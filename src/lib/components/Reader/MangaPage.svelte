@@ -22,6 +22,8 @@
     };
   });
 
+  let cleanupTimeout: number;
+
   $: {
     if (legacy) {
       legacy.style.backgroundImage = url;
@@ -30,6 +32,16 @@
 
   afterUpdate(() => {
     zoomDefault();
+  });
+
+  onDestroy(() => {
+    // Clear any lingering text boxes when page is destroyed
+    const textBoxes = document.querySelectorAll(`[data-page-index="${page.index}"]`);
+    textBoxes.forEach(box => box.remove());
+    
+    if (cleanupTimeout) {
+      window.clearTimeout(cleanupTimeout);
+    }
   });
 </script>
 

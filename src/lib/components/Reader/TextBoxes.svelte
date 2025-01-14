@@ -76,28 +76,31 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${index}`)}
-  <div
-    class="textBox"
-    style:width
-    style:height
-    style:left
-    style:top
-    style:font-size={fontSize}
-    style:font-weight={fontWeight}
-    style:display
-    style:border
-    style:writing-mode={writingMode}
-    role="none"
-    on:contextmenu={(e) => onContextMenu(e, lines)}
-    on:dblclick={(e) => onDoubleTap(e, lines)}
-    {contenteditable}
-  >
-    {#each lines as line}
-      <p>{line}</p>
-    {/each}
-  </div>
-{/each}
+{#key page}
+  {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${page.index}-${index}`)}
+    <div
+      class="textBox"
+      style:width
+      style:height
+      style:left
+      style:top
+      style:font-size={fontSize}
+      style:font-weight={fontWeight}
+      style:display
+      style:border
+      style:writing-mode={writingMode}
+      role="none"
+      on:contextmenu={(e) => onContextMenu(e, lines)}
+      on:dblclick={(e) => onDoubleTap(e, lines)}
+      {contenteditable}
+      data-page-index={page.index}
+    >
+      {#each lines as line}
+        <p>{line}</p>
+      {/each}
+    </div>
+  {/each}
+{/key}
 
 <style>
   .textBox {
@@ -132,4 +135,21 @@
   .textBox:hover p {
     display: table;
   }
+
+  /* Force text boxes to be hidden when not hovered/focused */
+  .textBox:not(:hover):not(:focus) p {
+    display: none !important;
+  }
+
+  /* Ensure text boxes are properly contained */
+  .textBox p {
+    pointer-events: none;
+    position: relative;
+    z-index: 11;
+  }
 </style>
+
+<script context="module">
+  // Track active text boxes to help with cleanup
+  const activeTextBoxes = new Set<string>();
+</script>
