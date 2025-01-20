@@ -3,9 +3,22 @@
   import type { Page } from '$lib/types';
   import { settings } from '$lib/settings';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
+  import { onDestroy } from 'svelte';
 
   export let page: Page;
   export let src: File;
+  
+  let textBoxElements: HTMLDivElement[] = [];
+
+  onDestroy(() => {
+    // Clean up text box elements when component is destroyed
+    textBoxElements.forEach(el => {
+      if (el && el.parentNode) {
+        el.parentNode.removeChild(el);
+      }
+    });
+    textBoxElements = [];
+  });
 
   $: textBoxes = page.blocks
     .map((block) => {
@@ -92,6 +105,7 @@
     on:contextmenu={(e) => onContextMenu(e, lines)}
     on:dblclick={(e) => onDoubleTap(e, lines)}
     {contenteditable}
+    bind:this={textBoxElements[index]}
   >
     {#each lines as line}
       <p>{line}</p>
