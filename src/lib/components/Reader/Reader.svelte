@@ -345,10 +345,12 @@
         role="none"
         id="manga-panel"
       >
-        {#if showSecondPage()}
-          <MangaPage page={pages[index + 1]} src={Object.values(volume?.files)[index + 1]} />
-        {/if}
-        <MangaPage page={pages[index]} src={Object.values(volume?.files)[index]} />
+        {#key page}
+          {#if showSecondPage()}
+            <MangaPage page={pages[index + 1]} src={Object.values(volume?.files)[index + 1]} />
+          {/if}
+          <MangaPage page={pages[index]} src={Object.values(volume?.files)[index]} />
+        {/key}
       </div>
     </Panzoom>
   </div>

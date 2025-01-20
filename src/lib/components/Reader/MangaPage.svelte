@@ -14,12 +14,13 @@
   onMount(() => {
     legacy = document.getElementById('popupAbout');
     zoomDefault();
+  });
 
-    return () => {
-      setTimeout(() => {
-        zoomDefault();
-      }, 10);
-    };
+  onDestroy(() => {
+    if (legacy) {
+      legacy.style.backgroundImage = '';
+    }
+    URL.revokeObjectURL(url);
   });
 
   $: {
