@@ -83,11 +83,16 @@
   }
 </script>
 
-{#key pageNum}
-  <div class="text-boxes-container" data-page-number={pageNum}>
-    {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${index}`)}
+<div class="text-boxes-container">
+    {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index}
+      {@const uniqueId = `page${pageNum}-box${index}-${Math.random().toString(36)}`}
       <div
         class="textBox"
+        {contenteditable}
+        id={uniqueId}
+        key={uniqueId}
+        on:contextmenu={(e) => onContextMenu(e, lines)}
+        on:dblclick={(e) => onDoubleTap(e, lines)}
         style:width
         style:height
         style:left
@@ -97,10 +102,6 @@
         style:display
         style:border
         style:writing-mode={writingMode}
-        role="none"
-        on:contextmenu={(e) => onContextMenu(e, lines)}
-        on:dblclick={(e) => onDoubleTap(e, lines)}
-        {contenteditable}
       >
         {#each lines as line}
           <p>{line}</p>
@@ -108,7 +109,6 @@
       </div>
     {/each}
   </div>
-{/key}
 
 <style>
   .text-boxes-container {
