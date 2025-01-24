@@ -6,6 +6,13 @@
 
   export let page: Page;
   export let src: File;
+  
+  // Get the current page number from the URL
+  import { page as pageStore } from '$app/stores';
+  import { progress } from '$lib/settings';
+  
+  $: currentVolume = $pageStore.params.volume;
+  $: pageNum = $progress?.[currentVolume] || 1;
 
   $: textBoxes = page.blocks
     .map((block) => {
@@ -76,8 +83,8 @@
   }
 </script>
 
-{#key page.img_width + '-' + page.img_height + '-' + textBoxes.length}
-  <div class="text-boxes-container">
+{#key pageNum}
+  <div class="text-boxes-container" data-page-number={pageNum}>
     {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${index}`)}
       <div
         class="textBox"
