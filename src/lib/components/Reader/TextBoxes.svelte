@@ -92,12 +92,23 @@
     on:contextmenu={(e) => onContextMenu(e, lines)}
     on:dblclick={(e) => onDoubleTap(e, lines)}
     {contenteditable}
+    data-page-text="true"
   >
     {#each lines as line}
       <p>{line}</p>
     {/each}
   </div>
 {/each}
+
+<div aria-hidden="true" class="visually-hidden" role="none">
+  <!-- This hidden div helps translation extensions detect page changes -->
+  <p data-page-marker>{page.img_width}-{page.img_height}-{textBoxes.length}</p>
+  {#each textBoxes as { lines }}
+    {#each lines as line}
+      <p data-text-content>{line}</p>
+    {/each}
+  {/each}
+</div>
 
 <style>
   .textBox {
@@ -118,7 +129,7 @@
   }
 
   .textBox p {
-    display: none;
+    display: table;
     white-space: nowrap;
     letter-spacing: 0.1em;
     line-height: 1.1em;
@@ -126,10 +137,24 @@
     background-color: rgb(255, 255, 255);
     font-weight: var(--bold);
     z-index: 11;
+    opacity: 0.01;
+    transition: opacity 0.1s ease-in-out;
   }
 
   .textBox:focus p,
   .textBox:hover p {
-    display: table;
+    opacity: 1;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>
