@@ -76,42 +76,45 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${index}`)}
-  <div
-    class="textBox"
-    style:width
-    style:height
-    style:left
-    style:top
-    style:font-size={fontSize}
-    style:font-weight={fontWeight}
-    style:display
-    style:border
-    style:writing-mode={writingMode}
-    role="none"
-    on:contextmenu={(e) => onContextMenu(e, lines)}
-    on:dblclick={(e) => onDoubleTap(e, lines)}
-    {contenteditable}
-    data-page-text="true"
-  >
-    {#each lines as line}
-      <p>{line}</p>
+{#key page.img_width + '-' + page.img_height + '-' + textBoxes.length}
+  <div class="text-boxes-container">
+    {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index (`textBox-${index}`)}
+      <div
+        class="textBox"
+        style:width
+        style:height
+        style:left
+        style:top
+        style:font-size={fontSize}
+        style:font-weight={fontWeight}
+        style:display
+        style:border
+        style:writing-mode={writingMode}
+        role="none"
+        on:contextmenu={(e) => onContextMenu(e, lines)}
+        on:dblclick={(e) => onDoubleTap(e, lines)}
+        {contenteditable}
+      >
+        {#each lines as line}
+          <p>{line}</p>
+        {/each}
+      </div>
     {/each}
   </div>
-{/each}
-
-<div aria-hidden="true" class="visually-hidden" role="none">
-  <!-- This hidden div helps translation extensions detect page changes -->
-  <p data-page-marker>{page.img_width}-{page.img_height}-{textBoxes.length}</p>
-  {#each textBoxes as { lines }}
-    {#each lines as line}
-      <p data-text-content>{line}</p>
-    {/each}
-  {/each}
-</div>
+{/key}
 
 <style>
+  .text-boxes-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
   .textBox {
+    pointer-events: auto;
     color: black;
     padding: 0;
     position: absolute;
