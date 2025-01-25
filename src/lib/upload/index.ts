@@ -305,6 +305,25 @@ async function processVolume(
   }
 }
 
+// Get number of available CPU threads, fallback to 4 if not available
+const maxThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+
+async function processBatch(
+  volumeBatch: [string, VolumeFiles][],
+  volumes: Record<string, Volume>
+): Promise<void> {
+  await Promise.all(
+    volumeBatch.map(async ([path, volumeFiles]) => {
+      const result = await processVolume(path, volumeFiles, volumes);
+      if (result) {
+        const { volume } = result;
+        volumes[path] = volume;
+      }
+      updateProgress(state => ({ processedFiles: state.processedFiles + 1 }));
+    })
+  );
+}
+
 export async function processFiles(_files: File[]) {
   resetProgress();
   
@@ -324,7 +343,8 @@ export async function processFiles(_files: File[]) {
 
   // Group files by volume
   const volumeGroups = groupFilesByVolume(files);
-  const totalVolumes = Object.keys(volumeGroups).length;
+  const volumeEntries = Object.entries(volumeGroups);
+  const totalVolumes = volumeEntries.length;
   
   updateProgress({ 
     totalFiles: totalVolumes, 
@@ -332,18 +352,14 @@ export async function processFiles(_files: File[]) {
     currentPhase: 'processing' 
   });
 
-  // Process each volume sequentially
+  // Process volumes in parallel batches
   const volumes: Record<string, Volume> = {};
-  let processedCount = 0;
+  const batchSize = maxThreads;
 
-  for (const [path, volumeFiles] of Object.entries(volumeGroups)) {
-    const result = await processVolume(path, volumeFiles, volumes);
-    if (result) {
-      const { volume } = result;
-      volumes[path] = volume;
-    }
-    processedCount++;
-    updateProgress({ processedFiles: processedCount });
+  // Process volumes in batches
+  for (let i = 0; i < volumeEntries.length; i += batchSize) {
+    const batch = volumeEntries.slice(i, i + batchSize);
+    await processBatch(batch, volumes);
   }
 
   // Final status update
