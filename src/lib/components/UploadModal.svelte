@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { Button, Dropzone, Modal, Spinner, Accordion, AccordionItem } from 'flowbite-svelte';
+  import { Button, Dropzone, Modal, Spinner, Accordion, AccordionItem, ProgressBar } from 'flowbite-svelte';
   import FileUpload from './FileUpload.svelte';
   import { processFiles } from '$lib/upload';
   import { onMount } from 'svelte';
   import { scanFiles } from '$lib/upload';
   import { formatBytes } from '$lib/util/upload';
   import { toClipboard } from '$lib/util';
+  import { uploadProgress } from '$lib/stores/uploadProgress';
 
   export let open = false;
 
@@ -88,8 +89,50 @@
 
 <Modal title="Upload" bind:open outsideclose on:close={reset}>
   {#await promise}
-    <h2 class="justify-center flex">Loading...</h2>
-    <div class="text-center"><Spinner /></div>
+    <div class="flex flex-col gap-4">
+      <h2 class="justify-center flex">
+        {#if $uploadProgress.currentPhase === 'preparing'}
+          Preparing files...
+        {:else if $uploadProgress.currentPhase === 'processing'}
+          Processing files ({$uploadProgress.processedFiles}/{$uploadProgress.totalFiles})
+        {:else if $uploadProgress.currentPhase === 'saving'}
+          Saving to database...
+        {:else if $uploadProgress.currentPhase === 'complete'}
+          Upload complete!
+        {:else if $uploadProgress.currentPhase === 'error'}
+          Error occurred
+        {/if}
+      </h2>
+      
+      {#if $uploadProgress.currentPhase !== 'complete' && $uploadProgress.currentPhase !== 'error'}
+        <div class="text-center"><Spinner /></div>
+      {/if}
+      
+      {#if $uploadProgress.totalFiles > 0}
+        <ProgressBar 
+          progress={($uploadProgress.processedFiles / $uploadProgress.totalFiles) * 100} 
+          size="h-3"
+        />
+      {/if}
+      
+      {#if Object.keys($uploadProgress.volumes).length > 0}
+        <div class="flex flex-col gap-2 max-h-60 overflow-y-auto">
+          {#each Object.entries($uploadProgress.volumes) as [path, volume]}
+            <div class="flex flex-col gap-1 p-2 bg-gray-50 dark:bg-gray-800 rounded">
+              <div class="flex justify-between items-center">
+                <span class="text-sm font-medium">{volume.name}</span>
+                <span class="text-xs {volume.status === 'error' ? 'text-red-500' : 'text-gray-500'}">{volume.message}</span>
+              </div>
+              <ProgressBar 
+                progress={volume.progress} 
+                size="h-2"
+                color={volume.status === 'error' ? 'red' : volume.status === 'complete' ? 'green' : 'blue'}
+              />
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
   {:then}
     <Accordion flush>
       <AccordionItem>

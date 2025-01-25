@@ -3,6 +3,7 @@ import type { Volume } from '$lib/types';
 import { showSnackbar } from '$lib/util/snackbar';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { ZipReader, BlobWriter, getMimeType, Uint8ArrayReader } from '@zip.js/zip.js';
+import { resetProgress, updateProgress, updateVolumeProgress } from '$lib/stores/uploadProgress';
 
 export * from './web-import'
 
@@ -130,10 +131,14 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
   const { ext, filename, path } = getDetails(file);
   const { type, webkitRelativePath } = file;
 
+  updateProgress(state => ({ processedFiles: state.processedFiles + 1 }));
+
   // Process mokuro files
   if (ext === 'mokuro') {
+    updateVolumeProgress(path, { status: 'processing', name: filename, progress: 0, message: 'Processing mokuro file' });
     const mokuroData: Volume['mokuroData'] = JSON.parse(await file.text());
     volumePathMap.set(path, path); // Add to lookup map
+    updateVolumeProgress(path, { progress: 50, message: 'Mokuro file processed' });
     return {
       path,
       volumeData: {
@@ -151,6 +156,7 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
     const vol = Array.from(volumePathMap.keys()).find(key => webkitRelativePath.startsWith(key));
     
     if (vol && imageName) {
+      updateVolumeProgress(vol, { status: 'processing', progress: 75, message: 'Processing images' });
       return {
         path: vol,
         volumeData: {
@@ -164,8 +170,10 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
 
   // Process zip files
   if (ext && zipTypes.includes(ext)) {
+    updateVolumeProgress(path, { status: 'processing', name: filename, progress: 0, message: 'Extracting zip file' });
     const unzippedFiles = await unzipManga(file);
     if (unzippedFiles) {
+      updateVolumeProgress(path, { progress: 50, message: 'Zip file extracted' });
       return {
         path,
         volumeData: {
@@ -179,6 +187,7 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
 }
 
 export async function processFiles(_files: File[]) {
+  resetProgress();
   const volumes: Record<string, Volume> = {};
   const mangas = new Set<string>(); // Use Set for faster lookups
 
@@ -188,6 +197,8 @@ export async function processFiles(_files: File[]) {
       sensitivity: 'base'
     });
   });
+  
+  updateProgress({ totalFiles: files.length, currentPhase: 'processing' });
 
   // Process all files in parallel, but handle zip files separately
   const zipFiles = files.filter(f => zipTypes.includes(f.name.split('.').pop() || ''));
@@ -230,15 +241,18 @@ export async function processFiles(_files: File[]) {
   const vols = Object.values(volumes);
 
   if (vols.length > 0) {
+    updateProgress({ currentPhase: 'saving' });
     // Validate volumes
     const valid = vols.every((vol) => {
       const { files, mokuroData, volumeName } = vol;
       if (!mokuroData || !volumeName) {
         showSnackbar('Missing .mokuro file');
+        updateProgress({ currentPhase: 'error' });
         return false;
       }
       if (!files) {
         showSnackbar('Missing image files');
+        updateProgress({ currentPhase: 'error' });
         return false;
       }
       return true;
@@ -268,9 +282,17 @@ export async function processFiles(_files: File[]) {
       });
 
       await transaction;
+      
+      // Mark all volumes as complete
+      Object.keys(volumes).forEach(path => {
+        updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
+      });
+      
+      updateProgress({ currentPhase: 'complete' });
       showSnackbar('Catalog updated successfully');
     }
   } else {
+    updateProgress({ currentPhase: 'error' });
     showSnackbar('Missing .mokuro file');
   }
 }
