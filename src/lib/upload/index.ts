@@ -186,113 +186,172 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
   return null;
 }
 
+interface VolumeFiles {
+  mokuroFile?: File;
+  imageFiles: File[];
+  zipFile?: File;
+}
+
+function groupFilesByVolume(files: File[]): Record<string, VolumeFiles> {
+  const volumeGroups: Record<string, VolumeFiles> = {};
+
+  for (const file of files) {
+    const { ext, path } = getDetails(file);
+    const isMokuro = ext === 'mokuro';
+    const isZip = zipTypes.includes(ext || '');
+
+    if (!volumeGroups[path]) {
+      volumeGroups[path] = { imageFiles: [] };
+    }
+
+    if (isMokuro) {
+      volumeGroups[path].mokuroFile = file;
+    } else if (isZip) {
+      volumeGroups[path].zipFile = file;
+    } else {
+      volumeGroups[path].imageFiles.push(file);
+    }
+  }
+
+  return volumeGroups;
+}
+
+async function processVolume(
+  path: string,
+  files: VolumeFiles,
+  existingVolumes: Record<string, Volume> = {}
+): Promise<{ volume: Volume; mangaId: string } | null> {
+  updateVolumeProgress(path, { status: 'processing', name: path, progress: 0, message: 'Starting volume processing' });
+
+  // Process mokuro file first
+  if (!files.mokuroFile) {
+    updateVolumeProgress(path, { status: 'error', progress: 0, message: 'Missing mokuro file' });
+    return null;
+  }
+
+  try {
+    // Step 1: Process mokuro file
+    updateVolumeProgress(path, { progress: 10, message: 'Reading mokuro file' });
+    const mokuroData: Volume['mokuroData'] = JSON.parse(await files.mokuroFile.text());
+    const volumeName = getDetails(files.mokuroFile).filename;
+
+    // Step 2: Process zip file if present
+    let processedFiles: Record<string, File> = {};
+    if (files.zipFile) {
+      updateVolumeProgress(path, { progress: 20, message: 'Extracting zip file' });
+      processedFiles = await unzipManga(files.zipFile);
+      updateVolumeProgress(path, { progress: 50, message: 'Zip file extracted' });
+    } else {
+      // Process individual image files
+      updateVolumeProgress(path, { progress: 20, message: 'Processing image files' });
+      for (const file of files.imageFiles) {
+        const imageName = file.webkitRelativePath.split('/').at(-1) || file.name;
+        processedFiles[imageName] = file;
+      }
+      updateVolumeProgress(path, { progress: 50, message: 'Image files processed' });
+    }
+
+    // Step 3: Validate files
+    if (Object.keys(processedFiles).length === 0) {
+      updateVolumeProgress(path, { status: 'error', progress: 50, message: 'No image files found' });
+      return null;
+    }
+
+    // Step 4: Save to database
+    updateVolumeProgress(path, { progress: 75, message: 'Saving to database' });
+    await requestPersistentStorage();
+
+    const volume: Volume = {
+      mokuroData,
+      volumeName,
+      files: processedFiles
+    };
+
+    const existingCatalog = await db.catalog.get(mokuroData.title_uuid);
+    
+    // Check if volume already exists
+    if (existingCatalog?.manga.some(manga => 
+      manga.mokuroData.volume_uuid === volume.mokuroData.volume_uuid
+    )) {
+      updateVolumeProgress(path, { status: 'error', progress: 75, message: 'Volume already exists' });
+      return null;
+    }
+
+    // Update database
+    await db.transaction('rw', db.catalog, async () => {
+      if (existingCatalog) {
+        await db.catalog.update(mokuroData.title_uuid, {
+          manga: [...existingCatalog.manga, volume]
+        });
+      } else {
+        await db.catalog.add({
+          id: mokuroData.title_uuid,
+          manga: [volume]
+        });
+      }
+    });
+
+    updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
+    return { volume, mangaId: mokuroData.title_uuid };
+
+  } catch (error) {
+    console.error('Error processing volume:', error);
+    updateVolumeProgress(path, { 
+      status: 'error', 
+      progress: 0, 
+      message: error instanceof Error ? error.message : 'Unknown error occurred' 
+    });
+    return null;
+  }
+}
+
 export async function processFiles(_files: File[]) {
   resetProgress();
-  const volumes: Record<string, Volume> = {};
-  const mangas = new Set<string>(); // Use Set for faster lookups
-
+  
+  // Sort files for consistent ordering
   const files = _files.sort((a, b) => {
     return decodeURI(a.name).localeCompare(decodeURI(b.name), undefined, {
       numeric: true,
       sensitivity: 'base'
     });
   });
-  
-  updateProgress({ totalFiles: files.length, currentPhase: 'processing' });
-
-  // Process all files in parallel, but handle zip files separately
-  const zipFiles = files.filter(f => zipTypes.includes(f.name.split('.').pop() || ''));
-  const regularFiles = files.filter(f => !zipFiles.includes(f));
 
   // Handle single zip file case
-  if (files.length === 1 && zipFiles.length === 1) {
-    const unzippedFiles = await unzipManga(zipFiles[0]);
+  if (files.length === 1 && zipTypes.includes(files[0].name.split('.').pop() || '')) {
+    const unzippedFiles = await unzipManga(files[0]);
     return processFiles(Object.values(unzippedFiles));
   }
 
-  // Process regular files in parallel
-  const results = await Promise.all(regularFiles.map(processFile));
+  // Group files by volume
+  const volumeGroups = groupFilesByVolume(files);
+  const totalVolumes = Object.keys(volumeGroups).length;
   
-  // Process zip files sequentially to avoid memory issues
-  for (const zipFile of zipFiles) {
-    const result = await processFile(zipFile);
-    if (result) results.push(result);
+  updateProgress({ 
+    totalFiles: totalVolumes, 
+    processedFiles: 0,
+    currentPhase: 'processing' 
+  });
+
+  // Process each volume sequentially
+  const volumes: Record<string, Volume> = {};
+  let processedCount = 0;
+
+  for (const [path, volumeFiles] of Object.entries(volumeGroups)) {
+    const result = await processVolume(path, volumeFiles, volumes);
+    if (result) {
+      const { volume } = result;
+      volumes[path] = volume;
+    }
+    processedCount++;
+    updateProgress({ processedFiles: processedCount });
   }
 
-  // Merge results into volumes
-  for (const result of results.filter(Boolean)) {
-    if (!result) continue;
-    const { path, volumeData } = result;
-    volumes[path] = {
-      ...volumes[path],
-      ...volumeData,
-      files: {
-        ...volumes[path]?.files,
-        ...volumeData.files
-      }
-    };
-
-    // Track manga IDs
-    if (volumeData.mokuroData) {
-      mangas.add(volumeData.mokuroData.title_uuid);
-    }
-  }
-
-  const vols = Object.values(volumes);
-
-  if (vols.length > 0) {
-    updateProgress({ currentPhase: 'saving' });
-    // Validate volumes
-    const valid = vols.every((vol) => {
-      const { files, mokuroData, volumeName } = vol;
-      if (!mokuroData || !volumeName) {
-        showSnackbar('Missing .mokuro file');
-        updateProgress({ currentPhase: 'error' });
-        return false;
-      }
-      if (!files) {
-        showSnackbar('Missing image files');
-        updateProgress({ currentPhase: 'error' });
-        return false;
-      }
-      return true;
-    });
-
-    if (valid) {
-      await requestPersistentStorage();
-
-      // Batch database operations
-      const transaction = db.transaction('rw', db.catalog, async () => {
-        const updates = Array.from(mangas).map(async (key) => {
-          const existingCatalog = await db.catalog.get(key);
-          const filtered = vols.filter((vol) => (
-            !existingCatalog?.manga.some((manga) => 
-              manga.mokuroData.volume_uuid === vol.mokuroData.volume_uuid
-            ) && key === vol.mokuroData.title_uuid
-          ));
-
-          if (existingCatalog) {
-            return db.catalog.update(key, { manga: [...existingCatalog.manga, ...filtered] });
-          } else {
-            return db.catalog.add({ id: key, manga: filtered });
-          }
-        });
-
-        await Promise.all(updates);
-      });
-
-      await transaction;
-      
-      // Mark all volumes as complete
-      Object.keys(volumes).forEach(path => {
-        updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
-      });
-      
-      updateProgress({ currentPhase: 'complete' });
-      showSnackbar('Catalog updated successfully');
-    }
+  // Final status update
+  if (Object.keys(volumes).length > 0) {
+    updateProgress({ currentPhase: 'complete' });
+    showSnackbar('Catalog updated successfully');
   } else {
     updateProgress({ currentPhase: 'error' });
-    showSnackbar('Missing .mokuro file');
+    showSnackbar('No volumes were processed successfully');
   }
 }
