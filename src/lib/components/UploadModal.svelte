@@ -117,7 +117,7 @@
       
       {#if Object.keys($uploadProgress.volumes).length > 0}
         <div class="flex flex-col gap-2 max-h-60 overflow-y-auto">
-          {#each Object.entries($uploadProgress.volumes) as [path, volume]}
+          {#each Object.entries($uploadProgress.volumes) as [path, volume] (path)}
             <div class="flex flex-col gap-1 p-2 bg-gray-50 dark:bg-gray-800 rounded">
               <div class="flex justify-between items-center">
                 <span class="text-sm font-medium">{volume.name}</span>
@@ -126,7 +126,7 @@
               <Progressbar 
                 progress={volume.progress} 
                 size="h-2"
-                color={volume.status === 'error' ? 'red' : volume.status === 'complete' ? 'green' : 'blue'}
+                color={volume.status === 'error' ? 'red' : 'blue'}
               />
             </div>
           {/each}

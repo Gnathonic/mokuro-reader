@@ -30,7 +30,15 @@ export const resetProgress = () => {
 export const updateVolumeProgress = (path: string, progress: Partial<VolumeProgress>) => {
   uploadProgress.update(state => {
     const volume = state.volumes[path] || { name: path, status: 'pending', progress: 0 };
-    state.volumes[path] = { ...volume, ...progress };
+    const updatedVolume = { ...volume, ...progress };
+    
+    // If volume is complete, remove it from the list
+    if (updatedVolume.status === 'complete') {
+      delete state.volumes[path];
+    } else {
+      state.volumes[path] = updatedVolume;
+    }
+    
     return state;
   });
 };

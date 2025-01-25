@@ -310,7 +310,9 @@ const maxThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurre
 
 async function processBatch(
   volumeBatch: [string, VolumeFiles][],
-  volumes: Record<string, Volume>
+  volumes: Record<string, Volume>,
+  processedCount: { value: number },
+  totalVolumes: number
 ): Promise<void> {
   await Promise.all(
     volumeBatch.map(async ([path, volumeFiles]) => {
@@ -319,7 +321,11 @@ async function processBatch(
         const { volume } = result;
         volumes[path] = volume;
       }
-      updateProgress(state => ({ processedFiles: state.processedFiles + 1 }));
+      processedCount.value++;
+      updateProgress({ 
+        processedFiles: processedCount.value,
+        totalFiles: totalVolumes 
+      });
     })
   );
 }
@@ -355,11 +361,12 @@ export async function processFiles(_files: File[]) {
   // Process volumes in parallel batches
   const volumes: Record<string, Volume> = {};
   const batchSize = maxThreads;
+  const processedCount = { value: 0 };
 
   // Process volumes in batches
   for (let i = 0; i < volumeEntries.length; i += batchSize) {
     const batch = volumeEntries.slice(i, i + batchSize);
-    await processBatch(batch, volumes);
+    await processBatch(batch, volumes, processedCount, totalVolumes);
   }
 
   // Final status update
