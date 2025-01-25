@@ -1,0 +1,16 @@
+name: Deploy to GitHub Pages
+on:
+    push:
+        branches: ['main']
+
+jobs:
+    build-and-deploy:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - uses: actions/setup-node@v3
+            - run: npm ci
+            - run: npm run build
+            - uses: JamesIves/github-pages-deploy-action@v4
+              with:
+                  folder: dist
