@@ -16,7 +16,7 @@ export async function unzipManga(file: File) {
   const entries = await zipReader.getEntries();
   const unzippedFiles: Record<string, File> = {};
 
-  // Sort entries once and process in parallel
+  // Sort entries and group by volume
   const sortedEntries = entries.sort((a, b) => {
     return a.filename.localeCompare(b.filename, undefined, {
       numeric: true,
@@ -24,39 +24,34 @@ export async function unzipManga(file: File) {
     });
   });
 
-  // Process mokuro files first as they're needed for validation
-  const mokuroEntries = sortedEntries.filter(entry => entry.filename.split('.').pop() === 'mokuro');
-  const imageEntries = sortedEntries.filter(entry => {
-    const mime = getMimeType(entry.filename);
-    return imageTypes.includes(mime);
+  // Group entries by volume directory
+  const volumeGroups = new Map<string, ZipEntry[]>();
+  sortedEntries.forEach(entry => {
+    const volumePath = entry.filename.split('/')[0];
+    if (!volumeGroups.has(volumePath)) {
+      volumeGroups.set(volumePath, []);
+    }
+    volumeGroups.get(volumePath)?.push(entry);
   });
 
-  // Process mokuro files
-  await Promise.all(mokuroEntries.map(async entry => {
-    const blob = await entry.getData?.(new BlobWriter('application/json'));
-    if (blob) {
-      const fileName = entry.filename.split('/').pop() || entry.filename;
-      const file = new File([blob], fileName, { type: 'application/json' });
-      Object.defineProperty(file, 'webkitRelativePath', { value: entry.filename });
-      unzippedFiles[entry.filename] = file;
+  // Process each volume's files in parallel, but process files within each volume sequentially
+  await Promise.all(Array.from(volumeGroups.entries()).map(async ([volumePath, entries]) => {
+    // Process volume entries sequentially to maintain order
+    for (const entry of entries) {
+      const mime = getMimeType(entry.filename);
+      const isMokuroFile = entry.filename.split('.').pop() === 'mokuro';
+      if (imageTypes.includes(mime) || isMokuroFile) {
+        const writerType = isMokuroFile ? 'application/json' : mime;
+        const blob = await entry.getData?.(new BlobWriter(writerType));
+        if (blob) {
+          const fileName = entry.filename.split('/').pop() || entry.filename;
+          const file = new File([blob], fileName, { type: writerType });
+          Object.defineProperty(file, 'webkitRelativePath', { value: entry.filename });
+          unzippedFiles[entry.filename] = file;
+        }
+      }
     }
   }));
-
-  // Process image files in chunks to avoid memory issues
-  const CHUNK_SIZE = 5; // Process 5 images at a time
-  for (let i = 0; i < imageEntries.length; i += CHUNK_SIZE) {
-    const chunk = imageEntries.slice(i, i + CHUNK_SIZE);
-    await Promise.all(chunk.map(async entry => {
-      const mime = getMimeType(entry.filename);
-      const blob = await entry.getData?.(new BlobWriter(mime));
-      if (blob) {
-        const fileName = entry.filename.split('/').pop() || entry.filename;
-        const file = new File([blob], fileName, { type: mime });
-        Object.defineProperty(file, 'webkitRelativePath', { value: entry.filename });
-        unzippedFiles[entry.filename] = file;
-      }
-    }));
-  }
 
   return unzippedFiles;
 }
