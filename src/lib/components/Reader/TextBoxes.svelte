@@ -4,48 +4,53 @@
   import { settings } from '$lib/settings';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
 
-  export let page: Page;
-  export let src: File;
-  
-  // Get the current page number from the URL
+  import { catalog } from '$lib/catalog';
   import { page as pageStore } from '$app/stores';
   import { progress } from '$lib/settings';
-  
+
+  // Get all pages for the current volume
+  $: volume = $catalog
+    ?.find((item) => item.id === $pageStore.params.manga)
+    ?.manga.find((item) => item.mokuroData.volume_uuid === $pageStore.params.volume);
+
   $: currentVolume = $pageStore.params.volume;
-  $: pageNum = $progress?.[currentVolume] || 1;
+  $: currentPage = $progress?.[currentVolume] || 1;
 
-  $: textBoxes = page.blocks
-    .map((block) => {
-      const { img_height, img_width } = page;
-      const { box, font_size, lines, vertical } = block;
+  // Process all pages to create text boxes
+  $: allTextBoxes = volume?.mokuroData.pages.map((page, pageIndex) => {
+    const pageNum = pageIndex + 1;
+    return page.blocks
+      .map((block) => {
+        const { img_height, img_width } = page;
+        const { box, font_size, lines, vertical } = block;
 
-      let [_xmin, _ymin, _xmax, _ymax] = box;
+        let [_xmin, _ymin, _xmax, _ymax] = box;
 
-      const xmin = clamp(_xmin, 0, img_width);
-      const ymin = clamp(_ymin, 0, img_height);
-      const xmax = clamp(_xmax, 0, img_width);
-      const ymax = clamp(_ymax, 0, img_height);
+        const xmin = clamp(_xmin, 0, img_width);
+        const ymin = clamp(_ymin, 0, img_height);
+        const xmax = clamp(_xmax, 0, img_width);
+        const ymax = clamp(_ymax, 0, img_height);
 
-      const width = xmax - xmin;
-      const height = ymax - ymin;
-      const area = width * height;
+        const width = xmax - xmin;
+        const height = ymax - ymin;
+        const area = width * height;
 
-      const textBox = {
-        left: `${xmin}px`,
-        top: `${ymin}px`,
-        width: `${width}px`,
-        height: `${height}px`,
-        fontSize: $settings.fontSize === 'auto' ? `${font_size}px` : `${$settings.fontSize}pt`,
-        writingMode: vertical ? 'vertical-rl' : 'horizontal-tb',
-        lines,
-        area
-      };
+        const textBox = {
+          left: `${xmin}px`,
+          top: `${ymin}px`,
+          width: `${width}px`,
+          height: `${height}px`,
+          fontSize: $settings.fontSize === 'auto' ? `${font_size}px` : `${$settings.fontSize}pt`,
+          writingMode: vertical ? 'vertical-rl' : 'horizontal-tb',
+          lines,
+          area,
+          pageNum
+        };
 
-      return textBox;
-    })
-    .sort(({ area: a }, { area: b }) => {
-      return b - a;
-    });
+        return textBox;
+      })
+      .sort(({ area: a }, { area: b }) => b - a);
+  }) || [];
 
   $: fontWeight = $settings.boldFont ? 'bold' : '400';
   $: display = $settings.displayOCR ? 'block' : 'none';
@@ -84,15 +89,12 @@
 </script>
 
 <div class="text-boxes-container">
-    {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode }, index}
-      {@const uniqueId = `page${pageNum}-box${index}-${Math.random().toString(36)}`}
+    {#each allTextBoxes.flat() as { fontSize, height, left, lines, top, width, writingMode, pageNum }, index}
       <div
         class="textBox"
+        class:active={pageNum === currentPage}
         {contenteditable}
-        id={uniqueId}
-        key={uniqueId}
-        on:contextmenu={(e) => onContextMenu(e, lines)}
-        on:dblclick={(e) => onDoubleTap(e, lines)}
+        data-page={pageNum}
         style:width
         style:height
         style:left
@@ -102,6 +104,8 @@
         style:display
         style:border
         style:writing-mode={writingMode}
+        on:contextmenu={(e) => onContextMenu(e, lines)}
+        on:dblclick={(e) => onDoubleTap(e, lines)}
       >
         {#each lines as line}
           <p>{line}</p>
@@ -121,7 +125,7 @@
   }
 
   .textBox {
-    pointer-events: auto;
+    pointer-events: none;
     color: black;
     padding: 0;
     position: absolute;
@@ -130,12 +134,12 @@
     white-space: nowrap;
     border: 1px solid rgba(0, 0, 0, 0);
     z-index: 11;
+    visibility: hidden;
   }
 
-  .textBox:focus,
-  .textBox:hover {
-    background: rgb(255, 255, 255);
-    border: 1px solid rgba(0, 0, 0, 0);
+  .textBox.active {
+    pointer-events: auto;
+    visibility: visible;
   }
 
   .textBox p {
@@ -147,12 +151,16 @@
     background-color: rgb(255, 255, 255);
     font-weight: var(--bold);
     z-index: 11;
+    opacity: 0;
+  }
+
+  .textBox.active p {
     opacity: 0.01;
     transition: opacity 0.1s ease-in-out;
   }
 
-  .textBox:focus p,
-  .textBox:hover p {
+  .textBox.active:focus p,
+  .textBox.active:hover p {
     opacity: 1;
   }
 
