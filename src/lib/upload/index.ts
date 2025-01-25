@@ -1,9 +1,9 @@
-import { db } from '$lib/catalog/db';
 import type { Volume } from '$lib/types';
 import { showSnackbar } from '$lib/util/snackbar';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { ZipReader, BlobWriter, getMimeType, Uint8ArrayReader } from '@zip.js/zip.js';
 import { resetProgress, updateProgress, updateVolumeProgress } from '$lib/stores/uploadProgress';
+import { dbQueue } from '$lib/catalog/dbQueue';
 
 export * from './web-import'
 
@@ -258,7 +258,7 @@ async function processVolume(
     }
 
     // Step 4: Save to database
-    updateVolumeProgress(path, { progress: 75, message: 'Saving to database' });
+    updateVolumeProgress(path, { progress: 75, message: 'Queuing for database update' });
     await requestPersistentStorage();
 
     const volume: Volume = {
@@ -267,32 +267,10 @@ async function processVolume(
       files: processedFiles
     };
 
-    const existingCatalog = await db.catalog.get(mokuroData.title_uuid);
-    
-    // Check if volume already exists
-    if (existingCatalog?.manga.some(manga => 
-      manga.mokuroData.volume_uuid === volume.mokuroData.volume_uuid
-    )) {
-      updateVolumeProgress(path, { status: 'error', progress: 75, message: 'Volume already exists' });
-      return null;
-    }
-
-    // Update database
-    await db.transaction('rw', db.catalog, async () => {
-      if (existingCatalog) {
-        await db.catalog.update(mokuroData.title_uuid, {
-          manga: [...existingCatalog.manga, volume]
-        });
-      } else {
-        await db.catalog.add({
-          id: mokuroData.title_uuid,
-          manga: [volume]
-        });
-      }
-    });
-
-    updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
-    return { volume, mangaId: mokuroData.title_uuid };
+    try {
+      await dbQueue.enqueue(volume, mokuroData.title_uuid);
+      updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
+      return { volume, mangaId: mokuroData.title_uuid };
 
   } catch (error) {
     console.error('Error processing volume:', error);
