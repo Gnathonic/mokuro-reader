@@ -3,10 +3,20 @@
 
   export let id: string;
 
-  $: manga = $catalog?.find((item) => item.id === id)?.manga[0];
+  import { liveQuery } from 'dexie';
+  import { db } from '$lib/catalog/db';
+
+  // Get first volume of the manga for display
+  $: manga = liveQuery(() => 
+    db.volumes
+      .where('catalogId')
+      .equals(id)
+      .limit(1)
+      .first()
+  );
 </script>
 
-{#if manga}
+{#if $manga}
   <a href={id}>
     <div
       class="flex flex-col gap-[5px] text-center items-center bg-slate-900 pb-1 bg-opacity-50 border border-slate-950"
