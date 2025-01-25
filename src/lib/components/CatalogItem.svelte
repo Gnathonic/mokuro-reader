@@ -3,10 +3,40 @@
 
   export let id: string;
 
-  $: manga = $catalog?.find((item) => item.id === id)?.manga[0];
+  import { onMount } from 'svelte';
+  import { writable } from 'svelte/store';
+  import type { Volume } from '$lib/types';
+
+  const manga = writable<Volume | null>(null);
+  let mounted = false;
+
+  onMount(() => {
+    mounted = true;
+    return () => {
+      mounted = false;
+    };
+  });
+
+  // Only load metadata when component is mounted and visible
+  $: if (mounted && id && $catalog) {
+    const item = $catalog.find((item) => item.id === id);
+    if (item) {
+      // Use requestIdleCallback to load metadata during idle time
+      if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(() => {
+          if (mounted) manga.set(item.manga[0]);
+        });
+      } else {
+        // Fallback for browsers that don't support requestIdleCallback
+        setTimeout(() => {
+          if (mounted) manga.set(item.manga[0]);
+        }, 0);
+      }
+    }
+  }
 </script>
 
-{#if manga}
+{#if $manga}
   <a href={id}>
     <div
       class="flex flex-col gap-[5px] text-center items-center bg-slate-900 pb-1 bg-opacity-50 border border-slate-950"
