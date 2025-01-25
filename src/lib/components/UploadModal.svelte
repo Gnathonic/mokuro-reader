@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Dropzone, Modal, Spinner, Accordion, AccordionItem, ProgressBar } from 'flowbite-svelte';
+  import { Button, Dropzone, Modal, Spinner, Accordion, AccordionItem, Progressbar } from 'flowbite-svelte';
   import FileUpload from './FileUpload.svelte';
   import { processFiles } from '$lib/upload';
   import { onMount } from 'svelte';
@@ -109,7 +109,7 @@
       {/if}
       
       {#if $uploadProgress.totalFiles > 0}
-        <ProgressBar 
+        <Progressbar 
           progress={($uploadProgress.processedFiles / $uploadProgress.totalFiles) * 100} 
           size="h-3"
         />
@@ -123,7 +123,7 @@
                 <span class="text-sm font-medium">{volume.name}</span>
                 <span class="text-xs {volume.status === 'error' ? 'text-red-500' : 'text-gray-500'}">{volume.message}</span>
               </div>
-              <ProgressBar 
+              <Progressbar 
                 progress={volume.progress} 
                 size="h-2"
                 color={volume.status === 'error' ? 'red' : volume.status === 'complete' ? 'green' : 'blue'}
