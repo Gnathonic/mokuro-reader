@@ -271,16 +271,15 @@ async function processVolume(
       await dbQueue.enqueue(volume, mokuroData.title_uuid);
       updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
       return { volume, mangaId: mokuroData.title_uuid };
-
-  } catch (error) {
-    console.error('Error processing volume:', error);
-    updateVolumeProgress(path, { 
-      status: 'error', 
-      progress: 0, 
-      message: error instanceof Error ? error.message : 'Unknown error occurred' 
-    });
-    return null;
-  }
+    } catch (error) {
+      console.error('Error processing volume:', error);
+      updateVolumeProgress(path, { 
+        status: 'error', 
+        progress: 0, 
+        message: error instanceof Error ? error.message : 'Unknown error occurred' 
+      });
+      return null;
+    }
 }
 
 // Get number of available CPU threads, fallback to 4 if not available
