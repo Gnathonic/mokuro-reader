@@ -272,4 +272,3 @@ export async function processFiles(_files: File[]) {
     showSnackbar('Missing .mokuro file');
   }
 }
-}
