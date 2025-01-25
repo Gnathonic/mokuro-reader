@@ -34,24 +34,31 @@ export async function unzipManga(file: File) {
     volumeGroups.get(volumePath)?.push(entry);
   });
 
-  // Process each volume's files in parallel, but process files within each volume sequentially
-  await Promise.all(Array.from(volumeGroups.entries()).map(async ([volumePath, entries]) => {
-    // Process volume entries sequentially to maintain order
-    for (const entry of entries) {
-      const mime = getMimeType(entry.filename);
-      const isMokuroFile = entry.filename.split('.').pop() === 'mokuro';
-      if (imageTypes.includes(mime) || isMokuroFile) {
-        const writerType = isMokuroFile ? 'application/json' : mime;
-        const blob = await entry.getData?.(new BlobWriter(writerType));
-        if (blob) {
-          const fileName = entry.filename.split('/').pop() || entry.filename;
-          const file = new File([blob], fileName, { type: writerType });
-          Object.defineProperty(file, 'webkitRelativePath', { value: entry.filename });
-          unzippedFiles[entry.filename] = file;
+  // Get number of available CPU threads, fallback to 4 if not available
+  const maxThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+
+  // Process volumes in parallel batches based on available threads
+  const volumes = Array.from(volumeGroups.entries());
+  for (let i = 0; i < volumes.length; i += maxThreads) {
+    const batch = volumes.slice(i, i + maxThreads);
+    await Promise.all(batch.map(async ([volumePath, entries]) => {
+      // Process volume entries sequentially to maintain order
+      for (const entry of entries) {
+        const mime = getMimeType(entry.filename);
+        const isMokuroFile = entry.filename.split('.').pop() === 'mokuro';
+        if (imageTypes.includes(mime) || isMokuroFile) {
+          const writerType = isMokuroFile ? 'application/json' : mime;
+          const blob = await entry.getData?.(new BlobWriter(writerType));
+          if (blob) {
+            const fileName = entry.filename.split('/').pop() || entry.filename;
+            const file = new File([blob], fileName, { type: writerType });
+            Object.defineProperty(file, 'webkitRelativePath', { value: entry.filename });
+            unzippedFiles[entry.filename] = file;
+          }
         }
       }
-    }
-  }));
+    }));
+  }
 
   return unzippedFiles;
 }
