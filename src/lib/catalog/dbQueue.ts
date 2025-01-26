@@ -37,7 +37,7 @@ class DatabaseQueue {
     try {
       // Group volumes by manga ID for batch processing
       const volumesByManga = new Map<string, Volume[]>();
-      
+
       for (const { volume, mangaId } of this.queue) {
         if (!volumesByManga.has(mangaId)) {
           volumesByManga.set(mangaId, []);
@@ -47,31 +47,32 @@ class DatabaseQueue {
 
       // Process all updates in a single transaction
       await db.transaction('rw', db.catalog, async () => {
-        const updates = Array.from(volumesByManga.entries()).map(async ([mangaId, volumes]) => {
+        const updatePromises = Array.from(volumesByManga.entries()).map(async ([mangaId, volumes]) => {
           const existingCatalog = await db.catalog.get(mangaId);
 
           if (existingCatalog) {
             // Filter out any volumes that already exist
-            const newVolumes = volumes.filter(vol => 
-              !existingCatalog.manga.some(existing => 
+            const newVolumes = volumes.filter(vol =>
+              !existingCatalog.manga.some(existing =>
                 existing.mokuroData.volume_uuid === vol.mokuroData.volume_uuid
               )
             );
 
             if (newVolumes.length > 0) {
-              await db.catalog.update(mangaId, {
+              return db.catalog.update(mangaId, {
                 manga: [...existingCatalog.manga, ...newVolumes]
               });
             }
           } else {
-            await db.catalog.add({
+            return db.catalog.add({
               id: mangaId,
               manga: volumes
             });
           }
         });
 
-        await Promise.all(updates);
+        // Wait for all database operations to complete
+        await Promise.all(updatePromises.filter(Boolean));
       });
 
       // Clear the processed items
@@ -81,7 +82,7 @@ class DatabaseQueue {
       throw error;
     } finally {
       this.isProcessing = false;
-      
+
       // If new items were added while processing, schedule another batch
       if (this.queue.length > 0) {
         this.scheduleBatchProcessing();
