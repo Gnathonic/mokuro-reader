@@ -31,6 +31,7 @@ export class CatalogDexie extends Dexie {
       catalog: 'id, manga, *manga.mokuroData.title',
       files: 'id, volumeUuid, filename'
     });
+  }
 }
 
 export const db = new CatalogDexie();
