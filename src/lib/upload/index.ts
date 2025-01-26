@@ -10,6 +10,9 @@ export * from './web-import'
 const zipTypes = ['zip', 'cbz', 'ZIP', 'CBZ'];
 const imageTypes = ['image/jpeg', 'image/png', 'image/webp'];
 
+// Get number of available CPU threads, fallback to 4 if not available
+const maxThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+
 export async function unzipManga(file: File) {
   const zipFileReader = new Uint8ArrayReader(new Uint8Array(await file.arrayBuffer()));
   const zipReader = new ZipReader(zipFileReader);
@@ -281,9 +284,6 @@ async function processVolume(
       return null;
     }
 }
-
-// Get number of available CPU threads, fallback to 4 if not available
-const maxThreads = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
 
 async function processBatch(
   volumeBatch: [string, VolumeFiles][],
