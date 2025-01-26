@@ -5,7 +5,7 @@ import { ZipReader, BlobWriter, getMimeType, Uint8ArrayReader } from '@zip.js/zi
 import { resetProgress, updateProgress, updateVolumeProgress } from '$lib/stores/uploadProgress';
 import { dbQueue } from '$lib/catalog/dbQueue';
 
-export * from './web-import'
+export * from './web-import';
 
 const zipTypes = ['zip', 'cbz', 'ZIP', 'CBZ'];
 const imageTypes = ['image/jpeg', 'image/png', 'image/webp'];
@@ -68,14 +68,14 @@ export async function unzipManga(file: File) {
 }
 
 function getDetails(file: File) {
-  const { webkitRelativePath, name } = file
+  const { webkitRelativePath, name } = file;
   const split = name.split('.');
   const ext = split.pop();
   const filename = split.join('.');
-  let path = filename
+  let path = filename;
 
   if (webkitRelativePath) {
-    path = webkitRelativePath.split('.')[0]
+    path = webkitRelativePath.split('.')[0];
   }
 
   return {
@@ -91,9 +91,9 @@ async function getFile(fileEntry: FileSystemFileEntry) {
       if (!file.webkitRelativePath) {
         Object.defineProperty(file, 'webkitRelativePath', {
           value: fileEntry.fullPath.substring(1)
-        })
+        });
       }
-      resolve(file)
+      resolve(file);
     }, reject));
   } catch (err) {
     console.log(err);
@@ -114,14 +114,14 @@ export async function scanFiles(item: FileSystemEntry, files: Promise<File | und
                 await scanFiles(entry, files);
               }
             }
-            readEntries()
+            readEntries();
           } else {
             resolve();
           }
         });
       }
 
-      readEntries()
+      readEntries();
     });
   }
 }
@@ -138,7 +138,12 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
 
   // Process mokuro files
   if (ext === 'mokuro') {
-    updateVolumeProgress(path, { status: 'processing', name: filename, progress: 0, message: 'Processing mokuro file' });
+    updateVolumeProgress(path, {
+      status: 'processing',
+      name: filename,
+      progress: 0,
+      message: 'Processing mokuro file'
+    });
     const mokuroData: Volume['mokuroData'] = JSON.parse(await file.text());
     volumePathMap.set(path, path); // Add to lookup map
     updateVolumeProgress(path, { progress: 50, message: 'Mokuro file processed' });
@@ -157,7 +162,7 @@ async function processFile(file: File): Promise<{ path: string; volumeData: Part
     const imageName = webkitRelativePath.split('/').at(-1);
     // Use prefix matching for faster lookup
     const vol = Array.from(volumePathMap.keys()).find(key => webkitRelativePath.startsWith(key));
-    
+
     if (vol && imageName) {
       updateVolumeProgress(vol, { status: 'processing', progress: 75, message: 'Processing images' });
       return {
@@ -276,13 +281,16 @@ async function processVolume(
       return { volume, mangaId: mokuroData.title_uuid };
     } catch (error) {
       console.error('Error processing volume:', error);
-      updateVolumeProgress(path, { 
-        status: 'error', 
-        progress: 0, 
-        message: error instanceof Error ? error.message : 'Unknown error occurred' 
+      updateVolumeProgress(path, {
+        status: 'error',
+        progress: 0,
+        message: error instanceof Error ? error.message : 'Unknown error occurred'
       });
       return null;
     }
+  } catch (e) {
+    return null;
+  }
 }
 
 async function processBatch(
@@ -299,9 +307,9 @@ async function processBatch(
         volumes[path] = volume;
       }
       processedCount.value++;
-      updateProgress({ 
+      updateProgress({
         processedFiles: processedCount.value,
-        totalFiles: totalVolumes 
+        totalFiles: totalVolumes
       });
     })
   );
@@ -309,7 +317,7 @@ async function processBatch(
 
 export async function processFiles(_files: File[]) {
   resetProgress();
-  
+
   // Sort files for consistent ordering
   const files = _files.sort((a, b) => {
     return decodeURI(a.name).localeCompare(decodeURI(b.name), undefined, {
@@ -328,11 +336,11 @@ export async function processFiles(_files: File[]) {
   const volumeGroups = groupFilesByVolume(files);
   const volumeEntries = Object.entries(volumeGroups);
   const totalVolumes = volumeEntries.length;
-  
-  updateProgress({ 
-    totalFiles: totalVolumes, 
+
+  updateProgress({
+    totalFiles: totalVolumes,
     processedFiles: 0,
-    currentPhase: 'processing' 
+    currentPhase: 'processing'
   });
 
   // Process volumes in parallel batches
