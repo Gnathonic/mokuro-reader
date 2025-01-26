@@ -269,15 +269,42 @@ async function processVolume(
     updateVolumeProgress(path, { progress: 75, message: 'Queuing for database update' });
     await requestPersistentStorage();
 
+    // Create file metadata instead of storing files directly
+    const fileMetadata: Volume['fileMetadata'] = {};
+    for (const [filename, file] of Object.entries(processedFiles)) {
+      fileMetadata[filename] = {
+        path: file.webkitRelativePath || filename,
+        type: file.type,
+        size: file.size
+      };
+      
+      // Store file separately
+      try {
+        await db.files.put({
+          id: `${mokuroData.volume_uuid}_${filename}`,
+          volumeUuid: mokuroData.volume_uuid,
+          filename,
+          file
+        });
+      } catch (error) {
+        console.error(`Error storing file ${filename}:`, error);
+        // Continue with other files
+      }
+    }
+
     const volume: Volume = {
       mokuroData,
       volumeName,
-      files: processedFiles
+      fileMetadata
     };
 
     try {
       await dbQueue.enqueue(volume, mokuroData.title_uuid);
       updateVolumeProgress(path, { status: 'complete', progress: 100, message: 'Volume processed successfully' });
+      
+      // Clean up memory
+      processedFiles = {};
+      
       return { volume, mangaId: mokuroData.title_uuid };
     } catch (error) {
       console.error('Error processing volume:', error);

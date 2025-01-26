@@ -6,8 +6,16 @@ export interface Catalog {
   manga: Volume[];
 }
 
+export interface FileEntry {
+  id: string; // volumeUuid + filename
+  file: Blob;
+  volumeUuid: string;
+  filename: string;
+}
+
 export class CatalogDexie extends Dexie {
   catalog!: Table<Catalog>;
+  files!: Table<FileEntry>;
 
   constructor() {
     super('mokuro');
@@ -18,7 +26,11 @@ export class CatalogDexie extends Dexie {
     this.version(2).stores({
       catalog: 'id, manga, *manga.mokuroData.title'
     });
-  }
+    // Add files store with indexes
+    this.version(3).stores({
+      catalog: 'id, manga, *manga.mokuroData.title',
+      files: 'id, volumeUuid, filename'
+    });
 }
 
 export const db = new CatalogDexie();

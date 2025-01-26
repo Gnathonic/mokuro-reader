@@ -25,5 +25,11 @@ export type MokuroData = {
 export type Volume = {
   mokuroData: MokuroData;
   volumeName: string;
-  files: Record<string, File>;
+  fileMetadata: {
+    [filename: string]: {
+      path: string;
+      type: string;
+      size: number;
+    };
+  };
 };
