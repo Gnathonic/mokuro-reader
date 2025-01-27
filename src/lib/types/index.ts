@@ -22,8 +22,17 @@ export type MokuroData = {
   pages: Page[];
 };
 
+export type VolumeFile = {
+  id: string;
+  volumeId: string;
+  path: string;
+  file: File;
+};
+
 export type Volume = {
+  id: string;
   mokuroData: MokuroData;
   volumeName: string;
-  files: Record<string, File>;
+  fileIds: Record<string, string>;
+  thumbnail?: string; // Base64 thumbnail for quick loading
 };
