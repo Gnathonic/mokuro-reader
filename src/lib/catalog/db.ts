@@ -14,10 +14,6 @@ export class CatalogDexie extends Dexie {
     this.version(1).stores({
       catalog: 'id, manga'
     });
-    // Add compound index for faster title-based searches and sorting
-    this.version(2).stores({
-      catalog: 'id, manga, *manga.mokuroData.title'
-    });
   }
 }
 
