@@ -51,13 +51,14 @@ export function initializeVolume(volume: string) {
 
   const { hasCover, rightToLeft, singlePageView } = volumeDefaults
   volumes.update((prev) => {
+    const existingVolume = prev[volume];
     return {
       ...prev,
       [volume]: {
-        chars: 0,
-        completed: false,
-        progress: 0,
-        timeReadInMinutes: 0,
+        chars: existingVolume?.chars ?? 0,
+        completed: existingVolume?.completed ?? false,
+        progress: existingVolume?.progress ?? 1,
+        timeReadInMinutes: existingVolume?.timeReadInMinutes ?? 0,
         settings: {
           hasCover,
           rightToLeft,

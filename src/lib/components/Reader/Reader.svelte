@@ -19,7 +19,7 @@
   $: volumeData = $currentVolumeData;
   $: pages = volumeData?.pages || [];
 
-  $: page = $progress?.[volume?.volume_uuid || 0] || 1;
+  $: page = volume?.volume_uuid ? ($progress?.[volume.volume_uuid] ?? 1) : 1;
   $: index = page - 1;
   $: navAmount =
     volumeSettings.singlePageView ||
