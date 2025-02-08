@@ -3,7 +3,8 @@
   import Reader from '$lib/components/Reader/Reader.svelte';
   import Timer from '$lib/components/Reader/Timer.svelte';
   import { initializeVolume, settings, startCount, volumeSettings, volumes } from '$lib/settings';
-  import { onMount, beforeNavigate } from 'svelte';
+  import { onMount } from 'svelte';
+  import { beforeNavigate } from '$app/navigation';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
 
   const volumeId = $page.params.volume;
