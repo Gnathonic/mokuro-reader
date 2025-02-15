@@ -318,28 +318,30 @@
   </button>
   <div class="flex" style:background-color={$settings.backgroundColor}>
     <Panzoom>
-      <button
-        class="h-full fixed -left-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
-        style:margin-left={`${$settings.edgeButtonWidth}px`}
-        on:mousedown={mouseDown}
-        on:mouseup={left}
-      />
-      <button
-        class="h-full fixed -right-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
-        style:margin-right={`${$settings.edgeButtonWidth}px`}
-        on:mousedown={mouseDown}
-        on:mouseup={right}
-      />
-      <button
-        class="h-screen fixed top-full -left-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
-        on:mousedown={mouseDown}
-        on:mouseup={left}
-      />
-      <button
-        class="h-screen fixed top-full -right-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
-        on:mousedown={mouseDown}
-        on:mouseup={right}
-      />
+      {#if !$settings.disableBlankSpacePageTurn}
+        <button
+          class="h-full fixed -left-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
+          style:margin-left={`${$settings.edgeButtonWidth}px`}
+          on:mousedown={mouseDown}
+          on:mouseup={left}
+        />
+        <button
+          class="h-full fixed -right-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
+          style:margin-right={`${$settings.edgeButtonWidth}px`}
+          on:mousedown={mouseDown}
+          on:mouseup={right}
+        />
+        <button
+          class="h-screen fixed top-full -left-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
+          on:mousedown={mouseDown}
+          on:mouseup={left}
+        />
+        <button
+          class="h-screen fixed top-full -right-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
+          on:mousedown={mouseDown}
+          on:mouseup={right}
+        />
+      {/if}
       <div
         class="flex flex-row"
         class:flex-row-reverse={!volumeSettings.rightToLeft}
@@ -357,7 +359,7 @@
       </div>
     </Panzoom>
   </div>
-  {#if !$settings.mobile}
+  {#if !$settings.mobile && !$settings.disableBlankSpacePageTurn}
     <button
       on:mousedown={mouseDown}
       on:mouseup={left}
