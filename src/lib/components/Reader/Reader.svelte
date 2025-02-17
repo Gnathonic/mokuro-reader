@@ -113,31 +113,27 @@
   function handleWheel(event: WheelEvent) {
     if ($panzoomStore) {
       const { scale } = $panzoomStore.getTransform();
-      console.log('Current scale:', scale);
       
       // Handle zooming when Ctrl is pressed
       if (event.ctrlKey) {
         event.preventDefault();
         const delta = event.deltaY;
-        console.log('Zoom delta:', delta);
         const zoomFactor = delta > 0 ? 0.9 : 1.1;
-        console.log('Zoom factor:', zoomFactor);
         $panzoomStore.zoomToPoint(event.clientX, event.clientY, zoomFactor * scale);
         return;
       }
 
-      // If zoomed in (scale < 1), use traditional scrolling
-      if (scale < 1) {
+      // If zoomed in (scale > 1), use traditional scrolling
+      if (scale > 1) {
         event.preventDefault();
         event.stopPropagation();
         const deltaX = event.deltaX;
         const deltaY = event.deltaY;
-        console.log('Pan deltas:', deltaX, deltaY);
         $panzoomStore.pan(deltaX * -1, deltaY * -1, { relative: true });
         return;
       }
 
-      // If not zoomed in, use page navigation
+      // If not zoomed in (scale <= 1), use page navigation
       event.preventDefault();
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
         if (event.deltaY > 0) {
