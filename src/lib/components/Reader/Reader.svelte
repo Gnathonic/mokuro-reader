@@ -110,46 +110,7 @@
     changePage(manualPage, true);
   }
 
-  function handleWheel(event: WheelEvent) {
-    // Only handle events from the manga panel
-    const mangaPanel = document.getElementById('manga-panel');
-    if (!mangaPanel?.contains(event.target as Node)) {
-      return;
-    }
 
-    if ($panzoomStore) {
-      const { scale } = $panzoomStore.getTransform();
-
-      // Handle zooming only when Ctrl is pressed
-      if (event.ctrlKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        const delta = event.deltaY;
-        const zoomFactor = delta > 0 ? 0.9 : 1.1;
-        $panzoomStore.zoomToPoint(event.clientX, event.clientY, zoomFactor * scale);
-        return;
-      }
-
-      // If zoomed in (scale > 1), use traditional scrolling
-      if (scale > 1) {
-        event.preventDefault();
-        const deltaX = event.deltaX;
-        const deltaY = event.deltaY;
-        $panzoomStore.moveBy(deltaX * -1, deltaY * -1);
-        return;
-      }
-
-      // If not zoomed in (scale <= 1), use page navigation
-      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-        event.preventDefault();
-        if (event.deltaY > 0) {
-          changePage(page + navAmount, true);
-        } else {
-          changePage(page - navAmount, true);
-        }
-      }
-    }
-  }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     const action = event.code || event.key;
