@@ -298,7 +298,6 @@
   on:keyup={handleShortcuts}
   on:touchstart={handleTouchStart}
   on:touchend={handlePointerUp}
-  on:wheel|capture={handleWheel}
 />
 <svelte:head>
   <title>{volume?.volume_title || 'Volume'}</title>
@@ -387,6 +386,7 @@
         class:flex-row-reverse={!volumeSettings.rightToLeft}
         style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
         on:dblclick={onDoubleTap}
+        on:wheel={handleWheel}
         role="none"
         id="manga-panel"
       >

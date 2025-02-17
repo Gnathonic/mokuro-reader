@@ -9,10 +9,12 @@ let container: HTMLElement | undefined;
 export const panzoomStore = writable<PanZoom | undefined>(undefined);
 
 export function initPanzoom(node: HTMLElement) {
-  // Add global event listener to prevent browser zoom
+  // Add global event listener to prevent browser zoom only on manga panel
   window.addEventListener('wheel', (e) => {
-    if (e.ctrlKey) {
+    const mangaPanel = document.getElementById('manga-panel');
+    if (e.ctrlKey && mangaPanel?.contains(e.target as Node)) {
       e.preventDefault();
+      e.stopPropagation();
     }
   }, { passive: false, capture: true });
 
