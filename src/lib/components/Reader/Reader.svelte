@@ -216,18 +216,8 @@
 
     const { scale } = $panzoomStore.getTransform();
 
-    // Handle zooming when Ctrl is pressed
-    if (event.ctrlKey) {
-      event.preventDefault();
-      const delta = event.deltaY;
-      const zoomFactor = delta > 0 ? 0.9 : 1.1;
-      $panzoomStore.zoomToPoint(event.clientX, event.clientY, zoomFactor * scale);
-      return;
-    }
-
-    // Handle page navigation when not zoomed in
-    if (scale <= 1) {
-      event.preventDefault();
+    // Only handle page navigation when not zoomed in
+    if (scale <= 1 && !event.ctrlKey) {
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
         if (event.deltaY > 0) {
           changePage(page + navAmount, true);
@@ -235,6 +225,7 @@
           changePage(page - navAmount, true);
         }
       }
+    }
     }
   }
 
