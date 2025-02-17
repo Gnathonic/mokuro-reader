@@ -32,7 +32,20 @@ export function initPanzoom(node: HTMLElement) {
     beforeWheel: (e) => {
       if (!pz) return false;
       const { scale } = pz.getTransform();
-      return e.ctrlKey || scale > 1;
+      
+      // When zoomed in, handle all wheel events
+      if (scale > 1) {
+        if (!e.ctrlKey) {
+          // Handle panning
+          e.preventDefault();
+          pz.pan(e.deltaX * -1, e.deltaY * -1, { relative: true });
+          return false; // Don't let panzoom handle it further
+        }
+        return true; // Let panzoom handle Ctrl+wheel for zooming
+      }
+      
+      // When not zoomed in, only handle Ctrl+wheel for zooming
+      return e.ctrlKey;
     },
     onTouch: (e) => e.touches.length > 1,
     // Panzoom typing is wrong here
