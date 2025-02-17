@@ -248,6 +248,35 @@
     }
   }
 
+  function handleWheel(event: WheelEvent) {
+    if (!$panzoomStore || !event.target.closest('#manga-panel')) {
+      return;
+    }
+
+    const { scale } = $panzoomStore.getTransform();
+
+    // Handle zooming when Ctrl is pressed
+    if (event.ctrlKey) {
+      event.preventDefault();
+      const delta = event.deltaY;
+      const zoomFactor = delta > 0 ? 0.9 : 1.1;
+      $panzoomStore.zoomToPoint(event.clientX, event.clientY, zoomFactor * scale);
+      return;
+    }
+
+    // Handle page navigation when not zoomed in
+    if (scale <= 1) {
+      event.preventDefault();
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        if (event.deltaY > 0) {
+          changePage(page + navAmount, true);
+        } else {
+          changePage(page - navAmount, true);
+        }
+      }
+    }
+  }
+
   $: {
     if (volume) {
       const { charCount, lineCount } = getCharCount(pages, page);
@@ -298,6 +327,7 @@
   on:keyup={handleShortcuts}
   on:touchstart={handleTouchStart}
   on:touchend={handlePointerUp}
+  on:wheel={handleWheel}
 />
 <svelte:head>
   <title>{volume?.volume_title || 'Volume'}</title>
