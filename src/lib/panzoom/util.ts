@@ -29,7 +29,16 @@ export function initPanzoom(node: HTMLElement) {
       const nodeName = (e.target as HTMLElement).nodeName;
       return nodeName === 'P';
     },
-    beforeWheel: () => true,
+    beforeWheel: (e) => {
+      if (!pz) return false;
+      const { scale } = pz.getTransform();
+      if (e.ctrlKey) {
+        pz.setOptions({ wheelMode: 'zoom' });
+      } else {
+        pz.setOptions({ wheelMode: 'transform' });
+      }
+      return scale > 1 || e.ctrlKey;
+    },
     onTouch: (e) => e.touches.length > 1,
     // Panzoom typing is wrong here
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
