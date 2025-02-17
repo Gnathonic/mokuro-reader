@@ -9,6 +9,13 @@ let container: HTMLElement | undefined;
 export const panzoomStore = writable<PanZoom | undefined>(undefined);
 
 export function initPanzoom(node: HTMLElement) {
+  // Add global event listener to prevent browser zoom
+  window.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+    }
+  }, { passive: false, capture: true });
+
   container = node;
   pz = panzoom(node, {
     bounds: false,
