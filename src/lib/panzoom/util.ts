@@ -29,7 +29,11 @@ export function initPanzoom(node: HTMLElement) {
       const nodeName = (e.target as HTMLElement).nodeName;
       return nodeName === 'P';
     },
-    beforeWheel: (e) => !e.ctrlKey,
+    beforeWheel: (e) => {
+      if (!pz) return false;
+      const { scale } = pz.getTransform();
+      return e.ctrlKey || scale > 1;
+    },
     onTouch: (e) => e.touches.length > 1,
     // Panzoom typing is wrong here
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
