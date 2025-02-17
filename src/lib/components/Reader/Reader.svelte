@@ -127,7 +127,7 @@
       if (scale > 1) {
         const deltaX = event.deltaX;
         const deltaY = event.deltaY;
-        $panzoomStore.pan(deltaX * -1, deltaY * -1, { relative: true });
+        $panzoomStore.moveBy(deltaX * -1, deltaY * -1);
         return;
       }
 
