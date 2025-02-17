@@ -298,7 +298,7 @@
   on:keyup={handleShortcuts}
   on:touchstart={handleTouchStart}
   on:touchend={handlePointerUp}
-  on:wheel={handleWheel}
+  on:wheel|capture={handleWheel}
 />
 <svelte:head>
   <title>{volume?.volume_title || 'Volume'}</title>
