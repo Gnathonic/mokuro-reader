@@ -8,7 +8,7 @@ import { generateThumbnail } from '$lib/catalog/thumbnails';
 export * from './web-import';
 
 const zipTypes = ['zip', 'cbz', 'ZIP', 'CBZ'];
-const imageTypes = ['image/jpeg', 'image/png', 'image/webp'];
+const imageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
 
 export async function unzipManga(file: File) {
   let zipReader;
