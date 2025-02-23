@@ -2,7 +2,7 @@ import { db } from '$lib/catalog/db';
 import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { showSnackbar } from '$lib/util/snackbar';
 import { requestPersistentStorage } from '$lib/util/upload';
-import { BlobWriter, getMimeType, Uint8ArrayReader, ZipReader } from '@zip.js/zip.js';
+import { BlobWriter, getMimeType, ZipReaderStream } from '@zip.js/zip.js';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 
 export * from './web-import';
@@ -11,16 +11,17 @@ const zipTypes = ['zip', 'cbz', 'ZIP', 'CBZ'];
 const imageTypes = ['image/jpeg', 'image/png', 'image/webp'];
 
 export async function unzipManga(file: File) {
-  let zipReader;
-  if (file.size < 1024 * 1024 * 1024) {
-    const zipFileReader = new Uint8ArrayReader(new Uint8Array(await file.arrayBuffer()));
-    zipReader = new ZipReader(zipFileReader);
-  } else {
-    zipReader = new ZipReader(file.stream());
-  }
-  const entries = await zipReader.getEntries();
+  // Create a TransformStream for the zip content
+  const zipFileStream = new TransformStream();
+  // Create a Promise that will resolve with the entries
+  const entriesPromise = (async () => {
+    const zipReader = new ZipReaderStream(file.stream());
+    return await zipReader.getEntries();
+  })();
+  const entries = await entriesPromise;
   const unzippedFiles: Record<string, File> = {};
 
+  // Sort entries by filename
   const sortedEntries = entries.sort((a, b) => {
     return a.filename.localeCompare(b.filename, undefined, {
       numeric: true,
@@ -28,22 +29,31 @@ export async function unzipManga(file: File) {
     });
   });
 
+  // Process entries sequentially to maintain memory efficiency
   for (const entry of sortedEntries) {
     const mime = getMimeType(entry.filename);
     const isMokuroFile = entry.filename.split('.').pop() === 'mokuro';
 
     if (imageTypes.includes(mime) || isMokuroFile) {
-      const blob = await entry.getData?.(new BlobWriter(mime));
-      if (blob) {
-        const fileName = entry.filename.split('/').pop() || entry.filename;
-        const file = new File([blob], fileName, { type: mime });
-        if (!file.webkitRelativePath) {
-          Object.defineProperty(file, 'webkitRelativePath', {
-            value: entry.filename
-          });
-        }
-        unzippedFiles[entry.filename] = file;
+      // Create a TransformStream for each entry
+      const entryStream = new TransformStream();
+      const blobPromise = new Response(entryStream.readable).blob();
+      
+      // Get the entry data as a stream
+      await entry.getData(entryStream.writable);
+      
+      // Wait for the blob to be ready
+      const blob = await blobPromise;
+      const fileName = entry.filename.split('/').pop() || entry.filename;
+      const file = new File([blob], fileName, { type: mime });
+      
+      // Set webkitRelativePath for proper file path handling
+      if (!file.webkitRelativePath) {
+        Object.defineProperty(file, 'webkitRelativePath', {
+          value: entry.filename
+        });
       }
+      unzippedFiles[entry.filename] = file;
     }
   }
 
