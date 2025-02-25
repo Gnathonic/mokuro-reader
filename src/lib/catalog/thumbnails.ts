@@ -37,17 +37,3 @@ export async function generateThumbnail(file: File, maxWidth = 500, maxHeight = 
   return new File([blob], `thumbnail_${file.name}`, { type: file.type });
 }
 
-export async function generateThumbnailFromPage(file: File, maxWidth = 500, maxHeight = 700): Promise<File> {
-  const thumbnail = await generateThumbnail(file);
-  return new File([thumbnail], `thumbnail_${file.name}`, { type: file.type });
-}
-
-export async function updateVolumeThumbnail(db: any, volumeUuid: string, file: File): Promise<void> {
-  try {
-    const thumbnail = await generateThumbnailFromPage(file);
-    await db.volumes.where('volume_uuid').equals(volumeUuid).modify({ thumbnail });
-  } catch (error) {
-    console.error('Failed to update thumbnail for volume:', volumeUuid, error);
-    throw error;
-  }
-}

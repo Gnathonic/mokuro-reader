@@ -1,15 +1,8 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
-import { generateThumbnail, generateThumbnailFromPage, updateVolumeThumbnail } from '../thumbnails';
+import { generateThumbnail } from '../thumbnails';
 
 describe('Thumbnail Generation', () => {
   const mockFile = new File(['test'], 'test.jpg', { type: 'image/jpeg' });
-  const mockDb = {
-    volumes: {
-      where: vi.fn().mockReturnThis(),
-      equals: vi.fn().mockReturnThis(),
-      modify: vi.fn().mockResolvedValue(undefined)
-    }
-  };
 
   // Mock canvas functionality
   beforeAll(() => {
@@ -58,31 +51,5 @@ describe('Thumbnail Generation', () => {
     expect(thumbnail).toBeInstanceOf(File);
     expect(thumbnail.name).toContain('thumbnail_');
     expect(thumbnail.type).toBe('image/jpeg');
-  });
-
-  it('should generate a thumbnail from a page', async () => {
-    const thumbnail = await generateThumbnailFromPage(mockFile);
-    expect(thumbnail).toBeInstanceOf(File);
-    expect(thumbnail.name).toContain('thumbnail_');
-    expect(thumbnail.type).toBe('image/jpeg');
-  });
-
-  it('should update volume thumbnail in database', async () => {
-    const volumeUuid = 'test-uuid';
-    await updateVolumeThumbnail(mockDb, volumeUuid, mockFile);
-
-    expect(mockDb.volumes.where).toHaveBeenCalledWith('volume_uuid');
-    expect(mockDb.volumes.equals).toHaveBeenCalledWith(volumeUuid);
-    expect(mockDb.volumes.modify).toHaveBeenCalledWith(expect.objectContaining({
-      thumbnail: expect.any(File)
-    }));
-  });
-
-  it('should throw error when updating thumbnail fails', async () => {
-    const volumeUuid = 'test-uuid';
-    mockDb.volumes.modify.mockRejectedValue(new Error('Database error'));
-
-    await expect(updateVolumeThumbnail(mockDb, volumeUuid, mockFile))
-      .rejects.toThrow('Database error');
   });
 });
