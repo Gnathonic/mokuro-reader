@@ -11,9 +11,6 @@
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
-  import { db } from '$lib/catalog/db';
-  import { currentVolume } from '$lib/catalog';
-  import { generateThumbnail } from '$lib/catalog/thumbnails';
 
   export let left: (_e: any, ingoreTimeOut?: boolean) => void;
   export let right: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -51,19 +48,7 @@
     open = false;
   }
 
-  async function onSetThumbnail(src: File | undefined) {
-    if (src && $currentVolume) {
-      promptConfirmation('Set this page as volume thumbnail?', async () => {
-        try {
-          const thumbnail = await generateThumbnail(src);
-          await db.volumes.where('volume_uuid').equals($currentVolume.volume_uuid).modify({ thumbnail });
-        } catch (error) {
-          console.error('Failed to update thumbnail for volume:', $currentVolume.volume_uuid, error);
-        }
-      });
-    }
-    open = false;
-  }
+
 </script>
 
 {#if $settings.quickActions}
@@ -95,9 +80,6 @@
     </SpeedDialButton>
     <SpeedDialButton on:click={handleLeft}>
       <ArrowLeftOutline />
-    </SpeedDialButton>
-    <SpeedDialButton on:click={() => onSetThumbnail(src1)}>
-      <PhotoOutline />
     </SpeedDialButton>
   </SpeedDial>
 {/if}

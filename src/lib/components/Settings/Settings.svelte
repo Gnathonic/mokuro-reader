@@ -14,6 +14,7 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import { beforeNavigate } from '$app/navigation';
+  import { currentVolumeData, progress } from '$lib/catalog';
 
   let transitionParams = {
     x: 320,
@@ -65,7 +66,7 @@
       <Profiles {onClose} />
       <ReaderSettings />
       <AnkiConnectSettings />
-      <CatalogSettings />
+      <CatalogSettings currentPage={$currentVolumeData?.files[Object.keys($currentVolumeData?.files || {})[$progress?.[Object.keys($progress || {})[0]] - 1]]} />
       <Stats />
       <About />
     </Accordion>
