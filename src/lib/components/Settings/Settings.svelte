@@ -14,7 +14,8 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import { beforeNavigate } from '$app/navigation';
-  import { currentVolumeData, progress } from '$lib/catalog';
+  import { currentVolumeData } from '$lib/catalog';
+  import { progress } from '$lib/settings/volume-data';
 
   let transitionParams = {
     x: 320,
