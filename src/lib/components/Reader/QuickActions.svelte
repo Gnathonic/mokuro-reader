@@ -7,10 +7,14 @@
     ArrowRightOutline,
     CompressOutline,
     ImageOutline,
-    ZoomOutOutline
+    ZoomOutOutline,
+    PhotoOutline
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
+  import { updateVolumeThumbnail } from '$lib/catalog/thumbnails';
+  import { db } from '$lib/catalog/db';
+  import { currentVolume } from '$lib/catalog';
 
   export let left: (_e: any, ingoreTimeOut?: boolean) => void;
   export let right: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -47,6 +51,15 @@
     }
     open = false;
   }
+
+  async function onSetThumbnail(src: File | undefined) {
+    if (src && $currentVolume) {
+      promptConfirmation('Set this page as volume thumbnail?', async () => {
+        await updateVolumeThumbnail(db, $currentVolume.volume_uuid, src);
+      });
+    }
+    open = false;
+  }
 </script>
 
 {#if $settings.quickActions}
@@ -78,6 +91,9 @@
     </SpeedDialButton>
     <SpeedDialButton on:click={handleLeft}>
       <ArrowLeftOutline />
+    </SpeedDialButton>
+    <SpeedDialButton on:click={() => onSetThumbnail(src1)}>
+      <PhotoOutline />
     </SpeedDialButton>
   </SpeedDial>
 {/if}

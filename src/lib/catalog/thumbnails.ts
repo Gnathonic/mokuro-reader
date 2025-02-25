@@ -17,22 +17,37 @@ export async function generateThumbnail(file: File, maxWidth = 500, maxHeight = 
   // Calculate thumbnail dimensions maintaining aspect ratio
   let width = img.width;
   let height = img.height;
-while (width > maxWidth * 2|| height > maxHeight * 2) {
+  while (width > maxWidth * 2|| height > maxHeight * 2) {
     width = width/2;
     height = height/2;
   }
-width = Math.round(width);
-height = Math.round(height);
+  width = Math.round(width);
+  height = Math.round(height);
 
-    canvas.width = width;
-    canvas.height = height;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, 0, 0, width, height);
+  canvas.width = width;
+  canvas.height = height;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, width, height);
 
   // Convert canvas to blob using the same type as the input file
   const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), file.type, 0.8));
 
   // Create and return a new File with the same type
   return new File([blob], `thumbnail_${file.name}`, { type: file.type });
+}
+
+export async function generateThumbnailFromPage(file: File, maxWidth = 500, maxHeight = 700): Promise<File> {
+  const thumbnail = await generateThumbnail(file);
+  return new File([thumbnail], `thumbnail_${file.name}`, { type: file.type });
+}
+
+export async function updateVolumeThumbnail(db: any, volumeUuid: string, file: File): Promise<void> {
+  try {
+    const thumbnail = await generateThumbnailFromPage(file);
+    await db.volumes.where('volume_uuid').equals(volumeUuid).modify({ thumbnail });
+  } catch (error) {
+    console.error('Failed to update thumbnail for volume:', volumeUuid, error);
+    throw error;
+  }
 }
