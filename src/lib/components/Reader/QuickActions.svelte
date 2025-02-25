@@ -7,8 +7,7 @@
     ArrowRightOutline,
     CompressOutline,
     ImageOutline,
-    ZoomOutOutline,
-    PhotoOutline
+    ZoomOutOutline
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
