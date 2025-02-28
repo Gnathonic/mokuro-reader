@@ -78,7 +78,7 @@
       xhr.ontimeout = (event) => {
         console.warn(`xhr ${fileId}: download timeout after ${event.loaded} of ${event.total}`);
         showSnackbar('Download timed out');
-        reject(new Error('Timout downloading file'));
+        reject(new Error('Timeout downloading file'));
       };
 
       xhr.send();
@@ -290,45 +290,168 @@
   }
 
   async function onDownloadVolumeData() {
+    if (!volumeDataId) {
+      showSnackbar('No volume data file found');
+      return;
+    }
+
     loadingMessage = 'Downloading volume data';
 
-    const { body } = await gapi.client.drive.files.get({
-      fileId: volumeDataId,
-      alt: 'media'
-    });
-
-    const downloaded = JSON.parse(body);
-
-    volumes.update((prev) => {
-      return {
-        ...prev,
-        ...downloaded
-      };
-    });
-
-    loadingMessage = '';
-    showSnackbar('Volume data downloaded');
+    try {
+      // Use the XHR method which is more reliable for downloads
+      const blob = await xhrDownloadFileId(volumeDataId);
+      
+      // Convert blob to text
+      const text = await blob.text();
+      
+      // Parse the JSON response
+      const downloaded = JSON.parse(text);
+      
+      // Log the structure to help debug
+      console.log('Downloaded volume data structure:', Object.keys(downloaded));
+      
+      // Update the volumes store with careful handling of potential structure changes
+      volumes.update((prev) => {
+        const result = { ...prev };
+        
+        // Process each volume entry to ensure compatibility with current structure
+        Object.entries(downloaded).forEach(([key, value]) => {
+          try {
+            // If the value is not an object or is null, skip it
+            if (!value || typeof value !== 'object') {
+              console.warn(`Skipping invalid volume data for key ${key}:`, value);
+              return;
+            }
+            
+            // Ensure the volume data has the expected structure
+            const volumeData = {
+              progress: typeof value.progress === 'number' ? value.progress : 0,
+              chars: typeof value.chars === 'number' ? value.chars : 0,
+              completed: !!value.completed,
+              timeReadInMinutes: typeof value.timeReadInMinutes === 'number' ? value.timeReadInMinutes : 0,
+              settings: {
+                singlePageView: typeof value.settings?.singlePageView === 'boolean' ? value.settings.singlePageView : false,
+                rightToLeft: typeof value.settings?.rightToLeft === 'boolean' ? value.settings.rightToLeft : true,
+                hasCover: typeof value.settings?.hasCover === 'boolean' ? value.settings.hasCover : false
+              }
+            };
+            
+            result[key] = volumeData;
+          } catch (err) {
+            console.error(`Error processing volume data for key ${key}:`, err);
+          }
+        });
+        
+        return result;
+      });
+      
+      loadingMessage = '';
+      showSnackbar('Volume data downloaded');
+    } catch (error) {
+      console.error('Error downloading volume data:', error);
+      loadingMessage = '';
+      showSnackbar('Failed to download volume data: ' + (error.message || 'Unknown error'));
+    }
   }
 
   async function onDownloadProfiles() {
+    if (!profilesId) {
+      showSnackbar('No profiles file found');
+      return;
+    }
+
     loadingMessage = 'Downloading profiles';
 
-    const { body } = await gapi.client.drive.files.get({
-      fileId: profilesId,
-      alt: 'media'
-    });
-
-    const downloaded = JSON.parse(body);
-
-    profiles.update((prev) => {
-      return {
-        ...prev,
-        ...downloaded
-      };
-    });
-
-    loadingMessage = '';
-    showSnackbar('Profiles downloaded');
+    try {
+      // Use the XHR method which is more reliable for downloads
+      const blob = await xhrDownloadFileId(profilesId);
+      
+      // Convert blob to text
+      const text = await blob.text();
+      
+      // Parse the JSON response
+      const downloaded = JSON.parse(text);
+      
+      // Log the structure to help debug
+      console.log('Downloaded profiles structure:', Object.keys(downloaded));
+      
+      // Update the profiles store with careful handling of potential structure changes
+      profiles.update((prev) => {
+        const result = { ...prev };
+        
+        // Process each profile entry to ensure compatibility with current structure
+        Object.entries(downloaded).forEach(([profileName, profileValue]) => {
+          try {
+            // If the value is not an object or is null, skip it
+            if (!profileValue || typeof profileValue !== 'object') {
+              console.warn(`Skipping invalid profile data for ${profileName}:`, profileValue);
+              return;
+            }
+            
+            // Create a valid profile with defaults for any missing properties
+            const defaultSettings = {
+              defaultFullscreen: false,
+              displayOCR: true,
+              textEditable: false,
+              textBoxBorders: false,
+              boldFont: false,
+              pageNum: true,
+              charCount: false,
+              mobile: false,
+              bounds: false,
+              backgroundColor: '#030712',
+              swipeThreshold: 50,
+              edgeButtonWidth: 40,
+              showTimer: false,
+              quickActions: true,
+              fontSize: 'auto',
+              zoomDefault: 'zoomFitToScreen',
+              invertColors: false,
+              volumeDefaults: {
+                singlePageView: false,
+                rightToLeft: true,
+                hasCover: false
+              },
+              ankiConnectSettings: {
+                enabled: false,
+                cropImage: false,
+                grabSentence: false,
+                overwriteImage: true,
+                pictureField: 'Picture',
+                sentenceField: 'Sentence',
+                triggerMethod: 'both'
+              }
+            };
+            
+            // Merge the downloaded profile with defaults
+            result[profileName] = {
+              ...defaultSettings,
+              ...profileValue,
+              // Ensure nested objects are properly merged
+              volumeDefaults: {
+                ...defaultSettings.volumeDefaults,
+                ...(profileValue.volumeDefaults || {})
+              },
+              ankiConnectSettings: {
+                ...defaultSettings.ankiConnectSettings,
+                ...(profileValue.ankiConnectSettings || {})
+              }
+            };
+          } catch (err) {
+            console.error(`Error processing profile data for ${profileName}:`, err);
+          }
+        });
+        
+        return result;
+      });
+      
+      loadingMessage = '';
+      showSnackbar('Profiles downloaded');
+    } catch (error) {
+      console.error('Error downloading profiles:', error);
+      loadingMessage = '';
+      showSnackbar('Failed to download profiles: ' + (error.message || 'Unknown error'));
+    }
   }
 </script>
 
