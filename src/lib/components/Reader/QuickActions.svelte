@@ -47,6 +47,8 @@
     }
     open = false;
   }
+
+
 </script>
 
 {#if $settings.quickActions}
