@@ -315,15 +315,47 @@
         // Continue with original folderId if we can't check
       }
       
-      const { result } = await gapi.client.drive.files.list({
-        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
-        fields: 'files(id, name, mimeType, shortcutDetails)',
+      // First try to list files directly
+      try {
+        const { result } = await gapi.client.drive.files.list({
+          q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
+          fields: 'files(id, name, mimeType, shortcutDetails)',
+          pageSize: 1000,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true
+        });
+        
+        // If we got files, return them
+        if (result.files && result.files.length > 0) {
+          console.log(`Found ${result.files.length} files in folder ${folderId}`);
+          return result.files;
+        }
+      } catch (error) {
+        console.warn(`Error listing files in folder ${folderId}:`, error);
+        // Continue with alternative approach
+      }
+      
+      // If we didn't get any files or there was an error, try a different approach
+      // This is a workaround for Google Drive's handling of shortcuts
+      console.log(`No files found directly in folder ${folderId}, trying alternative approach`);
+      
+      // Try to get all files that have this folder as a parent, including through shortcuts
+      const { result: allFilesResult } = await gapi.client.drive.files.list({
+        q: `(mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
+        fields: 'files(id, name, mimeType, shortcutDetails, parents)',
         pageSize: 1000,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true
       });
       
-      return result.files || [];
+      // Filter files that have the target folder as a parent
+      const filesInFolder = (allFilesResult.files || []).filter(file => {
+        if (!file.parents) return false;
+        return file.parents.includes(folderId);
+      });
+      
+      console.log(`Found ${filesInFolder.length} files in folder ${folderId} using alternative approach`);
+      return filesInFolder;
     } catch (error) {
       handleDriveError(error, 'listing files in folder');
       return [];
@@ -428,6 +460,8 @@
           if (doc.mimeType === 'application/vnd.google-apps.shortcut') {
             try {
               loadingMessage = `Checking shortcut: ${doc.name}`;
+              console.log(`Processing shortcut: ${doc.name} (${doc.id})`);
+              
               // Get the shortcut details to determine what it points to
               const { result: shortcutInfo } = await gapi.client.drive.files.get({
                 fileId: doc.id,
@@ -439,35 +473,65 @@
                 const targetId = shortcutInfo.shortcutDetails.targetId;
                 const targetMimeType = shortcutInfo.shortcutDetails.targetMimeType;
                 
+                console.log(`Shortcut ${doc.name} points to ${targetId} with type ${targetMimeType}`);
+                
                 // If it's a shortcut to a folder
                 if (targetMimeType === 'application/vnd.google-apps.folder') {
                   loadingMessage = `Scanning folder (via shortcut): ${doc.name}`;
                   console.log(`Processing shortcut to folder: ${doc.name} (${targetId})`);
-                  const folderFiles = await processFolder(targetId, doc.name);
-                  allFiles.push(...folderFiles);
+                  
+                  // Try to get the folder directly first
+                  try {
+                    const { result: folderInfo } = await gapi.client.drive.files.get({
+                      fileId: targetId,
+                      fields: 'id,name,mimeType',
+                      supportsAllDrives: true
+                    });
+                    
+                    console.log(`Successfully retrieved folder info for ${folderInfo.name} (${folderInfo.id})`);
+                    
+                    // Process the folder
+                    const folderFiles = await processFolder(targetId, doc.name);
+                    console.log(`Found ${folderFiles.length} files in folder ${doc.name}`);
+                    allFiles.push(...folderFiles);
+                  } catch (folderError) {
+                    console.error(`Error retrieving folder info for ${targetId}:`, folderError);
+                    showSnackbar(`Error accessing folder: ${doc.name}`);
+                  }
                 } 
                 // If it's a shortcut to a file
                 else {
                   // Check if the target file is a compatible type
-                  const { result: targetFile } = await gapi.client.drive.files.get({
-                    fileId: targetId,
-                    fields: 'id, name, mimeType',
-                    supportsAllDrives: true
-                  });
-                  
-                  const mimeType = targetFile.mimeType.toLowerCase();
-                  if (mimeType.includes('zip') || mimeType.includes('cbz')) {
-                    // Add the target file to the list with the shortcut's name
-                    allFiles.push({
-                      id: targetId,
-                      name: doc.name,
-                      mimeType: targetFile.mimeType
+                  try {
+                    const { result: targetFile } = await gapi.client.drive.files.get({
+                      fileId: targetId,
+                      fields: 'id, name, mimeType',
+                      supportsAllDrives: true
                     });
+                    
+                    console.log(`Successfully retrieved file info for ${targetFile.name} (${targetFile.id})`);
+                    
+                    const mimeType = targetFile.mimeType.toLowerCase();
+                    if (mimeType.includes('zip') || mimeType.includes('cbz')) {
+                      // Add the target file to the list with the shortcut's name
+                      allFiles.push({
+                        id: targetId,
+                        name: doc.name,
+                        mimeType: targetFile.mimeType
+                      });
+                    }
+                  } catch (fileError) {
+                    console.error(`Error retrieving file info for ${targetId}:`, fileError);
+                    showSnackbar(`Error accessing file: ${doc.name}`);
                   }
                 }
+              } else {
+                console.warn(`Shortcut ${doc.name} has no shortcutDetails`);
+                showSnackbar(`Invalid shortcut: ${doc.name}`);
               }
             } catch (error) {
               console.warn(`Error processing shortcut ${doc.name}:`, error);
+              showSnackbar(`Error processing shortcut: ${doc.name}`);
               // Continue with other files
             }
           }
@@ -475,28 +539,33 @@
           else if (doc.mimeType === 'application/vnd.google-apps.folder') {
             // Process folder to get all files inside
             loadingMessage = `Scanning folder: ${doc.name}`;
+            console.log(`Processing folder: ${doc.name} (${doc.id})`);
             const folderFiles = await processFolder(doc.id, doc.name);
+            console.log(`Found ${folderFiles.length} files in folder ${doc.name}`);
             allFiles.push(...folderFiles);
           } else {
             // Add regular file
+            console.log(`Adding regular file: ${doc.name} (${doc.id})`);
             allFiles.push(doc);
           }
         }
         
         // Filter out any non-zip files that might have been included in folders
-        allFiles = allFiles.filter(file => {
+        const filteredFiles = allFiles.filter(file => {
           const mimeType = file.mimeType.toLowerCase();
           return mimeType.includes('zip') || mimeType.includes('cbz');
         });
         
-        if (allFiles.length === 0) {
+        console.log(`Found ${filteredFiles.length} compatible files out of ${allFiles.length} total files`);
+        
+        if (filteredFiles.length === 0) {
           showSnackbar('No compatible files found');
           loadingMessage = '';
           return;
         }
         
         // Download and process all files
-        await downloadAndProcessFiles(allFiles);
+        await downloadAndProcessFiles(filteredFiles);
       }
     } catch (error) {
       handleDriveError(error, 'processing files');
