@@ -483,12 +483,12 @@
             fileName: fileInfo.name,
             accessToken
           },
-          onProgress: (data) => {
+          onProgress(data) {
             // Update progress for this file
             fileProgress[fileInfo.id] = data.loaded;
             updateOverallProgress();
           },
-          onComplete: async (data) => {
+          async onComplete(data) {
             console.log(`Received complete message for ${data.fileName}`, {
               processed: data.processed
             });
@@ -505,7 +505,7 @@
             checkAllComplete();
           }
           },
-          onError: (data) => {
+          onError(data) {
             console.error(`Error with ${fileInfo.name}:`, data.error);
             showSnackbar(`Failed to process ${fileInfo.name}`);
             
