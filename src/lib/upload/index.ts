@@ -5,6 +5,9 @@ import { requestPersistentStorage } from '$lib/util/upload';
 import { getMimeType, ZipReaderStream } from '@zip.js/zip.js';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 
+// Import the worker-based processing function
+import { processFilesWithWorker } from './worker-manager';
+
 export * from './web-import';
 
 const zipTypes = ['zip', 'cbz'];
@@ -308,26 +311,8 @@ async function processMokuroWithPendingImages(
   }
 }
 
+// Legacy function that now uses the worker-based approach
 export async function processFiles(_files: File[]) {
-  const volumesByPath: Record<string, Partial<VolumeMetadata>> = {};
-  const volumesDataByPath: Record<string, Partial<VolumeData>> = {};
-  const pendingImagesByPath: Record<string, Record<string, File>> = {};
-
-  // Create a stack of files to process
-  let fileStack: { path: string; file: File }[] = [];
-  _files.forEach((file) => {
-    const path = getDetails(file).path;
-    fileStack.push({ path, file });
-  });
-
-  fileStack = fileStack.sort((a, b) =>
-    a.file.name.localeCompare(b.file.name, undefined, { numeric: true })
-  );
-
-  for (const file of fileStack) {
-    await processFile(file, volumesByPath, volumesDataByPath, pendingImagesByPath);
-  }
-
-  showSnackbar('Files uploaded successfully');
-  db.processThumbnails(5);
+  // Use the worker-based approach
+  return processFilesWithWorker(_files);
 }
