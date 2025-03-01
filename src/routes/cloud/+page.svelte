@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { processFiles } from '$lib/upload';
   import { parseVolumesFromJson } from '$lib/settings';
+  import { saveToDatabase } from '$lib/upload/db-helper';
 
   /** @type {string} */
   export let accessToken = '';
@@ -510,20 +510,40 @@
             updateOverallProgress();
           },
           async onComplete(data) {
-            console.log(`Received complete message for ${data.fileName}`, {
-              processed: data.processed
-            });
-            
-            // File was already processed in the worker
-            console.log(`File ${data.fileName} was processed successfully in the worker`);
-            
-            // Mark as completed
-            completedFiles++;
-            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-            processedFiles[fileInfo.id] = true;
-            
-            updateOverallProgress();
-            checkAllComplete();
+            try {
+              console.log(`Received complete message for ${data.fileName}`, {
+                hasProcessedData: !!data.processedData
+              });
+              
+              // File was processed in the worker, now save to database
+              console.log(`File ${data.fileName} was processed in the worker, saving to database`);
+              
+              // Save the processed data to the database
+              if (data.processedData) {
+                await saveToDatabase(
+                  data.processedData.volumesByPath,
+                  data.processedData.volumesDataByPath
+                );
+              }
+              
+              // Mark as completed
+              completedFiles++;
+              fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+              processedFiles[fileInfo.id] = true;
+              
+              updateOverallProgress();
+              checkAllComplete();
+            } catch (error) {
+              console.error(`Error saving ${data.fileName} to database:`, error);
+              showSnackbar(`Failed to save ${data.fileName} to database`);
+              
+              // Mark as failed
+              failedFiles++;
+              processedFiles[fileInfo.id] = true;
+              
+              updateOverallProgress();
+              checkAllComplete();
+            }
           },
           onError(data) {
             console.error(`Error with ${fileInfo.name}:`, data.error);

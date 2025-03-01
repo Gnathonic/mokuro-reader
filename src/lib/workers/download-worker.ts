@@ -1,8 +1,8 @@
 // Web worker for downloading and processing files from Google Drive
 // This file will be bundled by Vite as a web worker
 
-// Import the necessary functions for processing files
-import { processFiles } from '$lib/upload';
+// Import the helper for processing files in the worker
+import { processFilesInWorker } from './process-helper';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -24,7 +24,7 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  processed: boolean; // Indicates if the file was processed successfully
+  processedData: any;
 }
 
 interface ErrorMessage {
@@ -94,7 +94,7 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     };
     
     return new Promise<void>((resolve, reject) => {
-      xhr.onload = () => {
+      xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             // Get the ArrayBuffer response
@@ -105,49 +105,31 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               status: xhr.status
             });
             
-            // Process the file in an async function
-            const processFile = async () => {
-              try {
-                // Create a File object from the ArrayBuffer
-                const blob = new Blob([arrayBuffer]);
-                const file = new File([blob], fileName);
-                
-                console.log(`Worker: Processing file ${fileName}`);
-                
-                // Process the file directly in the worker
-                await processFiles([file]);
-                
-                console.log(`Worker: File ${fileName} processed successfully`);
-                
-                // Create a message indicating successful processing
-                const completeMessage: CompleteMessage = {
-                  type: 'complete',
-                  fileId,
-                  fileName,
-                  processed: true
-                };
-                
-                // Post the message back to the main thread
-                ctx.postMessage(completeMessage);
-                console.log(`Worker: Success message posted for ${fileName}`);
-                resolve();
-              } catch (processingError) {
-                console.error(`Worker: Error processing file ${fileName}:`, processingError);
-                
-                // Create an error message for processing failure
-                const errorMessage: ErrorMessage = {
-                  type: 'error',
-                  fileId,
-                  error: `Error processing file: ${processingError.toString()}`
-                };
-                
-                ctx.postMessage(errorMessage);
-                reject(processingError);
-              }
+            // Create a File object from the ArrayBuffer
+            const blob = new Blob([arrayBuffer]);
+            const file = new File([blob], fileName);
+            
+            console.log(`Worker: Processing file ${fileName}`);
+            
+            // Process the file in the worker
+            const processedData = await processFilesInWorker([file]);
+            
+            console.log(`Worker: File ${fileName} processed successfully`);
+            
+            // Create a message with the processed data
+            const completeMessage: CompleteMessage = {
+              type: 'complete',
+              fileId,
+              fileName,
+              processedData
             };
             
-            // Execute the async function
-            processFile();
+            console.log(`Worker: Sending complete message for ${fileName}`);
+            
+            // Post the message back to the main thread
+            ctx.postMessage(completeMessage);
+            console.log(`Worker: Message posted for ${fileName}`);
+            resolve();
           } catch (error) {
             console.error('Worker: Error processing response:', error);
             const errorMessage: ErrorMessage = {
