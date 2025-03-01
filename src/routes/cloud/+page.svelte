@@ -406,12 +406,8 @@
     // Use navigator.hardwareConcurrency to determine optimal number of workers
     // but limit to a reasonable number to avoid overwhelming the browser
     const maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
-    // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
-    // This is not a hard limit - tasks that individually need more than 500MB can still run
-    // It just prevents starting new tasks when the current pool already exceeds 500MB
-    const memoryLimitMB = 500; // 500 MB memory threshold
-    console.log(`Creating worker pool with ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`);
-    const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
+    console.log(`Creating worker pool with ${maxWorkers} workers`);
+    const workerPool = new WorkerPool(undefined, maxWorkers);
     
     // Track download progress
     const fileProgress: { [fileId: string]: number } = {};
@@ -452,10 +448,6 @@
     return new Promise<void>((resolve) => {
       // Function to check if all downloads are complete
       const checkAllComplete = () => {
-        // Log current memory usage
-        const memUsage = workerPool.memoryUsage;
-        console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB active + ${(memUsage.pending / (1024 * 1024)).toFixed(2)}MB pending = ${(memUsage.total / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
-        
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
           workerPool.terminate();
@@ -482,23 +474,10 @@
         fileProgress[fileInfo.id] = 0;
         
         // Create a task for the worker pool
-        // Estimate memory requirement based on file size
-        // We need memory for: 
-        // 1. The downloaded file (fileSizes[fileInfo.id])
-        // 2. Processing overhead (typically 2-3x the file size for decompression)
-        const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
-        
-        console.log(`Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`);
+        console.log(`Adding task for ${fileInfo.name}`);
         
         workerPool.addTask({
           id: fileInfo.id,
-          memoryRequirement,
           data: {
             fileId: fileInfo.id,
             fileName: fileInfo.name,
@@ -510,58 +489,25 @@
             updateOverallProgress();
           },
           onComplete: async (data) => {
-            try {
-              console.log(`Received complete message for ${data.fileName}`, {
-                dataType: typeof data.data,
-                dataSize: data.data.byteLength,
-                hasData: !!data.data
-              });
-              
-              // Create a Blob from the ArrayBuffer
-              const blob = new Blob([data.data]);
-              console.log(`Created blob of size ${blob.size} bytes`);
-              
-              // Create a File object from the blob
-              const file = new File([blob], data.fileName);
-              console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
-              
-              // Note: We don't release the memory yet because processFiles will also use memory
-              // The worker's memory is released, but we're still using memory in the main thread
-              
-              // Process the file - this happens in the main thread and uses additional memory
-              console.log(`Starting to process file: ${file.name}`);
-              await processFiles([file]);
-              console.log(`Successfully processed file: ${file.name}`);
-              
-              // Now we can tell the worker pool that this task's memory has been fully released
-              // This is done by calling our new method to release memory after main thread processing
-              workerPool.releaseTaskMemory(fileInfo.id);
-              
-              // Mark as completed
-              completedFiles++;
-              fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-              processedFiles[fileInfo.id] = true;
-              
-              updateOverallProgress();
-              checkAllComplete();
-            } catch (error) {
-              console.error(`Error processing ${data.fileName}:`, error);
-              showSnackbar(`Failed to process ${data.fileName}`);
-              
-              // Release memory even if processing failed
-              workerPool.releaseTaskMemory(fileInfo.id);
-              
-              // Mark as failed
-              failedFiles++;
-              processedFiles[fileInfo.id] = true;
-              
-              updateOverallProgress();
-              checkAllComplete();
-            }
+            console.log(`Received complete message for ${data.fileName}`, {
+              processed: data.processed
+            });
+            
+            // File was already processed in the worker
+            console.log(`File ${data.fileName} was processed successfully in the worker`);
+            
+            // Mark as completed
+            completedFiles++;
+            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+            processedFiles[fileInfo.id] = true;
+            
+            updateOverallProgress();
+            checkAllComplete();
+          }
           },
           onError: (data) => {
-            console.error(`Error downloading ${fileInfo.name}:`, data.error);
-            showSnackbar(`Failed to download ${fileInfo.name}`);
+            console.error(`Error with ${fileInfo.name}:`, data.error);
+            showSnackbar(`Failed to process ${fileInfo.name}`);
             
             // Mark as failed but count the size as downloaded for progress calculation
             failedFiles++;

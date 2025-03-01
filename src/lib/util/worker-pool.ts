@@ -6,7 +6,6 @@ import DownloadWorker from '$lib/workers/download-worker.ts?worker';
 export interface WorkerTask {
   id: string;
   data: any;
-  memoryRequirement?: number; // Memory requirement in bytes
   onProgress?: (progress: any) => void;
   onComplete?: (result: any) => void;
   onError?: (error: any) => void;
@@ -18,12 +17,9 @@ export class WorkerPool {
   private activeTasks: Map<string, WorkerTask> = new Map();
   private workerTaskMap: Map<Worker, string | null> = new Map();
   private maxConcurrent: number;
-  private currentMemoryUsage: number = 0;
-  private maxMemoryUsage: number = 500 * 1024 * 1024; // 500 MB threshold (not a hard limit)
 
-  constructor(workerUrl?: string, maxConcurrent = 4, maxMemoryMB = 500) {
+  constructor(workerUrl?: string, maxConcurrent = 4) {
     this.maxConcurrent = Math.max(1, Math.min(maxConcurrent, navigator.hardwareConcurrency || 4));
-    this.maxMemoryUsage = maxMemoryMB * 1024 * 1024; // Convert MB to bytes - this is a threshold, not a hard limit
     
     // Initialize workers
     for (let i = 0; i < this.maxConcurrent; i++) {
@@ -92,19 +88,9 @@ export class WorkerPool {
     this.workerTaskMap.set(worker, null);
   }
 
-  // This map will track tasks that have completed the worker phase but are still processing in the main thread
-  private pendingMemoryRelease: Map<string, number> = new Map();
-
   private completeTask(worker: Worker) {
     const taskId = this.workerTaskMap.get(worker);
     if (taskId) {
-      const task = this.activeTasks.get(taskId);
-      if (task && task.memoryRequirement) {
-        // Instead of immediately reducing memory usage, we track it for later release
-        // This is because the task will continue to use memory in the main thread for processing
-        this.pendingMemoryRelease.set(taskId, task.memoryRequirement);
-        console.log(`Task ${taskId} worker completed. Memory will be freed after main thread processing.`);
-      }
       this.activeTasks.delete(taskId);
       this.workerTaskMap.set(worker, null);
     }
@@ -113,21 +99,8 @@ export class WorkerPool {
     this.processQueue();
   }
   
-  // New method to release memory after main thread processing is complete
-  public releaseTaskMemory(taskId: string) {
-    const memoryToRelease = this.pendingMemoryRelease.get(taskId);
-    if (memoryToRelease) {
-      this.currentMemoryUsage = Math.max(0, this.currentMemoryUsage - memoryToRelease);
-      this.pendingMemoryRelease.delete(taskId);
-      console.log(`Task ${taskId} fully completed. Memory freed: ${memoryToRelease / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB`);
-      
-      // Process the queue again in case we can now start more tasks
-      this.processQueue();
-    }
-  }
-  
   private processQueue() {
-    // Process as many tasks from the queue as possible based on memory constraints
+    // Process as many tasks from the queue as possible
     while (this.taskQueue.length > 0) {
       // Find an available worker first
       const availableWorker = this.workers.find(worker => this.workerTaskMap.get(worker) === null);
@@ -136,29 +109,10 @@ export class WorkerPool {
         break;
       }
       
-      const nextTask = this.taskQueue[0];
-      const memoryRequired = nextTask.memoryRequirement || 0;
-      
-      // Calculate total memory including pending releases
-      let pendingMemory = 0;
-      for (const memory of this.pendingMemoryRelease.values()) {
-        pendingMemory += memory;
-      }
-      const totalMemoryUsage = this.currentMemoryUsage + pendingMemory;
-      
-      // Check if we're already over the memory limit AND this isn't the only task in the queue
-      // We always allow at least one task to run, even if it exceeds the memory limit
-      if (totalMemoryUsage > this.maxMemoryUsage && (this.activeTasks.size > 0 || this.pendingMemoryRelease.size > 0)) {
-        console.log(`Memory usage already exceeds limit. Waiting for tasks to complete before starting new ones. Current: ${this.currentMemoryUsage / (1024 * 1024)} MB, Pending: ${pendingMemory / (1024 * 1024)} MB, Total: ${totalMemoryUsage / (1024 * 1024)} MB, Max: ${this.maxMemoryUsage / (1024 * 1024)} MB`);
-        break;
-      }
-      
       // Remove task from queue
-      this.taskQueue.shift();
+      const nextTask = this.taskQueue.shift()!;
       
-      // Update memory usage
-      this.currentMemoryUsage += memoryRequired;
-      console.log(`Starting task ${nextTask.id}. Memory required: ${memoryRequired / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB, Total with pending: ${(this.currentMemoryUsage + pendingMemory) / (1024 * 1024)} MB`);
+      console.log(`Starting task ${nextTask.id}`);
       
       // Assign task to worker
       this.assignTaskToWorker(availableWorker, nextTask);
@@ -172,12 +126,6 @@ export class WorkerPool {
   }
 
   public addTask(task: WorkerTask) {
-    // Add memory requirement if not specified
-    if (task.memoryRequirement === undefined) {
-      // Default to a conservative estimate if not provided
-      task.memoryRequirement = 50 * 1024 * 1024; // 50 MB default
-    }
-    
     // Add task to queue
     this.taskQueue.push(task);
     
@@ -195,8 +143,6 @@ export class WorkerPool {
     this.taskQueue = [];
     this.activeTasks.clear();
     this.workerTaskMap.clear();
-    this.pendingMemoryRelease.clear();
-    this.currentMemoryUsage = 0;
   }
   
   public get activeTaskCount() {
@@ -209,23 +155,5 @@ export class WorkerPool {
   
   public get totalPendingTasks() {
     return this.activeTaskCount + this.queuedTaskCount;
-  }
-  
-  public get memoryUsage() {
-    // Calculate total memory including pending releases
-    let pendingMemory = 0;
-    for (const memory of this.pendingMemoryRelease.values()) {
-      pendingMemory += memory;
-    }
-    
-    const totalMemory = this.currentMemoryUsage + pendingMemory;
-    
-    return {
-      current: this.currentMemoryUsage,
-      pending: pendingMemory,
-      total: totalMemory,
-      max: this.maxMemoryUsage,
-      percentUsed: (totalMemory / this.maxMemoryUsage) * 100
-    };
   }
 }

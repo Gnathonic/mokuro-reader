@@ -1,5 +1,8 @@
-// Web worker for downloading files from Google Drive
+// Web worker for downloading and processing files from Google Drive
 // This file will be bundled by Vite as a web worker
+
+// Import the necessary functions for processing files
+import { processFiles } from '$lib/upload';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -21,7 +24,7 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  data: ArrayBuffer;
+  processed: boolean; // Indicates if the file was processed successfully
 }
 
 interface ErrorMessage {
@@ -102,23 +105,43 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               status: xhr.status
             });
             
-            // Create a message with the ArrayBuffer
-            const completeMessage: CompleteMessage = {
-              type: 'complete',
-              fileId,
-              fileName,
-              data: arrayBuffer
-            };
-            
-            console.log(`Worker: Sending complete message for ${fileName}`, {
-              messageType: 'complete',
-              dataSize: arrayBuffer.byteLength
-            });
-            
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
-            console.log(`Worker: Message posted for ${fileName}`);
-            resolve();
+            try {
+              // Create a File object from the ArrayBuffer
+              const blob = new Blob([arrayBuffer]);
+              const file = new File([blob], fileName);
+              
+              console.log(`Worker: Processing file ${fileName}`);
+              
+              // Process the file directly in the worker
+              await processFiles([file]);
+              
+              console.log(`Worker: File ${fileName} processed successfully`);
+              
+              // Create a message indicating successful processing
+              const completeMessage: CompleteMessage = {
+                type: 'complete',
+                fileId,
+                fileName,
+                processed: true
+              };
+              
+              // Post the message back to the main thread
+              ctx.postMessage(completeMessage);
+              console.log(`Worker: Success message posted for ${fileName}`);
+              resolve();
+            } catch (processingError) {
+              console.error(`Worker: Error processing file ${fileName}:`, processingError);
+              
+              // Create an error message for processing failure
+              const errorMessage: ErrorMessage = {
+                type: 'error',
+                fileId,
+                error: `Error processing file: ${processingError.toString()}`
+              };
+              
+              ctx.postMessage(errorMessage);
+              reject(processingError);
+            }
           } catch (error) {
             console.error('Worker: Error processing response:', error);
             const errorMessage: ErrorMessage = {
