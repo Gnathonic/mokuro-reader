@@ -105,43 +105,49 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               status: xhr.status
             });
             
-            try {
-              // Create a File object from the ArrayBuffer
-              const blob = new Blob([arrayBuffer]);
-              const file = new File([blob], fileName);
-              
-              console.log(`Worker: Processing file ${fileName}`);
-              
-              // Process the file directly in the worker
-              await processFiles([file]);
-              
-              console.log(`Worker: File ${fileName} processed successfully`);
-              
-              // Create a message indicating successful processing
-              const completeMessage: CompleteMessage = {
-                type: 'complete',
-                fileId,
-                fileName,
-                processed: true
-              };
-              
-              // Post the message back to the main thread
-              ctx.postMessage(completeMessage);
-              console.log(`Worker: Success message posted for ${fileName}`);
-              resolve();
-            } catch (processingError) {
-              console.error(`Worker: Error processing file ${fileName}:`, processingError);
-              
-              // Create an error message for processing failure
-              const errorMessage: ErrorMessage = {
-                type: 'error',
-                fileId,
-                error: `Error processing file: ${processingError.toString()}`
-              };
-              
-              ctx.postMessage(errorMessage);
-              reject(processingError);
-            }
+            // Process the file in an async function
+            const processFile = async () => {
+              try {
+                // Create a File object from the ArrayBuffer
+                const blob = new Blob([arrayBuffer]);
+                const file = new File([blob], fileName);
+                
+                console.log(`Worker: Processing file ${fileName}`);
+                
+                // Process the file directly in the worker
+                await processFiles([file]);
+                
+                console.log(`Worker: File ${fileName} processed successfully`);
+                
+                // Create a message indicating successful processing
+                const completeMessage: CompleteMessage = {
+                  type: 'complete',
+                  fileId,
+                  fileName,
+                  processed: true
+                };
+                
+                // Post the message back to the main thread
+                ctx.postMessage(completeMessage);
+                console.log(`Worker: Success message posted for ${fileName}`);
+                resolve();
+              } catch (processingError) {
+                console.error(`Worker: Error processing file ${fileName}:`, processingError);
+                
+                // Create an error message for processing failure
+                const errorMessage: ErrorMessage = {
+                  type: 'error',
+                  fileId,
+                  error: `Error processing file: ${processingError.toString()}`
+                };
+                
+                ctx.postMessage(errorMessage);
+                reject(processingError);
+              }
+            };
+            
+            // Execute the async function
+            processFile();
           } catch (error) {
             console.error('Worker: Error processing response:', error);
             const errorMessage: ErrorMessage = {
