@@ -524,7 +524,6 @@
             
             updateOverallProgress();
             checkAllComplete();
-          }
           },
           onError(data) {
             console.error(`Error with ${fileInfo.name}:`, data.error);
