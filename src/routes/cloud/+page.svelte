@@ -253,9 +253,10 @@
     // Create a view for ZIP/CBZ files
     const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
       .setMimeTypes('application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz')
-      .setMode(google.picker.DocsViewMode.LIST)
+      .setMode(google.picker.DocsViewMode.GRID)
       .setIncludeFolders(true)
       .setSelectFolderEnabled(true)
+      .setSortOrder(google.picker.SortOrder.NAME)
       .setParent(readerFolderId);
 
     // Create a view specifically for folders
@@ -265,11 +266,11 @@
 
     const picker = new google.picker.PickerBuilder()
       .addView(docsView)
-      .addView(folderView)
       .setOAuthToken(accessToken)
       .setAppId(CLIENT_ID)
       .setDeveloperKey(API_KEY)
       .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+      .setSize(window.innerWidth * 0.9, window.innerHeight *0.9)
       .setCallback(pickerCallback)
       .build();
     picker.setVisible(true);
