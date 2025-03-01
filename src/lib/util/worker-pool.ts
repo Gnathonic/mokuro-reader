@@ -6,6 +6,7 @@ import DownloadWorker from '$lib/workers/download-worker.ts?worker';
 export interface WorkerTask {
   id: string;
   data: any;
+  memoryRequirement?: number; // Memory requirement in bytes
   onProgress?: (progress: any) => void;
   onComplete?: (result: any) => void;
   onError?: (error: any) => void;
@@ -17,9 +18,12 @@ export class WorkerPool {
   private activeTasks: Map<string, WorkerTask> = new Map();
   private workerTaskMap: Map<Worker, string | null> = new Map();
   private maxConcurrent: number;
+  private currentMemoryUsage: number = 0;
+  private maxMemoryUsage: number = 500 * 1024 * 1024; // 500 MB threshold (not a hard limit)
 
-  constructor(workerUrl?: string, maxConcurrent = 4) {
+  constructor(workerUrl?: string, maxConcurrent = 4, maxMemoryMB = 500) {
     this.maxConcurrent = Math.max(1, Math.min(maxConcurrent, navigator.hardwareConcurrency || 4));
+    this.maxMemoryUsage = maxMemoryMB * 1024 * 1024; // Convert MB to bytes - this is a threshold, not a hard limit
     
     // Initialize workers
     for (let i = 0; i < this.maxConcurrent; i++) {
@@ -91,6 +95,12 @@ export class WorkerPool {
   private completeTask(worker: Worker) {
     const taskId = this.workerTaskMap.get(worker);
     if (taskId) {
+      const task = this.activeTasks.get(taskId);
+      if (task && task.memoryRequirement) {
+        // Reduce current memory usage when task completes
+        this.currentMemoryUsage = Math.max(0, this.currentMemoryUsage - task.memoryRequirement);
+        console.log(`Task ${taskId} completed. Memory freed: ${task.memoryRequirement / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB`);
+      }
       this.activeTasks.delete(taskId);
       this.workerTaskMap.set(worker, null);
     }
@@ -100,7 +110,7 @@ export class WorkerPool {
   }
   
   private processQueue() {
-    // Process as many tasks from the queue as possible
+    // Process as many tasks from the queue as possible based on memory constraints
     while (this.taskQueue.length > 0) {
       // Find an available worker first
       const availableWorker = this.workers.find(worker => this.workerTaskMap.get(worker) === null);
@@ -109,10 +119,22 @@ export class WorkerPool {
         break;
       }
       
-      // Remove task from queue
-      const nextTask = this.taskQueue.shift()!;
+      const nextTask = this.taskQueue[0];
+      const memoryRequired = nextTask.memoryRequirement || 0;
       
-      console.log(`Starting task ${nextTask.id}`);
+      // Check if we're already over the memory limit AND this isn't the only task in the queue
+      // We always allow at least one task to run, even if it exceeds the memory limit
+      if (this.currentMemoryUsage > this.maxMemoryUsage && this.activeTasks.size > 0) {
+        console.log(`Memory usage already exceeds limit. Waiting for tasks to complete before starting new ones. Current: ${this.currentMemoryUsage / (1024 * 1024)} MB, Max: ${this.maxMemoryUsage / (1024 * 1024)} MB`);
+        break;
+      }
+      
+      // Remove task from queue
+      this.taskQueue.shift();
+      
+      // Update memory usage
+      this.currentMemoryUsage += memoryRequired;
+      console.log(`Starting task ${nextTask.id}. Memory required: ${memoryRequired / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB`);
       
       // Assign task to worker
       this.assignTaskToWorker(availableWorker, nextTask);
@@ -126,6 +148,12 @@ export class WorkerPool {
   }
 
   public addTask(task: WorkerTask) {
+    // Add memory requirement if not specified
+    if (task.memoryRequirement === undefined) {
+      // Default to a conservative estimate if not provided
+      task.memoryRequirement = 50 * 1024 * 1024; // 50 MB default
+    }
+    
     // Add task to queue
     this.taskQueue.push(task);
     
@@ -143,6 +171,7 @@ export class WorkerPool {
     this.taskQueue = [];
     this.activeTasks.clear();
     this.workerTaskMap.clear();
+    this.currentMemoryUsage = 0;
   }
   
   public get activeTaskCount() {
@@ -155,5 +184,13 @@ export class WorkerPool {
   
   public get totalPendingTasks() {
     return this.activeTaskCount + this.queuedTaskCount;
+  }
+  
+  public get memoryUsage() {
+    return {
+      current: this.currentMemoryUsage,
+      max: this.maxMemoryUsage,
+      percentUsed: (this.currentMemoryUsage / this.maxMemoryUsage) * 100
+    };
   }
 }

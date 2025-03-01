@@ -406,8 +406,12 @@
     // Use navigator.hardwareConcurrency to determine optimal number of workers
     // but limit to a reasonable number to avoid overwhelming the browser
     const maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
-    console.log(`Creating worker pool with ${maxWorkers} workers`);
-    const workerPool = new WorkerPool(undefined, maxWorkers);
+    // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
+    // This is not a hard limit - tasks that individually need more than 500MB can still run
+    // It just prevents starting new tasks when the current pool already exceeds 500MB
+    const memoryLimitMB = 500; // 500 MB memory threshold
+    console.log(`Creating worker pool with ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`);
+    const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
     
     // Track download progress
     const fileProgress: { [fileId: string]: number } = {};
@@ -448,6 +452,10 @@
     return new Promise<void>((resolve) => {
       // Function to check if all downloads are complete
       const checkAllComplete = () => {
+        // Log current memory usage
+        const memUsage = workerPool.memoryUsage;
+        console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
+        
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
           workerPool.terminate();
@@ -474,10 +482,23 @@
         fileProgress[fileInfo.id] = 0;
         
         // Create a task for the worker pool
-        console.log(`Adding task for ${fileInfo.name}`);
+        // Estimate memory requirement based on file size
+        // We need memory for: 
+        // 1. The downloaded file (fileSizes[fileInfo.id])
+        // 2. Processing overhead (typically 2-3x the file size for decompression)
+        const fileSize = fileSizes[fileInfo.id] || 0;
+        const memoryRequirement = Math.max(
+          // Estimate memory needed: file size + processing overhead
+          // Use at least 50MB as a minimum requirement
+          fileSize * 3, // 3x file size for processing overhead
+          50 * 1024 * 1024 // Minimum 50MB
+        );
+        
+        console.log(`Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`);
         
         workerPool.addTask({
           id: fileInfo.id,
+          memoryRequirement,
           data: {
             fileId: fileInfo.id,
             fileName: fileInfo.name,
