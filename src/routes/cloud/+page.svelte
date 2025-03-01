@@ -251,6 +251,71 @@
     gapi.load('picker', () => {});
   });
 
+  // Function to get all files in the current folder
+  async function selectAllFilesInFolder(folderId) {
+    loadingMessage = 'Fetching all files in folder...';
+    
+    try {
+      // Get all files in the folder
+      const { result } = await gapi.client.drive.files.list({
+        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz')`,
+        fields: 'files(id, name, mimeType)',
+        pageSize: 1000,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: 'allDrives',
+        spaces: 'drive'
+      });
+      
+      if (!result.files || result.files.length === 0) {
+        showSnackbar('No compatible files found in this folder');
+        loadingMessage = '';
+        return;
+      }
+      
+      console.log(`Found ${result.files.length} files to download`);
+      
+      // Process all files
+      await downloadAndProcessFiles(result.files);
+    } catch (error) {
+      handleDriveError(error, 'fetching all files');
+    }
+  }
+  
+  // Function to show a dialog to select a folder for "Select All" operation
+  function showSelectAllDialog() {
+    // Create a view specifically for folders
+    const folderView = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setSelectFolderEnabled(true)
+      .setParent(readerFolderId);
+      
+    // Create a view for folders in shared drives
+    const teamDriveFolderView = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setSelectFolderEnabled(true)
+      .setEnableTeamDrives(true);
+    
+    const picker = new google.picker.PickerBuilder()
+      .addView(folderView)
+      .addView(teamDriveFolderView)
+      .setTitle('Select a folder to download all files')
+      .setOAuthToken(accessToken)
+      .setAppId(CLIENT_ID)
+      .setDeveloperKey(API_KEY)
+      .enableFeature(google.picker.Feature.SUPPORT_TEAM_DRIVES)
+      .setCallback((data) => {
+        if (data[google.picker.Response.ACTION] == google.picker.Action.PICKED) {
+          const docs = data[google.picker.Response.DOCUMENTS];
+          if (docs.length > 0) {
+            const folder = docs[0]; // Only one folder can be selected
+            selectAllFilesInFolder(folder.id);
+          }
+        }
+      })
+      .build();
+    
+    picker.setVisible(true);
+  }
+
   function createPicker() {
     // Create a view for ZIP/CBZ files
     const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
@@ -900,10 +965,11 @@
         in your Google Drive.
       </p>
       <p class="text-center text-sm text-gray-500">
-        You can select multiple ZIP/CBZ files or entire folders at once.
+        You can select multiple ZIP/CBZ files or use "Select All Files in Folder" to download all files from a folder.
       </p>
       <div class="flex flex-col gap-4 w-full max-w-3xl">
-        <Button color="blue" on:click={createPicker}>Download Manga</Button>
+        <Button color="blue" on:click={createPicker}>Select Files to Download</Button>
+        <Button color="green" on:click={showSelectAllDialog}>Select All Files in Folder</Button>
         <div class="flex-col gap-2 flex">
           <Button
             color="dark"
