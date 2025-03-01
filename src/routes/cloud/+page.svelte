@@ -454,7 +454,7 @@
       const checkAllComplete = () => {
         // Log current memory usage
         const memUsage = workerPool.memoryUsage;
-        console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
+        console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB active + ${(memUsage.pending / (1024 * 1024)).toFixed(2)}MB pending = ${(memUsage.total / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
         
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
@@ -525,9 +525,17 @@
               const file = new File([blob], data.fileName);
               console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
               
-              // Process the file
+              // Note: We don't release the memory yet because processFiles will also use memory
+              // The worker's memory is released, but we're still using memory in the main thread
+              
+              // Process the file - this happens in the main thread and uses additional memory
+              console.log(`Starting to process file: ${file.name}`);
               await processFiles([file]);
               console.log(`Successfully processed file: ${file.name}`);
+              
+              // Now we can tell the worker pool that this task's memory has been fully released
+              // This is done by calling our new method to release memory after main thread processing
+              workerPool.releaseTaskMemory(fileInfo.id);
               
               // Mark as completed
               completedFiles++;
@@ -539,6 +547,9 @@
             } catch (error) {
               console.error(`Error processing ${data.fileName}:`, error);
               showSnackbar(`Failed to process ${data.fileName}`);
+              
+              // Release memory even if processing failed
+              workerPool.releaseTaskMemory(fileInfo.id);
               
               // Mark as failed
               failedFiles++;
