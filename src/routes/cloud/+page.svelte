@@ -346,8 +346,8 @@
   }
 
   async function downloadAndProcessFiles(fileList: { id: string; name: string; mimeType: string }[], existingProcessId?: string) {
-    // Import the worker pool dynamically
-    const { WorkerPool } = await import('$lib/util/worker-pool');
+    // Import the unified worker pool dynamically
+    const { downloadAndProcessFile, getMemoryUsage } = await import('$lib/util/unified-worker-pool');
     
     // Use the existing processId if provided, otherwise create a new one
     const overallProcessId = existingProcessId || 
@@ -402,17 +402,6 @@
       bytesLoaded: 0
     });
     
-    // Create a worker pool for parallel downloads
-    // Use navigator.hardwareConcurrency to determine optimal number of workers
-    // but limit to a reasonable number to avoid overwhelming the browser
-    const maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
-    // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
-    // This is not a hard limit - tasks that individually need more than 500MB can still run
-    // It just prevents starting new tasks when the current pool already exceeds 500MB
-    const memoryLimitMB = 500; // 500 MB memory threshold
-    console.log(`Creating worker pool with ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`);
-    const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
-    
     // Track download progress
     const fileProgress: { [fileId: string]: number } = {};
     let completedFiles = 0;
@@ -453,12 +442,11 @@
       // Function to check if all downloads are complete
       const checkAllComplete = () => {
         // Log current memory usage
-        const memUsage = workerPool.memoryUsage;
+        const memUsage = getMemoryUsage();
         console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
         
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
-          workerPool.terminate();
           
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
@@ -476,77 +464,33 @@
         }
       };
       
-      // Add each file to the worker pool
-      for (const fileInfo of sortedFiles) {
+      // Process each file
+      const processPromises = sortedFiles.map(fileInfo => {
         // Initialize progress for this file
         fileProgress[fileInfo.id] = 0;
         
-        // Create a task for the worker pool
-        // Estimate memory requirement based on file size
-        // We need memory for: 
-        // 1. The downloaded file (fileSizes[fileInfo.id])
-        // 2. Processing overhead (typically 2-3x the file size for decompression)
+        // Get the file size
         const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
         
-        console.log(`Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`);
+        // Create a function to update progress
+        const updateProgress = (loaded: number) => {
+          fileProgress[fileInfo.id] = loaded;
+          updateOverallProgress();
+        };
         
-        workerPool.addTask({
-          id: fileInfo.id,
-          memoryRequirement,
-          data: {
-            fileId: fileInfo.id,
-            fileName: fileInfo.name,
-            accessToken
-          },
-          onProgress(data) {
-            // Update progress for this file
-            fileProgress[fileInfo.id] = data.loaded;
+        // Return a promise that resolves when the file is processed
+        return downloadAndProcessFile(fileInfo.id, fileInfo.name, accessToken, fileSize, updateProgress)
+          .then(() => {
+            // Mark as completed
+            completedFiles++;
+            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+            processedFiles[fileInfo.id] = true;
+            
             updateOverallProgress();
-          },
-          async onComplete(data) {
-            try {
-              console.log(`Received complete message for ${data.fileName}`, {
-                hasProcessedData: !!data.processedData
-              });
-              
-              // File was processed in the worker, now save to database
-              console.log(`File ${data.fileName} was processed in the worker, saving to database`);
-              
-              // Save the processed data to the database
-              if (data.processedData) {
-                await saveToDatabase(
-                  data.processedData.volumesByPath,
-                  data.processedData.volumesDataByPath
-                );
-              }
-              
-              // Mark as completed
-              completedFiles++;
-              fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-              processedFiles[fileInfo.id] = true;
-              
-              updateOverallProgress();
-              checkAllComplete();
-            } catch (error) {
-              console.error(`Error saving ${data.fileName} to database:`, error);
-              showSnackbar(`Failed to save ${data.fileName} to database`);
-              
-              // Mark as failed
-              failedFiles++;
-              processedFiles[fileInfo.id] = true;
-              
-              updateOverallProgress();
-              checkAllComplete();
-            }
-          },
-          onError(data) {
-            console.error(`Error with ${fileInfo.name}:`, data.error);
+            checkAllComplete();
+          })
+          .catch(error => {
+            console.error(`Error with ${fileInfo.name}:`, error);
             showSnackbar(`Failed to process ${fileInfo.name}`);
             
             // Mark as failed but count the size as downloaded for progress calculation
@@ -556,9 +500,8 @@
             
             updateOverallProgress();
             checkAllComplete();
-          }
-        });
-      }
+          });
+      });
       
       // If there are no files, resolve immediately
       if (sortedFiles.length === 0) {
