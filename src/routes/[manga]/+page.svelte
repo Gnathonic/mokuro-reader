@@ -13,6 +13,7 @@
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
   import { CloudArrowUpSolid, TrashBinSolid } from 'flowbite-svelte-icons';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
+import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
   import driveStore, { isSeriesBackedUp, removeSeries } from '$lib/util/drive-store';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
@@ -114,7 +115,7 @@
     }
     
     promptConfirmation(
-      `Remove ${seriesTitle} from Google Drive?`,
+      `Move ${seriesTitle} to trash in Google Drive?`,
       async () => {
         try {
           removingFromDrive = true;
@@ -133,22 +134,34 @@
             return;
           }
           
-          // Delete the folder from Google Drive
-          const response = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${seriesFolderId}`,
-            {
-              method: 'DELETE',
-              headers: new Headers({ Authorization: 'Bearer ' + accessToken })
-            }
-          );
-          
-          if (response.ok) {
+          // Mark the folder as trashed in Google Drive instead of deleting it
+          try {
+            await driveApiRequest(
+              `https://www.googleapis.com/drive/v3/files/${seriesFolderId}`,
+              {
+                method: 'PATCH',
+                headers: new Headers({ 
+                  'Authorization': 'Bearer ' + accessToken,
+                  'Content-Type': 'application/json'
+                }),
+                body: JSON.stringify({ trashed: true })
+              }
+            );
+            
             // Remove the series from our store
             removeSeries(seriesTitle);
-            showSnackbar(`${seriesTitle} removed from Google Drive`);
-          } else {
-            const errorData = await response.json();
-            throw new Error(errorData.error?.message || 'Failed to delete folder');
+            showSnackbar(`${seriesTitle} moved to trash in Google Drive`);
+          } catch (error: any) {
+            console.error('Error moving folder to trash:', error);
+            
+            // Only throw auth errors, handle other errors gracefully
+            if (error.errorType === DriveErrorType.AUTH_ERROR) {
+              showSnackbar('Authentication error: Please log in again');
+              goto('/cloud');
+              return;
+            }
+            
+            throw new Error(error.message || 'Failed to move folder to trash');
           }
         } catch (error) {
           console.error('Error removing from Google Drive:', error);
@@ -240,7 +253,7 @@
           {#if seriesExistsInDrive}
             <Button color="red" on:click={onRemoveFromDrive} disabled={removingFromDrive}>
               <TrashBinSolid class="mr-2 h-5 w-5" />
-              {removingFromDrive ? 'Removing...' : 'Remove from Drive'}
+              {removingFromDrive ? 'Moving to trash...' : 'Move to trash'}
             </Button>
           {/if}
         {/if}

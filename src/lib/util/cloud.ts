@@ -3,6 +3,7 @@ import { BlobReader, BlobWriter, TextReader, ZipWriter } from "@zip.js/zip.js";
 import { db } from "$lib/catalog/db";
 import { progressTrackerStore } from "./progress-tracker";
 import { addSeries, addVolume } from "./drive-store";
+import { driveApiRequest, DriveErrorType } from "./api-helpers";
 
 type FileInfo = {
   accessToken: string;
@@ -23,17 +24,30 @@ export async function uploadFile({ accessToken, fileId, localStorageId, metadata
   form.append('resource', new Blob([JSON.stringify(metadata)], { type }));
   form.append('file', blob);
 
-
-  const res = await fetch(
-    `${FILES_API_URL}${fileId ? `/${fileId}` : ''}?uploadType=multipart`,
-    {
-      method: fileId ? 'PATCH' : 'POST',
-      headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
-      body: form
+  try {
+    return await driveApiRequest(
+      `${FILES_API_URL}${fileId ? `/${fileId}` : ''}?uploadType=multipart`,
+      {
+        method: fileId ? 'PATCH' : 'POST',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
+        body: form
+      }
+    );
+  } catch (error: any) {
+    console.error('Error uploading file:', error);
+    
+    // Only throw auth errors, handle other errors gracefully
+    if (error.errorType === DriveErrorType.AUTH_ERROR) {
+      throw error;
     }
-  );
-
-  return await res.json()
+    
+    // Return a partial success with error info
+    return {
+      error: true,
+      message: error.message || 'Unknown error',
+      errorType: error.errorType
+    };
+  }
 }
 
 /**
@@ -63,16 +77,36 @@ export async function uploadBlob(
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', blob);
   
-  const res = await fetch(
-    `${FILES_API_URL}?uploadType=multipart`,
-    {
-      method: 'POST',
-      headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
-      body: form
+  try {
+    return await driveApiRequest(
+      `${FILES_API_URL}?uploadType=multipart`,
+      {
+        method: 'POST',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
+        body: form
+      },
+      {
+        // Use more retries for uploads since they're more likely to fail
+        maxRetries: 5,
+        // Use longer initial backoff for large files
+        initialBackoffMs: 2000
+      }
+    );
+  } catch (error: any) {
+    console.error('Error uploading blob:', error);
+    
+    // Only throw auth errors, handle other errors gracefully
+    if (error.errorType === DriveErrorType.AUTH_ERROR) {
+      throw error;
     }
-  );
-  
-  return await res.json();
+    
+    // Return a partial success with error info
+    return {
+      error: true,
+      message: error.message || 'Unknown error',
+      errorType: error.errorType
+    };
+  }
 }
 
 /**
@@ -84,7 +118,7 @@ export async function uploadBlob(
  */
 export async function checkFileExists(accessToken: string, filename: string, folderId: string): Promise<string | null> {
   try {
-    const response = await fetch(
+    const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?q=name='${encodeURIComponent(filename)}' and '${folderId}' in parents and trashed=false&fields=files(id,name)`,
       {
         method: 'GET',
@@ -92,15 +126,19 @@ export async function checkFileExists(accessToken: string, filename: string, fol
       }
     );
     
-    const data = await response.json();
-    
     if (data.files && data.files.length > 0) {
       return data.files[0].id;
     }
     
     return null;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error checking if file exists:', error);
+    
+    // Only throw auth errors, handle other errors gracefully
+    if (error.errorType === DriveErrorType.AUTH_ERROR) {
+      throw error;
+    }
+    
     return null;
   }
 }
@@ -115,15 +153,13 @@ export async function checkFileExists(accessToken: string, filename: string, fol
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
     // Check if folder already exists
-    const response = await fetch(
+    const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?q=name='${encodeURIComponent(folderName)}' and '${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
       }
     );
-    
-    const data = await response.json();
     
     if (data.files && data.files.length > 0) {
       return data.files[0].id;
@@ -136,7 +172,7 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
       parents: [parentFolderId]
     };
     
-    const createResponse = await fetch(
+    const createData = await driveApiRequest(
       'https://www.googleapis.com/drive/v3/files',
       {
         method: 'POST',
@@ -148,11 +184,17 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
       }
     );
     
-    const createData = await createResponse.json();
     return createData.id;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating folder:', error);
-    throw error;
+    
+    // Only throw auth errors, handle other errors gracefully
+    if (error.errorType === DriveErrorType.AUTH_ERROR) {
+      throw error;
+    }
+    
+    // For other errors, throw a more descriptive error
+    throw new Error(`Failed to create folder "${folderName}": ${error.message || 'Unknown error'}`);
   }
 }
 

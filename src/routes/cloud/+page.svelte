@@ -14,10 +14,36 @@
   import { catalog } from '$lib/catalog';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
   import driveStore, { setDriveToken, clearDriveToken, addSeries, addVolume } from '$lib/util/drive-store';
+  import { DriveErrorType } from '$lib/util/api-helpers';
   
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
-    // Check if it's a connectivity issue
+    console.error(`${context} error:`, error);
+    
+    // If the error has been processed by our API helpers
+    if (error.errorType) {
+      switch (error.errorType) {
+        case DriveErrorType.AUTH_ERROR:
+          // Log the user out for auth errors
+          logout();
+          showSnackbar(`Authentication error: Please log in again`);
+          break;
+          
+        case DriveErrorType.CONNECTION_ERROR:
+          showSnackbar('Connection error: Please check your internet connection');
+          break;
+          
+        case DriveErrorType.RATE_LIMIT:
+          showSnackbar('Rate limit exceeded: Please try again later');
+          break;
+          
+        default:
+          showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
+      return;
+    }
+    
+    // Legacy error handling for errors not processed by our API helpers
     const errorMessage = error.toString().toLowerCase();
     const isConnectivityError = 
       errorMessage.includes('network') || 
@@ -26,14 +52,23 @@
       errorMessage.includes('internet');
     
     if (!isConnectivityError) {
-      // Log the user out for non-connectivity errors
-      logout();
-      showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      // Only log out for auth-related errors
+      if (
+        errorMessage.includes('auth') || 
+        errorMessage.includes('token') || 
+        errorMessage.includes('permission') ||
+        errorMessage.includes('access') ||
+        errorMessage.includes('unauthorized') ||
+        errorMessage.includes('forbidden')
+      ) {
+        logout();
+        showSnackbar(`Authentication error: Please log in again`);
+      } else {
+        showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
     } else {
       showSnackbar('Connection error: Please check your internet connection');
     }
-    
-    console.error(`${context} error:`, error);
   }
 
   const CLIENT_ID = import.meta.env.VITE_GDRIVE_CLIENT_ID;
@@ -408,6 +443,9 @@
             // If we have a reader folder ID in the store, use it
             if ($driveStore.readerFolderId) {
               readerFolderId = $driveStore.readerFolderId;
+              
+              // Scan for all CBZ files to update our backup status
+              await scanAllCbzFiles(storedToken, readerFolderId);
             }
             
             await connectDrive({ access_token: storedToken });
@@ -423,6 +461,96 @@
 
     gapi.load('picker', () => {});
   });
+  
+  /**
+   * Scans Google Drive for all CBZ files and updates our backup status
+   * @param token The access token
+   * @param parentFolderId The parent folder ID (mokuro-reader folder)
+   */
+  async function scanAllCbzFiles(token: string, parentFolderId: string) {
+    try {
+      const processId = 'scan-cbz-files';
+      progressTrackerStore.addProcess({
+        id: processId,
+        description: 'Scanning Google Drive for backups',
+        progress: 0,
+        status: 'Initializing scan...'
+      });
+      
+      // First, get all series folders
+      progressTrackerStore.updateProcess(processId, {
+        progress: 10,
+        status: 'Finding series folders...'
+      });
+      
+      const { result: foldersRes } = await gapi.client.drive.files.list({
+        q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'files(id, name)',
+        pageSize: 1000
+      });
+      
+      if (!foldersRes.files || foldersRes.files.length === 0) {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 100,
+          status: 'No series folders found'
+        });
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+        return;
+      }
+      
+      // Process each series folder
+      const totalFolders = foldersRes.files.length;
+      for (let i = 0; i < totalFolders; i++) {
+        const folder = foldersRes.files[i];
+        const seriesTitle = folder.name;
+        const seriesFolderId = folder.id;
+        
+        progressTrackerStore.updateProcess(processId, {
+          progress: 10 + ((i / totalFolders) * 90),
+          status: `Scanning ${seriesTitle} (${i+1}/${totalFolders})...`
+        });
+        
+        // Add the series to our store
+        addSeries(seriesTitle, seriesFolderId);
+        
+        // Get all CBZ files in this series folder
+        try {
+          const { result: filesRes } = await gapi.client.drive.files.list({
+            q: `'${seriesFolderId}' in parents and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false`,
+            fields: 'files(id, name)',
+            pageSize: 1000
+          });
+          
+          if (!filesRes.files || filesRes.files.length === 0) {
+            continue; // No volumes in this series
+          }
+          
+          // Process each volume file
+          for (const file of filesRes.files) {
+            // Extract volume title from filename (remove .cbz extension)
+            const fileName = file.name;
+            const volumeTitle = fileName.replace(/\.cbz$/i, '');
+            
+            // Add the volume to our store
+            addVolume(seriesTitle, volumeTitle, file.id, fileName);
+          }
+        } catch (error) {
+          console.error(`Error scanning files in ${seriesTitle}:`, error);
+          // Continue with next folder
+        }
+      }
+      
+      progressTrackerStore.updateProcess(processId, {
+        progress: 100,
+        status: `Scan complete: Found ${totalFolders} series`
+      });
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+      
+    } catch (error) {
+      console.error('Error scanning all CBZ files:', error);
+      // Don't throw, just log the error
+    }
+  }
 
   function createPicker() {
     // Create a view for ZIP/CBZ files
