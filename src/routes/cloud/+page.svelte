@@ -8,9 +8,11 @@
   import { Button } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { promptConfirmation } from '$lib/util';
-  import { GoogleSolid } from 'flowbite-svelte-icons';
+  import { CloudArrowUpSolid, GoogleSolid } from 'flowbite-svelte-icons';
   import { profiles, volumes } from '$lib/settings';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { catalog } from '$lib/catalog';
+  import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
   
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -50,12 +52,69 @@
   let readerFolderId = '';
   let volumeDataId = '';
   let profilesId = '';
+  let backingUp = false;
 
   // This variable is used to track if we're connected to Google Drive
   // and is used in the UI to show/hide the login button
 
   $: if (accessToken) {
     localStorage.setItem('gdrive_token', accessToken);
+  }
+  
+  async function onBackupAllSeries() {
+    if (!accessToken) {
+      showSnackbar('Please connect to Google Drive first');
+      return;
+    }
+    
+    if (!$catalog || $catalog.length === 0) {
+      showSnackbar('No series to backup');
+      return;
+    }
+    
+    try {
+      backingUp = true;
+      
+      // Create a master process for tracking overall progress
+      const masterProcessId = `backup-all-series-${Date.now()}`;
+      progressTrackerStore.addProcess({
+        id: masterProcessId,
+        description: `Backing up all series to Google Drive`,
+        progress: 0,
+        status: `Preparing to backup ${$catalog.length} series...`
+      });
+      
+      // Process each series one by one
+      for (let i = 0; i < $catalog.length; i++) {
+        const series = $catalog[i];
+        const seriesTitle = series.volumes[0]?.series_title || 'Unknown Series';
+        
+        // Update master progress
+        progressTrackerStore.updateProcess(masterProcessId, {
+          progress: (i / $catalog.length) * 100,
+          status: `Processing ${seriesTitle} (${i+1}/${$catalog.length})...`
+        });
+        
+        // Export and upload this series
+        await exportAndUploadVolumesToDrive(series.volumes, accessToken, readerFolderId);
+      }
+      
+      // All series have been processed
+      progressTrackerStore.updateProcess(masterProcessId, {
+        progress: 100,
+        status: `All ${$catalog.length} series backed up successfully`
+      });
+      
+      // Remove the process after a delay
+      setTimeout(() => progressTrackerStore.removeProcess(masterProcessId), 3000);
+      
+      showSnackbar('All series backed up to Google Drive');
+    } catch (error) {
+      console.error('Error backing up all series:', error);
+      showSnackbar(`Error backing up series: ${error.message || 'Unknown error'}`);
+    } finally {
+      backingUp = false;
+    }
   }
 
   async function getFileSize(fileId: string): Promise<number> {
@@ -887,6 +946,10 @@
       </p>
       <div class="flex flex-col gap-4 w-full max-w-3xl">
         <Button color="blue" on:click={createPicker}>Download Manga</Button>
+        <Button color="green" on:click={onBackupAllSeries} disabled={backingUp}>
+          <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+          {backingUp ? 'Backing up...' : 'Backup All Series to Drive'}
+        </Button>
         <div class="flex-col gap-2 flex">
           <Button
             color="dark"

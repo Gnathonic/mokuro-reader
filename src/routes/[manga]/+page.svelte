@@ -4,13 +4,15 @@
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import { Button, Listgroup } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
-  import { promptConfirmation, zipManga } from '$lib/util';
+  import { promptConfirmation, showSnackbar, zipManga } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { page } from '$app/stores';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume } from '$lib/settings';
   import { mangaStats} from '$lib/settings';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
+  import { CloudArrowUpSolid } from 'flowbite-svelte-icons';
+  import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
     return a.volume_title.localeCompare(b.volume_title, undefined, {
@@ -22,6 +24,7 @@
   $: manga = $catalog?.find((item) => item.series_uuid === $page.params.manga)?.volumes.sort(sortManga);
 
   $: loading = false;
+  $: uploadingToDrive = false;
 
   async function confirmDelete() {
     const seriesUuid = manga?.[0].series_uuid;
@@ -56,6 +59,86 @@
       );
     }
   }
+  
+  async function onExportToDrive() {
+    if (!manga || manga.length === 0) {
+      showSnackbar('No manga to export');
+      return;
+    }
+    
+    // Check if we have a Google Drive token
+    const accessToken = localStorage.getItem('gdrive_token');
+    if (!accessToken) {
+      showSnackbar('Please connect to Google Drive first in the Cloud menu');
+      goto('/cloud');
+      return;
+    }
+    
+    try {
+      uploadingToDrive = true;
+      
+      // Get the reader folder ID
+      const readerFolderId = await getReaderFolderId(accessToken);
+      if (!readerFolderId) {
+        showSnackbar('Could not find or create mokuro-reader folder in Google Drive');
+        uploadingToDrive = false;
+        return;
+      }
+      
+      // Export and upload the volumes
+      await exportAndUploadVolumesToDrive(manga, accessToken, readerFolderId);
+      
+      showSnackbar('Export to Google Drive completed');
+    } catch (error) {
+      console.error('Error exporting to Google Drive:', error);
+      showSnackbar(`Error exporting to Google Drive: ${error.message || 'Unknown error'}`);
+    } finally {
+      uploadingToDrive = false;
+    }
+  }
+  
+  async function getReaderFolderId(accessToken: string): Promise<string | null> {
+    try {
+      // Check if the mokuro-reader folder exists
+      const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
+        {
+          method: 'GET',
+          headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+        }
+      );
+      
+      const data = await response.json();
+      
+      if (data.files && data.files.length > 0) {
+        return data.files[0].id;
+      }
+      
+      // Create the folder if it doesn't exist
+      const metadata = {
+        name: 'mokuro-reader',
+        mimeType: 'application/vnd.google-apps.folder'
+      };
+      
+      const createResponse = await fetch(
+        'https://www.googleapis.com/drive/v3/files',
+        {
+          method: 'POST',
+          headers: new Headers({ 
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/json'
+          }),
+          body: JSON.stringify(metadata)
+        }
+      );
+      
+      const createData = await createResponse.json();
+      return createData.id;
+    } catch (error) {
+      console.error('Error getting reader folder ID:', error);
+      return null;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -76,6 +159,10 @@
         <Button color="alternative" on:click={onDelete}>Remove manga</Button>
         <Button color="light" on:click={onExtract} disabled={loading}>
           {loading ? 'Extracting...' : 'Extract manga'}
+        </Button>
+        <Button color="blue" on:click={onExportToDrive} disabled={uploadingToDrive}>
+          <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+          {uploadingToDrive ? 'Uploading...' : 'Backup to Drive'}
         </Button>
       </div>
     </div>
