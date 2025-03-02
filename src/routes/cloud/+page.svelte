@@ -13,6 +13,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { catalog } from '$lib/catalog';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
+  import driveStore, { setDriveToken, clearDriveToken, addSeries, addVolume } from '$lib/util/drive-store';
   
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -61,8 +62,13 @@
     localStorage.setItem('gdrive_token', accessToken);
   }
   
+  // Subscribe to the drive store to keep accessToken in sync
+  $: if ($driveStore.accessToken && !accessToken) {
+    accessToken = $driveStore.accessToken;
+  }
+  
   async function onBackupAllSeries() {
-    if (!accessToken) {
+    if (!$driveStore.isLoggedIn || !accessToken) {
       showSnackbar('Please connect to Google Drive first');
       return;
     }
@@ -88,6 +94,21 @@
       for (let i = 0; i < $catalog.length; i++) {
         const series = $catalog[i];
         const seriesTitle = series.volumes[0]?.series_title || 'Unknown Series';
+        const volumeTitles = series.volumes.map(vol => vol.volume_title);
+        
+        // Check if this series is already fully backed up
+        const isFullyBackedUp = volumeTitles.every(volumeTitle => 
+          !!$driveStore.series[seriesTitle]?.volumes[volumeTitle]
+        );
+        
+        if (isFullyBackedUp) {
+          // Skip this series as it's already backed up
+          progressTrackerStore.updateProcess(masterProcessId, {
+            progress: ((i + 1) / $catalog.length) * 100,
+            status: `${seriesTitle} already backed up (${i+1}/${$catalog.length})...`
+          });
+          continue;
+        }
         
         // Update master progress
         progressTrackerStore.updateProcess(masterProcessId, {
@@ -182,6 +203,7 @@
     if (resp?.error !== undefined) {
       localStorage.removeItem('gdrive_token');
       accessToken = '';
+      clearDriveToken();
       throw resp;
     }
 
@@ -223,6 +245,9 @@
         readerFolderId = id || '';
       }
 
+      // Update the drive store with the token and reader folder ID
+      setDriveToken(accessToken, readerFolderId);
+
       progressTrackerStore.updateProcess(processId, {
         progress: 60,
         status: 'Checking for volume data...'
@@ -238,7 +263,7 @@
       }
 
       progressTrackerStore.updateProcess(processId, {
-        progress: 80,
+        progress: 70,
         status: 'Checking for profiles...'
       });
       
@@ -250,6 +275,14 @@
       if (profilesRes.files?.length !== 0) {
         profilesId = profilesRes.files?.[0].id || '';
       }
+      
+      // Scan for existing series folders and volumes
+      progressTrackerStore.updateProcess(processId, {
+        progress: 80,
+        status: 'Scanning for backed up series...'
+      });
+      
+      await scanDriveForBackups(accessToken, readerFolderId);
 
       progressTrackerStore.updateProcess(processId, {
         progress: 100,
@@ -269,6 +302,52 @@
       handleDriveError(error, 'connecting to Google Drive');
     }
   }
+  
+  // Function to scan Google Drive for existing series and volumes
+  async function scanDriveForBackups(token: string, parentFolderId: string) {
+    try {
+      // Get all folders in the reader folder (these are series folders)
+      const { result: foldersRes } = await gapi.client.drive.files.list({
+        q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder'`,
+        fields: 'files(id, name)'
+      });
+      
+      if (!foldersRes.files || foldersRes.files.length === 0) {
+        return; // No series folders found
+      }
+      
+      // Process each series folder
+      for (const folder of foldersRes.files) {
+        const seriesTitle = folder.name;
+        const seriesFolderId = folder.id;
+        
+        // Add the series to our store
+        addSeries(seriesTitle, seriesFolderId);
+        
+        // Get all CBZ files in this series folder
+        const { result: filesRes } = await gapi.client.drive.files.list({
+          q: `'${seriesFolderId}' in parents and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz')`,
+          fields: 'files(id, name)'
+        });
+        
+        if (!filesRes.files || filesRes.files.length === 0) {
+          continue; // No volumes in this series
+        }
+        
+        // Process each volume file
+        for (const file of filesRes.files) {
+          // Extract volume title from filename (remove .cbz extension)
+          const fileName = file.name;
+          const volumeTitle = fileName.replace(/\.cbz$/i, '');
+          
+          // Add the volume to our store
+          addVolume(seriesTitle, volumeTitle, file.id, fileName);
+        }
+      }
+    } catch (error) {
+      console.error('Error scanning Drive for backups:', error);
+    }
+  }
 
   function signIn() {
     // Always show the account picker to allow switching accounts
@@ -281,6 +360,9 @@
     
     // Clear the token from memory
     accessToken = '';
+    
+    // Clear the token from our store
+    clearDriveToken();
     
     // Revoke the token with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
@@ -315,14 +397,20 @@
           callback: connectDrive
         });
 
-        // Try to restore the saved token only after gapi client is initialized
-        const savedToken = localStorage.getItem('gdrive_token');
-        if (savedToken) {
+        // Try to restore the token from our store or localStorage
+        const storedToken = $driveStore.accessToken || localStorage.getItem('gdrive_token');
+        if (storedToken) {
           try {
             // Set the token in gapi client
-            gapi.client.setToken({ access_token: savedToken });
-            accessToken = savedToken;
-            await connectDrive({ access_token: savedToken });
+            gapi.client.setToken({ access_token: storedToken });
+            accessToken = storedToken;
+            
+            // If we have a reader folder ID in the store, use it
+            if ($driveStore.readerFolderId) {
+              readerFolderId = $driveStore.readerFolderId;
+            }
+            
+            await connectDrive({ access_token: storedToken });
           } catch (error) {
             console.error('Failed to restore saved token:', error);
             // Token will be cleared in connectDrive if there's an error

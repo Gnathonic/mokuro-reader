@@ -11,8 +11,9 @@
   import { deleteVolume } from '$lib/settings';
   import { mangaStats} from '$lib/settings';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
-  import { CloudArrowUpSolid } from 'flowbite-svelte-icons';
+  import { CloudArrowUpSolid, TrashBinSolid } from 'flowbite-svelte-icons';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
+  import driveStore, { isSeriesBackedUp, removeSeries } from '$lib/util/drive-store';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
     return a.volume_title.localeCompare(b.volume_title, undefined, {
@@ -25,6 +26,15 @@
 
   $: loading = false;
   $: uploadingToDrive = false;
+  $: removingFromDrive = false;
+  
+  // Create a derived store to check if this series is backed up
+  $: seriesTitle = manga?.[0]?.series_title || '';
+  $: volumeTitles = manga?.map(vol => vol.volume_title) || [];
+  $: isBackedUp = isSeriesBackedUp(seriesTitle, volumeTitles);
+  
+  // Check if the series exists in Drive at all (even partially backed up)
+  $: seriesExistsInDrive = !!$driveStore.series[seriesTitle];
 
   async function confirmDelete() {
     const seriesUuid = manga?.[0].series_uuid;
@@ -67,7 +77,7 @@
     }
     
     // Check if we have a Google Drive token
-    const accessToken = localStorage.getItem('gdrive_token');
+    const accessToken = $driveStore.accessToken || localStorage.getItem('gdrive_token');
     if (!accessToken) {
       showSnackbar('Please connect to Google Drive first in the Cloud menu');
       goto('/cloud');
@@ -78,7 +88,7 @@
       uploadingToDrive = true;
       
       // Get the reader folder ID
-      const readerFolderId = await getReaderFolderId(accessToken);
+      const readerFolderId = $driveStore.readerFolderId || await getReaderFolderId(accessToken);
       if (!readerFolderId) {
         showSnackbar('Could not find or create mokuro-reader folder in Google Drive');
         uploadingToDrive = false;
@@ -95,6 +105,59 @@
     } finally {
       uploadingToDrive = false;
     }
+  }
+  
+  async function onRemoveFromDrive() {
+    if (!seriesTitle || !seriesExistsInDrive) {
+      showSnackbar('Series not found in Google Drive');
+      return;
+    }
+    
+    promptConfirmation(
+      `Remove ${seriesTitle} from Google Drive?`,
+      async () => {
+        try {
+          removingFromDrive = true;
+          
+          const accessToken = $driveStore.accessToken;
+          if (!accessToken) {
+            showSnackbar('Not connected to Google Drive');
+            removingFromDrive = false;
+            return;
+          }
+          
+          const seriesFolderId = $driveStore.series[seriesTitle]?.folderId;
+          if (!seriesFolderId) {
+            showSnackbar('Series folder not found in Google Drive');
+            removingFromDrive = false;
+            return;
+          }
+          
+          // Delete the folder from Google Drive
+          const response = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${seriesFolderId}`,
+            {
+              method: 'DELETE',
+              headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+            }
+          );
+          
+          if (response.ok) {
+            // Remove the series from our store
+            removeSeries(seriesTitle);
+            showSnackbar(`${seriesTitle} removed from Google Drive`);
+          } else {
+            const errorData = await response.json();
+            throw new Error(errorData.error?.message || 'Failed to delete folder');
+          }
+        } catch (error) {
+          console.error('Error removing from Google Drive:', error);
+          showSnackbar(`Error removing from Google Drive: ${error.message || 'Unknown error'}`);
+        } finally {
+          removingFromDrive = false;
+        }
+      }
+    );
   }
   
   async function getReaderFolderId(accessToken: string): Promise<string | null> {
@@ -160,10 +223,27 @@
         <Button color="light" on:click={onExtract} disabled={loading}>
           {loading ? 'Extracting...' : 'Extract manga'}
         </Button>
-        <Button color="blue" on:click={onExportToDrive} disabled={uploadingToDrive}>
-          <CloudArrowUpSolid class="mr-2 h-5 w-5" />
-          {uploadingToDrive ? 'Uploading...' : 'Backup to Drive'}
-        </Button>
+        
+        {#if $driveStore.isLoggedIn}
+          {#if $isBackedUp}
+            <Button color="green" disabled={true}>
+              <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+              Backed up to Drive
+            </Button>
+          {:else}
+            <Button color="blue" on:click={onExportToDrive} disabled={uploadingToDrive}>
+              <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+              {uploadingToDrive ? 'Uploading...' : 'Backup to Drive'}
+            </Button>
+          {/if}
+          
+          {#if seriesExistsInDrive}
+            <Button color="red" on:click={onRemoveFromDrive} disabled={removingFromDrive}>
+              <TrashBinSolid class="mr-2 h-5 w-5" />
+              {removingFromDrive ? 'Removing...' : 'Remove from Drive'}
+            </Button>
+          {/if}
+        {/if}
       </div>
     </div>
     <Listgroup active class="flex-1 h-full w-full">

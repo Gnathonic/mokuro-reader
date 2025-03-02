@@ -2,6 +2,7 @@ import type { VolumeMetadata } from "$lib/types";
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from "@zip.js/zip.js";
 import { db } from "$lib/catalog/db";
 import { progressTrackerStore } from "./progress-tracker";
+import { addSeries, addVolume } from "./drive-store";
 
 type FileInfo = {
   accessToken: string;
@@ -253,6 +254,9 @@ export async function exportAndUploadVolumesToDrive(
     
     const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, readerFolderId);
     
+    // Add the series to our store
+    addSeries(seriesTitle, seriesFolderId);
+    
     // Sort volumes by title for consistent processing
     const sortedVolumes = [...volumes].sort((a, b) => 
       a.volume_title.localeCompare(b.volume_title, undefined, { numeric: true, sensitivity: 'base' })
@@ -293,7 +297,12 @@ export async function exportAndUploadVolumesToDrive(
         status: `Uploading ${volumeTitle} to Google Drive...`
       });
       
-      await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
+      const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
+      
+      // Add the volume to our store
+      if (response && response.id) {
+        addVolume(seriesTitle, volumeTitle, response.id, filename);
+      }
       
       progressTrackerStore.updateProcess(processId, {
         status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
