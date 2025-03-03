@@ -339,7 +339,175 @@
     }
   }
   
-  // Function to scan Google Drive for existing series and volumes
+  // Function to sign in to Google Drive
+  function signIn() {
+    // Always show the account picker to allow switching accounts
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  }
+
+  // Function to log out from Google Drive
+  function logout() {
+    // Remove token from localStorage
+    localStorage.removeItem('gdrive_token');
+
+    // Clear the token from memory
+    accessToken = '';
+
+    // Clear the token from our store
+    clearDriveToken();
+
+    // Revoke the token with Google to ensure account picker shows up next time
+    if (gapi.client.getToken()) {
+      const token = gapi.client.getToken().access_token;
+      // Clear the token from gapi client
+      gapi.client.setToken(null);
+
+      // Revoke the token with Google's OAuth service
+      fetch(`https://oauth2.googleapis.com/revoke?token=${token}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }).catch(error => {
+        console.error('Error revoking token:', error);
+      });
+    }
+  }
+
+  // Function to create a picker for selecting files from Google Drive
+  function createPicker() {
+    // Create a view for ZIP/CBZ files
+    const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setMimeTypes('application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz')
+      .setMode(google.picker.DocsViewMode.LIST)
+      .setIncludeFolders(true)
+      .setSelectFolderEnabled(true)
+      .setParent(readerFolderId);
+
+    // Create a view specifically for folders
+    const folderView = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setSelectFolderEnabled(true)
+      .setParent(readerFolderId);
+
+    const picker = new google.picker.PickerBuilder()
+      .addView(docsView)
+      .addView(folderView)
+      .setOAuthToken(accessToken)
+      .setAppId(CLIENT_ID)
+      .setDeveloperKey(API_KEY)
+      .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+      .setCallback(pickerCallback)
+      .build();
+    picker.setVisible(true);
+  }
+
+  // Initialize Google Drive API on component mount
+  onMount(() => {
+    gapi.load('client', async () => {
+      try {
+        await gapi.client.init({
+          apiKey: API_KEY,
+          discoveryDocs: [DISCOVERY_DOC]
+        });
+
+        // Initialize token client after gapi client is ready
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPES,
+          callback: connectDrive
+        });
+
+        // Try to restore the token from our store or localStorage
+        const storedToken = $driveStore.accessToken || localStorage.getItem('gdrive_token');
+        if (storedToken) {
+          try {
+            // Set the token in gapi client
+            gapi.client.setToken({ access_token: storedToken });
+            accessToken = storedToken;
+
+            // If we have a reader folder ID in the store, use it
+            if ($driveStore.readerFolderId) {
+              readerFolderId = $driveStore.readerFolderId;
+              
+              // Fetch all Drive data to update our backup status
+              await fetchAllDriveData(storedToken, readerFolderId);
+            }
+
+            await connectDrive({ access_token: storedToken });
+          } catch (error) {
+            console.error('Failed to restore saved token:', error);
+            // Token will be cleared in connectDrive if there's an error
+          }
+        }
+      } catch (error) {
+        handleDriveError(error, 'initializing Google Drive');
+      }
+    });
+
+    gapi.load('picker', () => {});
+  });
+
+  // Function to download and process files from Google Drive
+  async function downloadAndProcessFiles(fileList: { id: string; name: string; mimeType: string }[], existingProcessId?: string) {
+    // Import the worker pool dynamically
+    const { WorkerPool } = await import('$lib/util/worker-pool');
+    
+    // Use the existing processId if provided, otherwise create a new one
+    const overallProcessId = existingProcessId ||
+      `download-batch-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    
+    // Sort files by name
+    const sortedFiles = fileList.sort((a, b) => a.name.localeCompare(b.name));
+    
+    // First, get the total size of all files to download
+    let totalBytesToDownload = 0;
+    let fileSizes: { [fileId: string]: number } = {};
+    
+    // If we're using a new process ID (not continuing from scanning), create a new tracker
+    if (!existingProcessId) {
+      progressTrackerStore.addProcess({
+        id: overallProcessId,
+        description: `Downloading ${sortedFiles.length} files`,
+        status: `Calculating total size...`,
+        progress: 0,
+        bytesLoaded: 0,
+        totalBytes: 1 // Temporary value until we know the real total
+      });
+    } else {
+      // Update the existing tracker
+      progressTrackerStore.updateProcess(overallProcessId, {
+        status: `Calculating total size...`,
+        // Keep the progress at 30% (after scanning phase)
+        progress: 30
+      });
+    }
+    
+    try {
+      // Get file sizes in parallel using Promise.all
+      const sizePromises = sortedFiles.map(file => getFileSize(file.id));
+      const sizes = await Promise.all(sizePromises);
+      
+      // Store sizes in the map and calculate total
+      sortedFiles.forEach((file, index) => {
+        const size = sizes[index];
+        fileSizes[file.id] = size;
+        totalBytesToDownload += size;
+      });
+    } catch (error) {
+      console.error('Error calculating total size:', error);
+      // Continue anyway with what we have
+    }
+    
+    // Update the progress tracker with the total size
+    progressTrackerStore.updateProcess(overallProcessId, {
+      status: `Preparing to download ${sortedFiles.length} files`,
+      totalBytes: totalBytesToDownload,
+      bytesLoaded: 0
+    });
+    
+    // Create a worker pool for parallel downloads
+    // Use navigator.hardwareConcurrency to determine optimal number of workers
+    // but limit to a reasonable number to avoid overwhelming the browser
     const maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
     // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
     // This is not a hard limit - tasks that individually need more than 500MB can still run
@@ -515,6 +683,49 @@
         resolve();
       }
     });
+  }
+
+  // Function to list files in a folder
+  async function listFilesInFolder(folderId) {
+    try {
+      const { result } = await gapi.client.drive.files.list({
+        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
+        fields: 'files(id, name, mimeType)',
+        pageSize: 1000
+      });
+
+      return result.files || [];
+    } catch (error) {
+      handleDriveError(error, 'listing files in folder');
+      return [];
+    }
+  }
+
+  // Function to process a folder recursively
+  async function processFolder(folderId, folderName, scanProcessId) {
+    const files = await listFilesInFolder(folderId);
+    const allFiles = [];
+
+    // Process each file in the folder
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+
+      // Update the scan process with subfolder information
+      progressTrackerStore.updateProcess(scanProcessId, {
+        status: `Scanning ${folderName} (${i+1}/${files.length}): ${file.name}`
+      });
+
+      if (file.mimeType === 'application/vnd.google-apps.folder') {
+        // Recursively process subfolders - pass the same scanProcessId
+        const subfolderFiles = await processFolder(file.id, file.name, scanProcessId);
+        allFiles.push(...subfolderFiles);
+      } else {
+        // Add file to the list
+        allFiles.push(file);
+      }
+    }
+
+    return allFiles;
   }
 
   async function pickerCallback(data: google.picker.ResponseObject) {
