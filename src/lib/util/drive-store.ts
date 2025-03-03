@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store';
 import type { Writable } from 'svelte/store';
+import { driveApiRequest } from './api-helpers';
 
 // Define types for Google Drive data
 export type DriveFile = {
@@ -124,80 +125,82 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
   }
   
   try {
-    // First, get all folders (series) in the reader folder
-    const foldersResponse = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q='${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)&pageSize=1000`,
+    // Get all folders and CBZ files in a single query
+    // This query finds:
+    // 1. All folders that are direct children of the reader folder
+    // 2. All CBZ files that are in any folder within the reader folder
+    const query = `
+      ('${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
+      ('${readerFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
+    `;
+    
+    const data = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query.trim())}&fields=files(id,name,mimeType,parents)&pageSize=1000`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      },
+      {
+        // Use more retries for this important query
+        maxRetries: 5,
+        // Use longer initial backoff
+        initialBackoffMs: 1000
       }
     );
+    const files = data.files || [];
     
-    if (!foldersResponse.ok) {
-      throw new Error(`Failed to fetch folders: ${foldersResponse.statusText}`);
-    }
+    // Separate folders and CBZ files
+    const folders = files.filter(file => 
+      file.mimeType === 'application/vnd.google-apps.folder' && 
+      file.parents && file.parents.includes(readerFolderId)
+    );
     
-    const foldersData = await foldersResponse.json();
-    const folders = foldersData.files || [];
+    const cbzFiles = files.filter(file => 
+      file.mimeType === 'application/vnd.comicbook+zip' || 
+      file.mimeType === 'application/zip' || 
+      file.mimeType === 'application/x-cbz'
+    );
     
-    // Create a map to store all series data
+    // Create a map of folder IDs to folder names for quick lookup
+    const folderMap = new Map();
+    folders.forEach(folder => {
+      folderMap.set(folder.id, folder.name);
+    });
+    
+    // Create the series map
     const seriesMap: { [seriesTitle: string]: DriveSeries } = {};
     
-    // Now, get all CBZ files in all series folders in a single query
-    // We'll use a complex query with OR conditions for each folder
-    if (folders.length > 0) {
-      // Build the query to find all CBZ files in any of the series folders
-      const folderConditions = folders.map(folder => `'${folder.id}' in parents`).join(' or ');
-      const query = `(${folderConditions}) and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false`;
+    // Initialize series entries for all folders
+    folders.forEach(folder => {
+      seriesMap[folder.name] = {
+        folderId: folder.id,
+        folderName: folder.name,
+        volumes: {}
+      };
+    });
+    
+    // Process all CBZ files and add them to their respective series
+    cbzFiles.forEach(file => {
+      // Find which folder (series) this file belongs to
+      const parentId = file.parents?.[0];
+      if (!parentId) return;
       
-      const filesResponse = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,parents)&pageSize=1000`,
-        {
-          method: 'GET',
-          headers: new Headers({ Authorization: 'Bearer ' + accessToken })
-        }
-      );
+      // Get the series name from the folder map
+      const seriesTitle = folderMap.get(parentId);
+      if (!seriesTitle) return; // Not a direct child of a series folder
       
-      if (!filesResponse.ok) {
-        throw new Error(`Failed to fetch files: ${filesResponse.statusText}`);
-      }
+      const fileName = file.name;
+      const volumeTitle = fileName.replace(/\.cbz$/i, '');
       
-      const filesData = await filesResponse.json();
-      const files = filesData.files || [];
-      
-      // Initialize series entries for all folders
-      folders.forEach(folder => {
-        seriesMap[folder.name] = {
-          folderId: folder.id,
-          folderName: folder.name,
-          volumes: {}
+      // Add the volume to its series
+      if (seriesMap[seriesTitle]) {
+        seriesMap[seriesTitle].volumes[volumeTitle] = {
+          fileId: file.id,
+          fileName: fileName,
+          lastModified: new Date().toISOString()
         };
-      });
-      
-      // Process all files and add them to their respective series
-      files.forEach(file => {
-        // Find which folder (series) this file belongs to
-        const parentId = file.parents?.[0];
-        if (!parentId) return;
-        
-        // Find the series this file belongs to
-        const seriesEntry = folders.find(folder => folder.id === parentId);
-        if (!seriesEntry) return;
-        
-        const seriesTitle = seriesEntry.name;
-        const fileName = file.name;
-        const volumeTitle = fileName.replace(/\.cbz$/i, '');
-        
-        // Add the volume to its series
-        if (seriesMap[seriesTitle]) {
-          seriesMap[seriesTitle].volumes[volumeTitle] = {
-            fileId: file.id,
-            fileName: fileName,
-            lastModified: new Date().toISOString()
-          };
-        }
-      });
-    }
+      }
+    });
     
     // Update the store with all the data at once
     driveStore.update(data => ({
