@@ -8,11 +8,8 @@ const config = {
   preprocess: vitePreprocess(),
 
   kit: {
-    // Using adapter-vercel with specific configuration for Vercel deployment
-    adapter: adapter({
-      runtime: 'nodejs18.x',
-      split: false
-    })
+    // Using adapter-vercel with default configuration
+    adapter: adapter()
   },
 
   vitePlugin: {
