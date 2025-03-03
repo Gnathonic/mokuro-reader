@@ -3,9 +3,6 @@
   "version": "0.9.1",
   "private": true,
   "scripts": {
-    "predev": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prebuild": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prepreview": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
@@ -17,7 +14,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@sveltejs/adapter-auto": "^2.0.0",
+    "@sveltejs/adapter-vercel": "^3.0.0",
     "@sveltejs/kit": "^1.20.4",
     "@testing-library/svelte": "^5.2.7",
     "@types/gapi.client.drive-v3": "^0.0.4",
@@ -46,6 +43,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@sveltejs/adapter-vercel": "^3.1.0",
     "@types/gapi": "^0.0.47",
     "@types/google.accounts": "^0.0.14",
     "@types/google.picker": "^0.0.42",
@@ -56,6 +54,6 @@
     "svelte-easy-crop": "^2.0.1"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.x"
   }
 }
