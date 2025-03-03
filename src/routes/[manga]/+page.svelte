@@ -115,7 +115,7 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
     }
     
     promptConfirmation(
-      `Move ${seriesTitle} to trash in Google Drive?`,
+      `Permanently delete ${seriesTitle} from Google Drive?\n\nThis action cannot be undone.`,
       async () => {
         try {
           removingFromDrive = true;
@@ -134,25 +134,23 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
             return;
           }
           
-          // Mark the folder as trashed in Google Drive instead of deleting it
+          // Permanently delete the folder from Google Drive
           try {
             await driveApiRequest(
               `https://www.googleapis.com/drive/v3/files/${seriesFolderId}`,
               {
-                method: 'PATCH',
+                method: 'DELETE',
                 headers: new Headers({ 
-                  'Authorization': 'Bearer ' + accessToken,
-                  'Content-Type': 'application/json'
-                }),
-                body: JSON.stringify({ trashed: true })
+                  'Authorization': 'Bearer ' + accessToken
+                })
               }
             );
             
             // Remove the series from our store
             removeSeries(seriesTitle);
-            showSnackbar(`${seriesTitle} moved to trash in Google Drive`);
+            showSnackbar(`${seriesTitle} permanently deleted from Google Drive`);
           } catch (error: any) {
-            console.error('Error moving folder to trash:', error);
+            console.error('Error deleting folder:', error);
             
             // Only throw auth errors, handle other errors gracefully
             if (error.errorType === DriveErrorType.AUTH_ERROR) {
@@ -161,7 +159,7 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
               return;
             }
             
-            throw new Error(error.message || 'Failed to move folder to trash');
+            throw new Error(error.message || 'Failed to delete folder');
           }
         } catch (error) {
           console.error('Error removing from Google Drive:', error);
@@ -253,7 +251,7 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
           {#if seriesExistsInDrive}
             <Button color="red" on:click={onRemoveFromDrive} disabled={removingFromDrive}>
               <TrashBinSolid class="mr-2 h-5 w-5" />
-              {removingFromDrive ? 'Moving to trash...' : 'Move to trash'}
+              {removingFromDrive ? 'Deleting...' : 'Delete from Drive'}
             </Button>
           {/if}
         {/if}
