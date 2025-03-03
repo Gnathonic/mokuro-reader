@@ -9,7 +9,10 @@ const config = {
 
   kit: {
     // Using adapter-vercel with specific configuration for Vercel deployment
-    adapter: adapter()
+    adapter: adapter({
+      runtime: 'nodejs18.x',
+      split: false
+    })
   },
 
   vitePlugin: {
