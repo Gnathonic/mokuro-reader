@@ -10,7 +10,7 @@
   import { Listgroup, ListgroupItem, Modal, Input } from 'flowbite-svelte';
   import {
     CirclePlusSolid,
-    CopySolid,
+    FileCopySolid,
     EditOutline,
     TrashBinSolid,
     UserEditSolid
@@ -100,7 +100,7 @@
         {/if}
       </div>
       <div class="flex flex-row gap-2 items-center">
-        <CopySolid size="sm" class="hover:text-primary-700" on:click={() => onCopy(item)} />
+        <FileCopySolid size="sm" class="hover:text-primary-700" on:click={() => onCopy(item)} />
         {#if item !== 'Default'}
           <UserEditSolid
             size="sm"
