@@ -14,7 +14,7 @@
   import { CloudArrowUpSolid, TrashBinSolid } from 'flowbite-svelte-icons';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
 import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
-  import driveStore, { isSeriesBackedUp, removeSeries } from '$lib/util/drive-store';
+  import driveStore, { isSeriesBackedUp, removeSeries, fetchAllDriveData } from '$lib/util/drive-store';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
     return a.volume_title.localeCompare(b.volume_title, undefined, {
@@ -99,6 +99,16 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
       // Export and upload the volumes
       await exportAndUploadVolumesToDrive(manga, accessToken, readerFolderId);
       
+      // Refresh the Drive data to update our backup status
+      if (typeof fetchAllDriveData === 'function') {
+        try {
+          await fetchAllDriveData(accessToken, readerFolderId);
+        } catch (error) {
+          console.error('Error refreshing Drive data:', error);
+          // Continue anyway, this is just to update the UI
+        }
+      }
+      
       showSnackbar('Export to Google Drive completed');
     } catch (error) {
       console.error('Error exporting to Google Drive:', error);
@@ -148,6 +158,17 @@ import { driveApiRequest, DriveErrorType } from "$lib/util/api-helpers";
             
             // Remove the series from our store
             removeSeries(seriesTitle);
+            
+            // Refresh the Drive data to update our backup status
+            if (typeof fetchAllDriveData === 'function' && accessToken && readerFolderId) {
+              try {
+                await fetchAllDriveData(accessToken, readerFolderId);
+              } catch (error) {
+                console.error('Error refreshing Drive data:', error);
+                // Continue anyway, this is just to update the UI
+              }
+            }
+            
             showSnackbar(`${seriesTitle} permanently deleted from Google Drive`);
           } catch (error: any) {
             console.error('Error deleting folder:', error);

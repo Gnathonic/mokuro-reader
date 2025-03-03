@@ -44,33 +44,24 @@ const initialDriveData: DriveStoreData = {
   lastUpdated: 0
 };
 
-// Try to load data from localStorage
+// Try to load only auth data from localStorage, not series data
 function loadDriveData(): DriveStoreData {
   try {
-    const savedData = localStorage.getItem('drive_store');
-    if (savedData) {
-      const parsedData = JSON.parse(savedData);
-      
-      // Check if the token is still valid (stored within the last 24 hours)
-      const tokenAge = Date.now() - (parsedData.lastUpdated || 0);
-      const tokenExpired = tokenAge > 24 * 60 * 60 * 1000; // 24 hours
-      
-      if (tokenExpired) {
-        // Token is expired, clear it
-        return {
-          ...initialDriveData,
-          series: parsedData.series || {} // Keep series data
-        };
-      }
-      
+    // Only load the token and reader folder ID from localStorage
+    const savedToken = localStorage.getItem('gdrive_token');
+    const savedReaderFolderId = localStorage.getItem('gdrive_reader_folder_id');
+    
+    if (savedToken) {
       return {
         ...initialDriveData,
-        ...parsedData,
-        isLoggedIn: !!parsedData.accessToken
+        isLoggedIn: true,
+        accessToken: savedToken,
+        readerFolderId: savedReaderFolderId || '',
+        lastUpdated: Date.now()
       };
     }
   } catch (error) {
-    console.error('Error loading drive data from localStorage:', error);
+    console.error('Error loading drive auth data from localStorage:', error);
   }
   
   return initialDriveData;
@@ -79,15 +70,23 @@ function loadDriveData(): DriveStoreData {
 // Create the writable store
 const driveStore: Writable<DriveStoreData> = writable(loadDriveData());
 
-// Subscribe to changes and save to localStorage
+// Subscribe to changes and save only auth data to localStorage
 driveStore.subscribe((data) => {
   try {
-    localStorage.setItem('drive_store', JSON.stringify({
-      ...data,
-      lastUpdated: data.lastUpdated || Date.now()
-    }));
+    // Only save the token and reader folder ID to localStorage
+    if (data.accessToken) {
+      localStorage.setItem('gdrive_token', data.accessToken);
+    } else {
+      localStorage.removeItem('gdrive_token');
+    }
+    
+    if (data.readerFolderId) {
+      localStorage.setItem('gdrive_reader_folder_id', data.readerFolderId);
+    } else {
+      localStorage.removeItem('gdrive_reader_folder_id');
+    }
   } catch (error) {
-    console.error('Error saving drive data to localStorage:', error);
+    console.error('Error saving drive auth data to localStorage:', error);
   }
 });
 
@@ -107,10 +106,114 @@ export function clearDriveToken() {
     ...data,
     isLoggedIn: false,
     accessToken: '',
+    series: {}, // Clear series data when logging out
     lastUpdated: Date.now()
   }));
 }
 
+/**
+ * Fetches all series and volumes data from Google Drive in a single operation
+ * and updates the store with the results
+ * @param accessToken The Google Drive access token
+ * @param readerFolderId The ID of the mokuro-reader folder
+ */
+export async function fetchAllDriveData(accessToken: string, readerFolderId: string) {
+  if (!accessToken || !readerFolderId) {
+    console.error('Cannot fetch Drive data: Missing token or folder ID');
+    return;
+  }
+  
+  try {
+    // First, get all folders (series) in the reader folder
+    const foldersResponse = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q='${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)&pageSize=1000`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
+    );
+    
+    if (!foldersResponse.ok) {
+      throw new Error(`Failed to fetch folders: ${foldersResponse.statusText}`);
+    }
+    
+    const foldersData = await foldersResponse.json();
+    const folders = foldersData.files || [];
+    
+    // Create a map to store all series data
+    const seriesMap: { [seriesTitle: string]: DriveSeries } = {};
+    
+    // Now, get all CBZ files in all series folders in a single query
+    // We'll use a complex query with OR conditions for each folder
+    if (folders.length > 0) {
+      // Build the query to find all CBZ files in any of the series folders
+      const folderConditions = folders.map(folder => `'${folder.id}' in parents`).join(' or ');
+      const query = `(${folderConditions}) and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false`;
+      
+      const filesResponse = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,parents)&pageSize=1000`,
+        {
+          method: 'GET',
+          headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+        }
+      );
+      
+      if (!filesResponse.ok) {
+        throw new Error(`Failed to fetch files: ${filesResponse.statusText}`);
+      }
+      
+      const filesData = await filesResponse.json();
+      const files = filesData.files || [];
+      
+      // Initialize series entries for all folders
+      folders.forEach(folder => {
+        seriesMap[folder.name] = {
+          folderId: folder.id,
+          folderName: folder.name,
+          volumes: {}
+        };
+      });
+      
+      // Process all files and add them to their respective series
+      files.forEach(file => {
+        // Find which folder (series) this file belongs to
+        const parentId = file.parents?.[0];
+        if (!parentId) return;
+        
+        // Find the series this file belongs to
+        const seriesEntry = folders.find(folder => folder.id === parentId);
+        if (!seriesEntry) return;
+        
+        const seriesTitle = seriesEntry.name;
+        const fileName = file.name;
+        const volumeTitle = fileName.replace(/\.cbz$/i, '');
+        
+        // Add the volume to its series
+        if (seriesMap[seriesTitle]) {
+          seriesMap[seriesTitle].volumes[volumeTitle] = {
+            fileId: file.id,
+            fileName: fileName,
+            lastModified: new Date().toISOString()
+          };
+        }
+      });
+    }
+    
+    // Update the store with all the data at once
+    driveStore.update(data => ({
+      ...data,
+      series: seriesMap,
+      lastUpdated: Date.now()
+    }));
+    
+    return seriesMap;
+  } catch (error) {
+    console.error('Error fetching Drive data:', error);
+    throw error;
+  }
+}
+
+// These functions now only update the in-memory store, not localStorage
 export function addSeries(seriesTitle: string, folderId: string) {
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
