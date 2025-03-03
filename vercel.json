@@ -1,12 +1,8 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/node",
-      "config": {
-        "nodeVersion": "18.x"
-      }
+  "functions": {
+    "api/*": {
+      "runtime": "nodejs18.x"
     }
-  ]
+  }
 }
