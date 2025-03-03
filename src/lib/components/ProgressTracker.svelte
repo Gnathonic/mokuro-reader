@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Progressbar, Button } from 'flowbite-svelte';
-  import { ChevronUpSolid, ChevronDownSolid, CloseSolid } from 'flowbite-svelte-icons';
+  import { ChevronUpOutline, ChevronDownOutline, CloseOutline } from 'flowbite-svelte-icons';
   import { formatBytes } from '$lib/util';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
 
@@ -33,9 +33,9 @@
       </div>
       <div>
         {#if expanded}
-          <ChevronDownSolid class="w-4 h-4" />
+          <ChevronDownOutline class="w-4 h-4" />
         {:else}
-          <ChevronUpSolid class="w-4 h-4" />
+          <ChevronUpOutline class="w-4 h-4" />
         {/if}
       </div>
     </div>
@@ -47,7 +47,7 @@
             <div class="flex justify-between items-center mb-1">
               <div class="text-sm font-medium">{process.description}</div>
               <Button size="xs" color="none" class="p-1" on:click={() => removeProcess(process.id)}>
-                <CloseSolid class="w-3 h-3" />
+                <CloseOutline class="w-3 h-3" />
               </Button>
             </div>
             

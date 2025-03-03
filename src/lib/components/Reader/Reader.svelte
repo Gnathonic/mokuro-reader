@@ -5,7 +5,7 @@
   import { clamp, debounce, fireExstaticEvent } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
-  import { ChervonDoubleLeftSolid, ChervonDoubleRightSolid, ChevronLeftSolid, ChevronRightSolid } from 'flowbite-svelte-icons';
+  import { ChevronDoubleLeftOutline, ChevronDoubleRightOutline, ChevronLeftOutline, ChevronRightOutline } from 'flowbite-svelte-icons';
   import Cropper from './Cropper.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
@@ -279,12 +279,12 @@
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
       <div class="flex flex-row items-center gap-5 z-10">
-        <ChervonDoubleLeftSolid
+        <ChevronDoubleLeftOutline
           on:click={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}
           class="hover:text-primary-600"
           size="sm"
         />
-        <ChevronLeftSolid
+        <ChevronLeftOutline
           on:click={(e) => left(e, true)}
           class="hover:text-primary-600"
           size="sm"
@@ -303,12 +303,12 @@
           }}
           on:blur={onManualPageChange}
         />
-        <ChevronRightSolid
+        <ChevronRightOutline
           on:click={(e) => right(e, true)}
           class="hover:text-primary-600"
           size="sm"
         />
-        <ChervonDoubleRightSolid
+        <ChevronDoubleRightOutline
           on:click={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}
           class="hover:text-primary-600"
           size="sm"

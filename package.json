@@ -3,9 +3,6 @@
   "version": "0.9.1",
   "private": true,
   "scripts": {
-    "predev": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prebuild": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prepreview": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
@@ -17,8 +14,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@sveltejs/adapter-auto": "^2.0.0",
-    "@sveltejs/kit": "^1.20.4",
+    "@sveltejs/adapter-auto": "^4.0.0",
+    "@sveltejs/adapter-node": "^5.2.12",
+    "@sveltejs/kit": "^1.27.6",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@testing-library/svelte": "^5.2.7",
     "@types/gapi.client.drive-v3": "^0.0.4",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
@@ -28,20 +27,20 @@
     "eslint": "^8.28.0",
     "eslint-config-prettier": "^8.5.0",
     "eslint-plugin-svelte": "^2.30.0",
-    "flowbite-svelte": "^0.44.5",
-    "flowbite-svelte-icons": "^0.4.2",
+    "flowbite-svelte": "^0.48.4",
+    "flowbite-svelte-icons": "^2.0.2",
     "jsdom": "^26.0.0",
     "postcss": "^8.4.24",
     "postcss-load-config": "^4.0.1",
     "prettier": "^2.8.0",
     "prettier-plugin-svelte": "^2.10.1",
     "sass": "^1.64.2",
-    "svelte": "^4.0.5",
+    "svelte": "^3.59.2",
     "svelte-check": "^3.4.3",
     "tailwindcss": "^3.3.2",
     "tslib": "^2.4.1",
     "typescript": "^5.0.0",
-    "vite": "^4.4.2",
+    "vite": "^6.2.0",
     "vitest": "^3.0.7"
   },
   "type": "module",
@@ -53,9 +52,9 @@
     "@zip.js/zip.js": "^2.7.57",
     "dexie": "^4.0.1-alpha.25",
     "panzoom": "^9.4.3",
-    "svelte-easy-crop": "^2.0.1"
+    "svelte-easy-crop": "^4.0.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18"
   }
 }
