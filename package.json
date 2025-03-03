@@ -3,9 +3,9 @@
   "version": "0.9.1",
   "private": true,
   "scripts": {
-    "predev": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prebuild": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
-    "prepreview": "node -e \"if(!process.version.startsWith('v18')){console.error('\\x1b[31mERROR: This project requires Node.js v18.x\\x1b[0m');process.exit(1)}\"",
+    "predev": "node -e \"const v = parseInt(process.version.slice(1)); if(v < 18){console.error('\\x1b[31mERROR: This project requires Node.js v18.x or higher\\x1b[0m');process.exit(1)}\"",
+    "prebuild": "node -e \"const v = parseInt(process.version.slice(1)); if(v < 18){console.error('\\x1b[31mERROR: This project requires Node.js v18.x or higher\\x1b[0m');process.exit(1)}\"",
+    "prepreview": "node -e \"const v = parseInt(process.version.slice(1)); if(v < 18){console.error('\\x1b[31mERROR: This project requires Node.js v18.x or higher\\x1b[0m');process.exit(1)}\"",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
@@ -56,6 +56,6 @@
     "svelte-easy-crop": "^2.0.1"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.x"
   }
 }
