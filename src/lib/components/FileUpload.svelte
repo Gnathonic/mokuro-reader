@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { A, Fileupload, Label } from 'flowbite-svelte';
+  import { A, Button } from 'flowbite-svelte';
 
   interface Props {
     files?: FileList | undefined;
@@ -17,7 +17,7 @@
     ...rest 
   }: Props = $props();
 
-  let input: HTMLInputElement = $state();
+  let input: HTMLInputElement;
 
   function handleChange() {
     if (files && onUpload) {
@@ -25,8 +25,10 @@
     }
   }
 
-  function onClick() {
-    input.click();
+  function handleClick() {
+    if (input) {
+      input.click();
+    }
   }
 </script>
 
@@ -39,6 +41,9 @@
   class="hidden"
   webkitdirectory={webkitdirectory ? "" : undefined}
   directory={webkitdirectory ? "" : undefined}
+  mozdirectory={webkitdirectory ? "" : undefined}
 />
 
-<A on:click={onClick}>{#if children}{@render children()}{:else}Upload{/if}</A>
+<Button color="none" class="p-0 text-primary-600 dark:text-primary-500 hover:underline font-medium" onclick={handleClick}>
+  {#if children}{@render children()}{:else}Upload{/if}
+</Button>
