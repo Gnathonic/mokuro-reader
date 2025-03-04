@@ -45,14 +45,14 @@
       </div>
     </NavBrand>
     <div class="flex md:order-2 gap-5">
-      <button onclick={openSettings} class="flex items-center justify-center">
-        <UserSettingsSolid class="hover:text-primary-700 cursor-pointer" />
+      <button onclick={openSettings} class="flex items-center justify-center w-6 h-6">
+        <UserSettingsSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
-      <button onclick={openUploadModal} class="flex items-center justify-center">
-        <UploadSolid class="hover:text-primary-700 cursor-pointer" />
+      <button onclick={openUploadModal} class="flex items-center justify-center w-6 h-6">
+        <UploadSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
-      <button onclick={navigateToCloud} class="flex items-center justify-center">
-        <CloudArrowUpOutline class="hover:text-primary-700 cursor-pointer" />
+      <button onclick={navigateToCloud} class="flex items-center justify-center w-6 h-6">
+        <CloudArrowUpOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
     </div>
   </Navbar>

@@ -172,7 +172,7 @@
           Drag and drop / <FileUpload bind:files accept=".mokuro,.zip,.cbz" multiple
             >choose files</FileUpload
           > /
-          <FileUpload bind:files webkitdirectory>choose directory</FileUpload>
+          <FileUpload bind:files webkitdirectory={true}>choose directory</FileUpload>
         </p>
       {/if}
     </Dropzone>

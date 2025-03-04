@@ -72,17 +72,19 @@
 {#if $catalog}
   {#if $catalog.length > 0}
     <div class="flex flex-col gap-5">
-      <div class="flex gap-1 py-2">
-        <Search bind:value={search} />
-        <Button size="sm" color="alternative" on:click={onLayout}>
+      <div class="flex gap-1 py-2 w-full">
+        <div class="flex-grow">
+          <Search bind:value={search} class="w-full" />
+        </div>
+        <Button size="sm" color="alternative" on:click={onLayout} class="min-w-10 h-10 flex items-center justify-center">
           {#if $miscSettings.galleryLayout === 'list'}
-            <GridOutline />
+            <GridOutline class="w-5 h-5" />
           {:else}
-            <ListOutline />
+            <ListOutline class="w-5 h-5" />
           {/if}
         </Button>
-        <Button size="sm" color="alternative" on:click={onOrder}>
-          <SortOutline />
+        <Button size="sm" color="alternative" on:click={onOrder} class="min-w-10 h-10 flex items-center justify-center">
+          <SortOutline class="w-5 h-5" />
           <span class="ml-1 text-xs">
             {#if $miscSettings.gallerySorting === 'ASC'}
               A-Z
