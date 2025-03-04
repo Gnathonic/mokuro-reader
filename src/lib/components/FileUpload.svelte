@@ -1,72 +1,49 @@
 <script lang="ts">
-  // Define the props interface
+  import { A, Fileupload, Label } from 'flowbite-svelte';
+
   interface Props {
     files?: FileList | undefined;
     onUpload?: ((files: FileList) => void) | undefined;
     children?: import('svelte').Snippet;
     webkitdirectory?: boolean;
-    multiple?: boolean;
-    accept?: string;
+    [key: string]: any
   }
 
-  // Extract props with defaults
   let { 
     files = $bindable(undefined), 
     onUpload = undefined, 
     children, 
     webkitdirectory = false,
-    multiple = false,
-    accept = undefined
+    ...rest 
   }: Props = $props();
 
-  // Create a reference to the file input element
-  let fileInputElement: HTMLInputElement;
+  let input: HTMLInputElement = $state();
 
-  // Function to handle file selection
-  function handleFileSelection(event: Event) {
-    const input = event.target as HTMLInputElement;
-    if (input.files) {
-      files = input.files;
-      if (onUpload) {
-        onUpload(files);
-      }
+  function handleChange() {
+    if (files && onUpload) {
+      onUpload(files);
     }
   }
 
-  // Function to trigger the file input click
-  function openFilePicker() {
-    console.log('Button clicked, fileInputElement:', fileInputElement);
-    if (fileInputElement) {
-      console.log('Triggering click on file input');
-      fileInputElement.click();
-      console.log('Click triggered');
-    } else {
-      console.error('File input element not found');
-    }
+  function onClick(event: MouseEvent) {
+    event.preventDefault();
+    console.log('Click handler called');
+    console.log('Input element:', input);
+    input.click();
+    console.log('Input click triggered');
   }
 </script>
 
-<!-- Wrapper div to maintain inline styling -->
-<span class="inline-block">
-  <!-- Hidden file input element -->
-  <input
-    type="file"
-    id="file-upload-input"
-    bind:this={fileInputElement}
-    on:change={handleFileSelection}
-    style="display: none;"
-    {multiple}
-    {accept}
-    webkitdirectory={webkitdirectory ? "" : undefined}
-    directory={webkitdirectory ? "" : undefined}
-    mozdirectory={webkitdirectory ? "" : undefined}
-  />
+<input
+  type="file"
+  bind:files
+  bind:this={input}
+  onchange={handleChange}
+  {...rest}
+  class="hidden"
+  webkitdirectory={webkitdirectory ? "" : undefined}
+  directory={webkitdirectory ? "" : undefined}
+  mozdirectory={webkitdirectory ? "" : undefined}
+/>
 
-  <!-- Label styled as a link that triggers the file input -->
-  <label 
-    for="file-upload-input"
-    class="text-primary-600 dark:text-primary-500 hover:underline font-medium bg-transparent border-none p-0 cursor-pointer"
-  >
-    {#if children}{@render children()}{:else}Upload{/if}
-  </label>
-</span>
+<A href="#" on:click={onClick}>{#if children}{@render children()}{:else}Upload{/if}</A>
