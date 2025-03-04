@@ -1,23 +1,26 @@
 <script lang="ts">
-  import { A, Fileupload, Label } from 'flowbite-svelte';
+  import { A } from 'flowbite-svelte';
 
+  // Define props interface for Svelte 5
   interface Props {
     files?: FileList | undefined;
     onUpload?: ((files: FileList) => void) | undefined;
-    children?: import('svelte').Snippet;
     webkitdirectory?: boolean;
-    [key: string]: any
+    children?: import('svelte').Snippet;
+    [key: string]: any;
   }
 
+  // Use $props() and $bindable for Svelte 5
   let { 
     files = $bindable(undefined), 
     onUpload = undefined, 
-    children, 
     webkitdirectory = false,
+    children,
     ...rest 
   }: Props = $props();
 
-  let input: HTMLInputElement = $state();
+  // Use regular variable instead of $state() for input element
+  let input: HTMLInputElement;
 
   function handleChange() {
     if (files && onUpload) {
@@ -26,11 +29,18 @@
   }
 
   function onClick(event: MouseEvent) {
+    // Prevent default anchor behavior
     event.preventDefault();
+    
+    // Log for debugging
     console.log('Click handler called');
     console.log('Input element:', input);
-    input.click();
-    console.log('Input click triggered');
+    
+    // Trigger file input click
+    if (input) {
+      input.click();
+      console.log('Input click triggered');
+    }
   }
 </script>
 
@@ -46,4 +56,7 @@
   mozdirectory={webkitdirectory ? "" : undefined}
 />
 
-<A href="#" on:click={onClick}>{#if children}{@render children()}{:else}Upload{/if}</A>
+<!-- Use href="#" to ensure proper cursor behavior -->
+<A href="#" on:click={onClick}>
+  {#if children}{@render children()}{:else}Upload{/if}
+</A>
