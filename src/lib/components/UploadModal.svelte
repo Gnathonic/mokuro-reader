@@ -162,7 +162,7 @@
         </p>
       {:else if draggedFiles && draggedFiles.length > 0}
         <p class="mb-2 text-sm text-gray-500 dark:text-gray-400">
-          Upload {draggedFiles.length} hih
+          Upload {draggedFiles.length}
           {draggedFiles.length > 1 ? 'files' : 'file'}?
         </p>
       {:else if loading}
@@ -172,7 +172,7 @@
           Drag and drop / <FileUpload bind:files accept=".mokuro,.zip,.cbz" multiple
             >choose files</FileUpload
           > /
-          <FileUpload bind:files webkitdirectory>choose directory</FileUpload>
+          <FileUpload bind:files webkitdirectory={true}>choose directory</FileUpload>
         </p>
       {/if}
     </Dropzone>

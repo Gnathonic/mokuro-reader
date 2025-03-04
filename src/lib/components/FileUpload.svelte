@@ -5,10 +5,17 @@
     files?: FileList | undefined;
     onUpload?: ((files: FileList) => void) | undefined;
     children?: import('svelte').Snippet;
+    webkitdirectory?: boolean;
     [key: string]: any
   }
 
-  let { files = $bindable(undefined), onUpload = undefined, children, ...rest }: Props = $props();
+  let { 
+    files = $bindable(undefined), 
+    onUpload = undefined, 
+    children, 
+    webkitdirectory = false,
+    ...rest 
+  }: Props = $props();
 
   let input: HTMLInputElement = $state();
 
@@ -30,6 +37,8 @@
   onchange={handleChange}
   {...rest}
   class="hidden"
+  webkitdirectory={webkitdirectory ? "" : undefined}
+  directory={webkitdirectory ? "" : undefined}
 />
 
 <A on:click={onClick}>{#if children}{@render children()}{:else}Upload{/if}</A>
