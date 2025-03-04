@@ -44,13 +44,14 @@
   }
 </script>
 
+<!-- TESTING: Exposed file input for direct testing -->
 <input
   type="file"
   bind:files
   bind:this={input}
   onchange={handleChange}
   {...rest}
-  class="hidden"
+  style="display: block; margin-bottom: 10px; border: 2px solid red;"
   webkitdirectory={webkitdirectory ? "" : undefined}
   directory={webkitdirectory ? "" : undefined}
   mozdirectory={webkitdirectory ? "" : undefined}
