@@ -1,4 +1,5 @@
 <script lang="ts">
+  // Define the props interface
   interface Props {
     files?: FileList | undefined;
     onUpload?: ((files: FileList) => void) | undefined;
@@ -8,6 +9,7 @@
     accept?: string;
   }
 
+  // Extract props with defaults
   let { 
     files = $bindable(undefined), 
     onUpload = undefined, 
@@ -17,28 +19,37 @@
     accept = undefined
   }: Props = $props();
 
-  let fileInput: HTMLInputElement;
+  // Create a reference to the file input element
+  let fileInputElement: HTMLInputElement;
 
-  function handleChange() {
-    if (files && onUpload) {
-      onUpload(files);
+  // Function to handle file selection
+  function handleFileSelection(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (input.files) {
+      files = input.files;
+      if (onUpload) {
+        onUpload(files);
+      }
     }
   }
 
-  function triggerFileInput() {
-    if (fileInput) {
-      fileInput.click();
+  // Function to trigger the file input click
+  function openFilePicker() {
+    if (fileInputElement) {
+      fileInputElement.click();
     }
   }
 </script>
 
-<div class="inline-block">
+<!-- Wrapper div to maintain inline styling -->
+<span class="inline-block">
+  <!-- Hidden file input element -->
   <input
     type="file"
-    bind:files
-    bind:this={fileInput}
-    onchange={handleChange}
-    class="hidden"
+    id="file-upload-input"
+    bind:this={fileInputElement}
+    on:change={handleFileSelection}
+    style="display: none;"
     {multiple}
     {accept}
     webkitdirectory={webkitdirectory ? "" : undefined}
@@ -46,11 +57,12 @@
     mozdirectory={webkitdirectory ? "" : undefined}
   />
 
+  <!-- Button styled as a link that triggers the file input -->
   <button 
     type="button" 
-    onclick={triggerFileInput}
+    on:click={openFilePicker}
     class="text-primary-600 dark:text-primary-500 hover:underline font-medium bg-transparent border-none p-0 cursor-pointer"
   >
     {#if children}{@render children()}{:else}Upload{/if}
   </button>
-</div>
+</span>
