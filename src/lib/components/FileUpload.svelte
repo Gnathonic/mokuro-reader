@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { A, Button } from 'flowbite-svelte';
-
   interface Props {
     files?: FileList | undefined;
     onUpload?: ((files: FileList) => void) | undefined;
     children?: import('svelte').Snippet;
     webkitdirectory?: boolean;
-    [key: string]: any
+    multiple?: boolean;
+    accept?: string;
   }
 
   let { 
@@ -14,10 +13,11 @@
     onUpload = undefined, 
     children, 
     webkitdirectory = false,
-    ...rest 
+    multiple = false,
+    accept = undefined
   }: Props = $props();
 
-  let input: HTMLInputElement;
+  let fileInput: HTMLInputElement;
 
   function handleChange() {
     if (files && onUpload) {
@@ -25,25 +25,32 @@
     }
   }
 
-  function handleClick() {
-    if (input) {
-      input.click();
+  function triggerFileInput() {
+    if (fileInput) {
+      fileInput.click();
     }
   }
 </script>
 
-<input
-  type="file"
-  bind:files
-  bind:this={input}
-  onchange={handleChange}
-  {...rest}
-  class="hidden"
-  webkitdirectory={webkitdirectory ? "" : undefined}
-  directory={webkitdirectory ? "" : undefined}
-  mozdirectory={webkitdirectory ? "" : undefined}
-/>
+<div class="inline-block">
+  <input
+    type="file"
+    bind:files
+    bind:this={fileInput}
+    onchange={handleChange}
+    class="hidden"
+    {multiple}
+    {accept}
+    webkitdirectory={webkitdirectory ? "" : undefined}
+    directory={webkitdirectory ? "" : undefined}
+    mozdirectory={webkitdirectory ? "" : undefined}
+  />
 
-<Button color="none" class="p-0 text-primary-600 dark:text-primary-500 hover:underline font-medium" onclick={handleClick}>
-  {#if children}{@render children()}{:else}Upload{/if}
-</Button>
+  <button 
+    type="button" 
+    onclick={triggerFileInput}
+    class="text-primary-600 dark:text-primary-500 hover:underline font-medium bg-transparent border-none p-0 cursor-pointer"
+  >
+    {#if children}{@render children()}{:else}Upload{/if}
+  </button>
+</div>
