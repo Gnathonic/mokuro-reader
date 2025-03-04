@@ -35,8 +35,13 @@
 
   // Function to trigger the file input click
   function openFilePicker() {
+    console.log('Button clicked, fileInputElement:', fileInputElement);
     if (fileInputElement) {
+      console.log('Triggering click on file input');
       fileInputElement.click();
+      console.log('Click triggered');
+    } else {
+      console.error('File input element not found');
     }
   }
 </script>
@@ -57,12 +62,11 @@
     mozdirectory={webkitdirectory ? "" : undefined}
   />
 
-  <!-- Button styled as a link that triggers the file input -->
-  <button 
-    type="button" 
-    on:click={openFilePicker}
+  <!-- Label styled as a link that triggers the file input -->
+  <label 
+    for="file-upload-input"
     class="text-primary-600 dark:text-primary-500 hover:underline font-medium bg-transparent border-none p-0 cursor-pointer"
   >
     {#if children}{@render children()}{:else}Upload{/if}
-  </button>
+  </label>
 </span>
