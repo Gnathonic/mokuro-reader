@@ -12,13 +12,13 @@
 
   const volumeId = $page.params.volume;
 
-  $: settings = $volumeSettings[$page.params.volume];
+  let settings = $derived($volumeSettings[$page.params.volume]);
 
-  $: toggles = [
+  let toggles = $derived([
     { key: 'rightToLeft', text: 'Right to left', value: settings.rightToLeft },
     { key: 'singlePageView', text: 'Single page view', value: settings.singlePageView },
     { key: 'hasCover', text: 'First page is cover', value: settings.hasCover }
-  ] as { key: VolumeSettingsKey; text: string; value: any }[];
+  ] as { key: VolumeSettingsKey; text: string; value: any }[]);
 
   function onChange(key: VolumeSettingsKey, value: any) {
     updateVolumeSetting(volumeId, key, !value);
@@ -31,7 +31,9 @@
 </script>
 
 <AccordionItem open>
-  <span slot="header">Volume settings</span>
+  {#snippet header()}
+    <span>Volume settings</span>
+  {/snippet}
   <div class="flex flex-col gap-5">
     <Helper>These settings only apply to this volume</Helper>
     {#each toggles as { key, text, value }}

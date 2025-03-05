@@ -4,13 +4,19 @@
   import ManageProfilesModal from './ManageProfilesModal.svelte';
   import { showSnackbar } from '$lib/util';
 
-  export let onClose: () => void;
+  interface Props {
+    onClose: () => void;
+  }
 
-  $: items = Object.keys($profiles).map((id) => {
-    return { value: id, name: id };
-  });
+  let { onClose }: Props = $props();
 
-  let profile = $currentProfile;
+  let items = $derived(
+    Object.keys($profiles).map((id) => {
+      return { value: id, name: id };
+    })
+  );
+
+  let profile = $state($currentProfile);
 
   function onChange() {
     changeProfile(profile);
@@ -26,7 +32,7 @@
     showSnackbar('Profiles exported');
   }
 
-  let files: FileList;
+  let files: FileList = $state();
   function importProfile() {
     const [file] = files;
     const reader = new FileReader();
@@ -48,13 +54,15 @@
     }
   }
 
-  let manageModalOpen = false;
+  let manageModalOpen = $state(false);
 </script>
 
 <ManageProfilesModal bind:open={manageModalOpen} />
 
 <AccordionItem>
-  <span slot="header">Profile</span>
+  {#snippet header()}
+    <span>Profile</span>
+  {/snippet}
   <div class="flex flex-col gap-5">
     <div class="flex flex-col gap-2">
       <Select {items} bind:value={profile} on:change={onChange} placeholder="Select profile ..." />

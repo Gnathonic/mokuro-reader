@@ -1,6 +1,7 @@
+<!-- @migration-task Error while migrating Svelte code: Can't migrate code with afterUpdate. Please migrate by hand. -->
 <script lang="ts">
   import type { Page } from '$lib/types';
-  import { afterUpdate, onMount, onDestroy } from 'svelte';
+  import { afterUpdate, onMount } from 'svelte';
   import TextBoxes from './TextBoxes.svelte';
   import { zoomDefault } from '$lib/panzoom';
 

@@ -101,7 +101,6 @@ export const db = new CatalogDexie();
 
 // Start thumbnail processing in the background
 export function startThumbnailProcessing(): void {
-
   // Process thumbnails in the background
   setTimeout(() => {
     db.processThumbnails().catch((error) => {

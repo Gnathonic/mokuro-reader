@@ -8,18 +8,24 @@
   import { goto } from '$app/navigation';
   import { db } from '$lib/catalog/db';
 
-  export let volume: VolumeMetadata;
+  interface Props {
+    volume: VolumeMetadata;
+  }
+
+  let { volume }: Props = $props();
 
   const volName = decodeURI(volume.volume_title);
 
-  $: volume_uuid = volume.volume_uuid;
-  $: currentPage = $progress?.[volume.volume_uuid || 0] || 1;
-  $: progressDisplay = `${
-    currentPage === volume.page_count - 1 ? currentPage + 1 : currentPage
-  } / ${volume.page_count}`;
-  $: isComplete =
-    currentPage === volume.page_count ||
-    currentPage === volume.page_count - 1;
+  let volume_uuid = $derived(volume.volume_uuid);
+  let currentPage = $derived($progress?.[volume.volume_uuid || 0] || 1);
+  let progressDisplay = $derived(
+    `${
+      currentPage === volume.page_count - 1 ? currentPage + 1 : currentPage
+    } / ${volume.page_count}`
+  );
+  let isComplete = $derived(
+    currentPage === volume.page_count || currentPage === volume.page_count - 1
+  );
 
   async function onDeleteClicked(e: Event) {
     e.stopPropagation();
@@ -56,7 +62,6 @@
           alt="img"
           style="margin-right:10px;"
           class="object-contain w-[50px] h-[70px] bg-black border-gray-900 border"
-
         />
       {/if}
       <div
@@ -68,10 +73,9 @@
           <p>{progressDisplay}</p>
         </div>
         <div class="flex gap-2">
-          <TrashBinSolid
-            class="text-red-400 hover:text-red-500 z-10 poin"
-            on:click={onDeleteClicked}
-          />
+          <button onclick={onDeleteClicked} class="flex items-center justify-center">
+            <TrashBinSolid class="text-red-400 hover:text-red-500 z-10 poin" />
+          </button>
           {#if isComplete}
             <CheckCircleSolid />
           {/if}

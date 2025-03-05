@@ -32,7 +32,7 @@ function getRadianAngle(degreeValue: number) {
   return (degreeValue * Math.PI) / 180;
 }
 
-export type Pixels = { width: number; height: number; x: number; y: number }
+export type Pixels = { width: number; height: number; x: number; y: number };
 
 export async function getCroppedImg(imageSrc: string, pixelCrop: Pixels, rotation = 0) {
   const image = await createImage(imageSrc);
@@ -40,7 +40,7 @@ export async function getCroppedImg(imageSrc: string, pixelCrop: Pixels, rotatio
   const ctx = canvas.getContext('2d');
 
   if (!ctx) {
-    showSnackbar('Error: crop failed')
+    showSnackbar('Error: crop failed');
     return;
   }
 
@@ -74,5 +74,5 @@ export async function getCroppedImg(imageSrc: string, pixelCrop: Pixels, rotatio
 
   const blob = await canvas.convertToBlob({ type: 'image/webp' });
 
-  return await blobToBase64(blob)
+  return await blobToBase64(blob);
 }

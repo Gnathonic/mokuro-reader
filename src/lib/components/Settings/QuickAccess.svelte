@@ -4,7 +4,11 @@
 
   import { Button } from 'flowbite-svelte';
 
-  export let hidden = false;
+  interface Props {
+    hidden?: boolean;
+  }
+
+  let { hidden = $bindable(false) }: Props = $props();
 
   function onClose() {
     hidden = true;

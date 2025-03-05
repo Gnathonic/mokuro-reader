@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { AccordionItem, Button, Label, Range } from 'flowbite-svelte';
+  import { AccordionItem, Label, Range } from 'flowbite-svelte';
   import ReaderSelects from './ReaderSelects.svelte';
   import ReaderToggles from './ReaderToggles.svelte';
   import { settings, updateSetting } from '$lib/settings';
 
-  let swipeThresholdValue = $settings.swipeThreshold;
-  let edgeButtonWidthValue = $settings.edgeButtonWidth;
+  let swipeThresholdValue = $state($settings.swipeThreshold);
+  let edgeButtonWidthValue = $state($settings.edgeButtonWidth);
   function onSwipeChange() {
     updateSetting('swipeThreshold', swipeThresholdValue);
   }
@@ -16,7 +16,9 @@
 </script>
 
 <AccordionItem>
-  <span slot="header">Reader</span>
+  {#snippet header()}
+    <span>Reader</span>
+  {/snippet}
   <div class="flex flex-col gap-5">
     <ReaderSelects />
     <hr class="border-gray-100 opacity-10" />

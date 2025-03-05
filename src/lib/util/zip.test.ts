@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zipManga } from './zip';
 import { db } from '$lib/catalog/db';
 
@@ -73,7 +73,7 @@ describe('zipManga', () => {
     const link = document.createElement('a');
     expect(link.download).toBe('Test Manga.cbz');
   });
-  
+
   it('should include series title in filename when includeSeriesTitle is true', async () => {
     const result = await zipManga([mockVolume], false, true, true);
     expect(result).toBe(false);
@@ -81,7 +81,7 @@ describe('zipManga', () => {
     const link = document.createElement('a');
     expect(link.download).toBe('Test Manga - Volume 1.zip');
   });
-  
+
   it('should exclude series title from filename when includeSeriesTitle is false', async () => {
     const result = await zipManga([mockVolume], false, true, false);
     expect(result).toBe(false);
@@ -89,7 +89,7 @@ describe('zipManga', () => {
     const link = document.createElement('a');
     expect(link.download).toBe('Volume 1.zip');
   });
-  
+
   it('should handle multiple volumes correctly when individualVolumes is true', async () => {
     // Create a second mock volume
     const mockVolume2 = {
@@ -97,7 +97,7 @@ describe('zipManga', () => {
       volume_uuid: 'test-uuid-2',
       volume_title: 'Volume 2'
     };
-    
+
     // Mock the document.createElement to track calls
     const originalCreateElement = document.createElement;
     const mockCreateElement = vi.fn().mockImplementation((tag) => {
@@ -111,7 +111,7 @@ describe('zipManga', () => {
       return {};
     });
     document.createElement = mockCreateElement;
-    
+
     // Mock the database get for the second volume
     // @ts-ignore
     db.volumes_data.get.mockImplementation((uuid) => {
@@ -122,26 +122,26 @@ describe('zipManga', () => {
       }
       return Promise.resolve(null);
     });
-    
+
     const result = await zipManga([mockVolume, mockVolume2], false, true, true);
     expect(result).toBe(false);
-    
+
     // Should have created 2 download links
     expect(mockCreateElement).toHaveBeenCalledTimes(2);
-    
+
     // Restore the original function
     document.createElement = originalCreateElement;
   });
-  
+
   it('should use the same internal structure for both single and multiple archives', async () => {
     // This test verifies that we're using the same function to add files to the archive
     // regardless of whether we're creating a single archive or multiple archives
     const singleArchiveResult = await zipManga([mockVolume], false, false, true);
     const multipleArchiveResult = await zipManga([mockVolume], false, true, true);
-    
+
     expect(singleArchiveResult).toBe(false);
     expect(multipleArchiveResult).toBe(false);
-    
+
     // Both should call the database get method the same number of times
     expect(db.volumes_data.get).toHaveBeenCalledTimes(2);
     expect(db.volumes_data.get).toHaveBeenCalledWith(mockVolume.volume_uuid);

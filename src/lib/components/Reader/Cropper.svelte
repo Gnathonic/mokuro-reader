@@ -1,14 +1,14 @@
 <script lang="ts">
   import { afterNavigate, beforeNavigate } from '$app/navigation';
-  import { cropperStore, getCroppedImg, updateLastCard, type Pixels } from '$lib/anki-connect';
+  import { cropperStore, getCroppedImg, type Pixels, updateLastCard } from '$lib/anki-connect';
   import { settings } from '$lib/settings';
   import { Button, Modal, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import Cropper from 'svelte-easy-crop';
 
-  let open = false;
+  let open = $state(false);
   let pixels: Pixels;
-  let loading = false;
+  let loading = $state(false);
 
   afterNavigate(() => {
     close();
@@ -44,7 +44,9 @@
   }
 
   function onCropComplete(e: any) {
-    pixels = e.detail.pixels;
+    // In v4, the event detail structure might have changed
+    // Check if e.detail.pixels exists, otherwise use e.detail directly
+    pixels = e.detail.pixels || e.detail;
   }
 </script>
 

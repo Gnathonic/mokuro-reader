@@ -51,7 +51,7 @@ function loadDriveData(): DriveStoreData {
     // Only load the token and reader folder ID from localStorage
     const savedToken = localStorage.getItem('gdrive_token');
     const savedReaderFolderId = localStorage.getItem('gdrive_reader_folder_id');
-    
+
     if (savedToken) {
       return {
         ...initialDriveData,
@@ -64,7 +64,7 @@ function loadDriveData(): DriveStoreData {
   } catch (error) {
     console.error('Error loading drive auth data from localStorage:', error);
   }
-  
+
   return initialDriveData;
 }
 
@@ -80,7 +80,7 @@ driveStore.subscribe((data) => {
     } else {
       localStorage.removeItem('gdrive_token');
     }
-    
+
     if (data.readerFolderId) {
       localStorage.setItem('gdrive_reader_folder_id', data.readerFolderId);
     } else {
@@ -123,7 +123,7 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
     console.error('Cannot fetch Drive data: Missing token or folder ID');
     return;
   }
-  
+
   try {
     // Get all folders and CBZ files in a single query
     // This query finds:
@@ -133,7 +133,7 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
       ('${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
       ('${readerFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
     `;
-    
+
     const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query.trim())}&fields=files(id,name,mimeType,parents)&pageSize=1000`,
       {
@@ -148,28 +148,28 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
       }
     );
     const files = data.files || [];
-    
+
     // Separate folders and CBZ files
-    const folders = files.filter(file => 
-      file.mimeType === 'application/vnd.google-apps.folder' && 
+    const folders = files.filter(file =>
+      file.mimeType === 'application/vnd.google-apps.folder' &&
       file.parents && file.parents.includes(readerFolderId)
     );
-    
-    const cbzFiles = files.filter(file => 
-      file.mimeType === 'application/vnd.comicbook+zip' || 
-      file.mimeType === 'application/zip' || 
+
+    const cbzFiles = files.filter(file =>
+      file.mimeType === 'application/vnd.comicbook+zip' ||
+      file.mimeType === 'application/zip' ||
       file.mimeType === 'application/x-cbz'
     );
-    
+
     // Create a map of folder IDs to folder names for quick lookup
     const folderMap = new Map();
     folders.forEach(folder => {
       folderMap.set(folder.id, folder.name);
     });
-    
+
     // Create the series map
     const seriesMap: { [seriesTitle: string]: DriveSeries } = {};
-    
+
     // Initialize series entries for all folders
     folders.forEach(folder => {
       seriesMap[folder.name] = {
@@ -178,20 +178,20 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
         volumes: {}
       };
     });
-    
+
     // Process all CBZ files and add them to their respective series
     cbzFiles.forEach(file => {
       // Find which folder (series) this file belongs to
       const parentId = file.parents?.[0];
       if (!parentId) return;
-      
+
       // Get the series name from the folder map
       const seriesTitle = folderMap.get(parentId);
       if (!seriesTitle) return; // Not a direct child of a series folder
-      
+
       const fileName = file.name;
       const volumeTitle = fileName.replace(/\.cbz$/i, '');
-      
+
       // Add the volume to its series
       if (seriesMap[seriesTitle]) {
         seriesMap[seriesTitle].volumes[volumeTitle] = {
@@ -201,14 +201,14 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
         };
       }
     });
-    
+
     // Update the store with all the data at once
     driveStore.update(data => ({
       ...data,
       series: seriesMap,
       lastUpdated: Date.now()
     }));
-    
+
     return seriesMap;
   } catch (error) {
     console.error('Error fetching Drive data:', error);
@@ -220,14 +220,14 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
 export function addSeries(seriesTitle: string, folderId: string) {
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
-    
+
     // Create or update the series entry
     updatedSeries[seriesTitle] = {
       folderId,
       folderName: seriesTitle,
       volumes: updatedSeries[seriesTitle]?.volumes || {}
     };
-    
+
     return {
       ...data,
       series: updatedSeries,
@@ -239,25 +239,25 @@ export function addSeries(seriesTitle: string, folderId: string) {
 export function addVolume(seriesTitle: string, volumeTitle: string, fileId: string, fileName: string) {
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
-    
+
     // Ensure the series exists
     if (!updatedSeries[seriesTitle]) {
       return data; // Series doesn't exist, can't add volume
     }
-    
+
     // Create or update the volume entry
     const series = { ...updatedSeries[seriesTitle] };
     const volumes = { ...series.volumes };
-    
+
     volumes[volumeTitle] = {
       fileId,
       fileName,
       lastModified: new Date().toISOString()
     };
-    
+
     series.volumes = volumes;
     updatedSeries[seriesTitle] = series;
-    
+
     return {
       ...data,
       series: updatedSeries,
@@ -269,10 +269,10 @@ export function addVolume(seriesTitle: string, volumeTitle: string, fileId: stri
 export function removeSeries(seriesTitle: string) {
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
-    
+
     // Remove the series
     delete updatedSeries[seriesTitle];
-    
+
     return {
       ...data,
       series: updatedSeries,
@@ -284,18 +284,18 @@ export function removeSeries(seriesTitle: string) {
 export function removeVolume(seriesTitle: string, volumeTitle: string) {
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
-    
+
     // Ensure the series exists
     if (!updatedSeries[seriesTitle]) {
       return data; // Series doesn't exist, nothing to remove
     }
-    
+
     // Remove the volume
     const series = { ...updatedSeries[seriesTitle] };
     const volumes = { ...series.volumes };
-    
+
     delete volumes[volumeTitle];
-    
+
     // If no volumes left, remove the series too
     if (Object.keys(volumes).length === 0) {
       delete updatedSeries[seriesTitle];
@@ -303,7 +303,7 @@ export function removeVolume(seriesTitle: string, volumeTitle: string) {
       series.volumes = volumes;
       updatedSeries[seriesTitle] = series;
     }
-    
+
     return {
       ...data,
       series: updatedSeries,
@@ -318,7 +318,7 @@ export function isSeriesBackedUp(seriesTitle: string, volumeTitles: string[]) {
     // Check if the series exists in Drive
     const series = $driveStore.series[seriesTitle];
     if (!series) return false;
-    
+
     // Check if all volumes are backed up
     return volumeTitles.every(volumeTitle => !!series.volumes[volumeTitle]);
   });
@@ -330,7 +330,7 @@ export function isVolumeBackedUp(seriesTitle: string, volumeTitle: string) {
     // Check if the series and volume exist in Drive
     const series = $driveStore.series[seriesTitle];
     if (!series) return false;
-    
+
     return !!series.volumes[volumeTitle];
   });
 }

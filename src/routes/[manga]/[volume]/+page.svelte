@@ -5,8 +5,8 @@
   import { initializeVolume, settings, startCount, volumes, volumeSettings } from '$lib/settings';
   import { onMount } from 'svelte';
 
-  $: volumeId = $page.params.volume;
-  let count: undefined | number = undefined;
+  let volumeId = $derived($page.params.volume);
+  let count: undefined | number = $state(undefined);
 
   onMount(() => {
     if (!$volumes?.[volumeId]) {

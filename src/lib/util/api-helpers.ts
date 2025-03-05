@@ -56,15 +56,15 @@ export function determineErrorType(response: Response | Error): DriveErrorType {
   if (response.status === 401 || response.status === 403) {
     return DriveErrorType.AUTH_ERROR;
   }
-  
+
   if (response.status === 429) {
     return DriveErrorType.RATE_LIMIT;
   }
-  
+
   if (response.status >= 500 && response.status < 600) {
     return DriveErrorType.CONNECTION_ERROR;
   }
-  
+
   return DriveErrorType.OTHER_ERROR;
 }
 
@@ -83,22 +83,22 @@ export async function fetchWithRetry(
   const opts = { ...DEFAULT_RETRY_OPTIONS, ...retryOptions };
   let retries = 0;
   let backoffMs = opts.initialBackoffMs!;
-  
+
   while (true) {
     try {
       const response = await fetch(url, options);
-      
+
       // If the response is ok or we've reached max retries, return it
       if (response.ok || retries >= opts.maxRetries!) {
         return response;
       }
-      
+
       // Determine if we should retry based on status code
       const shouldRetry = opts.retryStatusCodes!.includes(response.status);
       if (!shouldRetry) {
         return response;
       }
-      
+
       // For rate limiting, try to get retry-after header
       if (response.status === 429) {
         const retryAfter = response.headers.get('retry-after');
@@ -107,27 +107,27 @@ export async function fetchWithRetry(
           const retryAfterMs = isNaN(Number(retryAfter))
             ? new Date(retryAfter).getTime() - Date.now()
             : Number(retryAfter) * 1000;
-          
+
           backoffMs = Math.max(backoffMs, retryAfterMs);
         }
       }
-      
+
       // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, backoffMs));
-      
+
       // Increase backoff for next retry
       backoffMs = Math.min(backoffMs * opts.backoffFactor!, opts.maxBackoffMs!);
       retries++;
-      
+
     } catch (error) {
       // Network errors
       if (!opts.retryNetworkErrors || retries >= opts.maxRetries!) {
         throw error;
       }
-      
+
       // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, backoffMs));
-      
+
       // Increase backoff for next retry
       backoffMs = Math.min(backoffMs * opts.backoffFactor!, opts.maxBackoffMs!);
       retries++;
@@ -150,7 +150,7 @@ export async function driveApiRequest<T = any>(
 ): Promise<T> {
   try {
     const response = await fetchWithRetry(url, options, retryOptions);
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const error: any = new Error(errorData.error?.message || `HTTP error ${response.status}`);
@@ -159,19 +159,19 @@ export async function driveApiRequest<T = any>(
       error.response = response;
       throw error;
     }
-    
+
     // For empty responses (like DELETE)
     if (response.status === 204) {
       return {} as T;
     }
-    
+
     return await response.json();
   } catch (error: any) {
     // If it's already been processed, rethrow
     if (error.errorType) {
       throw error;
     }
-    
+
     // Process network errors
     error.errorType = determineErrorType(error);
     throw error;

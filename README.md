@@ -15,7 +15,7 @@ You can find the reader hosted [here](https://reader.mokuro.app/).
 
 To import your manga, process it with mokuro and then upload your manga along with the generated `.mokuro` file.
 
-As of the moment base mokuro does not generate the `.mokuro` file, you need to install and use `mokuro 0.2.0-beta.6`.
+Requires mokuro version 'v0.2.0' or later to generate the `.mokuro` file.
 
 ```bash
 pip install git+https://github.com/kha-white/mokuro.git@web-reader
@@ -26,20 +26,12 @@ Once installed and your manga is processed, import your manga into the reader.
 ## Development:
 
 ### Requirements
-- **Node.js version 18.x** (this project is not compatible with Node.js 19+ or earlier versions)
+- Node.js (latest LTS version recommended)
 - npm
-
-You can use [nvm](https://github.com/nvm-sh/nvm) to manage Node.js versions:
-```bash
-# Install Node.js 18
-nvm install 18
-# Use Node.js 18
-nvm use 18
-```
 
 Clone the repo:
 ```bash
-git clone https://github.com/ZXY101/mokuro-reader
+git clone https://github.com/Gnathonic/mokuro-reader
 cd mokuro-reader
 ```
 

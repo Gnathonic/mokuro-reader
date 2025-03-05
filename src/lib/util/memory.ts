@@ -47,14 +47,18 @@ export function getAvailableMemory() {
       const ua = navigator.userAgent.toLowerCase();
 
       // Mobile devices
-      if (ua.includes('mobile') || ua.includes('iphone') || ua.includes('ipad') || ua.includes('android')) {
+      if (
+        ua.includes('mobile') ||
+        ua.includes('iphone') ||
+        ua.includes('ipad') ||
+        ua.includes('android')
+      ) {
         return 1.5 * GB; // 1.5GB for mobile devices
       }
     }
 
     // Desktop browsers - conservative default
     return 4 * GB; // 4GB for desktop browsers
-
   } catch (error) {
     console.warn('Error determining available memory:', error);
     return 2 * GB; // 2GB as a safe fallback

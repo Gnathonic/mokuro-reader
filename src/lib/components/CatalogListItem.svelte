@@ -3,14 +3,29 @@
   import { ListgroupItem } from 'flowbite-svelte';
   import { progress } from '$lib/settings';
 
-  export let series_uuid: string;
+  interface Props {
+    series_uuid: string;
+  }
 
-  $: firstUnreadVolume = Object.values($volumes).sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-    .find((item) => (item.series_uuid === series_uuid) && (($progress?.[item.volume_uuid|| 0] || 1) < item.page_count - 1));
+  let { series_uuid }: Props = $props();
 
-  $: firstVolume = Object.values($volumes).sort((a, b) => a.volume_title.localeCompare(b.volume_title)).find((item) => item.series_uuid === series_uuid);
-  $: volume = firstUnreadVolume ?? firstVolume;
-  $: isComplete = !firstUnreadVolume;
+  let firstUnreadVolume = $derived(
+    Object.values($volumes)
+      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
+      .find(
+        (item) =>
+          item.series_uuid === series_uuid &&
+          ($progress?.[item.volume_uuid || 0] || 1) < item.page_count - 1
+      )
+  );
+
+  let firstVolume = $derived(
+    Object.values($volumes)
+      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
+      .find((item) => item.series_uuid === series_uuid)
+  );
+  let volume = $derived(firstUnreadVolume ?? firstVolume);
+  let isComplete = $derived(!firstUnreadVolume);
 </script>
 
 {#if volume}
@@ -18,9 +33,7 @@
     <ListgroupItem>
       <a href={series_uuid} class="h-full w-full">
         <div class="flex justify-between items-center">
-          <p class:text-green-400={isComplete}
-             class="font-semibold"
-             >{volume.series_title}</p>
+          <p class:text-green-400={isComplete} class="font-semibold">{volume.series_title}</p>
           {#if volume.thumbnail}
             <img
               src={URL.createObjectURL(volume.thumbnail)}

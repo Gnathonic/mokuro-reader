@@ -31,14 +31,14 @@ export type AnkiConnectSettings = {
   cropImage: boolean;
   overwriteImage: boolean;
   grabSentence: boolean;
-  triggerMethod: 'rightClick' | 'doubleTap' | 'both'
-}
+  triggerMethod: 'rightClick' | 'doubleTap' | 'both';
+};
 
 export type VolumeDefaults = {
   rightToLeft: boolean;
   singlePageView: boolean;
   hasCover: boolean;
-}
+};
 
 export type Settings = {
   defaultFullscreen: boolean;
@@ -102,18 +102,21 @@ const defaultSettings: Settings = {
   }
 };
 
-type Profiles = Record<string, Settings>
+type Profiles = Record<string, Settings>;
 
 const defaultProfiles: Profiles = {
   Default: defaultSettings
-}
+};
 
 const storedProfiles = browser ? window.localStorage.getItem('profiles') : undefined;
-const initialProfiles: Profiles = storedProfiles && browser ? JSON.parse(storedProfiles) : defaultProfiles;
+const initialProfiles: Profiles =
+  storedProfiles && browser ? JSON.parse(storedProfiles) : defaultProfiles;
 export const profiles = writable<Profiles>(initialProfiles);
 
-const storedCurrentProfile = browser ? window.localStorage.getItem('currentProfile') || 'Default' : 'Default';
-export const currentProfile = writable(storedCurrentProfile)
+const storedCurrentProfile = browser
+  ? window.localStorage.getItem('currentProfile') || 'Default'
+  : 'Default';
+export const currentProfile = writable(storedCurrentProfile);
 
 profiles.subscribe((profiles) => {
   if (browser) {
@@ -128,7 +131,7 @@ currentProfile.subscribe((currentProfile) => {
 });
 
 export const settings = derived([profiles, currentProfile], ([profiles, currentProfile]) => {
-  return profiles[currentProfile]
+  return profiles[currentProfile];
 });
 
 export function updateSetting(key: SettingsKey, value: any) {
@@ -154,7 +157,6 @@ export function updateVolumeDefaults(key: VolumeDefaultsKey, value: any) {
           [key]: value
         }
       }
-
     };
   });
 }
@@ -170,7 +172,6 @@ export function updateAnkiSetting(key: AnkiSettingsKey, value: any) {
           [key]: value
         }
       }
-
     };
   });
 }
@@ -180,7 +181,7 @@ export function resetSettings() {
     return {
       ...profiles,
       [get(currentProfile)]: defaultSettings
-    }
+    };
   });
 }
 
@@ -189,8 +190,8 @@ export function createProfile(profileId: string) {
     return {
       ...profiles,
       [profileId]: defaultSettings
-    }
-  })
+    };
+  });
 }
 
 export function deleteProfile(profileId: string) {
@@ -199,9 +200,9 @@ export function deleteProfile(profileId: string) {
   }
 
   profiles.update((profiles) => {
-    delete profiles[profileId]
-    return profiles
-  })
+    delete profiles[profileId];
+    return profiles;
+  });
 }
 
 export function renameProfile(oldName: string, newName: string) {
@@ -211,8 +212,8 @@ export function renameProfile(oldName: string, newName: string) {
 
   profiles.update((profiles) => {
     delete Object.assign(profiles, { [newName]: profiles[oldName] })[oldName];
-    return profiles
-  })
+    return profiles;
+  });
 }
 
 export function copyProfile(profileToCopy: string, newName: string) {
@@ -222,11 +223,10 @@ export function copyProfile(profileToCopy: string, newName: string) {
       [newName]: {
         ...profiles[profileToCopy]
       }
-    }
-  })
+    };
+  });
 }
 
-
 export function changeProfile(profileId: string) {
-  currentProfile.set(profileId)
+  currentProfile.set(profileId);
 }

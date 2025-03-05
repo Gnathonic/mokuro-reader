@@ -12,12 +12,16 @@
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
 
-  export let left: (_e: any, ingoreTimeOut?: boolean) => void;
-  export let right: (_e: any, ingoreTimeOut?: boolean) => void;
-  export let src1: File;
-  export let src2: File | undefined;
+  interface Props {
+    left: (_e: any, ingoreTimeOut?: boolean) => void;
+    right: (_e: any, ingoreTimeOut?: boolean) => void;
+    src1: File;
+    src2: File | undefined;
+  }
 
-  let open = false;
+  let { left, right, src1, src2 }: Props = $props();
+
+  let open = $state(false);
 
   function handleZoom() {
     zoomFitToScreen();

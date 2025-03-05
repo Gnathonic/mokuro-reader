@@ -4,7 +4,7 @@
   import { ExclamationCircleOutline } from 'flowbite-svelte-icons';
   import { onMount } from 'svelte';
 
-  let open = false;
+  let open = $state(false);
 
   onMount(() => {
     confirmationPopupStore.subscribe((value) => {

@@ -23,10 +23,10 @@ function createProgressTrackerStore() {
   return {
     subscribe,
     addProcess: (process: Process) => {
-      update(state => {
+      update((state) => {
         // Check if process with this ID already exists
-        const existingIndex = state.processes.findIndex(p => p.id === process.id);
-        
+        const existingIndex = state.processes.findIndex((p) => p.id === process.id);
+
         if (existingIndex >= 0) {
           // Update existing process
           const updatedProcesses = [...state.processes];
@@ -39,26 +39,26 @@ function createProgressTrackerStore() {
       });
     },
     updateProcess: (id: string, updates: Partial<Omit<Process, 'id'>>) => {
-      update(state => {
-        const existingIndex = state.processes.findIndex(p => p.id === id);
-        
+      update((state) => {
+        const existingIndex = state.processes.findIndex((p) => p.id === id);
+
         if (existingIndex >= 0) {
           const updatedProcesses = [...state.processes];
-          updatedProcesses[existingIndex] = { 
-            ...updatedProcesses[existingIndex], 
-            ...updates 
+          updatedProcesses[existingIndex] = {
+            ...updatedProcesses[existingIndex],
+            ...updates
           };
           return { ...state, processes: updatedProcesses };
         }
-        
+
         return state;
       });
     },
     removeProcess: (id: string) => {
-      update(state => {
-        return { 
-          ...state, 
-          processes: state.processes.filter(p => p.id !== id) 
+      update((state) => {
+        return {
+          ...state,
+          processes: state.processes.filter((p) => p.id !== id)
         };
       });
     },

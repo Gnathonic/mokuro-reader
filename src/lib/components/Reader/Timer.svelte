@@ -1,10 +1,14 @@
 <script lang="ts">
   import { startCount, volumeStats } from '$lib/settings';
 
-  export let count: number | undefined;
-  export let volumeId: string;
+  interface Props {
+    count: number | undefined;
+    volumeId: string;
+  }
 
-  $: active = Boolean(count);
+  let { count = $bindable(), volumeId }: Props = $props();
+
+  let active = $derived(Boolean(count));
 
   function onClick() {
     if (count) {
@@ -19,7 +23,7 @@
 <button
   class:text-primary-700={!active}
   class="mix-blend-difference z-10 fixed opacity-50 right-20 top-5 p-10 m-[-2.5rem]"
-  on:click={onClick}
+  onclick={onClick}
 >
   <p>
     {active ? 'Active' : 'Paused'} | Minutes read: {$volumeStats?.timeReadInMinutes}

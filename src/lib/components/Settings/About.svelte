@@ -1,12 +1,14 @@
 <script lang="ts">
   import { READER_VERSION } from '$lib/consts';
   import { toClipboard } from '$lib/util';
-  import { A, AccordionItem, Badge, Helper, Span } from 'flowbite-svelte';
+  import { A, AccordionItem, Badge, Helper } from 'flowbite-svelte';
   import { GithubSolid } from 'flowbite-svelte-icons';
 </script>
 
 <AccordionItem>
-  <span slot="header">About</span>
+  {#snippet header()}
+    <span>About</span>
+  {/snippet}
   <div class="flex flex-col gap-5">
     <div class="flex flex-row justify-between">
       <p class="font-semibold">Mokuro reader {READER_VERSION} <Badge>BETA</Badge></p>
@@ -29,7 +31,7 @@
           href="https://github.com/kha-white/mokuro/tree/web-reader">0.2.0-beta.6</A
         > which can be installed via:
       </p>
-      <div role="none" on:click={toClipboard}>
+      <div role="none" onclick={toClipboard}>
         <code class="text-primary-600 bg-slate-900"
           >pip3 install git+https://github.com/kha-white/mokuro.git@web-reader</code
         >

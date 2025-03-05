@@ -1,13 +1,15 @@
 <script lang="ts">
+  import { run } from 'svelte/legacy';
+
   import { Button, Modal, Toggle } from 'flowbite-svelte';
   import { extractionModalStore } from '$lib/util/modals';
   import { onMount } from 'svelte';
 
-  let open = false;
-  let asCbz = true;
-  let individualVolumes = false;
-  let includeSeriesTitle = true;
-  let firstVolumePreview = '';
+  let open = $state(false);
+  let asCbz = $state(true);
+  let individualVolumes = $state(false);
+  let includeSeriesTitle = $state(true);
+  let firstVolumePreview = $state('');
 
   onMount(() => {
     extractionModalStore.subscribe((value) => {
@@ -20,7 +22,7 @@
     });
   });
 
-  function updateFilenamePreview(firstVolume: { series_title: string, volume_title: string }) {
+  function updateFilenamePreview(firstVolume: { series_title: string; volume_title: string }) {
     if (firstVolume) {
       const extension = asCbz ? 'cbz' : 'zip';
       if (includeSeriesTitle && individualVolumes) {
@@ -47,42 +49,56 @@
     open = false;
   }
 
-  $: if ($extractionModalStore?.firstVolume) {
-    updateFilenamePreview($extractionModalStore.firstVolume);
-  }
-
-  $: if (asCbz !== undefined || includeSeriesTitle !== undefined || individualVolumes !== undefined) {
+  run(() => {
     if ($extractionModalStore?.firstVolume) {
       updateFilenamePreview($extractionModalStore.firstVolume);
     }
-  }
+  });
+
+  run(() => {
+    if (
+      asCbz !== undefined ||
+      includeSeriesTitle !== undefined ||
+      individualVolumes !== undefined
+    ) {
+      if ($extractionModalStore?.firstVolume) {
+        updateFilenamePreview($extractionModalStore.firstVolume);
+      }
+    }
+  });
 </script>
 
 <Modal bind:open size="md" autoclose outsideclose>
   <div class="text-center">
-    <h3 class="mb-5 text-lg font-normal text-gray-700 dark:text-gray-300">
-      Extract Options
-    </h3>
+    <h3 class="mb-5 text-lg font-normal text-gray-700 dark:text-gray-300">Extract Options</h3>
     <div class="flex flex-col gap-4 mb-5">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract as CBZ</span>
         <Toggle bind:checked={asCbz} />
       </div>
       <div class="flex items-center justify-between">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract individual volumes</span>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+          >Extract individual volumes</span
+        >
         <Toggle bind:checked={individualVolumes} />
       </div>
-      
+
       {#if individualVolumes}
         <div class="flex items-center justify-between">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Include series title in filename</span>
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >Include series title in filename</span
+          >
           <Toggle bind:checked={includeSeriesTitle} />
         </div>
       {/if}
-      
+
       <div class="mt-2 p-3 bg-gray-100 dark:bg-gray-800 rounded-md">
-        <div class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Filename preview:</div>
-        <div class="text-xs font-mono break-all text-gray-600 dark:text-gray-400">{firstVolumePreview}</div>
+        <div class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Filename preview:
+        </div>
+        <div class="text-xs font-mono break-all text-gray-600 dark:text-gray-400">
+          {firstVolumePreview}
+        </div>
       </div>
     </div>
     <div class="flex justify-center gap-2">

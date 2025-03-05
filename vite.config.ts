@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     host: true
   },
+  optimizeDeps: {
+    exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
+  },
   test: {
     include: ['src/**/*.{test,spec}.{js,ts,svelte}'],
     globals: true,

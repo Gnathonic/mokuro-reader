@@ -6,20 +6,21 @@
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { P, Progressbar } from 'flowbite-svelte';
   import { onMount } from 'svelte';
+
   export const BASE_URL = $page.url.searchParams.get('source') || 'https://www.mokuro.moe/manga';
 
   const manga = $page.url.searchParams.get('manga');
   const volume = $page.url.searchParams.get('volume');
   const url = `${BASE_URL}/${manga}/${volume}`;
 
-  let message = 'Loading...';
+  let message = $state('Loading...');
 
   let files: File[] = [];
 
-  let completed = 0;
-  let max = 0;
+  let completed = $state(0);
+  let max = $state(0);
 
-  $: progress = Math.floor((completed / max) * 100).toString();
+  let progress = $derived(Math.floor((completed / max) * 100).toString());
 
   async function onImport() {
     const mokuroRes = await fetch(url + '.mokuro', { cache: 'no-store' });

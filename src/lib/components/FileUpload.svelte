@@ -1,29 +1,34 @@
 <script lang="ts">
-  import { A, Fileupload, Label } from 'flowbite-svelte';
+  interface Props {
+    files?: FileList | undefined;
+    onUpload?: ((files: FileList) => void) | undefined;
+    children?: import('svelte').Snippet;
+    [key: string]: any;
+  }
 
-  export let files: FileList | undefined = undefined;
-  export let onUpload: ((files: FileList) => void) | undefined = undefined;
+  let { files = $bindable(undefined), onUpload = undefined, children, ...rest }: Props = $props();
 
-  let input: HTMLInputElement;
+  let fileInput: HTMLInputElement;
 
-  function handleChange() {
-    if (files && onUpload) {
-      onUpload(files);
+  function handleClick() {
+    if (fileInput) {
+      fileInput.click();
     }
   }
 
-  function onClick() {
-    input.click();
-  }
+  $effect(() => {
+    if (files && onUpload) {
+      onUpload(files);
+    }
+  });
 </script>
 
-<input
-  type="file"
-  bind:files
-  bind:this={input}
-  on:change={handleChange}
-  {...$$restProps}
-  class="hidden"
-/>
+<button
+  type="button"
+  onclick={handleClick}
+  class="inline-flex items-center hover:underline text-primary-600 dark:text-primary-500 cursor-pointer bg-transparent border-none p-0 m-0"
+>
+  {#if children}{@render children()}{:else}Upload{/if}
+</button>
 
-<A on:click={onClick}><slot>Upload</slot></A>
+<input type="file" bind:files bind:this={fileInput} {...rest} class="hidden" />

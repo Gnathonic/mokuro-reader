@@ -1,6 +1,6 @@
-import { settings, type ZoomModes } from '$lib/settings';
-import panzoom from 'panzoom';
+import { settings } from '$lib/settings';
 import type { PanZoom } from 'panzoom';
+import panzoom from 'panzoom';
 import { get, writable } from 'svelte/store';
 
 let pz: PanZoom | undefined;
@@ -39,9 +39,8 @@ export function initPanzoom(node: HTMLElement) {
 
   panzoomStore.set(pz);
 
-
-  pz.on('pan', () => keepInBounds())
-  pz.on('zoom', () => keepInBounds())
+  pz.on('pan', () => keepInBounds());
+  pz.on('zoom', () => keepInBounds());
 }
 
 type PanX = 'left' | 'center' | 'right';
@@ -144,19 +143,19 @@ export function zoomDefault() {
 
 export function keepInBounds() {
   if (!pz || !container) {
-    return
+    return;
   }
 
-  const { mobile, bounds } = get(settings)
+  const { mobile, bounds } = get(settings);
 
   if (!mobile && !bounds) {
-    return
+    return;
   }
 
   const transform = pz.getTransform();
 
   const { x, y, scale } = transform;
-  const { innerWidth, innerHeight } = window
+  const { innerWidth, innerHeight } = window;
 
   const width = container.offsetWidth * scale;
   const height = container.offsetHeight * scale;

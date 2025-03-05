@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, fireEvent, cleanup } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import Cloud from '../+page.svelte';
 
 describe('Cloud Component', () => {
@@ -8,7 +8,7 @@ describe('Cloud Component', () => {
     const localStorageMock = {
       getItem: vi.fn(),
       setItem: vi.fn(),
-      removeItem: vi.fn(),
+      removeItem: vi.fn()
     };
     global.localStorage = localStorageMock;
 
@@ -29,13 +29,13 @@ describe('Cloud Component', () => {
           files: {
             list: vi.fn(),
             create: vi.fn(),
-            get: vi.fn(),
-          },
-        },
+            get: vi.fn()
+          }
+        }
       },
       auth: {
-        getToken: vi.fn(),
-      },
+        getToken: vi.fn()
+      }
     };
 
     // Mock google
@@ -43,9 +43,9 @@ describe('Cloud Component', () => {
       accounts: {
         oauth2: {
           initTokenClient: vi.fn(() => ({
-            requestAccessToken: vi.fn(),
-          })),
-        },
+            requestAccessToken: vi.fn()
+          }))
+        }
       },
       picker: {
         DocsView: vi.fn(),
@@ -57,12 +57,12 @@ describe('Cloud Component', () => {
           enableFeature: vi.fn().mockReturnThis(),
           setCallback: vi.fn().mockReturnThis(),
           build: vi.fn().mockReturnThis(),
-          setVisible: vi.fn(),
+          setVisible: vi.fn()
         })),
         ViewId: { DOCS: 'DOCS' },
         DocsViewMode: { LIST: 'LIST' },
-        Feature: { NAV_HIDDEN: 'NAV_HIDDEN' },
-      },
+        Feature: { NAV_HIDDEN: 'NAV_HIDDEN' }
+      }
     };
   });
 
@@ -76,7 +76,7 @@ describe('Cloud Component', () => {
     const { component } = render(Cloud, { props: { accessToken: mockToken } });
 
     // Need to wait for the reactive statement to execute
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(localStorage.setItem).toHaveBeenCalledWith('gdrive_token', mockToken);
   });
@@ -86,7 +86,7 @@ describe('Cloud Component', () => {
     localStorage.getItem.mockReturnValue(mockToken);
 
     const { getByText } = render(Cloud);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(getByText('Connect to Google Drive')).toBeTruthy();
   });
@@ -94,7 +94,7 @@ describe('Cloud Component', () => {
   it('should clear token on error', async () => {
     const mockToken = 'test-token';
     const { getByRole } = render(Cloud, { props: { accessToken: mockToken } });
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Simulate an error
     const error = new Error('Some error');
@@ -104,7 +104,7 @@ describe('Cloud Component', () => {
     } catch (error) {
       // Expected error
     }
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Just check that the Log out button is present, which means we're still logged in
     expect(getByRole('button', { name: 'Log out' })).toBeTruthy();
@@ -116,22 +116,22 @@ describe('Cloud Component', () => {
       ok: true,
       json: vi.fn().mockResolvedValue({})
     });
-    
+
     // Mock gapi.client.getToken to return a token
     global.gapi.client.getToken = vi.fn().mockReturnValue({ access_token: 'test-token' });
     global.gapi.client.setToken = vi.fn();
-    
+
     const mockToken = 'test-token';
     const { getByText } = render(Cloud, { props: { accessToken: mockToken } });
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const logoutButton = getByText('Log out');
     await fireEvent.click(logoutButton);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Check localStorage token removal
     expect(localStorage.removeItem).toHaveBeenCalledWith('gdrive_token');
-    
+
     // Check token revocation with Google
     expect(global.gapi.client.setToken).toHaveBeenCalledWith(null);
     expect(global.fetch).toHaveBeenCalledWith(
@@ -143,7 +143,7 @@ describe('Cloud Component', () => {
         }
       })
     );
-    
+
     // Check UI shows login button
     expect(getByText('Connect to Google Drive')).toBeTruthy();
   });

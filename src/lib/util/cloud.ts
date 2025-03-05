@@ -35,12 +35,12 @@ export async function uploadFile({ accessToken, fileId, localStorageId, metadata
     );
   } catch (error: any) {
     console.error('Error uploading file:', error);
-    
+
     // Only throw auth errors, handle other errors gracefully
     if (error.errorType === DriveErrorType.AUTH_ERROR) {
       throw error;
     }
-    
+
     // Return a partial success with error info
     return {
       error: true,
@@ -60,23 +60,23 @@ export async function uploadFile({ accessToken, fileId, localStorageId, metadata
  * @returns The response from the Google Drive API
  */
 export async function uploadBlob(
-  accessToken: string, 
-  blob: Blob, 
-  filename: string, 
-  folderId: string, 
+  accessToken: string,
+  blob: Blob,
+  filename: string,
+  folderId: string,
   mimeType: string = 'application/zip'
 ) {
   const form = new FormData();
-  
+
   const metadata = {
     name: filename,
     mimeType: mimeType,
     parents: [folderId]
   };
-  
+
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', blob);
-  
+
   try {
     return await driveApiRequest(
       `${FILES_API_URL}?uploadType=multipart`,
@@ -94,12 +94,12 @@ export async function uploadBlob(
     );
   } catch (error: any) {
     console.error('Error uploading blob:', error);
-    
+
     // Only throw auth errors, handle other errors gracefully
     if (error.errorType === DriveErrorType.AUTH_ERROR) {
       throw error;
     }
-    
+
     // Return a partial success with error info
     return {
       error: true,
@@ -125,20 +125,20 @@ export async function checkFileExists(accessToken: string, filename: string, fol
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
       }
     );
-    
+
     if (data.files && data.files.length > 0) {
       return data.files[0].id;
     }
-    
+
     return null;
   } catch (error: any) {
     console.error('Error checking if file exists:', error);
-    
+
     // Only throw auth errors, handle other errors gracefully
     if (error.errorType === DriveErrorType.AUTH_ERROR) {
       throw error;
     }
-    
+
     return null;
   }
 }
@@ -160,39 +160,39 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
       }
     );
-    
+
     if (data.files && data.files.length > 0) {
       return data.files[0].id;
     }
-    
+
     // Create folder if it doesn't exist
     const metadata = {
       name: folderName,
       mimeType: 'application/vnd.google-apps.folder',
       parents: [parentFolderId]
     };
-    
+
     const createData = await driveApiRequest(
       'https://www.googleapis.com/drive/v3/files',
       {
         method: 'POST',
-        headers: new Headers({ 
+        headers: new Headers({
           'Authorization': 'Bearer ' + accessToken,
           'Content-Type': 'application/json'
         }),
         body: JSON.stringify(metadata)
       }
     );
-    
+
     return createData.id;
   } catch (error: any) {
     console.error('Error creating folder:', error);
-    
+
     // Only throw auth errors, handle other errors gracefully
     if (error.errorType === DriveErrorType.AUTH_ERROR) {
       throw error;
     }
-    
+
     // For other errors, throw a more descriptive error
     throw new Error(`Failed to create folder "${folderName}": ${error.message || 'Unknown error'}`);
   }
@@ -225,9 +225,9 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
 
   // Create folder name for images (same as mokuro file name without extension)
   const folderName = `${volume.volume_title}`;
-  
+
   // Add image files inside the folder
-  const imagePromises = volumeData.files ? 
+  const imagePromises = volumeData.files ?
     Object.entries(volumeData.files).map(([filename, file]) => {
       return zipWriter.add(`${folderName}/${filename}`, new BlobReader(file));
     }) : [];
@@ -236,7 +236,7 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
   return [
     ...imagePromises,
     zipWriter.add(
-      `${volume.volume_title}.mokuro`, 
+      `${volume.volume_title}.mokuro`,
       new TextReader(JSON.stringify(mokuroData))
     )
   ];
@@ -249,13 +249,13 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
  */
 export async function createVolumeArchive(volume: VolumeMetadata): Promise<Blob> {
   const zipWriter = new ZipWriter(new BlobWriter("application/zip"));
-  
+
   // Add the volume to the archive
   const filePromises = await addVolumeToArchive(zipWriter, volume);
-  
+
   // Wait for all files to be added
   await Promise.all(filePromises);
-  
+
   // Close the archive and get the blob
   return await zipWriter.close();
 }
@@ -268,17 +268,17 @@ export async function createVolumeArchive(volume: VolumeMetadata): Promise<Blob>
  * @returns Promise that resolves when all volumes have been uploaded
  */
 export async function exportAndUploadVolumesToDrive(
-  volumes: VolumeMetadata[], 
-  accessToken: string, 
+  volumes: VolumeMetadata[],
+  accessToken: string,
   readerFolderId: string
 ): Promise<void> {
   if (!volumes || volumes.length === 0) {
     throw new Error('No volumes to export');
   }
-  
+
   const seriesTitle = volumes[0].series_title;
   const processId = `export-upload-${Date.now()}`;
-  
+
   // Add a process to the progress tracker
   progressTrackerStore.addProcess({
     id: processId,
@@ -286,39 +286,39 @@ export async function exportAndUploadVolumesToDrive(
     progress: 0,
     status: 'Creating series folder...'
   });
-  
+
   try {
     // Create a folder for the series if it doesn't exist
     progressTrackerStore.updateProcess(processId, {
       progress: 5,
       status: `Creating folder for ${seriesTitle}...`
     });
-    
+
     const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, readerFolderId);
-    
+
     // Add the series to our store
     addSeries(seriesTitle, seriesFolderId);
-    
+
     // Sort volumes by title for consistent processing
-    const sortedVolumes = [...volumes].sort((a, b) => 
+    const sortedVolumes = [...volumes].sort((a, b) =>
       a.volume_title.localeCompare(b.volume_title, undefined, { numeric: true, sensitivity: 'base' })
     );
-    
+
     // Process each volume
     for (let i = 0; i < sortedVolumes.length; i++) {
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       const filename = `${volumeTitle}.cbz`;
-      
+
       // Update progress
       progressTrackerStore.updateProcess(processId, {
         progress: 5 + ((i / sortedVolumes.length) * 95),
         status: `Processing ${volumeTitle} (${i+1}/${sortedVolumes.length})...`
       });
-      
+
       // Check if the file already exists in Google Drive
       const existingFileId = await checkFileExists(accessToken, filename, seriesFolderId);
-      
+
       if (existingFileId) {
         // Skip this volume as it already exists
         progressTrackerStore.updateProcess(processId, {
@@ -326,51 +326,51 @@ export async function exportAndUploadVolumesToDrive(
         });
         continue;
       }
-      
+
       // Create the CBZ archive for this volume
       progressTrackerStore.updateProcess(processId, {
         status: `Creating archive for ${volumeTitle}...`
       });
-      
+
       const archiveBlob = await createVolumeArchive(volume);
-      
+
       // Upload the archive to Google Drive
       progressTrackerStore.updateProcess(processId, {
         status: `Uploading ${volumeTitle} to Google Drive...`
       });
-      
+
       const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
-      
+
       // Add the volume to our store
       if (response && response.id) {
         addVolume(seriesTitle, volumeTitle, response.id, filename);
       }
-      
+
       progressTrackerStore.updateProcess(processId, {
         status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
       });
     }
-    
+
     // All volumes have been processed
     progressTrackerStore.updateProcess(processId, {
       progress: 100,
       status: `All volumes of ${seriesTitle} processed successfully`
     });
-    
+
     // Remove the process after a delay
     setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
   } catch (error) {
     console.error('Error exporting and uploading volumes:', error);
-    
+
     // Update the progress tracker with the error
     progressTrackerStore.updateProcess(processId, {
       progress: 0,
       status: `Error: ${error.message || 'Unknown error'}`
     });
-    
+
     // Remove the process after a delay
     setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
-    
+
     throw error;
   }
 }

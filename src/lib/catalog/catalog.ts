@@ -32,11 +32,11 @@ export function deriveSeriesFromVolumes(volumeEntries: Array<VolumeMetadata>) {
 
   // Sort volumes within each title
   for (const title of titles) {
-    title.volumes
+    title.volumes;
   }
 
   // Sort titles
   titles.sort(sortTitles);
 
-  return titles ;
+  return titles;
 }

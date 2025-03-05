@@ -1,18 +1,28 @@
 <script lang="ts">
   import { Navbar, NavBrand } from 'flowbite-svelte';
-  import { UserSettingsSolid, UploadSolid, CloudArrowUpOutline } from 'flowbite-svelte-icons';
+  import { CloudArrowUpOutline, UploadSolid, UserSettingsSolid } from 'flowbite-svelte-icons';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import Settings from './Settings/Settings.svelte';
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
 
-  let settingsHidden = true;
-  let uploadModalOpen = false;
-  let isReader = false;
+  // Use $state to make these reactive
+  let settingsHidden = $state(true);
+  let uploadModalOpen = $state(false);
+  let isReader = $state(false);
 
+  // Define event handlers
   function openSettings() {
     settingsHidden = false;
+  }
+
+  function openUploadModal() {
+    uploadModalOpen = true;
+  }
+
+  function navigateToCloud() {
+    goto('/cloud');
   }
 
   afterNavigate(() => {
@@ -35,9 +45,15 @@
       </div>
     </NavBrand>
     <div class="flex md:order-2 gap-5">
-      <UserSettingsSolid class="hover:text-primary-700" on:click={openSettings} />
-      <UploadSolid class="hover:text-primary-700" on:click={() => (uploadModalOpen = true)} />
-      <CloudArrowUpOutline class="hover:text-primary-700" on:click={() => goto('/cloud')} />
+      <button onclick={openSettings} class="flex items-center justify-center w-6 h-6">
+        <UserSettingsSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+      </button>
+      <button onclick={openUploadModal} class="flex items-center justify-center w-6 h-6">
+        <UploadSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+      </button>
+      <button onclick={navigateToCloud} class="flex items-center justify-center w-6 h-6">
+        <CloudArrowUpOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+      </button>
     </div>
   </Navbar>
 </div>

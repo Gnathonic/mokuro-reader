@@ -1,19 +1,19 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { settings, updateAnkiSetting } from '$lib/settings';
-  import { AccordionItem, Label, Toggle, Input, Helper, Select } from 'flowbite-svelte';
+  import { AccordionItem, Helper, Input, Label, Select, Toggle } from 'flowbite-svelte';
 
-  $: disabled = !$settings.ankiConnectSettings.enabled;
+  let disabled = $derived(!$settings.ankiConnectSettings.enabled);
 
-  let enabled = $settings.ankiConnectSettings.enabled;
-  let cropImage = $settings.ankiConnectSettings.cropImage;
-  let grabSentence = $settings.ankiConnectSettings.grabSentence;
-  let overwriteImage = $settings.ankiConnectSettings.overwriteImage;
+  let enabled = $state($settings.ankiConnectSettings.enabled);
+  let cropImage = $state($settings.ankiConnectSettings.cropImage);
+  let grabSentence = $state($settings.ankiConnectSettings.grabSentence);
+  let overwriteImage = $state($settings.ankiConnectSettings.overwriteImage);
 
-  let pictureField = $settings.ankiConnectSettings.pictureField;
-  let sentenceField = $settings.ankiConnectSettings.sentenceField;
+  let pictureField = $state($settings.ankiConnectSettings.pictureField);
+  let sentenceField = $state($settings.ankiConnectSettings.sentenceField);
 
-  let triggerMethod = $settings.ankiConnectSettings.triggerMethod;
+  let triggerMethod = $state($settings.ankiConnectSettings.triggerMethod);
 
   const triggerOptions = [
     { value: 'rightClick', name: 'Right click (long press on mobile)' },
@@ -24,7 +24,9 @@
 </script>
 
 <AccordionItem>
-  <span slot="header">Anki Connect</span>
+  {#snippet header()}
+    <span>Anki Connect</span>
+  {/snippet}
   <div class="flex flex-col gap-5">
     <Helper
       >For anki connect integration to work, you must add the reader (<code class="text-primary-500"

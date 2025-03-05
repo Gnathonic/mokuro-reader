@@ -19,15 +19,15 @@ export function promptConfirmation(message: string, onConfirm?: () => void, onCa
 
 type ExtractionModal = {
   open: boolean;
-  firstVolume?: { series_title: string, volume_title: string };
+  firstVolume?: { series_title: string; volume_title: string };
   onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void;
   onCancel?: () => void;
 };
 export const extractionModalStore = writable<ExtractionModal | undefined>(undefined);
 
 export function promptExtraction(
-  firstVolume: { series_title: string, volume_title: string },
-  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void, 
+  firstVolume: { series_title: string; volume_title: string },
+  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void,
   onCancel?: () => void
 ) {
   extractionModalStore.set({

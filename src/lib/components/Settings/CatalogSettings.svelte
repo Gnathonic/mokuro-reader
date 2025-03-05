@@ -18,7 +18,9 @@
 </script>
 
 <AccordionItem>
-  <span slot="header">Catalog settings</span>
+  {#snippet header()}
+    <span>Catalog settings</span>
+  {/snippet}
   <div class="flex flex-col">
     <Button on:click={onClear} outline color="red">Clear catalog</Button>
   </div>

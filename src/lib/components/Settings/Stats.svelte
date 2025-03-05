@@ -4,7 +4,9 @@
 </script>
 
 <AccordionItem>
-  <span slot="header">Stats</span>
+  {#snippet header()}
+    <span>Stats</span>
+  {/snippet}
   <div>
     <p>Completed volumes: {$totalStats?.completed || 0}</p>
     <p>Pages read: {$totalStats?.pagesRead || 0}</p>

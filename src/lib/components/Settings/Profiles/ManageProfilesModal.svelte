@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { preventDefault } from 'svelte/legacy';
+
   import {
     copyProfile,
     createProfile,
@@ -7,21 +9,25 @@
     renameProfile
   } from '$lib/settings';
   import { promptConfirmation, showSnackbar } from '$lib/util';
-  import { Listgroup, ListgroupItem, Modal, Input } from 'flowbite-svelte';
+  import { Input, Listgroup, ListgroupItem, Modal } from 'flowbite-svelte';
   import {
     CirclePlusSolid,
-    CopySolid,
     EditOutline,
+    FileCopySolid,
     TrashBinSolid,
     UserEditSolid
   } from 'flowbite-svelte-icons';
   import type { ListGroupItemType } from 'flowbite-svelte/dist/types';
 
-  export let open = false;
+  interface Props {
+    open?: boolean;
+  }
 
-  $: items = Object.keys($profiles);
+  let { open = $bindable(false) }: Props = $props();
 
-  let newProfile: string;
+  let items = $derived(Object.keys($profiles));
+
+  let newProfile: string = $state();
 
   function onSubmit() {
     if (!newProfile) {
@@ -54,8 +60,8 @@
     });
   }
 
-  let profileToEdit: string | ListGroupItemType;
-  let newName: string | ListGroupItemType;
+  let profileToEdit: string | ListGroupItemType = $state();
+  let newName: string | ListGroupItemType = $state();
 
   function onEditClicked(item: string | ListGroupItemType) {
     if (profileToEdit) {
@@ -81,40 +87,45 @@
 </script>
 
 <Modal size="xs" bind:open outsideclose>
-  <Listgroup {items} let:item>
-    <ListgroupItem class="flex flex-row justify-between gap-6">
-      <div class="flex-1">
-        {#if profileToEdit === item}
-          <form on:submit|preventDefault={onEdit}>
-            <Input size="sm" bind:value={newName} autofocus on:click={onInputClick}>
-              <EditOutline
-                slot="right"
-                size="sm"
-                on:click={onEdit}
-                class="hover:text-primary-700"
-              />
-            </Input>
-          </form>
-        {:else}
-          <p class="line-clamp-1">{item}</p>
-        {/if}
-      </div>
-      <div class="flex flex-row gap-2 items-center">
-        <CopySolid size="sm" class="hover:text-primary-700" on:click={() => onCopy(item)} />
-        {#if item !== 'Default'}
-          <UserEditSolid
-            size="sm"
-            class="hover:text-primary-700"
-            on:click={() => onEditClicked(item)}
-          />
-          <TrashBinSolid size="sm" class="hover:text-primary-700" on:click={() => onDelete(item)} />
-        {/if}
-      </div>
-    </ListgroupItem>
+  <Listgroup {items}>
+    {#snippet children({ item })}
+      <ListgroupItem class="flex flex-row justify-between gap-6">
+        <div class="flex-1">
+          {#if profileToEdit === item}
+            <form onsubmit={preventDefault(onEdit)}>
+              <Input size="sm" bind:value={newName} autofocus on:click={onInputClick}>
+                {#snippet right()}
+                  <EditOutline size="sm" on:click={onEdit} class="hover:text-primary-700" />
+                {/snippet}
+              </Input>
+            </form>
+          {:else}
+            <p class="line-clamp-1">{item}</p>
+          {/if}
+        </div>
+        <div class="flex flex-row gap-2 items-center">
+          <FileCopySolid size="sm" class="hover:text-primary-700" on:click={() => onCopy(item)} />
+          {#if item !== 'Default'}
+            <UserEditSolid
+              size="sm"
+              class="hover:text-primary-700"
+              on:click={() => onEditClicked(item)}
+            />
+            <TrashBinSolid
+              size="sm"
+              class="hover:text-primary-700"
+              on:click={() => onDelete(item)}
+            />
+          {/if}
+        </div>
+      </ListgroupItem>
+    {/snippet}
   </Listgroup>
-  <form on:submit|preventDefault={onSubmit}>
+  <form onsubmit={preventDefault(onSubmit)}>
     <Input type="text" placeholder="New profile..." bind:value={newProfile}>
-      <CirclePlusSolid slot="right" class="hover:text-primary-700" on:click={onSubmit} />
+      {#snippet right()}
+        <CirclePlusSolid class="hover:text-primary-700" on:click={onSubmit} />
+      {/snippet}
     </Input>
   </form>
 </Modal>
