@@ -121,7 +121,7 @@
 
   let tokenClient: any;
   let readerFolderId = '';
-  let volumeDataId = '';
+  // volumeDataId is already declared at the top of the file
   let profilesId = '';
   let backingUp = false;
 
