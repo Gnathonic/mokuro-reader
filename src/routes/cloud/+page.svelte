@@ -862,11 +862,16 @@
 
 
   async function onUploadProfiles() {
+    // Only include parents if we're creating a new file
     const metadata = {
       mimeType: type,
-      name: PROFILES_FILE,
-      parents: [profilesId ? null : readerFolderId]
+      name: PROFILES_FILE
     };
+    
+    // Only add parents when creating a new file (not updating an existing one)
+    if (!profilesId) {
+      metadata.parents = [readerFolderId];
+    }
 
     const processId = 'upload-profiles';
     progressTrackerStore.addProcess({
@@ -1000,11 +1005,16 @@
         status: 'Uploading merged data...'
       });
 
+      // Only include parents if we're creating a new file
       const metadata = {
         mimeType: type,
-        name: VOLUME_DATA_FILE,
-        parents: [volumeDataId ? null : readerFolderId]
+        name: VOLUME_DATA_FILE
       };
+      
+      // Only add parents when creating a new file (not updating an existing one)
+      if (!volumeDataId) {
+        metadata.parents = [readerFolderId];
+      }
 
       const res = await uploadFile({
         accessToken,
