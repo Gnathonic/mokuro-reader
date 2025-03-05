@@ -1,24 +1,48 @@
 <script lang="ts">
   import { run } from 'svelte/legacy';
-
   import { processFiles } from '$lib/upload';
-  import { parseVolumesFromJson, profiles, volumes } from '$lib/settings';
-
-  import { promptConfirmation, showSnackbar, uploadFile } from '$lib/util';
+  import { parseVolumesFromJson } from '$lib/settings';
+  import { formatBytes, showSnackbar, uploadFile, promptConfirmation } from '$lib/util';
   import { Button } from 'flowbite-svelte';
   import { onMount } from 'svelte';
-  import { GoogleSolid } from 'flowbite-svelte-icons';
+  import { CloudArrowUpSolid, GoogleSolid } from 'flowbite-svelte-icons';
+  import { profiles, volumes } from '$lib/settings';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { catalog } from '$lib/catalog';
+  import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
+  import driveStore, { setDriveToken, clearDriveToken, fetchAllDriveData } from '$lib/util/drive-store';
+  import { DriveErrorType } from '$lib/util/api-helpers';
 
-  interface Props {
-    accessToken?: string;
-  }
-
-  let { accessToken = $bindable('') }: Props = $props();
+  let accessToken = '';
 
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
-    // Check if it's a connectivity issue
+    console.error(`${context} error:`, error);
+
+    // If the error has been processed by our API helpers
+    if (error.errorType) {
+      switch (error.errorType) {
+        case DriveErrorType.AUTH_ERROR:
+          // Log the user out for auth errors
+          logout();
+          showSnackbar(`Authentication error: Please log in again`);
+          break;
+
+        case DriveErrorType.CONNECTION_ERROR:
+          showSnackbar('Connection error: Please check your internet connection');
+          break;
+
+        case DriveErrorType.RATE_LIMIT:
+          showSnackbar('Rate limit exceeded: Please try again later');
+          break;
+
+        default:
+          showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
+      return;
+    }
+
+    // Legacy error handling for errors not processed by our API helpers
     const errorMessage = error.toString().toLowerCase();
     const isConnectivityError =
       errorMessage.includes('network') ||
@@ -27,14 +51,23 @@
       errorMessage.includes('internet');
 
     if (!isConnectivityError) {
-      // Log the user out for non-connectivity errors
-      logout();
-      showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      // Only log out for auth-related errors
+      if (
+        errorMessage.includes('auth') ||
+        errorMessage.includes('token') ||
+        errorMessage.includes('permission') ||
+        errorMessage.includes('access') ||
+        errorMessage.includes('unauthorized') ||
+        errorMessage.includes('forbidden')
+      ) {
+        logout();
+        showSnackbar(`Authentication error: Please log in again`);
+      } else {
+        showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
     } else {
       showSnackbar('Connection error: Please check your internet connection');
     }
-
-    console.error(`${context} error:`, error);
   }
 
   const CLIENT_ID = import.meta.env.VITE_GDRIVE_CLIENT_ID;
@@ -52,17 +85,93 @@
 
   let tokenClient: any;
   let readerFolderId = '';
-  let volumeDataId = $state('');
-  let profilesId = $state('');
+  let volumeDataId = '';
+  let profilesId = '';
+  let backingUp = false;
 
   // This variable is used to track if we're connected to Google Drive
   // and is used in the UI to show/hide the login button
 
-  run(() => {
-    if (accessToken) {
-      localStorage.setItem('gdrive_token', accessToken);
+  $: if (accessToken) {
+    localStorage.setItem('gdrive_token', accessToken);
+  }
+
+  // Subscribe to the drive store to keep accessToken in sync
+  $: if ($driveStore.accessToken && !accessToken) {
+    accessToken = $driveStore.accessToken;
+  }
+
+  async function onBackupAllSeries() {
+    if (!$driveStore.isLoggedIn || !accessToken) {
+      showSnackbar('Please connect to Google Drive first');
+      return;
     }
-  });
+
+    if (!$catalog || $catalog.length === 0) {
+      showSnackbar('No series to backup');
+      return;
+    }
+
+    try {
+      backingUp = true;
+
+      // Create a master process for tracking overall progress
+      const masterProcessId = `backup-all-series-${Date.now()}`;
+      progressTrackerStore.addProcess({
+        id: masterProcessId,
+        description: `Backing up all series to Google Drive`,
+        progress: 0,
+        status: `Preparing to backup ${$catalog.length} series...`
+      });
+
+      // Process each series one by one
+      for (let i = 0; i < $catalog.length; i++) {
+        const series = $catalog[i];
+        const seriesTitle = series.volumes[0]?.series_title || 'Unknown Series';
+        const volumeTitles = series.volumes.map(vol => vol.volume_title);
+
+        // Check if this series is already fully backed up
+        // Since we're now fetching data on demand, we need to check the current state
+        const isFullyBackedUp = volumeTitles.every(volumeTitle =>
+          !!$driveStore.series[seriesTitle]?.volumes[volumeTitle]
+        );
+
+        if (isFullyBackedUp) {
+          // Skip this series as it's already backed up
+          progressTrackerStore.updateProcess(masterProcessId, {
+            progress: ((i + 1) / $catalog.length) * 100,
+            status: `${seriesTitle} already backed up (${i+1}/${$catalog.length})...`
+          });
+          continue;
+        }
+
+        // Update master progress
+        progressTrackerStore.updateProcess(masterProcessId, {
+          progress: (i / $catalog.length) * 100,
+          status: `Processing ${seriesTitle} (${i+1}/${$catalog.length})...`
+        });
+
+        // Export and upload this series
+        await exportAndUploadVolumesToDrive(series.volumes, accessToken, readerFolderId);
+      }
+
+      // All series have been processed
+      progressTrackerStore.updateProcess(masterProcessId, {
+        progress: 100,
+        status: `All ${$catalog.length} series backed up successfully`
+      });
+
+      // Remove the process after a delay
+      setTimeout(() => progressTrackerStore.removeProcess(masterProcessId), 3000);
+
+      showSnackbar('All series backed up to Google Drive');
+    } catch (error) {
+      console.error('Error backing up all series:', error);
+      showSnackbar(`Error backing up series: ${error.message || 'Unknown error'}`);
+    } finally {
+      backingUp = false;
+    }
+  }
 
   async function getFileSize(fileId: string): Promise<number> {
     try {
@@ -77,11 +186,7 @@
     }
   }
 
-  function xhrDownloadFileIdWithTracking(
-    fileId: string,
-    fileName: string,
-    progressCallback: (loaded: number) => void
-  ) {
+  function xhrDownloadFileIdWithTracking(fileId: string, fileName: string, progressCallback: (loaded: number) => void) {
     return new Promise<Blob>(async (resolve, reject) => {
       const { access_token } = gapi.auth.getToken();
       const xhr = new XMLHttpRequest();
@@ -133,6 +238,7 @@
     if (resp?.error !== undefined) {
       localStorage.removeItem('gdrive_token');
       accessToken = '';
+      clearDriveToken();
       throw resp;
     }
 
@@ -174,6 +280,9 @@
         readerFolderId = id || '';
       }
 
+      // Update the drive store with the token and reader folder ID
+      setDriveToken(accessToken, readerFolderId);
+
       progressTrackerStore.updateProcess(processId, {
         progress: 60,
         status: 'Checking for volume data...'
@@ -189,7 +298,7 @@
       }
 
       progressTrackerStore.updateProcess(processId, {
-        progress: 80,
+        progress: 70,
         status: 'Checking for profiles...'
       });
 
@@ -201,6 +310,14 @@
       if (profilesRes.files?.length !== 0) {
         profilesId = profilesRes.files?.[0].id || '';
       }
+
+      // Fetch all series and volumes data in a single operation
+      progressTrackerStore.updateProcess(processId, {
+        progress: 80,
+        status: 'Fetching backed up series data...'
+      });
+
+      await fetchAllDriveData(accessToken, readerFolderId);
 
       progressTrackerStore.updateProcess(processId, {
         progress: 100,
@@ -221,17 +338,22 @@
     }
   }
 
+  // Function to sign in to Google Drive
   function signIn() {
     // Always show the account picker to allow switching accounts
     tokenClient.requestAccessToken({ prompt: 'consent' });
   }
 
-  export function logout() {
+  // Function to log out from Google Drive
+  function logout() {
     // Remove token from localStorage
     localStorage.removeItem('gdrive_token');
 
     // Clear the token from memory
     accessToken = '';
+
+    // Clear the token from our store
+    clearDriveToken();
 
     // Revoke the token with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
@@ -245,54 +367,17 @@
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
-      }).catch((error) => {
+      }).catch(error => {
         console.error('Error revoking token:', error);
       });
     }
   }
 
-  onMount(() => {
-    gapi.load('client', async () => {
-      try {
-        await gapi.client.init({
-          apiKey: API_KEY,
-          discoveryDocs: [DISCOVERY_DOC]
-        });
-
-        // Initialize token client after gapi client is ready
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SCOPES,
-          callback: connectDrive
-        });
-
-        // Try to restore the saved token only after gapi client is initialized
-        const savedToken = localStorage.getItem('gdrive_token');
-        if (savedToken) {
-          try {
-            // Set the token in gapi client
-            gapi.client.setToken({ access_token: savedToken });
-            accessToken = savedToken;
-            await connectDrive({ access_token: savedToken });
-          } catch (error) {
-            console.error('Failed to restore saved token:', error);
-            // Token will be cleared in connectDrive if there's an error
-          }
-        }
-      } catch (error) {
-        handleDriveError(error, 'initializing Google Drive');
-      }
-    });
-
-    gapi.load('picker', () => {});
-  });
-
+  // Function to create a picker for selecting files from Google Drive
   function createPicker() {
     // Create a view for ZIP/CBZ files
     const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
-      .setMimeTypes(
-        'application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz'
-      )
+      .setMimeTypes('application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz')
       .setMode(google.picker.DocsViewMode.LIST)
       .setIncludeFolders(true)
       .setSelectFolderEnabled(true)
@@ -315,58 +400,59 @@
     picker.setVisible(true);
   }
 
-  async function listFilesInFolder(folderId) {
-    try {
-      const { result } = await gapi.client.drive.files.list({
-        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
-        fields: 'files(id, name, mimeType)',
-        pageSize: 1000
-      });
+  // Initialize Google Drive API on component mount
+  onMount(() => {
+    gapi.load('client', async () => {
+      try {
+        await gapi.client.init({
+          apiKey: API_KEY,
+          discoveryDocs: [DISCOVERY_DOC]
+        });
 
-      return result.files || [];
-    } catch (error) {
-      handleDriveError(error, 'listing files in folder');
-      return [];
-    }
-  }
+        // Initialize token client after gapi client is ready
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPES,
+          callback: connectDrive
+        });
 
-  // Pass the scanProcessId as a parameter
-  async function processFolder(folderId, folderName, scanProcessId) {
-    const files = await listFilesInFolder(folderId);
-    const allFiles = [];
+        // Try to restore the token from our store or localStorage
+        const storedToken = $driveStore.accessToken || localStorage.getItem('gdrive_token');
+        if (storedToken) {
+          try {
+            // Set the token in gapi client
+            gapi.client.setToken({ access_token: storedToken });
+            accessToken = storedToken;
 
-    // Process each file in the folder
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+            // If we have a reader folder ID in the store, use it
+            if ($driveStore.readerFolderId) {
+              readerFolderId = $driveStore.readerFolderId;
 
-      // Update the scan process with subfolder information
-      progressTrackerStore.updateProcess(scanProcessId, {
-        status: `Scanning ${folderName} (${i + 1}/${files.length}): ${file.name}`
-      });
+              // Fetch all Drive data to update our backup status
+              await fetchAllDriveData(storedToken, readerFolderId);
+            }
 
-      if (file.mimeType === 'application/vnd.google-apps.folder') {
-        // Recursively process subfolders - pass the same scanProcessId
-        const subfolderFiles = await processFolder(file.id, file.name, scanProcessId);
-        allFiles.push(...subfolderFiles);
-      } else {
-        // Add file to the list
-        allFiles.push(file);
+            await connectDrive({ access_token: storedToken });
+          } catch (error) {
+            console.error('Failed to restore saved token:', error);
+            // Token will be cleared in connectDrive if there's an error
+          }
+        }
+      } catch (error) {
+        handleDriveError(error, 'initializing Google Drive');
       }
-    }
+    });
 
-    return allFiles;
-  }
+    gapi.load('picker', () => {});
+  });
 
-  async function downloadAndProcessFiles(
-    fileList: { id: string; name: string; mimeType: string }[],
-    existingProcessId?: string
-  ) {
+  // Function to download and process files from Google Drive
+  async function downloadAndProcessFiles(fileList: { id: string; name: string; mimeType: string }[], existingProcessId?: string) {
     // Import the worker pool dynamically
     const { WorkerPool } = await import('$lib/util/worker-pool');
 
     // Use the existing processId if provided, otherwise create a new one
-    const overallProcessId =
-      existingProcessId ||
+    const overallProcessId = existingProcessId ||
       `download-batch-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
     // Sort files by name
@@ -397,7 +483,7 @@
 
     try {
       // Get file sizes in parallel using Promise.all
-      const sizePromises = sortedFiles.map((file) => getFileSize(file.id));
+      const sizePromises = sortedFiles.map(file => getFileSize(file.id));
       const sizes = await Promise.all(sizePromises);
 
       // Store sizes in the map and calculate total
@@ -426,9 +512,7 @@
     // This is not a hard limit - tasks that individually need more than 500MB can still run
     // It just prevents starting new tasks when the current pool already exceeds 500MB
     const memoryLimitMB = 500; // 500 MB memory threshold
-    console.log(
-      `Creating worker pool with ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`
-    );
+    console.log(`Creating worker pool with ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`);
     const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
 
     // Track download progress
@@ -452,7 +536,7 @@
       if (existingProcessId) {
         // If we're using an existing process ID, scale the download progress to 30-100%
         // Download phase is 30-100% of the total progress
-        progressPercentage = 30 + (totalLoaded / totalBytesToDownload) * 70;
+        progressPercentage = 30 + ((totalLoaded / totalBytesToDownload) * 70);
       } else {
         // If this is a standalone download, use the full 0-100% range
         progressPercentage = (totalLoaded / totalBytesToDownload) * 100;
@@ -472,9 +556,7 @@
       const checkAllComplete = () => {
         // Log current memory usage
         const memUsage = workerPool.memoryUsage;
-        console.log(
-          `Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`
-        );
+        console.log(`Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`);
 
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
@@ -514,9 +596,7 @@
           50 * 1024 * 1024 // Minimum 50MB
         );
 
-        console.log(
-          `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
-        );
+        console.log(`Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`);
 
         workerPool.addTask({
           id: fileInfo.id,
@@ -569,7 +649,7 @@
               updateOverallProgress();
               checkAllComplete();
             } finally {
-              releaseMemory();
+              releaseMemory()
             }
           },
           onError: (data) => {
@@ -602,6 +682,49 @@
         resolve();
       }
     });
+  }
+
+  // Function to list files in a folder
+  async function listFilesInFolder(folderId) {
+    try {
+      const { result } = await gapi.client.drive.files.list({
+        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
+        fields: 'files(id, name, mimeType)',
+        pageSize: 1000
+      });
+
+      return result.files || [];
+    } catch (error) {
+      handleDriveError(error, 'listing files in folder');
+      return [];
+    }
+  }
+
+  // Function to process a folder recursively
+  async function processFolder(folderId, folderName, scanProcessId) {
+    const files = await listFilesInFolder(folderId);
+    const allFiles = [];
+
+    // Process each file in the folder
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+
+      // Update the scan process with subfolder information
+      progressTrackerStore.updateProcess(scanProcessId, {
+        status: `Scanning ${folderName} (${i+1}/${files.length}): ${file.name}`
+      });
+
+      if (file.mimeType === 'application/vnd.google-apps.folder') {
+        // Recursively process subfolders - pass the same scanProcessId
+        const subfolderFiles = await processFolder(file.id, file.name, scanProcessId);
+        allFiles.push(...subfolderFiles);
+      } else {
+        // Add file to the list
+        allFiles.push(file);
+      }
+    }
+
+    return allFiles;
   }
 
   async function pickerCallback(data: google.picker.ResponseObject) {
@@ -651,7 +774,7 @@
           }
 
           // Filter out any non-zip files that might have been included in folders
-          allFiles = allFiles.filter((file) => {
+          allFiles = allFiles.filter(file => {
             const mimeType = file.mimeType.toLowerCase();
             return mimeType.includes('zip') || mimeType.includes('cbz');
           });
@@ -901,15 +1024,18 @@
         <Button color="red" on:click={logout}>Log out</Button>
       </div>
       <p class="text-center">
-        Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700"
-          >{READER_FOLDER}</span
-        > folder in your Google Drive.
+        Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700">{READER_FOLDER}</span> folder
+        in your Google Drive.
       </p>
       <p class="text-center text-sm text-gray-500">
         You can select multiple ZIP/CBZ files or entire folders at once.
       </p>
       <div class="flex flex-col gap-4 w-full max-w-3xl">
         <Button color="blue" on:click={createPicker}>Download Manga</Button>
+        <Button color="green" on:click={onBackupAllSeries} disabled={backingUp}>
+          <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+          {backingUp ? 'Backing up...' : 'Backup All Series to Drive'}
+        </Button>
         <div class="flex-col gap-2 flex">
           <Button
             color="dark"
@@ -950,7 +1076,7 @@
     <div class="flex justify-center pt-0 sm:pt-32">
       <button
         class="w-full border rounded-lg border-slate-600 p-10 border-opacity-50 hover:bg-slate-800 max-w-3xl"
-        onclick={signIn}
+        on:click={signIn}
       >
         <div class="flex sm:flex-row flex-col gap-2 items-center justify-center">
           <GoogleSolid size="lg" />
