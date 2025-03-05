@@ -17,7 +17,8 @@
   let accessToken = '';
   let volumeDataId = '';
   let autoSyncEnabled = localStorage.getItem('gdrive_auto_sync') === 'true';
-  let lastLocalUpdate = 0;
+  // Initialize lastLocalUpdate to a time in the past to allow immediate auto-sync
+  let lastLocalUpdate = Date.now() - 10000; // 10 seconds ago
   let syncInProgress = false;
   
   // Create a store for auto sync setting
@@ -25,6 +26,7 @@
   
   // Update localStorage when auto sync setting changes
   autoSync.subscribe(value => {
+    console.log('Auto sync setting changed to:', value);
     autoSyncEnabled = value;
     localStorage.setItem('gdrive_auto_sync', value.toString());
   });
@@ -32,6 +34,12 @@
   // Subscribe to volumes store to detect changes
   volumes.subscribe(value => {
     const currentTime = Date.now();
+    console.log('Volumes updated, checking auto-sync conditions:');
+    console.log('- Auto sync enabled:', autoSyncEnabled);
+    console.log('- Logged in to Drive:', $driveStore.isLoggedIn);
+    console.log('- Volume data ID exists:', !!volumeDataId);
+    console.log('- Time since last update:', currentTime - lastLocalUpdate, 'ms');
+    console.log('- Sync not in progress:', !syncInProgress);
     
     // Only trigger sync if:
     // 1. Auto sync is enabled
@@ -48,6 +56,8 @@
       console.log('Auto sync triggered by local update');
       lastLocalUpdate = currentTime;
       onSyncVolumeData(true); // Pass true to indicate this is an auto sync
+    } else {
+      console.log('Auto sync conditions not met, skipping sync');
     }
   });
 
@@ -382,13 +392,20 @@
       if (accessToken) {
         showSnackbar('Connected to Google Drive');
         
+        console.log('Checking auto-sync on page load:');
+        console.log('- Auto sync enabled:', autoSyncEnabled);
+        console.log('- Volume data ID exists:', !!volumeDataId);
+        
         // If auto sync is enabled, trigger a sync after connection
         if (autoSyncEnabled && volumeDataId) {
+          console.log('Auto sync conditions met, will trigger sync in 1 second');
           // Wait a moment to ensure everything is initialized
           setTimeout(() => {
             console.log('Auto sync triggered on page load');
             onSyncVolumeData(true);
           }, 1000);
+        } else {
+          console.log('Auto sync conditions not met on page load, skipping sync');
         }
       }
     } catch (error) {
@@ -1290,9 +1307,10 @@
             Sync volume data
           </Button>
           
-          <div class="flex items-center gap-2 mt-2">
+          <div class="flex items-center gap-2 mt-4 p-2 border border-gray-200 rounded bg-gray-50">
             <Toggle bind:checked={$autoSync} class="mr-2" />
-            <span class="text-sm">Auto sync volume data</span>
+            <span class="text-sm font-medium">Auto sync volume data</span>
+            <span class="text-xs text-gray-500 ml-1">(Syncs when data changes or on page load)</span>
           </div>
         </div>
         <div class="flex-col gap-2 flex">
