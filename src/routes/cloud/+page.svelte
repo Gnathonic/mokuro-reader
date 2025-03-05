@@ -957,7 +957,7 @@
     try {
       // If we don't have a volume data ID, try to find it first
       if (!volumeDataId && readerFolderId) {
-        console.log('No volumeDataId found, searching for existing volume data file...');
+        console.log('No volumeDataId found, searching for existing volume data files...');
         
         // Search for volume data files
         const { result: volumeDataRes } = await gapi.client.drive.files.list({
@@ -967,12 +967,110 @@
         });
         
         if (volumeDataRes.files?.length !== 0) {
-          // Use the most recently modified file
-          volumeDataId = volumeDataRes.files[0].id;
-          console.log('Found existing volume data file with ID:', volumeDataId);
-          
-          if (volumeDataRes.files.length > 1) {
-            console.warn(`Found ${volumeDataRes.files.length} volume data files. Using the most recent one.`);
+          if (volumeDataRes.files.length === 1) {
+            // If only one file exists, use it
+            volumeDataId = volumeDataRes.files[0].id;
+            console.log('Found one volume data file with ID:', volumeDataId);
+          } else {
+            // If multiple files exist, merge them
+            console.warn(`Found ${volumeDataRes.files.length} volume data files. Merging them...`);
+            
+            // Update progress
+            progressTrackerStore.updateProcess(processId, {
+              progress: 10,
+              status: `Merging ${volumeDataRes.files.length} volume data files...`
+            });
+            
+            // Start with an empty merged volumes object
+            let mergedVolumes = {};
+            
+            // Process each file, starting with the oldest (reverse the order)
+            const sortedFiles = [...volumeDataRes.files].reverse();
+            
+            for (let i = 0; i < sortedFiles.length; i++) {
+              const file = sortedFiles[i];
+              progressTrackerStore.updateProcess(processId, {
+                progress: 10 + (i / sortedFiles.length * 10),
+                status: `Processing file ${i+1} of ${sortedFiles.length}...`
+              });
+              
+              try {
+                // Download the file
+                const { body } = await gapi.client.drive.files.get({
+                  fileId: file.id,
+                  alt: 'media'
+                });
+                
+                // Parse the file contents
+                const fileVolumes = parseVolumesFromJson(body);
+                
+                // Merge with our accumulated volumes
+                for (const [id, volume] of Object.entries(fileVolumes)) {
+                  if (!mergedVolumes[id]) {
+                    // If volume doesn't exist in merged data, add it
+                    mergedVolumes[id] = volume;
+                  } else {
+                    // If volume exists in both, keep the one with the most recent lastUpdated
+                    const mergedLastUpdated = new Date(mergedVolumes[id].lastUpdated || 0).getTime();
+                    const fileLastUpdated = new Date(volume.lastUpdated || 0).getTime();
+                    
+                    if (fileLastUpdated > mergedLastUpdated) {
+                      mergedVolumes[id] = volume;
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error(`Error processing file ${file.id}:`, error);
+                // Continue with the next file
+              }
+            }
+            
+            // Use the most recent file's ID for our update
+            volumeDataId = volumeDataRes.files[0].id;
+            console.log('Using most recent file ID for update:', volumeDataId);
+            
+            // Update local volumes with the merged data
+            volumes.update(() => mergedVolumes);
+            
+            // Upload the merged data to the most recent file
+            progressTrackerStore.updateProcess(processId, {
+              progress: 25,
+              status: 'Uploading merged data...'
+            });
+            
+            const metadata = {
+              mimeType: type,
+              name: VOLUME_DATA_FILE
+            };
+            
+            // Upload the merged data
+            await uploadFile({
+              accessToken,
+              fileId: volumeDataId,
+              metadata,
+              localStorageId: 'volumes',
+              type
+            });
+            
+            // Delete all the old files except the most recent one
+            progressTrackerStore.updateProcess(processId, {
+              progress: 30,
+              status: 'Cleaning up old files...'
+            });
+            
+            for (let i = 1; i < volumeDataRes.files.length; i++) {
+              try {
+                await gapi.client.drive.files.delete({
+                  fileId: volumeDataRes.files[i].id
+                });
+                console.log(`Deleted old volume data file: ${volumeDataRes.files[i].id}`);
+              } catch (error) {
+                console.error(`Error deleting file ${volumeDataRes.files[i].id}:`, error);
+                // Continue with the next file
+              }
+            }
+            
+            console.log('Finished merging and cleaning up volume data files.');
           }
         } else {
           console.log('No existing volume data file found, will create a new one.');
@@ -983,7 +1081,7 @@
 
       // Step 1: Download volume data if it exists
       progressTrackerStore.updateProcess(processId, {
-        progress: 20,
+        progress: 40,
         status: 'Downloading remote data...'
       });
 
@@ -1006,7 +1104,7 @@
 
       // Step 2: Merge local and remote volume data
       progressTrackerStore.updateProcess(processId, {
-        progress: 50,
+        progress: 60,
         status: 'Merging data...'
       });
 
@@ -1037,7 +1135,7 @@
 
       // Step 3: Update local store with merged data
       progressTrackerStore.updateProcess(processId, {
-        progress: 70,
+        progress: 75,
         status: 'Updating local data...'
       });
 
@@ -1045,7 +1143,7 @@
 
       // Step 4: Upload merged data back to Drive
       progressTrackerStore.updateProcess(processId, {
-        progress: 85,
+        progress: 90,
         status: 'Uploading merged data...'
       });
 
