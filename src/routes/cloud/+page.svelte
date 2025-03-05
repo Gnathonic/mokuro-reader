@@ -29,6 +29,13 @@
     console.log('Auto sync setting changed to:', value);
     autoSyncEnabled = value;
     localStorage.setItem('gdrive_auto_sync', value.toString());
+    
+    // If auto sync was just enabled and we're logged in, trigger a sync
+    if (value && $driveStore.isLoggedIn && volumeDataId && !syncInProgress) {
+      console.log('Auto sync triggered by enabling the setting');
+      // Small delay to ensure UI updates first
+      setTimeout(() => onSyncVolumeData(true), 100);
+    }
   });
   
   // Subscribe to volumes store to detect changes
@@ -482,6 +489,43 @@
 
   // Initialize Google Drive API on component mount
   onMount(() => {
+    // If auto sync is enabled and we're already logged in, trigger a sync
+    if (autoSyncEnabled && $driveStore.isLoggedIn && volumeDataId && !syncInProgress) {
+      console.log('Auto sync triggered by navigating to cloud page');
+      // Small delay to ensure component is fully mounted
+      setTimeout(() => onSyncVolumeData(true), 500);
+    }
+    // Function to check if we should auto-sync
+    const checkAndTriggerAutoSync = (trigger: string) => {
+      if (autoSyncEnabled && 
+          $driveStore.isLoggedIn && 
+          volumeDataId && 
+          !syncInProgress) {
+        console.log(`Auto sync triggered by ${trigger}`);
+        onSyncVolumeData(true);
+      }
+    };
+    
+    // Set up a periodic check for auto-sync
+    const autoSyncInterval = setInterval(() => {
+      checkAndTriggerAutoSync('periodic check');
+    }, 60000); // Check every minute
+    
+    // Set up visibility change listener to sync when user returns to the tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndTriggerAutoSync('visibility change');
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Clean up interval and event listeners on component unmount
+    return () => {
+      clearInterval(autoSyncInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+    
     gapi.load('client', async () => {
       try {
         await gapi.client.init({
@@ -1307,10 +1351,9 @@
             Sync volume data
           </Button>
           
-          <div class="flex items-center gap-2 mt-4 p-2 border border-gray-200 rounded bg-gray-50">
+          <div class="flex items-center gap-2 mt-2">
             <Toggle bind:checked={$autoSync} class="mr-2" />
-            <span class="text-sm font-medium">Auto sync volume data</span>
-            <span class="text-xs text-gray-500 ml-1">(Syncs when data changes or on page load)</span>
+            <span class="text-sm">Auto sync volume data</span>
           </div>
         </div>
         <div class="flex-col gap-2 flex">
