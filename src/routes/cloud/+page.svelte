@@ -3,7 +3,7 @@
   import { processFiles } from '$lib/upload';
   import { parseVolumesFromJson } from '$lib/settings';
   import { formatBytes, showSnackbar, uploadFile, promptConfirmation } from '$lib/util';
-  import { Button } from 'flowbite-svelte';
+  import { Button, Toggle } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { CloudArrowUpSolid, GoogleSolid } from 'flowbite-svelte-icons';
   import { profiles, volumes } from '$lib/settings';
@@ -12,8 +12,44 @@
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
   import driveStore, { setDriveToken, clearDriveToken, fetchAllDriveData } from '$lib/util/drive-store';
   import { DriveErrorType } from '$lib/util/api-helpers';
+  import { writable } from 'svelte/store';
 
   let accessToken = '';
+  let volumeDataId = '';
+  let autoSyncEnabled = localStorage.getItem('gdrive_auto_sync') === 'true';
+  let lastLocalUpdate = 0;
+  let syncInProgress = false;
+  
+  // Create a store for auto sync setting
+  const autoSync = writable(autoSyncEnabled);
+  
+  // Update localStorage when auto sync setting changes
+  autoSync.subscribe(value => {
+    autoSyncEnabled = value;
+    localStorage.setItem('gdrive_auto_sync', value.toString());
+  });
+  
+  // Subscribe to volumes store to detect changes
+  volumes.subscribe(value => {
+    const currentTime = Date.now();
+    
+    // Only trigger sync if:
+    // 1. Auto sync is enabled
+    // 2. We're logged in to Google Drive
+    // 3. We have a volume data ID
+    // 4. There's been a meaningful time gap since last update (to avoid loops)
+    // 5. We're not already syncing
+    if (autoSyncEnabled && 
+        $driveStore.isLoggedIn && 
+        volumeDataId && 
+        currentTime - lastLocalUpdate > 2000 &&
+        !syncInProgress) {
+      
+      console.log('Auto sync triggered by local update');
+      lastLocalUpdate = currentTime;
+      onSyncVolumeData(true); // Pass true to indicate this is an auto sync
+    }
+  });
 
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -327,6 +363,15 @@
 
       if (accessToken) {
         showSnackbar('Connected to Google Drive');
+        
+        // If auto sync is enabled, trigger a sync after connection
+        if (autoSyncEnabled && volumeDataId) {
+          // Wait a moment to ensure everything is initialized
+          setTimeout(() => {
+            console.log('Auto sync triggered on page load');
+            onSyncVolumeData(true);
+          }, 1000);
+        }
       }
     } catch (error) {
       progressTrackerStore.updateProcess(processId, {
@@ -867,14 +912,24 @@
     }
   }
 
-  async function onSyncVolumeData() {
-    const processId = 'sync-volume-data';
-    progressTrackerStore.addProcess({
-      id: processId,
-      description: 'Syncing volume data',
-      progress: 0,
-      status: 'Starting sync...'
-    });
+  async function onSyncVolumeData(isAutoSync = false) {
+    // If a sync is already in progress, don't start another one
+    if (syncInProgress) {
+      return;
+    }
+    
+    syncInProgress = true;
+    const processId = isAutoSync ? `auto-sync-volume-data-${Date.now()}` : 'sync-volume-data';
+    
+    // Only show progress for manual syncs or if auto sync fails
+    if (!isAutoSync) {
+      progressTrackerStore.addProcess({
+        id: processId,
+        description: 'Syncing volume data',
+        progress: 0,
+        status: 'Starting sync...'
+      });
+    }
 
     try {
       // Step 1: Download volume data if it exists
@@ -961,20 +1016,40 @@
 
       volumeDataId = res.id;
 
-      progressTrackerStore.updateProcess(processId, {
-        progress: 100,
-        status: 'Sync complete'
-      });
-      setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-
-      showSnackbar('Volume data synchronized successfully');
+      // Only update progress tracker for manual syncs
+      if (!isAutoSync) {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 100,
+          status: 'Sync complete'
+        });
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+        showSnackbar('Volume data synchronized successfully');
+      } else {
+        console.log('Auto sync completed successfully');
+      }
     } catch (error) {
-      progressTrackerStore.updateProcess(processId, {
-        progress: 0,
-        status: 'Sync failed'
-      });
-      setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+      // Always show errors, even for auto syncs
+      if (!isAutoSync) {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 0,
+          status: 'Sync failed'
+        });
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+      } else {
+        // For auto sync, create a process only on error
+        progressTrackerStore.addProcess({
+          id: processId,
+          description: 'Auto sync failed',
+          progress: 0,
+          status: 'Error during automatic synchronization'
+        });
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
+      }
+      
       handleDriveError(error, 'syncing volume data');
+    } finally {
+      // Always reset the sync in progress flag
+      syncInProgress = false;
     }
   }
 
@@ -1053,10 +1128,15 @@
         <div class="flex-col gap-2 flex">
           <Button
             color="dark"
-            on:click={() => promptConfirmation('Sync volume data with Google Drive?', onSyncVolumeData)}
+            on:click={() => promptConfirmation('Sync volume data with Google Drive?', () => onSyncVolumeData(false))}
           >
             Sync volume data
           </Button>
+          
+          <div class="flex items-center gap-2 mt-2">
+            <Toggle bind:checked={$autoSync} class="mr-2" />
+            <span class="text-sm">Auto sync volume data</span>
+          </div>
         </div>
         <div class="flex-col gap-2 flex">
           <Button
