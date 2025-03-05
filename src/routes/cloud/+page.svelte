@@ -324,16 +324,29 @@
         status: 'Checking for volume data...'
       });
 
+      // Search for volume data files with more detailed fields including modifiedTime
       const { result: volumeDataRes } = await gapi.client.drive.files.list({
-        q: `'${readerFolderId}' in parents and name='${VOLUME_DATA_FILE}'`,
-        fields: 'files(id, name)'
+        q: `'${readerFolderId}' in parents and name='${VOLUME_DATA_FILE}' and trashed=false`,
+        fields: 'files(id, name, modifiedTime, createdTime)',
+        orderBy: 'modifiedTime desc'
       });
 
       console.log('Volume data search results:', volumeDataRes);
       
       if (volumeDataRes.files?.length !== 0) {
-        volumeDataId = volumeDataRes.files?.[0].id || '';
+        // Use the most recently modified file if multiple exist
+        volumeDataId = volumeDataRes.files[0].id;
         console.log('Found volume data file with ID:', volumeDataId);
+        
+        // If multiple files were found, log a warning
+        if (volumeDataRes.files.length > 1) {
+          console.warn(`Found ${volumeDataRes.files.length} volume data files. Using the most recent one.`);
+          
+          // Log all found files for debugging
+          volumeDataRes.files.forEach((file, index) => {
+            console.log(`File ${index + 1}:`, file);
+          });
+        }
       } else {
         console.log('No volume data file found in folder:', readerFolderId);
       }
@@ -928,12 +941,10 @@
       return;
     }
     
-    console.log('Starting sync with volumeDataId:', volumeDataId);
-    
     syncInProgress = true;
     const processId = isAutoSync ? `auto-sync-volume-data-${Date.now()}` : 'sync-volume-data';
     
-    // Only show progress for manual syncs or if auto sync fails
+    // Only show progress for manual syncs
     if (!isAutoSync) {
       progressTrackerStore.addProcess({
         id: processId,
@@ -942,8 +953,34 @@
         status: 'Starting sync...'
       });
     }
-
+    
     try {
+      // If we don't have a volume data ID, try to find it first
+      if (!volumeDataId && readerFolderId) {
+        console.log('No volumeDataId found, searching for existing volume data file...');
+        
+        // Search for volume data files
+        const { result: volumeDataRes } = await gapi.client.drive.files.list({
+          q: `'${readerFolderId}' in parents and name='${VOLUME_DATA_FILE}' and trashed=false`,
+          fields: 'files(id, name, modifiedTime, createdTime)',
+          orderBy: 'modifiedTime desc'
+        });
+        
+        if (volumeDataRes.files?.length !== 0) {
+          // Use the most recently modified file
+          volumeDataId = volumeDataRes.files[0].id;
+          console.log('Found existing volume data file with ID:', volumeDataId);
+          
+          if (volumeDataRes.files.length > 1) {
+            console.warn(`Found ${volumeDataRes.files.length} volume data files. Using the most recent one.`);
+          }
+        } else {
+          console.log('No existing volume data file found, will create a new one.');
+        }
+      }
+      
+      console.log('Starting sync with volumeDataId:', volumeDataId);
+
       // Step 1: Download volume data if it exists
       progressTrackerStore.updateProcess(processId, {
         progress: 20,
