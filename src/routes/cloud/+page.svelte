@@ -14,6 +14,9 @@
   import { DriveErrorType } from '$lib/util/api-helpers';
 
   let accessToken = '';
+  
+  // Try to load volumeDataId from localStorage
+  let volumeDataId = localStorage.getItem('gdrive_volume_data_id') || '';
 
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -295,6 +298,8 @@
 
       if (volumeDataRes.files?.length !== 0) {
         volumeDataId = volumeDataRes.files?.[0].id || '';
+        // Save volumeDataId to localStorage
+        localStorage.setItem('gdrive_volume_data_id', volumeDataId);
       }
 
       progressTrackerStore.updateProcess(processId, {
@@ -346,11 +351,13 @@
 
   // Function to log out from Google Drive
   function logout() {
-    // Remove token from localStorage
+    // Remove token and volume data ID from localStorage
     localStorage.removeItem('gdrive_token');
+    localStorage.removeItem('gdrive_volume_data_id');
 
-    // Clear the token from memory
+    // Clear the values from memory
     accessToken = '';
+    volumeDataId = '';
 
     // Clear the token from our store
     clearDriveToken();
@@ -960,6 +967,8 @@
       });
 
       volumeDataId = res.id;
+      // Save volumeDataId to localStorage
+      localStorage.setItem('gdrive_volume_data_id', volumeDataId);
 
       progressTrackerStore.updateProcess(processId, {
         progress: 100,
