@@ -16,6 +16,9 @@ type FileInfo = {
 const FILES_API_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 
 export async function uploadFile({ accessToken, fileId, localStorageId, metadata, type }: FileInfo) {
+  console.log('uploadFile called with fileId:', fileId);
+  console.log('uploadFile metadata:', metadata);
+  
   const json = localStorage.getItem(localStorageId) || '';
   const blob = new Blob([json], { type });
 

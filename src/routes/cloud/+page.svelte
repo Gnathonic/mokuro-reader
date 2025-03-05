@@ -329,8 +329,13 @@
         fields: 'files(id, name)'
       });
 
+      console.log('Volume data search results:', volumeDataRes);
+      
       if (volumeDataRes.files?.length !== 0) {
         volumeDataId = volumeDataRes.files?.[0].id || '';
+        console.log('Found volume data file with ID:', volumeDataId);
+      } else {
+        console.log('No volume data file found in folder:', readerFolderId);
       }
 
       progressTrackerStore.updateProcess(processId, {
@@ -923,6 +928,8 @@
       return;
     }
     
+    console.log('Starting sync with volumeDataId:', volumeDataId);
+    
     syncInProgress = true;
     const processId = isAutoSync ? `auto-sync-volume-data-${Date.now()}` : 'sync-volume-data';
     
@@ -1016,6 +1023,8 @@
         metadata.parents = [readerFolderId];
       }
 
+      console.log('Uploading with fileId:', volumeDataId);
+      
       const res = await uploadFile({
         accessToken,
         fileId: volumeDataId,
@@ -1023,8 +1032,11 @@
         localStorageId: 'volumes',
         type
       });
-
+      
+      console.log('Upload response:', res);
+      
       volumeDataId = res.id;
+      console.log('Updated volumeDataId:', volumeDataId);
 
       // Only update progress tracker for manual syncs
       if (!isAutoSync) {

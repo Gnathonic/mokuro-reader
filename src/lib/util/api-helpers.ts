@@ -148,6 +148,9 @@ export async function driveApiRequest<T = any>(
   options: RequestInit = {},
   retryOptions: RetryOptions = {}
 ): Promise<T> {
+  console.log('driveApiRequest called with URL:', url);
+  console.log('driveApiRequest options:', options);
+  
   try {
     const response = await fetchWithRetry(url, options, retryOptions);
 
@@ -162,10 +165,13 @@ export async function driveApiRequest<T = any>(
 
     // For empty responses (like DELETE)
     if (response.status === 204) {
+      console.log('driveApiRequest empty response (204)');
       return {} as T;
     }
 
-    return await response.json();
+    const jsonResponse = await response.json();
+    console.log('driveApiRequest response:', jsonResponse);
+    return jsonResponse;
   } catch (error: any) {
     // If it's already been processed, rethrow
     if (error.errorType) {
