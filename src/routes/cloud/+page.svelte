@@ -1499,41 +1499,41 @@
             orderBy: 'modifiedTime desc',
             context: 'searching for volume data files'
           }, !isAutoSync);
-        
-        if (volumeDataFiles.length > 0) {
-          if (volumeDataFiles.length === 1) {
-            // If only one file exists, use it
-            volumeDataId = volumeDataFiles[0].id;
-            console.log('Found one volume data file with ID:', volumeDataId);
+          
+          if (volumeDataFiles.length > 0) {
+            if (volumeDataFiles.length === 1) {
+              // If only one file exists, use it
+              volumeDataId = volumeDataFiles[0].id;
+              console.log('Found one volume data file with ID:', volumeDataId);
+            } else {
+              // If multiple files exist, merge them using our helper function
+              const { mergedVolumes, mostRecentFileId } = await mergeVolumeDataFiles(volumeDataFiles, processId);
+              
+              // Set the volume data ID to the most recent file
+              volumeDataId = mostRecentFileId;
+              
+              // Update local volumes with the merged data
+              volumes.update(() => mergedVolumes);
+              
+              // Upload the merged data to the most recent file using our helper function
+              const uploadResponse = await uploadToDrive({
+                fileId: volumeDataId,
+                fileName: VOLUME_DATA_FILE,
+                localStorageId: 'volumes',
+                mimeType: JSON_MIME_TYPE,
+                progressId: processId,
+                progressStatus: 'Uploading merged data...',
+                progressValue: 25
+              });
+              
+              // Delete all the old files except the most recent one
+              await cleanupOldFiles(volumeDataFiles, processId);
+              
+              console.log('Finished merging and cleaning up volume data files.');
+            }
           } else {
-            // If multiple files exist, merge them using our helper function
-            const { mergedVolumes, mostRecentFileId } = await mergeVolumeDataFiles(volumeDataFiles, processId);
-            
-            // Set the volume data ID to the most recent file
-            volumeDataId = mostRecentFileId;
-            
-            // Update local volumes with the merged data
-            volumes.update(() => mergedVolumes);
-            
-            // Upload the merged data to the most recent file using our helper function
-            const uploadResponse = await uploadToDrive({
-              fileId: volumeDataId,
-              fileName: VOLUME_DATA_FILE,
-              localStorageId: 'volumes',
-              mimeType: JSON_MIME_TYPE,
-              progressId: processId,
-              progressStatus: 'Uploading merged data...',
-              progressValue: 25
-            });
-            
-            // Delete all the old files except the most recent one
-            await cleanupOldFiles(volumeDataFiles, processId);
-            
-            console.log('Finished merging and cleaning up volume data files.');
+            console.log('No existing volume data file found, will create a new one.');
           }
-        } else {
-          console.log('No existing volume data file found, will create a new one.');
-        }
       }
       
       console.log('Starting sync with volumeDataId:', volumeDataId);
