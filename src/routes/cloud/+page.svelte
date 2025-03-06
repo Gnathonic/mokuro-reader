@@ -107,6 +107,13 @@
       return body;
     } catch (error) {
       console.error('Error downloading file:', error);
+      
+      // If we get a not found error, mark the cache as stale
+      if (error.status === 404 || 
+          (error.message && error.message.toLowerCase().includes('not found'))) {
+        driveCache.markStale();
+      }
+      
       return parseJson ? {} : null;
     }
   }
@@ -155,7 +162,17 @@
     });
     
     // Mark the cache as stale since we've modified Drive contents
-    driveFileCache.markStale();
+    driveCache.markStale();
+    
+    // If this was a new file, add it to our cache
+    if (response && response.id && fileName && parentFolderId) {
+      driveCache.addFile({
+        id: response.id,
+        name: fileName,
+        mimeType,
+        parents: [parentFolderId]
+      });
+    }
     
     return response;
   }
@@ -180,17 +197,16 @@
         await gapi.client.drive.files.delete({
           fileId: files[i].id
         });
+        
+        // Remove the file from our cache
+        driveCache.removeFile(files[i].id);
+        
         deletedAny = true;
         console.log(`Deleted old file: ${files[i].id}`);
       } catch (error) {
         console.error(`Error deleting file ${files[i].id}:`, error);
         // Continue with the next file
       }
-    }
-    
-    // Mark the cache as stale if we deleted any files
-    if (deletedAny) {
-      driveFileCache.markStale();
     }
     
     console.log('Finished cleaning up old files.');
@@ -506,13 +522,13 @@
       });
 
       // Clear the cache when connecting to ensure we get fresh data
-      driveFileCache.clear();
+      driveCache.clear();
       
       // Find the reader folder
-      const readerFolders = await listDriveFiles({
+      const readerFolders = await driveCache.fetchFiles({
         mimeTypes: [FOLDER_MIME_TYPE],
         name: READER_FOLDER,
-        fields: 'files(id)',
+        fields: 'files(id, name, mimeType, parents)',
         context: 'checking for reader folder'
       });
 
@@ -571,9 +587,9 @@
         status: 'Fetching backed up series data...'
       });
 
-      // Mark the cache as stale before fetching all data
-      driveFileCache.markStale();
+      // Mark the cache as initialized after fetching all data
       await fetchAllDriveData(accessToken, readerFolderId);
+      driveCache.initialized = true;
 
       progressTrackerStore.updateProcess(processId, {
         progress: 100,
@@ -628,7 +644,7 @@
     clearDriveToken();
     
     // Clear the file cache
-    driveFileCache.clear();
+    driveCache.clear();
 
     // Revoke the token with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
@@ -677,8 +693,8 @@
 
   // Initialize Google Drive API on component mount
   onMount(() => {
-    // Initialize the drive file cache
-    driveFileCache.clear();
+    // Initialize the drive cache
+    driveCache.clear();
     
     // If auto sync is enabled and we're already logged in, trigger a sync
     if (autoSyncEnabled && $driveStore.isLoggedIn && volumeDataId && !syncInProgress) {
@@ -1000,85 +1016,118 @@
   }
 
   /**
-   * Drive file cache to minimize API calls
-   * This stores the results of list operations to avoid redundant API calls
+   * Simple virtual Google Drive cache to minimize API calls
+   * This stores file metadata in a structure similar to Google Drive
    */
-  const driveFileCache = {
-    // Main cache object to store file listings by query
-    cache: {},
+  const driveCache = {
+    // Flag to indicate if the cache is initialized
+    initialized: false,
     
     // Flag to indicate if the cache is stale and needs refreshing
     isStale: false,
     
-    // Last time the cache was refreshed
-    lastRefreshed: 0,
+    // Store files by ID for quick lookup
+    filesById: {},
     
-    // Generate a cache key from query parameters
-    generateKey(params) {
-      return JSON.stringify(params);
-    },
+    // Store files by parent ID for folder navigation
+    filesByParent: {},
     
-    // Get files from cache if available, otherwise fetch from API
-    async getFiles(params, forceRefresh = false) {
-      const cacheKey = this.generateKey(params);
-      const now = Date.now();
-      const cacheMaxAge = 5 * 60 * 1000; // 5 minutes
+    // Store files by name and parent for quick lookups
+    filesByNameAndParent: {},
+    
+    // Add a file to the cache
+    addFile(file) {
+      if (!file || !file.id) return;
       
-      // Check if we need to refresh the cache
-      const needsRefresh = forceRefresh || 
-                          this.isStale || 
-                          !this.cache[cacheKey] ||
-                          (now - this.lastRefreshed > cacheMaxAge);
+      // Store by ID
+      this.filesById[file.id] = file;
       
-      if (needsRefresh) {
-        console.log(`Cache miss or refresh needed for query: ${params.context || 'unknown'}`);
-        try {
-          const files = await this._fetchFilesFromDrive(params);
-          this.cache[cacheKey] = {
-            files,
-            timestamp: now
-          };
-          this.lastRefreshed = now;
-          this.isStale = false;
-          return files;
-        } catch (error) {
-          // If fetch fails, return cached data if available
-          if (this.cache[cacheKey]) {
-            console.warn(`Failed to refresh cache, using stale data for: ${params.context || 'unknown'}`);
-            return this.cache[cacheKey].files;
-          }
-          throw error;
+      // Store by parent
+      if (file.parents && file.parents.length > 0) {
+        const parentId = file.parents[0];
+        if (!this.filesByParent[parentId]) {
+          this.filesByParent[parentId] = [];
         }
-      } else {
-        console.log(`Cache hit for query: ${params.context || 'unknown'}`);
-        return this.cache[cacheKey].files;
+        
+        // Check if file already exists in this parent's array
+        const existingIndex = this.filesByParent[parentId].findIndex(f => f.id === file.id);
+        if (existingIndex >= 0) {
+          // Update existing entry
+          this.filesByParent[parentId][existingIndex] = file;
+        } else {
+          // Add new entry
+          this.filesByParent[parentId].push(file);
+        }
+        
+        // Store by name and parent for quick lookups
+        const key = `${parentId}:${file.name}`;
+        this.filesByNameAndParent[key] = file;
       }
     },
     
-    // Mark the cache as stale (e.g., after file operations that modify Drive contents)
+    // Remove a file from the cache
+    removeFile(fileId) {
+      if (!fileId || !this.filesById[fileId]) return;
+      
+      const file = this.filesById[fileId];
+      
+      // Remove from filesById
+      delete this.filesById[fileId];
+      
+      // Remove from filesByParent
+      if (file.parents && file.parents.length > 0) {
+        const parentId = file.parents[0];
+        if (this.filesByParent[parentId]) {
+          this.filesByParent[parentId] = this.filesByParent[parentId].filter(f => f.id !== fileId);
+          
+          // Remove from filesByNameAndParent
+          const key = `${parentId}:${file.name}`;
+          delete this.filesByNameAndParent[key];
+        }
+      }
+    },
+    
+    // Get a file by ID
+    getFileById(id) {
+      return this.filesById[id] || null;
+    },
+    
+    // Get files by parent ID
+    getFilesByParent(parentId) {
+      return this.filesByParent[parentId] || [];
+    },
+    
+    // Get a file by name and parent
+    getFileByNameAndParent(name, parentId) {
+      const key = `${parentId}:${name}`;
+      return this.filesByNameAndParent[key] || null;
+    },
+    
+    // Mark the cache as stale
     markStale() {
-      console.log('Marking drive file cache as stale');
+      console.log('Marking drive cache as stale');
       this.isStale = true;
     },
     
     // Clear the entire cache
     clear() {
-      console.log('Clearing drive file cache');
-      this.cache = {};
+      console.log('Clearing drive cache');
+      this.initialized = false;
       this.isStale = false;
-      this.lastRefreshed = 0;
+      this.filesById = {};
+      this.filesByParent = {};
+      this.filesByNameAndParent = {};
     },
     
-    // Internal method to fetch files from Drive API
-    async _fetchFilesFromDrive({
+    // Fetch files from Drive API and update the cache
+    async fetchFiles({
       parentId = null,
       name = null,
       mimeTypes = [],
-      fields = 'files(id, name, mimeType)',
+      fields = 'files(id, name, mimeType, parents)',
       orderBy = null,
       trashed = false,
-      pageSize = 1000,
-      context = 'listing files'
+      context = 'fetching files'
     }) {
       try {
         // Build the query parts
@@ -1110,7 +1159,7 @@
         const params: any = {
           q: query,
           fields,
-          pageSize
+          pageSize: 1000
         };
         
         // Add orderBy if provided
@@ -1121,15 +1170,23 @@
         console.log(`Making Drive API list call for: ${context}`);
         // Execute the request
         const { result } = await gapi.client.drive.files.list(params);
+        const files = result.files || [];
         
-        return result.files || [];
+        // Add files to cache
+        files.forEach(file => this.addFile(file));
+        
+        // If this was a folder listing, mark that we've cached this folder's contents
+        if (parentId && files.length > 0) {
+          this.filesByParent[parentId] = files;
+        }
+        
+        return files;
       } catch (error) {
         // Check if this is an error that might indicate our cache is out of sync
         if (error.errorType === DriveErrorType.NOT_FOUND || 
             error.status === 404 || 
             (error.message && error.message.toLowerCase().includes('not found'))) {
-          // Mark the cache as stale to force a refresh on next attempt
-          driveFileCache.markStale();
+          this.markStale();
           console.warn('Resource not found, marking cache as stale');
         }
         
@@ -1149,12 +1206,21 @@
   async function getFileId(name, parentId, forceRefresh = false) {
     if (!parentId) return null;
     
-    const files = await listDriveFiles({
+    // Check if we have this file in the cache
+    if (!forceRefresh && !driveCache.isStale) {
+      const cachedFile = driveCache.getFileByNameAndParent(name, parentId);
+      if (cachedFile) {
+        return cachedFile.id;
+      }
+    }
+    
+    // If not in cache or cache is stale, fetch from Drive
+    const files = await driveCache.fetchFiles({
       parentId,
       name,
-      fields: 'files(id)',
+      fields: 'files(id, name, parents)',
       context: `getting ID for ${name}`
-    }, forceRefresh);
+    });
     
     return files.length > 0 ? files[0].id : null;
   }
@@ -1165,7 +1231,7 @@
    * @returns The volume data file ID if found, null otherwise
    */
   async function getVolumeDataId(forceRefresh = false) {
-    if (volumeDataId) return volumeDataId;
+    if (volumeDataId && !forceRefresh && !driveCache.isStale) return volumeDataId;
     
     const id = await getFileId(VOLUME_DATA_FILE, readerFolderId, forceRefresh);
     if (id) volumeDataId = id;
@@ -1178,7 +1244,7 @@
    * @returns The profiles file ID if found, null otherwise
    */
   async function getProfilesId(forceRefresh = false) {
-    if (profilesId) return profilesId;
+    if (profilesId && !forceRefresh && !driveCache.isStale) return profilesId;
     
     const id = await getFileId(PROFILES_FILE, readerFolderId, forceRefresh);
     if (id) profilesId = id;
@@ -1186,32 +1252,45 @@
   }
 
   /**
-   * Unified function to list files in Google Drive with caching
-   * @param options Configuration options for the list operation
-   * @returns Array of files matching the query
+   * Function to list files in a folder using our cache
+   * @param parentId The parent folder ID
+   * @param options Additional options
+   * @returns Array of files in the folder
    */
-  async function listDriveFiles(params = {}, forceRefresh = false) {
-    return driveFileCache.getFiles(params, forceRefresh);
+  async function listFilesInFolder(parentId, options = {}) {
+    const { forceRefresh = false, mimeTypes = [] } = options;
+    
+    // Check if we have this folder's contents in the cache
+    if (!forceRefresh && !driveCache.isStale) {
+      const cachedFiles = driveCache.getFilesByParent(parentId);
+      if (cachedFiles.length > 0) {
+        // Filter by mime types if specified
+        if (mimeTypes.length > 0) {
+          return cachedFiles.filter(file => mimeTypes.includes(file.mimeType));
+        }
+        return cachedFiles;
+      }
+    }
+    
+    // If not in cache or cache is stale, fetch from Drive
+    return await driveCache.fetchFiles({
+      parentId,
+      mimeTypes,
+      context: `listing files in folder ${parentId}`
+    });
   }
-  
-  // Legacy wrapper for backward compatibility
-  async function listFilesInFolder(folderId) {
-    return listDriveFiles({
-      parentId: folderId,
+
+  // Function to process a folder recursively
+  async function processFolder(folderId, folderName, scanProcessId) {
+    const files = await listFilesInFolder(folderId, {
       mimeTypes: [
         'application/zip', 
         'application/x-zip-compressed', 
         'application/vnd.comicbook+zip', 
         'application/x-cbz',
         'application/vnd.google-apps.folder'
-      ],
-      context: 'listing files in folder'
+      ]
     });
-  }
-
-  // Function to process a folder recursively
-  async function processFolder(folderId, folderName, scanProcessId) {
-    const files = await listFilesInFolder(folderId);
     const allFiles = [];
 
     // Process each file in the folder
