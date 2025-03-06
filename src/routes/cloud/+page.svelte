@@ -1534,6 +1534,7 @@
           } else {
             console.log('No existing volume data file found, will create a new one.');
           }
+        }
       }
       
       console.log('Starting sync with volumeDataId:', volumeDataId);
