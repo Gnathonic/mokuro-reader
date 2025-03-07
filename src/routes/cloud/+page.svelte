@@ -16,10 +16,15 @@
 
   let accessToken = '';
   let volumeDataId = '';
-  let autoSyncEnabled = localStorage.getItem('gdrive_auto_sync') === 'true';
+  let autoSyncEnabled = false;
   // Initialize lastLocalUpdate to a time in the past to allow immediate auto-sync
   let lastLocalUpdate = Date.now() - 10000; // 10 seconds ago
   let syncInProgress = false;
+  
+  // Check localStorage in browser environment
+  if (typeof localStorage !== 'undefined') {
+    autoSyncEnabled = localStorage.getItem('gdrive_auto_sync') === 'true';
+  }
   
   // Create a store for auto sync setting
   const autoSync = writable(autoSyncEnabled);
@@ -28,7 +33,11 @@
   autoSync.subscribe(value => {
     console.log('Auto sync setting changed to:', value);
     autoSyncEnabled = value;
-    localStorage.setItem('gdrive_auto_sync', value.toString());
+    
+    // Only use localStorage in browser environment
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('gdrive_auto_sync', value.toString());
+    }
     
     // If auto sync was just enabled and we're logged in, trigger a sync
     if (value && $driveStore.isLoggedIn && volumeDataId && !syncInProgress) {
@@ -145,7 +154,7 @@
   // This variable is used to track if we're connected to Google Drive
   // and is used in the UI to show/hide the login button
 
-  $: if (accessToken) {
+  $: if (accessToken && typeof localStorage !== 'undefined') {
     localStorage.setItem('gdrive_token', accessToken);
   }
 
@@ -289,7 +298,9 @@
 
   export async function connectDrive(resp?: any) {
     if (resp?.error !== undefined) {
-      localStorage.removeItem('gdrive_token');
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('gdrive_token');
+      }
       accessToken = '';
       clearDriveToken();
       throw resp;
@@ -433,8 +444,10 @@
 
   // Function to log out from Google Drive
   function logout() {
-    // Remove token from localStorage
-    localStorage.removeItem('gdrive_token');
+    // Remove token from localStorage if available
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('gdrive_token');
+    }
 
     // Clear the token from memory
     accessToken = '';
@@ -1379,7 +1392,7 @@
     <div class="flex justify-center pt-0 sm:pt-32">
       <button
         class="w-full border rounded-lg border-slate-600 p-10 border-opacity-50 hover:bg-slate-800 max-w-3xl"
-        on:click={signIn}
+        onclick={signIn}
       >
         <div class="flex sm:flex-row flex-col gap-2 items-center justify-center">
           <GoogleSolid size="lg" />
