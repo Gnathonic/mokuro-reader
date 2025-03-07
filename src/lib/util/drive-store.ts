@@ -48,18 +48,21 @@ const initialDriveData: DriveStoreData = {
 // Try to load only auth data from localStorage, not series data
 function loadDriveData(): DriveStoreData {
   try {
-    // Only load the token and reader folder ID from localStorage
-    const savedToken = localStorage.getItem('gdrive_token');
-    const savedReaderFolderId = localStorage.getItem('gdrive_reader_folder_id');
+    // Check if localStorage is available (it won't be in SSR)
+    if (typeof localStorage !== 'undefined') {
+      // Only load the token and reader folder ID from localStorage
+      const savedToken = localStorage.getItem('gdrive_token');
+      const savedReaderFolderId = localStorage.getItem('gdrive_reader_folder_id');
 
-    if (savedToken) {
-      return {
-        ...initialDriveData,
-        isLoggedIn: true,
-        accessToken: savedToken,
-        readerFolderId: savedReaderFolderId || '',
-        lastUpdated: Date.now()
-      };
+      if (savedToken) {
+        return {
+          ...initialDriveData,
+          isLoggedIn: true,
+          accessToken: savedToken,
+          readerFolderId: savedReaderFolderId || '',
+          lastUpdated: Date.now()
+        };
+      }
     }
   } catch (error) {
     console.error('Error loading drive auth data from localStorage:', error);
@@ -74,17 +77,20 @@ const driveStore: Writable<DriveStoreData> = writable(loadDriveData());
 // Subscribe to changes and save only auth data to localStorage
 driveStore.subscribe((data) => {
   try {
-    // Only save the token and reader folder ID to localStorage
-    if (data.accessToken) {
-      localStorage.setItem('gdrive_token', data.accessToken);
-    } else {
-      localStorage.removeItem('gdrive_token');
-    }
+    // Check if localStorage is available (it won't be in SSR)
+    if (typeof localStorage !== 'undefined') {
+      // Only save the token and reader folder ID to localStorage
+      if (data.accessToken) {
+        localStorage.setItem('gdrive_token', data.accessToken);
+      } else {
+        localStorage.removeItem('gdrive_token');
+      }
 
-    if (data.readerFolderId) {
-      localStorage.setItem('gdrive_reader_folder_id', data.readerFolderId);
-    } else {
-      localStorage.removeItem('gdrive_reader_folder_id');
+      if (data.readerFolderId) {
+        localStorage.setItem('gdrive_reader_folder_id', data.readerFolderId);
+      } else {
+        localStorage.removeItem('gdrive_reader_folder_id');
+      }
     }
   } catch (error) {
     console.error('Error saving drive auth data to localStorage:', error);
