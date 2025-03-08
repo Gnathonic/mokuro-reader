@@ -1535,7 +1535,7 @@
     <div class="flex justify-center pt-0 sm:pt-32">
       <button
         class="w-full border rounded-lg border-slate-600 p-10 border-opacity-50 hover:bg-slate-800 max-w-3xl"
-        on:click={signIn}
+        onclick={signIn}
       >
         <div class="flex sm:flex-row flex-col gap-2 items-center justify-center">
           <GoogleSolid size="lg" />
