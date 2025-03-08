@@ -519,13 +519,7 @@
     };
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    // Clean up interval and event listeners on component unmount
-    return () => {
-      clearInterval(autoSyncInterval);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-    
+
     gapi.load('client', async () => {
       try {
         await gapi.client.init({
@@ -568,6 +562,12 @@
     });
 
     gapi.load('picker', () => {});
+
+    // Clean up interval and event listeners on component unmount
+    return () => {
+      clearInterval(autoSyncInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   });
 
   // Function to download and process files from Google Drive
