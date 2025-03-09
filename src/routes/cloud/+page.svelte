@@ -12,6 +12,7 @@
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
   import driveStore, { setDriveToken, clearDriveToken, fetchAllDriveData } from '$lib/util/drive-store';
   import { DriveErrorType } from '$lib/util/api-helpers';
+  import driveCache, { getFileId, listFilesInFolder } from '$lib/util/drive-cache';
   import { writable } from 'svelte/store';
 
   let accessToken = '';
@@ -67,6 +68,216 @@
       console.log('Auto sync conditions not met, skipping sync');
     }
   });
+
+  /**
+   * Helper function to download a file from Google Drive
+   * @param options Download options
+   * @returns The downloaded file content
+   */
+  async function downloadFromDrive({
+    fileId,
+    progressId = null,
+    progressStatus = 'Downloading data...',
+    progressValue = 50,
+    parseJson = false
+  }) {
+    if (!fileId) {
+      console.error('Cannot download: Missing file ID');
+      return parseJson ? {} : null;
+    }
+    
+    // Update progress if a progress ID is provided
+    if (progressId) {
+      progressTrackerStore.updateProcess(progressId, {
+        progress: progressValue,
+        status: progressStatus
+      });
+    }
+    
+    try {
+      const { body } = await gapi.client.drive.files.get({
+        fileId,
+        alt: 'media'
+      });
+      
+      // Parse JSON if requested
+      if (parseJson) {
+        return parseVolumesFromJson(body);
+      }
+      
+      return body;
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      
+      // If we get a not found error, mark the cache as stale
+      if (error.status === 404 || 
+          (error.message && error.message.toLowerCase().includes('not found'))) {
+        driveCache.markStale();
+      }
+      
+      return parseJson ? {} : null;
+    }
+  }
+
+  /**
+   * Helper function to upload data to Google Drive
+   * @param options Upload options
+   * @returns The response from the upload operation
+   */
+  async function uploadToDrive({
+    fileId = null,
+    fileName,
+    parentFolderId = null,
+    localStorageId,
+    mimeType = JSON_MIME_TYPE,
+    progressId = null,
+    progressStatus = 'Uploading data...',
+    progressValue = 75
+  }) {
+    // Create metadata for the file
+    const metadata = {
+      mimeType,
+      name: fileName
+    };
+    
+    // Only add parents when creating a new file (not updating an existing one)
+    if (!fileId && parentFolderId) {
+      metadata.parents = [parentFolderId];
+    }
+    
+    // Update progress if a progress ID is provided
+    if (progressId) {
+      progressTrackerStore.updateProcess(progressId, {
+        progress: progressValue,
+        status: progressStatus
+      });
+    }
+    
+    // Upload the file
+    const response = await uploadFile({
+      accessToken,
+      fileId,
+      metadata,
+      localStorageId,
+      type: mimeType
+    });
+    
+    // Mark the cache as stale since we've modified Drive contents
+    driveCache.markStale();
+    
+    // If this was a new file, add it to our cache
+    if (response && response.id && fileName && parentFolderId) {
+      driveCache.addFile({
+        id: response.id,
+        name: fileName,
+        mimeType,
+        parents: [parentFolderId]
+      });
+    }
+    
+    return response;
+  }
+
+  /**
+   * Helper function to delete old files, keeping only the most recent one
+   * @param files Array of file objects
+   * @param processId ID for progress tracking
+   */
+  async function cleanupOldFiles(files, processId) {
+    if (files.length <= 1) return; // Nothing to clean up
+    
+    progressTrackerStore.updateProcess(processId, {
+      progress: 30,
+      status: 'Cleaning up old files...'
+    });
+    
+    let deletedAny = false;
+    
+    for (let i = 1; i < files.length; i++) {
+      try {
+        await gapi.client.drive.files.delete({
+          fileId: files[i].id
+        });
+        
+        // Remove the file from our cache
+        driveCache.removeFile(files[i].id);
+        
+        deletedAny = true;
+        console.log(`Deleted old file: ${files[i].id}`);
+      } catch (error) {
+        console.error(`Error deleting file ${files[i].id}:`, error);
+        // Continue with the next file
+      }
+    }
+    
+    console.log('Finished cleaning up old files.');
+  }
+
+  /**
+   * Helper function to merge volume data from multiple files
+   * @param files Array of file objects to merge
+   * @param processId ID for progress tracking
+   * @returns Object containing merged volumes and the ID of the most recent file
+   */
+  async function mergeVolumeDataFiles(files, processId) {
+    console.warn(`Found ${files.length} volume data files. Merging them...`);
+    
+    // Update progress
+    progressTrackerStore.updateProcess(processId, {
+      progress: 10,
+      status: `Merging ${files.length} volume data files...`
+    });
+    
+    // Start with an empty merged volumes object
+    let mergedVolumes = {};
+    
+    // Process each file, starting with the oldest (reverse the order)
+    const sortedFiles = [...files].reverse();
+    
+    for (let i = 0; i < sortedFiles.length; i++) {
+      const file = sortedFiles[i];
+      progressTrackerStore.updateProcess(processId, {
+        progress: 10 + (i / sortedFiles.length * 10),
+        status: `Processing file ${i+1} of ${sortedFiles.length}...`
+      });
+      
+      try {
+        // Download the file using our helper function
+        const fileVolumes = await downloadFromDrive({
+          fileId: file.id,
+          parseJson: true
+        });
+        
+        // Merge with our accumulated volumes
+        for (const [id, volume] of Object.entries(fileVolumes)) {
+          if (!mergedVolumes[id]) {
+            // If volume doesn't exist in merged data, add it
+            mergedVolumes[id] = volume;
+          } else {
+            // If volume exists in both, keep the one with the most recent lastUpdated
+            const mergedLastUpdated = new Date(mergedVolumes[id].lastUpdated || 0).getTime();
+            const fileLastUpdated = new Date(volume.lastUpdated || 0).getTime();
+            
+            if (fileLastUpdated > mergedLastUpdated) {
+              mergedVolumes[id] = volume;
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error processing file ${file.id}:`, error);
+        // Continue with the next file
+      }
+    }
+    
+    // Use the most recent file's ID
+    const mostRecentFileId = files[0].id;
+    console.log('Using most recent file ID for update:', mostRecentFileId);
+    
+    return {
+      mergedVolumes,
+      mostRecentFileId
+    };
+  }
 
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -134,7 +345,7 @@
   const VOLUME_DATA_FILE = 'volume-data.json';
   const PROFILES_FILE = 'profiles.json';
 
-  const type = 'application/json';
+  const JSON_MIME_TYPE = 'application/json';
 
   let tokenClient: any;
   let readerFolderId = '';
@@ -311,12 +522,20 @@
         status: 'Checking for reader folder...'
       });
 
-      const { result: readerFolderRes } = await gapi.client.drive.files.list({
-        q: `mimeType='application/vnd.google-apps.folder' and name='${READER_FOLDER}'`,
-        fields: 'files(id)'
+      // Clear the cache when connecting to ensure we get fresh data
+      driveCache.clear();
+      
+      // Find the reader folder
+      const readerFolders = await listFilesInFolder(null, {
+        mimeTypes: [FOLDER_MIME_TYPE],
+        name: READER_FOLDER,
+        fields: 'files(id, name, mimeType, parents)',
+        context: 'checking for reader folder',
+        forceRefresh: true,
+        handleError: false
       });
 
-      if (readerFolderRes.files?.length === 0) {
+      if (readerFolders.length === 0) {
         progressTrackerStore.updateProcess(processId, {
           progress: 40,
           status: 'Creating reader folder...'
@@ -329,8 +548,7 @@
 
         readerFolderId = createReaderFolderRes.id || '';
       } else {
-        const id = readerFolderRes.files?.[0]?.id || '';
-        readerFolderId = id || '';
+        readerFolderId = readerFolders[0].id || '';
       }
 
       // Update the drive store with the token and reader folder ID
@@ -341,29 +559,12 @@
         status: 'Checking for volume data...'
       });
 
-      // Search for volume data files with more detailed fields including modifiedTime
-      const { result: volumeDataRes } = await gapi.client.drive.files.list({
-        q: `'${readerFolderId}' in parents and name='${VOLUME_DATA_FILE}' and trashed=false`,
-        fields: 'files(id, name, modifiedTime, createdTime)',
-        orderBy: 'modifiedTime desc'
-      });
-
-      console.log('Volume data search results:', volumeDataRes);
+      // Get the volume data ID using our lazy loading helper
+      // Force refresh since we're initializing
+      volumeDataId = await getVolumeDataId(true);
       
-      if (volumeDataRes.files?.length !== 0) {
-        // Use the most recently modified file if multiple exist
-        volumeDataId = volumeDataRes.files[0].id;
+      if (volumeDataId) {
         console.log('Found volume data file with ID:', volumeDataId);
-        
-        // If multiple files were found, log a warning
-        if (volumeDataRes.files.length > 1) {
-          console.warn(`Found ${volumeDataRes.files.length} volume data files. Using the most recent one.`);
-          
-          // Log all found files for debugging
-          volumeDataRes.files.forEach((file, index) => {
-            console.log(`File ${index + 1}:`, file);
-          });
-        }
       } else {
         console.log('No volume data file found in folder:', readerFolderId);
       }
@@ -373,13 +574,14 @@
         status: 'Checking for profiles...'
       });
 
-      const { result: profilesRes } = await gapi.client.drive.files.list({
-        q: `'${readerFolderId}' in parents and name='${PROFILES_FILE}'`,
-        fields: 'files(id, name)'
-      });
-
-      if (profilesRes.files?.length !== 0) {
-        profilesId = profilesRes.files?.[0].id || '';
+      // Get the profiles ID using our lazy loading helper
+      // Force refresh since we're initializing
+      profilesId = await getProfilesId(true);
+      
+      if (profilesId) {
+        console.log('Found profiles file with ID:', profilesId);
+      } else {
+        console.log('No profiles file found in folder:', readerFolderId);
       }
 
       // Fetch all series and volumes data in a single operation
@@ -388,7 +590,9 @@
         status: 'Fetching backed up series data...'
       });
 
+      // Mark the cache as initialized after fetching all data
       await fetchAllDriveData(accessToken, readerFolderId);
+      driveCache.initialized = true;
 
       progressTrackerStore.updateProcess(processId, {
         progress: 100,
@@ -441,6 +645,9 @@
 
     // Clear the token from our store
     clearDriveToken();
+    
+    // Clear the file cache
+    driveCache.clear();
 
     // Revoke the token with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
@@ -489,6 +696,9 @@
 
   // Initialize Google Drive API on component mount
   onMount(() => {
+    // Initialize the drive cache
+    driveCache.clear();
+    
     // If auto sync is enabled and we're already logged in, trigger a sync
     if (autoSyncEnabled && $driveStore.isLoggedIn && volumeDataId && !syncInProgress) {
       console.log('Auto sync triggered by navigating to cloud page');
@@ -808,25 +1018,43 @@
     });
   }
 
-  // Function to list files in a folder
-  async function listFilesInFolder(folderId) {
-    try {
-      const { result } = await gapi.client.drive.files.list({
-        q: `'${folderId}' in parents and (mimeType='application/zip' or mimeType='application/x-zip-compressed' or mimeType='application/vnd.comicbook+zip' or mimeType='application/x-cbz' or mimeType='application/vnd.google-apps.folder')`,
-        fields: 'files(id, name, mimeType)',
-        pageSize: 1000
-      });
-
-      return result.files || [];
-    } catch (error) {
-      handleDriveError(error, 'listing files in folder');
-      return [];
-    }
+  /**
+   * Helper function to lazily get the volume data file ID
+   * @param forceRefresh Whether to force a cache refresh
+   * @returns The volume data file ID if found, null otherwise
+   */
+  async function getVolumeDataId(forceRefresh = false) {
+    if (volumeDataId && !forceRefresh && !driveCache.isStale) return volumeDataId;
+    
+    const id = await getFileId(VOLUME_DATA_FILE, readerFolderId, forceRefresh);
+    if (id) volumeDataId = id;
+    return id;
+  }
+  
+  /**
+   * Helper function to lazily get the profiles file ID
+   * @param forceRefresh Whether to force a cache refresh
+   * @returns The profiles file ID if found, null otherwise
+   */
+  async function getProfilesId(forceRefresh = false) {
+    if (profilesId && !forceRefresh && !driveCache.isStale) return profilesId;
+    
+    const id = await getFileId(PROFILES_FILE, readerFolderId, forceRefresh);
+    if (id) profilesId = id;
+    return id;
   }
 
   // Function to process a folder recursively
   async function processFolder(folderId, folderName, scanProcessId) {
-    const files = await listFilesInFolder(folderId);
+    const files = await listFilesInFolder(folderId, {
+      mimeTypes: [
+        'application/zip', 
+        'application/x-zip-compressed', 
+        'application/vnd.comicbook+zip', 
+        'application/x-cbz',
+        'application/vnd.google-apps.folder'
+      ]
+    });
     const allFiles = [];
 
     // Process each file in the folder
@@ -941,17 +1169,6 @@
 
 
   async function onUploadProfiles() {
-    // Only include parents if we're creating a new file
-    const metadata = {
-      mimeType: type,
-      name: PROFILES_FILE
-    };
-    
-    // Only add parents when creating a new file (not updating an existing one)
-    if (!profilesId) {
-      metadata.parents = [readerFolderId];
-    }
-
     const processId = 'upload-profiles';
     progressTrackerStore.addProcess({
       id: processId,
@@ -961,18 +1178,27 @@
     });
 
     try {
-      // Update progress to show it's in progress
-      progressTrackerStore.updateProcess(processId, {
-        progress: 50,
-        status: 'Uploading...'
-      });
-
-      const res = await uploadFile({
-        accessToken,
+      // Get the profiles ID if it exists but we don't have it yet
+      if (!profilesId) {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 20,
+          status: 'Checking for existing profiles file...'
+        });
+        
+        // Try to get the existing profiles ID
+        profilesId = await getProfilesId(false);
+      }
+      
+      // Use our helper function to upload profiles
+      const res = await uploadToDrive({
         fileId: profilesId,
-        metadata,
+        fileName: PROFILES_FILE,
+        parentFolderId: readerFolderId,
         localStorageId: 'profiles',
-        type
+        mimeType: JSON_MIME_TYPE,
+        progressId: processId,
+        progressStatus: 'Uploading profiles...',
+        progressValue: 50
       });
 
       profilesId = res.id;
@@ -1016,151 +1242,79 @@
     }
     
     try {
-      // If we don't have a volume data ID, try to find it first
+      // Try to get the volume data ID using our lazy loading helper
       if (!volumeDataId && readerFolderId) {
         console.log('No volumeDataId found, searching for existing volume data files...');
         
-        // Search for volume data files
-        const { result: volumeDataRes } = await gapi.client.drive.files.list({
-          q: `'${readerFolderId}' in parents and name='${VOLUME_DATA_FILE}' and trashed=false`,
-          fields: 'files(id, name, modifiedTime, createdTime)',
-          orderBy: 'modifiedTime desc'
-        });
+        // Get the volume data ID, forcing refresh only if this is a manual sync
+        const id = await getVolumeDataId(!isAutoSync);
         
-        if (volumeDataRes.files?.length !== 0) {
-          if (volumeDataRes.files.length === 1) {
-            // If only one file exists, use it
-            volumeDataId = volumeDataRes.files[0].id;
-            console.log('Found one volume data file with ID:', volumeDataId);
-          } else {
-            // If multiple files exist, merge them
-            console.warn(`Found ${volumeDataRes.files.length} volume data files. Merging them...`);
-            
-            // Update progress
-            progressTrackerStore.updateProcess(processId, {
-              progress: 10,
-              status: `Merging ${volumeDataRes.files.length} volume data files...`
-            });
-            
-            // Start with an empty merged volumes object
-            let mergedVolumes = {};
-            
-            // Process each file, starting with the oldest (reverse the order)
-            const sortedFiles = [...volumeDataRes.files].reverse();
-            
-            for (let i = 0; i < sortedFiles.length; i++) {
-              const file = sortedFiles[i];
-              progressTrackerStore.updateProcess(processId, {
-                progress: 10 + (i / sortedFiles.length * 10),
-                status: `Processing file ${i+1} of ${sortedFiles.length}...`
+        // If we found an ID, we're done
+        if (id) {
+          volumeDataId = id;
+          console.log('Found volume data file with ID:', volumeDataId);
+        } else {
+          // If we didn't find an ID, we need to check if there are multiple files
+          // Search for volume data files using our cached list function
+          const volumeDataFiles = await listDriveFiles({
+            parentId: readerFolderId,
+            name: VOLUME_DATA_FILE,
+            fields: 'files(id, name, modifiedTime, createdTime)',
+            orderBy: 'modifiedTime desc',
+            context: 'searching for volume data files'
+          }, !isAutoSync);
+          
+          if (volumeDataFiles.length > 0) {
+            if (volumeDataFiles.length === 1) {
+              // If only one file exists, use it
+              volumeDataId = volumeDataFiles[0].id;
+              console.log('Found one volume data file with ID:', volumeDataId);
+            } else {
+              // If multiple files exist, merge them using our helper function
+              const { mergedVolumes, mostRecentFileId } = await mergeVolumeDataFiles(volumeDataFiles, processId);
+              
+              // Set the volume data ID to the most recent file
+              volumeDataId = mostRecentFileId;
+              
+              // Update local volumes with the merged data
+              volumes.update(() => mergedVolumes);
+              
+              // Upload the merged data to the most recent file using our helper function
+              const uploadResponse = await uploadToDrive({
+                fileId: volumeDataId,
+                fileName: VOLUME_DATA_FILE,
+                localStorageId: 'volumes',
+                mimeType: JSON_MIME_TYPE,
+                progressId: processId,
+                progressStatus: 'Uploading merged data...',
+                progressValue: 25
               });
               
-              try {
-                // Download the file
-                const { body } = await gapi.client.drive.files.get({
-                  fileId: file.id,
-                  alt: 'media'
-                });
-                
-                // Parse the file contents
-                const fileVolumes = parseVolumesFromJson(body);
-                
-                // Merge with our accumulated volumes
-                for (const [id, volume] of Object.entries(fileVolumes)) {
-                  if (!mergedVolumes[id]) {
-                    // If volume doesn't exist in merged data, add it
-                    mergedVolumes[id] = volume;
-                  } else {
-                    // If volume exists in both, keep the one with the most recent lastUpdated
-                    const mergedLastUpdated = new Date(mergedVolumes[id].lastUpdated || 0).getTime();
-                    const fileLastUpdated = new Date(volume.lastUpdated || 0).getTime();
-                    
-                    if (fileLastUpdated > mergedLastUpdated) {
-                      mergedVolumes[id] = volume;
-                    }
-                  }
-                }
-              } catch (error) {
-                console.error(`Error processing file ${file.id}:`, error);
-                // Continue with the next file
-              }
+              // Delete all the old files except the most recent one
+              await cleanupOldFiles(volumeDataFiles, processId);
+              
+              console.log('Finished merging and cleaning up volume data files.');
             }
-            
-            // Use the most recent file's ID for our update
-            volumeDataId = volumeDataRes.files[0].id;
-            console.log('Using most recent file ID for update:', volumeDataId);
-            
-            // Update local volumes with the merged data
-            volumes.update(() => mergedVolumes);
-            
-            // Upload the merged data to the most recent file
-            progressTrackerStore.updateProcess(processId, {
-              progress: 25,
-              status: 'Uploading merged data...'
-            });
-            
-            const metadata = {
-              mimeType: type,
-              name: VOLUME_DATA_FILE
-            };
-            
-            // Upload the merged data
-            await uploadFile({
-              accessToken,
-              fileId: volumeDataId,
-              metadata,
-              localStorageId: 'volumes',
-              type
-            });
-            
-            // Delete all the old files except the most recent one
-            progressTrackerStore.updateProcess(processId, {
-              progress: 30,
-              status: 'Cleaning up old files...'
-            });
-            
-            for (let i = 1; i < volumeDataRes.files.length; i++) {
-              try {
-                await gapi.client.drive.files.delete({
-                  fileId: volumeDataRes.files[i].id
-                });
-                console.log(`Deleted old volume data file: ${volumeDataRes.files[i].id}`);
-              } catch (error) {
-                console.error(`Error deleting file ${volumeDataRes.files[i].id}:`, error);
-                // Continue with the next file
-              }
-            }
-            
-            console.log('Finished merging and cleaning up volume data files.');
+          } else {
+            console.log('No existing volume data file found, will create a new one.');
           }
-        } else {
-          console.log('No existing volume data file found, will create a new one.');
         }
       }
       
       console.log('Starting sync with volumeDataId:', volumeDataId);
 
-      // Step 1: Download volume data if it exists
-      progressTrackerStore.updateProcess(processId, {
-        progress: 40,
-        status: 'Downloading remote data...'
-      });
-
+      // Step 1: Download volume data if it exists using our helper function
       let remoteVolumes = {};
       
       // Only try to download if the volume data file exists on Drive
       if (volumeDataId) {
-        try {
-          const { body } = await gapi.client.drive.files.get({
-            fileId: volumeDataId,
-            alt: 'media'
-          });
-          
-          remoteVolumes = parseVolumesFromJson(body);
-        } catch (error) {
-          console.error('Error downloading volume data:', error);
-          // Continue with empty remote volumes if download fails
-        }
+        remoteVolumes = await downloadFromDrive({
+          fileId: volumeDataId,
+          progressId: processId,
+          progressStatus: 'Downloading remote data...',
+          progressValue: 40,
+          parseJson: true
+        });
       }
 
       // Step 2: Merge local and remote volume data
@@ -1202,31 +1356,18 @@
 
       volumes.update(() => mergedVolumes);
 
-      // Step 4: Upload merged data back to Drive
-      progressTrackerStore.updateProcess(processId, {
-        progress: 90,
-        status: 'Uploading merged data...'
-      });
-
-      // Only include parents if we're creating a new file
-      const metadata = {
-        mimeType: type,
-        name: VOLUME_DATA_FILE
-      };
-      
-      // Only add parents when creating a new file (not updating an existing one)
-      if (!volumeDataId) {
-        metadata.parents = [readerFolderId];
-      }
-
+      // Step 4: Upload merged data back to Drive using our helper function
       console.log('Uploading with fileId:', volumeDataId);
       
-      const res = await uploadFile({
-        accessToken,
+      const res = await uploadToDrive({
         fileId: volumeDataId,
-        metadata,
+        fileName: VOLUME_DATA_FILE,
+        parentFolderId: readerFolderId,
         localStorageId: 'volumes',
-        type
+        mimeType: JSON_MIME_TYPE,
+        progressId: processId,
+        progressStatus: 'Uploading merged data...',
+        progressValue: 90
       });
       
       console.log('Upload response:', res);
@@ -1281,16 +1422,31 @@
     });
 
     try {
-      // Update progress to show it's in progress
-      progressTrackerStore.updateProcess(processId, {
-        progress: 50,
-        status: 'Downloading...'
-      });
-
-      const { body } = await gapi.client.drive.files.get({
+      // Get the profiles ID if we don't have it yet
+      if (!profilesId) {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 20,
+          status: 'Looking for profiles file...'
+        });
+        
+        profilesId = await getProfilesId(true);
+        
+        if (!profilesId) {
+          throw new Error('Profiles file not found');
+        }
+      }
+      
+      // Use our helper function to download profiles
+      const body = await downloadFromDrive({
         fileId: profilesId,
-        alt: 'media'
+        progressId: processId,
+        progressStatus: 'Downloading profiles...',
+        progressValue: 50
       });
+      
+      if (!body) {
+        throw new Error('Failed to download profiles');
+      }
 
       const downloaded = JSON.parse(body);
 
