@@ -115,27 +115,6 @@ export class WorkerPool {
 
     // Process the queue to assign next tasks
     this.processQueue();
-    
-    // Attempt to clean up memory
-    this.cleanupMemory();
-  }
-  
-  /**
-   * Attempts to clean up memory by suggesting garbage collection
-   * and clearing any references to large objects
-   */
-  private cleanupMemory() {
-    // Clear any temporary variables that might be holding references
-    // This is mostly a hint to the garbage collector
-    
-    // Force garbage collection if possible (not standard, but some browsers support it)
-    if (typeof window !== 'undefined' && window.gc) {
-      try {
-        window.gc();
-      } catch (e) {
-        // Ignore if gc is not available
-      }
-    }
   }
 
   private processQueue() {
@@ -209,9 +188,6 @@ export class WorkerPool {
     
     // Reset memory usage tracking
     this.currentMemoryUsage = 0;
-    
-    // Attempt to clean up memory
-    this.cleanupMemory();
   }
 
   public get activeTaskCount() {

@@ -807,14 +807,7 @@
                 }
               }
               
-              // Force garbage collection if possible (not standard, but some browsers support it)
-              if (typeof window !== 'undefined' && window.gc) {
-                try {
-                  window.gc();
-                } catch (e) {
-                  // Ignore if gc is not available
-                }
-              }
+
             }
           },
           onError: (data) => {
