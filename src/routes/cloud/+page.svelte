@@ -251,10 +251,52 @@
     }
   }
 
+  // Function to clean up zip.js temporary databases
+  async function cleanupZipJsTemporaryDatabases() {
+    if (!indexedDB.databases) {
+      console.log('indexedDB.databases not supported in this browser');
+      return;
+    }
+    
+    try {
+      const zipTempDbPrefix = 'zip.tmp.';
+      const databases = await indexedDB.databases();
+      
+      const zipTempDbs = databases.filter(db => 
+        db.name && db.name.startsWith(zipTempDbPrefix)
+      );
+      
+      if (zipTempDbs.length > 0) {
+        console.log(`Found ${zipTempDbs.length} zip.js temporary databases to clean up`);
+        
+        for (const db of zipTempDbs) {
+          await new Promise((resolve, reject) => {
+            const deleteRequest = indexedDB.deleteDatabase(db.name);
+            deleteRequest.onsuccess = () => {
+              console.log(`Successfully deleted zip.js temporary database: ${db.name}`);
+              resolve();
+            };
+            deleteRequest.onerror = (event) => {
+              console.error(`Error deleting zip.js temporary database: ${db.name}`, event);
+              reject(event);
+            };
+          });
+        }
+      } else {
+        console.log('No zip.js temporary databases found');
+      }
+    } catch (e) {
+      console.error('Error cleaning up zip.js temporary databases:', e);
+    }
+  }
+  
   // Function to clean up any orphaned download data
   async function cleanupOrphanedDownloads() {
     try {
       console.log('Cleaning up any orphaned download data...');
+      
+      // Clean up zip.js temporary databases first
+      await cleanupZipJsTemporaryDatabases();
       
       // Request temporary storage estimate
       if (navigator?.storage?.estimate) {
@@ -265,6 +307,88 @@
       // Clear any cached data in IndexedDB that might be orphaned
       // This is a safe operation as any properly stored data will remain intact
       // Only temporary download data that wasn't properly cleaned up will be removed
+      try {
+        // Check for any orphaned download data in IndexedDB
+        const dbName = 'mokuro-downloads-temp';
+        const req = indexedDB.open(dbName);
+        
+        req.onsuccess = (event) => {
+          const db = req.result;
+          console.log(`Found temporary download database: ${dbName}`);
+          
+          // Close and delete the database
+          db.close();
+          const deleteRequest = indexedDB.deleteDatabase(dbName);
+          
+          deleteRequest.onsuccess = () => {
+            console.log(`Successfully deleted temporary download database: ${dbName}`);
+          };
+          
+          deleteRequest.onerror = () => {
+            console.error(`Error deleting temporary download database: ${dbName}`);
+          };
+        };
+        
+        // Clean up zip.js temporary storage
+        // zip.js creates temporary storage with names like "zip.tmp.123456789"
+        const zipTempDbPrefix = 'zip.tmp.';
+        
+        // Function to delete a database
+        const deleteDatabase = (dbName) => {
+          return new Promise((resolve, reject) => {
+            console.log(`Attempting to delete database: ${dbName}`);
+            const deleteRequest = indexedDB.deleteDatabase(dbName);
+            deleteRequest.onsuccess = () => {
+              console.log(`Successfully deleted database: ${dbName}`);
+              resolve();
+            };
+            deleteRequest.onerror = (event) => {
+              console.error(`Error deleting database: ${dbName}`, event);
+              reject(event);
+            };
+          });
+        };
+        
+        // Get all databases (only works in some browsers)
+        if (indexedDB.databases) {
+          indexedDB.databases().then(async databases => {
+            // First look for zip.js temporary databases
+            const zipTempDbs = databases.filter(db => 
+              db.name && db.name.startsWith(zipTempDbPrefix)
+            );
+            
+            if (zipTempDbs.length > 0) {
+              console.log(`Found ${zipTempDbs.length} zip.js temporary databases to clean up`);
+              for (const db of zipTempDbs) {
+                try {
+                  await deleteDatabase(db.name);
+                } catch (e) {
+                  console.error(`Error deleting zip.js temporary database: ${db.name}`, e);
+                }
+              }
+            }
+            
+            // Also look for any other temporary databases that might have been created
+            const tempDbNames = ['temp', 'download', 'drive', 'cache', 'blob'];
+            
+            for (const database of databases) {
+              const dbName = database.name || '';
+              if (tempDbNames.some(tempName => dbName.includes(tempName))) {
+                console.log(`Found potential temporary database: ${dbName}`);
+                try {
+                  await deleteDatabase(dbName);
+                } catch (e) {
+                  console.error(`Error deleting temporary database: ${dbName}`, e);
+                }
+              }
+            }
+          }).catch(err => {
+            console.error('Error listing databases:', err);
+          });
+        }
+      } catch (e) {
+        console.error('Error cleaning up IndexedDB:', e);
+      }
       
       // Clear any temporary caches that might have been created during downloads
       if ('caches' in window) {
@@ -298,11 +422,15 @@
   function cleanup() {
     console.log('Performing cleanup on cloud component destruction');
     cleanupOrphanedDownloads();
+    cleanupZipJsTemporaryDatabases();
   }
 
   onMount(() => {
     // Clean up any orphaned download data when the page loads
     cleanupOrphanedDownloads();
+    
+    // Also clean up any zip.js temporary databases
+    cleanupZipJsTemporaryDatabases();
     
     gapi.load('client', async () => {
       try {
@@ -545,6 +673,9 @@
           
           // Run cleanup to remove any orphaned download data
           cleanupOrphanedDownloads();
+          
+          // Clean up any zip.js temporary databases
+          cleanupZipJsTemporaryDatabases();
 
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
