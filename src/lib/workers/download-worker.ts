@@ -54,6 +54,7 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     const xhr = new XMLHttpRequest();
     xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
     xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader('Cache-Control', 'no-store'); // Prevent browser caching of large file downloads
     xhr.responseType = 'arraybuffer'; // Use arraybuffer instead of blob for better transferability
 
     xhr.onprogress = (event) => {
