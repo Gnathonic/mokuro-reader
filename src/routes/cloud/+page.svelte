@@ -251,7 +251,49 @@
     }
   }
 
+  // Function to clear service worker cache for Google Drive downloads
+  async function clearServiceWorkerCache() {
+    if ('caches' in window) {
+      try {
+        console.log('Clearing service worker cache for Google Drive downloads...');
+        
+        // Get all cache keys
+        const cacheKeys = await caches.keys();
+        console.log('Found caches:', cacheKeys);
+        
+        for (const cacheName of cacheKeys) {
+          const cache = await caches.open(cacheName);
+          
+          // Get all cache entries
+          const requests = await cache.keys();
+          console.log(`Cache ${cacheName} has ${requests.length} entries`);
+          
+          // Filter for Google Drive API requests
+          const driveRequests = requests.filter(request => 
+            request.url.includes('googleapis.com/drive') || 
+            request.url.includes('alt=media')
+          );
+          
+          console.log(`Found ${driveRequests.length} Google Drive API requests in cache ${cacheName}`);
+          
+          // Delete each Google Drive API request from the cache
+          for (const request of driveRequests) {
+            console.log(`Deleting cached request: ${request.url}`);
+            await cache.delete(request);
+          }
+        }
+        
+        console.log('Service worker cache cleared for Google Drive downloads');
+      } catch (error) {
+        console.error('Error clearing service worker cache:', error);
+      }
+    }
+  }
+
   onMount(() => {
+    // Clear service worker cache for Google Drive downloads
+    clearServiceWorkerCache();
+    
     gapi.load('client', async () => {
       try {
         await gapi.client.init({
@@ -479,6 +521,13 @@
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
           workerPool.terminate();
+
+          // Clear service worker cache to free up storage
+          clearServiceWorkerCache().then(() => {
+            console.log('Service worker cache cleared after downloads');
+          }).catch(error => {
+            console.error('Error clearing service worker cache after downloads:', error);
+          });
 
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
