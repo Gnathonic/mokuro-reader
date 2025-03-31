@@ -50,18 +50,14 @@ self.addEventListener('fetch', (event) => {
 
       // Only cache if:
       // 1. Response is successful (status 200)
-      // 2. It's not a Google Drive API request
-      // 3. It's not a large file (>10MB)
-      if (response.status === 200 && 
-          !event.request.url.includes('googleapis.com/drive') && 
-          !event.request.url.includes('alt=media')) {
-        
+      // 2. It's not a large file (>50MB)
+      if (response.status === 200) {
         // Check response size before caching
         const contentLength = response.headers.get('content-length');
         const sizeInMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;
         
-        // Only cache if smaller than 10MB
-        if (sizeInMB < 10) {
+        // Only cache if smaller than 50MB
+        if (sizeInMB < 50) {
           cache.put(event.request, response.clone());
         }
       }

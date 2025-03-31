@@ -50,6 +50,56 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     const sizeData = await sizeResponse.json();
     const totalSize = parseInt(sizeData.size, 10);
 
+    // Check if the file is already in the cache
+    if ('caches' in self) {
+      try {
+        const cacheKeys = await caches.keys();
+        for (const cacheName of cacheKeys) {
+          const cache = await caches.open(cacheName);
+          const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+          const cachedResponse = await cache.match(new Request(url, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`
+            }
+          }));
+          
+          if (cachedResponse) {
+            console.log(`Worker: Found ${fileName} in cache`);
+            const arrayBuffer = await cachedResponse.arrayBuffer();
+            
+            // Create a progress message to show we're at 100%
+            const progressMessage: ProgressMessage = {
+              type: 'progress',
+              fileId,
+              loaded: totalSize,
+              total: totalSize
+            };
+            ctx.postMessage(progressMessage);
+            
+            // Create a complete message with the cached data
+            const completeMessage: CompleteMessage = {
+              type: 'complete',
+              fileId,
+              fileName,
+              data: arrayBuffer
+            };
+            
+            console.log(`Worker: Sending cached data for ${fileName}`, {
+              messageType: 'complete',
+              dataSize: arrayBuffer.byteLength
+            });
+            
+            // Post the message with the ArrayBuffer as a transferable object
+            ctx.postMessage(completeMessage, [arrayBuffer]);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Worker: Error checking cache:', error);
+        // Continue with normal download if cache check fails
+      }
+    }
+
     // Now download the file with progress tracking
     const xhr = new XMLHttpRequest();
     xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);

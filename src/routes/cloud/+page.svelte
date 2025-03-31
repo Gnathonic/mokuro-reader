@@ -252,6 +252,39 @@
     }
   }
 
+  // Function to clear a specific file from the service worker cache
+  async function clearSpecificFileFromCache(fileId: string, accessToken: string) {
+    if ('caches' in window) {
+      try {
+        console.log(`Clearing cache for file ID: ${fileId}`);
+        
+        // Get all cache keys
+        const cacheKeys = await caches.keys();
+        
+        for (const cacheName of cacheKeys) {
+          const cache = await caches.open(cacheName);
+          
+          // Get all cache entries
+          const requests = await cache.keys();
+          
+          // Find the specific file request
+          const fileRequest = requests.find(request => 
+            request.url.includes(`${fileId}?alt=media`)
+          );
+          
+          if (fileRequest) {
+            console.log(`Deleting cached request: ${fileRequest.url}`);
+            await cache.delete(fileRequest);
+          }
+        }
+        
+        console.log(`Cache cleared for file ID: ${fileId}`);
+      } catch (error) {
+        console.error(`Error clearing cache for file ID ${fileId}:`, error);
+      }
+    }
+  }
+
   // Function to clear service worker cache for Google Drive downloads
   async function clearServiceWorkerCache() {
     if ('caches' in window) {
@@ -292,8 +325,7 @@
   }
 
   onMount(() => {
-    // Clear service worker cache for Google Drive downloads
-    clearServiceWorkerCache();
+    // We no longer clear the cache on startup since we're using it for downloads
     
     gapi.load('client', async () => {
       try {
@@ -535,13 +567,6 @@
           // All files have been processed
           workerPool.terminate();
 
-          // Clear service worker cache to free up storage
-          clearServiceWorkerCache().then(() => {
-            console.log('Service worker cache cleared after downloads');
-          }).catch(error => {
-            console.error('Error clearing service worker cache after downloads:', error);
-          });
-
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
             status: `All downloads complete (${failedFiles} failed)`,
@@ -612,6 +637,10 @@
               // Process the file
               await processFiles([file]);
               console.log(`Successfully processed file: ${file.name}`);
+
+              // Clear this specific file from the cache
+              await clearSpecificFileFromCache(fileInfo.id, accessToken);
+              console.log(`Cleared cache for file: ${file.name}`);
 
               // Mark as completed
               completedFiles++;
