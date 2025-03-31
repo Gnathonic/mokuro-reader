@@ -52,9 +52,12 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
 
     // Now download the file with progress tracking
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    // Add a cache-busting parameter to ensure the request is never cached
+    const cacheBuster = Date.now() + Math.random().toString(36).substring(2, 9);
+    xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_cb=${cacheBuster}`);
     xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-    xhr.setRequestHeader('Cache-Control', 'no-store'); // Prevent browser caching of large file downloads
+    xhr.setRequestHeader('Cache-Control', 'no-store'); // Prevent browser caching
+    xhr.setRequestHeader('Pragma', 'no-cache'); // For older browsers
     xhr.responseType = 'arraybuffer'; // Use arraybuffer instead of blob for better transferability
 
     xhr.onprogress = (event) => {

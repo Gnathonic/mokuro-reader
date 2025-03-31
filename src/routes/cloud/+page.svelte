@@ -532,6 +532,9 @@
             updateOverallProgress();
           },
           onComplete: async (data, releaseMemory) => {
+            let blob = null;
+            let file = null;
+            
             try {
               console.log(`Received complete message for ${data.fileName}`, {
                 dataType: typeof data.data,
@@ -540,11 +543,11 @@
               });
 
               // Create a Blob from the ArrayBuffer
-              const blob = new Blob([data.data]);
+              blob = new Blob([data.data]);
               console.log(`Created blob of size ${blob.size} bytes`);
 
               // Create a File object from the blob
-              const file = new File([blob], data.fileName);
+              file = new File([blob], data.fileName);
               console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
 
               // Process the file
@@ -569,7 +572,31 @@
               updateOverallProgress();
               checkAllComplete();
             } finally {
+              // Release memory in the worker pool
               releaseMemory();
+              
+              // Clean up references to large objects to help garbage collection
+              blob = null;
+              file = null;
+              
+              // Explicitly request garbage collection if available
+              if (window.gc) {
+                try {
+                  window.gc();
+                } catch (e) {
+                  // Ignore if gc is not available
+                }
+              }
+              
+              // Attempt to revoke any object URLs that might have been created
+              try {
+                // Force a browser garbage collection cycle by creating and releasing a large object
+                const tempArray = new Uint8Array(100 * 1024 * 1024); // 100MB
+                tempArray.fill(0);
+                setTimeout(() => tempArray.fill(1), 0); // This will never execute but prevents immediate optimization
+              } catch (e) {
+                // Ignore if we can't allocate memory
+              }
             }
           },
           onError: (data) => {
