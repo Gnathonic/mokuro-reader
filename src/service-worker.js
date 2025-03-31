@@ -48,18 +48,10 @@ self.addEventListener('fetch', (event) => {
     try {
       const response = await fetch(event.request);
 
-      // Only cache if:
-      // 1. Response is successful (status 200)
-      // 2. It's not a large file (>50MB)
+      // Cache all successful responses
+      // This is especially important for large files to reduce RAM usage
       if (response.status === 200) {
-        // Check response size before caching
-        const contentLength = response.headers.get('content-length');
-        const sizeInMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;
-        
-        // Only cache if smaller than 50MB
-        if (sizeInMB < 50) {
-          cache.put(event.request, response.clone());
-        }
+        cache.put(event.request, response.clone());
       }
 
       return response;

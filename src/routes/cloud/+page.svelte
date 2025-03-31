@@ -252,6 +252,46 @@
     }
   }
 
+  // Function to get a file from the service worker cache
+  async function getFileFromCache(fileId: string, accessToken: string): Promise<Blob | null> {
+    if ('caches' in window) {
+      try {
+        console.log(`Getting file from cache for file ID: ${fileId}`);
+        
+        // Get all cache keys
+        const cacheKeys = await caches.keys();
+        
+        for (const cacheName of cacheKeys) {
+          const cache = await caches.open(cacheName);
+          
+          // Get all cache entries
+          const requests = await cache.keys();
+          
+          // Find the specific file request
+          const fileRequest = requests.find(request => 
+            request.url.includes(`${fileId}?alt=media`)
+          );
+          
+          if (fileRequest) {
+            console.log(`Found cached request: ${fileRequest.url}`);
+            const cachedResponse = await cache.match(fileRequest);
+            
+            if (cachedResponse) {
+              return await cachedResponse.blob();
+            }
+          }
+        }
+        
+        console.log(`File not found in cache for file ID: ${fileId}`);
+        return null;
+      } catch (error) {
+        console.error(`Error getting file from cache for file ID ${fileId}:`, error);
+        return null;
+      }
+    }
+    return null;
+  }
+
   // Function to clear a specific file from the service worker cache
   async function clearSpecificFileFromCache(fileId: string, accessToken: string) {
     if ('caches' in window) {
@@ -621,24 +661,27 @@
           },
           onComplete: async (data, releaseMemory) => {
             try {
-              console.log(`Received complete message for ${data.fileName}`, {
-                dataType: typeof data.data,
-                dataSize: data.data.byteLength,
-                hasData: !!data.data
-              });
-
-              // Create a Blob from the ArrayBuffer
-              const blob = new Blob([data.data]);
-              console.log(`Created blob of size ${blob.size} bytes`);
-
+              console.log(`Received complete message for ${data.fileName}`);
+              
+              // Get the file from the cache instead of using the ArrayBuffer directly
+              // This reduces memory usage by not having two copies of the data in memory
+              const fileBlob = await getFileFromCache(fileInfo.id, accessToken);
+              
+              if (!fileBlob) {
+                console.error(`Failed to get file from cache: ${data.fileName}`);
+                throw new Error(`Failed to get file from cache: ${data.fileName}`);
+              }
+              
+              console.log(`Retrieved file from cache: ${data.fileName}, size: ${fileBlob.size} bytes`);
+              
               // Create a File object from the blob
-              const file = new File([blob], data.fileName);
+              const file = new File([fileBlob], data.fileName);
               console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
-
+              
               // Process the file
               await processFiles([file]);
               console.log(`Successfully processed file: ${file.name}`);
-
+              
               // Clear this specific file from the cache
               await clearSpecificFileFromCache(fileInfo.id, accessToken);
               console.log(`Cleared cache for file: ${file.name}`);

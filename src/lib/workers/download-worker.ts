@@ -21,7 +21,7 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  data: ArrayBuffer;
+  data?: ArrayBuffer; // Optional now, as we'll get the data from cache
 }
 
 interface ErrorMessage {
@@ -50,55 +50,8 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     const sizeData = await sizeResponse.json();
     const totalSize = parseInt(sizeData.size, 10);
 
-    // Check if the file is already in the cache
-    if ('caches' in self) {
-      try {
-        const cacheKeys = await caches.keys();
-        for (const cacheName of cacheKeys) {
-          const cache = await caches.open(cacheName);
-          const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-          const cachedResponse = await cache.match(new Request(url, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`
-            }
-          }));
-          
-          if (cachedResponse) {
-            console.log(`Worker: Found ${fileName} in cache`);
-            const arrayBuffer = await cachedResponse.arrayBuffer();
-            
-            // Create a progress message to show we're at 100%
-            const progressMessage: ProgressMessage = {
-              type: 'progress',
-              fileId,
-              loaded: totalSize,
-              total: totalSize
-            };
-            ctx.postMessage(progressMessage);
-            
-            // Create a complete message with the cached data
-            const completeMessage: CompleteMessage = {
-              type: 'complete',
-              fileId,
-              fileName,
-              data: arrayBuffer
-            };
-            
-            console.log(`Worker: Sending cached data for ${fileName}`, {
-              messageType: 'complete',
-              dataSize: arrayBuffer.byteLength
-            });
-            
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
-            return;
-          }
-        }
-      } catch (error) {
-        console.error('Worker: Error checking cache:', error);
-        // Continue with normal download if cache check fails
-      }
-    }
+    // We don't check the cache before downloading
+    // The cache is used as a RAM-friendly queue for processing, not to avoid downloads
 
     // Now download the file with progress tracking
     const xhr = new XMLHttpRequest();
@@ -147,29 +100,29 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
-            // Get the ArrayBuffer response
-            const arrayBuffer = xhr.response;
+            // The response is now in the cache, we don't need to transfer the ArrayBuffer
+            // This reduces memory usage by not having two copies of the data
             console.log(`Worker: Download complete for ${fileName}`, {
               responseType: xhr.responseType,
-              responseSize: arrayBuffer.byteLength,
+              responseSize: xhr.response.byteLength,
               status: xhr.status
             });
 
-            // Create a message with the ArrayBuffer
+            // Create a message without the ArrayBuffer
             const completeMessage: CompleteMessage = {
               type: 'complete',
               fileId,
               fileName,
-              data: arrayBuffer
+              data: new ArrayBuffer(0) // Empty ArrayBuffer, we'll get the data from cache
             };
 
             console.log(`Worker: Sending complete message for ${fileName}`, {
               messageType: 'complete',
-              dataSize: arrayBuffer.byteLength
+              note: 'Data will be retrieved from cache'
             });
 
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
+            // Post the message without transferring the ArrayBuffer
+            ctx.postMessage(completeMessage);
             console.log(`Worker: Message posted for ${fileName}`);
             resolve();
           } catch (error) {
