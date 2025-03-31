@@ -260,28 +260,52 @@
     
     try {
       const zipTempDbPrefix = 'zip.tmp.';
-      const databases = await indexedDB.databases();
       
+      // Get all databases
+      console.log('Listing all IndexedDB databases...');
+      const databases = await indexedDB.databases();
+      console.log(`Found ${databases.length} total IndexedDB databases`);
+      
+      // Filter for zip.js temporary databases
       const zipTempDbs = databases.filter(db => 
         db.name && db.name.startsWith(zipTempDbPrefix)
       );
       
       if (zipTempDbs.length > 0) {
-        console.log(`Found ${zipTempDbs.length} zip.js temporary databases to clean up`);
+        console.log(`Found ${zipTempDbs.length} zip.js temporary databases to clean up:`, 
+          zipTempDbs.map(db => db.name).join(', '));
         
+        // Delete each database one by one
         for (const db of zipTempDbs) {
-          await new Promise((resolve, reject) => {
-            const deleteRequest = indexedDB.deleteDatabase(db.name);
-            deleteRequest.onsuccess = () => {
-              console.log(`Successfully deleted zip.js temporary database: ${db.name}`);
-              resolve();
-            };
-            deleteRequest.onerror = (event) => {
-              console.error(`Error deleting zip.js temporary database: ${db.name}`, event);
-              reject(event);
-            };
-          });
+          try {
+            await new Promise((resolve, reject) => {
+              console.log(`Deleting database: ${db.name}`);
+              const deleteRequest = indexedDB.deleteDatabase(db.name);
+              
+              deleteRequest.onsuccess = () => {
+                console.log(`Successfully deleted zip.js temporary database: ${db.name}`);
+                resolve();
+              };
+              
+              deleteRequest.onerror = (event) => {
+                console.error(`Error deleting zip.js temporary database: ${db.name}`, event);
+                // Resolve anyway to continue with other databases
+                resolve();
+              };
+              
+              // Set a timeout in case the delete operation hangs
+              setTimeout(() => {
+                console.warn(`Delete operation timed out for database: ${db.name}`);
+                resolve();
+              }, 5000);
+            });
+          } catch (err) {
+            console.error(`Error in database deletion promise for ${db.name}:`, err);
+            // Continue with other databases
+          }
         }
+        
+        console.log('Finished cleaning up zip.js temporary databases');
       } else {
         console.log('No zip.js temporary databases found');
       }
@@ -310,24 +334,35 @@
       try {
         // Check for any orphaned download data in IndexedDB
         const dbName = 'mokuro-downloads-temp';
-        const req = indexedDB.open(dbName);
         
-        req.onsuccess = (event) => {
-          const db = req.result;
-          console.log(`Found temporary download database: ${dbName}`);
+        // Use a promise to properly handle the asynchronous operation
+        await new Promise((resolve) => {
+          const req = indexedDB.open(dbName);
           
-          // Close and delete the database
-          db.close();
-          const deleteRequest = indexedDB.deleteDatabase(dbName);
-          
-          deleteRequest.onsuccess = () => {
-            console.log(`Successfully deleted temporary download database: ${dbName}`);
+          req.onsuccess = (event) => {
+            const db = req.result;
+            console.log(`Found temporary download database: ${dbName}`);
+            
+            // Close and delete the database
+            db.close();
+            const deleteRequest = indexedDB.deleteDatabase(dbName);
+            
+            deleteRequest.onsuccess = () => {
+              console.log(`Successfully deleted temporary download database: ${dbName}`);
+              resolve();
+            };
+            
+            deleteRequest.onerror = () => {
+              console.error(`Error deleting temporary download database: ${dbName}`);
+              resolve(); // Resolve anyway to continue with cleanup
+            };
           };
           
-          deleteRequest.onerror = () => {
-            console.error(`Error deleting temporary download database: ${dbName}`);
+          req.onerror = () => {
+            console.log(`Database ${dbName} not found or error opening it`);
+            resolve(); // Resolve anyway to continue with cleanup
           };
-        };
+        });
         
         // Clean up zip.js temporary storage
         // zip.js creates temporary storage with names like "zip.tmp.123456789"
@@ -351,40 +386,38 @@
         
         // Get all databases (only works in some browsers)
         if (indexedDB.databases) {
-          indexedDB.databases().then(async databases => {
-            // First look for zip.js temporary databases
-            const zipTempDbs = databases.filter(db => 
-              db.name && db.name.startsWith(zipTempDbPrefix)
-            );
-            
-            if (zipTempDbs.length > 0) {
-              console.log(`Found ${zipTempDbs.length} zip.js temporary databases to clean up`);
-              for (const db of zipTempDbs) {
-                try {
-                  await deleteDatabase(db.name);
-                } catch (e) {
-                  console.error(`Error deleting zip.js temporary database: ${db.name}`, e);
-                }
-              }
-            }
+          try {
+            // Get all databases
+            const databases = await indexedDB.databases();
             
             // Also look for any other temporary databases that might have been created
             const tempDbNames = ['temp', 'download', 'drive', 'cache', 'blob'];
             
-            for (const database of databases) {
-              const dbName = database.name || '';
-              if (tempDbNames.some(tempName => dbName.includes(tempName))) {
-                console.log(`Found potential temporary database: ${dbName}`);
+            // Filter for temporary databases
+            const tempDbs = databases.filter(db => 
+              db.name && tempDbNames.some(tempName => db.name.includes(tempName))
+            );
+            
+            if (tempDbs.length > 0) {
+              console.log(`Found ${tempDbs.length} other temporary databases to clean up:`, 
+                tempDbs.map(db => db.name).join(', '));
+              
+              // Delete each database one by one
+              for (const db of tempDbs) {
                 try {
-                  await deleteDatabase(dbName);
+                  await deleteDatabase(db.name);
                 } catch (e) {
-                  console.error(`Error deleting temporary database: ${dbName}`, e);
+                  console.error(`Error deleting temporary database: ${db.name}`, e);
                 }
               }
+              
+              console.log('Finished cleaning up other temporary databases');
+            } else {
+              console.log('No other temporary databases found');
             }
-          }).catch(err => {
-            console.error('Error listing databases:', err);
-          });
+          } catch (err) {
+            console.error('Error listing and cleaning up other databases:', err);
+          }
         }
       } catch (e) {
         console.error('Error cleaning up IndexedDB:', e);
@@ -778,30 +811,63 @@
               if (indexedDB.databases) {
                 try {
                   const zipTempDbPrefix = 'zip.tmp.';
+                  
+                  // Create a hash of the file ID to help identify related databases
                   const fileIdHash = fileInfo.id.split('').reduce((a, b) => (a * 31 + b.charCodeAt(0)) & 0xFFFFFFFF, 0).toString();
                   
-                  indexedDB.databases().then(databases => {
-                    // Look for zip.js temporary databases that might be related to this file
-                    // We can't know exactly which database is for which file, but we can make an educated guess
-                    // based on timing - check databases created in the last minute
-                    const recentTime = Date.now() - 60000; // Last minute
-                    
-                    databases.forEach(db => {
-                      if (db.name && db.name.startsWith(zipTempDbPrefix)) {
-                        // Extract the timestamp from the database name (if it contains one)
-                        const dbTimePart = db.name.split('.').pop();
-                        const dbTime = parseInt(dbTimePart, 10);
-                        
-                        // If the database was created recently or contains part of the file ID hash, it's likely related to this file
-                        if (!isNaN(dbTime) && dbTime > recentTime || db.name.includes(fileIdHash)) {
-                          console.log(`Cleaning up zip.js temporary database for file ${data.fileName}: ${db.name}`);
-                          indexedDB.deleteDatabase(db.name);
-                        }
-                      }
-                    });
-                  }).catch(err => {
-                    console.error('Error cleaning up individual file temporary databases:', err);
+                  // Get all databases
+                  const databases = await indexedDB.databases();
+                  
+                  // Look for zip.js temporary databases that might be related to this file
+                  // We can't know exactly which database is for which file, but we can make an educated guess
+                  // based on timing - check databases created in the last minute
+                  const recentTime = Date.now() - 60000; // Last minute
+                  
+                  // Filter for potential matches
+                  const relatedDbs = databases.filter(db => {
+                    if (db.name && db.name.startsWith(zipTempDbPrefix)) {
+                      // Extract the timestamp from the database name (if it contains one)
+                      const dbTimePart = db.name.split('.').pop();
+                      const dbTime = parseInt(dbTimePart, 10);
+                      
+                      // If the database was created recently or contains part of the file ID hash, it's likely related to this file
+                      return (!isNaN(dbTime) && dbTime > recentTime) || db.name.includes(fileIdHash);
+                    }
+                    return false;
                   });
+                  
+                  if (relatedDbs.length > 0) {
+                    console.log(`Found ${relatedDbs.length} temporary databases related to file ${data.fileName}:`, 
+                      relatedDbs.map(db => db.name).join(', '));
+                    
+                    // Delete each database
+                    for (const db of relatedDbs) {
+                      try {
+                        await new Promise((resolve) => {
+                          console.log(`Deleting database for file ${data.fileName}: ${db.name}`);
+                          const deleteRequest = indexedDB.deleteDatabase(db.name);
+                          
+                          deleteRequest.onsuccess = () => {
+                            console.log(`Successfully deleted database: ${db.name}`);
+                            resolve();
+                          };
+                          
+                          deleteRequest.onerror = (event) => {
+                            console.error(`Error deleting database: ${db.name}`, event);
+                            resolve(); // Resolve anyway to continue
+                          };
+                          
+                          // Set a timeout in case the delete operation hangs
+                          setTimeout(() => {
+                            console.warn(`Delete operation timed out for database: ${db.name}`);
+                            resolve();
+                          }, 3000);
+                        });
+                      } catch (err) {
+                        console.error(`Error in database deletion promise for ${db.name}:`, err);
+                      }
+                    }
+                  }
                 } catch (e) {
                   console.error('Error in individual file cleanup:', e);
                 }
