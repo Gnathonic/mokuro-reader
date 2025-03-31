@@ -38,8 +38,10 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
       `https://www.googleapis.com/drive/v3/files/${fileId}?fields=size`,
       {
         headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
+          Authorization: `Bearer ${accessToken}`,
+          'Cache-Control': 'no-store' // Prevent browser caching
+        },
+        cache: 'no-store' // Additional cache control for fetch API
       }
     );
 
@@ -54,6 +56,7 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     const xhr = new XMLHttpRequest();
     xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
     xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader('Cache-Control', 'no-store'); // Prevent browser caching
     xhr.responseType = 'arraybuffer'; // Use arraybuffer instead of blob for better transferability
 
     xhr.onprogress = (event) => {
