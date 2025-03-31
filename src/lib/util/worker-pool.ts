@@ -185,9 +185,6 @@ export class WorkerPool {
     this.taskQueue = [];
     this.activeTasks.clear();
     this.workerTaskMap.clear();
-    
-    // Reset memory usage tracking
-    this.currentMemoryUsage = 0;
   }
 
   public get activeTaskCount() {
