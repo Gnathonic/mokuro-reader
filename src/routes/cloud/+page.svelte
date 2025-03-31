@@ -487,10 +487,10 @@
     const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
 
     // Track download progress
-    const fileProgress: { [fileId: string]: number } = {};
+    let fileProgress: { [fileId: string]: number } = {};
     let completedFiles = 0;
     let failedFiles = 0;
-    const processedFiles: { [fileId: string]: boolean } = {};
+    let processedFiles: { [fileId: string]: boolean } = {};
 
     // Function to update overall progress
     const updateOverallProgress = () => {
