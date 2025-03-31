@@ -118,8 +118,18 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               dataSize: arrayBuffer.byteLength
             });
 
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
+            // Firefox has issues with transferring large ArrayBuffers
+            // So we'll use a different approach based on the browser
+            const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+            
+            if (isFirefox) {
+              // For Firefox, don't use transferable objects
+              ctx.postMessage(completeMessage);
+              console.log(`Worker: Using Firefox-compatible message posting for ${fileName}`);
+            } else {
+              // For other browsers, use transferable objects for better performance
+              ctx.postMessage(completeMessage, [arrayBuffer]);
+            }
             console.log(`Worker: Message posted for ${fileName}`);
             resolve();
           } catch (error) {

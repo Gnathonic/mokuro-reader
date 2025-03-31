@@ -467,21 +467,39 @@
     let maxWorkers;
     let memoryLimitMB;
     
+    // Check if the browser is Firefox
+    const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+    console.log(`Browser detection: ${isFirefox ? 'Firefox' : 'Not Firefox'}`);
+
     if ($miscSettings.throttleDownloads) {
-      // Throttled mode with reasonable limits
-      maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
-      // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
-      // This is not a hard limit - tasks that individually need more than 500MB can still run
-      // It just prevents starting new tasks when the current pool already exceeds 500MB
-      memoryLimitMB = 500; // 500 MB memory threshold
-      console.log(
-        `Throttled downloads: Using ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`
-      );
+      if (isFirefox) {
+        // Firefox in throttled mode - be very conservative
+        maxWorkers = Math.min(navigator.hardwareConcurrency || 2, 3);
+        memoryLimitMB = 200; // Very conservative memory limit for Firefox
+        console.log(`Throttled downloads on Firefox: Using ${maxWorkers} workers with ${memoryLimitMB}MB memory limit`);
+      } else {
+        // Other browsers in throttled mode - use reasonable limits
+        maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
+        // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
+        // This is not a hard limit - tasks that individually need more than 500MB can still run
+        // It just prevents starting new tasks when the current pool already exceeds 500MB
+        memoryLimitMB = 500; // 500 MB memory threshold
+        console.log(
+          `Throttled downloads: Using ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`
+        );
+      }
     } else {
-      // Unthrottled mode, use more workers and disable memory limits
-      maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 12);
-      memoryLimitMB = 100000; // Very high memory limit (100GB) effectively disables the constraint
-      console.log(`Unthrottled downloads: Using ${maxWorkers} workers with no memory limit`);
+      if (isFirefox) {
+        // Firefox in unthrottled mode - still be conservative
+        maxWorkers = Math.min(navigator.hardwareConcurrency || 2, 4);
+        memoryLimitMB = 250; // Lower memory limit for Firefox
+        console.log(`Unthrottled downloads on Firefox: Using ${maxWorkers} workers with ${memoryLimitMB}MB memory limit`);
+      } else {
+        // Other browsers in unthrottled mode - use more workers and disable memory limits
+        maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 12);
+        memoryLimitMB = 100000; // Very high memory limit (100GB) effectively disables the constraint
+        console.log(`Unthrottled downloads: Using ${maxWorkers} workers with no memory limit`);
+      }
     }
     
     const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
@@ -569,12 +587,18 @@
         // 1. The downloaded file (fileSizes[fileInfo.id])
         // 2. Processing overhead (typically 2-3x the file size for decompression)
         const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
+        // For Firefox, use a more conservative memory requirement estimation
+        const memoryRequirement = isFirefox 
+          ? Math.max(
+              // For Firefox: 2x file size + smaller minimum
+              fileSize * 2, // 2x file size for processing overhead
+              30 * 1024 * 1024 // Minimum 30MB for Firefox
+            )
+          : Math.max(
+              // For other browsers: 3x file size + larger minimum
+              fileSize * 3, // 3x file size for processing overhead
+              50 * 1024 * 1024 // Minimum 50MB
+            );
 
         console.log(
           `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
