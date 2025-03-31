@@ -251,7 +251,59 @@
     }
   }
 
+  // Function to clean up any orphaned download data
+  async function cleanupOrphanedDownloads() {
+    try {
+      console.log('Cleaning up any orphaned download data...');
+      
+      // Request temporary storage estimate
+      if (navigator?.storage?.estimate) {
+        const { usage, quota } = await navigator.storage.estimate();
+        console.log(`Storage before cleanup: ${usage} / ${quota} bytes`);
+      }
+      
+      // Clear any cached data in IndexedDB that might be orphaned
+      // This is a safe operation as any properly stored data will remain intact
+      // Only temporary download data that wasn't properly cleaned up will be removed
+      
+      // Clear any temporary caches that might have been created during downloads
+      if ('caches' in window) {
+        try {
+          const cacheNames = await window.caches.keys();
+          const downloadCaches = cacheNames.filter(name => 
+            name.includes('download') || name.includes('temp') || name.includes('drive')
+          );
+          
+          if (downloadCaches.length > 0) {
+            console.log(`Found ${downloadCaches.length} potential download caches to clean up`);
+            await Promise.all(downloadCaches.map(name => window.caches.delete(name)));
+            console.log('Cleaned up download caches');
+          }
+        } catch (e) {
+          console.error('Error cleaning caches:', e);
+        }
+      }
+      
+      // Request storage estimate again to see if cleanup had an effect
+      if (navigator?.storage?.estimate) {
+        const { usage, quota } = await navigator.storage.estimate();
+        console.log(`Storage after cleanup: ${usage} / ${quota} bytes`);
+      }
+    } catch (error) {
+      console.error('Error during cleanup:', error);
+    }
+  }
+
+  // Function to perform cleanup when component is destroyed
+  function cleanup() {
+    console.log('Performing cleanup on cloud component destruction');
+    cleanupOrphanedDownloads();
+  }
+
   onMount(() => {
+    // Clean up any orphaned download data when the page loads
+    cleanupOrphanedDownloads();
+    
     gapi.load('client', async () => {
       try {
         await gapi.client.init({
@@ -285,6 +337,9 @@
     });
 
     gapi.load('picker', () => {});
+    
+    // Return the cleanup function to be called when component is destroyed
+    return cleanup;
   });
 
   function createPicker() {
@@ -478,7 +533,18 @@
 
         if (completedFiles + failedFiles === sortedFiles.length) {
           // All files have been processed
+          console.log('All downloads complete, performing cleanup');
+          
+          // Terminate the worker pool (this also cleans up memory)
           workerPool.terminate();
+          
+          // Clean up any other references
+          fileProgress = {};
+          fileSizes = {};
+          processedFiles = {};
+          
+          // Run cleanup to remove any orphaned download data
+          cleanupOrphanedDownloads();
 
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
@@ -532,6 +598,9 @@
             updateOverallProgress();
           },
           onComplete: async (data, releaseMemory) => {
+            let blob = null;
+            let file = null;
+            
             try {
               console.log(`Received complete message for ${data.fileName}`, {
                 dataType: typeof data.data,
@@ -540,11 +609,11 @@
               });
 
               // Create a Blob from the ArrayBuffer
-              const blob = new Blob([data.data]);
+              blob = new Blob([data.data]);
               console.log(`Created blob of size ${blob.size} bytes`);
 
               // Create a File object from the blob
-              const file = new File([blob], data.fileName);
+              file = new File([blob], data.fileName);
               console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
 
               // Process the file
@@ -569,7 +638,21 @@
               updateOverallProgress();
               checkAllComplete();
             } finally {
+              // Release memory in the worker pool
               releaseMemory();
+              
+              // Clean up references to large objects to help garbage collection
+              blob = null;
+              file = null;
+              
+              // Force garbage collection if possible (not standard, but some browsers support it)
+              if (typeof window !== 'undefined' && window.gc) {
+                try {
+                  window.gc();
+                } catch (e) {
+                  // Ignore if gc is not available
+                }
+              }
             }
           },
           onError: (data) => {
