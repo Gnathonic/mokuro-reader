@@ -61,7 +61,7 @@ export class WorkerPool {
         console.log(`Worker pool: Calling onComplete for task ${taskId}`, {
           hasData: !!data.data,
           dataType: typeof data.data,
-          dataSize: data.data?.byteLength
+          dataSize: data.data ? data.data.byteLength : 0
         });
 
         task.onComplete(data, () => {

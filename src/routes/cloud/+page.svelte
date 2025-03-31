@@ -597,10 +597,15 @@
             try {
               console.log(`Received complete message for ${data.fileName}`, {
                 dataType: typeof data.data,
-                dataSize: data.data.byteLength,
+                dataSize: data.data ? data.data.byteLength : 0,
                 hasData: !!data.data
               });
 
+              // Check if we have data before creating a blob
+              if (!data.data) {
+                throw new Error(`No data received for file ${data.fileName}`);
+              }
+              
               // Create a Blob from the ArrayBuffer
               const blob = new Blob([data.data]);
               console.log(`Created blob of size ${blob.size} bytes`);

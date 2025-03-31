@@ -99,6 +99,12 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
           try {
             // Get the ArrayBuffer response
             const arrayBuffer = xhr.response;
+            
+            // Check if we have a valid response
+            if (!arrayBuffer) {
+              throw new Error(`No response data received for ${fileName}`);
+            }
+            
             console.log(`Worker: Download complete for ${fileName}`, {
               responseType: xhr.responseType,
               responseSize: arrayBuffer.byteLength,
@@ -118,8 +124,21 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               dataSize: arrayBuffer.byteLength
             });
 
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
+            try {
+              // Post the message with the ArrayBuffer as a transferable object
+              ctx.postMessage(completeMessage, [arrayBuffer]);
+            } catch (transferError) {
+              console.error(`Worker: Error transferring ArrayBuffer for ${fileName}:`, transferError);
+              
+              // Try again without using transferable objects
+              ctx.postMessage({
+                type: 'error',
+                fileId,
+                error: `Failed to transfer data: ${transferError.toString()}`
+              });
+              
+              throw transferError;
+            }
             console.log(`Worker: Message posted for ${fileName}`);
             resolve();
           } catch (error) {
