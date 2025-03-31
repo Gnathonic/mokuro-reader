@@ -418,11 +418,35 @@
     }
   }
 
+  // Keep track of active downloads
+  let activeDownloads = 0;
+  
+  // Subscribe to the progress tracker store to monitor active downloads
+  const unsubscribe = progressTrackerStore.subscribe(state => {
+    // Count download processes (those with IDs containing 'download')
+    activeDownloads = state.processes.filter(p => 
+      p.id.includes('download') || p.description.includes('Download')
+    ).length;
+  });
+  
   // Function to perform cleanup when component is destroyed
   function cleanup() {
-    console.log('Performing cleanup on cloud component destruction');
+    // We should NOT clean up if there are active downloads
+    // This would disrupt background downloads when navigating within the app
+    console.log('Component being destroyed, checking if cleanup is safe');
+    
+    // Unsubscribe from the store
+    unsubscribe();
+    
+    // Skip cleanup if there are active downloads
+    if (activeDownloads > 0) {
+      console.log(`Skipping cleanup because there are ${activeDownloads} active downloads`);
+      return;
+    }
+    
+    console.log('No active downloads, performing cleanup');
+    // Only clean up orphaned data, not active downloads
     cleanupOrphanedDownloads();
-    cleanupZipJsTemporaryDatabases();
   }
 
   onMount(() => {
