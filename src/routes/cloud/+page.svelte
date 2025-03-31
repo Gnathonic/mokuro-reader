@@ -325,7 +325,8 @@
   }
 
   onMount(() => {
-    // We no longer clear the cache on startup since we're using it for downloads
+    // Clear service worker cache for Google Drive downloads
+    clearServiceWorkerCache();
     
     gapi.load('client', async () => {
       try {
