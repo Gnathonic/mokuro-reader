@@ -672,41 +672,7 @@
           fileSizes = {};
           processedFiles = {};
           
-          // Clean up any remaining temporary databases for this batch
-          // We don't want to run a full cleanup as it might affect other downloads
-          if (indexedDB.databases) {
-            try {
-              const zipTempDbPrefix = 'zip.tmp.';
-              const batchId = overallProcessId;
-              
-              indexedDB.databases().then(databases => {
-                // Look for zip.js temporary databases that might be related to this batch
-                // We use the batch start time as a heuristic
-                const batchStartTime = parseInt(batchId.split('-')[1], 10);
-                if (!isNaN(batchStartTime)) {
-                  const batchEndTime = Date.now();
-                  
-                  databases.forEach(db => {
-                    if (db.name && db.name.startsWith(zipTempDbPrefix)) {
-                      // Extract the timestamp from the database name (if it contains one)
-                      const dbTimePart = db.name.split('.').pop();
-                      const dbTime = parseInt(dbTimePart, 10);
-                      
-                      // If the database was created during this batch's lifetime, it's likely related
-                      if (!isNaN(dbTime) && dbTime >= batchStartTime && dbTime <= batchEndTime) {
-                        console.log(`Cleaning up zip.js temporary database for batch ${batchId}: ${db.name}`);
-                        indexedDB.deleteDatabase(db.name);
-                      }
-                    }
-                  });
-                }
-              }).catch(err => {
-                console.error('Error cleaning up batch temporary databases:', err);
-              });
-            } catch (e) {
-              console.error('Error in batch cleanup:', e);
-            }
-          }
+          // No cleanup needed here - each download cleans up after itself
 
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
