@@ -10,6 +10,7 @@ export interface WorkerTask {
   onProgress?: (progress: any) => void;
   onComplete?: (result: any, completeTask: () => void) => void;
   onError?: (error: any) => void;
+  onChunk?: (chunk: any) => void; // New callback for handling chunked downloads (Firefox)
 }
 
 export class WorkerPool {
@@ -57,6 +58,11 @@ export class WorkerPool {
 
       if (data.type === 'progress' && task.onProgress) {
         task.onProgress(data);
+      } else if (data.type === 'chunk' && task.onChunk) {
+        // Handle chunked downloads (Firefox-specific)
+        console.log(`Worker pool: Received chunk ${data.chunkIndex + 1}/${data.totalChunks} for task ${taskId}`);
+        task.onChunk(data);
+        // Note: We don't complete the task here, as more chunks are coming
       } else if (data.type === 'complete' && task.onComplete) {
         console.log(`Worker pool: Calling onComplete for task ${taskId}`, {
           hasData: !!data.data,

@@ -11,6 +11,20 @@
   import { GoogleSolid } from 'flowbite-svelte-icons';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
 
+  // Add TypeScript declaration for the fileChunks global variable
+  declare global {
+    interface Window {
+      fileChunks?: {
+        [fileId: string]: {
+          chunks: ArrayBuffer[];
+          receivedChunks: number;
+          totalChunks: number;
+          fileName: string;
+        };
+      };
+    }
+  }
+
   interface Props {
     accessToken?: string;
   }
@@ -593,8 +607,99 @@
             fileProgress[fileInfo.id] = data.loaded;
             updateOverallProgress();
           },
+          onChunk: async (data) => {
+            // This handler is for Firefox chunked downloads
+            console.log(`Received chunk ${data.chunkIndex + 1}/${data.totalChunks} for ${data.fileName}`);
+            
+            // Store the chunk in the fileChunks object
+            if (!window.fileChunks || !window.fileChunks[fileInfo.id]) {
+              console.error(`Received chunk for ${data.fileName} but no chunks array initialized`);
+              return;
+            }
+            
+            const fileChunkData = window.fileChunks[fileInfo.id];
+            fileChunkData.chunks[data.chunkIndex] = data.chunk;
+            fileChunkData.receivedChunks++;
+            fileChunkData.totalChunks = data.totalChunks;
+            
+            console.log(`Stored chunk ${data.chunkIndex + 1}/${data.totalChunks} for ${data.fileName}, received ${fileChunkData.receivedChunks}/${data.totalChunks}`);
+            
+            // If we've received all chunks, process the file
+            if (fileChunkData.receivedChunks === data.totalChunks) {
+              console.log(`All ${data.totalChunks} chunks received for ${data.fileName}, processing...`);
+              
+              try {
+                // Combine all chunks into a single ArrayBuffer
+                const totalSize = fileChunkData.chunks.reduce((size, chunk) => size + chunk.byteLength, 0);
+                const combinedBuffer = new Uint8Array(totalSize);
+                
+                let offset = 0;
+                for (const chunk of fileChunkData.chunks) {
+                  combinedBuffer.set(new Uint8Array(chunk), offset);
+                  offset += chunk.byteLength;
+                }
+                
+                // Create a Blob and File from the combined buffer
+                const blob = new Blob([combinedBuffer.buffer]);
+                console.log(`Created blob of size ${blob.size} bytes from ${data.totalChunks} chunks`);
+                
+                const file = new File([blob], data.fileName);
+                console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
+                
+                // Process the file
+                await processFiles([file]);
+                console.log(`Successfully processed file: ${file.name}`);
+                
+                // Mark as completed
+                completedFiles++;
+                fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+                processedFiles[fileInfo.id] = true;
+                
+                // Clean up
+                delete window.fileChunks[fileInfo.id];
+                
+                updateOverallProgress();
+                checkAllComplete();
+              } catch (error) {
+                console.error(`Error processing chunked file ${data.fileName}:`, error);
+                showSnackbar(`Failed to process ${data.fileName}`);
+                
+                // Mark as failed
+                failedFiles++;
+                processedFiles[fileInfo.id] = true;
+                
+                // Clean up
+                delete window.fileChunks[fileInfo.id];
+                
+                updateOverallProgress();
+                checkAllComplete();
+              }
+            }
+          },
           onComplete: async (data, releaseMemory) => {
             try {
+              // Check if this is a chunked download (Firefox-specific)
+              if (!data.data || data.data.byteLength === 0) {
+                console.log(`Received chunked download start signal for ${data.fileName}`);
+                
+                // For Firefox chunked downloads, we'll collect chunks in the fileChunks object
+                // The actual processing will happen in the onChunk handler
+                if (!window.fileChunks) {
+                  window.fileChunks = {};
+                }
+                
+                // Initialize the chunks array for this file
+                window.fileChunks[fileInfo.id] = {
+                  chunks: [],
+                  receivedChunks: 0,
+                  totalChunks: 0,
+                  fileName: data.fileName
+                };
+                
+                // Don't mark as completed yet - we'll do that when all chunks are received
+                return;
+              }
+              
               console.log(`Received complete message for ${data.fileName}`, {
                 dataType: typeof data.data,
                 dataSize: data.data.byteLength,
