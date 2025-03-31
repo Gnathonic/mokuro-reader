@@ -418,35 +418,12 @@
     }
   }
 
-  // Keep track of active downloads
-  let activeDownloads = 0;
-  
-  // Subscribe to the progress tracker store to monitor active downloads
-  const unsubscribe = progressTrackerStore.subscribe(state => {
-    // Count download processes (those with IDs containing 'download')
-    activeDownloads = state.processes.filter(p => 
-      p.id.includes('download') || p.description.includes('Download')
-    ).length;
-  });
-  
-  // Function to perform cleanup when component is destroyed
+  // We don't need to perform cleanup when the component is destroyed
+  // as it could interfere with ongoing downloads
   function cleanup() {
-    // We should NOT clean up if there are active downloads
-    // This would disrupt background downloads when navigating within the app
-    console.log('Component being destroyed, checking if cleanup is safe');
-    
-    // Unsubscribe from the store
-    unsubscribe();
-    
-    // Skip cleanup if there are active downloads
-    if (activeDownloads > 0) {
-      console.log(`Skipping cleanup because there are ${activeDownloads} active downloads`);
-      return;
-    }
-    
-    console.log('No active downloads, performing cleanup');
-    // Only clean up orphaned data, not active downloads
-    cleanupOrphanedDownloads();
+    // Just unsubscribe from any subscriptions to prevent memory leaks
+    // but don't perform any cleanup that could affect ongoing downloads
+    console.log('Component being destroyed, no cleanup needed');
   }
 
   onMount(() => {
@@ -695,11 +672,41 @@
           fileSizes = {};
           processedFiles = {};
           
-          // Run cleanup to remove any orphaned download data
-          cleanupOrphanedDownloads();
-          
-          // Clean up any zip.js temporary databases
-          cleanupZipJsTemporaryDatabases();
+          // Clean up any remaining temporary databases for this batch
+          // We don't want to run a full cleanup as it might affect other downloads
+          if (indexedDB.databases) {
+            try {
+              const zipTempDbPrefix = 'zip.tmp.';
+              const batchId = overallProcessId;
+              
+              indexedDB.databases().then(databases => {
+                // Look for zip.js temporary databases that might be related to this batch
+                // We use the batch start time as a heuristic
+                const batchStartTime = parseInt(batchId.split('-')[1], 10);
+                if (!isNaN(batchStartTime)) {
+                  const batchEndTime = Date.now();
+                  
+                  databases.forEach(db => {
+                    if (db.name && db.name.startsWith(zipTempDbPrefix)) {
+                      // Extract the timestamp from the database name (if it contains one)
+                      const dbTimePart = db.name.split('.').pop();
+                      const dbTime = parseInt(dbTimePart, 10);
+                      
+                      // If the database was created during this batch's lifetime, it's likely related
+                      if (!isNaN(dbTime) && dbTime >= batchStartTime && dbTime <= batchEndTime) {
+                        console.log(`Cleaning up zip.js temporary database for batch ${batchId}: ${db.name}`);
+                        indexedDB.deleteDatabase(db.name);
+                      }
+                    }
+                  });
+                }
+              }).catch(err => {
+                console.error('Error cleaning up batch temporary databases:', err);
+              });
+            } catch (e) {
+              console.error('Error in batch cleanup:', e);
+            }
+          }
 
           // Update the process to show completion
           progressTrackerStore.updateProcess(overallProcessId, {
@@ -799,6 +806,40 @@
               // Clean up references to large objects to help garbage collection
               blob = null;
               file = null;
+              
+              // Clean up any temporary zip.js databases for this specific file
+              // This is safe because we've already processed the file
+              if (indexedDB.databases) {
+                try {
+                  const zipTempDbPrefix = 'zip.tmp.';
+                  const fileIdHash = fileInfo.id.split('').reduce((a, b) => (a * 31 + b.charCodeAt(0)) & 0xFFFFFFFF, 0).toString();
+                  
+                  indexedDB.databases().then(databases => {
+                    // Look for zip.js temporary databases that might be related to this file
+                    // We can't know exactly which database is for which file, but we can make an educated guess
+                    // based on timing - check databases created in the last minute
+                    const recentTime = Date.now() - 60000; // Last minute
+                    
+                    databases.forEach(db => {
+                      if (db.name && db.name.startsWith(zipTempDbPrefix)) {
+                        // Extract the timestamp from the database name (if it contains one)
+                        const dbTimePart = db.name.split('.').pop();
+                        const dbTime = parseInt(dbTimePart, 10);
+                        
+                        // If the database was created recently or contains part of the file ID hash, it's likely related to this file
+                        if (!isNaN(dbTime) && dbTime > recentTime || db.name.includes(fileIdHash)) {
+                          console.log(`Cleaning up zip.js temporary database for file ${data.fileName}: ${db.name}`);
+                          indexedDB.deleteDatabase(db.name);
+                        }
+                      }
+                    });
+                  }).catch(err => {
+                    console.error('Error cleaning up individual file temporary databases:', err);
+                  });
+                } catch (e) {
+                  console.error('Error in individual file cleanup:', e);
+                }
+              }
               
               // Force garbage collection if possible (not standard, but some browsers support it)
               if (typeof window !== 'undefined' && window.gc) {
