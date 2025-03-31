@@ -663,8 +663,7 @@
             try {
               console.log(`Received complete message for ${data.fileName}`);
               
-              // Get the file from the cache instead of using the ArrayBuffer directly
-              // This reduces memory usage by not having two copies of the data in memory
+              // Get the file from the cache
               const fileBlob = await getFileFromCache(fileInfo.id, accessToken);
               
               if (!fileBlob) {

@@ -21,7 +21,6 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  data?: ArrayBuffer; // Optional now, as we'll get the data from cache
 }
 
 interface ErrorMessage {
@@ -100,20 +99,19 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
-            // The response is now in the cache, we don't need to transfer the ArrayBuffer
-            // This reduces memory usage by not having two copies of the data
+            // The response is now in the cache, we don't need to transfer any ArrayBuffer
+            // This reduces memory usage significantly
             console.log(`Worker: Download complete for ${fileName}`, {
               responseType: xhr.responseType,
               responseSize: xhr.response.byteLength,
               status: xhr.status
             });
 
-            // Create a message without the ArrayBuffer
+            // Create a message with just the file information
             const completeMessage: CompleteMessage = {
               type: 'complete',
               fileId,
-              fileName,
-              data: new ArrayBuffer(0) // Empty ArrayBuffer, we'll get the data from cache
+              fileName
             };
 
             console.log(`Worker: Sending complete message for ${fileName}`, {
@@ -121,7 +119,7 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               note: 'Data will be retrieved from cache'
             });
 
-            // Post the message without transferring the ArrayBuffer
+            // Post the message
             ctx.postMessage(completeMessage);
             console.log(`Worker: Message posted for ${fileName}`);
             resolve();
