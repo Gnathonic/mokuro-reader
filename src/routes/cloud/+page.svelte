@@ -602,44 +602,23 @@
           onComplete: async (data, releaseMemory) => {
             try {
               console.log(`Received complete message for ${data.fileName}`, {
-                dataType: typeof data.data,
-                dataSize: data.data.byteLength,
-                hasData: !!data.data,
-                isExtracted: data.isExtracted,
-                extractedFilesCount: data.extractedFiles?.length || 0
+                extractedFilesCount: data.extractedFiles.length
               });
 
-              if (data.isExtracted && data.extractedFiles && data.extractedFiles.length > 0) {
-                // If the worker has already extracted the files, process them directly
-                console.log(`Processing ${data.extractedFiles.length} extracted files from ${data.fileName}`);
-                
-                // Convert extracted files to File objects
-                const files = data.extractedFiles.map(extractedFile => {
-                  return new File(
-                    [extractedFile.data], 
-                    extractedFile.name
-                  );
-                });
-                
-                // Process the extracted files
-                await processFiles(files);
-                console.log(`Successfully processed ${files.length} extracted files from ${data.fileName}`);
-              } else {
-                // If the worker didn't extract the files (or extraction failed), process the original file
-                console.log(`Processing original file: ${data.fileName}`);
-                
-                // Create a Blob from the ArrayBuffer
-                const blob = new Blob([data.data]);
-                console.log(`Created blob of size ${blob.size} bytes`);
-
-                // Create a File object from the blob
-                const file = new File([blob], data.fileName);
-                console.log(`Created file object: ${file.name}, size: ${file.size} bytes`);
-
-                // Process the file
-                await processFiles([file]);
-                console.log(`Successfully processed file: ${file.name}`);
-              }
+              // Process the extracted files directly
+              console.log(`Processing ${data.extractedFiles.length} extracted files from ${data.fileName}`);
+              
+              // Convert extracted files to File objects
+              const files = data.extractedFiles.map(extractedFile => {
+                return new File(
+                  [extractedFile.data], 
+                  extractedFile.name
+                );
+              });
+              
+              // Process the extracted files
+              await processFiles(files);
+              console.log(`Successfully processed ${files.length} extracted files from ${data.fileName}`);
 
               // Mark as completed
               completedFiles++;

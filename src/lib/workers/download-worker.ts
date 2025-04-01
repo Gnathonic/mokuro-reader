@@ -29,9 +29,7 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  data: ArrayBuffer;
-  extractedFiles?: ExtractedFile[];
-  isExtracted: boolean;
+  extractedFiles: ExtractedFile[];
 }
 
 interface ErrorMessage {
@@ -40,11 +38,7 @@ interface ErrorMessage {
   error: string;
 }
 
-// Function to check if a file is a zip or cbz
-function isZipFile(fileName: string): boolean {
-  const ext = fileName.split('.').pop()?.toLowerCase();
-  return ext === 'zip' || ext === 'cbz';
-}
+// All files from Google Drive are zip or cbz, so we don't need to check
 
 // Function to extract files from a zip/cbz
 async function extractZipFiles(arrayBuffer: ArrayBuffer): Promise<ExtractedFile[]> {
@@ -235,52 +229,45 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               status: xhr.status
             });
 
-            // Check if this is a zip/cbz file that needs extraction
-            const shouldExtract = isZipFile(fileName);
-            let extractedFiles: ExtractedFile[] | undefined;
+            // Extract the contents (all files from Drive are zip/cbz)
+            let extractedFiles: ExtractedFile[] = [];
             let transferables: ArrayBuffer[] = [];
             
-            // If it's a zip/cbz file, extract its contents
-            if (shouldExtract) {
-              try {
-                console.log(`Worker: Starting extraction for ${fileName}`);
-                // Clone the array buffer since we'll be transferring the original
-                const arrayBufferClone = arrayBuffer.slice(0);
-                extractedFiles = await extractZipFiles(arrayBufferClone);
-                
-                // Add all extracted file buffers to transferables
-                if (extractedFiles) {
-                  extractedFiles.forEach(file => {
-                    transferables.push(file.data);
-                  });
-                }
-                
-                console.log(`Worker: Extraction complete for ${fileName}, found ${extractedFiles.length} files`);
-              } catch (error) {
-                console.error(`Worker: Error extracting ${fileName}:`, error);
-                // If extraction fails, we'll still send the original file
-                extractedFiles = undefined;
-              }
+            try {
+              console.log(`Worker: Starting extraction for ${fileName}`);
+              extractedFiles = await extractZipFiles(arrayBuffer);
+              
+              // Add all extracted file buffers to transferables
+              extractedFiles.forEach(file => {
+                transferables.push(file.data);
+              });
+              
+              console.log(`Worker: Extraction complete for ${fileName}, found ${extractedFiles.length} files`);
+            } catch (error) {
+              console.error(`Worker: Error extracting ${fileName}:`, error);
+              // Send an error message if extraction fails
+              const errorMessage: ErrorMessage = {
+                type: 'error',
+                fileId,
+                error: `Error extracting file: ${error.toString()}`
+              };
+              ctx.postMessage(errorMessage);
+              reject(error);
+              return;
             }
 
-            // Create a message with the ArrayBuffer and extracted files if available
+            // Create a message with the extracted files
             const completeMessage: CompleteMessage = {
               type: 'complete',
               fileId,
               fileName,
-              data: arrayBuffer,
-              extractedFiles,
-              isExtracted: !!extractedFiles
+              extractedFiles
             };
 
             console.log(`Worker: Sending complete message for ${fileName}`, {
               messageType: 'complete',
-              dataSize: arrayBuffer.byteLength,
-              extractedFiles: extractedFiles ? extractedFiles.length : 0
+              extractedFiles: extractedFiles.length
             });
-
-            // Add the original array buffer to transferables
-            transferables.push(arrayBuffer);
 
             // Post the message with all ArrayBuffers as transferable objects
             ctx.postMessage(completeMessage, transferables);

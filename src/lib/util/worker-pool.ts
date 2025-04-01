@@ -59,11 +59,7 @@ export class WorkerPool {
         task.onProgress(data);
       } else if (data.type === 'complete' && task.onComplete) {
         console.log(`Worker pool: Calling onComplete for task ${taskId}`, {
-          hasData: !!data.data,
-          dataType: typeof data.data,
-          dataSize: data.data?.byteLength,
-          isExtracted: data.isExtracted,
-          extractedFilesCount: data.extractedFiles?.length || 0
+          extractedFilesCount: data.extractedFiles.length
         });
 
         task.onComplete(data, () => {
