@@ -23,6 +23,21 @@ pip install git+https://github.com/kha-white/mokuro.git@web-reader
 
 Once installed and your manga is processed, import your manga into the reader.
 
+## Google Drive Integration
+
+The reader supports Google Drive integration for syncing your library and reading progress across devices. This feature uses OAuth 2.0 with refresh tokens to minimize the need for frequent logins.
+
+### Setting up Google Drive API (for developers)
+
+1. Create a project in the [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the Google Drive API
+3. Create OAuth 2.0 credentials (Web application type)
+4. Add authorized redirect URIs:
+   - For development: `http://localhost:5173/api/auth/callback`
+   - For production: `https://your-domain.com/api/auth/callback`
+5. Copy the client ID, client secret, and API key
+6. Create a `.env` file based on `.env.example` and add your credentials
+
 ## Development:
 
 ### Requirements
@@ -38,6 +53,12 @@ cd mokuro-reader
 Install dependencies:
 ```bash
 npm install
+```
+
+Configure environment variables:
+```bash
+cp .env.example .env
+# Edit .env with your Google Drive API credentials
 ```
 
 Start the dev server:

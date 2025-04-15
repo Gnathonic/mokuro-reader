@@ -7,15 +7,24 @@
 
   import { promptConfirmation, showSnackbar, uploadFile } from '$lib/util';
   import { Badge, Button, Toggle } from 'flowbite-svelte';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { GoogleSolid } from 'flowbite-svelte-icons';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { 
+    getToken, 
+    getValidToken, 
+    clearTokens, 
+    initFromUrlHash, 
+    initiateOAuthFlow,
+    saveToken
+  } from '$lib/util/auth';
 
   interface Props {
     accessToken?: string;
   }
 
   let { accessToken = $bindable('') }: Props = $props();
+  let tokenRefreshInterval: number | null = null;
 
   // Helper function to handle errors consistently
   function handleDriveError(error: any, context: string) {
@@ -60,8 +69,21 @@
   // and is used in the UI to show/hide the login button
 
   run(() => {
+    // Check for error parameter in URL (from OAuth callback)
+    const urlParams = new URLSearchParams(window.location.search);
+    const error = urlParams.get('error');
+    if (error) {
+      showSnackbar(`Authentication error: ${error.replace(/_/g, ' ')}`);
+      // Clean up the URL
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+    
+    // Save token if we have one
     if (accessToken) {
-      localStorage.setItem('gdrive_token', accessToken);
+      // Use our auth utility to save the token with expiry time
+      // Default to 1 hour expiry if we don't know the exact time
+      const expiresIn = 3600; // 1 hour in seconds
+      saveToken(accessToken, expiresIn);
     }
   });
 
@@ -132,12 +154,15 @@
 
   export async function connectDrive(resp?: any) {
     if (resp?.error !== undefined) {
-      localStorage.removeItem('gdrive_token');
+      clearTokens();
       accessToken = '';
       throw resp;
     }
 
-    accessToken = resp?.access_token;
+    // If we received a new access token, use it
+    if (resp?.access_token) {
+      accessToken = resp.access_token;
+    }
 
     const processId = 'connect-drive';
     progressTrackerStore.addProcess({
@@ -223,16 +248,22 @@
   }
 
   function signIn() {
-    // Always show the account picker to allow switching accounts
-    tokenClient.requestAccessToken({ prompt: 'consent' });
+    // Use the new OAuth flow to get refresh tokens
+    initiateOAuthFlow();
   }
 
   export function logout() {
-    // Remove token from localStorage
-    localStorage.removeItem('gdrive_token');
+    // Clear all tokens from storage
+    clearTokens();
 
     // Clear the token from memory
     accessToken = '';
+
+    // Clear the token refresh interval
+    if (tokenRefreshInterval) {
+      window.clearInterval(tokenRefreshInterval);
+      tokenRefreshInterval = null;
+    }
 
     // Revoke the token with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
@@ -250,6 +281,8 @@
         console.error('Error revoking token:', error);
       });
     }
+    
+    showSnackbar('Logged out from Google Drive');
   }
 
   // Function to clear service worker cache for Google Drive downloads
@@ -295,6 +328,9 @@
     // Clear service worker cache for Google Drive downloads
     clearServiceWorkerCache();
     
+    // Initialize from URL hash if coming back from OAuth flow
+    initFromUrlHash();
+    
     gapi.load('client', async () => {
       try {
         await gapi.client.init({
@@ -302,23 +338,27 @@
           discoveryDocs: [DISCOVERY_DOC]
         });
 
-        // Initialize token client after gapi client is ready
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SCOPES,
-          callback: connectDrive
-        });
-
-        // Try to restore the saved token only after gapi client is initialized
-        const savedToken = localStorage.getItem('gdrive_token');
-        if (savedToken) {
+        // Try to get a valid token (will refresh if needed)
+        const validToken = await getValidToken();
+        
+        if (validToken) {
           try {
             // Set the token in gapi client
-            gapi.client.setToken({ access_token: savedToken });
-            accessToken = savedToken;
-            await connectDrive({ access_token: savedToken });
+            gapi.client.setToken({ access_token: validToken });
+            accessToken = validToken;
+            await connectDrive({ access_token: validToken });
+            
+            // Set up token refresh interval (check every 10 minutes)
+            tokenRefreshInterval = window.setInterval(async () => {
+              const newToken = await getValidToken();
+              if (newToken && newToken !== accessToken) {
+                accessToken = newToken;
+                gapi.client.setToken({ access_token: newToken });
+                console.log('Access token refreshed automatically');
+              }
+            }, 10 * 60 * 1000); // 10 minutes
           } catch (error) {
-            console.error('Failed to restore saved token:', error);
+            console.error('Failed to use valid token:', error);
             // Token will be cleared in connectDrive if there's an error
           }
         }
@@ -328,6 +368,14 @@
     });
 
     gapi.load('picker', () => {});
+  });
+  
+  // Clean up interval on component destroy
+  onDestroy(() => {
+    if (tokenRefreshInterval) {
+      window.clearInterval(tokenRefreshInterval);
+      tokenRefreshInterval = null;
+    }
   });
 
   function createPicker() {
