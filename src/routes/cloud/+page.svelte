@@ -374,9 +374,13 @@
           tokenClient.callback = originalCallback;
           
           if (resp?.error) {
+            console.error('Token refresh failed:', resp.error);
             reject(new Error(`Token refresh failed: ${resp.error}`));
           } else {
-            // Call the original callback to update the token
+            // Set the access token directly so the UI updates immediately
+            accessToken = resp.access_token;
+            
+            // Call the original callback to handle the rest of the connection process
             if (originalCallback) originalCallback(resp);
             resolve();
           }
@@ -464,9 +468,43 @@
         if (savedRefreshToken) {
           try {
             console.log('Found saved refresh token, requesting new access token');
-            // Request a new access token using the refresh token
-            // This will call the connectDrive callback with a new access token
-            tokenClient.requestAccessToken({ prompt: '' });
+            
+            // Create a promise that will resolve when the token is refreshed
+            const tokenRefreshPromise = new Promise<void>((resolve, reject) => {
+              // Store the original callback
+              const originalCallback = tokenClient.callback;
+              
+              // Override the callback temporarily
+              tokenClient.callback = (resp) => {
+                // Restore the original callback
+                tokenClient.callback = originalCallback;
+                
+                if (resp?.error) {
+                  console.error('Token refresh failed:', resp.error);
+                  reject(new Error(`Token refresh failed: ${resp.error}`));
+                } else {
+                  // Set the access token directly so the UI updates immediately
+                  accessToken = resp.access_token;
+                  
+                  // Call the original callback to handle the rest of the connection process
+                  if (originalCallback) originalCallback(resp);
+                  resolve();
+                }
+              };
+              
+              // Request a new access token using the refresh token without prompting the user
+              tokenClient.requestAccessToken({ prompt: '' });
+            });
+            
+            try {
+              // Wait for the token refresh to complete
+              await tokenRefreshPromise;
+              console.log('Successfully refreshed token on page load');
+            } catch (refreshError) {
+              console.error('Failed to refresh token on page load:', refreshError);
+              // If there's an error with the refresh token, we'll need to re-authenticate
+              localStorage.removeItem('gdrive_refresh_token');
+            }
           } catch (error) {
             console.error('Failed to use refresh token:', error);
             // If there's an error with the refresh token, we'll need to re-authenticate
