@@ -18,7 +18,7 @@
   let { accessToken = $bindable('') }: Props = $props();
 
   // Helper function to handle errors consistently
-  function handleDriveError(error: any, context: string) {
+  async function handleDriveError(error: any, context: string, retryFn?: () => Promise<any>) {
     // Check if it's a connectivity issue
     const errorMessage = error.toString().toLowerCase();
     const isConnectivityError =
@@ -27,12 +27,31 @@
       errorMessage.includes('offline') ||
       errorMessage.includes('internet');
 
-    if (!isConnectivityError) {
-      // Log the user out for non-connectivity errors
+    // Check if it's a token expiration issue
+    const isTokenExpired = 
+      errorMessage.includes('invalid_grant') || 
+      errorMessage.includes('invalid_token') || 
+      errorMessage.includes('unauthorized') || 
+      errorMessage.includes('auth') || 
+      errorMessage.includes('401');
+
+    if (isTokenExpired && retryFn) {
+      console.log('Token expired, attempting to refresh and retry operation');
+      try {
+        // Use our helper function to refresh the token and retry the operation
+        await refreshTokenAndRetry(retryFn);
+        return;
+      } catch (refreshError) {
+        console.error('Failed to refresh token:', refreshError);
+        logout();
+        showSnackbar(`Error refreshing authentication: ${refreshError.message || 'Unknown error'}`);
+      }
+    } else if (isConnectivityError) {
+      showSnackbar('Connection error: Please check your internet connection');
+    } else {
+      // Log the user out for other non-connectivity errors
       logout();
       showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
-    } else {
-      showSnackbar('Connection error: Please check your internet connection');
     }
 
     console.error(`${context} error:`, error);
@@ -42,6 +61,7 @@
   const API_KEY = import.meta.env.VITE_GDRIVE_API_KEY;
 
   const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+  // Use drive.file scope with offline access
   const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
   const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
@@ -59,11 +79,8 @@
   // This variable is used to track if we're connected to Google Drive
   // and is used in the UI to show/hide the login button
 
-  run(() => {
-    if (accessToken) {
-      localStorage.setItem('gdrive_token', accessToken);
-    }
-  });
+  // We no longer need to store the access token in localStorage
+  // as we're only storing the refresh token now
 
   async function getFileSize(fileId: string): Promise<number> {
     try {
@@ -84,44 +101,97 @@
     progressCallback: (loaded: number) => void
   ) {
     return new Promise<Blob>(async (resolve, reject) => {
-      const { access_token } = gapi.auth.getToken();
-      const xhr = new XMLHttpRequest();
+      try {
+        const { access_token } = gapi.auth.getToken();
+        const xhr = new XMLHttpRequest();
 
-      // Get file size before starting download
-      const size = await getFileSize(fileId);
+        // Get file size before starting download
+        const size = await getFileSize(fileId);
 
-      xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-      xhr.setRequestHeader('Authorization', `Bearer ${access_token}`);
-      xhr.responseType = 'blob';
+        xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+        xhr.setRequestHeader('Authorization', `Bearer ${access_token}`);
+        xhr.responseType = 'blob';
 
-      xhr.onprogress = ({ loaded }) => {
-        // Call the progress callback with the loaded bytes
-        progressCallback(loaded);
-      };
+        xhr.onprogress = ({ loaded }) => {
+          // Call the progress callback with the loaded bytes
+          progressCallback(loaded);
+        };
 
-      xhr.onabort = (event) => {
-        console.warn(`xhr ${fileId}: download aborted at ${event.loaded} of ${size}`);
-        showSnackbar('Download failed');
-        reject(new Error('Download aborted'));
-      };
+        xhr.onabort = (event) => {
+          console.warn(`xhr ${fileId}: download aborted at ${event.loaded} of ${size}`);
+          showSnackbar('Download failed');
+          reject(new Error('Download aborted'));
+        };
 
-      xhr.onerror = (event) => {
-        console.error(`xhr ${fileId}: download error at ${event.loaded} of ${size}`);
-        showSnackbar('Download failed');
-        reject(new Error('Error downloading file'));
-      };
+        xhr.onerror = async (event) => {
+          console.error(`xhr ${fileId}: download error at ${event.loaded} of ${size}`);
+          
+          // Check if this might be an authorization error (401)
+          if (xhr.status === 401) {
+            console.log('Token expired during download, attempting to refresh');
+            try {
+              // Use our helper function to refresh the token and retry the download
+              const blob = await refreshTokenAndRetry(() => 
+                xhrDownloadFileIdWithTracking(fileId, fileName, progressCallback)
+              );
+              resolve(blob);
+              return;
+            } catch (refreshError) {
+              console.error('Failed to refresh token during download:', refreshError);
+              showSnackbar('Authentication error. Please log in again.');
+              reject(new Error('Authentication error'));
+              return;
+            }
+          }
+          
+          showSnackbar('Download failed');
+          reject(new Error('Error downloading file'));
+        };
 
-      xhr.onload = () => {
-        resolve(xhr.response);
-      };
+        xhr.onload = async () => {
+          // Check for HTTP error status codes
+          if (xhr.status >= 400) {
+            if (xhr.status === 401) {
+              // Handle unauthorized error (token expired)
+              console.log('Token expired during download (status 401), attempting to refresh');
+              
+              try {
+                // Use our helper function to refresh the token and retry the download
+                const blob = await refreshTokenAndRetry(() => 
+                  xhrDownloadFileIdWithTracking(fileId, fileName, progressCallback)
+                );
+                resolve(blob);
+                return;
+              } catch (refreshError) {
+                console.error('Failed to refresh token during download:', refreshError);
+                showSnackbar('Authentication error. Please log in again.');
+                reject(new Error('Authentication error'));
+                return;
+              }
+            } else {
+              reject(new Error(`HTTP error ${xhr.status}`));
+              return;
+            }
+          }
+          
+          resolve(xhr.response);
+        };
 
-      xhr.ontimeout = (event) => {
-        console.warn(`xhr ${fileId}: download timeout after ${event.loaded} of ${size}`);
-        showSnackbar('Download timed out');
-        reject(new Error('Timeout downloading file'));
-      };
+        xhr.ontimeout = (event) => {
+          console.warn(`xhr ${fileId}: download timeout after ${event.loaded} of ${size}`);
+          showSnackbar('Download timed out');
+          reject(new Error('Timeout downloading file'));
+        };
 
-      xhr.send();
+        xhr.send();
+      } catch (error) {
+        // Handle any errors that occur during setup
+        await handleDriveError(error, 'downloading file', async () => {
+          // Retry the download after token refresh
+          return xhrDownloadFileIdWithTracking(fileId, fileName, progressCallback);
+        });
+        reject(error);
+      }
     });
   }
 
@@ -132,12 +202,19 @@
 
   export async function connectDrive(resp?: any) {
     if (resp?.error !== undefined) {
-      localStorage.removeItem('gdrive_token');
+      localStorage.removeItem('gdrive_refresh_token');
       accessToken = '';
       throw resp;
     }
 
+    // Set the access token in memory
     accessToken = resp?.access_token;
+    
+    // Store the refresh token in localStorage if provided
+    if (resp?.refresh_token) {
+      localStorage.setItem('gdrive_refresh_token', resp.refresh_token);
+      console.log('Refresh token stored');
+    }
 
     const processId = 'connect-drive';
     progressTrackerStore.addProcess({
@@ -218,40 +295,111 @@
         status: 'Connection failed'
       });
       setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-      handleDriveError(error, 'connecting to Google Drive');
+      
+      // Pass a retry function to handleDriveError
+      await handleDriveError(error, 'connecting to Google Drive', async () => {
+        return connectDrive({ access_token: accessToken });
+      });
     }
   }
 
   function signIn() {
     // Always show the account picker to allow switching accounts
-    tokenClient.requestAccessToken({ prompt: 'consent' });
+    // Request offline access to get a refresh token
+    tokenClient.requestAccessToken({ 
+      prompt: 'consent',
+      access_type: 'offline'
+    });
   }
 
   export function logout() {
-    // Remove token from localStorage
-    localStorage.removeItem('gdrive_token');
+    // Get refresh token before clearing
+    const refreshToken = localStorage.getItem('gdrive_refresh_token');
+    
+    // Remove refresh token from localStorage
+    localStorage.removeItem('gdrive_refresh_token');
 
-    // Clear the token from memory
+    // Clear the access token from memory
     accessToken = '';
 
-    // Revoke the token with Google to ensure account picker shows up next time
+    // Revoke the tokens with Google to ensure account picker shows up next time
     if (gapi.client.getToken()) {
       const token = gapi.client.getToken().access_token;
       // Clear the token from gapi client
       gapi.client.setToken(null);
 
-      // Revoke the token with Google's OAuth service
+      // Revoke the access token with Google's OAuth service
       fetch(`https://oauth2.googleapis.com/revoke?token=${token}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
       }).catch((error) => {
-        console.error('Error revoking token:', error);
+        console.error('Error revoking access token:', error);
       });
+      
+      // Also revoke the refresh token if we have one
+      if (refreshToken) {
+        fetch(`https://oauth2.googleapis.com/revoke?token=${refreshToken}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }).catch((error) => {
+          console.error('Error revoking refresh token:', error);
+        });
+      }
     }
   }
 
+  // Helper function to refresh token and retry an operation
+  async function refreshTokenAndRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      // Request a new token using the refresh token
+      const refreshToken = localStorage.getItem('gdrive_refresh_token');
+      if (!refreshToken) {
+        throw new Error('No refresh token available');
+      }
+
+      console.log('Refreshing token and retrying operation');
+      
+      // Create a promise that will resolve when the token is refreshed
+      const tokenRefreshPromise = new Promise<void>((resolve, reject) => {
+        // Store the original callback
+        const originalCallback = tokenClient.callback;
+        
+        // Override the callback temporarily
+        tokenClient.callback = (resp) => {
+          // Restore the original callback
+          tokenClient.callback = originalCallback;
+          
+          if (resp?.error) {
+            reject(new Error(`Token refresh failed: ${resp.error}`));
+          } else {
+            // Call the original callback to update the token
+            if (originalCallback) originalCallback(resp);
+            resolve();
+          }
+        };
+        
+        // Request a new access token without prompting the user
+        tokenClient.requestAccessToken({ prompt: '' });
+      });
+      
+      // Wait for the token to be refreshed
+      await tokenRefreshPromise;
+      
+      // Wait a moment for the token to be applied
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Retry the operation with the new token
+      return await operation();
+    } catch (error) {
+      console.error('Error refreshing token and retrying:', error);
+      throw error;
+    }
+  }
+  
   // Function to clear service worker cache for Google Drive downloads
   async function clearServiceWorkerCache() {
     if ('caches' in window) {
@@ -306,24 +454,27 @@
         tokenClient = google.accounts.oauth2.initTokenClient({
           client_id: CLIENT_ID,
           scope: SCOPES,
-          callback: connectDrive
+          callback: connectDrive,
+          // Request offline access to get a refresh token
+          access_type: 'offline'
         });
 
-        // Try to restore the saved token only after gapi client is initialized
-        const savedToken = localStorage.getItem('gdrive_token');
-        if (savedToken) {
+        // Try to restore using the refresh token
+        const savedRefreshToken = localStorage.getItem('gdrive_refresh_token');
+        if (savedRefreshToken) {
           try {
-            // Set the token in gapi client
-            gapi.client.setToken({ access_token: savedToken });
-            accessToken = savedToken;
-            await connectDrive({ access_token: savedToken });
+            console.log('Found saved refresh token, requesting new access token');
+            // Request a new access token using the refresh token
+            // This will call the connectDrive callback with a new access token
+            tokenClient.requestAccessToken({ prompt: '' });
           } catch (error) {
-            console.error('Failed to restore saved token:', error);
-            // Token will be cleared in connectDrive if there's an error
+            console.error('Failed to use refresh token:', error);
+            // If there's an error with the refresh token, we'll need to re-authenticate
+            localStorage.removeItem('gdrive_refresh_token');
           }
         }
       } catch (error) {
-        handleDriveError(error, 'initializing Google Drive');
+        await handleDriveError(error, 'initializing Google Drive');
       }
     });
 
@@ -368,8 +519,29 @@
 
       return result.files || [];
     } catch (error) {
-      handleDriveError(error, 'listing files in folder');
-      return [];
+      // Check if it's a token expiration issue
+      const errorMessage = error.toString().toLowerCase();
+      const isTokenExpired = 
+        errorMessage.includes('invalid_grant') || 
+        errorMessage.includes('invalid_token') || 
+        errorMessage.includes('unauthorized') || 
+        errorMessage.includes('auth') || 
+        errorMessage.includes('401');
+      
+      if (isTokenExpired) {
+        try {
+          // Use our helper function to refresh the token and retry the operation
+          return await refreshTokenAndRetry(() => listFilesInFolder(folderId));
+        } catch (refreshError) {
+          console.error('Failed to refresh token:', refreshError);
+          await handleDriveError(refreshError, 'refreshing token for listing files');
+          return [];
+        }
+      } else {
+        // Handle other types of errors
+        await handleDriveError(error, 'listing files in folder');
+        return [];
+      }
     }
   }
 
