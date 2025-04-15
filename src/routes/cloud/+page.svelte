@@ -204,7 +204,6 @@
     console.log('connectDrive called with response:', resp ? 'Response object received' : 'No response');
     if (resp?.error !== undefined) {
       console.error('Error in connectDrive:', resp.error);
-      localStorage.removeItem('gdrive_refresh_token');
       accessToken = '';
       throw resp;
     }
@@ -219,30 +218,8 @@
       localStorage.setItem('gdrive_refresh_token', resp.refresh_token);
       console.log('Refresh token stored successfully');
     } else {
-      console.log('No refresh token in response, this may cause login persistence issues');
+      console.log('No refresh token in response');
       console.log('Current scopes:', resp?.scope);
-      
-      // Check if we already have a refresh token
-      const existingRefreshToken = localStorage.getItem('gdrive_refresh_token');
-      if (!existingRefreshToken) {
-        console.log('No existing refresh token found. This will require re-authentication on page refresh.');
-        console.log('This typically happens when prompt is not set to "consent" or access_type is not "offline"');
-        
-        // Force a new sign-in to get a refresh token
-        console.log('Forcing a new sign-in to get a refresh token');
-        setTimeout(() => {
-          signIn();
-        }, 100);
-        return;
-      } else {
-        console.log('Using existing refresh token from localStorage');
-      }
-    }
-    
-    // Store the access token in localStorage as well for immediate use after page refresh
-    if (accessToken) {
-      localStorage.setItem('gdrive_access_token', accessToken);
-      console.log('Access token stored in localStorage');
     }
 
     const processId = 'connect-drive';
@@ -339,28 +316,25 @@
     // or when prompt='consent' is specified. We need to force the consent screen
     // to appear every time to ensure we get a refresh token.
     
-    // Clear any existing tokens to ensure we get a fresh refresh token
-    localStorage.removeItem('gdrive_refresh_token');
+    // Clear the access token from memory
     accessToken = '';
     
     // Always show the account picker to allow switching accounts
     // Request offline access to get a refresh token
     tokenClient.requestAccessToken({ 
       // Force the consent screen to appear every time
-      prompt: 'consent',
+      prompt: 'consent select_account',
       // Request offline access to get a refresh token
       access_type: 'offline'
     });
   }
 
   export function logout() {
-    // Get tokens before clearing
+    // Get refresh token before clearing
     const refreshToken = localStorage.getItem('gdrive_refresh_token');
-    const storedAccessToken = localStorage.getItem('gdrive_access_token');
     
-    // Remove tokens from localStorage
+    // Remove refresh token from localStorage
     localStorage.removeItem('gdrive_refresh_token');
-    localStorage.removeItem('gdrive_access_token');
 
     // Clear the access token from memory
     accessToken = '';
@@ -392,16 +366,6 @@
           console.error('Error revoking refresh token:', error);
         });
       }
-    } else if (storedAccessToken) {
-      // If we have a stored access token but not in gapi client, revoke it too
-      fetch(`https://oauth2.googleapis.com/revoke?token=${storedAccessToken}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }).catch((error) => {
-        console.error('Error revoking stored access token:', error);
-      });
     }
     
     console.log('Logged out and cleared all tokens');
@@ -505,10 +469,7 @@
         scope: SCOPES,
         callback: connectDrive,
         // Request offline access to get a refresh token
-        access_type: 'offline',
-        // This is critical: prompt must be set to 'consent' to ensure we get a refresh token
-        // every time, even if the user has already granted permission
-        prompt: 'consent'
+        access_type: 'offline'
       });
       console.log('Token client initialized successfully');
       
@@ -576,10 +537,9 @@
           console.log('Requesting access token without prompt');
           // The key issue: we need to use the refresh token to get a new access token
           // but Google's OAuth2 client doesn't directly expose a refresh token API
-          // Instead, we use requestAccessToken with prompt: '' to use the stored refresh token
+          // Instead, we use requestAccessToken with prompt: 'none' to use the stored refresh token
           tokenClient.requestAccessToken({ 
-            prompt: '', 
-            access_type: 'offline'
+            prompt: 'none'
           });
           console.log('Access token request sent');
         } catch (error) {
@@ -600,11 +560,9 @@
     console.log('Cloud component mounted');
     console.log('Initial accessToken state:', accessToken ? 'set' : 'not set');
     
-    // Check for stored tokens in localStorage
+    // Check for refresh token in localStorage
     const savedRefreshToken = localStorage.getItem('gdrive_refresh_token');
-    const savedAccessToken = localStorage.getItem('gdrive_access_token');
     console.log('Refresh token in localStorage:', savedRefreshToken ? 'Yes' : 'No');
-    console.log('Access token in localStorage:', savedAccessToken ? 'Yes' : 'No');
     
     // Clear service worker cache for Google Drive downloads
     await clearServiceWorkerCache();
@@ -629,21 +587,15 @@
       });
     });
     
-    // First try to use the saved access token if available
-    if (savedAccessToken && !accessToken) {
-      console.log('Using saved access token from localStorage');
-      accessToken = savedAccessToken;
-    }
-    
-    // If we still don't have an access token but have a refresh token, try to refresh
-    if (!accessToken && savedRefreshToken) {
+    // If we have a refresh token, try to refresh the access token
+    if (savedRefreshToken) {
       console.log('Found saved refresh token, attempting to refresh access token');
       const refreshed = await refreshTokenWithSavedRefreshToken();
       console.log('Token refresh completed with result:', refreshed);
       console.log('Final accessToken state:', accessToken ? 'set' : 'not set');
       console.log('Refresh token in localStorage after refresh attempt:', localStorage.getItem('gdrive_refresh_token') ? 'Yes' : 'No');
-    } else if (!accessToken) {
-      console.log('No valid tokens found in localStorage, user will need to sign in');
+    } else {
+      console.log('No refresh token found in localStorage, user will need to sign in');
     }
   });
 
