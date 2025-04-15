@@ -201,7 +201,9 @@
   }
 
   export async function connectDrive(resp?: any) {
+    console.log('connectDrive called with response:', resp ? 'Response object received' : 'No response');
     if (resp?.error !== undefined) {
+      console.error('Error in connectDrive:', resp.error);
       localStorage.removeItem('gdrive_refresh_token');
       accessToken = '';
       throw resp;
@@ -209,11 +211,15 @@
 
     // Set the access token in memory
     accessToken = resp?.access_token;
+    console.log('Access token set in memory:', accessToken ? 'Yes' : 'No');
     
     // Store the refresh token in localStorage if provided
     if (resp?.refresh_token) {
+      console.log('Refresh token received, storing in localStorage');
       localStorage.setItem('gdrive_refresh_token', resp.refresh_token);
-      console.log('Refresh token stored');
+      console.log('Refresh token stored successfully');
+    } else {
+      console.log('No refresh token in response');
     }
 
     const processId = 'connect-drive';
@@ -304,6 +310,7 @@
   }
 
   function signIn() {
+    console.log('Sign in clicked, requesting access token with offline access');
     // Always show the account picker to allow switching accounts
     // Request offline access to get a refresh token
     tokenClient.requestAccessToken({ 
@@ -416,16 +423,35 @@
   // Function to initialize Google API client and token client
   async function initializeGoogleAPI() {
     try {
+      // Check if gapi is available
+      if (!window.gapi) {
+        console.error('Google API client library not loaded');
+        return false;
+      }
+      
+      // Check if google.accounts.oauth2 is available
+      if (!window.google?.accounts?.oauth2) {
+        console.error('Google Identity Services library not loaded');
+        return false;
+      }
+      
+      console.log('Loading Google API client');
       await new Promise<void>((resolve) => {
-        gapi.load('client', () => resolve());
+        gapi.load('client', () => {
+          console.log('Google API client loaded');
+          resolve();
+        });
       });
       
+      console.log('Initializing Google API client with API key and discovery docs');
       await gapi.client.init({
         apiKey: API_KEY,
         discoveryDocs: [DISCOVERY_DOC]
       });
+      console.log('Google API client initialized successfully');
 
       // Initialize token client after gapi client is ready
+      console.log('Initializing token client');
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
@@ -433,6 +459,7 @@
         // Request offline access to get a refresh token
         access_type: 'offline'
       });
+      console.log('Token client initialized successfully');
       
       return true;
     } catch (error) {
@@ -444,9 +471,14 @@
   
   // Function to refresh token using the saved refresh token
   async function refreshTokenWithSavedRefreshToken(): Promise<boolean> {
+    console.log('Attempting to refresh token with saved refresh token');
+    
+    // Check if we have a saved refresh token
     const savedRefreshToken = localStorage.getItem('gdrive_refresh_token');
+    console.log('Saved refresh token found:', savedRefreshToken ? 'Yes' : 'No');
+    
     if (!savedRefreshToken) {
-      console.log('No saved refresh token found');
+      console.log('No saved refresh token found, cannot refresh token');
       return false;
     }
     
@@ -455,33 +487,44 @@
       
       // Create a promise that will resolve when the token is refreshed
       return await new Promise<boolean>((resolve) => {
+        console.log('Setting up token refresh promise');
+        
         // Store the original callback
         const originalCallback = tokenClient.callback;
+        console.log('Original callback stored:', originalCallback ? 'Yes' : 'No');
         
         // Override the callback temporarily
         tokenClient.callback = (resp) => {
+          console.log('Token refresh callback received response:', resp ? 'Yes' : 'No');
+          
           // Restore the original callback
           tokenClient.callback = originalCallback;
+          console.log('Original callback restored');
           
           if (resp?.error) {
-            console.error('Token refresh failed:', resp.error);
+            console.error('Token refresh failed with error:', resp.error);
             // If there's an error with the refresh token, we'll need to re-authenticate
             localStorage.removeItem('gdrive_refresh_token');
             resolve(false);
           } else {
             // Set the access token directly so the UI updates immediately
             accessToken = resp.access_token;
-            console.log('Successfully refreshed token on page load, accessToken set');
+            console.log('Successfully refreshed token, accessToken set:', accessToken ? 'Yes' : 'No');
             
             // Call the original callback to handle the rest of the connection process
-            if (originalCallback) originalCallback(resp);
+            if (originalCallback) {
+              console.log('Calling original callback with response');
+              originalCallback(resp);
+            }
             resolve(true);
           }
         };
         
         // Request a new access token using the refresh token without prompting the user
         try {
+          console.log('Requesting access token without prompt');
           tokenClient.requestAccessToken({ prompt: '' });
+          console.log('Access token request sent');
         } catch (error) {
           console.error('Error requesting access token:', error);
           localStorage.removeItem('gdrive_refresh_token');
@@ -498,25 +541,38 @@
 
   onMount(async () => {
     console.log('Cloud component mounted');
+    console.log('Initial accessToken state:', accessToken ? 'set' : 'not set');
+    console.log('Refresh token in localStorage:', localStorage.getItem('gdrive_refresh_token') ? 'Yes' : 'No');
     
     // Clear service worker cache for Google Drive downloads
-    clearServiceWorkerCache();
+    await clearServiceWorkerCache();
+    console.log('Service worker cache cleared');
     
     // Initialize Google API client
+    console.log('Initializing Google API client');
     const initialized = await initializeGoogleAPI();
+    console.log('Google API client initialized:', initialized ? 'Yes' : 'No');
+    
     if (!initialized) {
       console.error('Failed to initialize Google API');
       return;
     }
     
     // Load the picker API
+    console.log('Loading picker API');
     await new Promise<void>((resolve) => {
-      gapi.load('picker', () => resolve());
+      gapi.load('picker', () => {
+        console.log('Picker API loaded');
+        resolve();
+      });
     });
     
     // Try to refresh token with saved refresh token
+    console.log('Attempting to refresh token');
     const refreshed = await refreshTokenWithSavedRefreshToken();
-    console.log('Token refresh result:', refreshed, 'accessToken:', accessToken ? 'set' : 'not set');
+    console.log('Token refresh completed with result:', refreshed);
+    console.log('Final accessToken state:', accessToken ? 'set' : 'not set');
+    console.log('Refresh token in localStorage after refresh attempt:', localStorage.getItem('gdrive_refresh_token') ? 'Yes' : 'No');
   });
 
   function createPicker() {
