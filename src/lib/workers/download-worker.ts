@@ -1,6 +1,6 @@
 // Web worker for downloading files from Google Drive
 // This file will be bundled by Vite as a web worker
-import { BlobReader, ZipReader, Entry, BlobWriter, getMimeType } from '@zip.js/zip.js';
+import { BlobReader, ZipReader, BlobWriter, getMimeType } from '@zip.js/zip.js';
 
 // Define the worker context
 const ctx: Worker = self as any;
