@@ -151,10 +151,38 @@
   });
 
   function createPicker() {
+    // Make sure the Google API is available
+    if (typeof google === 'undefined') {
+      console.error('Google API not loaded');
+      showSnackbar('Error: Google API not loaded. Please refresh the page and try again.');
+      return;
+    }
+
     // Make sure the picker API is loaded
     if (!google.picker) {
       console.error('Google Picker API not loaded');
-      showSnackbar('Error: Google Picker API not loaded. Please refresh the page and try again.');
+      
+      // Try to load the picker API dynamically
+      if (typeof gapi !== 'undefined') {
+        showSnackbar('Loading Google Picker API...');
+        gapi.load('picker', () => {
+          console.log('Google Picker API loaded dynamically');
+          window.pickerApiLoaded = true;
+          // Try again after loading
+          setTimeout(createPicker, 1000);
+        });
+        return;
+      } else {
+        showSnackbar('Error: Google Picker API not available. Please refresh the page and try again.');
+        return;
+      }
+    }
+    
+    // Check if the picker API is fully loaded
+    if (!window.pickerApiLoaded) {
+      console.log('Picker API not fully loaded yet, waiting...');
+      showSnackbar('Preparing file picker...');
+      setTimeout(createPicker, 1000);
       return;
     }
 
@@ -166,32 +194,53 @@
       return;
     }
 
-    // Create a view for ZIP/CBZ files
-    const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
-      .setMimeTypes(
-        'application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz'
-      )
-      .setMode(google.picker.DocsViewMode.LIST)
-      .setIncludeFolders(true)
-      .setSelectFolderEnabled(true)
-      .setParent(readerFolderId);
-
-    // Create a view specifically for folders
-    const folderView = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
-      .setSelectFolderEnabled(true)
-      .setParent(readerFolderId);
-
     try {
-      const picker = new google.picker.PickerBuilder()
+      // Create a view for ZIP/CBZ files
+      const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
+        .setMimeTypes(
+          'application/zip,application/x-zip-compressed,application/vnd.comicbook+zip,application/x-cbz'
+        )
+        .setMode(google.picker.DocsViewMode.LIST)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true);
+      
+      // Only set parent if we have a valid folder ID
+      if (readerFolderId) {
+        docsView.setParent(readerFolderId);
+      }
+
+      // Create a view specifically for folders
+      const folderView = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+        .setSelectFolderEnabled(true);
+      
+      // Only set parent if we have a valid folder ID
+      if (readerFolderId) {
+        folderView.setParent(readerFolderId);
+      }
+
+      // Create the picker builder
+      const pickerBuilder = new google.picker.PickerBuilder()
         .addView(docsView)
         .addView(folderView)
         .setOAuthToken(accessToken)
-        .setAppId(CLIENT_ID)
-        .setDeveloperKey(API_KEY)
         .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
-        .setCallback(pickerCallback)
-        .build();
+        .setCallback(pickerCallback);
+      
+      // Add API key if available
+      if (API_KEY) {
+        pickerBuilder.setDeveloperKey(API_KEY);
+      }
+      
+      // Add client ID if available
+      if (CLIENT_ID) {
+        pickerBuilder.setAppId(CLIENT_ID);
+      }
+      
+      // Build and show the picker
+      const picker = pickerBuilder.build();
       picker.setVisible(true);
+      
+      console.log('Picker created successfully');
     } catch (error) {
       console.error('Error creating picker:', error);
       showSnackbar('Error creating file picker. Please refresh and try again.');
