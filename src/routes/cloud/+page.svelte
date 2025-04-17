@@ -323,9 +323,6 @@
     fileList: { id: string; name: string; mimeType: string }[],
     existingProcessId?: string
   ) {
-    // Import the worker pool dynamically
-    const { WorkerPool } = await import('$lib/util/worker-pool');
-
     // Use the existing processId if provided, otherwise create a new one
     const overallProcessId =
       existingProcessId ||
@@ -380,31 +377,6 @@
       bytesLoaded: 0
     });
 
-    // Create a worker pool for parallel downloads
-    // Use navigator.hardwareConcurrency to determine optimal number of workers
-    // but limit to a reasonable number to avoid overwhelming the browser
-    let maxWorkers;
-    let memoryLimitMB;
-    
-    if ($miscSettings.throttleDownloads) {
-      // Throttled mode with reasonable limits
-      maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 6);
-      // Set memory threshold to 500MB to prevent excessive memory usage on mobile devices
-      // This is not a hard limit - tasks that individually need more than 500MB can still run
-      // It just prevents starting new tasks when the current pool already exceeds 500MB
-      memoryLimitMB = 500; // 500 MB memory threshold
-      console.log(
-        `Throttled downloads: Using ${maxWorkers} workers and ${memoryLimitMB}MB memory threshold`
-      );
-    } else {
-      // Unthrottled mode, use more workers and disable memory limits
-      maxWorkers = Math.min(navigator.hardwareConcurrency || 4, 12);
-      memoryLimitMB = 100000; // Very high memory limit (100GB) effectively disables the constraint
-      console.log(`Unthrottled downloads: Using ${maxWorkers} workers with no memory limit`);
-    }
-    
-    const workerPool = new WorkerPool(undefined, maxWorkers, memoryLimitMB);
-
     // Track download progress
     const fileProgress: { [fileId: string]: number } = {};
     let completedFiles = 0;
@@ -440,148 +412,189 @@
       });
     };
 
-    // Create a promise that resolves when all downloads are complete
-    return new Promise<void>((resolve) => {
-      // Function to check if all downloads are complete
-      const checkAllComplete = () => {
-        // Log current memory usage
-        const memUsage = workerPool.memoryUsage;
-        console.log(
-          `Memory usage: ${(memUsage.current / (1024 * 1024)).toFixed(2)}MB / ${(memUsage.max / (1024 * 1024)).toFixed(2)}MB (${memUsage.percentUsed.toFixed(2)}%)`
-        );
-
-        if (completedFiles + failedFiles === sortedFiles.length) {
-          // All files have been processed
-          workerPool.terminate();
-
-          // Clear service worker cache to free up storage
-          clearServiceWorkerCache().then(() => {
-            console.log('Service worker cache cleared after downloads');
-          }).catch(error => {
-            console.error('Error clearing service worker cache after downloads:', error);
-          });
-
-          // Update the process to show completion
-          progressTrackerStore.updateProcess(overallProcessId, {
-            status: `All downloads complete (${failedFiles} failed)`,
-            progress: 100,
-            bytesLoaded: totalBytesToDownload
-          });
-
-          // Only auto-remove the tracker if it's not part of a larger process
-          if (!existingProcessId) {
-            setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
-          }
-
-          resolve();
-        }
-      };
-
-      // Add each file to the worker pool
-      for (const fileInfo of sortedFiles) {
-        // Initialize progress for this file
-        fileProgress[fileInfo.id] = 0;
-
-        // Create a task for the worker pool
-        // Estimate memory requirement based on file size
-        // We need memory for:
-        // 1. The downloaded file (fileSizes[fileInfo.id])
-        // 2. Processing overhead (typically 2-3x the file size for decompression)
-        const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
-
-        console.log(
-          `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
-        );
-
-        workerPool.addTask({
-          id: fileInfo.id,
-          memoryRequirement,
-          data: {
-            fileId: fileInfo.id,
-            fileName: fileInfo.name,
-            accessToken
-          },
-          onProgress: (data) => {
-            // Update progress for this file
-            fileProgress[fileInfo.id] = data.loaded;
-            updateOverallProgress();
-          },
-          onComplete: async (data, releaseMemory) => {
-            try {
-              console.log(`Received complete message for ${data.fileName}`, {
-                entriesCount: data.entries?.length
-              });
-
-              console.log(`Processing ${data.entries.length} decompressed entries from ${data.fileName}`);
-              
-              // Create File objects for each entry
-              const files = data.entries.map(entry => {
-                return new File([entry.data], entry.filename);
-              });
-              
-              console.log(`Created ${files.length} file objects from decompressed entries`);
-              
-              // Process all the files
-              await processFiles(files);
-              console.log(`Successfully processed ${files.length} decompressed files from ${data.fileName}`);
-
-              // Mark as completed
-              completedFiles++;
-              fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-              processedFiles[fileInfo.id] = true;
-
-              updateOverallProgress();
-              checkAllComplete();
-            } catch (error) {
-              console.error(`Error processing ${data.fileName}:`, error);
-              showSnackbar(`Failed to process ${data.fileName}`);
-
-              // Mark as failed
-              failedFiles++;
-              processedFiles[fileInfo.id] = true;
-
-              updateOverallProgress();
-              checkAllComplete();
-            } finally {
-              releaseMemory();
-            }
-          },
-          onError: (data) => {
-            console.error(`Error downloading ${fileInfo.name}:`, data.error);
-            showSnackbar(`Failed to download ${fileInfo.name}`);
-
-            // Mark as failed but count the size as downloaded for progress calculation
-            failedFiles++;
-            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-            processedFiles[fileInfo.id] = true;
-
-            updateOverallProgress();
-            checkAllComplete();
-          }
+    // Function to check if all downloads are complete
+    const checkAllComplete = () => {
+      if (completedFiles + failedFiles === sortedFiles.length) {
+        // All files have been processed
+        
+        // Clear service worker cache to free up storage
+        clearServiceWorkerCache().then(() => {
+          console.log('Service worker cache cleared after downloads');
+        }).catch(error => {
+          console.error('Error clearing service worker cache after downloads:', error);
         });
-      }
 
-      // If there are no files, resolve immediately
-      if (sortedFiles.length === 0) {
+        // Update the process to show completion
         progressTrackerStore.updateProcess(overallProcessId, {
-          status: 'No files to download',
-          progress: 100
+          status: `All downloads complete (${failedFiles} failed)`,
+          progress: 100,
+          bytesLoaded: totalBytesToDownload
         });
 
         // Only auto-remove the tracker if it's not part of a larger process
         if (!existingProcessId) {
           setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
         }
-
-        resolve();
       }
-    });
+    };
+
+    // Function to download and process a single file
+    const downloadAndProcessFile = async (fileInfo: { id: string; name: string; mimeType: string }) => {
+      try {
+        // Initialize progress for this file
+        fileProgress[fileInfo.id] = 0;
+        
+        // Download the file
+        const fileData = await downloadFile(fileInfo.id, fileInfo.name, accessToken, (loaded) => {
+          // Update progress for this file
+          fileProgress[fileInfo.id] = loaded;
+          updateOverallProgress();
+        });
+        
+        // Process the file
+        if (fileData) {
+          console.log(`Processing ${fileInfo.name}`);
+          
+          // Create a blob from the array buffer
+          const blob = new Blob([fileData]);
+          
+          try {
+            // Import zip.js dynamically
+            const { BlobReader, ZipReader, BlobWriter, getMimeType } = await import('@zip.js/zip.js');
+            
+            // Create a zip reader
+            const zipReader = new ZipReader(new BlobReader(blob));
+            
+            // Get all entries from the zip file
+            const entries = await zipReader.getEntries();
+            
+            // Process each entry
+            const files = [];
+            
+            for (const entry of entries) {
+              // Skip directories
+              if (entry.directory) continue;
+
+              try {
+                const mime = getMimeType(entry.filename);
+                const entryBlob = await entry.getData(new BlobWriter(mime));
+                
+                // Create a File object
+                const file = new File([entryBlob], entry.filename, { type: mime });
+                files.push(file);
+              } catch (entryError) {
+                console.error(`Error extracting entry ${entry.filename}:`, entryError);
+              }
+            }
+            
+            // Close the zip reader
+            await zipReader.close();
+            
+            console.log(`Extracted ${files.length} files from ${fileInfo.name}`);
+            
+            // Process all the files
+            await processFiles(files);
+            console.log(`Successfully processed ${files.length} files from ${fileInfo.name}`);
+            
+            // Mark as completed
+            completedFiles++;
+            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+            processedFiles[fileInfo.id] = true;
+            
+            updateOverallProgress();
+            checkAllComplete();
+          } catch (zipError) {
+            console.error(`Error processing zip file ${fileInfo.name}:`, zipError);
+            showSnackbar(`Failed to process ${fileInfo.name}`);
+            
+            // Mark as failed
+            failedFiles++;
+            processedFiles[fileInfo.id] = true;
+            
+            updateOverallProgress();
+            checkAllComplete();
+          }
+        } else {
+          console.error(`No data received for ${fileInfo.name}`);
+          showSnackbar(`Failed to download ${fileInfo.name}`);
+          
+          // Mark as failed
+          failedFiles++;
+          fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+          processedFiles[fileInfo.id] = true;
+          
+          updateOverallProgress();
+          checkAllComplete();
+        }
+      } catch (error) {
+        console.error(`Error downloading ${fileInfo.name}:`, error);
+        showSnackbar(`Failed to download ${fileInfo.name}`);
+        
+        // Mark as failed
+        failedFiles++;
+        fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+        processedFiles[fileInfo.id] = true;
+        
+        updateOverallProgress();
+        checkAllComplete();
+      }
+    };
+    
+    // Function to download a file with progress tracking
+    const downloadFile = (fileId: string, fileName: string, accessToken: string, onProgress?: (loaded: number) => void): Promise<ArrayBuffer> => {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+        xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+        xhr.responseType = 'arraybuffer';
+        
+        xhr.onprogress = (event) => {
+          if (onProgress) {
+            onProgress(event.loaded);
+          }
+        };
+        
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr.response);
+          } else {
+            reject(new Error(`HTTP error ${xhr.status}: ${xhr.statusText}`));
+          }
+        };
+        
+        xhr.onerror = () => {
+          reject(new Error('Network error during download'));
+        };
+        
+        xhr.ontimeout = () => {
+          reject(new Error('Download timed out'));
+        };
+        
+        xhr.onabort = () => {
+          reject(new Error('Download aborted'));
+        };
+        
+        xhr.send();
+      });
+    };
+
+    // Process files sequentially to avoid memory issues
+    for (const fileInfo of sortedFiles) {
+      await downloadAndProcessFile(fileInfo);
+    }
+
+    // If there are no files, update the progress tracker
+    if (sortedFiles.length === 0) {
+      progressTrackerStore.updateProcess(overallProcessId, {
+        status: 'No files to download',
+        progress: 100
+      });
+
+      // Only auto-remove the tracker if it's not part of a larger process
+      if (!existingProcessId) {
+        setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
+      }
+    }
   }
 
   async function pickerCallback(data: google.picker.ResponseObject) {
