@@ -32,10 +32,12 @@ export class WorkerPool {
   }
 
   private addWorker() {
-    // Create a new worker using Vite's worker instantiation
-    const worker = new DownloadWorker();
+    try {
+      // Create a new worker using Vite's worker instantiation
+      const worker = new DownloadWorker();
+      console.log('Worker created successfully');
 
-    worker.onmessage = (event) => {
+      worker.onmessage = (event) => {
       const taskId = this.workerTaskMap.get(worker);
       if (!taskId) {
         console.warn('Worker pool: Received message but no taskId found', event.data);
@@ -96,6 +98,60 @@ export class WorkerPool {
 
     this.workers.push(worker);
     this.workerTaskMap.set(worker, null);
+    } catch (error) {
+      console.error('Error creating worker:', error);
+      // Try to create a fallback worker with a different approach
+      try {
+        const workerBlob = new Blob([
+          `self.onmessage = function(e) {
+            console.log('Fallback worker received message:', e.data);
+            self.postMessage({
+              type: 'error',
+              fileId: e.data.fileId,
+              error: 'Fallback worker cannot process files. Please try again later.'
+            });
+          }`
+        ], { type: 'application/javascript' });
+        
+        const workerUrl = URL.createObjectURL(workerBlob);
+        const fallbackWorker = new Worker(workerUrl);
+        
+        console.log('Fallback worker created successfully');
+        
+        fallbackWorker.onmessage = (event) => {
+          console.log('Fallback worker message:', event.data);
+          const taskId = this.workerTaskMap.get(fallbackWorker);
+          if (!taskId) return;
+          
+          const task = this.activeTasks.get(taskId);
+          if (!task) return;
+          
+          if (event.data.type === 'error' && task.onError) {
+            task.onError(event.data);
+          }
+          
+          this.completeTask(fallbackWorker);
+        };
+        
+        fallbackWorker.onerror = (error) => {
+          console.error('Fallback worker error:', error);
+          const taskId = this.workerTaskMap.get(fallbackWorker);
+          if (!taskId) return;
+          
+          const task = this.activeTasks.get(taskId);
+          if (task && task.onError) {
+            task.onError({ type: 'error', fileId: taskId, error: error.message });
+          }
+          
+          this.completeTask(fallbackWorker);
+        };
+        
+        this.workers.push(fallbackWorker);
+        this.workerTaskMap.set(fallbackWorker, null);
+      } catch (fallbackError) {
+        console.error('Error creating fallback worker:', fallbackError);
+      }
+    }
   }
 
   private completeTask(worker: Worker) {

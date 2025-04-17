@@ -5,6 +5,13 @@ import { BlobReader, ZipReader, BlobWriter, getMimeType } from '@zip.js/zip.js';
 // Define the worker context
 const ctx: Worker = self as any;
 
+// Add error handling for worker initialization
+try {
+  console.log('Download worker initialized');
+} catch (error) {
+  console.error('Error initializing download worker:', error);
+}
+
 interface DownloadMessage {
   fileId: string;
   fileName: string;
