@@ -265,47 +265,14 @@
     } catch (error) {
       console.error('Error creating picker:', error);
       
-      // Try one more approach - direct DOM method
-      try {
-        console.log('Attempting direct DOM method for file selection');
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.zip,.cbz';
-        input.multiple = true;
-        input.onchange = (e) => {
-          if (e.target.files && e.target.files.length > 0) {
-            console.log('Files selected via direct DOM method:', e.target.files);
-            pickerCallback({
-              [google.picker.Response.ACTION]: google.picker.Action.PICKED,
-              [google.picker.Response.DOCUMENTS]: Array.from(e.target.files).map(file => ({
-                id: 'local-' + Math.random().toString(36).substring(2),
-                name: file.name,
-                mimeType: file.type,
-                localFile: file
-              }))
-            });
-          }
-        };
-        document.body.appendChild(input);
-        input.click();
-        setTimeout(() => {
-          document.body.removeChild(input);
-        }, 100);
-        
-        // Don't show error message since we're providing an alternative
-        return;
-      } catch (domError) {
-        console.error('Error with direct DOM method:', domError);
-      }
-      
-      // If all approaches fail, show a detailed error message
+      // Show a detailed error message based on the error type
       const errorMessage = error.toString();
       if (errorMessage.includes('API key')) {
         showSnackbar('Error: Google API key issue. Please check your API configuration.');
       } else if (errorMessage.includes('OAuth')) {
         showSnackbar('Error: Authentication issue. Please sign in again.');
       } else {
-        showSnackbar('Error creating file picker. Please refresh and try again.');
+        showSnackbar('Error creating file picker. Please use the Upload button for local files or refresh and try again.');
       }
     }
   }
@@ -623,24 +590,6 @@
         const docs = data[google.picker.Response.DOCUMENTS];
 
         if (docs.length === 0) return;
-
-        // Check if we have local files from the fallback method
-        const hasLocalFiles = docs.some(doc => doc.localFile);
-        
-        if (hasLocalFiles) {
-          console.log('Processing local files from fallback method');
-          try {
-            // Process the local files directly
-            const files = docs.map(doc => doc.localFile);
-            await processFiles(files);
-            showSnackbar(`Successfully processed ${files.length} files`);
-            return;
-          } catch (error) {
-            console.error('Error processing local files:', error);
-            showSnackbar('Error processing files. Please try again.');
-            return;
-          }
-        }
 
         // Create a unique ID for this entire process (scanning + downloading)
         const processId = `download-process-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
