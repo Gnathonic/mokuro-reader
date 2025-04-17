@@ -112,7 +112,9 @@ export async function initGoogleDriveApi() {
       });
 
       // Also load the picker API
-      gapi.load('picker', () => {});
+      gapi.load('picker', () => {
+        console.log('Google Picker API loaded');
+      });
     } catch (error) {
       console.error('Error loading Google API:', error);
       reject(error);

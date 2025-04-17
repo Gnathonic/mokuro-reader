@@ -151,6 +151,21 @@
   });
 
   function createPicker() {
+    // Make sure the picker API is loaded
+    if (!google.picker) {
+      console.error('Google Picker API not loaded');
+      showSnackbar('Error: Google Picker API not loaded. Please refresh the page and try again.');
+      return;
+    }
+
+    // Make sure we have an access token
+    if (!accessToken) {
+      console.error('No access token available');
+      showSnackbar('Please sign in to Google Drive first');
+      signIn();
+      return;
+    }
+
     // Create a view for ZIP/CBZ files
     const docsView = new google.picker.DocsView(google.picker.ViewId.DOCS)
       .setMimeTypes(
@@ -166,16 +181,21 @@
       .setSelectFolderEnabled(true)
       .setParent(readerFolderId);
 
-    const picker = new google.picker.PickerBuilder()
-      .addView(docsView)
-      .addView(folderView)
-      .setOAuthToken(accessToken)
-      .setAppId(CLIENT_ID)
-      .setDeveloperKey(API_KEY)
-      .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
-      .setCallback(pickerCallback)
-      .build();
-    picker.setVisible(true);
+    try {
+      const picker = new google.picker.PickerBuilder()
+        .addView(docsView)
+        .addView(folderView)
+        .setOAuthToken(accessToken)
+        .setAppId(CLIENT_ID)
+        .setDeveloperKey(API_KEY)
+        .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+        .setCallback(pickerCallback)
+        .build();
+      picker.setVisible(true);
+    } catch (error) {
+      console.error('Error creating picker:', error);
+      showSnackbar('Error creating file picker. Please refresh and try again.');
+    }
   }
 
   async function listFilesInFolder(folderId) {
