@@ -1,6 +1,4 @@
 <script lang="ts">
-  export const prerender = true;
-  export const ssr = false;
   import '../app.postcss';
   import { dev } from '$app/environment';
   import { inject } from '@vercel/analytics';

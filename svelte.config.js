@@ -16,7 +16,7 @@ const config = {
 			// these options are set automatically — see below
 			pages: 'docs',
 			assets: 'docs',
-			fallback: 'index.html',
+			fallback: '404.html',
 			precompress: false,
 			strict: true
 		}),
