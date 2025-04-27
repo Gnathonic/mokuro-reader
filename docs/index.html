@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="/mokuro-reader/favicon.png" />
+    <link rel="manifest" crossorigin="use-credentials" href="manifest.json" />
+    <meta
+      name="viewport"
+      content="width=device-width, height=device-height,initial-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://accounts.google.com/gsi/client"></script>
+    
+		<link rel="modulepreload" href="/mokuro-reader/_app/immutable/entry/start.fa41d72d.js">
+		<link rel="modulepreload" href="/mokuro-reader/_app/immutable/chunks/scheduler.729d8167.js">
+		<link rel="modulepreload" href="/mokuro-reader/_app/immutable/chunks/singletons.8b19cfba.js">
+		<link rel="modulepreload" href="/mokuro-reader/_app/immutable/entry/app.dfbef106.js">
+		<link rel="modulepreload" href="/mokuro-reader/_app/immutable/chunks/index.fba99ec1.js">
+  </head>
+  <body data-sveltekit-preload-data="hover" class="bg-white dark:bg-gray-950 dark:text-white">
+    <div
+      id="popupAbout"
+      class="pageContainer"
+      style="
+        display: contents;
+        background-image: url('https://reader.mokuro.app/_app/immutable/assets/icon.06fcfdd6.webp');
+      "
+    >
+      
+			<script>
+				{
+					__sveltekit_opkp0f = {
+						assets: "/mokuro-reader",
+						base: "/mokuro-reader",
+						env: {}
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/mokuro-reader/_app/immutable/entry/start.fa41d72d.js"),
+						import("/mokuro-reader/_app/immutable/entry/app.dfbef106.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+
+					if ('serviceWorker' in navigator) {
+						addEventListener('load', function () {
+							navigator.serviceWorker.register('/mokuro-reader/service-worker.js');
+						});
+					}
+				}
+			</script>
+		
+    </div>
+  </body>
+</html>
