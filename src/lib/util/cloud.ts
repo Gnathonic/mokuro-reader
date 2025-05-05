@@ -287,17 +287,25 @@ export async function exportAndUploadVolumesToDrive(
     id: processId,
     description: `Exporting and uploading ${seriesTitle}`,
     progress: 0,
-    status: 'Creating series folder...'
+    status: 'Creating folders...'
   });
 
   try {
-    // Create a folder for the series if it doesn't exist
+    // First, create a "comics" folder if it doesn't exist
+    progressTrackerStore.updateProcess(processId, {
+      progress: 2,
+      status: `Creating comics folder...`
+    });
+    
+    const comicsFolderId = await createFolderIfNotExists(accessToken, "comics", readerFolderId);
+    
+    // Then create a folder for the series inside the comics folder
     progressTrackerStore.updateProcess(processId, {
       progress: 5,
       status: `Creating folder for ${seriesTitle}...`
     });
 
-    const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, readerFolderId);
+    const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, comicsFolderId);
 
     // Add the series to our store
     addSeries(seriesTitle, seriesFolderId);

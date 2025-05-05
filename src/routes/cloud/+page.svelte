@@ -876,7 +876,7 @@
       </div>
       <p class="text-center">
         Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700"
-          >{READER_FOLDER}</span
+          >{READER_FOLDER}/comics</span
         > folder in your Google Drive.
       </p>
       <p class="text-center text-sm text-gray-500">
@@ -946,7 +946,7 @@
           
           <Button color="green" on:click={onBackupAllSeries} disabled={backingUp}>
             <CloudArrowUpSolid class="mr-2 h-5 w-5" />
-            Backup All Series to Drive
+            Backup All Series to Comics Folder
           </Button>
         </div>
       </div>

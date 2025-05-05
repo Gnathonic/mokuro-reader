@@ -125,13 +125,37 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
   }
 
   try {
+    // First, find the comics folder
+    const comicsFolderQuery = `name='comics' and '${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    
+    const comicsFolderData = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(comicsFolderQuery)}&fields=files(id,name)`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
+    );
+    
+    // If comics folder doesn't exist yet, return empty data
+    if (!comicsFolderData.files || comicsFolderData.files.length === 0) {
+      console.log('Comics folder not found in Google Drive');
+      driveStore.update(data => ({
+        ...data,
+        series: {},
+        lastUpdated: Date.now()
+      }));
+      return {};
+    }
+    
+    const comicsFolderId = comicsFolderData.files[0].id;
+    
     // Get all folders and CBZ files in a single query
     // This query finds:
-    // 1. All folders that are direct children of the reader folder
-    // 2. All CBZ files that are in any folder within the reader folder
+    // 1. All folders that are direct children of the comics folder
+    // 2. All CBZ files that are in any folder within the comics folder
     const query = `
-      ('${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
-      ('${readerFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
+      ('${comicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
+      ('${comicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
     `;
 
     const data = await driveApiRequest(
@@ -152,7 +176,7 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
     // Separate folders and CBZ files
     const folders = files.filter(file =>
       file.mimeType === 'application/vnd.google-apps.folder' &&
-      file.parents && file.parents.includes(readerFolderId)
+      file.parents && file.parents.includes(comicsFolderId)
     );
 
     const cbzFiles = files.filter(file =>

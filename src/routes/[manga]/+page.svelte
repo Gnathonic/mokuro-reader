@@ -272,12 +272,12 @@
           {#if $isBackedUp}
             <Button color="green" disabled={true}>
               <CloudArrowUpSolid class="mr-2 h-5 w-5" />
-              Backed up to Drive
+              Backed up to Comics Folder
             </Button>
           {:else}
             <Button color="blue" on:click={onExportToDrive} disabled={uploadingToDrive}>
               <CloudArrowUpSolid class="mr-2 h-5 w-5" />
-              {uploadingToDrive ? 'Uploading...' : 'Backup to Drive'}
+              {uploadingToDrive ? 'Uploading...' : 'Backup to Comics Folder'}
             </Button>
           {/if}
 
