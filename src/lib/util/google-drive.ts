@@ -32,8 +32,22 @@ export function handleDriveError(error: any, context: string) {
     errorMessage.includes('connection') ||
     errorMessage.includes('offline') ||
     errorMessage.includes('internet');
+  
+  // Check if it's a token expiration issue
+  const isTokenExpired = 
+    errorMessage.includes('token') && 
+    (errorMessage.includes('expired') || 
+     errorMessage.includes('invalid') || 
+     errorMessage.includes('auth') || 
+     error.status === 401);
 
-  if (!isConnectivityError) {
+  if (isTokenExpired && context === 'syncing read progress') {
+    console.log('Access token expired during sync, attempting silent login');
+    // Store that we want to sync after login
+    localStorage.setItem('sync_after_login', 'true');
+    // Attempt a silent login without account selection or confirmation
+    signIn({ prompt: 'none' });
+  } else if (!isConnectivityError) {
     // Log the user out for non-connectivity errors
     logout();
     showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
@@ -98,7 +112,36 @@ export async function initGoogleDriveApi() {
               resolve();
             } catch (error) {
               console.error('Failed to restore saved token:', error);
-              reject(error);
+              
+              // Check if it's a token expiration issue
+              const errorMessage = error.toString().toLowerCase();
+              const isTokenExpired = 
+                errorMessage.includes('token') && 
+                (errorMessage.includes('expired') || 
+                 errorMessage.includes('invalid') || 
+                 errorMessage.includes('auth') || 
+                 error.status === 401);
+              
+              if (isTokenExpired) {
+                console.log('Saved token expired, attempting silent refresh');
+                // Clear the invalid token
+                localStorage.removeItem('gdrive_token');
+                accessTokenStore.set('');
+                
+                // Set API as initialized so we can proceed with silent login
+                isInitializedStore.set(true);
+                
+                // Attempt silent token refresh if we're in the sync process
+                const syncAfterLogin = localStorage.getItem('sync_after_login');
+                if (syncAfterLogin === 'true') {
+                  // We'll try a silent login
+                  tokenClient.requestAccessToken({ prompt: 'none' });
+                }
+                
+                resolve();
+              } else {
+                reject(error);
+              }
             }
           } else {
             // No saved token, but API is initialized
@@ -227,11 +270,11 @@ export async function connectDrive(token: string) {
 }
 
 // Sign in to Google Drive
-export function signIn() {
+export function signIn(options: { prompt?: string } = {}) {
   const tokenClient = get(tokenClientStore);
   if (tokenClient) {
-    // Always show the account picker to allow switching accounts
-    tokenClient.requestAccessToken({ prompt: 'consent' });
+    // Use provided prompt option or default to 'consent' to show account picker
+    tokenClient.requestAccessToken({ prompt: options.prompt || 'consent' });
   } else {
     showSnackbar('Google Drive API not initialized');
     // Try to initialize
@@ -273,7 +316,15 @@ export async function syncReadProgress() {
   if (!get(accessTokenStore)) {
     // Store that we want to sync after login
     localStorage.setItem('sync_after_login', 'true');
-    signIn();
+    // Use silent login (no account selection or confirmation) if we have a token in localStorage
+    const savedToken = localStorage.getItem('gdrive_token');
+    if (savedToken) {
+      console.log('Attempting silent login with saved token');
+      signIn({ prompt: 'none' });
+    } else {
+      // No saved token, show the account picker
+      signIn();
+    }
     return;
   }
   
@@ -283,7 +334,23 @@ export async function syncReadProgress() {
       await initGoogleDriveApi();
     } catch (error) {
       console.error('Failed to initialize Google Drive API:', error);
-      showSnackbar('Failed to initialize Google Drive API');
+      // Check if it's a token expiration issue
+      const errorMessage = error.toString().toLowerCase();
+      const isTokenExpired = 
+        errorMessage.includes('token') && 
+        (errorMessage.includes('expired') || 
+         errorMessage.includes('invalid') || 
+         errorMessage.includes('auth') || 
+         error.status === 401);
+      
+      if (isTokenExpired) {
+        // Try silent login
+        console.log('Token expired during initialization, attempting silent login');
+        localStorage.setItem('sync_after_login', 'true');
+        signIn({ prompt: 'none' });
+      } else {
+        showSnackbar('Failed to initialize Google Drive API');
+      }
       return;
     }
   }
