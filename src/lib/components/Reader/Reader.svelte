@@ -325,19 +325,15 @@
         </button>
       </div>
       <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
-        <Range
-          min={1}
-          max={pages.length}
-          bind:value={manualPage}
-          on:change={onManualPageChange}
-          defaultClass=""
-        />
+        <Range min={1} max={pages.length} bind:value={manualPage} on:change={onManualPageChange} />
       </div>
     </div>
   </Popover>
   <button class="absolute opacity-50 left-5 top-5 z-10 mix-blend-difference" id="page-num">
-    <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
-    <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
+    {#key page}
+      <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
+      <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
+    {/key}
   </button>
   <div class="flex" style:background-color={$settings.backgroundColor}>
     <Panzoom>

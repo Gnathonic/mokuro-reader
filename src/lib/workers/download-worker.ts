@@ -1,5 +1,6 @@
 // Web worker for downloading files from Google Drive
 // This file will be bundled by Vite as a web worker
+import { BlobReader, ZipReader, Entry, BlobWriter, getMimeType } from '@zip.js/zip.js';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -21,13 +22,19 @@ interface CompleteMessage {
   type: 'complete';
   fileId: string;
   fileName: string;
-  data: ArrayBuffer;
+  data: ArrayBuffer; // Empty buffer since we're sending the decompressed entries
+  entries: DecompressedEntry[];
 }
 
 interface ErrorMessage {
   type: 'error';
   fileId: string;
   error: string;
+}
+
+interface DecompressedEntry {
+  filename: string;
+  data: ArrayBuffer;
 }
 
 // Function to download a file from Google Drive
@@ -94,7 +101,7 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
     };
 
     return new Promise<void>((resolve, reject) => {
-      xhr.onload = () => {
+      xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             // Get the ArrayBuffer response
@@ -105,21 +112,63 @@ async function downloadFile(fileId: string, fileName: string, accessToken: strin
               status: xhr.status
             });
 
-            // Create a message with the ArrayBuffer
+            console.log(`Worker: Decompressing ${fileName}...`);
+            
+            // Create a blob from the array buffer
+            const blob = new Blob([arrayBuffer]);
+            
+            // Create a zip reader
+            const zipReader = new ZipReader(new BlobReader(blob));
+            
+            // Get all entries from the zip file
+            const entries = await zipReader.getEntries();
+            
+            // Process each entry
+            const decompressedEntries: DecompressedEntry[] = [];
+            
+            for (const entry of entries) {
+              // Skip directories
+              if (entry.directory) continue;
+
+              try {
+                const mime = getMimeType(entry.filename)
+                const blob:Blob = await entry.getData(new BlobWriter(mime));
+                // Get the entry data as an array buffer
+                const buffer = await blob.arrayBuffer();
+                
+                // Add the entry to the decompressed entries
+                decompressedEntries.push({
+                  filename: entry.filename,
+                  data: buffer
+                });
+              } catch (entryError) {
+                console.error(`Worker: Error extracting entry ${entry.filename}:`, entryError);
+              }
+            }
+            
+            // Close the zip reader
+            await zipReader.close();
+            
+            console.log(`Worker: Decompressed ${decompressedEntries.length} files from ${fileName}`);
+            
+            // Create a message with the decompressed entries
             const completeMessage: CompleteMessage = {
               type: 'complete',
               fileId,
               fileName,
-              data: arrayBuffer
+              data: new ArrayBuffer(0), // Empty buffer since we're sending the decompressed entries
+              entries: decompressedEntries
             };
-
-            console.log(`Worker: Sending complete message for ${fileName}`, {
-              messageType: 'complete',
-              dataSize: arrayBuffer.byteLength
-            });
-
-            // Post the message with the ArrayBuffer as a transferable object
-            ctx.postMessage(completeMessage, [arrayBuffer]);
+            
+            console.log(`Worker: Sending complete message for ${fileName} with ${decompressedEntries.length} decompressed entries`);
+            
+            // Create an array of transferable objects (the entry data array buffers)
+            const transferables = decompressedEntries.map(entry => entry.data);
+            
+            console.log(`Worker: Sending ${transferables.length} transferable objects`);
+            
+            // Post the message with the transferable objects
+            ctx.postMessage(completeMessage, transferables);
             console.log(`Worker: Message posted for ${fileName}`);
             resolve();
           } catch (error) {

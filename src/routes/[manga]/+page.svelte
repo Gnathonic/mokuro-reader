@@ -39,21 +39,34 @@
   // Check if the series exists in Drive at all (even partially backed up)
   let seriesExistsInDrive = $derived(!!$driveStore.series[seriesTitle]);
 
-  async function confirmDelete() {
+  async function confirmDelete(deleteStats = false) {
     const seriesUuid = manga?.[0].series_uuid;
     if (seriesUuid) {
       manga?.forEach((vol) => {
         const volId = vol.volume_uuid;
         db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
         db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
-        deleteVolume(volId);
+        
+        // Only delete stats and progress if the checkbox is checked
+        if (deleteStats) {
+          deleteVolume(volId);
+        }
       });
       goto('/');
     }
   }
 
   function onDelete() {
-    promptConfirmation('Are you sure you want to delete this manga?', confirmDelete);
+    promptConfirmation(
+      'Are you sure you want to delete this manga?', 
+      confirmDelete, 
+      undefined, 
+      {
+        label: "Also delete stats and progress?",
+        storageKey: "deleteStatsPreference",
+        defaultValue: false
+      }
+    );
   }
 
   async function onExtract() {

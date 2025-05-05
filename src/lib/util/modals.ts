@@ -1,17 +1,30 @@
 import { writable } from 'svelte/store';
 
+type CheckboxOption = {
+  label: string;
+  storageKey: string;
+  defaultValue: boolean;
+};
+
 type ConfirmationPopup = {
   open: boolean;
   message: string;
-  onConfirm?: () => void;
+  checkboxOption?: CheckboxOption;
+  onConfirm?: (checkboxValue?: boolean) => void;
   onCancel?: () => void;
 };
 export const confirmationPopupStore = writable<ConfirmationPopup | undefined>(undefined);
 
-export function promptConfirmation(message: string, onConfirm?: () => void, onCancel?: () => void) {
+export function promptConfirmation(
+  message: string, 
+  onConfirm?: (checkboxValue?: boolean) => void, 
+  onCancel?: () => void,
+  checkboxOption?: CheckboxOption
+) {
   confirmationPopupStore.set({
     open: true,
     message,
+    checkboxOption,
     onConfirm,
     onCancel
   });

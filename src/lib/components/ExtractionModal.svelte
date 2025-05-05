@@ -4,18 +4,21 @@
   import { Button, Modal, Toggle } from 'flowbite-svelte';
   import { extractionModalStore } from '$lib/util/modals';
   import { onMount } from 'svelte';
+  import { extractionSettings, updateExtractionSetting } from '$lib/settings';
 
   let open = $state(false);
-  let asCbz = $state(true);
-  let individualVolumes = $state(false);
-  let includeSeriesTitle = $state(true);
+  let asCbz = $state($extractionSettings.asCbz);
+  let individualVolumes = $state($extractionSettings.individualVolumes);
+  let includeSeriesTitle = $state($extractionSettings.includeSeriesTitle);
   let firstVolumePreview = $state('');
+  let currentVolume = $state<{ series_title: string; volume_title: string } | null>(null);
 
   onMount(() => {
     extractionModalStore.subscribe((value) => {
       if (value) {
         open = value.open;
         if (value.firstVolume) {
+          currentVolume = value.firstVolume;
           updateFilenamePreview(value.firstVolume);
         }
       }
@@ -49,21 +52,27 @@
     open = false;
   }
 
+  function updateAsCbz(value: boolean) {
+    asCbz = value;
+    updateExtractionSetting('asCbz', value);
+    if (currentVolume) updateFilenamePreview(currentVolume);
+  }
+
+  function updateIndividualVolumes(value: boolean) {
+    individualVolumes = value;
+    updateExtractionSetting('individualVolumes', value);
+    if (currentVolume) updateFilenamePreview(currentVolume);
+  }
+
+  function updateIncludeSeriesTitle(value: boolean) {
+    includeSeriesTitle = value;
+    updateExtractionSetting('includeSeriesTitle', value);
+    if (currentVolume) updateFilenamePreview(currentVolume);
+  }
+
   run(() => {
     if ($extractionModalStore?.firstVolume) {
       updateFilenamePreview($extractionModalStore.firstVolume);
-    }
-  });
-
-  run(() => {
-    if (
-      asCbz !== undefined ||
-      includeSeriesTitle !== undefined ||
-      individualVolumes !== undefined
-    ) {
-      if ($extractionModalStore?.firstVolume) {
-        updateFilenamePreview($extractionModalStore.firstVolume);
-      }
     }
   });
 </script>
@@ -74,13 +83,13 @@
     <div class="flex flex-col gap-4 mb-5">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract as CBZ</span>
-        <Toggle bind:checked={asCbz} />
+        <Toggle checked={asCbz} on:change={(e) => updateAsCbz(e.target.checked)} />
       </div>
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
           >Extract individual volumes</span
         >
-        <Toggle bind:checked={individualVolumes} />
+        <Toggle checked={individualVolumes} on:change={(e) => updateIndividualVolumes(e.target.checked)} />
       </div>
 
       {#if individualVolumes}
@@ -88,7 +97,7 @@
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
             >Include series title in filename</span
           >
-          <Toggle bind:checked={includeSeriesTitle} />
+          <Toggle checked={includeSeriesTitle} on:change={(e) => updateIncludeSeriesTitle(e.target.checked)} />
         </div>
       {/if}
 

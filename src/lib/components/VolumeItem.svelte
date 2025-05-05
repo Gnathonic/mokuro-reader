@@ -30,23 +30,36 @@
   async function onDeleteClicked(e: Event) {
     e.stopPropagation();
 
-    promptConfirmation(`Delete ${volName}?`, async () => {
-      await db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete();
-      await db.volumes_data.where('volume_uuid').equals(volume.volume_uuid).delete();
-      deleteVolume(volume.volume_uuid);
+    promptConfirmation(
+      `Delete ${volName}?`, 
+      async (deleteStats = false) => {
+        await db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete();
+        await db.volumes_data.where('volume_uuid').equals(volume.volume_uuid).delete();
+        
+        // Only delete stats and progress if the checkbox is checked
+        if (deleteStats) {
+          deleteVolume(volume.volume_uuid);
+        }
 
-      // Check if this was the last volume for this title
-      const remainingVolumes = await db.volumes
-        .where('series_uuid')
-        .equals(volume.series_uuid)
-        .count();
+        // Check if this was the last volume for this title
+        const remainingVolumes = await db.volumes
+          .where('series_uuid')
+          .equals(volume.series_uuid)
+          .count();
 
-      if (remainingVolumes > 0) {
-        goto(`/${$page.params.manga}`);
-      } else {
-        goto('/');
+        if (remainingVolumes > 0) {
+          goto(`/${$page.params.manga}`);
+        } else {
+          goto('/');
+        }
+      }, 
+      undefined, 
+      {
+        label: "Also delete stats and progress?",
+        storageKey: "deleteStatsPreference",
+        defaultValue: false
       }
-    });
+    );
   }
 </script>
 

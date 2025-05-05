@@ -17,8 +17,13 @@ export function initPanzoom(node: HTMLElement) {
     zoomDoubleClickSpeed: 1,
     enableTextSelection: true,
     beforeMouseDown: (e) => {
-      const nodeName = (e.target as HTMLElement).nodeName;
-      return nodeName === 'P';
+      const target = e.target as HTMLElement;
+      // Check if the target is a text box or a child of a text box
+      const isTextBox = target.classList.contains('textBox') || 
+                        target.closest('.textBox') !== null;
+      // Return true to prevent panning when clicking on text boxes
+      // This allows text selection within text boxes
+      return isTextBox;
     },
     beforeWheel: (e) => e.altKey,
     onTouch: (e) => e.touches.length > 1,

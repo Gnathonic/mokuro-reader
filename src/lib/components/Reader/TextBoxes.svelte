@@ -115,6 +115,10 @@
     white-space: nowrap;
     border: 1px solid rgba(0, 0, 0, 0);
     z-index: 11;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
   }
 
   .textBox:focus,
@@ -132,6 +136,10 @@
     background-color: rgb(255, 255, 255);
     font-weight: var(--bold);
     z-index: 11;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
   }
 
   .textBox:focus p,
