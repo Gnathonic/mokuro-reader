@@ -159,10 +159,16 @@ export async function checkFileExists(accessToken: string, filename: string, fol
  */
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
+    // Sanitize folder name for safer handling
+    // Replace problematic characters with safer alternatives
+    const sanitizedFolderName = folderName
+      .replace(/[\\/:*?"<>|]/g, '_') // Replace Windows-invalid filename chars
+      .trim(); // Remove leading/trailing whitespace
+    
     // Check if folder already exists
     // Properly escape single quotes in parent folder ID
     const safeParentFolderId = parentFolderId.replace(/'/g, "\\'");
-    const query = `name='${encodeURIComponent(folderName)}' and '${safeParentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    const query = `name='${encodeURIComponent(sanitizedFolderName)}' and '${safeParentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
     
     const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
@@ -178,7 +184,7 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
 
     // Create folder if it doesn't exist
     const metadata = {
-      name: folderName,
+      name: sanitizedFolderName, // Use sanitized name
       mimeType: 'application/vnd.google-apps.folder',
       parents: [parentFolderId]
     };
@@ -327,7 +333,13 @@ export async function exportAndUploadVolumesToDrive(
     for (let i = 0; i < sortedVolumes.length; i++) {
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
-      const filename = `${volumeTitle}.cbz`;
+      
+      // Sanitize volume title for safer filename
+      const sanitizedVolumeTitle = volumeTitle
+        .replace(/[\\/:*?"<>|]/g, '_') // Replace Windows-invalid filename chars
+        .trim(); // Remove leading/trailing whitespace
+      
+      const filename = `${sanitizedVolumeTitle}.cbz`;
 
       // Update progress
       progressTrackerStore.updateProcess(processId, {
