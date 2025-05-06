@@ -159,11 +159,24 @@ export async function checkFileExists(accessToken: string, filename: string, fol
  */
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
-    // Sanitize folder name for safer handling
-    // Replace problematic characters with safer alternatives
-    const sanitizedFolderName = folderName
-      .replace(/[\\/:*?"<>|]/g, '_') // Replace Windows-invalid filename chars
-      .trim(); // Remove leading/trailing whitespace
+    // Extremely aggressive sanitization for folder names
+    // Only allow alphanumeric characters, spaces, and basic punctuation
+    let sanitizedFolderName = folderName
+      .replace(/[^a-zA-Z0-9 .,_-]/g, '_') // Replace any non-alphanumeric, space, period, comma, underscore, or hyphen with underscore
+      .replace(/\s+/g, ' ')  // Replace multiple spaces with a single space
+      .trim();
+    
+    // Ensure the name isn't too long (Google Drive has limits)
+    if (sanitizedFolderName.length > 100) {
+      sanitizedFolderName = sanitizedFolderName.substring(0, 100);
+    }
+    
+    // If the name is empty after sanitization, use a default name
+    if (!sanitizedFolderName) {
+      sanitizedFolderName = "Folder_" + Date.now();
+    }
+    
+    console.log(`Original folder name: "${folderName}", Sanitized: "${sanitizedFolderName}"`); // Debug log
     
     // Check if folder already exists
     // Properly escape single quotes in parent folder ID
@@ -210,8 +223,41 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
       throw error;
     }
 
-    // For other errors, throw a more descriptive error
-    throw new Error(`Failed to create folder "${folderName}": ${error.message || 'Unknown error'}`);
+    // For other errors, throw a more descriptive error with detailed information
+    console.error('Detailed error creating folder:', error);
+    console.error('Folder name:', folderName);
+    console.error('Sanitized folder name:', sanitizedFolderName);
+    console.error('Parent folder ID:', parentFolderId);
+    
+    // Try with an even simpler folder name as a fallback
+    try {
+      const fallbackName = "Folder_" + Date.now();
+      console.log(`Attempting fallback with simple folder name: ${fallbackName}`);
+      
+      const fallbackMetadata = {
+        name: fallbackName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentFolderId]
+      };
+      
+      const fallbackData = await driveApiRequest(
+        'https://www.googleapis.com/drive/v3/files',
+        {
+          method: 'POST',
+          headers: new Headers({
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/json'
+          }),
+          body: JSON.stringify(fallbackMetadata)
+        }
+      );
+      
+      console.log('Successfully created fallback folder:', fallbackData);
+      return fallbackData.id;
+    } catch (fallbackError) {
+      console.error('Even fallback folder creation failed:', fallbackError);
+      throw new Error(`Failed to create folder. Original error: ${error.message || 'Unknown error'}. Fallback also failed.`);
+    }
   }
 }
 
@@ -334,10 +380,24 @@ export async function exportAndUploadVolumesToDrive(
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       
-      // Sanitize volume title for safer filename
-      const sanitizedVolumeTitle = volumeTitle
-        .replace(/[\\/:*?"<>|]/g, '_') // Replace Windows-invalid filename chars
-        .trim(); // Remove leading/trailing whitespace
+      // Extremely aggressive sanitization for filenames
+      // Only allow alphanumeric characters, spaces, and basic punctuation
+      let sanitizedVolumeTitle = volumeTitle
+        .replace(/[^a-zA-Z0-9 .,_-]/g, '_') // Replace any non-alphanumeric, space, period, comma, underscore, or hyphen with underscore
+        .replace(/\s+/g, ' ')  // Replace multiple spaces with a single space
+        .trim();
+      
+      // Ensure the name isn't too long (Google Drive has limits)
+      if (sanitizedVolumeTitle.length > 100) {
+        sanitizedVolumeTitle = sanitizedVolumeTitle.substring(0, 100);
+      }
+      
+      // If the name is empty after sanitization, use a default name
+      if (!sanitizedVolumeTitle) {
+        sanitizedVolumeTitle = "Volume_" + Date.now();
+      }
+      
+      console.log(`Original volume title: "${volumeTitle}", Sanitized: "${sanitizedVolumeTitle}"`); // Debug log
       
       const filename = `${sanitizedVolumeTitle}.cbz`;
 
@@ -358,28 +418,38 @@ export async function exportAndUploadVolumesToDrive(
         continue;
       }
 
-      // Create the CBZ archive for this volume
-      progressTrackerStore.updateProcess(processId, {
-        status: `Creating archive for ${volumeTitle}...`
-      });
+      try {
+        // Create the CBZ archive for this volume
+        progressTrackerStore.updateProcess(processId, {
+          status: `Creating archive for ${volumeTitle}...`
+        });
 
-      const archiveBlob = await createVolumeArchive(volume);
+        const archiveBlob = await createVolumeArchive(volume);
 
-      // Upload the archive to Google Drive
-      progressTrackerStore.updateProcess(processId, {
-        status: `Uploading ${volumeTitle} to Google Drive...`
-      });
+        // Upload the archive to Google Drive
+        progressTrackerStore.updateProcess(processId, {
+          status: `Uploading ${volumeTitle} to Google Drive...`
+        });
 
-      const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
+        const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
 
-      // Add the volume to our store
-      if (response && response.id) {
-        addVolume(seriesTitle, volumeTitle, response.id, filename);
+        // Add the volume to our store
+        if (response && response.id) {
+          addVolume(seriesTitle, volumeTitle, response.id, filename);
+        }
+
+        progressTrackerStore.updateProcess(processId, {
+          status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
+        });
+      } catch (volumeError) {
+        console.error(`Error processing volume "${volumeTitle}":`, volumeError);
+        progressTrackerStore.updateProcess(processId, {
+          status: `Error with ${volumeTitle}: ${volumeError.message || 'Unknown error'} (${i+1}/${sortedVolumes.length})`,
+        });
+        
+        // Continue with next volume instead of failing the entire process
+        continue;
       }
-
-      progressTrackerStore.updateProcess(processId, {
-        status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
-      });
     }
 
     // All volumes have been processed
