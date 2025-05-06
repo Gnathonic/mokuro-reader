@@ -76,8 +76,7 @@ export async function uploadBlob(
   console.log(`Uploading file: "${sanitizedFilename}" (${blob.size} bytes) to folder: ${folderId}`);
   console.log(`MIME type: ${mimeType}`);
   
-  const form = new FormData();
-
+  // Create the metadata
   const metadata = {
     name: sanitizedFilename,
     mimeType: mimeType,
@@ -86,32 +85,62 @@ export async function uploadBlob(
   
   // Log the metadata being sent
   console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
-
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', blob);
-
+  
   try {
-    // For now, stick with multipart upload as it's simpler
-    // Resumable uploads require a more complex implementation with multiple steps
-    const uploadType = 'multipart';
-    console.log(`Using ${uploadType} upload for file size: ${blob.size} bytes`);
+    // Use the resumable upload protocol for more reliability
+    // Step 1: Initiate the resumable upload session
+    console.log("Step 1: Initiating resumable upload session");
     
-    return await driveApiRequest(
-      `${FILES_API_URL}?uploadType=${uploadType}`,
+    const sessionResponse = await fetch(
+      `${FILES_API_URL}?uploadType=resumable`,
       {
         method: 'POST',
-        headers: new Headers({ 
-          Authorization: 'Bearer ' + accessToken
-        }),
-        body: form
-      },
-      {
-        // Use more retries for uploads since they're more likely to fail
-        maxRetries: 5,
-        // Use longer initial backoff for large files
-        initialBackoffMs: 2000
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': blob.type,
+          'X-Upload-Content-Length': blob.size.toString()
+        },
+        body: JSON.stringify(metadata)
       }
     );
+    
+    if (!sessionResponse.ok) {
+      const errorText = await sessionResponse.text();
+      console.error("Failed to initiate resumable upload session:", errorText);
+      throw new Error(`Failed to initiate upload: ${sessionResponse.status} ${errorText}`);
+    }
+    
+    // Get the upload URL from the Location header
+    const uploadUrl = sessionResponse.headers.get('Location');
+    if (!uploadUrl) {
+      throw new Error("No upload URL returned from resumable upload initiation");
+    }
+    
+    console.log("Received upload URL:", uploadUrl);
+    
+    // Step 2: Upload the file content
+    console.log("Step 2: Uploading file content");
+    
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': blob.type,
+        'Content-Length': blob.size.toString()
+      },
+      body: blob
+    });
+    
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      console.error("Failed to upload file content:", errorText);
+      throw new Error(`Failed to upload file: ${uploadResponse.status} ${errorText}`);
+    }
+    
+    // Parse and return the response
+    const result = await uploadResponse.json();
+    console.log("Upload successful, file ID:", result.id);
+    return result;
   } catch (error: any) {
     // Log detailed error information
     console.error('Error uploading blob:', error);
