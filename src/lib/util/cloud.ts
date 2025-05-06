@@ -69,12 +69,28 @@ export async function uploadBlob(
   folderId: string,
   mimeType: string = 'application/zip'
 ) {
+  // VERBOSE DEBUGGING: Log all input parameters
+  console.log("=== UPLOAD BLOB FUNCTION CALLED ===");
+  console.log(`Original filename: "${filename}"`);
+  console.log(`Folder ID: "${folderId}"`);
+  console.log(`MIME type: "${mimeType}"`);
+  console.log(`Blob size: ${blob.size} bytes`);
+  console.log(`Blob type: ${blob.type}`);
+  
   // Ensure filename is properly sanitized
   const sanitizedFilename = sanitizeNameForGoogleDrive(filename);
+  console.log(`Sanitized filename: "${sanitizedFilename}"`);
   
-  // Log detailed information about the upload
-  console.log(`Uploading file: "${sanitizedFilename}" (${blob.size} bytes) to folder: ${folderId}`);
-  console.log(`MIME type: ${mimeType}`);
+  // VERBOSE DEBUGGING: Validate folder ID
+  if (!folderId) {
+    console.error("ERROR: Folder ID is empty or undefined!");
+    throw new Error("Folder ID is required but was not provided");
+  }
+  
+  if (typeof folderId !== 'string') {
+    console.error(`ERROR: Folder ID is not a string! Type: ${typeof folderId}, Value:`, folderId);
+    throw new Error(`Folder ID must be a string, got ${typeof folderId}`);
+  }
   
   // Try a completely different approach - use a simple metadata-only request first
   try {
@@ -90,6 +106,14 @@ export async function uploadBlob(
     // Log the metadata being sent
     console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
     
+    // VERBOSE DEBUGGING: Log the full request details
+    console.log("Making metadata request to:", 'https://www.googleapis.com/drive/v3/files');
+    console.log("Request headers:", {
+      'Authorization': 'Bearer [TOKEN REDACTED]',
+      'Content-Type': 'application/json; charset=UTF-8'
+    });
+    console.log("Request body:", JSON.stringify(metadata));
+    
     const metadataResponse = await fetch(
       'https://www.googleapis.com/drive/v3/files',
       {
@@ -102,13 +126,43 @@ export async function uploadBlob(
       }
     );
     
+    // VERBOSE DEBUGGING: Log the response status and headers
+    console.log(`Metadata response status: ${metadataResponse.status} ${metadataResponse.statusText}`);
+    console.log("Metadata response headers:");
+    metadataResponse.headers.forEach((value, key) => {
+      console.log(`  ${key}: ${value}`);
+    });
+    
     if (!metadataResponse.ok) {
       const errorText = await metadataResponse.text();
-      console.error("Failed to create file metadata:", errorText);
+      console.error("Failed to create file metadata. Response:", errorText);
+      
+      // Try to parse the error as JSON for more details
+      try {
+        const errorJson = JSON.parse(errorText);
+        console.error("Parsed error JSON:", errorJson);
+        
+        if (errorJson.error && errorJson.error.errors) {
+          console.error("Detailed errors:", errorJson.error.errors);
+          
+          // Check for specific error types
+          const invalidValueError = errorJson.error.errors.find(e => e.reason === 'invalid');
+          if (invalidValueError) {
+            console.error("INVALID VALUE ERROR DETAILS:", invalidValueError);
+            console.error("Invalid field:", invalidValueError.location);
+            console.error("Invalid value:", invalidValueError.locationType);
+          }
+        }
+      } catch (e) {
+        console.error("Error response is not valid JSON");
+      }
+      
       throw new Error(`Failed to create file metadata: ${metadataResponse.status} ${errorText}`);
     }
     
     const fileData = await metadataResponse.json();
+    console.log("Metadata response data:", fileData);
+    
     const fileId = fileData.id;
     
     if (!fileId) {
@@ -119,6 +173,14 @@ export async function uploadBlob(
     
     // Step 2: Upload the file content
     console.log("Step 2: Uploading file content");
+    
+    // VERBOSE DEBUGGING: Log the content upload request details
+    console.log("Making content upload request to:", `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`);
+    console.log("Content upload headers:", {
+      'Authorization': 'Bearer [TOKEN REDACTED]',
+      'Content-Type': blob.type
+    });
+    console.log("Content upload body: [BLOB DATA]");
     
     const uploadResponse = await fetch(
       `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
@@ -132,9 +194,29 @@ export async function uploadBlob(
       }
     );
     
+    // VERBOSE DEBUGGING: Log the upload response status and headers
+    console.log(`Content upload response status: ${uploadResponse.status} ${uploadResponse.statusText}`);
+    console.log("Content upload response headers:");
+    uploadResponse.headers.forEach((value, key) => {
+      console.log(`  ${key}: ${value}`);
+    });
+    
     if (!uploadResponse.ok) {
       const errorText = await uploadResponse.text();
-      console.error("Failed to upload file content:", errorText);
+      console.error("Failed to upload file content. Response:", errorText);
+      
+      // Try to parse the error as JSON for more details
+      try {
+        const errorJson = JSON.parse(errorText);
+        console.error("Parsed error JSON:", errorJson);
+        
+        if (errorJson.error && errorJson.error.errors) {
+          console.error("Detailed errors:", errorJson.error.errors);
+        }
+      } catch (e) {
+        console.error("Error response is not valid JSON");
+      }
+      
       throw new Error(`Failed to upload file content: ${uploadResponse.status} ${errorText}`);
     }
     
@@ -574,11 +656,24 @@ export async function exportAndUploadVolumesToDrive(
   accessToken: string,
   readerFolderId: string
 ): Promise<void> {
+  // VERBOSE DEBUGGING: Log all input parameters
+  console.log("=== EXPORT AND UPLOAD VOLUMES FUNCTION CALLED ===");
+  console.log(`Number of volumes: ${volumes?.length || 0}`);
+  console.log(`Reader folder ID: "${readerFolderId}"`);
+  
   if (!volumes || volumes.length === 0) {
     throw new Error('No volumes to export');
   }
 
   const seriesTitle = volumes[0].series_title;
+  console.log(`Series title: "${seriesTitle}"`);
+  
+  // VERBOSE DEBUGGING: Log all volume titles
+  console.log("Volume titles:");
+  volumes.forEach((volume, index) => {
+    console.log(`  ${index + 1}. "${volume.volume_title}"`);
+  });
+  
   const processId = `export-upload-${Date.now()}`;
 
   // Add a process to the progress tracker
@@ -598,6 +693,14 @@ export async function exportAndUploadVolumesToDrive(
     
     const driveStructure = await fetchExistingDriveStructure(accessToken, readerFolderId);
     
+    // VERBOSE DEBUGGING: Log the drive structure
+    console.log("Drive structure retrieved:");
+    console.log(`  Comics folder ID: ${driveStructure.comicsFolderId}`);
+    console.log(`  Series folders: ${Object.keys(driveStructure.seriesFolders).length}`);
+    Object.entries(driveStructure.seriesFolders).forEach(([name, id]) => {
+      console.log(`    "${name}": ${id}`);
+    });
+    
     // Create comics folder if it doesn't exist
     let comicsFolderId = driveStructure.comicsFolderId;
     if (!comicsFolderId) {
@@ -610,6 +713,12 @@ export async function exportAndUploadVolumesToDrive(
       console.log(`Created comics folder with ID: ${comicsFolderId}`);
     }
     
+    // VERBOSE DEBUGGING: Validate comics folder ID
+    if (!comicsFolderId) {
+      console.error("ERROR: Comics folder ID is empty or undefined after creation attempt!");
+      throw new Error("Failed to get or create comics folder");
+    }
+    
     // Sanitize series title for Google Drive
     // Replace problematic characters with safer alternatives
     const sanitizedSeriesTitle = sanitizeNameForGoogleDrive(seriesTitle);
@@ -617,6 +726,11 @@ export async function exportAndUploadVolumesToDrive(
     
     // Check if series folder exists, create if needed
     let seriesFolderId = driveStructure.seriesFolders[seriesTitle] || driveStructure.seriesFolders[sanitizedSeriesTitle];
+    
+    // VERBOSE DEBUGGING: Log series folder lookup
+    console.log(`Looking for series folder with title "${seriesTitle}" or "${sanitizedSeriesTitle}"`);
+    console.log(`Series folder ID from lookup: ${seriesFolderId || "NOT FOUND"}`);
+    
     if (!seriesFolderId) {
       progressTrackerStore.updateProcess(processId, {
         progress: 10,
@@ -628,6 +742,12 @@ export async function exportAndUploadVolumesToDrive(
       console.log(`Created series folder for "${sanitizedSeriesTitle}" with ID: ${seriesFolderId}`);
     } else {
       console.log(`Found existing series folder for "${seriesTitle}" with ID: ${seriesFolderId}`);
+    }
+    
+    // VERBOSE DEBUGGING: Validate series folder ID
+    if (!seriesFolderId) {
+      console.error("ERROR: Series folder ID is empty or undefined after creation attempt!");
+      throw new Error("Failed to get or create series folder");
     }
     
     // Add or update the series in our store
@@ -648,17 +768,29 @@ export async function exportAndUploadVolumesToDrive(
                                driveStructure.volumeFiles[sanitizedSeriesTitle] || 
                                {};
     
+    // VERBOSE DEBUGGING: Log existing volume files
+    console.log("Existing volume files for this series:");
+    Object.entries(existingVolumeFiles).forEach(([name, id]) => {
+      console.log(`  "${name}": ${id}`);
+    });
+    
     // Process each volume
     for (let i = 0; i < sortedVolumes.length; i++) {
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       
+      // VERBOSE DEBUGGING: Log detailed volume info
+      console.log(`\n=== PROCESSING VOLUME ${i+1}/${sortedVolumes.length} ===`);
+      console.log(`Volume title: "${volumeTitle}"`);
+      console.log(`Volume UUID: ${volume.volume_uuid}`);
+      
       // Sanitize volume title for Google Drive
       const sanitizedVolumeTitle = sanitizeNameForGoogleDrive(volumeTitle);
-      console.log(`Processing volume: "${volumeTitle}", Sanitized: "${sanitizedVolumeTitle}"`);
+      console.log(`Sanitized volume title: "${sanitizedVolumeTitle}"`);
       
       // Use the sanitized volume title for the filename
       const filename = `${sanitizedVolumeTitle}.cbz`;
+      console.log(`Filename: "${filename}"`);
 
       // Update progress
       progressTrackerStore.updateProcess(processId, {
@@ -669,6 +801,18 @@ export async function exportAndUploadVolumesToDrive(
       // Check if the file already exists using our pre-fetched data
       // Try both original and sanitized names
       const existingFileId = existingVolumeFiles[volumeTitle] || existingVolumeFiles[sanitizedVolumeTitle];
+      
+      // VERBOSE DEBUGGING: Log existing file check
+      console.log(`Checking if volume already exists:`);
+      console.log(`  Looking for "${volumeTitle}" or "${sanitizedVolumeTitle}"`);
+      console.log(`  Existing file ID: ${existingFileId || "NOT FOUND"}`);
+      
+      // VERBOSE DEBUGGING: Validate series folder ID again before using it
+      console.log(`Series folder ID (for upload): ${seriesFolderId}`);
+      if (!seriesFolderId) {
+        console.error("ERROR: Series folder ID is missing before upload attempt!");
+        throw new Error("Series folder ID is required but was not available");
+      }
 
       if (existingFileId) {
         // Skip this volume as it already exists
@@ -689,13 +833,27 @@ export async function exportAndUploadVolumesToDrive(
         progressTrackerStore.updateProcess(processId, {
           status: `Creating archive for ${volumeTitle}...`
         });
-
+        
+        // VERBOSE DEBUGGING: Log archive creation
+        console.log(`Creating archive for volume "${volumeTitle}"...`);
+        
         const archiveBlob = await createVolumeArchive(volume);
+        
+        // VERBOSE DEBUGGING: Log archive creation result
+        console.log(`Archive created successfully:`);
+        console.log(`  Size: ${archiveBlob.size} bytes`);
+        console.log(`  Type: ${archiveBlob.type}`);
 
         // Upload the archive to Google Drive
         progressTrackerStore.updateProcess(processId, {
           status: `Uploading ${volumeTitle} to Google Drive...`
         });
+        
+        // VERBOSE DEBUGGING: Log upload attempt
+        console.log(`Uploading archive to Google Drive...`);
+        console.log(`  Filename: "${filename}"`);
+        console.log(`  Series folder ID: ${seriesFolderId}`);
+        console.log(`  MIME type: application/vnd.comicbook+zip`);
 
         const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
 
