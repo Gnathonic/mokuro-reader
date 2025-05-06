@@ -69,106 +69,49 @@ export async function uploadBlob(
   folderId: string,
   mimeType: string = 'application/zip'
 ) {
-  // ULTRA VERBOSE DEBUGGING: Log all input parameters with character codes
-  console.log("=== UPLOAD BLOB FUNCTION CALLED ===");
-  console.log(`Original filename: "${filename}"`);
-  console.log("Filename character codes:", Array.from(filename).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
-  
-  console.log(`Folder ID: "${folderId}"`);
-  console.log("Folder ID character codes:", Array.from(folderId).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
-  
-  console.log(`MIME type: "${mimeType}"`);
-  console.log(`Blob size: ${blob.size} bytes`);
-  console.log(`Blob type: ${blob.type}`);
-  
   // Ensure filename is properly sanitized
   const sanitizedFilename = sanitizeNameForGoogleDrive(filename);
-  console.log(`Sanitized filename: "${sanitizedFilename}"`);
-  console.log("Sanitized filename character codes:", Array.from(sanitizedFilename).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
   
-  // ULTRA VERBOSE DEBUGGING: Validate folder ID
+  // Validate folder ID
   if (!folderId) {
-    console.error("ERROR: Folder ID is empty or undefined!");
     throw new Error("Folder ID is required but was not provided");
   }
   
   if (typeof folderId !== 'string') {
-    console.error(`ERROR: Folder ID is not a string! Type: ${typeof folderId}, Value:`, folderId);
     throw new Error(`Folder ID must be a string, got ${typeof folderId}`);
   }
   
-  // ULTRA VERBOSE DEBUGGING: Check for invalid characters in folder ID
+  // Check for invalid characters in folder ID
   const invalidCharInFolderId = Array.from(folderId).find(c => {
     const code = c.charCodeAt(0);
     return code < 32 || code > 126; // Non-printable or non-ASCII
   });
   
   if (invalidCharInFolderId) {
-    console.error(`ERROR: Folder ID contains invalid character: ${invalidCharInFolderId} (${invalidCharInFolderId.charCodeAt(0)})`);
     // Try to clean the folder ID
     const cleanFolderId = folderId.replace(/[^\x20-\x7E]/g, '');
-    console.error(`Cleaned folder ID: ${cleanFolderId}`);
-    // Continue with the cleaned ID
-    folderId = cleanFolderId;
+    
+    // If cleaning changed the ID, use the cleaned version
+    if (cleanFolderId !== folderId) {
+      folderId = cleanFolderId;
+    }
   }
   
-  // Try a completely different approach - use a simple metadata-only request first
+  // Check if the folder ID looks like a valid Google Drive ID
+  if (!/^[a-zA-Z0-9_-]+$/.test(folderId)) {
+    throw new Error(`Invalid folder ID format: "${folderId}". Google Drive IDs should only contain letters, numbers, underscores, and hyphens.`);
+  }
+  
+  // Use a simple metadata-only request first, then upload the content
   try {
     // Step 1: Create a metadata-only file entry
-    console.log("Step 1: Creating file metadata");
-    
     const metadata = {
       name: sanitizedFilename,
       mimeType: mimeType,
       parents: [folderId]
     };
     
-    // Log the metadata being sent
-    console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
-    
-    // ULTRA VERBOSE DEBUGGING: Log the full request details
-    console.log("Making metadata request to:", 'https://www.googleapis.com/drive/v3/files');
-    console.log("Request headers:", {
-      'Authorization': 'Bearer [TOKEN REDACTED]',
-      'Content-Type': 'application/json; charset=UTF-8'
-    });
-    
-    // ULTRA VERBOSE DEBUGGING: Check for invalid JSON
-    try {
-      const metadataJson = JSON.stringify(metadata);
-      console.log("Request body:", metadataJson);
-      
-      // Validate the JSON by parsing it back
-      JSON.parse(metadataJson);
-    } catch (jsonError) {
-      console.error("ERROR: Invalid JSON metadata:", jsonError);
-      // Try to create a clean version of the metadata
-      const cleanMetadata = {
-        name: sanitizedFilename.replace(/[^\x20-\x7E]/g, '_'),
-        mimeType: mimeType,
-        parents: [folderId.replace(/[^\x20-\x7E]/g, '')]
-      };
-      console.error("Using cleaned metadata:", JSON.stringify(cleanMetadata));
-      metadata.name = cleanMetadata.name;
-      metadata.parents = cleanMetadata.parents;
-    }
-    
-    // ULTRA VERBOSE DEBUGGING: Try a direct API call with XMLHttpRequest for more detailed error info
-    console.log("Making metadata request with XMLHttpRequest for better error details");
-    
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', 'https://www.googleapis.com/drive/v3/files', false); // Synchronous for debugging
-    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-    xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
-    
-    try {
-      xhr.send(JSON.stringify(metadata));
-      console.log(`XHR Status: ${xhr.status} ${xhr.statusText}`);
-      console.log(`XHR Response: ${xhr.responseText}`);
-    } catch (xhrError) {
-      console.error("XHR Error:", xhrError);
-    }
-    
+    // Create the file metadata
     const metadataResponse = await fetch(
       'https://www.googleapis.com/drive/v3/files',
       {
@@ -181,62 +124,62 @@ export async function uploadBlob(
       }
     );
     
-    // VERBOSE DEBUGGING: Log the response status and headers
-    console.log(`Metadata response status: ${metadataResponse.status} ${metadataResponse.statusText}`);
-    console.log("Metadata response headers:");
-    metadataResponse.headers.forEach((value, key) => {
-      console.log(`  ${key}: ${value}`);
-    });
-    
+    // Handle metadata creation errors
     if (!metadataResponse.ok) {
-      const errorText = await metadataResponse.text();
-      console.error("Failed to create file metadata. Response:", errorText);
+      let errorMessage = `Failed to create file metadata (HTTP ${metadataResponse.status})`;
       
-      // Try to parse the error as JSON for more details
       try {
-        const errorJson = JSON.parse(errorText);
-        console.error("Parsed error JSON:", errorJson);
+        const errorText = await metadataResponse.text();
         
-        if (errorJson.error && errorJson.error.errors) {
-          console.error("Detailed errors:", errorJson.error.errors);
+        // Try to parse the error as JSON for more details
+        try {
+          const errorJson = JSON.parse(errorText);
           
-          // Check for specific error types
-          const invalidValueError = errorJson.error.errors.find(e => e.reason === 'invalid');
-          if (invalidValueError) {
-            console.error("INVALID VALUE ERROR DETAILS:", invalidValueError);
-            console.error("Invalid field:", invalidValueError.location);
-            console.error("Invalid value:", invalidValueError.locationType);
+          if (errorJson.error && errorJson.error.message) {
+            errorMessage = `Google Drive API error: ${errorJson.error.message}`;
+          }
+          
+          if (errorJson.error && errorJson.error.errors && errorJson.error.errors.length > 0) {
+            const firstError = errorJson.error.errors[0];
+            
+            // Check for specific error types
+            if (firstError.reason === 'invalid') {
+              if (firstError.location === 'parents') {
+                errorMessage = `Invalid folder ID: "${folderId}". The folder may not exist or you don't have access to it.`;
+              } else if (firstError.location === 'name') {
+                errorMessage = `Invalid filename: "${sanitizedFilename}". Please try a simpler filename without special characters.`;
+              } else {
+                errorMessage = `Invalid value for ${firstError.location}: "${firstError.locationType}"`;
+              }
+            } else if (firstError.reason === 'authError') {
+              errorMessage = "Authentication error. Please sign out and sign in again.";
+            } else if (firstError.reason === 'rateLimitExceeded') {
+              errorMessage = "Rate limit exceeded. Please try again later.";
+            }
+          }
+        } catch (e) {
+          // If not JSON, use the raw error text
+          if (errorText) {
+            errorMessage += `: ${errorText}`;
           }
         }
       } catch (e) {
-        console.error("Error response is not valid JSON");
+        // If we can't get the error text, use a generic message
+        errorMessage += ". Could not get detailed error information.";
       }
       
-      throw new Error(`Failed to create file metadata: ${metadataResponse.status} ${errorText}`);
+      throw new Error(errorMessage);
     }
     
+    // Parse the metadata response
     const fileData = await metadataResponse.json();
-    console.log("Metadata response data:", fileData);
-    
     const fileId = fileData.id;
     
     if (!fileId) {
       throw new Error("No file ID returned from metadata creation");
     }
     
-    console.log(`Created file metadata with ID: ${fileId}`);
-    
     // Step 2: Upload the file content
-    console.log("Step 2: Uploading file content");
-    
-    // VERBOSE DEBUGGING: Log the content upload request details
-    console.log("Making content upload request to:", `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`);
-    console.log("Content upload headers:", {
-      'Authorization': 'Bearer [TOKEN REDACTED]',
-      'Content-Type': blob.type
-    });
-    console.log("Content upload body: [BLOB DATA]");
-    
     const uploadResponse = await fetch(
       `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
       {
@@ -249,35 +192,36 @@ export async function uploadBlob(
       }
     );
     
-    // VERBOSE DEBUGGING: Log the upload response status and headers
-    console.log(`Content upload response status: ${uploadResponse.status} ${uploadResponse.statusText}`);
-    console.log("Content upload response headers:");
-    uploadResponse.headers.forEach((value, key) => {
-      console.log(`  ${key}: ${value}`);
-    });
-    
+    // Handle content upload errors
     if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error("Failed to upload file content. Response:", errorText);
+      let errorMessage = `Failed to upload file content (HTTP ${uploadResponse.status})`;
       
-      // Try to parse the error as JSON for more details
       try {
-        const errorJson = JSON.parse(errorText);
-        console.error("Parsed error JSON:", errorJson);
+        const errorText = await uploadResponse.text();
         
-        if (errorJson.error && errorJson.error.errors) {
-          console.error("Detailed errors:", errorJson.error.errors);
+        // Try to parse the error as JSON for more details
+        try {
+          const errorJson = JSON.parse(errorText);
+          
+          if (errorJson.error && errorJson.error.message) {
+            errorMessage = `Google Drive API error: ${errorJson.error.message}`;
+          }
+        } catch (e) {
+          // If not JSON, use the raw error text
+          if (errorText) {
+            errorMessage += `: ${errorText}`;
+          }
         }
       } catch (e) {
-        console.error("Error response is not valid JSON");
+        // If we can't get the error text, use a generic message
+        errorMessage += ". Could not get detailed error information.";
       }
       
-      throw new Error(`Failed to upload file content: ${uploadResponse.status} ${errorText}`);
+      throw new Error(errorMessage);
     }
     
     // Parse and return the response
     const result = await uploadResponse.json();
-    console.log("Upload successful, file ID:", result.id);
     return result;
   } catch (error: any) {
     // Log detailed error information
@@ -377,45 +321,37 @@ export async function checkFileExists(accessToken: string, filename: string, fol
  */
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
-    // ULTRA VERBOSE DEBUGGING: Log all input parameters with character codes
-    console.log("=== CREATE FOLDER IF NOT EXISTS FUNCTION CALLED ===");
-    console.log(`Folder name: "${folderName}"`);
-    console.log("Folder name character codes:", Array.from(folderName).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
-    
-    console.log(`Parent folder ID: "${parentFolderId}"`);
-    console.log("Parent folder ID character codes:", Array.from(parentFolderId).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
-    
-    // ULTRA VERBOSE DEBUGGING: Validate parent folder ID
+    // Validate parent folder ID
     if (!parentFolderId) {
-      console.error("ERROR: Parent folder ID is empty or undefined!");
       throw new Error("Parent folder ID is required but was not provided");
     }
     
     if (typeof parentFolderId !== 'string') {
-      console.error(`ERROR: Parent folder ID is not a string! Type: ${typeof parentFolderId}, Value:`, parentFolderId);
       throw new Error(`Parent folder ID must be a string, got ${typeof parentFolderId}`);
     }
     
-    // ULTRA VERBOSE DEBUGGING: Check for invalid characters in parent folder ID
+    // Check for invalid characters in parent folder ID
     const invalidCharInParentId = Array.from(parentFolderId).find(c => {
       const code = c.charCodeAt(0);
       return code < 32 || code > 126; // Non-printable or non-ASCII
     });
     
     if (invalidCharInParentId) {
-      console.error(`ERROR: Parent folder ID contains invalid character: ${invalidCharInParentId} (${invalidCharInParentId.charCodeAt(0)})`);
       // Try to clean the parent folder ID
       const cleanParentId = parentFolderId.replace(/[^\x20-\x7E]/g, '');
-      console.error(`Cleaned parent folder ID: ${cleanParentId}`);
-      // Continue with the cleaned ID
-      parentFolderId = cleanParentId;
+      
+      // If cleaning changed the ID, use the cleaned version
+      if (cleanParentId !== parentFolderId) {
+        parentFolderId = cleanParentId;
+      }
+    }
+    
+    // Check if the parent folder ID looks like a valid Google Drive ID
+    if (!/^[a-zA-Z0-9_-]+$/.test(parentFolderId)) {
+      throw new Error(`Invalid parent folder ID format: "${parentFolderId}". Google Drive IDs should only contain letters, numbers, underscores, and hyphens.`);
     }
     
     // Check if folder already exists
-    // Use proper URL parameter encoding for the query
-    // We need to properly escape the folder name for the query string
-    // The Google Drive API requires single quotes around string literals in queries
-    
     // Build the query parameters properly
     const queryParams = new URLSearchParams();
     
@@ -431,10 +367,6 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
     queryParams.append('q', query);
     queryParams.append('fields', 'files(id,name)');
     
-    // ULTRA VERBOSE DEBUGGING: Log the query
-    console.log("Folder existence query:", query);
-    console.log("Full URL:", `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`);
-    
     // Make the API request with the properly encoded query
     const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
@@ -443,25 +375,15 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
       }
     );
-    
-    // ULTRA VERBOSE DEBUGGING: Log the response
-    console.log("Folder existence check response:", data);
 
     if (data.files && data.files.length > 0) {
-      console.log(`Found existing folder "${folderName}" with ID ${data.files[0].id}`);
-      
-      // If multiple folders with the same name exist, log a warning
+      // If multiple folders with the same name exist, use the first one but show a warning
       if (data.files.length > 1) {
-        console.warn(`Multiple folders named "${folderName}" found in parent ${parentFolderId}. Using the first one.`);
-        for (let i = 0; i < data.files.length; i++) {
-          console.warn(`  ${i+1}. Folder ID: ${data.files[i].id}`);
-        }
+        showSnackbar(`Multiple folders named "${folderName}" found. Using the first one.`);
       }
       
       return data.files[0].id;
     }
-    
-    console.log(`No existing folder "${folderName}" found, will create a new one.`);
 
     // Create folder if it doesn't exist
     const metadata = {
@@ -470,93 +392,105 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
       parents: [parentFolderId]
     };
     
-    // ULTRA VERBOSE DEBUGGING: Log the metadata
-    console.log("Folder creation metadata:", JSON.stringify(metadata));
-    
-    // ULTRA VERBOSE DEBUGGING: Try a direct API call with XMLHttpRequest for more detailed error info
-    console.log("Making folder creation request with XMLHttpRequest for better error details");
-    
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', 'https://www.googleapis.com/drive/v3/files', false); // Synchronous for debugging
-    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-    xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
-    
     try {
-      xhr.send(JSON.stringify(metadata));
-      console.log(`XHR Status: ${xhr.status} ${xhr.statusText}`);
-      console.log(`XHR Response: ${xhr.responseText}`);
-      
-      // If successful, try to parse the response
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const response = JSON.parse(xhr.responseText);
-          if (response.id) {
-            console.log(`Successfully created folder with ID: ${response.id}`);
-            return response.id;
-          }
-        } catch (e) {
-          console.error("Error parsing XHR response:", e);
-        }
-      }
-    } catch (xhrError) {
-      console.error("XHR Error:", xhrError);
-    }
-
-    const createData = await driveApiRequest(
-      'https://www.googleapis.com/drive/v3/files',
-      {
-        method: 'POST',
-        headers: new Headers({
-          'Authorization': 'Bearer ' + accessToken,
-          'Content-Type': 'application/json'
-        }),
-        body: JSON.stringify(metadata)
-      }
-    );
-
-    return createData.id;
-  } catch (error: any) {
-    console.error('Error creating folder:', error);
-
-    // Only throw auth errors, handle other errors gracefully
-    if (error.errorType === DriveErrorType.AUTH_ERROR) {
-      throw error;
-    }
-
-    // For other errors, throw a more descriptive error with detailed information
-    console.error('Detailed error creating folder:', error);
-    console.error('Folder name:', folderName);
-    console.error('Parent folder ID:', parentFolderId);
-    
-    // Try with an even simpler folder name as a fallback
-    try {
-      const fallbackName = "Folder_" + Date.now();
-      console.log(`Attempting fallback with simple folder name: ${fallbackName}`);
-      
-      const fallbackMetadata = {
-        name: fallbackName,
-        mimeType: 'application/vnd.google-apps.folder',
-        parents: [parentFolderId]
-      };
-      
-      const fallbackData = await driveApiRequest(
+      const createResponse = await fetch(
         'https://www.googleapis.com/drive/v3/files',
         {
           method: 'POST',
-          headers: new Headers({
-            'Authorization': 'Bearer ' + accessToken,
-            'Content-Type': 'application/json'
-          }),
-          body: JSON.stringify(fallbackMetadata)
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json; charset=UTF-8'
+          },
+          body: JSON.stringify(metadata)
         }
       );
       
-      console.log('Successfully created fallback folder:', fallbackData);
-      return fallbackData.id;
-    } catch (fallbackError) {
-      console.error('Even fallback folder creation failed:', fallbackError);
-      throw new Error(`Failed to create folder. Original error: ${error.message || 'Unknown error'}. Fallback also failed.`);
+      // Handle folder creation errors
+      if (!createResponse.ok) {
+        let errorMessage = `Failed to create folder (HTTP ${createResponse.status})`;
+        
+        try {
+          const errorText = await createResponse.text();
+          
+          // Try to parse the error as JSON for more details
+          try {
+            const errorJson = JSON.parse(errorText);
+            
+            if (errorJson.error && errorJson.error.message) {
+              errorMessage = `Google Drive API error: ${errorJson.error.message}`;
+            }
+            
+            if (errorJson.error && errorJson.error.errors && errorJson.error.errors.length > 0) {
+              const firstError = errorJson.error.errors[0];
+              
+              // Check for specific error types
+              if (firstError.reason === 'invalid') {
+                if (firstError.location === 'parents') {
+                  errorMessage = `Invalid parent folder ID: "${parentFolderId}". The folder may not exist or you don't have access to it.`;
+                } else if (firstError.location === 'name') {
+                  errorMessage = `Invalid folder name: "${folderName}". Please try a simpler name without special characters.`;
+                } else {
+                  errorMessage = `Invalid value for ${firstError.location}: "${firstError.locationType}"`;
+                }
+              } else if (firstError.reason === 'authError') {
+                errorMessage = "Authentication error. Please sign out and sign in again.";
+              }
+            }
+          } catch (e) {
+            // If not JSON, use the raw error text
+            if (errorText) {
+              errorMessage += `: ${errorText}`;
+            }
+          }
+        } catch (e) {
+          // If we can't get the error text, use a generic message
+          errorMessage += ". Could not get detailed error information.";
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      const createData = await createResponse.json();
+      return createData.id;
+    } catch (error) {
+      // Try with an even simpler folder name as a fallback
+      try {
+        const fallbackName = "Folder_" + Date.now();
+        showSnackbar(`Trying with a simpler folder name: ${fallbackName}`);
+        
+        const fallbackMetadata = {
+          name: fallbackName,
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [parentFolderId]
+        };
+        
+        const fallbackResponse = await fetch(
+          'https://www.googleapis.com/drive/v3/files',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json; charset=UTF-8'
+            },
+            body: JSON.stringify(fallbackMetadata)
+          }
+        );
+        
+        if (!fallbackResponse.ok) {
+          throw new Error(`Fallback folder creation failed: HTTP ${fallbackResponse.status}`);
+        }
+        
+        const fallbackData = await fallbackResponse.json();
+        return fallbackData.id;
+      } catch (fallbackError) {
+        // If even the fallback fails, throw a comprehensive error
+        throw new Error(`Failed to create folder "${folderName}". Original error: ${error.message}. Fallback also failed: ${fallbackError.message}`);
+      }
     }
+  } catch (error) {
+    // Add the error to the UI
+    showSnackbar(`Error creating folder: ${error.message}`);
+    throw error;
   }
 }
 
@@ -957,43 +891,62 @@ export async function exportAndUploadVolumesToDrive(
           status: `Creating archive for ${volumeTitle}...`
         });
         
-        // VERBOSE DEBUGGING: Log archive creation
-        console.log(`Creating archive for volume "${volumeTitle}"...`);
+        // Create a detailed error message that will be shown to the user
+        let detailedErrorInfo = "";
         
-        const archiveBlob = await createVolumeArchive(volume);
-        
-        // VERBOSE DEBUGGING: Log archive creation result
-        console.log(`Archive created successfully:`);
-        console.log(`  Size: ${archiveBlob.size} bytes`);
-        console.log(`  Type: ${archiveBlob.type}`);
-
-        // Upload the archive to Google Drive
-        progressTrackerStore.updateProcess(processId, {
-          status: `Uploading ${volumeTitle} to Google Drive...`
-        });
-        
-        // VERBOSE DEBUGGING: Log upload attempt
-        console.log(`Uploading archive to Google Drive...`);
-        console.log(`  Filename: "${filename}"`);
-        console.log(`  Series folder ID: ${seriesFolderId}`);
-        console.log(`  MIME type: application/vnd.comicbook+zip`);
-
-        const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
-
-        // Add the volume to our store
-        if (response && response.id) {
-          // Use sanitized names for consistency
-          addVolume(sanitizedSeriesTitle, sanitizedVolumeTitle, response.id, filename);
+        try {
+          const archiveBlob = await createVolumeArchive(volume);
+          
+          // Update progress with archive size info
+          progressTrackerStore.updateProcess(processId, {
+            status: `Archive created (${(archiveBlob.size / (1024 * 1024)).toFixed(1)} MB). Uploading to Google Drive...`
+          });
+          
+          try {
+            // Try to upload with detailed error handling
+            const response = await uploadBlob(accessToken, archiveBlob, filename, seriesFolderId, 'application/vnd.comicbook+zip');
+            
+            // Add the volume to our store
+            if (response && response.id) {
+              // Use sanitized names for consistency
+              addVolume(sanitizedSeriesTitle, sanitizedVolumeTitle, response.id, filename);
+              
+              progressTrackerStore.updateProcess(processId, {
+                status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
+              });
+            } else {
+              throw new Error("Upload succeeded but no file ID was returned");
+            }
+          } catch (uploadError) {
+            // Capture detailed upload error information
+            detailedErrorInfo = `Upload error: ${uploadError.message}`;
+            
+            // Check for specific error types
+            if (uploadError.message.includes("Invalid Value")) {
+              detailedErrorInfo += `\nPossible causes: 
+              - Invalid folder ID: ${seriesFolderId}
+              - Invalid filename: ${filename}
+              - Authentication issue`;
+            }
+            
+            throw new Error(`Failed to upload: ${uploadError.message}`);
+          }
+        } catch (archiveError) {
+          // Capture detailed archive error information
+          detailedErrorInfo = `Archive creation error: ${archiveError.message}`;
+          throw new Error(`Failed to create archive: ${archiveError.message}`);
         }
-
-        progressTrackerStore.updateProcess(processId, {
-          status: `Uploaded ${volumeTitle} (${i+1}/${sortedVolumes.length})`,
-        });
       } catch (volumeError) {
-        console.error(`Error processing volume "${volumeTitle}":`, volumeError);
+        // Show a detailed error message in the UI
+        const errorMessage = `Error with ${volumeTitle}: ${volumeError.message || 'Unknown error'}`;
+        
+        // Update the progress tracker with detailed error info
         progressTrackerStore.updateProcess(processId, {
-          status: `Error with ${volumeTitle}: ${volumeError.message || 'Unknown error'} (${i+1}/${sortedVolumes.length})`,
+          status: `${errorMessage} (${i+1}/${sortedVolumes.length})`,
         });
+        
+        // Show a snackbar with the error details
+        showSnackbar(`${errorMessage}\n${detailedErrorInfo}`);
         
         // Continue with next volume instead of failing the entire process
         continue;
