@@ -569,53 +569,61 @@
         }
       };
 
-      // Add each file to the worker pool
-      for (const fileInfo of sortedFiles) {
-        // Check if the file already exists locally
-        // Extract the volume name from the filename (remove .cbz or .zip extension)
-        const volumeName = fileInfo.name.replace(/\.(cbz|zip)$/i, '');
-        
-        // Check if this volume exists in the database
-        const volumeExists = await checkVolumeExists(volumeName);
-        
-        if (volumeExists) {
-          console.log(`Skipping ${fileInfo.name} - already downloaded`);
-          // Mark as completed without downloading
-          completedFiles++;
-          fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
-          processedFiles[fileInfo.id] = true;
-          updateOverallProgress();
-          continue;
-        }
-        
-        // Initialize progress for this file
-        fileProgress[fileInfo.id] = 0;
+      // Process files in an async manner
+      (async () => {
+        // Check which files already exist locally before adding them to the worker pool
+        for (const fileInfo of sortedFiles) {
+          // Extract the volume name from the filename (remove .cbz or .zip extension)
+          const volumeName = fileInfo.name.replace(/\.(cbz|zip)$/i, '');
+          
+          // Check if this volume exists in the database
+          const volumeExists = await checkVolumeExists(volumeName);
+          
+          if (volumeExists) {
+            console.log(`Skipping ${fileInfo.name} - already downloaded`);
+            // Mark as completed without downloading
+            completedFiles++;
+            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+            processedFiles[fileInfo.id] = true;
+            updateOverallProgress();
+            
+            // Check if all files are already processed
+            if (completedFiles + failedFiles === sortedFiles.length) {
+              checkAllComplete();
+            }
+            continue;
+          }
+          
+          // Add the file to the worker pool if it doesn't exist locally
+          
+          // Initialize progress for this file
+          fileProgress[fileInfo.id] = 0;
 
-        // Create a task for the worker pool
-        // Estimate memory requirement based on file size
-        // We need memory for:
-        // 1. The downloaded file (fileSizes[fileInfo.id])
-        // 2. Processing overhead (typically 2-3x the file size for decompression)
-        const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
+          // Create a task for the worker pool
+          // Estimate memory requirement based on file size
+          // We need memory for:
+          // 1. The downloaded file (fileSizes[fileInfo.id])
+          // 2. Processing overhead (typically 2-3x the file size for decompression)
+          const fileSize = fileSizes[fileInfo.id] || 0;
+          const memoryRequirement = Math.max(
+            // Estimate memory needed: file size + processing overhead
+            // Use at least 50MB as a minimum requirement
+            fileSize * 3, // 3x file size for processing overhead
+            50 * 1024 * 1024 // Minimum 50MB
+          );
 
-        console.log(
-          `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
-        );
+          console.log(
+            `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
+          );
 
-        workerPool.addTask({
-          id: fileInfo.id,
-          memoryRequirement,
-          data: {
-            fileId: fileInfo.id,
-            fileName: fileInfo.name,
-            accessToken
-          },
+          workerPool.addTask({
+            id: fileInfo.id,
+            memoryRequirement,
+            data: {
+              fileId: fileInfo.id,
+              fileName: fileInfo.name,
+              accessToken
+            },
           onProgress: (data) => {
             // Update progress for this file
             fileProgress[fileInfo.id] = data.loaded;
@@ -674,7 +682,8 @@
             checkAllComplete();
           }
         });
-      }
+        }
+      })();
 
       // If there are no files, resolve immediately
       if (sortedFiles.length === 0) {
