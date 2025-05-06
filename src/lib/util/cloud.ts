@@ -386,6 +386,9 @@ export async function exportAndUploadVolumesToDrive(
     const sortedVolumes = [...volumes].sort((a, b) =>
       a.volume_title.localeCompare(b.volume_title, undefined, { numeric: true, sensitivity: 'base' })
     );
+    
+    // Track how many volumes already exist
+    let existingVolumes = 0;
 
     // Process each volume
     for (let i = 0; i < sortedVolumes.length; i++) {
@@ -408,8 +411,13 @@ export async function exportAndUploadVolumesToDrive(
 
       if (existingFileId) {
         // Skip this volume as it already exists
+        existingVolumes++;
+        
+        // Add the volume to our store since it already exists
+        addVolume(seriesTitle, volumeTitle, existingFileId, filename);
+        
         progressTrackerStore.updateProcess(processId, {
-          status: `${volumeTitle} already exists in Google Drive, skipping...`
+          status: `${volumeTitle} already exists in Google Drive, skipping... (${existingVolumes} existing)`
         });
         continue;
       }
@@ -449,9 +457,21 @@ export async function exportAndUploadVolumesToDrive(
     }
 
     // All volumes have been processed
+    const newlyUploaded = sortedVolumes.length - existingVolumes;
+    
+    // Create a status message based on what happened
+    let statusMessage;
+    if (existingVolumes === sortedVolumes.length) {
+      statusMessage = `All ${sortedVolumes.length} volumes of ${seriesTitle} were already in Google Drive`;
+    } else if (existingVolumes > 0) {
+      statusMessage = `Processed ${seriesTitle}: ${newlyUploaded} uploaded, ${existingVolumes} already existed`;
+    } else {
+      statusMessage = `All ${sortedVolumes.length} volumes of ${seriesTitle} uploaded successfully`;
+    }
+    
     progressTrackerStore.updateProcess(processId, {
       progress: 100,
-      status: `All volumes of ${seriesTitle} processed successfully`
+      status: statusMessage
     });
 
     // Remove the process after a delay
