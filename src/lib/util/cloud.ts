@@ -367,6 +367,151 @@ export async function createVolumeArchive(volume: VolumeMetadata): Promise<Blob>
  * @param readerFolderId The ID of the mokuro-reader folder in Google Drive
  * @returns Promise that resolves when all volumes have been uploaded
  */
+/**
+ * Fetches all existing folders and files in the Google Drive structure
+ * @param accessToken Google Drive access token
+ * @param readerFolderId The ID of the mokuro-reader folder
+ * @returns Object containing folder IDs and file IDs
+ */
+async function fetchExistingDriveStructure(accessToken: string, readerFolderId: string) {
+  console.log("Fetching existing Google Drive structure...");
+  
+  // Initialize the result structure
+  const result = {
+    comicsFolderId: null as string | null,
+    seriesFolders: {} as Record<string, string>, // Map of series name to folder ID
+    volumeFiles: {} as Record<string, Record<string, string>> // Map of series name to map of volume name to file ID
+  };
+  
+  try {
+    // Build a query to get all relevant folders and files in a single request
+    // This query will find:
+    // 1. The comics folder (direct child of reader folder)
+    // 2. All series folders (direct children of comics folder)
+    // 3. All CBZ files (children of series folders)
+    
+    // First, find the comics folder
+    const queryParams = new URLSearchParams();
+    const escapedReaderFolderId = readerFolderId.replace(/'/g, "\\'");
+    
+    // Query for the comics folder
+    const comicsFolderQuery = `name='comics' and '${escapedReaderFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    queryParams.append('q', comicsFolderQuery);
+    queryParams.append('fields', 'files(id,name)');
+    
+    const comicsFolderData = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
+    );
+    
+    // If comics folder doesn't exist, return empty structure
+    if (!comicsFolderData.files || comicsFolderData.files.length === 0) {
+      console.log("Comics folder not found, will need to create it");
+      return result;
+    }
+    
+    // Store the comics folder ID
+    result.comicsFolderId = comicsFolderData.files[0].id;
+    console.log(`Found comics folder with ID: ${result.comicsFolderId}`);
+    
+    // Now get all series folders and CBZ files in a single query
+    const allFilesQueryParams = new URLSearchParams();
+    const escapedComicsFolderId = result.comicsFolderId.replace(/'/g, "\\'");
+    
+    // This query gets:
+    // 1. All folders that are direct children of the comics folder (series folders)
+    // 2. All CBZ files that are in any folder within the comics folder
+    const allFilesQuery = `
+      ('${escapedComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
+      ('${escapedComicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
+    `;
+    
+    allFilesQueryParams.append('q', allFilesQuery.trim());
+    allFilesQueryParams.append('fields', 'files(id,name,mimeType,parents)');
+    allFilesQueryParams.append('pageSize', '1000'); // Get up to 1000 items
+    
+    const allFilesData = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?${allFilesQueryParams.toString()}`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
+    );
+    
+    if (!allFilesData.files || allFilesData.files.length === 0) {
+      console.log("No series folders or files found");
+      return result;
+    }
+    
+    console.log(`Found ${allFilesData.files.length} items (folders and files)`);
+    
+    // Process all the files and folders
+    const seriesFolders: Record<string, string> = {}; // Map of folder name to ID
+    const folderParents: Record<string, string> = {}; // Map of folder ID to parent ID
+    
+    // First pass: identify all folders and their parents
+    for (const item of allFilesData.files) {
+      if (item.mimeType === 'application/vnd.google-apps.folder') {
+        seriesFolders[item.name] = item.id;
+        if (item.parents && item.parents.length > 0) {
+          folderParents[item.id] = item.parents[0];
+        }
+      }
+    }
+    
+    // Store series folders (only direct children of comics folder)
+    for (const [folderName, folderId] of Object.entries(seriesFolders)) {
+      if (folderParents[folderId] === result.comicsFolderId) {
+        result.seriesFolders[folderName] = folderId;
+        result.volumeFiles[folderName] = {}; // Initialize the volumes map for this series
+      }
+    }
+    
+    console.log(`Found ${Object.keys(result.seriesFolders).length} series folders`);
+    
+    // Second pass: identify all CBZ files and associate them with their series
+    for (const item of allFilesData.files) {
+      if (item.mimeType === 'application/vnd.comicbook+zip' || 
+          item.mimeType === 'application/zip' || 
+          item.mimeType === 'application/x-cbz') {
+        
+        if (item.parents && item.parents.length > 0) {
+          const parentId = item.parents[0];
+          
+          // Find which series this file belongs to
+          for (const [seriesName, seriesFolderId] of Object.entries(result.seriesFolders)) {
+            if (parentId === seriesFolderId) {
+              // This file belongs to this series
+              // Extract volume name from filename (remove .cbz extension)
+              const volumeName = item.name.replace(/\.cbz$/i, '');
+              result.volumeFiles[seriesName][volumeName] = item.id;
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // Log summary of what we found
+    let totalVolumes = 0;
+    for (const seriesName of Object.keys(result.volumeFiles)) {
+      const volumeCount = Object.keys(result.volumeFiles[seriesName]).length;
+      totalVolumes += volumeCount;
+      console.log(`Series "${seriesName}": ${volumeCount} volumes`);
+    }
+    
+    console.log(`Total: ${totalVolumes} volume files found across ${Object.keys(result.seriesFolders).length} series`);
+    
+    return result;
+  } catch (error) {
+    console.error("Error fetching existing Drive structure:", error);
+    throw error;
+  }
+}
+
 export async function exportAndUploadVolumesToDrive(
   volumes: VolumeMetadata[],
   accessToken: string,
@@ -384,36 +529,47 @@ export async function exportAndUploadVolumesToDrive(
     id: processId,
     description: `Exporting and uploading ${seriesTitle}`,
     progress: 0,
-    status: 'Creating folders...'
+    status: 'Checking existing files...'
   });
 
   try {
-    // First, create a "comics" folder if it doesn't exist
+    // First, fetch the existing structure to minimize API calls
     progressTrackerStore.updateProcess(processId, {
       progress: 2,
-      status: `Creating/checking comics folder...`
+      status: `Fetching existing Google Drive structure...`
     });
     
-    // Force a fresh check for the comics folder in Google Drive
-    console.log("Checking for comics folder in Google Drive...");
-    const comicsFolderId = await createFolderIfNotExists(accessToken, "comics", readerFolderId);
-    console.log(`Comics folder ID: ${comicsFolderId}`);
+    const driveStructure = await fetchExistingDriveStructure(accessToken, readerFolderId);
     
-    // Then create a folder for the series inside the comics folder
-    progressTrackerStore.updateProcess(processId, {
-      progress: 5,
-      status: `Creating/checking folder for ${seriesTitle}...`
-    });
-
-    // Force a fresh check for the series folder in Google Drive
-    console.log(`Checking for series folder "${seriesTitle}" in Google Drive...`);
-    const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, comicsFolderId);
-    console.log(`Series folder ID for "${seriesTitle}": ${seriesFolderId}`);
-
+    // Create comics folder if it doesn't exist
+    let comicsFolderId = driveStructure.comicsFolderId;
+    if (!comicsFolderId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 5,
+        status: `Creating comics folder...`
+      });
+      
+      comicsFolderId = await createFolderIfNotExists(accessToken, "comics", readerFolderId);
+      console.log(`Created comics folder with ID: ${comicsFolderId}`);
+    }
+    
+    // Check if series folder exists, create if needed
+    let seriesFolderId = driveStructure.seriesFolders[seriesTitle];
+    if (!seriesFolderId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 10,
+        status: `Creating folder for ${seriesTitle}...`
+      });
+      
+      seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, comicsFolderId);
+      console.log(`Created series folder for "${seriesTitle}" with ID: ${seriesFolderId}`);
+    } else {
+      console.log(`Found existing series folder for "${seriesTitle}" with ID: ${seriesFolderId}`);
+    }
+    
     // Add or update the series in our store
-    console.log(`Adding/updating series "${seriesTitle}" in local store with folder ID ${seriesFolderId}`);
     addSeries(seriesTitle, seriesFolderId);
-
+    
     // Sort volumes by title for consistent processing
     const sortedVolumes = [...volumes].sort((a, b) =>
       a.volume_title.localeCompare(b.volume_title, undefined, { numeric: true, sensitivity: 'base' })
@@ -421,25 +577,28 @@ export async function exportAndUploadVolumesToDrive(
     
     // Track how many volumes already exist
     let existingVolumes = 0;
-
+    
+    // Get the existing volumes for this series
+    const existingVolumeFiles = driveStructure.volumeFiles[seriesTitle] || {};
+    
     // Process each volume
     for (let i = 0; i < sortedVolumes.length; i++) {
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       
       // Use the original volume title for the filename
-      console.log(`Processing volume: "${volumeTitle}"`); // Debug log
+      console.log(`Processing volume: "${volumeTitle}"`);
       
       const filename = `${volumeTitle}.cbz`;
 
       // Update progress
       progressTrackerStore.updateProcess(processId, {
-        progress: 5 + ((i / sortedVolumes.length) * 95),
+        progress: 15 + ((i / sortedVolumes.length) * 85),
         status: `Processing ${volumeTitle} (${i+1}/${sortedVolumes.length})...`
       });
 
-      // Check if the file already exists in Google Drive
-      const existingFileId = await checkFileExists(accessToken, filename, seriesFolderId);
+      // Check if the file already exists using our pre-fetched data
+      const existingFileId = existingVolumeFiles[volumeTitle];
 
       if (existingFileId) {
         // Skip this volume as it already exists
@@ -453,7 +612,7 @@ export async function exportAndUploadVolumesToDrive(
         });
         continue;
       }
-
+      
       try {
         // Create the CBZ archive for this volume
         progressTrackerStore.updateProcess(processId, {
