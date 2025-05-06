@@ -76,65 +76,66 @@ export async function uploadBlob(
   console.log(`Uploading file: "${sanitizedFilename}" (${blob.size} bytes) to folder: ${folderId}`);
   console.log(`MIME type: ${mimeType}`);
   
-  // Create the metadata
-  const metadata = {
-    name: sanitizedFilename,
-    mimeType: mimeType,
-    parents: [folderId]
-  };
-  
-  // Log the metadata being sent
-  console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
-  
+  // Try a completely different approach - use a simple metadata-only request first
   try {
-    // Use the resumable upload protocol for more reliability
-    // Step 1: Initiate the resumable upload session
-    console.log("Step 1: Initiating resumable upload session");
+    // Step 1: Create a metadata-only file entry
+    console.log("Step 1: Creating file metadata");
     
-    const sessionResponse = await fetch(
-      `${FILES_API_URL}?uploadType=resumable`,
+    const metadata = {
+      name: sanitizedFilename,
+      mimeType: mimeType,
+      parents: [folderId]
+    };
+    
+    // Log the metadata being sent
+    console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
+    
+    const metadataResponse = await fetch(
+      'https://www.googleapis.com/drive/v3/files',
       {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json; charset=UTF-8',
-          'X-Upload-Content-Type': blob.type,
-          'X-Upload-Content-Length': blob.size.toString()
+          'Content-Type': 'application/json; charset=UTF-8'
         },
         body: JSON.stringify(metadata)
       }
     );
     
-    if (!sessionResponse.ok) {
-      const errorText = await sessionResponse.text();
-      console.error("Failed to initiate resumable upload session:", errorText);
-      throw new Error(`Failed to initiate upload: ${sessionResponse.status} ${errorText}`);
+    if (!metadataResponse.ok) {
+      const errorText = await metadataResponse.text();
+      console.error("Failed to create file metadata:", errorText);
+      throw new Error(`Failed to create file metadata: ${metadataResponse.status} ${errorText}`);
     }
     
-    // Get the upload URL from the Location header
-    const uploadUrl = sessionResponse.headers.get('Location');
-    if (!uploadUrl) {
-      throw new Error("No upload URL returned from resumable upload initiation");
+    const fileData = await metadataResponse.json();
+    const fileId = fileData.id;
+    
+    if (!fileId) {
+      throw new Error("No file ID returned from metadata creation");
     }
     
-    console.log("Received upload URL:", uploadUrl);
+    console.log(`Created file metadata with ID: ${fileId}`);
     
     // Step 2: Upload the file content
     console.log("Step 2: Uploading file content");
     
-    const uploadResponse = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': blob.type,
-        'Content-Length': blob.size.toString()
-      },
-      body: blob
-    });
+    const uploadResponse = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': blob.type
+        },
+        body: blob
+      }
+    );
     
     if (!uploadResponse.ok) {
       const errorText = await uploadResponse.text();
       console.error("Failed to upload file content:", errorText);
-      throw new Error(`Failed to upload file: ${uploadResponse.status} ${errorText}`);
+      throw new Error(`Failed to upload file content: ${uploadResponse.status} ${errorText}`);
     }
     
     // Parse and return the response
@@ -461,9 +462,9 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
     const queryParams = new URLSearchParams();
     const escapedReaderFolderId = readerFolderId.replace(/'/g, "\\'");
     
-    // Simple query to get everything under the reader folder
-    // We'll filter on the client side
-    const query = `'${escapedReaderFolderId}' in parents or '${escapedReaderFolderId}' in ancestors`;
+    // Let's try a more specific approach to avoid potential issues
+    // First, just get the direct children of the reader folder
+    const query = `'${escapedReaderFolderId}' in parents and trashed=false`;
     
     queryParams.append('q', query);
     // Get all the fields we need for processing
@@ -471,7 +472,8 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
     // Set a high page size to get everything in one request if possible
     queryParams.append('pageSize', '1000');
     
-    const allFilesData = await driveApiRequest(
+    // Step 1: Get direct children of the reader folder to find the comics folder
+    const readerFolderContents = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
       {
         method: 'GET',
@@ -479,19 +481,17 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
       }
     );
     
-    if (!allFilesData.files || allFilesData.files.length === 0) {
-      console.log("No files found in Google Drive");
+    if (!readerFolderContents.files || readerFolderContents.files.length === 0) {
+      console.log("No files found in reader folder");
       return result;
     }
     
-    console.log(`Found ${allFilesData.files.length} total items in Google Drive`);
+    console.log(`Found ${readerFolderContents.files.length} items in reader folder`);
     
-    // First, find the comics folder
-    const comicsFolder = allFilesData.files.find(
+    // Find the comics folder
+    const comicsFolder = readerFolderContents.files.find(
       file => file.name === 'comics' && 
-              file.mimeType === 'application/vnd.google-apps.folder' && 
-              file.parents && 
-              file.parents.includes(readerFolderId)
+              file.mimeType === 'application/vnd.google-apps.folder'
     );
     
     if (!comicsFolder) {
@@ -503,28 +503,74 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
     result.comicsFolderId = comicsFolder.id;
     console.log(`Found comics folder with ID: ${result.comicsFolderId}`);
     
-    // Find all series folders (direct children of comics folder)
-    const seriesFolders = allFilesData.files.filter(
-      file => file.mimeType === 'application/vnd.google-apps.folder' && 
-              file.parents && 
-              file.parents.includes(result.comicsFolderId)
+    // Step 2: Get all series folders (direct children of comics folder)
+    const seriesFoldersQueryParams = new URLSearchParams();
+    const escapedComicsFolderId = result.comicsFolderId.replace(/'/g, "\\'");
+    const seriesFoldersQuery = `'${escapedComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    seriesFoldersQueryParams.append('q', seriesFoldersQuery);
+    seriesFoldersQueryParams.append('fields', 'files(id,name,mimeType,parents)');
+    seriesFoldersQueryParams.append('pageSize', '1000');
+    
+    const seriesFoldersData = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?${seriesFoldersQueryParams.toString()}`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
     );
     
+    if (!seriesFoldersData.files || seriesFoldersData.files.length === 0) {
+      console.log("No series folders found");
+      return result;
+    }
+    
     // Store series folders
-    for (const folder of seriesFolders) {
+    for (const folder of seriesFoldersData.files) {
       result.seriesFolders[folder.name] = folder.id;
       result.volumeFiles[folder.name] = {}; // Initialize the volumes map for this series
     }
     
-    console.log(`Found ${seriesFolders.length} series folders`);
+    console.log(`Found ${seriesFoldersData.files.length} series folders`);
     
-    // Find all CBZ files
-    const cbzFiles = allFilesData.files.filter(
-      file => (file.mimeType === 'application/vnd.comicbook+zip' || 
-               file.mimeType === 'application/zip' || 
-               file.mimeType === 'application/x-cbz') &&
-              file.name.toLowerCase().endsWith('.cbz')
+    // Step 3: For each series folder, get its CBZ files
+    const seriesFolderIds = Object.values(result.seriesFolders);
+    
+    // If there are no series folders, return early
+    if (seriesFolderIds.length === 0) {
+      return result;
+    }
+    
+    // Build a query to get all CBZ files in all series folders
+    const cbzFilesQueryParams = new URLSearchParams();
+    
+    // Create a query with OR conditions for each series folder
+    const folderConditions = seriesFolderIds.map(id => {
+      const escapedId = id.replace(/'/g, "\\'");
+      return `'${escapedId}' in parents`;
+    }).join(' or ');
+    
+    const cbzFilesQuery = `(${folderConditions}) and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false`;
+    cbzFilesQueryParams.append('q', cbzFilesQuery);
+    cbzFilesQueryParams.append('fields', 'files(id,name,mimeType,parents)');
+    cbzFilesQueryParams.append('pageSize', '1000');
+    
+    const cbzFilesData = await driveApiRequest(
+      `https://www.googleapis.com/drive/v3/files?${cbzFilesQueryParams.toString()}`,
+      {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
+      }
     );
+    
+    if (!cbzFilesData.files || cbzFilesData.files.length === 0) {
+      console.log("No CBZ files found");
+      return result;
+    }
+    
+    console.log(`Found ${cbzFilesData.files.length} CBZ files`);
+    
+    // Process the CBZ files
+    const cbzFiles = cbzFilesData.files;
     
     // Associate CBZ files with their series
     for (const file of cbzFiles) {
