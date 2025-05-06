@@ -102,34 +102,40 @@ export async function uploadBlob(
     throw new Error(`Invalid folder ID format: "${folderId}". Google Drive IDs should only contain letters, numbers, underscores, and hyphens.`);
   }
   
-  // Use a simple metadata-only request first, then upload the content
+  // Try using the multipart upload approach that was working before
   try {
-    // Step 1: Create a metadata-only file entry
+    // Create a FormData object for multipart upload
+    const form = new FormData();
+    
+    // Add the metadata part
     const metadata = {
       name: sanitizedFilename,
       mimeType: mimeType,
       parents: [folderId]
     };
     
-    // Create the file metadata
-    const metadataResponse = await fetch(
-      'https://www.googleapis.com/drive/v3/files',
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+    form.append('file', blob);
+    
+    // Make the request using the multipart upload approach
+    const uploadResponse = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json; charset=UTF-8'
+          'Authorization': `Bearer ${accessToken}`
+          // Let the browser set the Content-Type with boundary
         },
-        body: JSON.stringify(metadata)
+        body: form
       }
     );
     
-    // Handle metadata creation errors
-    if (!metadataResponse.ok) {
-      let errorMessage = `Failed to create file metadata (HTTP ${metadataResponse.status})`;
+    // Handle upload errors
+    if (!uploadResponse.ok) {
+      let errorMessage = `Failed to upload file (HTTP ${uploadResponse.status})`;
       
       try {
-        const errorText = await metadataResponse.text();
+        const errorText = await uploadResponse.text();
         
         // Try to parse the error as JSON for more details
         try {
@@ -168,54 +174,8 @@ export async function uploadBlob(
         errorMessage += ". Could not get detailed error information.";
       }
       
-      throw new Error(errorMessage);
-    }
-    
-    // Parse the metadata response
-    const fileData = await metadataResponse.json();
-    const fileId = fileData.id;
-    
-    if (!fileId) {
-      throw new Error("No file ID returned from metadata creation");
-    }
-    
-    // Step 2: Upload the file content
-    const uploadResponse = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': blob.type
-        },
-        body: blob
-      }
-    );
-    
-    // Handle content upload errors
-    if (!uploadResponse.ok) {
-      let errorMessage = `Failed to upload file content (HTTP ${uploadResponse.status})`;
-      
-      try {
-        const errorText = await uploadResponse.text();
-        
-        // Try to parse the error as JSON for more details
-        try {
-          const errorJson = JSON.parse(errorText);
-          
-          if (errorJson.error && errorJson.error.message) {
-            errorMessage = `Google Drive API error: ${errorJson.error.message}`;
-          }
-        } catch (e) {
-          // If not JSON, use the raw error text
-          if (errorText) {
-            errorMessage += `: ${errorText}`;
-          }
-        }
-      } catch (e) {
-        // If we can't get the error text, use a generic message
-        errorMessage += ". Could not get detailed error information.";
-      }
+      // Show the error in the UI
+      showSnackbar(errorMessage);
       
       throw new Error(errorMessage);
     }
@@ -722,42 +682,57 @@ export async function exportAndUploadVolumesToDrive(
   accessToken: string,
   readerFolderId: string
 ): Promise<void> {
-  // VERBOSE DEBUGGING: Log all input parameters
-  console.log("=== EXPORT AND UPLOAD VOLUMES FUNCTION CALLED ===");
-  console.log(`Number of volumes: ${volumes?.length || 0}`);
-  console.log(`Reader folder ID: "${readerFolderId}"`);
-  
-  if (!volumes || volumes.length === 0) {
-    throw new Error('No volumes to export');
-  }
-
-  const seriesTitle = volumes[0].series_title;
-  console.log(`Series title: "${seriesTitle}"`);
-  
-  // VERBOSE DEBUGGING: Log all volume titles
-  console.log("Volume titles:");
-  volumes.forEach((volume, index) => {
-    console.log(`  ${index + 1}. "${volume.volume_title}"`);
-  });
-  
-  const processId = `export-upload-${Date.now()}`;
-
-  // Add a process to the progress tracker
-  progressTrackerStore.addProcess({
-    id: processId,
-    description: `Exporting and uploading ${seriesTitle}`,
-    progress: 0,
-    status: 'Checking existing files...'
-  });
-
+  // Add a try/catch block around the entire function for better error reporting
   try {
-    // First, fetch the existing structure to minimize API calls
-    progressTrackerStore.updateProcess(processId, {
-      progress: 2,
-      status: `Fetching existing Google Drive structure...`
-    });
+    // Validate input parameters
+    if (!volumes || volumes.length === 0) {
+      throw new Error('No volumes to export');
+    }
     
-    const driveStructure = await fetchExistingDriveStructure(accessToken, readerFolderId);
+    if (!accessToken) {
+      throw new Error('Access token is required but was not provided');
+    }
+    
+    if (!readerFolderId) {
+      throw new Error('Reader folder ID is required but was not provided');
+    }
+    
+    // Check if the reader folder ID looks valid
+    if (!/^[a-zA-Z0-9_-]+$/.test(readerFolderId)) {
+      throw new Error(`Invalid reader folder ID format: "${readerFolderId}". Google Drive IDs should only contain letters, numbers, underscores, and hyphens.`);
+    }
+
+    const seriesTitle = volumes[0].series_title;
+    
+    // Show a snackbar to indicate the process is starting
+    showSnackbar(`Starting export of ${volumes.length} volumes from ${seriesTitle}`);
+    
+    const processId = `export-upload-${Date.now()}`;
+
+    // Add a process to the progress tracker
+    progressTrackerStore.addProcess({
+      id: processId,
+      description: `Exporting and uploading ${seriesTitle}`,
+      progress: 0,
+      status: 'Checking existing files...'
+    });
+
+    try {
+      // First, fetch the existing structure to minimize API calls
+      progressTrackerStore.updateProcess(processId, {
+        progress: 2,
+        status: `Fetching existing Google Drive structure...`
+      });
+      
+      // Wrap this in its own try/catch to get more specific error information
+      let driveStructure;
+      try {
+        driveStructure = await fetchExistingDriveStructure(accessToken, readerFolderId);
+      } catch (structureError) {
+        // Show a specific error message for this step
+        showSnackbar(`Error fetching Google Drive structure: ${structureError.message}`);
+        throw new Error(`Failed to fetch Google Drive structure: ${structureError.message}`);
+      }
     
     // VERBOSE DEBUGGING: Log the drive structure
     console.log("Drive structure retrieved:");
@@ -1003,18 +978,36 @@ export async function exportAndUploadVolumesToDrive(
 
     // Remove the process after a delay
     setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-  } catch (error) {
-    console.error('Error exporting and uploading volumes:', error);
-
-    // Update the progress tracker with the error
-    progressTrackerStore.updateProcess(processId, {
-      progress: 0,
-      status: `Error: ${error.message || 'Unknown error'}`
-    });
-
-    // Remove the process after a delay
-    setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
-
-    throw error;
+    
+    // Show a success message
+    showSnackbar(statusMessage);
+    
+    } catch (innerError) {
+      console.error('Error in inner try block:', innerError);
+      
+      // Update the progress tracker with the error
+      progressTrackerStore.updateProcess(processId, {
+        progress: 0,
+        status: `Error: ${innerError.message || 'Unknown error'}`
+      });
+      
+      // Show a detailed error message
+      showSnackbar(`Error: ${innerError.message || 'Unknown error'}`);
+      
+      // Remove the process after a delay
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
+      
+      // Don't rethrow, just log
+      console.error('Full error details:', innerError);
+    }
+  } catch (outerError) {
+    // This catches errors in the validation phase, before the progress tracker is created
+    console.error('Error in outer try block:', outerError);
+    
+    // Show a detailed error message
+    showSnackbar(`Error: ${outerError.message || 'Unknown error'}`);
+    
+    // Don't rethrow, just log
+    console.error('Full error details:', outerError);
   }
 }
