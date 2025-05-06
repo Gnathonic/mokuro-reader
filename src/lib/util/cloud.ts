@@ -384,22 +384,22 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
   };
   
   try {
-    // Build a query to get all relevant folders and files in a single request
-    // This query will find:
-    // 1. The comics folder (direct child of reader folder)
-    // 2. All series folders (direct children of comics folder)
-    // 3. All CBZ files (children of series folders)
-    
-    // First, find the comics folder
+    // Fetch ALL files and folders under the reader folder in a single request
+    // This is more efficient for comic files which are large but limited in number
     const queryParams = new URLSearchParams();
     const escapedReaderFolderId = readerFolderId.replace(/'/g, "\\'");
     
-    // Query for the comics folder
-    const comicsFolderQuery = `name='comics' and '${escapedReaderFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-    queryParams.append('q', comicsFolderQuery);
-    queryParams.append('fields', 'files(id,name)');
+    // Simple query to get everything under the reader folder
+    // We'll filter on the client side
+    const query = `'${escapedReaderFolderId}' in parents or '${escapedReaderFolderId}' in ancestors`;
     
-    const comicsFolderData = await driveApiRequest(
+    queryParams.append('q', query);
+    // Get all the fields we need for processing
+    queryParams.append('fields', 'files(id,name,mimeType,parents)');
+    // Set a high page size to get everything in one request if possible
+    queryParams.append('pageSize', '1000');
+    
+    const allFilesData = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
       {
         method: 'GET',
@@ -407,89 +407,66 @@ async function fetchExistingDriveStructure(accessToken: string, readerFolderId: 
       }
     );
     
-    // If comics folder doesn't exist, return empty structure
-    if (!comicsFolderData.files || comicsFolderData.files.length === 0) {
+    if (!allFilesData.files || allFilesData.files.length === 0) {
+      console.log("No files found in Google Drive");
+      return result;
+    }
+    
+    console.log(`Found ${allFilesData.files.length} total items in Google Drive`);
+    
+    // First, find the comics folder
+    const comicsFolder = allFilesData.files.find(
+      file => file.name === 'comics' && 
+              file.mimeType === 'application/vnd.google-apps.folder' && 
+              file.parents && 
+              file.parents.includes(readerFolderId)
+    );
+    
+    if (!comicsFolder) {
       console.log("Comics folder not found, will need to create it");
       return result;
     }
     
     // Store the comics folder ID
-    result.comicsFolderId = comicsFolderData.files[0].id;
+    result.comicsFolderId = comicsFolder.id;
     console.log(`Found comics folder with ID: ${result.comicsFolderId}`);
     
-    // Now get all series folders and CBZ files in a single query
-    const allFilesQueryParams = new URLSearchParams();
-    const escapedComicsFolderId = result.comicsFolderId.replace(/'/g, "\\'");
-    
-    // This query gets:
-    // 1. All folders that are direct children of the comics folder (series folders)
-    // 2. All CBZ files that are in any folder within the comics folder
-    const allFilesQuery = `
-      ('${escapedComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
-      ('${escapedComicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
-    `;
-    
-    allFilesQueryParams.append('q', allFilesQuery.trim());
-    allFilesQueryParams.append('fields', 'files(id,name,mimeType,parents)');
-    allFilesQueryParams.append('pageSize', '1000'); // Get up to 1000 items
-    
-    const allFilesData = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?${allFilesQueryParams.toString()}`,
-      {
-        method: 'GET',
-        headers: new Headers({ Authorization: 'Bearer ' + accessToken })
-      }
+    // Find all series folders (direct children of comics folder)
+    const seriesFolders = allFilesData.files.filter(
+      file => file.mimeType === 'application/vnd.google-apps.folder' && 
+              file.parents && 
+              file.parents.includes(result.comicsFolderId)
     );
     
-    if (!allFilesData.files || allFilesData.files.length === 0) {
-      console.log("No series folders or files found");
-      return result;
+    // Store series folders
+    for (const folder of seriesFolders) {
+      result.seriesFolders[folder.name] = folder.id;
+      result.volumeFiles[folder.name] = {}; // Initialize the volumes map for this series
     }
     
-    console.log(`Found ${allFilesData.files.length} items (folders and files)`);
+    console.log(`Found ${seriesFolders.length} series folders`);
     
-    // Process all the files and folders
-    const seriesFolders: Record<string, string> = {}; // Map of folder name to ID
-    const folderParents: Record<string, string> = {}; // Map of folder ID to parent ID
+    // Find all CBZ files
+    const cbzFiles = allFilesData.files.filter(
+      file => (file.mimeType === 'application/vnd.comicbook+zip' || 
+               file.mimeType === 'application/zip' || 
+               file.mimeType === 'application/x-cbz') &&
+              file.name.toLowerCase().endsWith('.cbz')
+    );
     
-    // First pass: identify all folders and their parents
-    for (const item of allFilesData.files) {
-      if (item.mimeType === 'application/vnd.google-apps.folder') {
-        seriesFolders[item.name] = item.id;
-        if (item.parents && item.parents.length > 0) {
-          folderParents[item.id] = item.parents[0];
-        }
-      }
-    }
-    
-    // Store series folders (only direct children of comics folder)
-    for (const [folderName, folderId] of Object.entries(seriesFolders)) {
-      if (folderParents[folderId] === result.comicsFolderId) {
-        result.seriesFolders[folderName] = folderId;
-        result.volumeFiles[folderName] = {}; // Initialize the volumes map for this series
-      }
-    }
-    
-    console.log(`Found ${Object.keys(result.seriesFolders).length} series folders`);
-    
-    // Second pass: identify all CBZ files and associate them with their series
-    for (const item of allFilesData.files) {
-      if (item.mimeType === 'application/vnd.comicbook+zip' || 
-          item.mimeType === 'application/zip' || 
-          item.mimeType === 'application/x-cbz') {
+    // Associate CBZ files with their series
+    for (const file of cbzFiles) {
+      if (file.parents && file.parents.length > 0) {
+        const parentId = file.parents[0];
         
-        if (item.parents && item.parents.length > 0) {
-          const parentId = item.parents[0];
-          
-          // Find which series this file belongs to
-          for (const [seriesName, seriesFolderId] of Object.entries(result.seriesFolders)) {
-            if (parentId === seriesFolderId) {
-              // This file belongs to this series
-              // Extract volume name from filename (remove .cbz extension)
-              const volumeName = item.name.replace(/\.cbz$/i, '');
-              result.volumeFiles[seriesName][volumeName] = item.id;
-              break;
-            }
+        // Find which series this file belongs to
+        for (const [seriesName, seriesFolderId] of Object.entries(result.seriesFolders)) {
+          if (parentId === seriesFolderId) {
+            // This file belongs to this series
+            // Extract volume name from filename (remove .cbz extension)
+            const volumeName = file.name.replace(/\.cbz$/i, '');
+            result.volumeFiles[seriesName][volumeName] = file.id;
+            break;
           }
         }
       }
