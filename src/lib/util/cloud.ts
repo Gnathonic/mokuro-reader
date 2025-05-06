@@ -368,6 +368,22 @@ export async function createVolumeArchive(volume: VolumeMetadata): Promise<Blob>
  * @returns Promise that resolves when all volumes have been uploaded
  */
 /**
+ * Sanitizes a name for use with Google Drive
+ * @param name The name to sanitize
+ * @returns The sanitized name
+ */
+function sanitizeNameForGoogleDrive(name: string): string {
+  // Replace problematic characters with safer alternatives
+  return name
+    // Replace characters that might cause issues in Google Drive API
+    .replace(/[~]/g, '-') // Replace tilde with hyphen
+    .replace(/[()[\]{}]/g, '_') // Replace parentheses and brackets with underscore
+    .replace(/[<>:"/\\|?*]/g, '_') // Replace other invalid filename chars with underscore
+    .replace(/\s+/g, ' ') // Replace multiple spaces with a single space
+    .trim(); // Remove leading/trailing whitespace
+}
+
+/**
  * Fetches all existing folders and files in the Google Drive structure
  * @param accessToken Google Drive access token
  * @param readerFolderId The ID of the mokuro-reader folder
@@ -530,22 +546,29 @@ export async function exportAndUploadVolumesToDrive(
       console.log(`Created comics folder with ID: ${comicsFolderId}`);
     }
     
+    // Sanitize series title for Google Drive
+    // Replace problematic characters with safer alternatives
+    const sanitizedSeriesTitle = sanitizeNameForGoogleDrive(seriesTitle);
+    console.log(`Original series title: "${seriesTitle}", Sanitized: "${sanitizedSeriesTitle}"`);
+    
     // Check if series folder exists, create if needed
-    let seriesFolderId = driveStructure.seriesFolders[seriesTitle];
+    let seriesFolderId = driveStructure.seriesFolders[seriesTitle] || driveStructure.seriesFolders[sanitizedSeriesTitle];
     if (!seriesFolderId) {
       progressTrackerStore.updateProcess(processId, {
         progress: 10,
         status: `Creating folder for ${seriesTitle}...`
       });
       
-      seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, comicsFolderId);
-      console.log(`Created series folder for "${seriesTitle}" with ID: ${seriesFolderId}`);
+      // Use sanitized title for folder creation
+      seriesFolderId = await createFolderIfNotExists(accessToken, sanitizedSeriesTitle, comicsFolderId);
+      console.log(`Created series folder for "${sanitizedSeriesTitle}" with ID: ${seriesFolderId}`);
     } else {
       console.log(`Found existing series folder for "${seriesTitle}" with ID: ${seriesFolderId}`);
     }
     
     // Add or update the series in our store
-    addSeries(seriesTitle, seriesFolderId);
+    // Use sanitized name for consistency
+    addSeries(sanitizedSeriesTitle, seriesFolderId);
     
     // Sort volumes by title for consistent processing
     const sortedVolumes = [...volumes].sort((a, b) =>
@@ -556,17 +579,22 @@ export async function exportAndUploadVolumesToDrive(
     let existingVolumes = 0;
     
     // Get the existing volumes for this series
-    const existingVolumeFiles = driveStructure.volumeFiles[seriesTitle] || {};
+    // Try both original and sanitized series names
+    const existingVolumeFiles = driveStructure.volumeFiles[seriesTitle] || 
+                               driveStructure.volumeFiles[sanitizedSeriesTitle] || 
+                               {};
     
     // Process each volume
     for (let i = 0; i < sortedVolumes.length; i++) {
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       
-      // Use the original volume title for the filename
-      console.log(`Processing volume: "${volumeTitle}"`);
+      // Sanitize volume title for Google Drive
+      const sanitizedVolumeTitle = sanitizeNameForGoogleDrive(volumeTitle);
+      console.log(`Processing volume: "${volumeTitle}", Sanitized: "${sanitizedVolumeTitle}"`);
       
-      const filename = `${volumeTitle}.cbz`;
+      // Use the sanitized volume title for the filename
+      const filename = `${sanitizedVolumeTitle}.cbz`;
 
       // Update progress
       progressTrackerStore.updateProcess(processId, {
@@ -575,14 +603,16 @@ export async function exportAndUploadVolumesToDrive(
       });
 
       // Check if the file already exists using our pre-fetched data
-      const existingFileId = existingVolumeFiles[volumeTitle];
+      // Try both original and sanitized names
+      const existingFileId = existingVolumeFiles[volumeTitle] || existingVolumeFiles[sanitizedVolumeTitle];
 
       if (existingFileId) {
         // Skip this volume as it already exists
         existingVolumes++;
         
         // Add the volume to our store since it already exists
-        addVolume(seriesTitle, volumeTitle, existingFileId, filename);
+        // Use sanitized names for consistency
+        addVolume(sanitizedSeriesTitle, sanitizedVolumeTitle, existingFileId, filename);
         
         progressTrackerStore.updateProcess(processId, {
           status: `${volumeTitle} already exists in Google Drive, skipping... (${existingVolumes} existing)`
@@ -607,7 +637,8 @@ export async function exportAndUploadVolumesToDrive(
 
         // Add the volume to our store
         if (response && response.id) {
-          addVolume(seriesTitle, volumeTitle, response.id, filename);
+          // Use sanitized names for consistency
+          addVolume(sanitizedSeriesTitle, sanitizedVolumeTitle, response.id, filename);
         }
 
         progressTrackerStore.updateProcess(processId, {
