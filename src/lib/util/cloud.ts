@@ -121,6 +121,8 @@ export async function uploadBlob(
  */
 export async function checkFileExists(accessToken: string, filename: string, folderId: string): Promise<string | null> {
   try {
+    console.log(`Checking if file "${filename}" exists in folder ${folderId}...`);
+    
     // Build the query parameters properly
     const queryParams = new URLSearchParams();
     
@@ -145,9 +147,20 @@ export async function checkFileExists(accessToken: string, filename: string, fol
     );
 
     if (data.files && data.files.length > 0) {
+      console.log(`Found existing file "${filename}" with ID ${data.files[0].id}`);
+      
+      // If multiple files with the same name exist, log a warning
+      if (data.files.length > 1) {
+        console.warn(`Multiple files named "${filename}" found in folder ${folderId}. Using the first one.`);
+        for (let i = 0; i < data.files.length; i++) {
+          console.warn(`  ${i+1}. File ID: ${data.files[i].id}`);
+        }
+      }
+      
       return data.files[0].id;
     }
 
+    console.log(`No existing file "${filename}" found in folder ${folderId}.`);
     return null;
   } catch (error: any) {
     console.error('Error checking if file exists:', error);
@@ -205,8 +218,20 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
     );
 
     if (data.files && data.files.length > 0) {
+      console.log(`Found existing folder "${folderName}" with ID ${data.files[0].id}`);
+      
+      // If multiple folders with the same name exist, log a warning
+      if (data.files.length > 1) {
+        console.warn(`Multiple folders named "${folderName}" found in parent ${parentFolderId}. Using the first one.`);
+        for (let i = 0; i < data.files.length; i++) {
+          console.warn(`  ${i+1}. Folder ID: ${data.files[i].id}`);
+        }
+      }
+      
       return data.files[0].id;
     }
+    
+    console.log(`No existing folder "${folderName}" found, will create a new one.`);
 
     // Create folder if it doesn't exist
     const metadata = {
@@ -366,20 +391,27 @@ export async function exportAndUploadVolumesToDrive(
     // First, create a "comics" folder if it doesn't exist
     progressTrackerStore.updateProcess(processId, {
       progress: 2,
-      status: `Creating comics folder...`
+      status: `Creating/checking comics folder...`
     });
     
+    // Force a fresh check for the comics folder in Google Drive
+    console.log("Checking for comics folder in Google Drive...");
     const comicsFolderId = await createFolderIfNotExists(accessToken, "comics", readerFolderId);
+    console.log(`Comics folder ID: ${comicsFolderId}`);
     
     // Then create a folder for the series inside the comics folder
     progressTrackerStore.updateProcess(processId, {
       progress: 5,
-      status: `Creating folder for ${seriesTitle}...`
+      status: `Creating/checking folder for ${seriesTitle}...`
     });
 
+    // Force a fresh check for the series folder in Google Drive
+    console.log(`Checking for series folder "${seriesTitle}" in Google Drive...`);
     const seriesFolderId = await createFolderIfNotExists(accessToken, seriesTitle, comicsFolderId);
+    console.log(`Series folder ID for "${seriesTitle}": ${seriesFolderId}`);
 
-    // Add the series to our store
+    // Add or update the series in our store
+    console.log(`Adding/updating series "${seriesTitle}" in local store with folder ID ${seriesFolderId}`);
     addSeries(seriesTitle, seriesFolderId);
 
     // Sort volumes by title for consistent processing

@@ -268,8 +268,15 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
 
 // These functions now only update the in-memory store, not localStorage
 export function addSeries(seriesTitle: string, folderId: string) {
+  console.log(`Adding/updating series in local store: "${seriesTitle}" with folder ID ${folderId}`);
+  
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
+    
+    // Check if the series already exists with a different folder ID
+    if (updatedSeries[seriesTitle] && updatedSeries[seriesTitle].folderId !== folderId) {
+      console.warn(`Series "${seriesTitle}" already exists with folder ID ${updatedSeries[seriesTitle].folderId}, updating to ${folderId}`);
+    }
 
     // Create or update the series entry
     updatedSeries[seriesTitle] = {
@@ -287,17 +294,25 @@ export function addSeries(seriesTitle: string, folderId: string) {
 }
 
 export function addVolume(seriesTitle: string, volumeTitle: string, fileId: string, fileName: string) {
+  console.log(`Adding/updating volume in local store: "${volumeTitle}" in series "${seriesTitle}" with file ID ${fileId}`);
+  
   driveStore.update(data => {
     const updatedSeries = { ...data.series };
 
     // Ensure the series exists
     if (!updatedSeries[seriesTitle]) {
+      console.warn(`Cannot add volume "${volumeTitle}" because series "${seriesTitle}" doesn't exist in the local store`);
       return data; // Series doesn't exist, can't add volume
     }
 
     // Create or update the volume entry
     const series = { ...updatedSeries[seriesTitle] };
     const volumes = { ...series.volumes };
+    
+    // Check if the volume already exists with a different file ID
+    if (volumes[volumeTitle] && volumes[volumeTitle].fileId !== fileId) {
+      console.warn(`Volume "${volumeTitle}" already exists with file ID ${volumes[volumeTitle].fileId}, updating to ${fileId}`);
+    }
 
     volumes[volumeTitle] = {
       fileId,
