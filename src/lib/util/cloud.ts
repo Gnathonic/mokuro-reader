@@ -121,12 +121,23 @@ export async function uploadBlob(
  */
 export async function checkFileExists(accessToken: string, filename: string, folderId: string): Promise<string | null> {
   try {
-    // Properly escape single quotes in folder ID
-    const safeFolderId = folderId.replace(/'/g, "\\'");
-    const query = `name='${encodeURIComponent(filename)}' and '${safeFolderId}' in parents and trashed=false`;
+    // Build the query parameters properly
+    const queryParams = new URLSearchParams();
+    
+    // The q parameter needs special handling for the Drive API query syntax
+    // We need to escape single quotes in the filename and folder ID with backslashes
+    const escapedFilename = filename.replace(/'/g, "\\'");
+    const escapedFolderId = folderId.replace(/'/g, "\\'");
+    
+    // Construct the query without URL encoding the values yet
+    const query = `name='${escapedFilename}' and '${escapedFolderId}' in parents and trashed=false`;
+    
+    // Add the query to the URL parameters
+    queryParams.append('q', query);
+    queryParams.append('fields', 'files(id,name)');
     
     const data = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
@@ -159,32 +170,34 @@ export async function checkFileExists(accessToken: string, filename: string, fol
  */
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
-    // Extremely aggressive sanitization for folder names
-    // Only allow alphanumeric characters, spaces, and basic punctuation
-    let sanitizedFolderName = folderName
-      .replace(/[^a-zA-Z0-9 .,_-]/g, '_') // Replace any non-alphanumeric, space, period, comma, underscore, or hyphen with underscore
-      .replace(/\s+/g, ' ')  // Replace multiple spaces with a single space
-      .trim();
+    // Keep the original folder name - no sanitization needed
+    // Google Drive API should handle special characters properly when we use proper encoding
     
-    // Ensure the name isn't too long (Google Drive has limits)
-    if (sanitizedFolderName.length > 100) {
-      sanitizedFolderName = sanitizedFolderName.substring(0, 100);
-    }
-    
-    // If the name is empty after sanitization, use a default name
-    if (!sanitizedFolderName) {
-      sanitizedFolderName = "Folder_" + Date.now();
-    }
-    
-    console.log(`Original folder name: "${folderName}", Sanitized: "${sanitizedFolderName}"`); // Debug log
+    console.log(`Creating/checking folder: "${folderName}"`); // Debug log
     
     // Check if folder already exists
-    // Properly escape single quotes in parent folder ID
-    const safeParentFolderId = parentFolderId.replace(/'/g, "\\'");
-    const query = `name='${encodeURIComponent(sanitizedFolderName)}' and '${safeParentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    // Use proper URL parameter encoding for the query
+    // We need to properly escape the folder name for the query string
+    // The Google Drive API requires single quotes around string literals in queries
     
+    // Build the query parameters properly
+    const queryParams = new URLSearchParams();
+    
+    // The q parameter needs special handling for the Drive API query syntax
+    // We need to escape single quotes in the folder name with backslashes
+    const escapedFolderName = folderName.replace(/'/g, "\\'");
+    const escapedParentId = parentFolderId.replace(/'/g, "\\'");
+    
+    // Construct the query without URL encoding the values yet
+    const query = `name='${escapedFolderName}' and '${escapedParentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    
+    // Add the query to the URL parameters
+    queryParams.append('q', query);
+    queryParams.append('fields', 'files(id,name)');
+    
+    // Make the API request with the properly encoded query
     const data = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
@@ -197,7 +210,7 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
 
     // Create folder if it doesn't exist
     const metadata = {
-      name: sanitizedFolderName, // Use sanitized name
+      name: folderName, // Use original folder name
       mimeType: 'application/vnd.google-apps.folder',
       parents: [parentFolderId]
     };
@@ -226,7 +239,6 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
     // For other errors, throw a more descriptive error with detailed information
     console.error('Detailed error creating folder:', error);
     console.error('Folder name:', folderName);
-    console.error('Sanitized folder name:', sanitizedFolderName);
     console.error('Parent folder ID:', parentFolderId);
     
     // Try with an even simpler folder name as a fallback
@@ -380,26 +392,10 @@ export async function exportAndUploadVolumesToDrive(
       const volume = sortedVolumes[i];
       const volumeTitle = volume.volume_title;
       
-      // Extremely aggressive sanitization for filenames
-      // Only allow alphanumeric characters, spaces, and basic punctuation
-      let sanitizedVolumeTitle = volumeTitle
-        .replace(/[^a-zA-Z0-9 .,_-]/g, '_') // Replace any non-alphanumeric, space, period, comma, underscore, or hyphen with underscore
-        .replace(/\s+/g, ' ')  // Replace multiple spaces with a single space
-        .trim();
+      // Use the original volume title for the filename
+      console.log(`Processing volume: "${volumeTitle}"`); // Debug log
       
-      // Ensure the name isn't too long (Google Drive has limits)
-      if (sanitizedVolumeTitle.length > 100) {
-        sanitizedVolumeTitle = sanitizedVolumeTitle.substring(0, 100);
-      }
-      
-      // If the name is empty after sanitization, use a default name
-      if (!sanitizedVolumeTitle) {
-        sanitizedVolumeTitle = "Volume_" + Date.now();
-      }
-      
-      console.log(`Original volume title: "${volumeTitle}", Sanitized: "${sanitizedVolumeTitle}"`); // Debug log
-      
-      const filename = `${sanitizedVolumeTitle}.cbz`;
+      const filename = `${volumeTitle}.cbz`;
 
       // Update progress
       progressTrackerStore.updateProcess(processId, {

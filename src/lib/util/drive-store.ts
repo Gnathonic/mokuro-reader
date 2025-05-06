@@ -126,11 +126,22 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
 
   try {
     // First, find the comics folder
-    // Properly escape single quotes in the query by doubling them
-    const comicsFolderQuery = `name='comics' and '${readerFolderId.replace(/'/g, "\\'")}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    // Build the query parameters properly
+    const queryParams = new URLSearchParams();
+    
+    // The q parameter needs special handling for the Drive API query syntax
+    // We need to escape single quotes in the folder ID with backslashes
+    const escapedReaderFolderId = readerFolderId.replace(/'/g, "\\'");
+    
+    // Construct the query without URL encoding the values yet
+    const comicsFolderQuery = `name='comics' and '${escapedReaderFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    
+    // Add the query to the URL parameters
+    queryParams.append('q', comicsFolderQuery);
+    queryParams.append('fields', 'files(id,name)');
     
     const comicsFolderData = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(comicsFolderQuery)}&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
@@ -154,15 +165,27 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
     // This query finds:
     // 1. All folders that are direct children of the comics folder
     // 2. All CBZ files that are in any folder within the comics folder
-    // Properly escape single quotes in the query by escaping them
-    const safeComicsFolderId = comicsFolderId.replace(/'/g, "\\'");
+    
+    // Build the query parameters properly
+    const filesQueryParams = new URLSearchParams();
+    
+    // The q parameter needs special handling for the Drive API query syntax
+    // We need to escape single quotes in the folder ID with backslashes
+    const escapedComicsFolderId = comicsFolderId.replace(/'/g, "\\'");
+    
+    // Construct the query without URL encoding the values yet
     const query = `
-      ('${safeComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
-      ('${safeComicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
+      ('${escapedComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
+      ('${escapedComicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
     `;
+    
+    // Add the query to the URL parameters
+    filesQueryParams.append('q', query.trim());
+    filesQueryParams.append('fields', 'files(id,name,mimeType,parents)');
+    filesQueryParams.append('pageSize', '1000');
 
     const data = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query.trim())}&fields=files(id,name,mimeType,parents)&pageSize=1000`,
+      `https://www.googleapis.com/drive/v3/files?${filesQueryParams.toString()}`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
