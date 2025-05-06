@@ -69,10 +69,14 @@ export async function uploadBlob(
   folderId: string,
   mimeType: string = 'application/zip'
 ) {
-  // VERBOSE DEBUGGING: Log all input parameters
+  // ULTRA VERBOSE DEBUGGING: Log all input parameters with character codes
   console.log("=== UPLOAD BLOB FUNCTION CALLED ===");
   console.log(`Original filename: "${filename}"`);
+  console.log("Filename character codes:", Array.from(filename).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
+  
   console.log(`Folder ID: "${folderId}"`);
+  console.log("Folder ID character codes:", Array.from(folderId).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
+  
   console.log(`MIME type: "${mimeType}"`);
   console.log(`Blob size: ${blob.size} bytes`);
   console.log(`Blob type: ${blob.type}`);
@@ -80,8 +84,9 @@ export async function uploadBlob(
   // Ensure filename is properly sanitized
   const sanitizedFilename = sanitizeNameForGoogleDrive(filename);
   console.log(`Sanitized filename: "${sanitizedFilename}"`);
+  console.log("Sanitized filename character codes:", Array.from(sanitizedFilename).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
   
-  // VERBOSE DEBUGGING: Validate folder ID
+  // ULTRA VERBOSE DEBUGGING: Validate folder ID
   if (!folderId) {
     console.error("ERROR: Folder ID is empty or undefined!");
     throw new Error("Folder ID is required but was not provided");
@@ -90,6 +95,21 @@ export async function uploadBlob(
   if (typeof folderId !== 'string') {
     console.error(`ERROR: Folder ID is not a string! Type: ${typeof folderId}, Value:`, folderId);
     throw new Error(`Folder ID must be a string, got ${typeof folderId}`);
+  }
+  
+  // ULTRA VERBOSE DEBUGGING: Check for invalid characters in folder ID
+  const invalidCharInFolderId = Array.from(folderId).find(c => {
+    const code = c.charCodeAt(0);
+    return code < 32 || code > 126; // Non-printable or non-ASCII
+  });
+  
+  if (invalidCharInFolderId) {
+    console.error(`ERROR: Folder ID contains invalid character: ${invalidCharInFolderId} (${invalidCharInFolderId.charCodeAt(0)})`);
+    // Try to clean the folder ID
+    const cleanFolderId = folderId.replace(/[^\x20-\x7E]/g, '');
+    console.error(`Cleaned folder ID: ${cleanFolderId}`);
+    // Continue with the cleaned ID
+    folderId = cleanFolderId;
   }
   
   // Try a completely different approach - use a simple metadata-only request first
@@ -106,13 +126,48 @@ export async function uploadBlob(
     // Log the metadata being sent
     console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
     
-    // VERBOSE DEBUGGING: Log the full request details
+    // ULTRA VERBOSE DEBUGGING: Log the full request details
     console.log("Making metadata request to:", 'https://www.googleapis.com/drive/v3/files');
     console.log("Request headers:", {
       'Authorization': 'Bearer [TOKEN REDACTED]',
       'Content-Type': 'application/json; charset=UTF-8'
     });
-    console.log("Request body:", JSON.stringify(metadata));
+    
+    // ULTRA VERBOSE DEBUGGING: Check for invalid JSON
+    try {
+      const metadataJson = JSON.stringify(metadata);
+      console.log("Request body:", metadataJson);
+      
+      // Validate the JSON by parsing it back
+      JSON.parse(metadataJson);
+    } catch (jsonError) {
+      console.error("ERROR: Invalid JSON metadata:", jsonError);
+      // Try to create a clean version of the metadata
+      const cleanMetadata = {
+        name: sanitizedFilename.replace(/[^\x20-\x7E]/g, '_'),
+        mimeType: mimeType,
+        parents: [folderId.replace(/[^\x20-\x7E]/g, '')]
+      };
+      console.error("Using cleaned metadata:", JSON.stringify(cleanMetadata));
+      metadata.name = cleanMetadata.name;
+      metadata.parents = cleanMetadata.parents;
+    }
+    
+    // ULTRA VERBOSE DEBUGGING: Try a direct API call with XMLHttpRequest for more detailed error info
+    console.log("Making metadata request with XMLHttpRequest for better error details");
+    
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://www.googleapis.com/drive/v3/files', false); // Synchronous for debugging
+    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
+    
+    try {
+      xhr.send(JSON.stringify(metadata));
+      console.log(`XHR Status: ${xhr.status} ${xhr.statusText}`);
+      console.log(`XHR Response: ${xhr.responseText}`);
+    } catch (xhrError) {
+      console.error("XHR Error:", xhrError);
+    }
     
     const metadataResponse = await fetch(
       'https://www.googleapis.com/drive/v3/files',
@@ -322,10 +377,39 @@ export async function checkFileExists(accessToken: string, filename: string, fol
  */
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
-    // Keep the original folder name - no sanitization needed
-    // Google Drive API should handle special characters properly when we use proper encoding
+    // ULTRA VERBOSE DEBUGGING: Log all input parameters with character codes
+    console.log("=== CREATE FOLDER IF NOT EXISTS FUNCTION CALLED ===");
+    console.log(`Folder name: "${folderName}"`);
+    console.log("Folder name character codes:", Array.from(folderName).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
     
-    console.log(`Creating/checking folder: "${folderName}"`); // Debug log
+    console.log(`Parent folder ID: "${parentFolderId}"`);
+    console.log("Parent folder ID character codes:", Array.from(parentFolderId).map(c => `${c} (${c.charCodeAt(0)})`).join(', '));
+    
+    // ULTRA VERBOSE DEBUGGING: Validate parent folder ID
+    if (!parentFolderId) {
+      console.error("ERROR: Parent folder ID is empty or undefined!");
+      throw new Error("Parent folder ID is required but was not provided");
+    }
+    
+    if (typeof parentFolderId !== 'string') {
+      console.error(`ERROR: Parent folder ID is not a string! Type: ${typeof parentFolderId}, Value:`, parentFolderId);
+      throw new Error(`Parent folder ID must be a string, got ${typeof parentFolderId}`);
+    }
+    
+    // ULTRA VERBOSE DEBUGGING: Check for invalid characters in parent folder ID
+    const invalidCharInParentId = Array.from(parentFolderId).find(c => {
+      const code = c.charCodeAt(0);
+      return code < 32 || code > 126; // Non-printable or non-ASCII
+    });
+    
+    if (invalidCharInParentId) {
+      console.error(`ERROR: Parent folder ID contains invalid character: ${invalidCharInParentId} (${invalidCharInParentId.charCodeAt(0)})`);
+      // Try to clean the parent folder ID
+      const cleanParentId = parentFolderId.replace(/[^\x20-\x7E]/g, '');
+      console.error(`Cleaned parent folder ID: ${cleanParentId}`);
+      // Continue with the cleaned ID
+      parentFolderId = cleanParentId;
+    }
     
     // Check if folder already exists
     // Use proper URL parameter encoding for the query
@@ -347,6 +431,10 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
     queryParams.append('q', query);
     queryParams.append('fields', 'files(id,name)');
     
+    // ULTRA VERBOSE DEBUGGING: Log the query
+    console.log("Folder existence query:", query);
+    console.log("Full URL:", `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`);
+    
     // Make the API request with the properly encoded query
     const data = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`,
@@ -355,6 +443,9 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
       }
     );
+    
+    // ULTRA VERBOSE DEBUGGING: Log the response
+    console.log("Folder existence check response:", data);
 
     if (data.files && data.files.length > 0) {
       console.log(`Found existing folder "${folderName}" with ID ${data.files[0].id}`);
@@ -378,6 +469,38 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
       mimeType: 'application/vnd.google-apps.folder',
       parents: [parentFolderId]
     };
+    
+    // ULTRA VERBOSE DEBUGGING: Log the metadata
+    console.log("Folder creation metadata:", JSON.stringify(metadata));
+    
+    // ULTRA VERBOSE DEBUGGING: Try a direct API call with XMLHttpRequest for more detailed error info
+    console.log("Making folder creation request with XMLHttpRequest for better error details");
+    
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://www.googleapis.com/drive/v3/files', false); // Synchronous for debugging
+    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
+    
+    try {
+      xhr.send(JSON.stringify(metadata));
+      console.log(`XHR Status: ${xhr.status} ${xhr.statusText}`);
+      console.log(`XHR Response: ${xhr.responseText}`);
+      
+      // If successful, try to parse the response
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const response = JSON.parse(xhr.responseText);
+          if (response.id) {
+            console.log(`Successfully created folder with ID: ${response.id}`);
+            return response.id;
+          }
+        } catch (e) {
+          console.error("Error parsing XHR response:", e);
+        }
+      }
+    } catch (xhrError) {
+      console.error("XHR Error:", xhrError);
+    }
 
     const createData = await driveApiRequest(
       'https://www.googleapis.com/drive/v3/files',
