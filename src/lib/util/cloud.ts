@@ -121,8 +121,12 @@ export async function uploadBlob(
  */
 export async function checkFileExists(accessToken: string, filename: string, folderId: string): Promise<string | null> {
   try {
+    // Properly escape single quotes in folder ID
+    const safeFolderId = folderId.replace(/'/g, "\\'");
+    const query = `name='${encodeURIComponent(filename)}' and '${safeFolderId}' in parents and trashed=false`;
+    
     const data = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=name='${encodeURIComponent(filename)}' and '${folderId}' in parents and trashed=false&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })
@@ -156,8 +160,12 @@ export async function checkFileExists(accessToken: string, filename: string, fol
 export async function createFolderIfNotExists(accessToken: string, folderName: string, parentFolderId: string): Promise<string> {
   try {
     // Check if folder already exists
+    // Properly escape single quotes in parent folder ID
+    const safeParentFolderId = parentFolderId.replace(/'/g, "\\'");
+    const query = `name='${encodeURIComponent(folderName)}' and '${safeParentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    
     const data = await driveApiRequest(
-      `https://www.googleapis.com/drive/v3/files?q=name='${encodeURIComponent(folderName)}' and '${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
       {
         method: 'GET',
         headers: new Headers({ Authorization: 'Bearer ' + accessToken })

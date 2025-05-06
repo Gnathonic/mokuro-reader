@@ -126,7 +126,8 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
 
   try {
     // First, find the comics folder
-    const comicsFolderQuery = `name='comics' and '${readerFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    // Properly escape single quotes in the query by doubling them
+    const comicsFolderQuery = `name='comics' and '${readerFolderId.replace(/'/g, "\\'")}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
     
     const comicsFolderData = await driveApiRequest(
       `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(comicsFolderQuery)}&fields=files(id,name)`,
@@ -153,9 +154,11 @@ export async function fetchAllDriveData(accessToken: string, readerFolderId: str
     // This query finds:
     // 1. All folders that are direct children of the comics folder
     // 2. All CBZ files that are in any folder within the comics folder
+    // Properly escape single quotes in the query by escaping them
+    const safeComicsFolderId = comicsFolderId.replace(/'/g, "\\'");
     const query = `
-      ('${comicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
-      ('${comicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
+      ('${safeComicsFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false) or
+      ('${safeComicsFolderId}' in ancestors and (mimeType='application/vnd.comicbook+zip' or mimeType='application/zip' or mimeType='application/x-cbz') and trashed=false)
     `;
 
     const data = await driveApiRequest(
