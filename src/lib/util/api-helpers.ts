@@ -149,17 +149,56 @@ export async function driveApiRequest<T = any>(
   retryOptions: RetryOptions = {}
 ): Promise<T> {
   console.log('driveApiRequest called with URL:', url);
-  console.log('driveApiRequest options:', options);
+  
+  // Don't log the full options object as it might contain sensitive data
+  // Instead, log specific parts that are useful for debugging
+  const methodInfo = options.method || 'GET';
+  const hasBody = !!options.body;
+  const contentType = options.headers ? 
+    (options.headers instanceof Headers ? 
+      options.headers.get('Content-Type') : 
+      (options.headers as Record<string, string>)['Content-Type']) : 
+    null;
+  
+  console.log(`driveApiRequest method: ${methodInfo}, hasBody: ${hasBody}, contentType: ${contentType}`);
   
   try {
     const response = await fetchWithRetry(url, options, retryOptions);
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const error: any = new Error(errorData.error?.message || `HTTP error ${response.status}`);
+      // Try to get detailed error information
+      let errorData;
+      let errorText;
+      
+      try {
+        // Try to parse as JSON first
+        errorData = await response.json();
+        errorText = JSON.stringify(errorData);
+      } catch (e) {
+        // If not JSON, get as text
+        try {
+          errorText = await response.text();
+        } catch (e2) {
+          errorText = "Could not extract error details";
+        }
+        errorData = {};
+      }
+      
+      // Create a detailed error object
+      const error: any = new Error(
+        errorData.error?.message || 
+        `HTTP error ${response.status}: ${errorText.substring(0, 200)}${errorText.length > 200 ? '...' : ''}`
+      );
+      
       error.status = response.status;
       error.errorType = determineErrorType(response);
-      error.response = response;
+      error.response = errorData;
+      error.responseText = errorText;
+      
+      // Log detailed error information
+      console.error(`Drive API error (${response.status}):`, error.message);
+      console.error('Error details:', errorText);
+      
       throw error;
     }
 
@@ -169,9 +208,24 @@ export async function driveApiRequest<T = any>(
       return {} as T;
     }
 
-    const jsonResponse = await response.json();
-    console.log('driveApiRequest response:', jsonResponse);
-    return jsonResponse;
+    // Try to parse the response as JSON
+    try {
+      const jsonResponse = await response.json();
+      console.log('driveApiRequest successful response');
+      return jsonResponse;
+    } catch (parseError) {
+      console.error('Error parsing response as JSON:', parseError);
+      
+      // Try to get the response as text for debugging
+      try {
+        const textResponse = await response.text();
+        console.error('Response text:', textResponse.substring(0, 500));
+      } catch (e) {
+        console.error('Could not get response text');
+      }
+      
+      throw new Error('Failed to parse API response as JSON');
+    }
   } catch (error: any) {
     // If it's already been processed, rethrow
     if (error.errorType) {
@@ -179,6 +233,7 @@ export async function driveApiRequest<T = any>(
     }
 
     // Process network errors
+    console.error('Network error in driveApiRequest:', error.message);
     error.errorType = determineErrorType(error);
     throw error;
   }

@@ -69,23 +69,40 @@ export async function uploadBlob(
   folderId: string,
   mimeType: string = 'application/zip'
 ) {
+  // Ensure filename is properly sanitized
+  const sanitizedFilename = sanitizeNameForGoogleDrive(filename);
+  
+  // Log detailed information about the upload
+  console.log(`Uploading file: "${sanitizedFilename}" (${blob.size} bytes) to folder: ${folderId}`);
+  console.log(`MIME type: ${mimeType}`);
+  
   const form = new FormData();
 
   const metadata = {
-    name: filename,
+    name: sanitizedFilename,
     mimeType: mimeType,
     parents: [folderId]
   };
+  
+  // Log the metadata being sent
+  console.log(`Upload metadata: ${JSON.stringify(metadata)}`);
 
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', blob);
 
   try {
+    // For now, stick with multipart upload as it's simpler
+    // Resumable uploads require a more complex implementation with multiple steps
+    const uploadType = 'multipart';
+    console.log(`Using ${uploadType} upload for file size: ${blob.size} bytes`);
+    
     return await driveApiRequest(
-      `${FILES_API_URL}?uploadType=multipart`,
+      `${FILES_API_URL}?uploadType=${uploadType}`,
       {
         method: 'POST',
-        headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
+        headers: new Headers({ 
+          Authorization: 'Bearer ' + accessToken
+        }),
         body: form
       },
       {
@@ -96,7 +113,17 @@ export async function uploadBlob(
       }
     );
   } catch (error: any) {
+    // Log detailed error information
     console.error('Error uploading blob:', error);
+    console.error(`Failed to upload file: "${sanitizedFilename}" to folder: ${folderId}`);
+    
+    if (error.response) {
+      try {
+        console.error('Error response:', JSON.stringify(error.response));
+      } catch (e) {
+        console.error('Error response (not JSON):', error.response);
+      }
+    }
 
     // Only throw auth errors, handle other errors gracefully
     if (error.errorType === DriveErrorType.AUTH_ERROR) {
