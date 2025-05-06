@@ -23,10 +23,16 @@
     API_KEY
   } from '$lib/util';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
+  import { catalog } from '$lib/catalog';
+  import { db } from '$lib/catalog/db';
+  import { volumes } from '$lib/settings';
+  import { DriveErrorType } from '$lib/util/api-helpers';
   import { get } from 'svelte/store';
   import { Badge, Button, Toggle } from 'flowbite-svelte';
   import { onMount } from 'svelte';
-  import { GoogleSolid } from 'flowbite-svelte-icons';
+  import { GoogleSolid, CloudArrowUpSolid } from 'flowbite-svelte-icons';
+  import { writable } from 'svelte/store';
 
   // Subscribe to stores
   let accessToken = $state('');
@@ -34,12 +40,121 @@
   let volumeDataId = $state('');
   let profilesId = $state('');
   let tokenClient = $state(null);
+  let backingUp = false;
   
   accessTokenStore.subscribe(value => { accessToken = value; });
   readerFolderIdStore.subscribe(value => { readerFolderId = value; });
   volumeDataIdStore.subscribe(value => { volumeDataId = value; });
   profilesIdStore.subscribe(value => { profilesId = value; });
   tokenClientStore.subscribe(value => { tokenClient = value; });
+  
+  // Auto-sync functionality
+  let autoSyncEnabled = localStorage.getItem('gdrive_auto_sync') === 'true';
+  // Initialize lastLocalUpdate to a time in the past to allow immediate auto-sync
+  let lastLocalUpdate = Date.now() - 10000; // 10 seconds ago
+  let syncInProgress = false;
+  
+  // Create a store for auto sync setting
+  const autoSync = writable(autoSyncEnabled);
+  
+  // Update localStorage when auto sync setting changes
+  autoSync.subscribe(value => {
+    console.log('Auto sync setting changed to:', value);
+    autoSyncEnabled = value;
+    localStorage.setItem('gdrive_auto_sync', value.toString());
+    
+    // If auto sync was just enabled and we're logged in, trigger a sync
+    if (value && accessToken && volumeDataId && !syncInProgress) {
+      console.log('Auto sync triggered by enabling the setting');
+      // Small delay to ensure UI updates first
+      setTimeout(() => syncReadProgress(true), 100);
+    }
+  });
+  
+  // Subscribe to volumes store to detect changes
+  volumes.subscribe(value => {
+    const currentTime = Date.now();
+    console.log('Volumes updated, checking auto-sync conditions:');
+    console.log('- Auto sync enabled:', autoSyncEnabled);
+    console.log('- Logged in to Drive:', !!accessToken);
+    console.log('- Volume data ID exists:', !!volumeDataId);
+    console.log('- Time since last update:', currentTime - lastLocalUpdate, 'ms');
+    console.log('- Sync not in progress:', !syncInProgress);
+    
+    // Only trigger sync if:
+    // 1. Auto sync is enabled
+    // 2. We're logged in to Google Drive
+    // 3. We have a volume data ID
+    // 4. There's been a meaningful time gap since last update (to avoid loops)
+    // 5. We're not already syncing
+    if (autoSyncEnabled && 
+        accessToken && 
+        volumeDataId && 
+        currentTime - lastLocalUpdate > 2000 &&
+        !syncInProgress) {
+      
+      console.log('Auto sync triggered by local update');
+      lastLocalUpdate = currentTime;
+      syncReadProgress(true); // Pass true to indicate this is an auto sync
+    } else {
+      console.log('Auto sync conditions not met, skipping sync');
+    }
+  });
+
+  // Helper function to handle errors consistently
+  function handleDriveError(error: any, context: string) {
+    console.error(`${context} error:`, error);
+
+    // If the error has been processed by our API helpers
+    if (error.errorType) {
+      switch (error.errorType) {
+        case DriveErrorType.AUTH_ERROR:
+          // Log the user out for auth errors
+          logout();
+          showSnackbar(`Authentication error: Please log in again`);
+          break;
+
+        case DriveErrorType.CONNECTION_ERROR:
+          showSnackbar('Connection error: Please check your internet connection');
+          break;
+
+        case DriveErrorType.RATE_LIMIT:
+          showSnackbar('Rate limit exceeded: Please try again later');
+          break;
+
+        default:
+          showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
+      return;
+    }
+
+    // Legacy error handling for errors not processed by our API helpers
+    const errorMessage = error.toString().toLowerCase();
+    const isConnectivityError =
+      errorMessage.includes('network') ||
+      errorMessage.includes('connection') ||
+      errorMessage.includes('offline') ||
+      errorMessage.includes('internet');
+
+    if (!isConnectivityError) {
+      // Only log out for auth-related errors
+      if (
+        errorMessage.includes('auth') ||
+        errorMessage.includes('token') ||
+        errorMessage.includes('permission') ||
+        errorMessage.includes('access') ||
+        errorMessage.includes('unauthorized') ||
+        errorMessage.includes('forbidden')
+      ) {
+        logout();
+        showSnackbar(`Authentication error: Please log in again`);
+      } else {
+        showSnackbar(`Error ${context}: ${error.message || 'Unknown error'}`);
+      }
+    } else {
+      showSnackbar('Connection error: Please check your internet connection');
+    }
+  }
 
   // Use constants from the google-drive utility
   const type = 'application/json';
@@ -110,6 +225,79 @@
   }
 
   // Function to clear service worker cache for Google Drive downloads
+  async function onBackupAllSeries() {
+    if (!accessToken) {
+      showSnackbar('Please connect to Google Drive first');
+      return;
+    }
+
+    if (!$catalog || $catalog.length === 0) {
+      showSnackbar('No series to backup');
+      return;
+    }
+
+    try {
+      backingUp = true;
+
+      // Create a master process for tracking overall progress
+      const masterProcessId = `backup-all-series-${Date.now()}`;
+      progressTrackerStore.addProcess({
+        id: masterProcessId,
+        description: `Backing up all series to Google Drive`,
+        progress: 0,
+        status: `Preparing to backup ${$catalog.length} series...`
+      });
+
+      // Process each series one by one
+      for (let i = 0; i < $catalog.length; i++) {
+        const series = $catalog[i];
+        const seriesTitle = series.volumes[0]?.series_title || 'Unknown Series';
+        
+        // Update master progress
+        progressTrackerStore.updateProcess(masterProcessId, {
+          progress: (i / $catalog.length) * 100,
+          status: `Processing ${seriesTitle} (${i+1}/${$catalog.length})...`
+        });
+
+        // Export and upload this series
+        await exportAndUploadVolumesToDrive(series.volumes, accessToken, readerFolderId);
+      }
+
+      // All series have been processed
+      progressTrackerStore.updateProcess(masterProcessId, {
+        progress: 100,
+        status: `All ${$catalog.length} series backed up successfully`
+      });
+
+      // Remove the process after a delay
+      setTimeout(() => progressTrackerStore.removeProcess(masterProcessId), 3000);
+
+      showSnackbar('All series backed up to Google Drive');
+    } catch (error) {
+      console.error('Error backing up all series:', error);
+      showSnackbar(`Error backing up series: ${error.message || 'Unknown error'}`);
+    } finally {
+      backingUp = false;
+    }
+  }
+
+  // Function to check if a volume already exists in the database
+  async function checkVolumeExists(volumeName: string): Promise<boolean> {
+    try {
+      // Query the database for volumes with this title
+      const existingVolumes = await db.volumes
+        .filter(volume => volume.volume_title === volumeName)
+        .toArray();
+      
+      // Return true if any volumes were found
+      return existingVolumes.length > 0;
+    } catch (error) {
+      console.error(`Error checking if volume exists: ${volumeName}`, error);
+      // If there's an error, assume the volume doesn't exist
+      return false;
+    }
+  }
+
   async function clearServiceWorkerCache() {
     if ('caches' in window) {
       try {
@@ -381,36 +569,61 @@
         }
       };
 
-      // Add each file to the worker pool
-      for (const fileInfo of sortedFiles) {
-        // Initialize progress for this file
-        fileProgress[fileInfo.id] = 0;
+      // Process files in an async manner
+      (async () => {
+        // Check which files already exist locally before adding them to the worker pool
+        for (const fileInfo of sortedFiles) {
+          // Extract the volume name from the filename (remove .cbz or .zip extension)
+          const volumeName = fileInfo.name.replace(/\.(cbz|zip)$/i, '');
+          
+          // Check if this volume exists in the database
+          const volumeExists = await checkVolumeExists(volumeName);
+          
+          if (volumeExists) {
+            console.log(`Skipping ${fileInfo.name} - already downloaded`);
+            // Mark as completed without downloading
+            completedFiles++;
+            fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+            processedFiles[fileInfo.id] = true;
+            updateOverallProgress();
+            
+            // Check if all files are already processed
+            if (completedFiles + failedFiles === sortedFiles.length) {
+              checkAllComplete();
+            }
+            continue;
+          }
+          
+          // Add the file to the worker pool if it doesn't exist locally
+          
+          // Initialize progress for this file
+          fileProgress[fileInfo.id] = 0;
 
-        // Create a task for the worker pool
-        // Estimate memory requirement based on file size
-        // We need memory for:
-        // 1. The downloaded file (fileSizes[fileInfo.id])
-        // 2. Processing overhead (typically 2-3x the file size for decompression)
-        const fileSize = fileSizes[fileInfo.id] || 0;
-        const memoryRequirement = Math.max(
-          // Estimate memory needed: file size + processing overhead
-          // Use at least 50MB as a minimum requirement
-          fileSize * 3, // 3x file size for processing overhead
-          50 * 1024 * 1024 // Minimum 50MB
-        );
+          // Create a task for the worker pool
+          // Estimate memory requirement based on file size
+          // We need memory for:
+          // 1. The downloaded file (fileSizes[fileInfo.id])
+          // 2. Processing overhead (typically 2-3x the file size for decompression)
+          const fileSize = fileSizes[fileInfo.id] || 0;
+          const memoryRequirement = Math.max(
+            // Estimate memory needed: file size + processing overhead
+            // Use at least 50MB as a minimum requirement
+            fileSize * 3, // 3x file size for processing overhead
+            50 * 1024 * 1024 // Minimum 50MB
+          );
 
-        console.log(
-          `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
-        );
+          console.log(
+            `Adding task for ${fileInfo.name} with estimated memory requirement: ${(memoryRequirement / (1024 * 1024)).toFixed(2)}MB`
+          );
 
-        workerPool.addTask({
-          id: fileInfo.id,
-          memoryRequirement,
-          data: {
-            fileId: fileInfo.id,
-            fileName: fileInfo.name,
-            accessToken
-          },
+          workerPool.addTask({
+            id: fileInfo.id,
+            memoryRequirement,
+            data: {
+              fileId: fileInfo.id,
+              fileName: fileInfo.name,
+              accessToken
+            },
           onProgress: (data) => {
             // Update progress for this file
             fileProgress[fileInfo.id] = data.loaded;
@@ -469,7 +682,8 @@
             checkAllComplete();
           }
         });
-      }
+        }
+      })();
 
       // If there are no files, resolve immediately
       if (sortedFiles.length === 0) {
@@ -483,6 +697,23 @@
           setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
         }
 
+        resolve();
+        return;
+      }
+      
+      // Check if all files are already processed (already downloaded)
+      // This happens when we've checked all files and found they're all already downloaded
+      if (completedFiles + failedFiles === sortedFiles.length) {
+        progressTrackerStore.updateProcess(overallProcessId, {
+          status: 'All files already downloaded',
+          progress: 100
+        });
+        
+        // Only auto-remove the tracker if it's not part of a larger process
+        if (!existingProcessId) {
+          setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
+        }
+        
         resolve();
       }
     });
@@ -706,7 +937,7 @@
       </div>
       <p class="text-center">
         Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700"
-          >{READER_FOLDER}</span
+          >{READER_FOLDER}/comics</span
         > folder in your Google Drive.
       </p>
       <p class="text-center text-sm text-gray-500">
@@ -729,6 +960,23 @@
           </div>
           <p class="text-xs text-gray-500 ml-1">
             Helps prevent crashes on low memory devices or for extremely large downloads.
+          </p>
+        </div>
+        
+        <div class="mt-4">
+          <div class="flex items-center gap-2">
+            <Toggle
+              size="small"
+              checked={$autoSync}
+              on:change={() => $autoSync = !$autoSync}
+            >
+              <span class="flex items-center gap-2">
+                Auto-sync with Google Drive
+              </span>
+            </Toggle>
+          </div>
+          <p class="text-xs text-gray-500 ml-1">
+            Automatically sync reading progress with Google Drive when changes are made.
           </p>
         </div>
         
@@ -756,6 +1004,11 @@
               Download profiles
             </Button>
           {/if}
+          
+          <Button color="green" on:click={onBackupAllSeries} disabled={backingUp}>
+            <CloudArrowUpSolid class="mr-2 h-5 w-5" />
+            Backup All Series to Comics Folder
+          </Button>
         </div>
       </div>
     </div>
