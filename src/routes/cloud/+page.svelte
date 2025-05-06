@@ -25,6 +25,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { exportAndUploadVolumesToDrive } from '$lib/util/cloud';
   import { catalog } from '$lib/catalog';
+  import { db } from '$lib/catalog/db';
   import { volumes } from '$lib/settings';
   import { DriveErrorType } from '$lib/util/api-helpers';
   import { get } from 'svelte/store';
@@ -277,6 +278,23 @@
       showSnackbar(`Error backing up series: ${error.message || 'Unknown error'}`);
     } finally {
       backingUp = false;
+    }
+  }
+
+  // Function to check if a volume already exists in the database
+  async function checkVolumeExists(volumeName: string): Promise<boolean> {
+    try {
+      // Query the database for volumes with this title
+      const existingVolumes = await db.volumes
+        .filter(volume => volume.volume_title === volumeName)
+        .toArray();
+      
+      // Return true if any volumes were found
+      return existingVolumes.length > 0;
+    } catch (error) {
+      console.error(`Error checking if volume exists: ${volumeName}`, error);
+      // If there's an error, assume the volume doesn't exist
+      return false;
     }
   }
 
@@ -553,6 +571,23 @@
 
       // Add each file to the worker pool
       for (const fileInfo of sortedFiles) {
+        // Check if the file already exists locally
+        // Extract the volume name from the filename (remove .cbz or .zip extension)
+        const volumeName = fileInfo.name.replace(/\.(cbz|zip)$/i, '');
+        
+        // Check if this volume exists in the database
+        const volumeExists = await checkVolumeExists(volumeName);
+        
+        if (volumeExists) {
+          console.log(`Skipping ${fileInfo.name} - already downloaded`);
+          // Mark as completed without downloading
+          completedFiles++;
+          fileProgress[fileInfo.id] = fileSizes[fileInfo.id] || 0;
+          processedFiles[fileInfo.id] = true;
+          updateOverallProgress();
+          continue;
+        }
+        
         // Initialize progress for this file
         fileProgress[fileInfo.id] = 0;
 
@@ -653,6 +688,23 @@
           setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
         }
 
+        resolve();
+        return;
+      }
+      
+      // Check if all files are already processed (already downloaded)
+      // This happens when we've checked all files and found they're all already downloaded
+      if (completedFiles + failedFiles === sortedFiles.length) {
+        progressTrackerStore.updateProcess(overallProcessId, {
+          status: 'All files already downloaded',
+          progress: 100
+        });
+        
+        // Only auto-remove the tracker if it's not part of a larger process
+        if (!existingProcessId) {
+          setTimeout(() => progressTrackerStore.removeProcess(overallProcessId), 3000);
+        }
+        
         resolve();
       }
     });
