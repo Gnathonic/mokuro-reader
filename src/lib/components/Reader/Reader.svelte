@@ -41,6 +41,7 @@
     (volumeSettings.hasCover && !volumeSettings.singlePageView && index === 0)
       ? 1
       : 2;
+  $: getPagePath = (index: number) => pages[index]?.img_path;
 
   let start: Date;
 
@@ -262,8 +263,8 @@
   <QuickActions
     {left}
     {right}
-    src1={Object.values(volume?.files)[index]}
-    src2={!volumeSettings.singlePageView ? Object.values(volume?.files)[index + 1] : undefined}
+    src1={volume?.files[getPagePath(index)]}
+    src2={!volumeSettings.singlePageView ? volume?.files[getPagePath(index + 1)] : undefined}
   />
   <SettingsButton />
   <Cropper />
@@ -347,9 +348,9 @@
       >
         {#key page}
           {#if showSecondPage()}
-            <MangaPage page={pages[index + 1]} src={Object.values(volume?.files)[index + 1]} />
+            <MangaPage page={pages[index + 1]} src={volume?.files[getPagePath(index + 1)]} />
           {/if}
-          <MangaPage page={pages[index]} src={Object.values(volume?.files)[index]} />
+          <MangaPage page={pages[index]} src={volume?.files[getPagePath(index)]} />
         {/key}
       </div>
     </Panzoom>
