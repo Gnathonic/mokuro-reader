@@ -43,16 +43,16 @@ export const catalog = derived(
   ([$volumes, $driveCache, $token], set) => {
     const localVolumes = Object.values($volumes);
 
-    // If authenticated and cache is populated, reconcile with Drive
+    // If authenticated and cache is populated, reconcile with Drive async
     if ($token && $driveCache.size > 0) {
       const driveFiles = Array.from($driveCache.values());
       reconcileDriveWithLocal(localVolumes, driveFiles).then((reconciledVolumes) => {
         set(deriveSeriesFromVolumes(reconciledVolumes));
       });
-    } else {
-      // Not authenticated or no cache - just show local volumes
-      set(deriveSeriesFromVolumes(localVolumes));
     }
+
+    // Always return synchronously to avoid navigation issues
+    return deriveSeriesFromVolumes(localVolumes);
   }
 );
 
