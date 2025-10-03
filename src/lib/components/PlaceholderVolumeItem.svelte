@@ -15,26 +15,12 @@
     volume.driveSize ? `${(volume.driveSize / 1024 / 1024).toFixed(1)} MB` : 'Unknown size'
   );
 
-  let isDownloading = $state(false);
-  let downloadProgress = $state(0);
-  let downloadStatus = $state('');
-
   // Track download progress from progress tracker
-  let progressState = $state($progressTrackerStore);
-  $effect(() => {
-    return progressTrackerStore.subscribe(value => {
-      progressState = value;
-      const processId = `download-${volume.volume_uuid}`;
-      const process = value.processes.find(p => p.id === processId);
-      if (process) {
-        isDownloading = true;
-        downloadProgress = process.progress || 0;
-        downloadStatus = process.status || '';
-      } else {
-        isDownloading = false;
-      }
-    });
-  });
+  const processId = $derived(`download-${volume.volume_uuid}`);
+  const downloadProcess = $derived($progressTrackerStore.processes.find(p => p.id === processId));
+  const isDownloading = $derived(!!downloadProcess);
+  const downloadProgress = $derived(downloadProcess?.progress || 0);
+  const downloadStatus = $derived(downloadProcess?.status || '');
 
   async function handleDownload(e: MouseEvent) {
     e.stopPropagation();
