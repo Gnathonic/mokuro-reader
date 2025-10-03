@@ -22,6 +22,12 @@ export interface VolumeMetadata {
   page_count: number;
   character_count: number;
   thumbnail?: File;
+
+  // Placeholder fields for Drive-only volumes (not yet downloaded)
+  isPlaceholder?: boolean;      // True if this is a Drive-only placeholder
+  driveFileId?: string;         // Google Drive file ID
+  driveModifiedTime?: string;   // Last modified timestamp from Drive
+  driveSize?: number;           // File size in bytes
 }
 
 export interface VolumeData {

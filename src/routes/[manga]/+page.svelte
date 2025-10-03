@@ -2,6 +2,7 @@
   import { catalog } from '$lib/catalog';
   import { goto } from '$app/navigation';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
+  import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import BackupButton from '$lib/components/BackupButton.svelte';
   import { Button, Listgroup, Spinner } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
@@ -12,7 +13,7 @@
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, mangaStats } from '$lib/settings';
   import { tokenManager, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
-  import { CloudArrowUpOutline, TrashBinSolid } from 'flowbite-svelte-icons';
+  import { CloudArrowUpOutline, DownloadOutline, TrashBinSolid } from 'flowbite-svelte-icons';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
     return a.volume_title.localeCompare(b.volume_title, undefined, {
@@ -36,14 +37,22 @@
   });
 
   let seriesTitle = $derived(manga?.[0]?.series_title || '');
-  let processId = $derived(`backup-series-${seriesTitle}`);
+  let backupProcessId = $derived(`backup-series-${seriesTitle}`);
+  let downloadProcessId = $derived(`download-series-${seriesTitle}`);
+
 
   let backupProcess = $derived.by(() => {
-    return progressState.processes.find(p => p.id === processId);
+    return progressState.processes.find(p => p.id === backupProcessId);
   });
 
   let backingUpSeries = $derived(!!backupProcess);
   let backupProgress = $derived(backupProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
+  let downloadProcess = $derived.by(() => {
+    return progressState.processes.find(p => p.id === downloadProcessId);
+  });
+
+  let downloadingSeries = $derived(!!downloadProcess);
+  let downloadProgress = $derived(downloadProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
 
   let token = $state('');
   $effect(() => {
@@ -70,6 +79,10 @@
   let anyBackedUp = $derived.by(() => {
     if (!manga || manga.length === 0) return false;
     return manga.some(vol => driveCache.has(`${vol.series_title}/${vol.volume_title}.cbz`));
+  });
+  let anyPlaceholders = $derived.by(() => {
+    if (!manga || manga.length === 0) return false;
+    return manga.some(vol => vol.isPlaceholder);
   });
 
   async function confirmDelete(deleteStats = false, deleteDrive = false) {
@@ -262,6 +275,70 @@
       showSnackbar(`Backed up ${successCount} volumes, ${failCount} failed`, 'error');
     }
   }
+
+  async function downloadSeries() {
+    if (!manga || manga.length === 0) return;
+    if (!isAuthenticated) {
+      showSnackbar('Please sign in to Google Drive first', 'error');
+      return;
+    }
+
+    // If already downloading, don't start again
+    if (downloadingSeries) {
+      return;
+    }
+
+    const currentSeriesTitle = manga[0].series_title;
+    const currentProcessId = `download-series-${currentSeriesTitle}`;
+
+    // Filter for placeholder volumes only
+    const volumesToDownload = manga.filter(vol => vol.isPlaceholder);
+
+    if (volumesToDownload.length === 0) {
+      showSnackbar('All volumes already downloaded', 'info');
+      return;
+    }
+
+    progressTrackerStore.addProcess({
+      id: currentProcessId,
+      description: `Downloading ${currentSeriesTitle}`,
+      progress: 0,
+      status: `0/${volumesToDownload.length} volumes`
+    });
+
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      const { downloadVolumeFromDrive } = await import('$lib/util/download-from-drive');
+
+      for (let i = 0; i < volumesToDownload.length; i++) {
+        const volume = volumesToDownload[i];
+        const progress = Math.round(((i + 1) / volumesToDownload.length) * 100);
+
+        progressTrackerStore.updateProcess(currentProcessId, {
+          progress,
+          status: `${i + 1}/${volumesToDownload.length}: ${volume.volume_title}`
+        });
+
+        try {
+          await downloadVolumeFromDrive(volume);
+          successCount++;
+        } catch (error) {
+          console.error(`Failed to download ${volume.volume_title}:`, error);
+          failCount++;
+        }
+      }
+    } finally {
+      progressTrackerStore.removeProcess(currentProcessId);
+    }
+
+    if (failCount === 0) {
+      showSnackbar(`Successfully downloaded ${successCount} volumes`, 'success');
+    } else {
+      showSnackbar(`Downloaded ${successCount} volumes, ${failCount} failed`, 'error');
+    }
+  }
 </script>
 
 <svelte:head>
@@ -279,6 +356,21 @@
         </div>
       </div>
       <div class="flex flex-row gap-2 items-start">
+        {#if anyPlaceholders && isAuthenticated}
+          <Button
+            color="light"
+            on:click={downloadSeries}
+            disabled={downloadingSeries || !isAuthenticated}
+          >
+            {#if downloadingSeries}
+              <Spinner size="4" class="me-2" />
+              Downloading {downloadProgress}
+            {:else}
+              <DownloadOutline class="w-4 h-4 me-2" />
+              Download series from Drive
+            {/if}
+          </Button>
+        {/if}
         {#if !allBackedUp}
           <Button
             color="light"
@@ -311,7 +403,11 @@
     </div>
     <Listgroup active class="flex-1 h-full w-full">
       {#each manga as volume (volume.volume_uuid)}
-        <VolumeItem {volume} />
+        {#if volume.isPlaceholder}
+          <PlaceholderVolumeItem {volume} />
+        {:else}
+          <VolumeItem {volume} />
+        {/if}
       {/each}
     </Listgroup>
   </div>
