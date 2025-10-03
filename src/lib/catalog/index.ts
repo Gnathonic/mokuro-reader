@@ -40,18 +40,17 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
 // When authenticated, adds placeholder volumes for Drive-only files
 export const catalog = derived(
   [volumes, driveFilesCache.store, tokenManager.token],
-  ([$volumes, $driveCache, $token], set) => {
+  ([$volumes, $driveCache, $token]) => {
     const localVolumes = Object.values($volumes);
 
-    // If authenticated and cache is populated, reconcile with Drive async
+    // If authenticated and cache is populated, reconcile with Drive synchronously
     if ($token && $driveCache.size > 0) {
       const driveFiles = Array.from($driveCache.values());
-      reconcileDriveWithLocal(localVolumes, driveFiles).then((reconciledVolumes) => {
-        set(deriveSeriesFromVolumes(reconciledVolumes));
-      });
+      const reconciledVolumes = reconcileDriveWithLocal(localVolumes, driveFiles);
+      return deriveSeriesFromVolumes(reconciledVolumes);
     }
 
-    // Always return synchronously to avoid navigation issues
+    // Return local volumes only if not authenticated
     return deriveSeriesFromVolumes(localVolumes);
   }
 );

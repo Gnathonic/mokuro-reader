@@ -11,16 +11,18 @@ function generatePlaceholderUuid(driveFileId: string): string {
 
 /**
  * Generate a temporary series UUID for Drive-only series
- * Format: "placeholder-series-{hash of series title}"
+ * Format: "placeholder-series-{simple hash of series title}"
+ * Uses a simple string hash for SSR compatibility (no async crypto)
  */
-async function generatePlaceholderSeriesUuid(seriesTitle: string): Promise<string> {
-  // Use Web Crypto API for deterministic hashing
-  const encoder = new TextEncoder();
-  const data = encoder.encode(seriesTitle);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return `placeholder-series-${hashHex.substring(0, 16)}`;
+function generatePlaceholderSeriesUuid(seriesTitle: string): string {
+  // Simple deterministic hash without crypto API (SSR-compatible)
+  let hash = 0;
+  for (let i = 0; i < seriesTitle.length; i++) {
+    const char = seriesTitle.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return `placeholder-series-${Math.abs(hash).toString(16)}`;
 }
 
 /**
@@ -43,7 +45,7 @@ export function getLocalVolumePaths(volumes: VolumeMetadata[]): Set<string> {
 /**
  * Create placeholder VolumeMetadata from Drive file metadata
  */
-async function createPlaceholder(driveFile: DriveFileMetadata): Promise<VolumeMetadata> {
+function createPlaceholder(driveFile: DriveFileMetadata): VolumeMetadata {
   // Parse path: "seriesTitle/volumeTitle.cbz"
   const pathParts = driveFile.path.split('/');
   if (pathParts.length !== 2) {
@@ -57,7 +59,7 @@ async function createPlaceholder(driveFile: DriveFileMetadata): Promise<VolumeMe
   return {
     mokuro_version: '', // Unknown until downloaded
     series_title: seriesTitle,
-    series_uuid: await generatePlaceholderSeriesUuid(seriesTitle),
+    series_uuid: generatePlaceholderSeriesUuid(seriesTitle),
     volume_title: volumeTitle,
     volume_uuid: generatePlaceholderUuid(driveFile.fileId),
     page_count: 0, // Unknown until downloaded
@@ -80,10 +82,10 @@ async function createPlaceholder(driveFile: DriveFileMetadata): Promise<VolumeMe
  * 3. Create placeholder metadata for remaining Drive files
  * 4. Return combined array of local + placeholder volumes
  */
-export async function reconcileDriveWithLocal(
+export function reconcileDriveWithLocal(
   localVolumes: VolumeMetadata[],
   driveFiles: DriveFileMetadata[]
-): Promise<VolumeMetadata[]> {
+): VolumeMetadata[] {
   const localPaths = getLocalVolumePaths(localVolumes);
 
   // Find Drive files that don't exist locally
@@ -92,9 +94,7 @@ export async function reconcileDriveWithLocal(
   });
 
   // Create placeholders for Drive-only files
-  const placeholders = await Promise.all(
-    driveOnlyFiles.map(driveFile => createPlaceholder(driveFile))
-  );
+  const placeholders = driveOnlyFiles.map(driveFile => createPlaceholder(driveFile));
 
   // Filter out any old placeholders from local volumes and combine with new placeholders
   const realLocalVolumes = localVolumes.filter(v => !v.isPlaceholder);
