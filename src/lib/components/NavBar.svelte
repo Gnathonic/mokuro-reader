@@ -7,12 +7,21 @@
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
   import { onMount } from 'svelte';
-  import { showSnackbar, accessTokenStore, initGoogleDriveApi, syncReadProgress } from '$lib/util';
+  import { showSnackbar, tokenManager, initGoogleDriveApi, syncReadProgress } from '$lib/util';
 
   // Use $state to make these reactive
   let settingsHidden = $state(true);
   let uploadModalOpen = $state(false);
   let isReader = $state(false);
+  let accessToken = $state('');
+
+  // Subscribe to the token manager
+  $effect(() => {
+    const unsubscribe = tokenManager.token.subscribe(value => {
+      accessToken = value;
+    });
+    return unsubscribe;
+  });
 
   // Define event handlers
   function openSettings() {
@@ -64,10 +73,10 @@
       <button onclick={navigateToCloud} class="flex items-center justify-center w-6 h-6">
         <CloudArrowUpOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
-      <button
-        onclick={handleSync}
-        class="flex items-center justify-center w-6 h-6"
-        title="Sync read progress"
+      <button 
+        onclick={handleSync} 
+        class="flex items-center justify-center w-6 h-6" 
+        title={accessToken ? "Sync read progress with Google Drive" : "Sign in to sync"}
       >
         <RefreshOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
