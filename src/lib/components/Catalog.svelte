@@ -7,8 +7,6 @@
   import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
-  import PlaceholderCatalogItem from './PlaceholderCatalogItem.svelte';
-  import { isSeriesPlaceholder } from '$lib/catalog/placeholders';
 
   let search = $state('');
 
@@ -117,21 +115,13 @@
       {:else}
         <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
           {#if $miscSettings.galleryLayout === 'grid'}
-            {#each sortedCatalog as series (series.series_uuid)}
-              {#if isSeriesPlaceholder(series.volumes)}
-                <PlaceholderCatalogItem {series} />
-              {:else}
-              <CatalogItem series_uuid={series.series_uuid} />
-              {/if}
+            {#each sortedCatalog as { series_uuid } (series_uuid)}
+              <CatalogItem {series_uuid} />
             {/each}
           {:else}
             <Listgroup active class="w-full">
-              {#each sortedCatalog as series (series.series_uuid)}
-              {#if isSeriesPlaceholder(series.volumes)}
-                <PlaceholderCatalogItem {series} />
-              {:else}
-                <CatalogListItem series_uuid={series.series_uuid} />
-              {/if}
+              {#each sortedCatalog as { series_uuid } (series_uuid)}
+                <CatalogListItem {series_uuid} />
               {/each}
             </Listgroup>
           {/if}

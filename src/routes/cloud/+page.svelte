@@ -20,29 +20,30 @@
     syncService,
     READER_FOLDER,
     CLIENT_ID,
-    API_KEY,
-    backupVolumeToDrive
+    API_KEY
   } from '$lib/util';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { get } from 'svelte/store';
   import { Badge, Button, Toggle } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid } from 'flowbite-svelte-icons';
-  import { catalog } from '$lib/catalog';
-  import type { VolumeMetadata } from '$lib/types';
 
-  // Subscribe to stores using $state for writable values
+  // Subscribe to stores
   let accessToken = $state('');
   let readerFolderId = $state('');
   let volumeDataId = $state('');
   let profilesId = $state('');
+  let tokenClient = $state(null);
 
-  // Manually sync store values without circular subscription
   $effect(() => {
-    accessToken = $accessTokenStore;
-    readerFolderId = $readerFolderIdStore.reader;
-    volumeDataId = $volumeDataIdStore;
-    profilesId = $profilesIdStore;
+    const unsubscribers = [
+      accessTokenStore.subscribe(value => { accessToken = value; }),
+      readerFolderIdStore.subscribe(value => { readerFolderId = value.reader; }),
+      volumeDataIdStore.subscribe(value => { volumeDataId = value; }),
+      profilesIdStore.subscribe(value => { profilesId = value; }),
+      tokenClientStore.subscribe(value => { tokenClient = value; })
+    ];
+    return () => unsubscribers.forEach(unsub => unsub());
   });
 
   // Use constants from the google-drive utility
@@ -710,83 +711,6 @@
       handleDriveError(error, 'downloading profiles');
     }
   }
-
-  async function backupAllSeries() {
-    if (!accessToken) {
-      showSnackbar('Please sign in to Google Drive first', 'error');
-      return;
-    }
-
-    // Import driveFilesCache
-    const { driveFilesCache } = await import('$lib/util/google-drive');
-
-    // Get all volumes from catalog
-    const allVolumes: VolumeMetadata[] = [];
-    for (const series of $catalog) {
-      allVolumes.push(...series.volumes);
-    }
-
-    if (allVolumes.length === 0) {
-      showSnackbar('No volumes to backup', 'error');
-      return;
-    }
-
-    // Filter out already backed up volumes
-    const volumesToBackup = allVolumes.filter(vol =>
-      !driveFilesCache.existsInDrive(vol.series_title, vol.volume_title)
-    );
-
-    const skippedCount = allVolumes.length - volumesToBackup.length;
-
-    if (volumesToBackup.length === 0) {
-      showSnackbar('All volumes already backed up', 'info');
-      return;
-    }
-
-    const processId = 'backup-all';
-    progressTrackerStore.addProcess({
-      id: processId,
-      description: `Backing up ${volumesToBackup.length} volumes`,
-      progress: 0,
-      status: skippedCount > 0 ? `Skipping ${skippedCount} already backed up` : 'Starting backup...'
-    });
-
-    let completedCount = 0;
-    let failedCount = 0;
-
-    for (let i = 0; i < volumesToBackup.length; i++) {
-      const volume = volumesToBackup[i];
-
-      try {
-        progressTrackerStore.updateProcess(processId, {
-          progress: (i / volumesToBackup.length) * 100,
-          status: `Backing up ${volume.series_title} - ${volume.volume_title}...`
-        });
-
-        await backupVolumeToDrive(volume);
-        completedCount++;
-      } catch (error) {
-        console.error(`Failed to backup ${volume.volume_title}:`, error);
-        failedCount++;
-      }
-    }
-
-    progressTrackerStore.updateProcess(processId, {
-      progress: 100,
-      status: `Backup complete (${completedCount} succeeded, ${failedCount} failed${skippedCount > 0 ? `, ${skippedCount} skipped` : ''})`
-    });
-
-    setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
-
-    if (failedCount === 0) {
-      const message = skippedCount > 0
-        ? `${completedCount} volumes backed up, ${skippedCount} already backed up`
-        : 'All volumes backed up successfully';
-      showSnackbar(message, 'success');
-    } else {
-      showSnackbar(`Backup completed with ${failedCount} failures`, 'error');
-    }
-  }
 </script>
 
 <svelte:head>
@@ -810,12 +734,12 @@
       </p>
       <div class="flex flex-col gap-4 w-full max-w-3xl">
         <Button color="blue" on:click={createPicker}>Download Manga</Button>
-
+        
         <div class="flex flex-col gap-2">
           <div class="flex items-center gap-2">
-            <Toggle
-              size="small"
-              checked={$miscSettings.throttleDownloads}
+            <Toggle 
+              size="small" 
+              checked={$miscSettings.throttleDownloads} 
               on:change={() => updateMiscSetting('throttleDownloads', !$miscSettings.throttleDownloads)}
             >
               <span class="flex items-center gap-2">
@@ -827,22 +751,13 @@
             Helps prevent crashes on low memory devices or for extremely large downloads.
           </p>
         </div>
-
+        
         <div class="flex-col gap-2 flex">
           <Button
             color="dark"
             on:click={performSync}
           >
             Sync read progress
-          </Button>
-        </div>
-
-        <div class="flex-col gap-2 flex">
-          <Button
-            color="purple"
-            on:click={() => promptConfirmation('Backup all series to Google Drive?', backupAllSeries)}
-          >
-            Backup all series to Drive
           </Button>
         </div>
         <div class="flex-col gap-2 flex">

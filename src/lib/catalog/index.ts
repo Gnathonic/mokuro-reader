@@ -4,8 +4,6 @@ import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
-import { reconcileDriveWithLocal } from '$lib/catalog/placeholders';
-import { driveFilesCache, tokenManager } from '$lib/util/google-drive';
 
 function sortVolumes(a: VolumeMetadata, b: VolumeMetadata) {
   if (a.volume_title < b.volume_title) {
@@ -36,23 +34,9 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   return () => subscription.unsubscribe();
 });
 
-// Catalog merges local volumes with Drive placeholders
-// When authenticated, adds placeholder volumes for Drive-only files
-export const catalog = derived(
-  [volumes, driveFilesCache.store, tokenManager.token],
-  ([$volumes, $driveCache, $token]) => {
-    const localVolumes = Object.values($volumes);
-
-    // If authenticated and cache is populated, reconcile with Drive synchronously
-    if ($token && $driveCache.size > 0) {
-      const driveFiles = Array.from($driveCache.values());
-      const reconciledVolumes = reconcileDriveWithLocal(localVolumes, driveFiles);
-      return deriveSeriesFromVolumes(reconciledVolumes);
-    }
-
-    // Return local volumes only if not authenticated
-    return deriveSeriesFromVolumes(localVolumes);
-  }
+// Each derived store needs to be passed as an array if using multiple inputs
+export const catalog = derived([volumes], ([$volumes]) =>
+  deriveSeriesFromVolumes(Object.values($volumes))
 );
 
 export const currentSeries = derived([page, catalog], ([$page, $catalog]) =>
