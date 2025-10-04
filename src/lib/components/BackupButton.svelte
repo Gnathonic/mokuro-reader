@@ -3,7 +3,7 @@
   import { CloudArrowUpOutline, CheckCircleSolid, TrashBinSolid } from 'flowbite-svelte-icons';
   import { backupVolumeToDrive } from '$lib/util';
   import { showSnackbar } from '$lib/util';
-  import { tokenManager, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
+  import { accessTokenStore, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
   import type { VolumeMetadata } from '$lib/types';
   import type { DriveFileMetadata } from '$lib/util/google-drive';
 
@@ -17,29 +17,14 @@
   let isBackingUp = $state(false);
   let currentStep = $state('');
 
-  let token = $state('');
-  $effect(() => {
-    return tokenManager.token.subscribe(value => {
-      token = value;
-    });
-  });
-
-  let isAuthenticated = $derived(token !== '');
-
-  // Subscribe to Drive files cache
-  let driveCache = $state<Map<string, DriveFileMetadata>>(new Map());
-  $effect(() => {
-    return driveFilesCache.store.subscribe(value => {
-      driveCache = value;
-    });
-  });
+  let isAuthenticated = $derived($accessTokenStore !== '');
 
   // Check if this volume exists in Drive (by parent/filename path)
   let expectedPath = $derived(`${volume.series_title}/${volume.volume_title}.cbz`);
   let isBackedUp = $derived.by(() => {
-    const exists = driveCache.has(expectedPath);
+    const exists = $driveFilesCache.store.has(expectedPath);
     console.log(`Checking backup status for: ${expectedPath}, exists: ${exists}`);
-    console.log('Cache keys:', Array.from(driveCache.keys()));
+    console.log('Cache keys:', Array.from($driveFilesCache.store.keys()));
     return exists;
   });
 

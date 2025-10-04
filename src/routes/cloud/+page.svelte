@@ -31,22 +31,18 @@
   import { catalog } from '$lib/catalog';
   import type { VolumeMetadata } from '$lib/types';
 
-  // Subscribe to stores
+  // Subscribe to stores using $state for writable values
   let accessToken = $state('');
   let readerFolderId = $state('');
   let volumeDataId = $state('');
   let profilesId = $state('');
-  let tokenClient = $state(null);
 
+  // Manually sync store values without circular subscription
   $effect(() => {
-    const unsubscribers = [
-      accessTokenStore.subscribe(value => { accessToken = value; }),
-      readerFolderIdStore.subscribe(value => { readerFolderId = value.reader; }),
-      volumeDataIdStore.subscribe(value => { volumeDataId = value; }),
-      profilesIdStore.subscribe(value => { profilesId = value; }),
-      tokenClientStore.subscribe(value => { tokenClient = value; })
-    ];
-    return () => unsubscribers.forEach(unsub => unsub());
+    accessToken = $accessTokenStore;
+    readerFolderId = $readerFolderIdStore.reader;
+    volumeDataId = $volumeDataIdStore;
+    profilesId = $profilesIdStore;
   });
 
   // Use constants from the google-drive utility

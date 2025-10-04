@@ -12,7 +12,7 @@
   import { page } from '$app/stores';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, mangaStats } from '$lib/settings';
-  import { tokenManager, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
+  import { accessTokenStore, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
   import { CloudArrowUpOutline, DownloadOutline, TrashBinSolid } from 'flowbite-svelte-icons';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
@@ -28,58 +28,31 @@
 
   let loading = $state(false);
 
-  // Track backup state from progress tracker
-  let progressState = $state($progressTrackerStore);
-  $effect(() => {
-    return progressTrackerStore.subscribe(value => {
-      progressState = value;
-    });
-  });
-
   let seriesTitle = $derived(manga?.[0]?.series_title || '');
   let backupProcessId = $derived(`backup-series-${seriesTitle}`);
   let downloadProcessId = $derived(`download-series-${seriesTitle}`);
 
-
-  let backupProcess = $derived.by(() => {
-    return progressState.processes.find(p => p.id === backupProcessId);
-  });
-
+  let backupProcess = $derived($progressTrackerStore.processes.find(p => p.id === backupProcessId));
   let backingUpSeries = $derived(!!backupProcess);
   let backupProgress = $derived(backupProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
-  let downloadProcess = $derived.by(() => {
-    return progressState.processes.find(p => p.id === downloadProcessId);
-  });
 
+  let downloadProcess = $derived($progressTrackerStore.processes.find(p => p.id === downloadProcessId));
   let downloadingSeries = $derived(!!downloadProcess);
   let downloadProgress = $derived(downloadProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
 
-  let token = $state('');
-  $effect(() => {
-    return tokenManager.token.subscribe(value => {
-      token = value;
-    });
-  });
-
-  let isAuthenticated = $derived(token !== '');
+  let isAuthenticated = $derived($accessTokenStore !== '');
 
   // Check if all volumes in series are backed up
-  let driveCache = $state(new Map());
-  $effect(() => {
-    return driveFilesCache.store.subscribe(value => {
-      driveCache = value;
-    });
-  });
-
   let allBackedUp = $derived.by(() => {
     if (!manga || manga.length === 0) return false;
-    return manga.every(vol => driveCache.has(`${vol.series_title}/${vol.volume_title}.cbz`));
+    return manga.every(vol => $driveFilesCache.store.has(`${vol.series_title}/${vol.volume_title}.cbz`));
   });
 
   let anyBackedUp = $derived.by(() => {
     if (!manga || manga.length === 0) return false;
-    return manga.some(vol => driveCache.has(`${vol.series_title}/${vol.volume_title}.cbz`));
+    return manga.some(vol => $driveFilesCache.store.has(`${vol.series_title}/${vol.volume_title}.cbz`));
   });
+
   let anyPlaceholders = $derived.by(() => {
     if (!manga || manga.length === 0) return false;
     return manga.some(vol => vol.isPlaceholder);
