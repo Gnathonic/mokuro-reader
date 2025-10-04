@@ -2,17 +2,13 @@
   import { catalog } from '$lib/catalog';
   import { goto } from '$app/navigation';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
-  import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
-  import { Button, Listgroup, Spinner } from 'flowbite-svelte';
+  import { Button, Listgroup } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
-  import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
+  import { promptConfirmation, zipManga } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { page } from '$app/stores';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, mangaStats } from '$lib/settings';
-  import { accessTokenStore, driveFilesCache, driveApiClient } from '$lib/util/google-drive';
-  import { CloudArrowUpOutline, DownloadOutline, TrashBinSolid } from 'flowbite-svelte-icons';
 
   function sortManga(a: VolumeMetadata, b: VolumeMetadata) {
     return a.volume_title.localeCompare(b.volume_title, undefined, {
@@ -26,39 +22,6 @@
   );
 
   let loading = $state(false);
-
-  let seriesTitle = $derived(manga?.[0]?.series_title || '');
-  let backupProcessId = $derived(`backup-series-${seriesTitle}`);
-  let downloadProcessId = $derived(`download-series-${seriesTitle}`);
-
-  let backupProcess = $derived($progressTrackerStore.processes.find(p => p.id === backupProcessId));
-  let backingUpSeries = $derived(!!backupProcess);
-  let backupProgress = $derived(backupProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
-
-  let downloadProcess = $derived($progressTrackerStore.processes.find(p => p.id === downloadProcessId));
-  let downloadingSeries = $derived(!!downloadProcess);
-  let downloadProgress = $derived(downloadProcess?.status?.match(/(\d+\/\d+)/)?.[1] || '');
-
-  let isAuthenticated = $derived($accessTokenStore !== '');
-
-  // Extract drive cache store to avoid property chain subscription
-  const driveCacheStore = driveFilesCache.store;
-
-  // Check if all volumes in series are backed up
-  let allBackedUp = $derived.by(() => {
-    if (!manga || manga.length === 0) return false;
-    return manga.every(vol => $driveCacheStore.has(`${vol.series_title}/${vol.volume_title}.cbz`));
-  });
-
-  let anyBackedUp = $derived.by(() => {
-    if (!manga || manga.length === 0) return false;
-    return manga.some(vol => $driveCacheStore.has(`${vol.series_title}/${vol.volume_title}.cbz`));
-  });
-
-  let anyPlaceholders = $derived.by(() => {
-    if (!manga || manga.length === 0) return false;
-    return manga.some(vol => vol.isPlaceholder);
-  });
 
   async function confirmDelete(deleteStats = false) {
     const seriesUuid = manga?.[0].series_uuid;
