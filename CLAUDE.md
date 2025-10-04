@@ -80,6 +80,60 @@ src/
   - `miscSettings` (settings/misc.ts): Global app settings
   - Token stores in `google-drive/token-manager.ts`: OAuth tokens and auth state
 
+#### **CRITICAL: Svelte 5 Store Subscription Patterns**
+
+**NEVER use manual `.subscribe()` calls inside `$effect()` in Svelte 5 components. This causes circular dependency errors.**
+
+❌ **WRONG - DO NOT USE:**
+```svelte
+let value = $state('');
+$effect(() => {
+  return someStore.subscribe(v => { value = v; });
+});
+```
+
+❌ **WRONG - DO NOT USE:**
+```svelte
+let value = $state('');
+$effect(() => {
+  const unsub = someStore.subscribe(v => { value = v; });
+  return unsub;
+});
+```
+
+✅ **CORRECT - Use `$derived` with store auto-subscription:**
+```svelte
+let value = $derived($someStore);
+```
+
+✅ **CORRECT - Direct store access in templates:**
+```svelte
+<p>{$someStore}</p>
+```
+
+✅ **CORRECT - For objects with store properties, extract first:**
+```svelte
+const store = objectWithStore.store;  // Extract the store reference
+let value = $derived($store);         // Then use $ prefix
+```
+
+❌ **WRONG - Cannot use $ on property chains:**
+```svelte
+let value = $derived($objectWithStore.store);  // ERROR!
+```
+
+**This pattern applies to ALL stores including:**
+- `tokenManager.token` → Use `accessTokenStore` export instead
+- `driveFilesCache.store` → Extract to `const cache = driveFilesCache.store` first
+- `progressTrackerStore` → Use `$progressTrackerStore` directly
+- Any writable/readable/derived store
+
+**Common errors indicating this issue:**
+- "Cannot access 'or' before initialization"
+- "e.subscribe is not a function"
+- Circular dependency errors
+- Navigation/UI elements not responding to clicks
+
 ### Google Drive Integration
 
 Located in `src/lib/util/google-drive/`, the integration is modular:

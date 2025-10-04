@@ -19,12 +19,15 @@
 
   let isAuthenticated = $derived($accessTokenStore !== '');
 
+  // Get the store reference once
+  const driveCache = driveFilesCache.store;
+
   // Check if this volume exists in Drive (by parent/filename path)
   let expectedPath = $derived(`${volume.series_title}/${volume.volume_title}.cbz`);
   let isBackedUp = $derived.by(() => {
-    const exists = $driveFilesCache.store.has(expectedPath);
+    const exists = $driveCache.has(expectedPath);
     console.log(`Checking backup status for: ${expectedPath}, exists: ${exists}`);
-    console.log('Cache keys:', Array.from($driveFilesCache.store.keys()));
+    console.log('Cache keys:', Array.from($driveCache.keys()));
     return exists;
   });
 
