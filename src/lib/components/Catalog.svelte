@@ -117,20 +117,20 @@
       {:else}
         <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
           {#if $miscSettings.galleryLayout === 'grid'}
-            {#each sortedCatalog as { series_uuid } (series_uuid)}
-              {#if isSeriesPlaceholder($catalog.find(s => s.series_uuid === series_uuid)?.volumes || [])}
-                <PlaceholderCatalogItem series={$catalog.find(s => s.series_uuid === series_uuid)!} />
+            {#each sortedCatalog as series (series.series_uuid)}
+              {#if isSeriesPlaceholder(series.volumes)}
+                <PlaceholderCatalogItem {series} />
               {:else}
-              <CatalogItem {series_uuid} />
+              <CatalogItem series_uuid={series.series_uuid} />
               {/if}
             {/each}
           {:else}
             <Listgroup active class="w-full">
-              {#each sortedCatalog as { series_uuid } (series_uuid)}
-              {#if isSeriesPlaceholder($catalog.find(s => s.series_uuid === series_uuid)?.volumes || [])}
-                <PlaceholderCatalogItem series={$catalog.find(s => s.series_uuid === series_uuid)!} />
+              {#each sortedCatalog as series (series.series_uuid)}
+              {#if isSeriesPlaceholder(series.volumes)}
+                <PlaceholderCatalogItem {series} />
               {:else}
-                <CatalogListItem {series_uuid} />
+                <CatalogListItem series_uuid={series.series_uuid} />
               {/if}
               {/each}
             </Listgroup>
