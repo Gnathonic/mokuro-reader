@@ -67,7 +67,7 @@
       <button
         onclick={handleSync}
         class="flex items-center justify-center w-6 h-6"
-        title={$accessTokenStore ? "Sync read progress with Google Drive" : "Sign in to sync"}
+        title="Sync read progress"
       >
         <RefreshOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
       </button>
