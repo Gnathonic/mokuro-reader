@@ -92,12 +92,25 @@ class DriveApiClient {
 
   async listFiles(query: string, fields = 'files(id, name, mimeType)'): Promise<DriveFile[]> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.list({
-        q: query,
-        fields,
-        pageSize: 1000
-      });
-      return result.files || [];
+      const allFiles: DriveFile[] = [];
+      let pageToken: string | undefined = undefined;
+
+      do {
+        const { result } = await gapi.client.drive.files.list({
+          q: query,
+          fields: `nextPageToken, ${fields}`,
+          pageSize: 1000,
+          pageToken
+        });
+
+        if (result.files) {
+          allFiles.push(...(result.files as DriveFile[]));
+        }
+
+        pageToken = result.nextPageToken;
+      } while (pageToken);
+
+      return allFiles;
     });
   }
 
