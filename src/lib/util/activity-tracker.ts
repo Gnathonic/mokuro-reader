@@ -44,7 +44,9 @@ class ActivityTracker {
    * Set the inactivity timeout duration
    */
   setTimeoutDuration(minutes: number) {
-    this.timeoutDuration = minutes * 60 * 1000;
+    // Sanity check: ensure minutes is a valid positive number, default to 5 if invalid
+    const validMinutes = (typeof minutes === 'number' && minutes > 0 && !isNaN(minutes)) ? minutes : 5;
+    this.timeoutDuration = validMinutes * 60 * 1000;
     // Restart the timer with new duration if currently active
     if (this.timeoutId !== null) {
       this.recordActivity();

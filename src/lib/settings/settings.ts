@@ -113,8 +113,26 @@ const defaultProfiles: Profiles = {
 };
 
 const storedProfiles = browser ? window.localStorage.getItem('profiles') : undefined;
-const initialProfiles: Profiles =
-  storedProfiles && browser ? JSON.parse(storedProfiles) : defaultProfiles;
+const parsedProfiles: Profiles = storedProfiles && browser ? JSON.parse(storedProfiles) : defaultProfiles;
+
+// Merge stored profiles with default settings to ensure new fields have default values
+const initialProfiles: Profiles = Object.keys(parsedProfiles).reduce((acc, profileName) => {
+  const storedProfile = parsedProfiles[profileName];
+  acc[profileName] = {
+    ...defaultSettings,
+    ...storedProfile,
+    volumeDefaults: {
+      ...defaultSettings.volumeDefaults,
+      ...storedProfile.volumeDefaults
+    },
+    ankiConnectSettings: {
+      ...defaultSettings.ankiConnectSettings,
+      ...storedProfile.ankiConnectSettings
+    }
+  };
+  return acc;
+}, {} as Profiles);
+
 export const profiles = writable<Profiles>(initialProfiles);
 
 const storedCurrentProfile = browser
@@ -135,7 +153,7 @@ currentProfile.subscribe((currentProfile) => {
 });
 
 export const settings = derived([profiles, currentProfile], ([profiles, currentProfile]) => {
-  return profiles[currentProfile];
+  return profiles[currentProfile] || profiles['Default'] || defaultSettings;
 });
 
 export function updateSetting(key: SettingsKey, value: any) {
