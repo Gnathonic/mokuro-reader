@@ -207,6 +207,9 @@
     // Set the timeout duration from settings
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
 
+    // Start tracking activity immediately
+    activityTracker.recordActivity();
+
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();

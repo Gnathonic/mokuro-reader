@@ -44,6 +44,9 @@
       }
     });
 
+    // Start the timer immediately when component mounts
+    startTimer();
+
     return () => {
       stopTimer();
     };
