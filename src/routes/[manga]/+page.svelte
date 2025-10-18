@@ -258,7 +258,7 @@
     }
 
     // Add volumes to backup queue
-    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider.type);
+    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
 
     showSnackbar(`Added ${volumesToBackup.length} volume(s) to backup queue`);
   }

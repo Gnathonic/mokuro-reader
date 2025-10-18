@@ -11,7 +11,7 @@ export type ExtractionSettingsKey = keyof ExtractionSettings;
 
 const defaultSettings: ExtractionSettings = {
   asCbz: true,
-  individualVolumes: false,
+  individualVolumes: true,
   includeSeriesTitle: true
 };
 

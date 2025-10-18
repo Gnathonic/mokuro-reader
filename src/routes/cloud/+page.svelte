@@ -29,7 +29,7 @@
   import type { DriveState } from '$lib/util/google-drive';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { get } from 'svelte/store';
-  import { Badge, Button, Radio } from 'flowbite-svelte';
+  import { Badge, Button, Radio, Toggle } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid } from 'flowbite-svelte-icons';
   import { catalog } from '$lib/catalog';
@@ -910,7 +910,7 @@
     }
 
     // Add all volumes to the backup queue
-    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider.type);
+    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
 
     // Show notification
     const message = skippedCount > 0
@@ -1074,16 +1074,29 @@
         <Button color="blue" on:click={createPicker}>Download Manga</Button>
 
         <div class="flex flex-col gap-2">
-          <div class="text-sm font-medium">Device RAM Configuration</div>
-          <div class="flex gap-4">
-            <Radio name="ram-config" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
-            <Radio name="ram-config" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
-            <Radio name="ram-config" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
-            <Radio name="ram-config" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+          <div class="flex items-center gap-3">
+            <Toggle bind:checked={$miscSettings.turboMode} on:change={() => updateMiscSetting('turboMode', $miscSettings.turboMode)}>
+              Turbo Mode
+            </Toggle>
           </div>
           <p class="text-xs text-gray-500">
-            Configure your device's RAM to optimize download performance and prevent memory issues.
+            For users with fast internet and a lack of patience. Enables parallel downloads/uploads.
           </p>
+
+          {#if $miscSettings.turboMode}
+            <div class="flex flex-col gap-2 mt-2">
+              <div class="text-sm font-medium">Device RAM Configuration</div>
+              <div class="flex gap-4">
+                <Radio name="ram-config" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
+                <Radio name="ram-config" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
+                <Radio name="ram-config" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
+                <Radio name="ram-config" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+              </div>
+              <p class="text-xs text-gray-500">
+                Configure your device's RAM to optimize parallel download performance and prevent memory issues.
+              </p>
+            </div>
+          {/if}
         </div>
 
         <div class="flex-col gap-2 flex">
@@ -1140,16 +1153,29 @@
             </p>
 
             <div class="flex flex-col gap-2">
-              <div class="text-sm font-medium">Device RAM Configuration</div>
-              <div class="flex gap-4">
-                <Radio name="ram-config-mega" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
-                <Radio name="ram-config-mega" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
-                <Radio name="ram-config-mega" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
-                <Radio name="ram-config-mega" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+              <div class="flex items-center gap-3">
+                <Toggle bind:checked={$miscSettings.turboMode} on:change={() => updateMiscSetting('turboMode', $miscSettings.turboMode)}>
+                  Turbo Mode
+                </Toggle>
               </div>
               <p class="text-xs text-gray-500">
-                Configure your device's RAM to optimize download performance and prevent memory issues.
+                For users with fast internet and a lack of patience. Enables parallel downloads/uploads.
               </p>
+
+              {#if $miscSettings.turboMode}
+                <div class="flex flex-col gap-2 mt-2">
+                  <div class="text-sm font-medium">Device RAM Configuration</div>
+                  <div class="flex gap-4">
+                    <Radio name="ram-config-mega" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
+                    <Radio name="ram-config-mega" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
+                    <Radio name="ram-config-mega" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
+                    <Radio name="ram-config-mega" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+                  </div>
+                  <p class="text-xs text-gray-500">
+                    Configure your device's RAM to optimize parallel download performance and prevent memory issues.
+                  </p>
+                </div>
+              {/if}
             </div>
 
             <Button color="blue" on:click={handleMegaSync}>
@@ -1192,16 +1218,29 @@
             </p>
 
             <div class="flex flex-col gap-2">
-              <div class="text-sm font-medium">Device RAM Configuration</div>
-              <div class="flex gap-4">
-                <Radio name="ram-config-mega" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
-                <Radio name="ram-config-mega" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
-                <Radio name="ram-config-mega" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
-                <Radio name="ram-config-mega" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+              <div class="flex items-center gap-3">
+                <Toggle bind:checked={$miscSettings.turboMode} on:change={() => updateMiscSetting('turboMode', $miscSettings.turboMode)}>
+                  Turbo Mode
+                </Toggle>
               </div>
               <p class="text-xs text-gray-500">
-                Configure your device's RAM to optimize download performance and prevent memory issues.
+                For users with fast internet and a lack of patience. Enables parallel downloads/uploads.
               </p>
+
+              {#if $miscSettings.turboMode}
+                <div class="flex flex-col gap-2 mt-2">
+                  <div class="text-sm font-medium">Device RAM Configuration</div>
+                  <div class="flex gap-4">
+                    <Radio name="ram-config-webdav" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
+                    <Radio name="ram-config-webdav" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
+                    <Radio name="ram-config-webdav" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
+                    <Radio name="ram-config-webdav" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+                  </div>
+                  <p class="text-xs text-gray-500">
+                    Configure your device's RAM to optimize parallel download performance and prevent memory issues.
+                  </p>
+                </div>
+              {/if}
             </div>
 
             <Button color="blue" on:click={handleWebDAVSync}>

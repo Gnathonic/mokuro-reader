@@ -82,12 +82,12 @@
     <h3 class="mb-5 text-lg font-normal text-gray-700 dark:text-gray-300">Extract Options</h3>
     <div class="flex flex-col gap-4 mb-5">
       <div class="flex items-center justify-between">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract as CBZ</span>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract as CBZ (recommended)</span>
         <Toggle checked={asCbz} on:change={(e) => updateAsCbz(e.target.checked)} />
       </div>
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
-          >Extract individual volumes</span
+          >Extract individual volumes (recommended)</span
         >
         <Toggle checked={individualVolumes} on:change={(e) => updateIndividualVolumes(e.target.checked)} />
       </div>
