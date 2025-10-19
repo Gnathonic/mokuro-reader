@@ -1,7 +1,7 @@
 import { writable, get } from 'svelte/store';
 import type { VolumeMetadata, VolumeData } from '$lib/types';
 import { progressTrackerStore } from './progress-tracker';
-import type { WorkerPool, WorkerTask } from './worker-pool';
+import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
 import { tokenManager } from './google-drive/token-manager';
 import { showSnackbar } from './snackbar';
@@ -9,11 +9,11 @@ import { db } from '$lib/catalog/db';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { driveApiClient } from './google-drive/api-client';
 import { driveFilesCache } from './google-drive/drive-files-cache';
-import { miscSettings } from '$lib/settings/misc';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import { getCloudFileId, getCloudProvider, getCloudSize, getCloudModifiedTime } from './cloud-fields';
 import type { ProviderType } from './sync/provider-interface';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
+import { getFileProcessingPool, incrementPoolUsers, decrementPoolUsers } from './file-processing-pool';
 
 export interface QueueItem {
 	volumeUuid: string;
@@ -50,9 +50,7 @@ interface DecompressedEntry {
 // Internal queue state
 const queueStore = writable<QueueItem[]>([]);
 
-// Shared worker pool for all downloads
-let workerPool: WorkerPool | null = null;
-let poolInitPromise: Promise<WorkerPool> | null = null;
+// Track if this queue is currently using the shared pool
 let processingStarted = false;
 
 // Track MEGA share links that need cleanup after download
@@ -85,15 +83,6 @@ export function queueVolume(volume: VolumeMetadata): void {
 	const cloudFileId = getCloudFileId(volume);
 	const cloudProvider = getCloudProvider(volume);
 
-	console.log('[Download Queue] queueVolume called:', {
-		isPlaceholder: volume.isPlaceholder,
-		volumeTitle: volume.volume_title,
-		cloudFileId,
-		cloudProvider,
-		volumeCloudProvider: volume.cloudProvider,
-		volumeDriveFileId: volume.driveFileId
-	});
-
 	if (!volume.isPlaceholder || !cloudFileId || !cloudProvider) {
 		console.warn('Can only queue placeholder volumes with cloud file IDs');
 		return;
@@ -124,7 +113,6 @@ export function queueVolume(volume: VolumeMetadata): void {
 	queueStore.update(q => [...q, queueItem]);
 
 	// Always call processQueue to handle newly added items
-	// It will only process items with status 'queued'
 	processQueue();
 }
 
@@ -184,57 +172,6 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
 	};
 }
 
-/**
- * Initialize worker pool based on user-configured RAM setting
- * Uses promise-based mutex to prevent race conditions with concurrent calls
- */
-async function initializeWorkerPool(): Promise<WorkerPool> {
-	// Return existing pool if already created
-	if (workerPool) {
-		return workerPool;
-	}
-
-	// If already initializing, wait for that to complete
-	if (poolInitPromise) {
-		return poolInitPromise;
-	}
-
-	// Start initialization and store the promise
-	poolInitPromise = (async () => {
-		// Dynamically import WorkerPool to reduce initial bundle size
-		const { WorkerPool: WorkerPoolClass } = await import('./worker-pool');
-
-		let maxWorkers: number;
-		let memoryLimitMB: number;
-
-		// Get user's RAM configuration
-		let deviceRamGB = 4; // Default
-		miscSettings.subscribe(value => {
-			deviceRamGB = value.deviceRamGB ?? 4;
-		})();
-
-		// Memory limit: 1/8th of configured RAM (e.g., 16GB = 2048MB limit)
-		memoryLimitMB = (deviceRamGB * 1024) / 8;
-
-		// Worker count: scale with RAM, minimum 2, cap at 8
-		// Use 1.5x RAM in GB as base (e.g., 4GB = 6 workers, 16GB = 24 workers → capped at 8)
-		// Cap at 8 to avoid overwhelming cloud services and saturating network bandwidth
-		const calculatedWorkers = Math.max(2, Math.floor(deviceRamGB * 1.5));
-		maxWorkers = Math.min(8, calculatedWorkers);
-
-		console.log(`Download queue: ${maxWorkers} workers, ${memoryLimitMB}MB limit (${deviceRamGB}GB configured)`);
-
-		workerPool = new WorkerPoolClass(undefined, maxWorkers, memoryLimitMB);
-		return workerPool;
-	})();
-
-	try {
-		return await poolInitPromise;
-	} finally {
-		// Clear the promise after completion (success or failure)
-		poolInitPromise = null;
-	}
-}
 
 /**
  * Decompress a CBZ file blob into entries
@@ -433,13 +370,12 @@ function handleDownloadError(item: QueueItem, processId: string, errorMessage: s
 }
 
 /**
- * Check if queue is empty and terminate worker pool if so
+ * Check if queue is empty and release shared pool if so
  */
 function checkAndTerminatePool(): void {
 	const currentQueue = get(queueStore);
-	if (currentQueue.length === 0 && workerPool) {
-		workerPool.terminate();
-		workerPool = null;
+	if (currentQueue.length === 0 && processingStarted) {
+		decrementPoolUsers();
 		processingStarted = false;
 	}
 }
@@ -473,24 +409,20 @@ async function cleanupMegaShareLink(fileId: string): Promise<void> {
  * - MEGA: Workers download from share link via MEGA API and decompress
  */
 async function processDownload(item: QueueItem, processId: string): Promise<void> {
+	// Get the active provider (single-provider architecture - only one provider active at a time)
 	const provider = unifiedCloudManager.getActiveProvider();
 
 	if (!provider) {
-		handleDownloadError(item, processId, 'No cloud provider authenticated');
+		handleDownloadError(item, processId, `No cloud provider authenticated`);
 		return;
 	}
 
-	const pool = await initializeWorkerPool();
+	const pool = await getFileProcessingPool();
 	const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
 	// Check if provider supports worker downloads
 	if (provider.supportsWorkerDownload) {
 		// Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
-		console.log(`[Download Queue] Using worker download for ${provider.name}`);
-
-		// Get provider credentials (for MEGA, this creates a temporary share link)
-		const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
-
 		// Estimate memory requirement (download + decompress + processing overhead)
 		// More accurate multiplier: compressed file + decompressed data + working memory
 		const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
@@ -509,14 +441,22 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
 		const task: WorkerTask = {
 			id: item.cloudFileId,
 			memoryRequirement,
+			provider: `${provider.type}:download`, // Provider:operation identifier for concurrency tracking
+			providerConcurrencyLimit: provider.downloadConcurrencyLimit, // Provider's download limit
 			metadata: workerMetadata,
-			data: {
-				mode: 'download-and-decompress',
-				provider: provider.type,
-				fileId: item.cloudFileId,
-				fileName: item.volumeTitle + '.cbz',
-				credentials,
-				metadata: workerMetadata
+			// Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
+			prepareData: async () => {
+				// Get provider credentials (for MEGA, this creates a temporary share link)
+				const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
+
+				return {
+					mode: 'download-and-decompress',
+					provider: provider.type,
+					fileId: item.cloudFileId,
+					fileName: item.volumeTitle + '.cbz',
+					credentials,
+					metadata: workerMetadata
+				};
 			},
 			onProgress: data => {
 				const percent = Math.round((data.loaded / data.total) * 100);
@@ -542,6 +482,9 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
 					showSnackbar(`Downloaded ${item.volumeTitle} successfully`);
 					queueStore.update(q => q.filter(i => i.volumeUuid !== item.volumeUuid));
 					setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+
+					// Process next item in queue
+					processQueue();
 				} catch (error) {
 					console.error(`Failed to process ${item.volumeTitle}:`, error);
 					handleDownloadError(item, processId, error instanceof Error ? error.message : 'Unknown error');
@@ -558,6 +501,9 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
 				await cleanupMegaShareLink(item.cloudFileId);
 				handleDownloadError(item, processId, data.error);
 				checkAndTerminatePool();
+
+				// Process next item in queue even after error
+				processQueue();
 			}
 		};
 
@@ -567,43 +513,59 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
 
 /**
  * Process the queue - unified download handling for all providers
- * Processes all queued items concurrently (respecting worker pool limits)
+ * Processes items one at a time to preserve queue ordering
+ * When a download completes, processQueue() is called again to start the next item
  */
-function processQueue(): void {
+async function processQueue(): Promise<void> {
+	// CRITICAL: Take queue snapshot BEFORE any await points
+	// This prevents race conditions where multiple processQueue() calls interleave
 	const queue = get(queueStore);
 	const queuedItems = queue.filter(item => item.status === 'queued');
 
-	// Mark processing as started if we have queued items
-	if (queuedItems.length > 0) {
+	// Mark processing as started and register as pool user if we have queued items
+	if (queuedItems.length > 0 && !processingStarted) {
 		processingStarted = true;
+		incrementPoolUsers();
+
+		// Pre-initialize the pool BEFORE processing any items
+		// This prevents the race condition where multiple downloads wait for pool initialization
+		// and then resume in scrambled order
+		await getFileProcessingPool();
 	}
 
-	// Process each queued item (worker pool will handle concurrency limits)
-	queuedItems.forEach(item => {
-		// Mark as downloading
-		queueStore.update(q =>
-			q.map(i => (i.volumeUuid === item.volumeUuid ? { ...i, status: 'downloading' as const } : i))
-		);
+	// Process only the FIRST queued item to preserve ordering
+	// When it completes, it will call processQueue() again to process the next item
+	// This ensures downloads complete in the order they were queued
+	const item = queuedItems[0];
+	if (!item) {
+		return; // No queued items
+	}
 
-		const processId = `download-${item.cloudFileId}`;
+	// Get active provider (single-provider architecture)
+	const provider = unifiedCloudManager.getActiveProvider();
+	if (!provider) {
+		console.error(`[Download Queue] No cloud provider authenticated, skipping ${item.volumeTitle}`);
+		return;
+	}
 
-		// Add progress tracker
-		progressTrackerStore.addProcess({
-			id: processId,
-			description: `Downloading ${item.volumeTitle}`,
-			progress: 0,
-			status: 'Starting download...'
-		});
+	// Mark as downloading
+	queueStore.update(q =>
+		q.map(i => (i.volumeUuid === item.volumeUuid ? { ...i, status: 'downloading' as const } : i))
+	);
 
-		console.log('[Download Queue] Processing download:', {
-			volumeTitle: item.volumeTitle,
-			cloudProvider: item.cloudProvider
-		});
+	const processId = `download-${item.cloudFileId}`;
 
-		// Start download (worker pool handles concurrency)
-		// Don't await - let multiple downloads run concurrently
-		processDownload(item, processId);
+	// Add progress tracker
+	progressTrackerStore.addProcess({
+		id: processId,
+		description: `Downloading ${item.volumeTitle}`,
+		progress: 0,
+		status: 'Starting download...'
 	});
+
+	// Start download - process one at a time to preserve queue ordering
+	// When this completes, onComplete will call processQueue() to start the next item
+	processDownload(item, processId);
 }
 
 // Export the store for reactive subscriptions

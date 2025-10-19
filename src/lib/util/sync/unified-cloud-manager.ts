@@ -156,11 +156,9 @@ class UnifiedCloudManager {
 
 		await provider.deleteVolumeCbz(fileId);
 
-		// Remove from cache via cacheManager
-		const cache = cacheManager.getCache(provider.type);
-		if (cache && cache.removeById) {
-			cache.removeById(fileId);
-		}
+		// Refresh cache from server to ensure UI updates correctly
+		// This prevents stale cache showing deleted files as still existing
+		await this.fetchAllCloudVolumes();
 	}
 
 	/**
@@ -184,13 +182,9 @@ class UnifiedCloudManager {
 			try {
 				await (provider as any).deleteSeriesFolder(seriesTitle);
 
-				// Remove all volumes from cache
-				const cache = cacheManager.getCache(provider.type);
-				if (cache && cache.removeById) {
-					for (const volume of seriesVolumes) {
-						cache.removeById(volume.fileId);
-					}
-				}
+				// Refresh cache from server to ensure ALL entries (including optimistic ones) are cleared
+				// This is more reliable than manual removeById which could miss optimistic entries
+				await this.fetchAllCloudVolumes();
 
 				return { succeeded: seriesVolumes.length, failed: 0 };
 			} catch (error) {

@@ -1,7 +1,6 @@
 // Worker pool for managing parallel downloads and decompression
 
-// Import the worker scripts using Vite's worker plugin
-import UniversalDownloadWorker from '$lib/workers/universal-download-worker.ts?worker';
+import { sharedMemoryManager } from './shared-memory-manager';
 
 export interface VolumeMetadata {
   volumeUuid: string;
@@ -17,6 +16,8 @@ export interface WorkerTask {
   data?: any; // Direct data to send to worker (if prepareData is not used)
   prepareData?: () => Promise<any>; // Lazy data preparation function (called just before worker starts)
   memoryRequirement?: number; // Memory requirement in bytes
+  provider?: string; // Provider identifier for concurrency tracking (e.g., 'google-drive:upload', 'mega:download', 'export-for-download')
+  providerConcurrencyLimit?: number; // Max concurrent operations for this provider:operation
   metadata?: VolumeMetadata; // Optional metadata for volume downloads
   onProgress?: (progress: any) => void;
   onComplete?: (result: any, completeTask: () => void) => void;
@@ -32,16 +33,19 @@ export class WorkerPool {
   private activeTasks: Map<string, WorkerTask> = new Map();
   private workerTaskMap: Map<Worker, string | null> = new Map();
   private maxConcurrent: number;
-  private currentMemoryUsage: number = 0;
-  private maxMemoryUsage: number = 500 * 1024 * 1024; // 500 MB threshold (not a hard limit)
+  private providerOperationCounts: Map<string, number> = new Map(); // Track concurrent operations per provider
   private workerConstructor: WorkerConstructor;
+  private poolId: string; // Unique identifier for this pool
 
-  constructor(workerConstructor?: WorkerConstructor, maxConcurrent = 4, maxMemoryMB = 500) {
-    this.workerConstructor = workerConstructor || UniversalDownloadWorker;
+  constructor(poolId: string, workerConstructor: WorkerConstructor, maxConcurrent = 4, maxMemoryMB = 500) {
+    this.poolId = poolId;
+    this.workerConstructor = workerConstructor;
     this.maxConcurrent = Math.max(1, Math.min(maxConcurrent, navigator.hardwareConcurrency || 4));
-    this.maxMemoryUsage = maxMemoryMB * 1024 * 1024; // Convert MB to bytes - this is a threshold, not a hard limit
 
-    console.log(`Worker pool: ${this.maxConcurrent} workers, ${maxMemoryMB}MB limit`);
+    // Initialize shared memory manager limit (only needs to be set once, but multiple calls are safe)
+    sharedMemoryManager.setMemoryLimit(maxMemoryMB);
+
+    console.log(`Worker pool [${poolId}]: ${this.maxConcurrent} workers, ${maxMemoryMB}MB shared limit`);
 
     // Initialize workers
     for (let i = 0; i < this.maxConcurrent; i++) {
@@ -119,12 +123,21 @@ export class WorkerPool {
     const taskId = this.workerTaskMap.get(worker);
     if (taskId) {
       const task = this.activeTasks.get(taskId);
-      if (task && task.memoryRequirement) {
-        // Reduce current memory usage when task completes
-        this.currentMemoryUsage = Math.max(0, this.currentMemoryUsage - task.memoryRequirement);
-        console.log(
-          `Task ${taskId} completed. Memory freed: ${task.memoryRequirement / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB`
-        );
+      if (task) {
+        // Release memory via shared memory manager
+        if (task.memoryRequirement) {
+          sharedMemoryManager.release(this.poolId, taskId);
+        }
+
+        // Decrement provider operation count
+        if (task.provider) {
+          const currentCount = this.providerOperationCounts.get(task.provider) || 0;
+          const newCount = Math.max(0, currentCount - 1);
+          this.providerOperationCounts.set(task.provider, newCount);
+          console.log(
+            `[${this.poolId}] Task ${taskId} completed. Provider ${task.provider} operations: ${newCount}/${task.providerConcurrencyLimit || 'unlimited'}`
+          );
+        }
       }
       this.activeTasks.delete(taskId);
       this.workerTaskMap.set(worker, null);
@@ -135,7 +148,9 @@ export class WorkerPool {
   }
 
   private processQueue() {
-    // Process as many tasks from the queue as possible based on memory constraints
+    // Process as many tasks from the queue as possible based on memory and provider constraints
+    // Multiple providers can run concurrently up to their individual limits
+
     while (this.taskQueue.length > 0) {
       // Find an available worker first
       const availableWorker = this.workers.find(
@@ -146,29 +161,68 @@ export class WorkerPool {
         break;
       }
 
-      const nextTask = this.taskQueue[0];
-      const memoryRequired = nextTask.memoryRequirement || 0;
-
-      // Check if we're already over the memory limit AND this isn't the only task in the queue
-      // We always allow at least one task to run, even if it exceeds the memory limit
-      if (this.currentMemoryUsage > this.maxMemoryUsage && this.activeTasks.size > 0) {
+      // Check memory constraint via shared memory manager
+      // Only block if we're currently OVER the limit (not if adding would exceed)
+      // This allows large single tasks to run even if they exceed the conservative limit
+      if (!sharedMemoryManager.canStartNewTask(this.activeTasks.size > 0)) {
+        const memoryStats = sharedMemoryManager.getStats();
         console.log(
-          `Memory usage already exceeds limit. Waiting for tasks to complete before starting new ones. Current: ${this.currentMemoryUsage / (1024 * 1024)} MB, Max: ${this.maxMemoryUsage / (1024 * 1024)} MB`
+          `[${this.poolId}] Currently over memory limit. Waiting for tasks to complete. Total: ${(memoryStats.current / (1024 * 1024)).toFixed(1)}MB / ${(memoryStats.max / (1024 * 1024)).toFixed(1)}MB (${memoryStats.percentUsed.toFixed(1)}%)`
         );
         break;
       }
 
-      // Remove task from queue
-      this.taskQueue.shift();
+      // Find the first task in queue whose provider is not at its limit
+      let taskIndex = -1;
+      let eligibleTask: WorkerTask | null = null;
 
-      // Update memory usage
-      this.currentMemoryUsage += memoryRequired;
-      console.log(
-        `Starting task ${nextTask.id}. Memory required: ${memoryRequired / (1024 * 1024)} MB. Current usage: ${this.currentMemoryUsage / (1024 * 1024)} MB`
-      );
+      for (let i = 0; i < this.taskQueue.length; i++) {
+        const task = this.taskQueue[i];
+
+        // Check provider concurrency constraint
+        if (task.provider && task.providerConcurrencyLimit !== undefined) {
+          const currentProviderCount = this.providerOperationCounts.get(task.provider) || 0;
+          if (currentProviderCount >= task.providerConcurrencyLimit) {
+            // This provider is at limit, skip this task
+            continue;
+          }
+        }
+
+        // Found an eligible task!
+        taskIndex = i;
+        eligibleTask = task;
+        break;
+      }
+
+      // No eligible tasks found (all providers at their limits)
+      if (!eligibleTask || taskIndex === -1) {
+        console.log('All providers at concurrency limits. Waiting for tasks to complete.');
+        break;
+      }
+
+      // Remove the eligible task from queue
+      this.taskQueue.splice(taskIndex, 1);
+
+      const memoryRequired = eligibleTask.memoryRequirement || 0;
+
+      // Reserve memory via shared memory manager (always succeeds - blocking is done earlier via canStartNewTask)
+      sharedMemoryManager.reserve(this.poolId, eligibleTask.id, memoryRequired);
+
+      // Update provider operation count
+      if (eligibleTask.provider) {
+        const currentCount = this.providerOperationCounts.get(eligibleTask.provider) || 0;
+        this.providerOperationCounts.set(eligibleTask.provider, currentCount + 1);
+        console.log(
+          `[${this.poolId}] Starting task ${eligibleTask.id}. Provider: ${eligibleTask.provider} (${currentCount + 1}/${eligibleTask.providerConcurrencyLimit || 'unlimited'})`
+        );
+      } else {
+        console.log(
+          `[${this.poolId}] Starting task ${eligibleTask.id}`
+        );
+      }
 
       // Assign task to worker
-      this.assignTaskToWorker(availableWorker, nextTask);
+      this.assignTaskToWorker(availableWorker, eligibleTask);
     }
   }
 
@@ -226,6 +280,11 @@ export class WorkerPool {
       worker.terminate();
     }
 
+    // Release all memory reservations for this pool
+    for (const taskId of this.activeTasks.keys()) {
+      sharedMemoryManager.release(this.poolId, taskId);
+    }
+
     this.workers = [];
     this.taskQueue = [];
     this.activeTasks.clear();
@@ -245,10 +304,11 @@ export class WorkerPool {
   }
 
   public get memoryUsage() {
-    return {
-      current: this.currentMemoryUsage,
-      max: this.maxMemoryUsage,
-      percentUsed: (this.currentMemoryUsage / this.maxMemoryUsage) * 100
-    };
+    // Return shared memory stats (all pools combined)
+    return sharedMemoryManager.getStats();
+  }
+
+  public get maxConcurrentWorkers() {
+    return this.maxConcurrent;
   }
 }

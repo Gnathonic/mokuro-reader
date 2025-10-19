@@ -5,6 +5,7 @@ export type MiscSettings = {
   galleryLayout: 'grid' | 'list';
   gallerySorting: 'ASC' | 'DESC' | 'SMART';
   deviceRamGB: 4 | 8 | 16 | 32;
+  turboMode: boolean;
 };
 
 export type MiscSettingsKey = keyof MiscSettings;
@@ -26,7 +27,8 @@ function getDefaultRamSetting(): 4 | 8 | 16 | 32 {
 const defaultSettings: MiscSettings = {
   galleryLayout: 'grid',
   gallerySorting: 'SMART',
-  deviceRamGB: getDefaultRamSetting()
+  deviceRamGB: getDefaultRamSetting(),
+  turboMode: false // Default to single-operation mode (patient users)
 };
 
 const stored = browser ? window.localStorage.getItem('miscSettings') : undefined;

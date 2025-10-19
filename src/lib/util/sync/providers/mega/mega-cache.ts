@@ -59,6 +59,8 @@ class MegaCacheManager implements CloudCache<CloudVolumeMetadata> {
 				}
 			}
 
+			// Replace entire cache atomically (clears optimistic/fake entries)
+			// This prevents duplicates from fake entries added during uploads
 			this.cache.set(cacheMap);
 			this.loadedFlag = true;
 			console.log(`✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`);

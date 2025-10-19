@@ -23,6 +23,8 @@ export class WebDAVProvider implements SyncProvider {
 	readonly type = 'webdav' as const;
 	readonly name = 'WebDAV';
 	readonly supportsWorkerDownload = true; // Workers can download directly with Basic Auth
+	readonly uploadConcurrencyLimit = 2; // Conservative, depends on server capacity
+	readonly downloadConcurrencyLimit = 2;
 
 	private client: WebDAVClient | null = null;
 	private initPromise: Promise<void>;

@@ -1,6 +1,8 @@
 import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { BlobReader, Uint8ArrayWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
+import { compressVolume, type MokuroMetadata } from './compress-volume';
+import { backupQueue } from './backup-queue';
 
 export async function zipManga(
   manga: VolumeMetadata[],
@@ -11,21 +13,17 @@ export async function zipManga(
   const extension = asCbz ? 'cbz' : 'zip';
 
   if (individualVolumes) {
-    // Extract each volume individually
+    // Queue each volume for export (non-blocking with progress tracking)
     for (const volume of manga) {
       // Generate the filename for this specific volume
       const filename = includeSeriesTitle
         ? `${volume.series_title} - ${volume.volume_title}.${extension}`
         : `${volume.volume_title}.${extension}`;
 
-      await createAndDownloadArchive(
-        [volume], // Pass as array for consistency with the shared function
-        asCbz,
-        filename // Pass the pre-generated filename directly
-      );
+      backupQueue.queueVolumeForExport(volume, filename, extension);
     }
   } else {
-    // Extract all volumes as a single file
+    // Multi-volume export: Keep blocking approach for now (edge case, less common)
     const filename = `${manga[0].series_title}.${extension}`;
     await createAndDownloadArchive(manga, asCbz, filename);
   }
@@ -34,7 +32,45 @@ export async function zipManga(
 }
 
 /**
- * Adds a volume's files to a zip archive
+ * Prepares volume data for compression (loads from DB, converts to Uint8Array)
+ * @param volume The volume metadata
+ * @returns Promise resolving to metadata and files data
+ */
+async function prepareVolumeData(volume: VolumeMetadata): Promise<{
+  metadata: MokuroMetadata;
+  filesData: { filename: string; data: Uint8Array }[];
+}> {
+  // Get volume data from the database
+  const volumeData = await db.volumes_data.get(volume.volume_uuid);
+  if (!volumeData) {
+    throw new Error(`Volume data not found for ${volume.volume_uuid}`);
+  }
+
+  // Create mokuro metadata in the standard format
+  const metadata: MokuroMetadata = {
+    version: volume.mokuro_version,
+    title: volume.series_title,
+    title_uuid: volume.series_uuid,
+    volume: volume.volume_title,
+    volume_uuid: volume.volume_uuid,
+    pages: volumeData.pages,
+    chars: volume.character_count
+  };
+
+  // Convert File objects to Uint8Arrays
+  const filesData: { filename: string; data: Uint8Array }[] = [];
+  if (volumeData.files) {
+    for (const [filename, file] of Object.entries(volumeData.files)) {
+      const arrayBuffer = await file.arrayBuffer();
+      filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
+    }
+  }
+
+  return { metadata, filesData };
+}
+
+/**
+ * Adds a volume's files to a zip archive (for multi-volume ZIP files)
  * @param zipWriter The ZipWriter instance
  * @param volume The volume metadata
  * @returns Promise resolving to an array of promises for adding files
@@ -64,7 +100,9 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
   // Add image files inside the folder
   const imagePromises = volumeData.files
     ? Object.entries(volumeData.files).map(([filename, file]) => {
-        return zipWriter.add(`${folderName}/${filename}`, new BlobReader(file));
+        // Extract just the basename to avoid nested folders from original CBZ structure
+        const basename = filename.split('/').pop() || filename;
+        return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
       })
     : [];
 
@@ -78,11 +116,19 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
 /**
  * Creates an archive blob containing the specified volumes
  * Uses Uint8Array throughout to avoid intermediate Blob disk writes under memory pressure
+ * For single volumes, uses shared compression function; for multiple volumes, uses multi-volume archive
  * @param volumes Array of volumes to include in the archive
  * @returns Promise resolving to the archive blob
  */
 export async function createArchiveBlob(volumes: VolumeMetadata[]): Promise<Blob> {
-  // Use Uint8ArrayWriter to keep everything in memory until final conversion
+  // For single volume, use shared compression function
+  if (volumes.length === 1) {
+    const { metadata, filesData } = await prepareVolumeData(volumes[0]);
+    const uint8Array = await compressVolume(volumes[0].volume_title, metadata, filesData);
+    return new Blob([uint8Array], { type: 'application/zip' });
+  }
+
+  // For multiple volumes, create a single ZIP containing all volumes
   const zipWriter = new ZipWriter(new Uint8ArrayWriter());
 
   // Add each volume to the archive

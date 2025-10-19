@@ -1,22 +1,27 @@
 import { writable, get } from 'svelte/store';
 import type { VolumeMetadata } from '$lib/types';
 import { progressTrackerStore } from './progress-tracker';
-import type { WorkerPool, WorkerTask } from './worker-pool';
+import type { WorkerTask } from './worker-pool';
 import { tokenManager } from './google-drive/token-manager';
 import { showSnackbar } from './snackbar';
 import { db } from '$lib/catalog/db';
-import { miscSettings } from '$lib/settings/misc';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
-import type { ProviderType } from './sync/provider-interface';
-import UploadWorker from '$lib/workers/upload-worker.ts?worker';
+import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
+import { isRealProvider, isPseudoProvider, exportProvider } from './sync/provider-interface';
+import { getFileProcessingPool, incrementPoolUsers, decrementPoolUsers } from './file-processing-pool';
+
+// Type for provider instances (real or export)
+type ProviderInstance = SyncProvider | typeof exportProvider;
 
 export interface BackupQueueItem {
 	volumeUuid: string;
 	seriesTitle: string;
 	volumeTitle: string;
-	provider: ProviderType;
+	provider: BackupProviderType; // Provider type string for routing
+	uploadConcurrencyLimit: number; // Concurrency limit from provider instance
 	volumeMetadata: VolumeMetadata;
 	status: 'queued' | 'backing-up';
+	downloadFilename?: string; // Only for export-for-download pseudo-provider
 }
 
 interface SeriesQueueStatus {
@@ -29,10 +34,12 @@ interface SeriesQueueStatus {
 // Internal queue state
 const queueStore = writable<BackupQueueItem[]>([]);
 
-// Shared worker pool for all backups
-let workerPool: WorkerPool | null = null;
-let poolInitPromise: Promise<WorkerPool> | null = null;
+// Track if this queue is currently using the shared pool
 let processingStarted = false;
+
+// Queue lock: Ensures processQueue() executions wait in line instead of skipping
+// Each call waits for the previous one to finish before proceeding
+let queueLock = Promise.resolve();
 
 // Series folder initialization lock (provider-agnostic)
 // Prevents multiple concurrent workers from racing to create the same series folder
@@ -58,14 +65,9 @@ queueStore.subscribe(queue => {
 /**
  * Add a single volume to the backup queue
  */
-export function queueVolumeForBackup(volume: VolumeMetadata, provider?: ProviderType): void {
-	console.log('[Backup Queue] queueVolumeForBackup called:', {
-		volumeTitle: volume.volume_title,
-		provider
-	});
-
+export function queueVolumeForBackup(volume: VolumeMetadata, providerInstance?: SyncProvider): void {
 	// Get default provider if not specified
-	const targetProvider = provider || unifiedCloudManager.getDefaultProvider()?.type;
+	const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
 	if (!targetProvider) {
 		console.warn('No cloud provider available for backup');
 		showSnackbar('Please connect to a cloud storage provider first');
@@ -74,11 +76,13 @@ export function queueVolumeForBackup(volume: VolumeMetadata, provider?: Provider
 
 	const queue = get(queueStore);
 
-	// Check for duplicates by volumeUuid
-	const isDuplicate = queue.some(item => item.volumeUuid === volume.volume_uuid);
+	// Check for duplicates by volumeUuid:provider (allows same volume to be queued for different providers)
+	const isDuplicate = queue.some(
+		item => item.volumeUuid === volume.volume_uuid && item.provider === targetProvider.type
+	);
 
 	if (isDuplicate) {
-		console.log(`Volume ${volume.volume_title} already in backup queue`);
+		console.log(`Volume ${volume.volume_title} already in backup queue for ${targetProvider.type}`);
 		return;
 	}
 
@@ -86,7 +90,8 @@ export function queueVolumeForBackup(volume: VolumeMetadata, provider?: Provider
 		volumeUuid: volume.volume_uuid,
 		seriesTitle: volume.series_title,
 		volumeTitle: volume.volume_title,
-		provider: targetProvider,
+		provider: targetProvider.type,
+		uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
 		volumeMetadata: volume,
 		status: 'queued'
 	};
@@ -98,11 +103,46 @@ export function queueVolumeForBackup(volume: VolumeMetadata, provider?: Provider
 }
 
 /**
+ * Add a single volume to the export queue (local download)
+ */
+export function queueVolumeForExport(
+	volume: VolumeMetadata,
+	filename: string,
+	extension: 'zip' | 'cbz' = 'cbz'
+): void {
+	const queue = get(queueStore);
+
+	// Check for duplicates by volumeUuid
+	const isDuplicate = queue.some(item => item.volumeUuid === volume.volume_uuid);
+
+	if (isDuplicate) {
+		console.log(`Volume ${volume.volume_title} already in export queue`);
+		return;
+	}
+
+	const queueItem: BackupQueueItem = {
+		volumeUuid: volume.volume_uuid,
+		seriesTitle: volume.series_title,
+		volumeTitle: volume.volume_title,
+		provider: exportProvider.type,
+		uploadConcurrencyLimit: exportProvider.uploadConcurrencyLimit,
+		volumeMetadata: volume,
+		status: 'queued',
+		downloadFilename: filename
+	};
+
+	queueStore.update(q => [...q, queueItem]);
+
+	// Always call processQueue to handle newly added items
+	processQueue();
+}
+
+/**
  * Add multiple volumes to the backup queue
  */
-export function queueSeriesVolumesForBackup(volumes: VolumeMetadata[], provider?: ProviderType): void {
+export function queueSeriesVolumesForBackup(volumes: VolumeMetadata[], providerInstance?: SyncProvider): void {
 	// Get default provider if not specified
-	const targetProvider = provider || unifiedCloudManager.getDefaultProvider()?.type;
+	const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
 	if (!targetProvider) {
 		console.warn('No cloud provider available for backup');
 		showSnackbar('Please connect to a cloud storage provider first');
@@ -135,9 +175,14 @@ export function queueSeriesVolumesForBackup(volumes: VolumeMetadata[], provider?
 
 /**
  * Check if a specific volume is in the backup queue
+ * @param volumeUuid The volume UUID to check
+ * @param provider Optional provider to check for. If not specified, checks if volume is queued for ANY provider
  */
-export function isVolumeInBackupQueue(volumeUuid: string): boolean {
+export function isVolumeInBackupQueue(volumeUuid: string, provider?: string): boolean {
 	const queue = get(queueStore);
+	if (provider) {
+		return queue.some(item => item.volumeUuid === volumeUuid && item.provider === provider);
+	}
 	return queue.some(item => item.volumeUuid === volumeUuid);
 }
 
@@ -156,58 +201,12 @@ export function getSeriesBackupQueueStatus(seriesTitle: string): SeriesQueueStat
 	};
 }
 
-/**
- * Initialize worker pool based on user-configured RAM setting
- * Uses promise-based mutex to prevent race conditions with concurrent calls
- */
-async function initializeWorkerPool(): Promise<WorkerPool> {
-	// Return existing pool if already created
-	if (workerPool) {
-		return workerPool;
-	}
-
-	// If already initializing, wait for that to complete
-	if (poolInitPromise) {
-		return poolInitPromise;
-	}
-
-	// Start initialization and store the promise
-	poolInitPromise = (async () => {
-		// Dynamically import WorkerPool to reduce initial bundle size
-		const { WorkerPool: WorkerPoolClass } = await import('./worker-pool');
-
-		// Fixed worker count - cloud upload speeds are the bottleneck, not CPU
-		const maxWorkers = 4;
-		let memoryLimitMB: number;
-
-		// Get user's RAM configuration
-		let deviceRamGB = 4; // Default
-		miscSettings.subscribe(value => {
-			deviceRamGB = value.deviceRamGB ?? 4;
-		})();
-
-		// Memory limit: 1/8th of configured RAM (e.g., 16GB = 2048MB limit)
-		memoryLimitMB = (deviceRamGB * 1024) / 8;
-
-		console.log(`Backup queue: ${maxWorkers} workers, ${memoryLimitMB}MB limit (${deviceRamGB}GB configured)`);
-
-		workerPool = new WorkerPoolClass(UploadWorker, maxWorkers, memoryLimitMB);
-		return workerPool;
-	})();
-
-	try {
-		return await poolInitPromise;
-	} finally {
-		// Clear the promise after completion (success or failure)
-		poolInitPromise = null;
-	}
-}
 
 /**
  * Ensure series folder exists for any provider (with race condition protection)
  * Provider-agnostic mutex prevents concurrent folder creation for the same series
  */
-async function ensureSeriesFolder(provider: ProviderType, seriesTitle: string, credentials: any): Promise<any> {
+async function ensureSeriesFolder(provider: BackupProviderType, seriesTitle: string, credentials: any): Promise<any> {
 	const lockKey = `${provider}:${seriesTitle}`;
 
 	// Check if folder initialization is already in progress or complete
@@ -342,7 +341,7 @@ async function ensureWebDAVFolder(seriesTitle: string, serverUrl: string, userna
 /**
  * Get provider credentials for worker uploads
  */
-async function getProviderCredentials(provider: ProviderType): Promise<any> {
+async function getProviderCredentials(provider: BackupProviderType): Promise<any> {
 	if (provider === 'google-drive') {
 		let token = '';
 		tokenManager.token.subscribe(value => {
@@ -410,62 +409,71 @@ function handleBackupError(item: BackupQueueItem, processId: string, errorMessag
 		status: `Error: ${errorMessage}`
 	});
 	showSnackbar(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
-	queueStore.update(q => q.filter(i => i.volumeUuid !== item.volumeUuid));
+	queueStore.update(q => q.filter(i => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider)));
 	setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
 }
 
 /**
- * Check if queue is empty and terminate worker pool if so
+ * Check if queue is empty and release shared pool if so
  */
 async function checkAndTerminatePool(): Promise<void> {
 	const currentQueue = get(queueStore);
-	if (currentQueue.length === 0 && workerPool) {
-		const provider = unifiedCloudManager.getActiveProvider();
-
-		workerPool.terminate();
-		workerPool = null;
+	if (currentQueue.length === 0 && processingStarted) {
+		decrementPoolUsers();
 		processingStarted = false;
 
-		// For MEGA, delay cache refresh to allow server propagation
-		// Manual cache additions have already made files visible in UI
-		if (provider?.type === 'mega') {
-			console.log('[Backup Queue] All uploads complete, waiting 3s before refreshing MEGA cache...');
-			setTimeout(async () => {
-				await unifiedCloudManager.fetchAllCloudVolumes();
-				console.log('[Backup Queue] MEGA cache refreshed with server data');
-			}, 3000);
-		} else {
-			// For other providers, refresh immediately
-			console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
-			await unifiedCloudManager.fetchAllCloudVolumes();
-		}
+		// Refresh cache immediately for all providers
+		// This replaces optimistic entries with real server data
+		console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
+		await unifiedCloudManager.fetchAllCloudVolumes();
+		console.log('[Backup Queue] Cloud cache refreshed with server data');
 	}
 }
 
 /**
- * Process backup using workers for all providers
+ * Process backup/export using workers for all providers (including pseudo-providers)
  * Data loading is deferred until worker is ready to prevent memory pressure
  */
 async function processBackup(item: BackupQueueItem, processId: string): Promise<void> {
-	const provider = unifiedCloudManager.getActiveProvider();
+	// Check if this is an export operation (pseudo-provider)
+	const isExport = isPseudoProvider(item.provider);
 
-	if (!provider) {
+	// For real providers, get the active provider and validate authentication
+	const provider = isExport ? null : unifiedCloudManager.getActiveProvider();
+
+	if (!isExport && !provider) {
 		handleBackupError(item, processId, 'No cloud provider authenticated');
 		return;
 	}
 
-	const pool = await initializeWorkerPool();
+	const pool = await getFileProcessingPool();
 
 	// Estimate volume size (rough estimate: page count * 0.5MB average per page)
 	const estimatedSize = (item.volumeMetadata.page_count || 10) * 0.5 * 1024 * 1024;
 	// Estimate memory requirement (compression + upload buffer)
 	const memoryRequirement = Math.max(estimatedSize * 2.8, 50 * 1024 * 1024);
 
+	// Calculate effective concurrency limit for export tasks
+	// Export is CPU/memory bound, so we use pool limit minus 2 to leave headroom for other operations
+	let effectiveConcurrencyLimit = item.uploadConcurrencyLimit;
+	console.log(`[Backup Queue] Initial concurrency limit for ${item.volumeTitle}:`, {
+		provider: item.provider,
+		isExport,
+		storedLimit: item.uploadConcurrencyLimit,
+		poolMax: pool.maxConcurrentWorkers
+	});
+	if (isExport) {
+		effectiveConcurrencyLimit = Math.max(1, pool.maxConcurrentWorkers - 2);
+		console.log(`[Backup Queue] Export concurrency limit: ${effectiveConcurrencyLimit} (pool: ${pool.maxConcurrentWorkers})`);
+	}
+
 	try {
 		// Create worker task with lazy data loading
 		const task: WorkerTask = {
 			id: item.volumeUuid,
 			memoryRequirement,
+			provider: `${item.provider}:upload`, // Provider:operation identifier for concurrency tracking
+			providerConcurrencyLimit: effectiveConcurrencyLimit, // Provider's upload limit (dynamic for exports)
 			// Defer data loading until worker is ready
 			prepareData: async () => {
 				// This will only be called when a worker is actually available
@@ -475,20 +483,33 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 				});
 
 				const { metadata, filesData } = await prepareVolumeDataForWorker(item.volumeUuid);
-				const credentials = await getProviderCredentials(provider.type);
+
+				// Handle export-for-download (pseudo-provider)
+				if (isExport) {
+					return {
+						mode: 'compress-and-return',
+						volumeTitle: item.volumeTitle,
+						metadata,
+						filesData,
+						downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`
+					};
+				}
+
+				// Handle real cloud providers
+				const credentials = await getProviderCredentials(provider!.type);
 
 				// Ensure series folder exists BEFORE worker starts (prevents race conditions)
 				// This is provider-agnostic and works for Google Drive, MEGA, and WebDAV
-				const folderData = await ensureSeriesFolder(provider.type, item.seriesTitle, credentials);
+				const folderData = await ensureSeriesFolder(provider!.type, item.seriesTitle, credentials);
 
 				// For Google Drive, pass folder ID to worker to avoid redundant folder lookups
-				if (provider.type === 'google-drive' && folderData) {
+				if (provider!.type === 'google-drive' && folderData) {
 					credentials.seriesFolderId = folderData;
 				}
 
 				return {
 					mode: 'compress-and-upload',
-					provider: provider.type,
+					provider: provider!.type,
 					volumeTitle: item.volumeTitle,
 					seriesTitle: item.seriesTitle,
 					metadata,
@@ -497,28 +518,54 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 				};
 			},
 			onProgress: data => {
-				// Progress: 0-30% compression, 30-100% upload
 				const percent = Math.round(data.progress);
+				// Each phase goes from 0-100%
+				const status = data.phase === 'compressing' ? 'Compressing...' : 'Uploading...';
+
 				progressTrackerStore.updateProcess(processId, {
 					progress: percent,
-					status: data.phase === 'compressing' ? 'Compressing...' : 'Uploading...'
+					status
 				});
 			},
 			onComplete: async (data, releaseMemory) => {
 				try {
+					// Handle export-for-download (trigger browser download)
+					if (isExport && data?.data) {
+						progressTrackerStore.updateProcess(processId, {
+							progress: 100,
+							status: 'Download ready'
+						});
+
+						// Trigger browser download using Transferable Object data
+						const blob = new Blob([data.data], { type: 'application/x-cbz' });
+						const url = URL.createObjectURL(blob);
+						const link = document.createElement('a');
+						link.href = url;
+						link.download = item.downloadFilename || `${item.volumeTitle}.cbz`;
+						link.click();
+						URL.revokeObjectURL(url);
+
+						showSnackbar(`Exported ${item.volumeTitle} successfully`);
+						queueStore.update(q => q.filter(i => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider)));
+						setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+
+						return; // Early return for export
+					}
+
+					// Handle real cloud backup
 					progressTrackerStore.updateProcess(processId, {
 						progress: 100,
 						status: 'Backup complete'
 					});
 
 					showSnackbar(`Backed up ${item.volumeTitle} successfully`);
-					queueStore.update(q => q.filter(i => i.volumeUuid !== item.volumeUuid));
+					queueStore.update(q => q.filter(i => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider)));
 
 					// Add the uploaded file to cache immediately for ALL providers
 					// This ensures the UI updates right away, showing the file as backed up
 					if (data?.fileId) {
 						const { cacheManager } = await import('./sync/cache-manager');
-						const cache = cacheManager.getCache(provider.type);
+						const cache = cacheManager.getCache(provider!.type);
 						const path = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
 
 						if (cache && cache.add) {
@@ -530,7 +577,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 								modifiedTime: new Date().toISOString(),
 								size: 0 // Size unknown at this point, will be updated on next full fetch
 							});
-							console.log(`✅ Added ${path} to ${provider.type} cache`);
+							console.log(`✅ Added ${path} to ${provider!.type} cache`);
 						}
 					}
 
@@ -539,17 +586,17 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
 					setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
 				} catch (error) {
-					console.error(`Failed to finalize backup for ${item.volumeTitle}:`, error);
+					console.error(`Failed to finalize ${isExport ? 'export' : 'backup'} for ${item.volumeTitle}:`, error);
 					handleBackupError(item, processId, error instanceof Error ? error.message : 'Unknown error');
 				} finally {
 					releaseMemory();
-					checkAndTerminatePool();
+					await checkAndTerminatePool();
 				}
 			},
-			onError: data => {
+			onError: async data => {
 				console.error(`Error backing up ${item.volumeTitle}:`, data.error);
 				handleBackupError(item, processId, data.error);
-				checkAndTerminatePool();
+				await checkAndTerminatePool();
 			}
 		};
 
@@ -557,46 +604,78 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 	} catch (error) {
 		console.error(`Failed to prepare backup for ${item.volumeTitle}:`, error);
 		handleBackupError(item, processId, error instanceof Error ? error.message : 'Unknown error');
-		checkAndTerminatePool();
+		await checkAndTerminatePool();
 	}
 }
 
 /**
  * Process the queue - unified backup handling for all providers
  * Processes all queued items concurrently (respecting worker pool limits)
+ *
+ * Lock pattern: Only queue read/update is serialized, everything else is parallel
  */
-function processQueue(): void {
-	const queue = get(queueStore);
-	const queuedItems = queue.filter(item => item.status === 'queued');
+async function processQueue(): Promise<void> {
+	// Wait for previous processQueue() to finish queue access
+	await queueLock;
 
-	// Mark processing as started if we have queued items
-	if (queuedItems.length > 0) {
-		processingStarted = true;
+	// Create new lock for next caller to wait on
+	let releaseLock: () => void;
+	queueLock = new Promise(resolve => {
+		releaseLock = resolve;
+	});
+
+	let queuedItems: BackupQueueItem[];
+	try {
+		// CRITICAL SECTION: Only queue reading/updating (serialized)
+		const queue = get(queueStore);
+		queuedItems = queue.filter(item => item.status === 'queued');
+
+		// Nothing to do if no queued items
+		if (queuedItems.length === 0) {
+			return;
+		}
+
+		// Mark all items as backing-up atomically
+		queuedItems.forEach(item => {
+			queueStore.update(q =>
+				q.map(i => (i.volumeUuid === item.volumeUuid && i.provider === item.provider ? { ...i, status: 'backing-up' as const } : i))
+			);
+		});
+	} finally {
+		// Release lock immediately after queue update
+		releaseLock!();
 	}
 
-	// Process each queued item (worker pool will handle concurrency limits)
-	queuedItems.forEach(item => {
-		// Mark as backing-up
-		queueStore.update(q =>
-			q.map(i => (i.volumeUuid === item.volumeUuid ? { ...i, status: 'backing-up' as const } : i))
-		);
+	// OUTSIDE LOCK: Pool initialization and task submission (parallel)
 
+	// Mark processing as started and register as pool user
+	if (!processingStarted) {
+		processingStarted = true;
+		incrementPoolUsers();
+
+		// Pre-initialize the pool (parallel - don't block other processQueue calls)
+		await getFileProcessingPool();
+	}
+
+	// Submit tasks to worker pool (parallel)
+	queuedItems.forEach(item => {
 		const processId = `backup-${item.volumeUuid}`;
 
 		// Add progress tracker
+		const isExport = isPseudoProvider(item.provider);
 		progressTrackerStore.addProcess({
 			id: processId,
-			description: `Backing up ${item.volumeTitle}`,
+			description: isExport ? `Exporting ${item.volumeTitle}` : `Backing up ${item.volumeTitle}`,
 			progress: 0,
-			status: 'Starting backup...'
+			status: 'Queued...'
 		});
 
-		console.log('[Backup Queue] Processing backup:', {
+		console.log(`[Backup Queue] Processing ${isExport ? 'export' : 'backup'}:`, {
 			volumeTitle: item.volumeTitle,
 			provider: item.provider
 		});
 
-		// Start backup (worker pool handles concurrency)
+		// Start backup/export (worker pool handles global concurrency)
 		processBackup(item, processId);
 	});
 }
@@ -605,6 +684,7 @@ function processQueue(): void {
 export const backupQueue = {
 	subscribe: queueStore.subscribe,
 	queueVolumeForBackup,
+	queueVolumeForExport,
 	queueSeriesVolumesForBackup,
 	isVolumeInBackupQueue,
 	getSeriesBackupQueueStatus
