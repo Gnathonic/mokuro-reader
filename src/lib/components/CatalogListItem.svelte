@@ -12,7 +12,7 @@
     <ListgroupItem>
       <a href={id} class="h-full w-full">
         <div class="flex justify-between items-center">
-          <p class="font-semibold text-white">{manga.mokuroData.title}</p>
+          <p class="font-semibold text-black dark:text-white">{manga.mokuroData.title}</p>
           <img
             src={URL.createObjectURL(Object.values(manga.files)[0])}
             alt="img"

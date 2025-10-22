@@ -27,7 +27,7 @@
   });
 </script>
 
-<div class=" h-full min-h-[100svh] text-white">
+<div class=" h-full min-h-[100svh] text-black dark:text-white">
   <NavBar />
   <slot />
   <Snackbar />
