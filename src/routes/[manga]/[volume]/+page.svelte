@@ -6,7 +6,6 @@
     effectiveVolumeSettings,
     initializeVolume,
     settings,
-    startCount,
     volumes
   } from '$lib/settings';
   import { onMount } from 'svelte';
@@ -23,23 +22,13 @@
     }
   });
 
-  // Start/restart timer when volumeId changes
+  // Record activity when volumeId changes to trigger timer via activity tracker
   $effect(() => {
     if (!volumeId) return;
 
-    // Record activity when volume changes
+    // Record activity when volume changes - this will trigger the timer
+    // via the activity tracker in the Timer component
     activityTracker.recordActivity();
-
-    // Start timer for this volume
-    count = startCount(volumeId);
-
-    // Cleanup: clear the interval when volumeId changes or component unmounts
-    return () => {
-      if (count) {
-        clearInterval(count);
-        count = undefined;
-      }
-    };
   });
 
   onMount(() => {
