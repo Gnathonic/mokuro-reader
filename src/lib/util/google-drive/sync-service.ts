@@ -1,7 +1,8 @@
 import { writable } from 'svelte/store';
 import { progressTrackerStore } from '../progress-tracker';
-import { parseVolumesFromJson, volumes } from '$lib/settings';
+import { volumes } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
+import { syncOrchestrator } from '../sync-orchestrator';
 import { driveApiClient, DriveApiError, escapeNameForDriveQuery } from './api-client';
 import { tokenManager } from './token-manager';
 import { GOOGLE_DRIVE_CONFIG, type SyncProgress } from './constants';
@@ -124,62 +125,37 @@ class SyncService {
 
       console.log('Volume data files from Drive API:', volumeDataFiles);
 
-      // Step 2: Download and merge cloud data from all volume-data.json files
-      let cloudVolumes: any = {};
+      // Step 2: Download cloud data from all volume-data.json files
+      const cloudJsonStrings: string[] = [];
       if (volumeDataFiles.length > 0) {
         progressTrackerStore.updateProcess(processId, {
           progress: 30,
           status: `Downloading cloud data (${volumeDataFiles.length} file${volumeDataFiles.length > 1 ? 's' : ''})...`
         });
 
-        // Merge data from all duplicate files
         for (const file of volumeDataFiles) {
           try {
-            const cloudData = await driveApiClient.getFileContent(file.fileId);
-            const fileVolumes = parseVolumesFromJson(cloudData);
-
-            // Merge with newest-wins strategy
-            Object.keys(fileVolumes).forEach(volumeId => {
-              const existing = cloudVolumes[volumeId];
-              const incoming = fileVolumes[volumeId];
-
-              if (!existing) {
-                cloudVolumes[volumeId] = incoming;
-              } else {
-                const existingDate = new Date(existing.lastProgressUpdate).getTime();
-                const incomingDate = new Date(incoming.lastProgressUpdate).getTime();
-                if (incomingDate > existingDate) {
-                  cloudVolumes[volumeId] = incoming;
-                }
-              }
-            });
+            const jsonString = await driveApiClient.getFileContent(file.fileId);
+            cloudJsonStrings.push(jsonString);
           } catch (error) {
-            console.warn(`Failed to download/merge cloud data from file ${file.fileId}:`, error);
+            console.warn(`Failed to download cloud data from file ${file.fileId}:`, error);
           }
         }
       }
 
-      // Step 3: Merge data
+      // Step 3: Orchestrate sync (parse, merge, enrich)
       progressTrackerStore.updateProcess(processId, {
         progress: 60,
         status: 'Merging local and cloud data...'
       });
 
-      const mergedVolumes = await this.mergeVolumeData(cloudVolumes);
+      const enrichedVolumes = await syncOrchestrator.syncVolumeData(cloudJsonStrings);
 
-      // Step 4: Update local storage
-      progressTrackerStore.updateProcess(processId, {
-        progress: 80,
-        status: 'Updating local data...'
-      });
+      // Step 4: Upload merged data (only if changed) and clean up duplicates
+      const enrichedJson = JSON.stringify(enrichedVolumes);
+      const cloudJson = cloudJsonStrings.length > 0 ? cloudJsonStrings[0] : '{}';
 
-      volumes.update(() => mergedVolumes);
-
-      // Step 5: Upload merged data (only if changed) and clean up duplicates
-      const mergedJson = JSON.stringify(mergedVolumes);
-      const cloudJson = JSON.stringify(cloudVolumes);
-
-      if (mergedJson !== cloudJson || volumeDataFiles.length > 1) {
+      if (enrichedJson !== cloudJson || volumeDataFiles.length > 1) {
         progressTrackerStore.updateProcess(processId, {
           progress: 90,
           status: volumeDataFiles.length > 1
@@ -190,7 +166,7 @@ class SyncService {
         // Upload to first file (or create new if none exist)
         const primaryFileId = volumeDataFiles.length > 0 ? volumeDataFiles[0].fileId : null;
         console.log('Uploading with primaryFileId:', primaryFileId);
-        const uploadResult = await this.uploadVolumeData(mergedVolumes, primaryFileId, readerFolderId);
+        const uploadResult = await this.uploadVolumeData(enrichedVolumes, primaryFileId, readerFolderId);
 
         // Delete duplicate files (if any)
         if (volumeDataFiles.length > 1) {
@@ -222,36 +198,6 @@ class SyncService {
     } finally {
       setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
     }
-  }
-
-  private async mergeVolumeData(cloudVolumes: any): Promise<any> {
-    return new Promise((resolve) => {
-      volumes.subscribe(localVolumes => {
-        const merged: Record<string, any> = {};
-        const allVolumeIds = new Set([
-          ...Object.keys(localVolumes),
-          ...Object.keys(cloudVolumes)
-        ]);
-
-        allVolumeIds.forEach(volumeId => {
-          const local = localVolumes[volumeId];
-          const cloud = cloudVolumes[volumeId];
-
-          if (!local) {
-            merged[volumeId] = cloud;
-          } else if (!cloud) {
-            merged[volumeId] = local;
-          } else {
-            // Keep the newer record based on lastProgressUpdate
-            const localDate = new Date(local.lastProgressUpdate).getTime();
-            const cloudDate = new Date(cloud.lastProgressUpdate).getTime();
-            merged[volumeId] = localDate >= cloudDate ? local : cloud;
-          }
-        });
-
-        resolve(merged);
-      })();
-    });
   }
 
   private async uploadVolumeData(

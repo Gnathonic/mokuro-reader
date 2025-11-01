@@ -77,14 +77,14 @@
   ];
 
   // Reactive state
-  let chartCanvas: HTMLCanvasElement;
+  let chartCanvas: HTMLCanvasElement = $state()!;
   let chart: Chart | null = null;
-  let sortBy: 'date' | 'speed' | 'series' = 'date';
-  let sortDirection: 'asc' | 'desc' = 'desc';
+  let sortBy: 'dateFinished' | 'speed' | 'series' | 'volume' | 'duration' = $state('dateFinished');
+  let sortDirection: 'asc' | 'desc' = $state('desc');
 
   // Delete confirmation modal
-  let deleteModalOpen = false;
-  let volumeToDelete: VolumeSpeedData | null = null;
+  let deleteModalOpen = $state(false);
+  let volumeToDelete: VolumeSpeedData | null = $state(null);
 
   // Toggle for showing all achievements
   let showAllAchievements = $state(false);
@@ -114,12 +114,12 @@
     return Object.values($volumes).filter(vol => vol.completed).length;
   });
 
-  // Sorted volume list
-  const sortedVolumes = derived(volumeSpeedData, ($volumeSpeedData) => {
+  // Sorted volume list using $derived for reactivity
+  const sortedVolumes = $derived.by(() => {
     let sorted = [...$volumeSpeedData];
 
     switch (sortBy) {
-      case 'date':
+      case 'dateFinished':
         sorted.sort((a, b) => {
           const comparison = b.completionDate.getTime() - a.completionDate.getTime();
           return sortDirection === 'asc' ? -comparison : comparison;
@@ -137,12 +137,24 @@
           return sortDirection === 'asc' ? comparison : -comparison;
         });
         break;
+      case 'volume':
+        sorted.sort((a, b) => {
+          const comparison = a.volumeTitle.localeCompare(b.volumeTitle);
+          return sortDirection === 'asc' ? comparison : -comparison;
+        });
+        break;
+      case 'duration':
+        sorted.sort((a, b) => {
+          const comparison = b.durationMinutes - a.durationMinutes;
+          return sortDirection === 'asc' ? -comparison : comparison;
+        });
+        break;
     }
 
     return sorted;
   });
 
-  function toggleSort(column: 'date' | 'speed' | 'series') {
+  function toggleSort(column: 'dateFinished' | 'speed' | 'series' | 'volume' | 'duration') {
     if (sortBy === column) {
       sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
     } else {
@@ -717,27 +729,26 @@
       <div class="overflow-x-auto w-full">
       <Table hoverable={true}>
         <TableHead>
-          <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('date')}>
-            Date {sortBy === 'date' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
-          </TableHeadCell>
           <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('series')}>
             Series {sortBy === 'series' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
           </TableHeadCell>
-          <TableHeadCell>Volume</TableHeadCell>
+          <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('volume')}>
+            Volume {sortBy === 'volume' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </TableHeadCell>
           <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('speed')}>
             Speed {sortBy === 'speed' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
           </TableHeadCell>
-          <TableHeadCell>Duration</TableHeadCell>
-          <TableHeadCell>Badges</TableHeadCell>
+          <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('duration')}>
+            Duration {sortBy === 'duration' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </TableHeadCell>
+          <TableHeadCell class="cursor-pointer" on:click={() => toggleSort('dateFinished')}>
+            Date Finished {sortBy === 'dateFinished' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </TableHeadCell>
           <TableHeadCell>Actions</TableHeadCell>
         </TableHead>
         <TableBody>
-          {#each $sortedVolumes as volume}
+          {#each sortedVolumes as volume}
             <TableBodyRow>
-              <TableBodyCell>
-                <div class="text-sm">{formatRelativeDate(volume.completionDate)}</div>
-                <div class="text-xs text-gray-500">{volume.completionDate.toLocaleDateString()}</div>
-              </TableBodyCell>
               <TableBodyCell>{volume.seriesTitle}</TableBodyCell>
               <TableBodyCell>{volume.volumeTitle}</TableBodyCell>
               <TableBodyCell>
@@ -754,24 +765,8 @@
                 <div class="text-xs text-gray-500">{formatNumber(volume.charsRead)} chars</div>
               </TableBodyCell>
               <TableBodyCell>
-                <div class="flex flex-wrap gap-1">
-                  {#if volume.isPersonalBest}
-                    <Badge color="yellow">Personal Best</Badge>
-                  {/if}
-                  {#if volume.isSlowest}
-                    <Badge color="red">Slowest</Badge>
-                  {/if}
-                  {#if volume.isMilestone}
-                    <Badge color="purple">#{volume.isMilestone}</Badge>
-                  {/if}
-                  {#if volume.percentVsSeriesAvg !== undefined}
-                    {#if volume.percentVsSeriesAvg > 10}
-                      <Badge color="green">Series Best</Badge>
-                    {:else if volume.percentVsSeriesAvg < -10}
-                      <Badge color="dark">Below Series Avg</Badge>
-                    {/if}
-                  {/if}
-                </div>
+                <div class="text-sm">{formatRelativeDate(volume.completionDate)}</div>
+                <div class="text-xs text-gray-500">{volume.completionDate.toLocaleDateString()}</div>
               </TableBodyCell>
               <TableBodyCell>
                 <Button size="xs" color="red" on:click={() => confirmDelete(volume)}>

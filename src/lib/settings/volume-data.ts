@@ -4,6 +4,7 @@ import { zoomDefault } from '$lib/panzoom';
 import { page } from '$app/stores';
 import { currentSeries, currentVolume } from '$lib/catalog';
 import { settings as globalSettings } from './settings';
+import { db } from '$lib/catalog/db';
 
 import type { PageViewMode } from './settings';
 
@@ -60,6 +61,10 @@ type VolumeDataJSON = {
   recentPageTurns?: PageTurn[];
   // Aggregate session data for reading speed calculation
   sessions?: AggregateSession[];
+  // Volume metadata for self-describing sync data
+  series_uuid?: string;
+  series_title?: string;
+  volume_title?: string;
 };
 
 class VolumeData implements VolumeDataJSON {
@@ -71,6 +76,9 @@ class VolumeData implements VolumeDataJSON {
   lastProgressUpdate: string;
   recentPageTurns: PageTurn[];
   sessions: AggregateSession[];
+  series_uuid?: string;
+  series_title?: string;
+  volume_title?: string;
 
   constructor(data: Partial<VolumeDataJSON> = {}) {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
@@ -83,6 +91,11 @@ class VolumeData implements VolumeDataJSON {
     // Session tracking fields
     this.recentPageTurns = data.recentPageTurns || [];
     this.sessions = data.sessions || [];
+
+    // Volume metadata (optional, for self-describing sync data)
+    this.series_uuid = data.series_uuid;
+    this.series_title = data.series_title;
+    this.volume_title = data.volume_title;
 
     // Only store explicitly set values, leave others undefined to fall back to global defaults
     this.settings = {};
@@ -157,6 +170,17 @@ class VolumeData implements VolumeDataJSON {
       result.sessions = this.sessions;
     }
 
+    // Include volume metadata if present (for self-describing sync data)
+    if (this.series_uuid) {
+      result.series_uuid = this.series_uuid;
+    }
+    if (this.series_title) {
+      result.series_title = this.series_title;
+    }
+    if (this.volume_title) {
+      result.volume_title = this.volume_title;
+    }
+
     return result;
   }
 }
@@ -179,6 +203,56 @@ export function parseVolumesFromJson(storedData: string): Volumes {
   } catch {
     return {};
   }
+}
+
+/**
+ * Enriches VolumeData with metadata from IndexedDB
+ * Useful for populating self-describing sync data
+ */
+export async function enrichVolumeDataWithMetadata(
+  volumeUuid: string,
+  volumeData: VolumeData
+): Promise<VolumeData> {
+  if (!browser) return volumeData;
+
+  try {
+    const metadata = await db.volumes.get(volumeUuid);
+    if (metadata) {
+      return new VolumeData({
+        ...volumeData,
+        series_uuid: metadata.series_uuid,
+        series_title: metadata.series_title,
+        volume_title: metadata.volume_title
+      });
+    }
+  } catch (error) {
+    console.warn(`Failed to fetch metadata for volume ${volumeUuid}:`, error);
+  }
+
+  return volumeData;
+}
+
+/**
+ * Updates metadata for a specific volume in the store
+ */
+export function updateVolumeMetadata(
+  volumeUuid: string,
+  series_uuid?: string,
+  series_title?: string,
+  volume_title?: string
+) {
+  volumes.update((prev) => {
+    const currentVolume = prev[volumeUuid] || new VolumeData();
+    return {
+      ...prev,
+      [volumeUuid]: new VolumeData({
+        ...currentVolume,
+        series_uuid,
+        series_title,
+        volume_title
+      })
+    };
+  });
 }
 
 const initial: Volumes = browser
@@ -260,6 +334,26 @@ export function updateProgress(
 
     // Add new turn
     recentPageTurns = [...recentPageTurns, [now, progress]];
+
+    // Lazy metadata population: If metadata is missing, fetch it asynchronously
+    // This ensures stats pages work even if IndexedDB is later deleted
+    if (!currentVolume.series_uuid && browser) {
+      enrichVolumeDataWithMetadata(volume, currentVolume).then(enriched => {
+        if (enriched.series_uuid) {
+          volumes.update(vols => ({
+            ...vols,
+            [volume]: new VolumeData({
+              ...(vols[volume] || currentVolume),
+              series_uuid: enriched.series_uuid,
+              series_title: enriched.series_title,
+              volume_title: enriched.volume_title
+            })
+          }));
+        }
+      }).catch(err => {
+        console.warn(`Failed to enrich metadata for ${volume}:`, err);
+      });
+    }
 
     return {
       ...prev,
@@ -441,3 +535,47 @@ export const volumeStats = derived([currentVolume, volumes], ([$currentVolume, $
     lastProgressUpdate: new Date(0).toISOString()
   };
 });
+
+/**
+ * Merges local and remote volume data, keeping the newest progress while preserving metadata
+ * @param localVolumes Local volume data
+ * @param remoteVolumes Remote volume data (from any sync provider)
+ * @returns Merged volume data
+ */
+export function mergeVolumeData(
+  localVolumes: Volumes,
+  remoteVolumes: Volumes
+): Volumes {
+  const merged: Volumes = {};
+  const allVolumeIds = new Set([
+    ...Object.keys(localVolumes),
+    ...Object.keys(remoteVolumes)
+  ]);
+
+  allVolumeIds.forEach(volumeId => {
+    const local = localVolumes[volumeId];
+    const remote = remoteVolumes[volumeId];
+
+    if (!local) {
+      merged[volumeId] = remote;
+    } else if (!remote) {
+      merged[volumeId] = local;
+    } else {
+      // Keep the newer record based on lastProgressUpdate
+      const localDate = new Date(local.lastProgressUpdate).getTime();
+      const remoteDate = new Date(remote.lastProgressUpdate).getTime();
+      const newerRecord = localDate >= remoteDate ? local : remote;
+      const olderRecord = localDate >= remoteDate ? remote : local;
+
+      // Fill in missing metadata from the other record
+      merged[volumeId] = new VolumeData({
+        ...newerRecord,
+        series_uuid: newerRecord.series_uuid || olderRecord.series_uuid,
+        series_title: newerRecord.series_title || olderRecord.series_title,
+        volume_title: newerRecord.volume_title || olderRecord.volume_title
+      });
+    }
+  });
+
+  return merged;
+}
