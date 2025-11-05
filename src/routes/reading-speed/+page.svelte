@@ -26,7 +26,10 @@
   import type { VolumeMetadata } from '$lib/types';
   import Chart from 'chart.js/auto';
 
-  // All possible achievements for test mode (10 levels per category + 1 special)
+  // Streak-based badge categories (no fixed list, dynamically generated)
+  const STREAK_CATEGORIES = ['15 min', '30 min', '1 hour', '1 vol'];
+
+  // All possible achievements for test mode (10 levels per category)
   const ALL_ACHIEVEMENTS = [
     // Speed-based achievements (10 levels: Grey -> Bronze -> Silver -> Gold -> Platinum -> Prestige Bronze -> Prestige Silver -> Prestige Gold -> Prestige Platinum -> Prismatic)
     'Beginner',
@@ -71,9 +74,7 @@
     '250 Hour Reader',
     '500 Hour Reader',
     '1000 Hour Reader',
-    '2000 Hour Reader',
-    // Special achievement
-    'Improving Fast'
+    '2000 Hour Reader'
   ];
 
   // Reactive state
@@ -341,7 +342,32 @@
     return num.toString();
   }
 
+  // Helper to check if badge is a streak badge
+  function isStreakBadge(badge: string): boolean {
+    return badge.match(/^\d+ day streak of (15 min|30 min|1 hour|1 vol) per day$/) !== null;
+  }
+
+  // Extract days from streak badge
+  function getStreakDays(badge: string): number {
+    const match = badge.match(/^(\d+) day streak/);
+    return match ? parseInt(match[1]) : 0;
+  }
+
   function getBadgeColor(badge: string): 'dark' | 'yellow' | 'blue' | 'green' {
+    // Handle streak badges with tier-based coloring
+    if (isStreakBadge(badge)) {
+      const days = getStreakDays(badge);
+      if (days >= 30) return 'dark'; // Prismatic (tier 10)
+      if (days >= 21) return 'blue';  // Prestige Platinum (tier 9)
+      if (days >= 14) return 'dark';  // Prestige Gold (tier 8)
+      if (days >= 10) return 'dark';  // Prestige Silver (tier 7)
+      if (days >= 7) return 'blue';   // Prestige Bronze (tier 6) / Platinum (tier 5)
+      if (days >= 5) return 'dark';   // Gold (tier 4)
+      if (days >= 3) return 'dark';   // Silver (tier 3)
+      if (days >= 2) return 'dark';   // Bronze (tier 2)
+      return 'dark';                  // Grey (tier 1)
+    }
+
     // 10-tier system: Grey -> Bronze -> Silver -> Gold -> Platinum -> Prestige Bronze -> Prestige Silver -> Prestige Gold -> Prestige Platinum -> Prismatic
     switch (badge) {
       // Speed-based badges (10 levels)
@@ -392,14 +418,25 @@
       case '1000 Hour Reader': return 'blue';    // Tier 9: Prestige Platinum
       case '2000 Hour Reader': return 'dark';    // Tier 10: Prismatic
 
-      // Special achievement
-      case 'Improving Fast': return 'green';
-
       default: return 'dark';
     }
   }
 
   function getBadgeTooltip(badge: string): string {
+    // Handle streak badges
+    if (isStreakBadge(badge)) {
+      const days = getStreakDays(badge);
+      if (badge.includes('15 min per day')) {
+        return `${days} day streak reading at least 15 minutes per day`;
+      } else if (badge.includes('30 min per day')) {
+        return `${days} day streak reading at least 30 minutes per day`;
+      } else if (badge.includes('1 hour per day')) {
+        return `${days} day streak reading at least 1 hour per day`;
+      } else if (badge.includes('1 vol per day')) {
+        return `${days} day streak completing at least 1 volume per day`;
+      }
+    }
+
     switch (badge) {
       // Speed-based badges (10 levels)
       case 'Beginner': return 'Unlocked at >10 chars/min reading speed';
@@ -449,21 +486,14 @@
       case '1000 Hour Reader': return 'Unlocked after 1,000 hours of reading time';
       case '2000 Hour Reader': return 'Unlocked after 2,000 hours of reading time';
 
-      // Special achievement
-      case 'Improving Fast': return 'Unlocked when speed trend shows >20% improvement';
-
       default: return '';
     }
   }
 
-  function getTrendIcon(trend: number) {
-    if (trend > 10) return ArrowUpOutline;
-    if (trend < -10) return ArrowDownOutline;
-    return null;
-  }
-
   // Get category for a badge to enable separators
-  function getBadgeCategory(badge: string): 'speed' | 'volume' | 'characters' | 'time' | 'special' {
+  function getBadgeCategory(badge: string): 'speed' | 'volume' | 'characters' | 'time' | 'streak' {
+    if (isStreakBadge(badge)) return 'streak';
+
     const speedBadges = ['Beginner', '¹⁄₁₆ Native', '⅛ Native', '¼ Native', '⅜ Native', '½ Native', '⅝ Native', '¾ Native', '⅞ Native', 'Native'];
     const volumeBadges = ['First Volume', 'First Steps', 'Getting Started', 'Consistent Reader', 'Dedicated Reader', 'Veteran Reader', 'Century Club', 'Master Reader', 'Bookworm', 'Librarian'];
     const charBadges = ['10K Characters', '50K Characters', '100K Characters', 'Quarter Million', 'Half Million', 'Million Club', '2.5 Million Club', '5 Million Club', '7.5 Million Club', '10 Million Club'];
@@ -472,8 +502,7 @@
     if (speedBadges.includes(badge)) return 'speed';
     if (volumeBadges.includes(badge)) return 'volume';
     if (charBadges.includes(badge)) return 'characters';
-    if (timeBadges.includes(badge)) return 'time';
-    return 'special';
+    return 'time';
   }
 
   function confirmDelete(volume: VolumeSpeedData) {
@@ -492,6 +521,17 @@
 
   // Get animation class for prestige and mythic tier badges
   function getBadgeAnimation(badge: string): string {
+    // Handle streak badges based on days
+    if (isStreakBadge(badge)) {
+      const days = getStreakDays(badge);
+      if (days >= 30) return 'badge-prismatic';      // Tier 10
+      if (days >= 21) return 'badge-platinum-pulse'; // Tier 9
+      if (days >= 14) return 'badge-gold-glow';      // Tier 8
+      if (days >= 10) return 'badge-silver-sparkle'; // Tier 7
+      if (days >= 7) return 'badge-bronze-shimmer';  // Tier 6
+      return '';
+    }
+
     // Tier 6 (Prestige Bronze) - Bronze shimmer effect
     const tier6Badges = ['½ Native', 'Veteran Reader', '100 Hour Reader', 'Million Club'];
     if (tier6Badges.includes(badge)) return 'badge-bronze-shimmer';
@@ -517,6 +557,20 @@
 
   // Get tier-specific color class for custom badge colors
   function getBadgeTierClass(badge: string): string {
+    // Handle streak badges based on days
+    if (isStreakBadge(badge)) {
+      const days = getStreakDays(badge);
+      if (days >= 30) return 'badge-tier-prismatic';  // Tier 10
+      if (days >= 21) return 'badge-tier-platinum';   // Tier 9
+      if (days >= 14) return 'badge-tier-gold';       // Tier 8
+      if (days >= 10) return 'badge-tier-silver';     // Tier 7
+      if (days >= 7) return 'badge-tier-bronze';      // Tier 6
+      if (days >= 5) return 'badge-tier-gold';        // Tier 4
+      if (days >= 3) return 'badge-tier-silver';      // Tier 3
+      if (days >= 2) return 'badge-tier-bronze';      // Tier 2
+      return 'badge-tier-grey';                       // Tier 1
+    }
+
     // Tier 1 (Grey)
     const tier1Badges = ['Beginner', 'First Volume', '10K Characters', '1 Hour Reader'];
     if (tier1Badges.includes(badge)) return 'badge-tier-grey';
@@ -618,17 +672,6 @@
           <div>
             <p class="text-sm text-gray-400 mb-1">Total Time</p>
             <p class="text-2xl font-bold">{formatDuration($stats.totalTimeMinutes)}</p>
-            {#if $stats.speedTrend !== 0}
-              <div class="flex items-center gap-1 text-xs mt-1">
-                {#if getTrendIcon($stats.speedTrend)}
-                  <svelte:component this={getTrendIcon($stats.speedTrend)} size="xs"
-                    class={$stats.speedTrend > 0 ? 'text-green-500' : 'text-red-500'} />
-                {/if}
-                <span class={$stats.speedTrend > 0 ? 'text-green-500' : 'text-red-500'}>
-                  {Math.abs(Math.round($stats.speedTrend))}% {$stats.speedTrendLabel}
-                </span>
-              </div>
-            {/if}
           </div>
           <ClockSolid size="lg" class="text-purple-500" />
         </div>

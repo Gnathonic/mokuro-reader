@@ -31,6 +31,14 @@ export interface ReadingSpeedStats {
 
 	// Achievements
 	badges: string[];
+
+	// Streaks
+	streaks: {
+		fifteenMin: number; // days
+		thirtyMin: number;
+		oneHour: number;
+		oneVolume: number;
+	};
 }
 
 export interface SeriesSpeedInfo {
@@ -186,6 +194,103 @@ export function processVolumeSpeedData(
 }
 
 /**
+ * Calculate current reading streaks based on daily activity
+ */
+function calculateStreaks(allVolumesData: Record<string, any>): {
+	fifteenMin: number;
+	thirtyMin: number;
+	oneHour: number;
+	oneVolume: number;
+} {
+	// Group all page turns and completions by day
+	const dailyActivity = new Map<string, { minutes: number; volumesCompleted: number }>();
+
+	const today = new Date();
+	today.setHours(0, 0, 0, 0);
+
+	for (const [volumeId, data] of Object.entries(allVolumesData)) {
+		// Process page turns for time-based streaks
+		if (data.recentPageTurns && Array.isArray(data.recentPageTurns)) {
+			// Group page turns by day and calculate reading time
+			const pageTurnsByDay = new Map<string, number[]>();
+
+			for (const turn of data.recentPageTurns) {
+				const timestamp = turn[0];
+				const date = new Date(timestamp);
+				date.setHours(0, 0, 0, 0);
+				const dateKey = date.toISOString().split('T')[0];
+
+				if (!pageTurnsByDay.has(dateKey)) {
+					pageTurnsByDay.set(dateKey, []);
+				}
+				pageTurnsByDay.get(dateKey)!.push(timestamp);
+			}
+
+			// Estimate reading time per day based on page turn intervals
+			for (const [dateKey, timestamps] of pageTurnsByDay) {
+				if (timestamps.length < 2) continue;
+
+				// Sort timestamps
+				timestamps.sort((a, b) => a - b);
+
+				// Sum intervals between page turns (max 5 min per interval to avoid counting idle time)
+				let totalMs = 0;
+				for (let i = 1; i < timestamps.length; i++) {
+					const interval = timestamps[i] - timestamps[i - 1];
+					totalMs += Math.min(interval, 5 * 60 * 1000); // Cap at 5 minutes
+				}
+
+				const minutes = totalMs / (1000 * 60);
+
+				if (!dailyActivity.has(dateKey)) {
+					dailyActivity.set(dateKey, { minutes: 0, volumesCompleted: 0 });
+				}
+				dailyActivity.get(dateKey)!.minutes += minutes;
+			}
+		}
+
+		// Process completed volumes
+		if (data.completed && data.lastProgressUpdate) {
+			const date = new Date(data.lastProgressUpdate);
+			date.setHours(0, 0, 0, 0);
+			const dateKey = date.toISOString().split('T')[0];
+
+			if (!dailyActivity.has(dateKey)) {
+				dailyActivity.set(dateKey, { minutes: 0, volumesCompleted: 0 });
+			}
+			dailyActivity.get(dateKey)!.volumesCompleted += 1;
+		}
+	}
+
+	// Calculate streaks by checking consecutive days from today backwards
+	const calculateStreak = (requirement: (activity: { minutes: number; volumesCompleted: number }) => boolean): number => {
+		let streak = 0;
+		let checkDate = new Date(today);
+
+		while (true) {
+			const dateKey = checkDate.toISOString().split('T')[0];
+			const activity = dailyActivity.get(dateKey);
+
+			if (activity && requirement(activity)) {
+				streak++;
+				checkDate.setDate(checkDate.getDate() - 1);
+			} else {
+				break;
+			}
+		}
+
+		return streak;
+	};
+
+	return {
+		fifteenMin: calculateStreak((a) => a.minutes >= 15),
+		thirtyMin: calculateStreak((a) => a.minutes >= 30),
+		oneHour: calculateStreak((a) => a.minutes >= 60),
+		oneVolume: calculateStreak((a) => a.volumesCompleted >= 1)
+	};
+}
+
+/**
  * Calculate overall reading speed statistics
  */
 export function calculateReadingSpeedStats(
@@ -204,6 +309,9 @@ export function calculateReadingSpeedStats(
 		}
 	}
 
+	// Calculate streaks
+	const streaks = calculateStreaks(allVolumesData);
+
 	if (volumeData.length === 0 && allCompletedCount === 0) {
 		return {
 			totalTimeMinutes: 0,
@@ -213,7 +321,8 @@ export function calculateReadingSpeedStats(
 			totalCharsRead: 0,
 			speedTrend: 0,
 			speedTrendLabel: 'stable',
-			badges: []
+			badges: [],
+			streaks
 		};
 	}
 
@@ -377,10 +486,15 @@ export function calculateReadingSpeedStats(
 		badges.push('2000 Hour Reader');
 	}
 
-	// Special achievement (trend-based)
-	if (speedTrend > 20) {
-		badges.push('Improving Fast');
-	}
+	// Streak-based achievements (dynamic labels with day count)
+	// 15 minute streak
+	if (streaks.fifteenMin >= 1) badges.push(`${streaks.fifteenMin} day streak of 15 min per day`);
+	// 30 minute streak
+	if (streaks.thirtyMin >= 1) badges.push(`${streaks.thirtyMin} day streak of 30 min per day`);
+	// 1 hour streak
+	if (streaks.oneHour >= 1) badges.push(`${streaks.oneHour} day streak of 1 hour per day`);
+	// 1 volume per day streak
+	if (streaks.oneVolume >= 1) badges.push(`${streaks.oneVolume} day streak of 1 vol per day`);
 
 	return {
 		totalTimeMinutes: totalTime,
@@ -390,7 +504,8 @@ export function calculateReadingSpeedStats(
 		totalCharsRead: totalChars,
 		speedTrend,
 		speedTrendLabel,
-		badges
+		badges,
+		streaks
 	};
 }
 
