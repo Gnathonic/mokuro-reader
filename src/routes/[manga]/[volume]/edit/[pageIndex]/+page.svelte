@@ -5,7 +5,8 @@
 	import { getCurrentPages, getOriginalPages } from '$lib/catalog/pages';
 	import type { VolumeData, Page, Block } from '$lib/types';
 	import { onMount } from 'svelte';
-	import { Button, Modal, Spinner } from 'flowbite-svelte';
+	import { Button, Modal, Spinner, Toast } from 'flowbite-svelte';
+	import { CheckCircleSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
 	import EditToolbar from '$lib/components/Editor/EditToolbar.svelte';
 	import EditCanvas from '$lib/components/Editor/EditCanvas.svelte';
 
@@ -23,6 +24,9 @@
 	let showUnsavedWarning = $state(false);
 	let pendingNavigation: (() => void) | null = null;
 	let zoomMode = $state<ZoomMode>('fit-screen');
+	let showSaveSuccess = $state(false);
+	let showSaveError = $state(false);
+	let saveErrorMessage = $state('');
 
 	let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
 	let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
@@ -90,8 +94,9 @@
 			const currentPages = getCurrentPages(volumeData);
 
 			// Create a copy and update the current page's blocks
-			const updatedPages = structuredClone(currentPages);
-			updatedPages[pageIndex].blocks = workingBlocks;
+			// Use JSON parse/stringify to avoid cloning issues with IndexedDB objects and Svelte proxies
+			const updatedPages = JSON.parse(JSON.stringify(currentPages));
+			updatedPages[pageIndex].blocks = JSON.parse(JSON.stringify(workingBlocks));
 
 			// Save to edited_pages field
 			await db.volumes_data.update(volumeUuid, {
@@ -102,9 +107,22 @@
 			volumeData.edited_pages = updatedPages;
 			hasUnsavedChanges = false;
 
+			// Show success toast
+			showSaveSuccess = true;
+			setTimeout(() => {
+				showSaveSuccess = false;
+			}, 3000);
+
 			console.log('Edits saved successfully');
 		} catch (error) {
 			console.error('Failed to save edits:', error);
+
+			// Show error toast
+			saveErrorMessage = error instanceof Error ? error.message : 'Unknown error';
+			showSaveError = true;
+			setTimeout(() => {
+				showSaveError = false;
+			}, 5000);
 		}
 	}
 
@@ -239,6 +257,32 @@
 			</div>
 		</div>
 	</Modal>
+
+	<!-- Success Toast -->
+	<Toast
+		color="green"
+		position="top-right"
+		open={showSaveSuccess}
+		class="fixed top-20 right-4 z-50"
+	>
+		<svelte:fragment slot="icon">
+			<CheckCircleSolid class="w-5 h-5" />
+		</svelte:fragment>
+		Edits saved successfully
+	</Toast>
+
+	<!-- Error Toast -->
+	<Toast
+		color="red"
+		position="top-right"
+		open={showSaveError}
+		class="fixed top-20 right-4 z-50"
+	>
+		<svelte:fragment slot="icon">
+			<CloseCircleSolid class="w-5 h-5" />
+		</svelte:fragment>
+		Failed to save: {saveErrorMessage}
+	</Toast>
 {:else}
 	<div class="flex items-center justify-center w-screen h-screen">
 		<p class="text-xl">Failed to load page data</p>
