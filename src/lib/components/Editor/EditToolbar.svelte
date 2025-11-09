@@ -6,7 +6,8 @@
 		FloppyDiskSolid,
 		DownloadSolid,
 		XSolid,
-		ArrowRotateBackwardSolid
+		ArrowRotateBackwardSolid,
+		EyeSolid
 	} from 'flowbite-svelte-icons';
 
 	type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
@@ -23,6 +24,7 @@
 		onExport: () => void;
 		onExit: () => void;
 		onRevert: () => void;
+		onCompare: () => void;
 		onZoomChange: (mode: ZoomMode) => void;
 	}
 
@@ -38,6 +40,7 @@
 		onExport,
 		onExit,
 		onRevert,
+		onCompare,
 		onZoomChange
 	}: Props = $props();
 
@@ -99,6 +102,11 @@
 		</Button>
 
 		{#if hasEdits}
+			<Button size="sm" color="purple" onclick={onCompare}>
+				<EyeSolid class="w-4 h-4 mr-2" />
+				Compare
+			</Button>
+
 			<Button size="sm" color="red" onclick={onRevert}>
 				<ArrowRotateBackwardSolid class="w-4 h-4 mr-2" />
 				Revert to Original
