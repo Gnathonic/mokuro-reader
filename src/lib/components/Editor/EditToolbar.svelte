@@ -5,7 +5,8 @@
 		CaretRightSolid,
 		FloppyDiskSolid,
 		DownloadSolid,
-		XSolid
+		XSolid,
+		ArrowRotateBackwardSolid
 	} from 'flowbite-svelte-icons';
 
 	type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
@@ -14,12 +15,14 @@
 		pageIndex: number;
 		totalPages: number;
 		hasUnsavedChanges: boolean;
+		hasEdits: boolean;
 		zoomMode: ZoomMode;
 		onPrev: () => void;
 		onNext: () => void;
 		onSave: () => void;
 		onExport: () => void;
 		onExit: () => void;
+		onRevert: () => void;
 		onZoomChange: (mode: ZoomMode) => void;
 	}
 
@@ -27,12 +30,14 @@
 		pageIndex,
 		totalPages,
 		hasUnsavedChanges,
+		hasEdits,
 		zoomMode = $bindable(),
 		onPrev,
 		onNext,
 		onSave,
 		onExport,
 		onExit,
+		onRevert,
 		onZoomChange
 	}: Props = $props();
 
@@ -92,6 +97,13 @@
 			<FloppyDiskSolid class="w-4 h-4 mr-2" />
 			Save
 		</Button>
+
+		{#if hasEdits}
+			<Button size="sm" color="red" onclick={onRevert}>
+				<ArrowRotateBackwardSolid class="w-4 h-4 mr-2" />
+				Revert to Original
+			</Button>
+		{/if}
 
 		<Button size="sm" color="blue" onclick={onExport}>
 			<DownloadSolid class="w-4 h-4 mr-2" />

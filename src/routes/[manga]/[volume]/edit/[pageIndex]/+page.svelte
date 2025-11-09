@@ -2,13 +2,14 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { db } from '$lib/catalog/db';
-	import { getCurrentPages, getOriginalPages } from '$lib/catalog/pages';
+	import { getCurrentPages, getOriginalPages, hasEdits } from '$lib/catalog/pages';
 	import type { VolumeData, Page, Block } from '$lib/types';
 	import { onMount } from 'svelte';
 	import { Button, Modal, Spinner, Toast } from 'flowbite-svelte';
 	import { CheckCircleSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
 	import EditToolbar from '$lib/components/Editor/EditToolbar.svelte';
 	import EditCanvas from '$lib/components/Editor/EditCanvas.svelte';
+	import { promptConfirmation } from '$lib/util';
 
 	type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
 
@@ -30,6 +31,7 @@
 
 	let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
 	let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
+	let volumeHasEdits = $derived(volumeData ? hasEdits(volumeData) : false);
 	let pageImage = $derived(
 		volumeData?.files && Object.values(volumeData.files)[pageIndex]
 			? URL.createObjectURL(Object.values(volumeData.files)[pageIndex])
@@ -173,6 +175,38 @@
 		pendingNavigation = null;
 	}
 
+	async function revertToOriginal() {
+		if (!volumeData) return;
+
+		promptConfirmation(
+			'Revert all edits to original? This cannot be undone.',
+			async () => {
+				try {
+					// Remove edited_pages field from database
+					await db.volumes_data.update(volumeUuid, {
+						edited_pages: undefined
+					});
+
+					// Reload the page to show original data
+					await loadVolumeData();
+
+					// Show success toast
+					showSaveSuccess = true;
+					setTimeout(() => {
+						showSaveSuccess = false;
+					}, 3000);
+				} catch (error) {
+					console.error('Failed to revert edits:', error);
+					saveErrorMessage = error instanceof Error ? error.message : 'Unknown error';
+					showSaveError = true;
+					setTimeout(() => {
+						showSaveError = false;
+					}, 5000);
+				}
+			}
+		);
+	}
+
 	async function exportMokuro() {
 		if (!volumeData) return;
 
@@ -225,12 +259,14 @@
 		{pageIndex}
 		{totalPages}
 		{hasUnsavedChanges}
+		hasEdits={volumeHasEdits}
 		bind:zoomMode
 		onPrev={() => navigatePage(pageIndex - 1)}
 		onNext={() => navigatePage(pageIndex + 1)}
 		onSave={saveEdits}
 		onExport={exportMokuro}
 		onExit={exitToReader}
+		onRevert={revertToOriginal}
 		onZoomChange={(mode) => (zoomMode = mode)}
 	/>
 
