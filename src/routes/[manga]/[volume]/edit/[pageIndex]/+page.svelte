@@ -2,10 +2,10 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { db } from '$lib/catalog/db';
-	import { getCurrentPages, getOriginalPages, hasEdits } from '$lib/catalog/pages';
+	import { getCurrentPages, hasEdits } from '$lib/catalog/pages';
 	import type { VolumeData, Page, Block } from '$lib/types';
 	import { onMount } from 'svelte';
-	import { Button, Modal, Spinner, Toast } from 'flowbite-svelte';
+	import { Button, Spinner, Toast } from 'flowbite-svelte';
 	import { CheckCircleSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
 	import EditToolbar from '$lib/components/Editor/EditToolbar.svelte';
 	import EditCanvas from '$lib/components/Editor/EditCanvas.svelte';
@@ -28,10 +28,8 @@
 	let showSaveSuccess = $state(false);
 	let showSaveError = $state(false);
 	let saveErrorMessage = $state('');
-	let showCompareModal = $state(false);
 
 	let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
-	let originalPageData = $derived(volumeData ? getOriginalPages(volumeData)[pageIndex] : undefined);
 	let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
 	let volumeHasEdits = $derived(volumeData ? hasEdits(volumeData) : false);
 	let pageImage = $derived(
@@ -177,8 +175,33 @@
 		pendingNavigation = null;
 	}
 
-	function showCompare() {
-		showCompareModal = true;
+	function addTextbox() {
+		if (!pageData) return;
+
+		// Create a new empty textbox in the center of the page
+		const centerX = pageData.img_width / 2;
+		const centerY = pageData.img_height / 2;
+		const defaultWidth = 200;
+		const defaultHeight = 100;
+
+		const newBlock: Block = {
+			box: [
+				centerX - defaultWidth / 2,
+				centerY - defaultHeight / 2,
+				centerX + defaultWidth / 2,
+				centerY + defaultHeight / 2
+			],
+			vertical: false,
+			font_size: 20,
+			lines: ['']
+		};
+
+		workingBlocks.push(newBlock);
+		workingBlocks = [...workingBlocks]; // Trigger reactivity
+		hasUnsavedChanges = true;
+
+		// Auto-select the new box
+		selectedIndex = workingBlocks.length - 1;
 	}
 
 	async function revertToOriginal() {
@@ -273,7 +296,7 @@
 		onExport={exportMokuro}
 		onExit={exitToReader}
 		onRevert={revertToOriginal}
-		onCompare={showCompare}
+		onAddBox={addTextbox}
 		onZoomChange={(mode) => (zoomMode = mode)}
 	/>
 
@@ -326,83 +349,6 @@
 		</svelte:fragment>
 		Failed to save: {saveErrorMessage}
 	</Toast>
-
-	<!-- Compare Modal -->
-	{#if volumeHasEdits && originalPageData}
-		<Modal bind:open={showCompareModal} size="xl" autoclose={false} class="!max-w-[90vw]">
-			<div class="space-y-4">
-				<h3 class="text-xl font-semibold text-gray-900 dark:text-white">
-					Compare Original vs Edited
-				</h3>
-
-				<div class="grid grid-cols-2 gap-4">
-					<!-- Original Version -->
-					<div class="space-y-2">
-						<h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Original</h4>
-						<div class="relative border-2 border-gray-300 dark:border-gray-600 rounded overflow-auto max-h-[70vh]">
-							<img
-								src={pageImage}
-								alt="Original page"
-								class="w-full h-auto"
-							/>
-							{#each originalPageData.blocks as block}
-								<div
-									class="absolute border-2 border-blue-500 bg-white bg-opacity-60 p-1 overflow-hidden"
-									style:left="{block.box[0]}px"
-									style:top="{block.box[1]}px"
-									style:width="{block.box[2] - block.box[0]}px"
-									style:height="{block.box[3] - block.box[1]}px"
-									style:writing-mode={block.vertical ? 'vertical-rl' : 'horizontal-tb'}
-									style:font-size="{block.font_size}px"
-									style:line-height="1.1em"
-									style:font-family="'Noto Sans JP', sans-serif"
-								>
-									{#each block.lines as line}
-										<p class="m-0 leading-tight text-black">{line}</p>
-									{/each}
-								</div>
-							{/each}
-						</div>
-					</div>
-
-					<!-- Edited Version -->
-					<div class="space-y-2">
-						<h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Edited</h4>
-						<div class="relative border-2 border-gray-300 dark:border-gray-600 rounded overflow-auto max-h-[70vh]">
-							<img
-								src={pageImage}
-								alt="Edited page"
-								class="w-full h-auto"
-							/>
-							{#each pageData.blocks as block}
-								<div
-									class="absolute border-2 border-green-500 bg-white bg-opacity-60 p-1 overflow-hidden"
-									style:left="{block.box[0]}px"
-									style:top="{block.box[1]}px"
-									style:width="{block.box[2] - block.box[0]}px"
-									style:height="{block.box[3] - block.box[1]}px"
-									style:writing-mode={block.vertical ? 'vertical-rl' : 'horizontal-tb'}
-									style:font-size="{block.font_size}px"
-									style:line-height="1.1em"
-									style:font-family="'Noto Sans JP', sans-serif"
-								>
-									{#each block.lines as line}
-										<p class="m-0 leading-tight text-black">{line}</p>
-									{/each}
-								</div>
-							{/each}
-						</div>
-					</div>
-				</div>
-
-				<div class="flex justify-end">
-					<Button color="alternative" on:click={() => showCompareModal = false}>
-						Close
-					</Button>
-				</div>
-			</div>
-		</Modal>
-	{/if}
 {:else}
 	<div class="flex items-center justify-center w-screen h-screen">
 		<p class="text-xl">Failed to load page data</p>

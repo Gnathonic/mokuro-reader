@@ -7,7 +7,7 @@
 		DownloadSolid,
 		XSolid,
 		UndoOutline,
-		EyeSolid
+		PlusSolid
 	} from 'flowbite-svelte-icons';
 
 	type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
@@ -24,7 +24,7 @@
 		onExport: () => void;
 		onExit: () => void;
 		onRevert: () => void;
-		onCompare: () => void;
+		onAddBox: () => void;
 		onZoomChange: (mode: ZoomMode) => void;
 	}
 
@@ -40,7 +40,7 @@
 		onExport,
 		onExit,
 		onRevert,
-		onCompare,
+		onAddBox,
 		onZoomChange
 	}: Props = $props();
 
@@ -101,12 +101,12 @@
 			Save
 		</Button>
 
-		{#if hasEdits}
-			<Button size="sm" color="purple" onclick={onCompare}>
-				<EyeSolid class="w-4 h-4 mr-2" />
-				Compare
-			</Button>
+		<Button size="sm" color="purple" onclick={onAddBox}>
+			<PlusSolid class="w-4 h-4 mr-2" />
+			Add Textbox
+		</Button>
 
+		{#if hasEdits}
 			<Button size="sm" color="red" onclick={onRevert}>
 				<UndoOutline class="w-4 h-4 mr-2" />
 				Revert to Original
