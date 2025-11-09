@@ -7,7 +7,7 @@
 		DownloadSolid,
 		XSolid,
 		UndoOutline,
-		PlusSolid
+		CirclePlusSolid
 	} from 'flowbite-svelte-icons';
 
 	type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
@@ -102,7 +102,7 @@
 		</Button>
 
 		<Button size="sm" color="purple" onclick={onAddBox}>
-			<PlusSolid class="w-4 h-4 mr-2" />
+			<CirclePlusSolid class="w-4 h-4 mr-2" />
 			Add Textbox
 		</Button>
 

@@ -28,6 +28,7 @@
 	let showSaveSuccess = $state(false);
 	let showSaveError = $state(false);
 	let saveErrorMessage = $state('');
+	let showRevertSuccess = $state(false);
 
 	let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
 	let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
@@ -220,9 +221,9 @@
 					await loadVolumeData();
 
 					// Show success toast
-					showSaveSuccess = true;
+					showRevertSuccess = true;
 					setTimeout(() => {
-						showSaveSuccess = false;
+						showRevertSuccess = false;
 					}, 3000);
 				} catch (error) {
 					console.error('Failed to revert edits:', error);
@@ -348,6 +349,19 @@
 			<CloseCircleSolid class="w-5 h-5" />
 		</svelte:fragment>
 		Failed to save: {saveErrorMessage}
+	</Toast>
+
+	<!-- Revert Success Toast -->
+	<Toast
+		color="green"
+		position="top-right"
+		open={showRevertSuccess}
+		class="fixed top-20 right-4 z-50"
+	>
+		<svelte:fragment slot="icon">
+			<CheckCircleSolid class="w-5 h-5" />
+		</svelte:fragment>
+		Reverted to original
 	</Toast>
 {:else}
 	<div class="flex items-center justify-center w-screen h-screen">
