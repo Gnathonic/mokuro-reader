@@ -6,7 +6,7 @@
 		FloppyDiskSolid,
 		DownloadSolid,
 		XSolid,
-		ArrowRotateBackwardSolid,
+		UndoOutline,
 		EyeSolid
 	} from 'flowbite-svelte-icons';
 
@@ -108,7 +108,7 @@
 			</Button>
 
 			<Button size="sm" color="red" onclick={onRevert}>
-				<ArrowRotateBackwardSolid class="w-4 h-4 mr-2" />
+				<UndoOutline class="w-4 h-4 mr-2" />
 				Revert to Original
 			</Button>
 		{/if}
