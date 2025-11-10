@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Block } from '$lib/types';
-	import { TrashBinSolid, FileCopySolid, ExpandOutline, ArrowUpRightDownLeftOutline, TextSizeOutline } from 'flowbite-svelte-icons';
+	import { TrashBinSolid, FileCopySolid, ExpandOutline, ArrowUpRightDownLeftOutline } from 'flowbite-svelte-icons';
 	import { clamp } from '$lib/util';
 
 	interface Props {
@@ -35,6 +35,7 @@
 	let dragStartY = $state(0);
 	let isEditingText = $state(false);
 	let textContent = $state('');
+	let resizeFrameCount = $state(0);
 
 	// Derived values
 	let [xmin, ymin, xmax, ymax] = $derived(block.box);
@@ -117,12 +118,70 @@
 
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
+
+		// Auto-size font every 10 frames during resize (throttle for performance)
+		resizeFrameCount++;
+		if (resizeFrameCount % 10 === 0) {
+			requestAnimationFrame(() => autoSizeFontDuringResize());
+		}
+	}
+
+	async function autoSizeFontDuringResize() {
+		// Get the text container element
+		const container = document.querySelector(`[data-block-index="${index}"] .text-container`) as HTMLElement;
+		if (!container) return;
+
+		const maxSize = 100;
+		const minSize = 6;
+
+		// Helper to check if content overflows
+		const isOverflowing = () => {
+			return container.scrollHeight > container.clientHeight || container.scrollWidth > container.clientWidth;
+		};
+
+		let testSize = block.font_size;
+
+		// Quick check: if overflowing, decrease; if not, try to increase
+		if (isOverflowing()) {
+			// Decrease until fits
+			while (testSize > minSize && isOverflowing()) {
+				testSize--;
+				onUpdate({
+					...block,
+					font_size: testSize
+				});
+				await new Promise(resolve => requestAnimationFrame(resolve));
+			}
+		} else {
+			// Try to increase
+			while (testSize < maxSize) {
+				testSize++;
+				onUpdate({
+					...block,
+					font_size: testSize
+				});
+				await new Promise(resolve => requestAnimationFrame(resolve));
+				if (isOverflowing()) {
+					// Went too far, go back one
+					testSize--;
+					onUpdate({
+						...block,
+						font_size: testSize
+					});
+					break;
+				}
+			}
+		}
 	}
 
 	function handleResizeEnd() {
 		isDraggingResize = false;
+		resizeFrameCount = 0;
 		document.removeEventListener('mousemove', handleResize);
 		document.removeEventListener('mouseup', handleResizeEnd);
+
+		// Do a final auto-size when resize is complete
+		requestAnimationFrame(() => autoSizeFontDuringResize());
 	}
 
 	function handleClone(e: MouseEvent) {
@@ -224,7 +283,7 @@
 <svelte:window onkeydown={handleKeyDown} />
 
 <div
-	class="absolute border-2 transition-all"
+	class="absolute border-2"
 	class:border-dashed={!isSelected}
 	class:border-solid={isSelected}
 	class:border-gray-400={!isSelected}
@@ -243,6 +302,7 @@
 	onclick={handleSelect}
 	role="button"
 	tabindex="0"
+	data-block-index={index}
 >
 	<!-- Text Content -->
 	{#if isEditingText}
@@ -258,7 +318,7 @@
 		></textarea>
 	{:else}
 		<div
-			class="w-full h-full p-1 overflow-hidden cursor-text text-black"
+			class="text-container w-full h-full p-1 overflow-hidden cursor-text text-black"
 			class:bg-white={isSelected}
 			class:bg-opacity-80={isSelected}
 			onclick={handleTextClick}
@@ -309,20 +369,10 @@
 		<button
 			class="handle handle-resize"
 			onmousedown={handleResizeStart}
-			title="Resize"
+			title="Resize (auto-sizes font)"
 			aria-label="Resize box"
 		>
 			<ArrowUpRightDownLeftOutline class="w-4 h-4 rotate-90" />
-		</button>
-
-		<!-- Auto Size Font (Right side) -->
-		<button
-			class="handle handle-font-auto"
-			onclick={autoSizeFontSize}
-			title="Auto-size font to fit"
-			aria-label="Auto-size font"
-		>
-			<TextSizeOutline class="w-4 h-4" />
 		</button>
 	{/if}
 </div>
@@ -379,15 +429,5 @@
 		right: -14px;
 		cursor: nwse-resize;
 		color: #3b82f6;
-	}
-
-	.handle-font-auto {
-		top: 50%;
-		right: -14px;
-		transform: translateY(-50%);
-		cursor: pointer;
-		background: #f59e0b;
-		color: white;
-		border-color: #d97706;
 	}
 </style>

@@ -5,7 +5,7 @@
 	import { getCurrentPages, hasEdits } from '$lib/catalog/pages';
 	import type { VolumeData, Page, Block } from '$lib/types';
 	import { onMount } from 'svelte';
-	import { Button, Spinner, Toast } from 'flowbite-svelte';
+	import { Button, Modal, Spinner, Toast } from 'flowbite-svelte';
 	import { CheckCircleSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
 	import EditToolbar from '$lib/components/Editor/EditToolbar.svelte';
 	import EditCanvas from '$lib/components/Editor/EditCanvas.svelte';
@@ -29,6 +29,7 @@
 	let showSaveError = $state(false);
 	let saveErrorMessage = $state('');
 	let showRevertSuccess = $state(false);
+	let isMounted = $state(false);
 
 	let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
 	let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
@@ -41,6 +42,19 @@
 
 	onMount(async () => {
 		await loadVolumeData();
+		isMounted = true;
+	});
+
+	// Reload working blocks when page index changes
+	$effect(() => {
+		if (volumeData && pageIndex >= 0) {
+			const currentPages = getCurrentPages(volumeData);
+			if (currentPages[pageIndex]) {
+				workingBlocks = JSON.parse(JSON.stringify(currentPages[pageIndex].blocks || []));
+				selectedIndex = null;
+				hasUnsavedChanges = false;
+			}
+		}
 	});
 
 	async function loadVolumeData() {
@@ -329,7 +343,7 @@
 	<Toast
 		color="green"
 		position="top-right"
-		open={showSaveSuccess}
+		open={isMounted && showSaveSuccess}
 		class="fixed top-20 right-4 z-50"
 	>
 		<svelte:fragment slot="icon">
@@ -342,7 +356,7 @@
 	<Toast
 		color="red"
 		position="top-right"
-		open={showSaveError}
+		open={isMounted && showSaveError}
 		class="fixed top-20 right-4 z-50"
 	>
 		<svelte:fragment slot="icon">
@@ -355,7 +369,7 @@
 	<Toast
 		color="green"
 		position="top-right"
-		open={showRevertSuccess}
+		open={isMounted && showRevertSuccess}
 		class="fixed top-20 right-4 z-50"
 	>
 		<svelte:fragment slot="icon">
