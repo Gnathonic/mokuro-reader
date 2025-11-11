@@ -268,6 +268,9 @@
           const volId = vol.volume_uuid;
           await db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
           await db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
+          if(deleteCloud && hasAnyProvider && unifiedCloudManager.existsInCloud(vol.series_title,vol.volume_title)) {
+            await unifiedCloudManager.deleteFile(unifiedCloudManager.getCloudFile(vol.series_title,vol.volume_title));
+          }
 
           // Only delete stats and progress if the checkbox is checked
           if (deleteStats) {
