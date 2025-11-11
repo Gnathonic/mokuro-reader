@@ -261,20 +261,23 @@
 
   async function confirmDelete(deleteStats = false, deleteCloud = false) {
     const seriesUuid = manga?.[0].series_uuid;
-    if (seriesUuid) {
-      manga?.forEach((vol) => {
-        const volId = vol.volume_uuid;
-        db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
-        db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
+    if (seriesUuid && manga) {
+      // Batch all deletions and await them to prevent race conditions
+      await Promise.all(
+        manga.map(async (vol) => {
+          const volId = vol.volume_uuid;
+          await db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
+          await db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
 
-        // Only delete stats and progress if the checkbox is checked
-        if (deleteStats) {
-          deleteVolume(volId);
-        }
-      });
+          // Only delete stats and progress if the checkbox is checked
+          if (deleteStats) {
+            deleteVolume(volId);
+          }
+        })
+      );
 
       // Delete from cloud if checkbox checked
-      if (deleteCloud && hasAnyProvider && manga) {
+      if (deleteCloud && hasAnyProvider) {
         await deleteSeriesFromCloud(manga);
       }
 
