@@ -127,6 +127,7 @@ export class MegaProvider implements SyncProvider {
 	private storage: any = null;
 	private mokuroFolder: any = null;
 	private initPromise: Promise<void>;
+	private reinitializePromise: Promise<void> | null = null;
 
 	constructor() {
 		if (browser) {
@@ -293,9 +294,19 @@ export class MegaProvider implements SyncProvider {
 	/**
 	 * Reinitialize the MEGA connection to get a fresh storage cache
 	 * This is needed when files change on other devices and the cache becomes stale
+	 *
+	 * Uses Promise-based mutex to prevent concurrent reinitializations that cause deadlocks.
+	 * If already reinitializing, returns the existing Promise so all callers wait together.
 	 */
 	private async reinitialize(): Promise<void> {
 		if (!browser) return;
+
+		// If already reinitializing, return the existing Promise
+		// This prevents concurrent calls from creating multiple Storage connections
+		if (this.reinitializePromise) {
+			console.log('Reinitialize already in progress, waiting for it to complete...');
+			return this.reinitializePromise;
+		}
 
 		// Save current credentials
 		const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
@@ -306,30 +317,38 @@ export class MegaProvider implements SyncProvider {
 			return;
 		}
 
-		console.log('🔄 Reinitializing MEGA connection to refresh cache...');
+		// Create and store the reinitialize Promise
+		this.reinitializePromise = (async () => {
+			console.log('🔄 Reinitializing MEGA connection to refresh cache...');
 
-		// Save current storage in case reconnection fails
-		const oldStorage = this.storage;
-		const oldMokuroFolder = this.mokuroFolder;
+			// Save current storage in case reconnection fails
+			const oldStorage = this.storage;
+			const oldMokuroFolder = this.mokuroFolder;
 
-		// Clear current storage
-		this.storage = null;
-		this.mokuroFolder = null;
+			// Clear current storage
+			this.storage = null;
+			this.mokuroFolder = null;
 
-		// Reconnect with fresh credentials
-		try {
-			await this.login({ email, password });
-			console.log('✅ MEGA connection reinitialized successfully');
-		} catch (error) {
-			// Restore previous connection on failure so user doesn't get logged out
-			console.error('Failed to reinitialize MEGA, restoring previous connection:', error);
-			this.storage = oldStorage;
-			this.mokuroFolder = oldMokuroFolder;
+			// Reconnect with fresh credentials
+			try {
+				await this.login({ email, password });
+				console.log('✅ MEGA connection reinitialized successfully');
+			} catch (error) {
+				// Restore previous connection on failure so user doesn't get logged out
+				console.error('Failed to reinitialize MEGA, restoring previous connection:', error);
+				this.storage = oldStorage;
+				this.mokuroFolder = oldMokuroFolder;
 
-			// Don't throw - allow operations to continue with stale cache
-			// This prevents temporary network issues from appearing as logouts
-			console.warn('Continuing with potentially stale MEGA cache');
-		}
+				// Don't throw - allow operations to continue with stale cache
+				// This prevents temporary network issues from appearing as logouts
+				console.warn('Continuing with potentially stale MEGA cache');
+			} finally {
+				// Clear the Promise so future calls can reinitialize again
+				this.reinitializePromise = null;
+			}
+		})();
+
+		return this.reinitializePromise;
 	}
 
 	private async ensureMokuroFolder(): Promise<any> {
