@@ -14,6 +14,7 @@ import { getCloudFileId, getCloudProvider, getCloudSize, getCloudModifiedTime } 
 import type { ProviderType } from './sync/provider-interface';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import { getFileProcessingPool, incrementPoolUsers, decrementPoolUsers } from './file-processing-pool';
+// v3: enrichAllOrphanedVolumes no longer needed - metadata already in IndexedDB
 
 export interface QueueItem {
 	volumeUuid: string;
@@ -314,6 +315,23 @@ async function processVolumeData(
 	const mokuroText = new TextDecoder().decode(mokuroEntry.data);
 	const mokuroData: MokuroData = JSON.parse(mokuroText);
 
+	// Calculate Japanese character count per page AND total
+	const japaneseRegex = /[○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+	const charactersPerPage: number[] = [];
+	let totalCharCount = 0;
+
+	for (const page of mokuroData.pages) {
+		let pageCharCount = 0;
+		for (const block of page.blocks) {
+			for (const line of block.lines) {
+				const chars = Array.from(line) as string[];
+				pageCharCount += chars.filter((char) => japaneseRegex.test(char)).length;
+			}
+		}
+		charactersPerPage.push(pageCharCount);
+		totalCharCount += pageCharCount;
+	}
+
 	// Create VolumeMetadata from mokuro data
 	const metadata: VolumeMetadata = {
 		mokuro_version: mokuroData.version,
@@ -322,12 +340,12 @@ async function processVolumeData(
 		volume_title: mokuroData.volume,
 		volume_uuid: mokuroData.volume_uuid,
 		page_count: mokuroData.pages.length,
-		character_count: mokuroData.chars
+		character_count: totalCharCount,
+		characters_per_page: charactersPerPage
 	};
 
-	// Convert image entries to File objects
-	// Create File objects directly from ArrayBuffers with proper MIME types
-	const files: Record<string, File> = {};
+	// Convert image entries to File objects and sort them
+	const sortedFiles: [string, File][] = [];
 	for (const entry of entries) {
 		if (!entry.filename.endsWith('.mokuro') && !entry.filename.includes('__MACOSX')) {
 			// Determine MIME type from file extension
@@ -343,33 +361,62 @@ async function processVolumeData(
 			const mimeType = mimeTypes[extension] || 'application/octet-stream';
 
 			// Create File directly from ArrayBuffer with proper MIME type
-			files[entry.filename] = new File([entry.data], entry.filename, { type: mimeType });
+			const file = new File([entry.data], entry.filename, { type: mimeType });
+			sortedFiles.push([entry.filename, file]);
 		}
 	}
 
-	// Create VolumeData
-	const volumeData: VolumeData = {
-		volume_uuid: mokuroData.volume_uuid,
-		pages: mokuroData.pages,
-		files
-	};
+	// Sort files by name
+	sortedFiles.sort((a, b) =>
+		a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
+	);
 
 	// Generate thumbnail from first image
-	const fileNames = Object.keys(files).sort((a, b) =>
-		a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-	);
-	if (fileNames.length > 0) {
-		metadata.thumbnail = await generateThumbnail(files[fileNames[0]]);
+	let thumbnail: File | undefined;
+	if (sortedFiles.length > 0) {
+		thumbnail = await generateThumbnail(sortedFiles[0][1]);
 	}
 
-	// Save to IndexedDB
+	// Prepare images for volumes_images table
+	const images: Array<{ volume_uuid: string; page_number: number; filename: string; image: File }> = [];
+	for (let pageNumber = 0; pageNumber < sortedFiles.length; pageNumber++) {
+		const [filename, image] = sortedFiles[pageNumber];
+		images.push({
+			volume_uuid: metadata.volume_uuid,
+			page_number: pageNumber,
+			filename,
+			image
+		});
+	}
+
+	// Save to IndexedDB using v3 schema
 	const existingVolume = await db.volumes.where('volume_uuid').equals(metadata.volume_uuid).first();
 
 	if (!existingVolume) {
-		await db.transaction('rw', db.volumes, db.volumes_data, async () => {
+		await db.transaction('rw', db.volumes, db.volumes_covers, db.volumes_data, db.volumes_images, async () => {
+			// Insert metadata (without thumbnail, with character stats)
 			await db.volumes.add(metadata);
-			await db.volumes_data.add(volumeData);
+
+			// Insert thumbnail separately
+			if (thumbnail) {
+				await db.volumes_covers.add({
+					volume_uuid: metadata.volume_uuid,
+					thumbnail: thumbnail
+				});
+			}
+
+			// Insert volume data (OCR only)
+			await db.volumes_data.add({
+				volume_uuid: metadata.volume_uuid,
+				pages: mokuroData.pages
+			});
+
+			// Insert images separately
+			await db.volumes_images.bulkAdd(images);
 		});
+
+		// Enrich any orphaned volumes after adding to database
+		// v3: Metadata enrichment no longer needed - data already in IndexedDB
 	}
 
 	// Update cloud file description if folder name doesn't match series title

@@ -21,6 +21,7 @@ export interface VolumeMetadata {
   volume_uuid: string;
   page_count: number;
   character_count: number;
+  characters_per_page?: number[]; // v3: Pre-calculated character count per page
   thumbnail?: File;
 
   // Placeholder fields for cloud-only volumes (not yet downloaded locally)
@@ -41,6 +42,19 @@ export interface VolumeMetadata {
 
 export interface VolumeData {
   volume_uuid: string;
-  pages: Page[];
-  files?: Record<string, File>;
+  pages: Page[]; // v3: OCR data only, images moved to volumes_images
+}
+
+// v3: Thumbnail cache
+export interface VolumeCover {
+  volume_uuid: string;
+  thumbnail: File;
+}
+
+// v3: Per-page image storage (separated from OCR data in volumes_data)
+export interface VolumeImage {
+  volume_uuid: string;
+  page_number: number;
+  filename: string;
+  image: File;
 }

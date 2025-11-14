@@ -1,8 +1,9 @@
-import type { VolumeData, VolumeMetadata } from '$lib/types';
+import type { VolumeData, VolumeMetadata, VolumeCover, VolumeImage } from '$lib/types';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
+import { enrichAllOrphanedVolumes } from '$lib/settings/volume-data';
 
 function naturalSort(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
@@ -10,9 +11,19 @@ function naturalSort(a: string, b: string): number {
 
 export const isUpgrading = writable(false);
 
+// Migration progress tracking for background migration
+export const migrationProgress = writable<{
+  current: number;
+  total: number;
+  percent: number;
+  currentVolume: string;
+} | null>(null);
+
 export class CatalogDexie extends Dexie {
   volumes!: Table<VolumeMetadata>;
-  volumes_data!: Table<VolumeData>;
+  volumes_data!: Table<VolumeData>; // v3: OCR data only, images moved to volumes_images
+  volumes_covers!: Table<VolumeCover>;
+  volumes_images!: Table<VolumeImage>; // v3: Per-page image storage
   catalog!: Table<{ id: string; manga: any[] }>;
 
   constructor() {
@@ -55,6 +66,96 @@ export class CatalogDexie extends Dexie {
 
         await tx.table('volumes').bulkAdd(volumes);
         await tx.table('volumes_data').bulkAdd(volumes_data);
+
+        // Mark upgrade as complete and enrich any orphaned volumes
+        isUpgrading.set(false);
+
+        // v3: Metadata enrichment no longer needed - data already in IndexedDB
+      });
+
+    // Version 3: Separate images from OCR data for memory efficiency
+    // Phase 1: Extract thumbnails and migrate images to volumes_images
+    // Phase 2: Background calculation of characters_per_page cache
+    this.version(3)
+      .stores({
+        volumes: 'volume_uuid',
+        volumes_covers: 'volume_uuid',
+        volumes_data: 'volume_uuid',
+        volumes_images: '[volume_uuid+page_number], volume_uuid' // Compound primary key + volume index
+      })
+      .upgrade(async (tx) => {
+        isUpgrading.set(true);
+        console.log('[DB Migration v3] Phase 1: Extracting thumbnails and migrating images...');
+        const startTime = performance.now();
+
+        // Load old data
+        const oldVolumes = await tx.table('volumes').toArray() as VolumeMetadata[];
+        const oldVolumesData = await tx.table('volumes_data').toArray() as Array<VolumeData & { files?: Record<string, File> }>;
+        console.log(`[DB Migration v3] Processing ${oldVolumes.length} volumes...`);
+
+        // Clear and rebuild tables
+        await tx.table('volumes').clear();
+        await tx.table('volumes_data').clear();
+
+        const covers: VolumeCover[] = [];
+        const newVolumes: VolumeMetadata[] = [];
+        const newVolumesData: VolumeData[] = [];
+        const images: VolumeImage[] = [];
+
+        for (const volume of oldVolumes) {
+          const { thumbnail, ...metadata } = volume;
+
+          // Create new volume metadata with empty characters_per_page (to be calculated in Phase 2)
+          newVolumes.push({
+            ...metadata,
+            character_count: volume.character_count || 0,
+            characters_per_page: [] // Will be populated during background migration
+          } as VolumeMetadata);
+
+          // Extract thumbnail to volumes_covers table
+          if (thumbnail) {
+            covers.push({ volume_uuid: volume.volume_uuid, thumbnail });
+          }
+        }
+
+        // Migrate volumes_data: separate OCR (keep) from images (move to volumes_images)
+        for (const volumeData of oldVolumesData) {
+          const { files, ...ocrData } = volumeData;
+
+          // Keep only OCR data in volumes_data
+          newVolumesData.push(ocrData as VolumeData);
+
+          // Move images to volumes_images table
+          if (files) {
+            const sortedFiles = Object.entries(files).sort(([a], [b]) =>
+              a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+            );
+
+            sortedFiles.forEach(([filename, image], pageNumber) => {
+              images.push({
+                volume_uuid: volumeData.volume_uuid,
+                page_number: pageNumber,
+                filename,
+                image
+              });
+            });
+          }
+        }
+
+        // Write new data
+        await tx.table('volumes').bulkAdd(newVolumes);
+        await tx.table('volumes_data').bulkAdd(newVolumesData);
+        if (covers.length > 0) await tx.table('volumes_covers').bulkAdd(covers);
+        if (images.length > 0) await tx.table('volumes_images').bulkAdd(images);
+
+        const endTime = performance.now();
+        console.log(`[DB Migration v3] Phase 1 complete in ${((endTime - startTime) / 1000).toFixed(1)}s`);
+        console.log(`[DB Migration v3] - ${newVolumes.length} volumes`);
+        console.log(`[DB Migration v3] - ${covers.length} covers`);
+        console.log(`[DB Migration v3] - ${images.length} images migrated to volumes_images`);
+        console.log('[DB Migration v3] Phase 2 will run in background (calculating characters_per_page)...');
+
+        isUpgrading.set(false);
       });
 
     // Only start thumbnail processing in browser environment
@@ -64,41 +165,55 @@ export class CatalogDexie extends Dexie {
   }
 
   async processThumbnails(batchSize: number = 5): Promise<void> {
-    // Get volumes without thumbnails and not currently being processed
-    const volumes = await this.volumes
-      .filter((volume) => !volume.thumbnail)
-      .limit(batchSize)
-      .toArray();
+    // Get volumes without covers
+    const allVolumes = await this.volumes.toArray();
 
-    if (volumes.length === 0) return;
+    // Check which ones don't have covers yet
+    const volumesNeedingThumbnails: VolumeMetadata[] = [];
+    for (const volume of allVolumes) {
+      const existingCover = await this.volumes_covers.get(volume.volume_uuid);
+      if (!existingCover) {
+        volumesNeedingThumbnails.push(volume);
+        // Limit batch size
+        if (volumesNeedingThumbnails.length >= batchSize) {
+          break;
+        }
+      }
+    }
+
+    // If no volumes need thumbnails, we're done
+    if (volumesNeedingThumbnails.length === 0) {
+      return;
+    }
 
     // Process thumbnails in parallel
+    let successCount = 0;
     await Promise.all(
-      volumes.map(async (volume) => {
-        // Mark as processing
-        db.volumes_data.get({ volume_uuid: volume.volume_uuid }).then(async (data) => {
-          if (data && data.files) {
-            try {
-              // Get the first image file when sorted naturally
-              const fileNames = Object.keys(data.files).sort(naturalSort);
-              const firstImageFile = fileNames.length > 0 ? data.files[fileNames[0]] : null;
+      volumesNeedingThumbnails.map(async (volume) => {
+        try {
+          // Get the first image (page 0) from volumes_images
+          const firstImage = await db.volumes_images.get([volume.volume_uuid, 0]);
 
-              if (firstImageFile) {
-                const thumbnail = await generateThumbnail(firstImageFile);
-                // Update the volume with the thumbnail
-                volume.thumbnail = thumbnail;
-                await this.volumes.where('volume_uuid').equals(volume.volume_uuid).modify(volume);
-              }
-            } catch (error) {
-              console.error('Failed to generate thumbnail for volume:', volume.volume_uuid, error);
-            }
+          if (firstImage?.image) {
+            const thumbnail = await generateThumbnail(firstImage.image);
+            // Insert into volumes_covers table
+            await this.volumes_covers.add({
+              volume_uuid: volume.volume_uuid,
+              thumbnail: thumbnail
+            });
+            successCount++;
           }
-        });
+        } catch (error) {
+          console.error('Failed to generate thumbnail for volume:', volume.volume_uuid, error);
+        }
       })
     );
 
-    // Continue processing remaining volumes
-    await this.processThumbnails(batchSize);
+    // Only continue if we successfully generated thumbnails
+    // This prevents infinite recursion if volumes have no images
+    if (successCount > 0) {
+      await this.processThumbnails(batchSize);
+    }
   }
 }
 

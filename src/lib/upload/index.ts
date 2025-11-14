@@ -4,6 +4,7 @@ import { showSnackbar } from '$lib/util/snackbar';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { getMimeType, ZipReaderStream } from '@zip.js/zip.js';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
+// v3: enrichAllOrphanedVolumes no longer needed - metadata already in IndexedDB
 
 export * from './web-import';
 
@@ -122,10 +123,34 @@ async function uploadVolumeData(
 
     if (!existingVolume) {
       showSnackbar('adding ' + uploadMetadata.volume_title + ' to your catalog');
+
+      // Calculate Japanese character count per page AND total
+      const japaneseRegex = /[○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+      const charactersPerPage: number[] = [];
+      let totalCharCount = 0;
+
+      if (uploadData.pages) {
+        for (const page of uploadData.pages) {
+          let pageCharCount = 0;
+          for (const block of page.blocks) {
+            for (const line of block.lines) {
+              const chars = Array.from(line) as string[];
+              pageCharCount += chars.filter((char) => japaneseRegex.test(char)).length;
+            }
+          }
+          charactersPerPage.push(pageCharCount);
+          totalCharCount += pageCharCount;
+        }
+      }
+
+      uploadMetadata.character_count = totalCharCount;
+      uploadMetadata.characters_per_page = charactersPerPage;
+
       // Sort files by name case-insensitively
+      const sortedFiles: [string, File][] = [];
       if (uploadData.files) {
-        uploadData.files = Object.fromEntries(
-          Object.entries(uploadData.files).sort(([aKey, aFile], [bKey, bFile]) =>
+        sortedFiles.push(
+          ...Object.entries(uploadData.files).sort(([aKey], [bKey]) =>
             aKey.localeCompare(bKey, undefined, {
               numeric: true,
               sensitivity: 'base'
@@ -134,16 +159,45 @@ async function uploadVolumeData(
         );
       }
 
-      const firstFileKey = uploadData.files ? Object.keys(uploadData.files)[0] : undefined;
-      const firstFile = firstFileKey ? uploadData.files?.[firstFileKey] : undefined;
-      if (firstFile) {
-        uploadMetadata.thumbnail = await generateThumbnail(firstFile);
+      // Generate thumbnail from first file
+      let thumbnail: File | undefined;
+      if (sortedFiles.length > 0) {
+        thumbnail = await generateThumbnail(sortedFiles[0][1]);
       }
-      await db.transaction('rw', db.volumes, async () => {
+
+      // Prepare images for volumes_images table
+      const images: Array<{ volume_uuid: string; page_number: number; filename: string; image: File }> = [];
+      for (let pageNumber = 0; pageNumber < sortedFiles.length; pageNumber++) {
+        const [filename, image] = sortedFiles[pageNumber];
+        images.push({
+          volume_uuid: uploadMetadata.volume_uuid!,
+          page_number: pageNumber,
+          filename,
+          image
+        });
+      }
+
+      // v3: Insert metadata, thumbnail, volume data (OCR only), and images (separate table)
+      await db.transaction('rw', db.volumes, db.volumes_covers, db.volumes_data, db.volumes_images, async () => {
+        // Insert metadata (without thumbnail, with character stats)
         await db.volumes.add(uploadMetadata as VolumeMetadata, uploadMetadata.volume_uuid);
-      });
-      await db.transaction('rw', db.volumes_data, async () => {
-        await db.volumes_data.add(uploadData as VolumeData, uploadMetadata.volume_uuid);
+
+        // Insert thumbnail separately
+        if (thumbnail) {
+          await db.volumes_covers.add({
+            volume_uuid: uploadMetadata.volume_uuid!,
+            thumbnail: thumbnail
+          });
+        }
+
+        // Insert volume data (OCR only)
+        await db.volumes_data.add({
+          volume_uuid: uploadMetadata.volume_uuid!,
+          pages: uploadData.pages || []
+        });
+
+        // Insert images separately
+        await db.volumes_images.bulkAdd(images);
       });
     }
   }
@@ -398,4 +452,7 @@ export async function processFiles(_files: File[]) {
 
   showSnackbar('Files uploaded successfully');
   db.processThumbnails(5);
+
+  // Enrich any orphaned volumes after upload completes
+  // v3: Metadata enrichment no longer needed - data already in IndexedDB
 }

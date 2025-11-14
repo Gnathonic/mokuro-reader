@@ -15,6 +15,7 @@
   import { backupQueue } from '$lib/util/backup-queue';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
+  import { getVolumeCover } from '$lib/catalog';
 
   interface Props {
     volume: VolumeMetadata;
@@ -30,6 +31,15 @@
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
   let isComplete = $derived(isVolumeComplete(currentPage, volume.page_count));
+
+  // v3: Load thumbnail from volumes_covers table
+  let coverStore = $derived(getVolumeCover(volume_uuid));
+  let thumbnail = $state<File | undefined>(undefined);
+
+  $effect(() => {
+    const unsubscribe = coverStore.subscribe(value => { thumbnail = value; });
+    return unsubscribe;
+  });
 
   // Cloud backup state (for grid view menu)
   let cloudFiles = $state<Map<string, CloudVolumeWithProvider[]>>(new Map());
@@ -57,19 +67,9 @@
   // Time statistics
   let timeReadMinutes = $derived(volumeData?.timeReadInMinutes || 0);
   let charsRead = $derived(volumeData?.chars || 0);
-  let totalChars = $state<number | undefined>(undefined);
 
-  // Calculate Japanese character count from pages data (matches reading tracker)
-  $effect(() => {
-    db.volumes_data.get(volume.volume_uuid).then(data => {
-      if (data?.pages) {
-        const { charCount } = getCharCount(data.pages);
-        if (charCount > 0) {
-          totalChars = charCount;
-        }
-      }
-    });
-  });
+  // Use pre-calculated character count from metadata (no DB read needed!)
+  let totalChars = $derived(volume.character_count || 0);
 
   // Get current reading speed
   let currentSpeed = $derived.by(() => {
@@ -162,8 +162,11 @@
     promptConfirmation(
       `Delete ${volName}?`,
       async (deleteStats = false) => {
+        // v3: Delete from all tables
         await db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete();
+        await db.volumes_covers.where('volume_uuid').equals(volume.volume_uuid).delete();
         await db.volumes_data.where('volume_uuid').equals(volume.volume_uuid).delete();
+        await db.volumes_images.where('volume_uuid').equals(volume.volume_uuid).delete();
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {
@@ -232,9 +235,9 @@
         on:click={() => goto(`/${$page.params.manga}/${volume_uuid}`)}
         normalClass="py-4"
       >
-        {#if volume.thumbnail}
+        {#if thumbnail}
           <img
-            src={URL.createObjectURL(volume.thumbnail)}
+            src={URL.createObjectURL(thumbnail)}
             alt="img"
             style="margin-right:10px;"
             class="object-contain w-[50px] h-[70px] bg-black border-gray-900 border"
@@ -310,9 +313,9 @@
 
       <a href="/{$page.params.manga}/{volume_uuid}" class="flex flex-col gap-2">
         <div class="sm:w-[250px] sm:h-[350px] flex items-center justify-center">
-          {#if volume.thumbnail}
+          {#if thumbnail}
             <img
-              src={URL.createObjectURL(volume.thumbnail)}
+              src={URL.createObjectURL(thumbnail)}
               alt={volName}
               class="sm:max-w-[250px] sm:max-h-[350px] h-auto w-auto bg-black border-gray-900 border"
             />

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { run } from 'svelte/legacy';
 
-  import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
+  import { currentSeries, currentVolume, currentVolumeData, currentVolumeImages } from '$lib/catalog';
   import {
     Panzoom,
     panzoomStore,
@@ -39,6 +39,7 @@
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
+  let volumeImages = $derived($currentVolumeImages); // v3: Images loaded separately
 
   // Use store directly for reactivity instead of prop
   let volumeSettings = $derived($effectiveVolumeSettings[volume?.volume_uuid || ''] || _volumeSettingsProp);
@@ -326,6 +327,8 @@
     const pg = page;
     const pgs = pages;
     const pz = $panzoomStore;
+    const vData = volumeData;
+    const vImages = volumeImages; // v3: Wait for images to load
 
     // Add dependencies on settings that affect layout and zoom
     const zoomMode = $settings.zoomDefault;
@@ -333,8 +336,8 @@
     const hasCover = volumeSettings.hasCover;
     const rtl = volumeSettings.rightToLeft;
 
-    // Wait for all required data and panzoom instance to be ready
-    if (pg && pgs && pgs.length > 0 && pz) {
+    // Wait for all required data (including images) and panzoom instance to be ready
+    if (pg && pgs && pgs.length > 0 && pz && vData && vImages) {
       // Wait for Svelte DOM updates, then wait for browser layout reflow
       // This is critical for auto page mode switching to have correct dimensions
       tick().then(() => {
@@ -541,8 +544,8 @@
   <QuickActions
     {left}
     {right}
-    src1={volumeData.files ? Object.values(volumeData.files)[index] : undefined}
-    src2={!useSinglePage && volumeData.files ? Object.values(volumeData.files)[index + 1] : undefined}
+    src1={volumeImages ? volumeImages[index] : undefined}
+    src2={!useSinglePage && volumeImages ? volumeImages[index + 1] : undefined}
   />
   <SettingsButton />
   <Cropper />
@@ -636,11 +639,11 @@
         id="manga-panel"
       >
         {#key page}
-          {#if volumeData && volumeData.files}
+          {#if volumeData && volumeImages}
             {#if showSecondPage()}
-              <MangaPage page={pages[index + 1]} src={Object.values(volumeData.files)[index + 1]} volumeUuid={volume.volume_uuid} />
+              <MangaPage page={pages[index + 1]} src={volumeImages[index + 1]} volumeUuid={volume.volume_uuid} />
             {/if}
-            <MangaPage page={pages[index]} src={Object.values(volumeData.files)[index]} volumeUuid={volume.volume_uuid} />
+            <MangaPage page={pages[index]} src={volumeImages[index]} volumeUuid={volume.volume_uuid} />
           {:else}
             <div class="flex items-center justify-center w-screen h-screen">
               <Spinner size="12" />

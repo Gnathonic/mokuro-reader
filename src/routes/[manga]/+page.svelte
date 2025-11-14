@@ -20,7 +20,6 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
-  import { getCharCount } from '$lib/util/count-chars';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -44,35 +43,11 @@
       );
   });
 
-  // Track Japanese character counts per volume (calculated from pages)
-  let volumeJapaneseChars = $state<Map<string, number>>(new Map());
-
-  // Calculate Japanese character counts from pages data when manga list changes
-  $effect(() => {
-    if (!manga || manga.length === 0) return;
-
-    const fetchCharCounts = async () => {
-      const charCounts = new Map<string, number>();
-
-      for (const vol of manga) {
-        const volumeData = await db.volumes_data.get(vol.volume_uuid);
-        if (volumeData?.pages) {
-          const { charCount } = getCharCount(volumeData.pages);
-          charCounts.set(vol.volume_uuid, charCount);
-        }
-      }
-
-      volumeJapaneseChars = charCounts;
-    };
-
-    fetchCharCounts();
-  });
-
-  // Calculate total Japanese characters in series
+  // Calculate total Japanese characters in series (use pre-calculated character_count from metadata)
   let totalSeriesChars = $derived.by(() => {
     if (!manga || manga.length === 0) return 0;
     return manga.reduce((total, vol) => {
-      return total + (volumeJapaneseChars.get(vol.volume_uuid) || 0);
+      return total + (vol.character_count || 0);
     }, 0);
   });
 
@@ -262,27 +237,36 @@
   async function confirmDelete(deleteStats = false, deleteCloud = false) {
     const seriesUuid = manga?.[0].series_uuid;
     if (seriesUuid && manga) {
-      // Batch all deletions and await them to prevent race conditions
-      await Promise.all(
-        manga.map(async (vol) => {
-          const volId = vol.volume_uuid;
-          await db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
-          await db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
-          if(deleteCloud && hasAnyProvider && unifiedCloudManager.existsInCloud(vol.series_title,vol.volume_title)) {
-            await unifiedCloudManager.deleteFile(unifiedCloudManager.getCloudFile(vol.series_title,vol.volume_title));
+      // Cloud deletion FIRST (before removing local data)
+      // If cloud deletion fails, we don't lose local data
+      if (deleteCloud && hasAnyProvider) {
+        // Delete individual files first
+        for (const vol of manga) {
+          if (unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)) {
+            await unifiedCloudManager.deleteFile(unifiedCloudManager.getCloudFile(vol.series_title, vol.volume_title));
           }
+        }
+        // Then delete the series folder
+        await deleteSeriesFromCloud(manga);
+      }
+
+      // Use single atomic transaction to prevent SIGBUS from concurrent IndexedDB access
+      // (e.g., when download worker is also writing while we're deleting)
+      await db.transaction('rw', db.volumes, db.volumes_covers, db.volumes_data, db.volumes_images, async () => {
+        for (const vol of manga) {
+          const volId = vol.volume_uuid;
+          // v3: Delete from all tables
+          await db.volumes.where('volume_uuid').equals(volId).delete();
+          await db.volumes_covers.where('volume_uuid').equals(volId).delete();
+          await db.volumes_data.where('volume_uuid').equals(volId).delete();
+          await db.volumes_images.where('volume_uuid').equals(volId).delete();
 
           // Only delete stats and progress if the checkbox is checked
           if (deleteStats) {
             deleteVolume(volId);
           }
-        })
-      );
-
-      // Delete from cloud if checkbox checked
-      if (deleteCloud && hasAnyProvider) {
-        await deleteSeriesFromCloud(manga);
-      }
+        }
+      });
 
       goto('/');
     }
