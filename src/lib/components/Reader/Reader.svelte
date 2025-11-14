@@ -1,7 +1,7 @@
 <script lang="ts">
   import { run } from 'svelte/legacy';
 
-  import { currentSeries, currentVolume, currentVolumeData, currentVolumeImages } from '$lib/catalog';
+  import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import {
     Panzoom,
     panzoomStore,
@@ -14,7 +14,7 @@
   import { effectiveVolumeSettings, progress, settings, updateProgress, updateSetting, updateVolumeSetting, volumes, type VolumeSettings } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
-  import MangaPage from './MangaPage.svelte';
+  import PageView from './PageView.svelte';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
@@ -39,7 +39,9 @@
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
-  let volumeImages = $derived($currentVolumeImages); // v3: Images loaded separately
+
+  // Track which pages are loaded and ready
+  let loadedPages = $state<Set<number>>(new Set());
 
   // Use store directly for reactivity instead of prop
   let volumeSettings = $derived($effectiveVolumeSettings[volume?.volume_uuid || ''] || _volumeSettingsProp);
@@ -328,7 +330,6 @@
     const pgs = pages;
     const pz = $panzoomStore;
     const vData = volumeData;
-    const vImages = volumeImages; // v3: Wait for images to load
 
     // Add dependencies on settings that affect layout and zoom
     const zoomMode = $settings.zoomDefault;
@@ -336,8 +337,8 @@
     const hasCover = volumeSettings.hasCover;
     const rtl = volumeSettings.rightToLeft;
 
-    // Wait for all required data (including images) and panzoom instance to be ready
-    if (pg && pgs && pgs.length > 0 && pz && vData && vImages) {
+    // Wait for all required data and panzoom instance to be ready
+    if (pg && pgs && pgs.length > 0 && pz && vData) {
       // Wait for Svelte DOM updates, then wait for browser layout reflow
       // This is critical for auto page mode switching to have correct dimensions
       tick().then(() => {
@@ -410,21 +411,25 @@
     useSinglePage || (volumeSettings.hasCover && !useSinglePage && index === 0) ? 1 : 2
   );
 
-  let showSecondPage = $derived(() => {
+  // Calculate if a specific page number should show second page
+  function shouldShowSecondPage(pageNum: number): boolean {
     if (!pages) {
       return false;
     }
 
-    if (useSinglePage || index + 1 >= pages.length) {
+    if (useSinglePage || pageNum + 1 >= pages.length) {
       return false;
     }
 
-    if (index === 0 && volumeSettings.hasCover) {
+    if (pageNum === 0 && volumeSettings.hasCover) {
       return false;
     }
 
     return true;
-  });
+  }
+
+  // For current page display and navigation
+  let showSecondPage = $derived(() => shouldShowSecondPage(index));
   let manualPage = $state(0);
   run(() => {
     manualPage = page;
@@ -544,8 +549,9 @@
   <QuickActions
     {left}
     {right}
-    src1={volumeImages ? volumeImages[index] : undefined}
-    src2={!useSinglePage && volumeImages ? volumeImages[index + 1] : undefined}
+    volumeUuid={volume.volume_uuid}
+    pageNumber={index}
+    showSecondPage={showSecondPage()}
   />
   <SettingsButton />
   <Cropper />
@@ -631,28 +637,81 @@
         onmouseup={right}
       ></button>
       <div
-        class="flex flex-row"
-        class:flex-row-reverse={!volumeSettings.rightToLeft}
+        class="grid"
         style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
         ondblclick={onDoubleTap}
         role="none"
         id="manga-panel"
       >
-        {#key page}
-          {#if volumeData && volumeImages}
-            {#if showSecondPage()}
-              <MangaPage page={pages[index + 1]} src={volumeImages[index + 1]} volumeUuid={volume.volume_uuid} />
-            {/if}
-            <MangaPage page={pages[index]} src={volumeImages[index]} volumeUuid={volume.volume_uuid} />
-          {:else}
-            <div class="flex items-center justify-center w-screen h-screen">
-              <Spinner size="12" />
+        {#if volumeData && volume}
+          {@const PRELOAD_RANGE = 2}
+          {@const pagesToRender = Array.from(
+            { length: PRELOAD_RANGE * 2 + 1 },
+            (_, i) => index + i - PRELOAD_RANGE
+          ).filter(p => p >= 0 && p < pages.length)}
+
+          {#each pagesToRender as pageNum (pageNum)}
+            {@const isCurrent = pageNum === index}
+            {@const baseStyle = isCurrent ? 'grid-area: 1 / 1;' : 'position: absolute; visibility: hidden; pointer-events: none; z-index: -1;'}
+
+            <!-- Stable wrapper - no dynamic attributes, only the key -->
+            <div>
+              <!-- Inner div with all dynamic styling -->
+              <div
+                class:flex-row-reverse={!volumeSettings.rightToLeft && isCurrent}
+                style={baseStyle}
+              >
+                <PageView
+                  volumeUuid={volume.volume_uuid}
+                  pageNumber={pageNum}
+                  {pages}
+                  {useSinglePage}
+                  hasCover={volumeSettings.hasCover}
+                  isVisible={isCurrent}
+                  onReady={() => loadedPages.add(pageNum)}
+                />
+              </div>
             </div>
-          {/if}
-        {/key}
+          {/each}
+        {:else}
+          <div class="flex items-center justify-center w-screen h-screen">
+            <Spinner size="12" />
+          </div>
+        {/if}
       </div>
     </Panzoom>
   </div>
+
+  <!-- Debug: Show preloaded pages outside Panzoom -->
+  <!-- DISABLED: Causes duplicate PageView instances
+  {#if volumeData && volume}
+    {@const PRELOAD_RANGE = 2}
+    {@const pagesToRender = Array.from(
+      { length: PRELOAD_RANGE * 2 + 1 },
+      (_, i) => index + i - PRELOAD_RANGE
+    ).filter(p => p >= 0 && p < pages.length && p !== index)}
+
+    {#each pagesToRender as pageNum (pageNum)}
+      {@const isLeft = pageNum < index}
+      {@const offset = Math.abs(pageNum - index)}
+      <div
+        style="position: fixed; {isLeft ? `left: ${offset * 15}%` : `right: ${offset * 15}%`}; top: 10%; pointer-events: none; z-index: 999; opacity: 0.5; transform: scale(0.2); transform-origin: top {isLeft ? 'left' : 'right'};"
+        class="border-8 border-red-500 bg-black"
+      >
+        <PageView
+          volumeUuid={volume.volume_uuid}
+          pageNumber={pageNum}
+          {pages}
+          {useSinglePage}
+          hasCover={volumeSettings.hasCover}
+          isVisible={false}
+          onReady={() => loadedPages.add(pageNum)}
+        />
+      </div>
+    {/each}
+  {/if}
+  -->
+
   {#if !$settings.mobile}
     <button
       aria-label="Previous page (left edge)"
