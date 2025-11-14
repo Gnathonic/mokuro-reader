@@ -192,8 +192,8 @@
       <!-- Local series -->
       <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
         {#if $miscSettings.galleryLayout === 'grid'}
-          {#each localSeries as { series_uuid } (series_uuid)}
-            <CatalogItem {series_uuid} />
+          {#each localSeries as { series_uuid, volumes } (series_uuid)}
+            <CatalogItem {series_uuid} {volumes} />
           {/each}
         {:else}
           <Listgroup active class="w-full">
@@ -223,8 +223,8 @@
           </div>
           <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
             {#if $miscSettings.galleryLayout === 'grid'}
-              {#each placeholderSeries as { series_uuid } (series_uuid)}
-                <CatalogItem {series_uuid} />
+              {#each placeholderSeries as { series_uuid, volumes } (series_uuid)}
+                <CatalogItem {series_uuid} {volumes} />
               {/each}
             {:else}
               <Listgroup active class="w-full">

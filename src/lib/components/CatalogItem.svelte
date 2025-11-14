@@ -1,17 +1,19 @@
 <script lang="ts">
-  import { volumesWithPlaceholders } from '$lib/catalog';
   import { progress } from '$lib/settings';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { Spinner } from 'flowbite-svelte';
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import type { VolumeMetadata } from '$lib/types';
+  import { db } from '$lib/catalog/db';
 
   interface Props {
     series_uuid: string;
+    volumes: VolumeMetadata[]; // Already sorted from parent
   }
 
-  let { series_uuid }: Props = $props();
+  let { series_uuid, volumes }: Props = $props();
 
   // Get active provider's display name
   let providerDisplayName = $derived.by(() => {
@@ -19,47 +21,36 @@
     return provider?.name || 'Cloud';
   });
 
-  let firstUnreadVolume = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter(v => !v.isPlaceholder)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-      .find(
-        (item) =>
-          item.series_uuid === series_uuid &&
-          ($progress?.[item.volume_uuid || 0] || 1) < item.page_count - 1
-      )
+  // Sort volumes once alphabetically (reused by all derived)
+  let sortedVolumes = $derived(
+    volumes
+      .slice()
+      .sort((a, b) => a.volume_title.localeCompare(b.volume_title, undefined, { numeric: true, sensitivity: 'base' }))
   );
 
-  let firstVolume = $derived(
-    Object.values($volumesWithPlaceholders)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-      .find((item) => item.series_uuid === series_uuid)
-  );
+  let allSeriesVolumes = $derived(sortedVolumes);
 
-  let allSeriesVolumes = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter(v => v.series_uuid === series_uuid)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-  );
+  // Get local volumes (non-placeholders)
+  let localVolumes = $derived(sortedVolumes.filter(v => !v.isPlaceholder));
 
-  // Get up to 3 volumes for stacked thumbnail (local volumes only)
-  let stackedVolumes = $derived.by(() => {
-    const localVolumes = allSeriesVolumes.filter(v => !v.isPlaceholder);
-
-    // Check if there are any unread volumes
-    const unreadVolumes = localVolumes.filter(v =>
+  // Get unread volumes
+  let unreadVolumes = $derived(
+    localVolumes.filter(v =>
       ($progress?.[v.volume_uuid] || 1) < v.page_count - 1
-    );
+    )
+  );
 
-    // If there are unread volumes, only show those; otherwise show all
-    const volumesToStack = unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
+  // Use unread if available, otherwise all local volumes
+  let volumesToShow = $derived(unreadVolumes.length > 0 ? unreadVolumes : localVolumes);
 
-    // Take up to 3 (already sorted alphabetically, first volume will be on top/left)
-    return volumesToStack.slice(0, 3);
-  });
+  // Get up to 3 volumes for stacked thumbnail
+  let stackedVolumes = $derived(volumesToShow.slice(0, 3));
 
-  let volume = $derived(firstUnreadVolume ?? firstVolume);
-  let isComplete = $derived(!firstUnreadVolume);
+  // First volume to display
+  let volume = $derived(volumesToShow[0] ?? sortedVolumes[0]);
+
+  // Check if series is complete (no unread volumes)
+  let isComplete = $derived(unreadVolumes.length === 0);
   let isPlaceholderOnly = $derived(volume?.isPlaceholder === true);
 
   // Track queue state
@@ -97,33 +88,45 @@
     };
   }
 
-  // Store thumbnail dimensions
+  // Store thumbnail dimensions and thumbnails themselves
   let thumbnailDimensions = $state<Map<string, { width: number; height: number }>>(new Map());
+  let thumbnails = $state<Map<string, File>>(new Map());
 
-  // Load thumbnail dimensions
+  // Load thumbnails and dimensions from volumes_covers table
   $effect(() => {
-    const newDimensions = new Map<string, { width: number; height: number }>();
+    // Load all thumbnails asynchronously, updating state as each one loads
+    const loadThumbnails = async () => {
+      for (const vol of stackedVolumes) {
+        // Load thumbnail from volumes_covers table
+        const coverData = await db.volumes_covers.get(vol.volume_uuid);
+        if (!coverData?.thumbnail) continue;
 
-    const promises = stackedVolumes.map(vol => {
-      if (!vol.thumbnail) return Promise.resolve();
-
-      return new Promise<void>((resolve) => {
+        // Create image to get dimensions
         const img = new Image();
-        img.onload = () => {
-          newDimensions.set(vol.volume_uuid, {
-            width: img.naturalWidth,
-            height: img.naturalHeight
-          });
-          resolve();
-        };
-        img.onerror = () => resolve(); // Skip on error
-        img.src = URL.createObjectURL(vol.thumbnail);
-      });
-    });
+        const imageUrl = URL.createObjectURL(coverData.thumbnail);
 
-    Promise.all(promises).then(() => {
-      thumbnailDimensions = newDimensions;
-    });
+        // Wait for image to load to get dimensions
+        await new Promise<void>((resolve) => {
+          img.onload = () => {
+            // Update state immediately for this thumbnail
+            thumbnails = new Map(thumbnails).set(vol.volume_uuid, coverData.thumbnail);
+            thumbnailDimensions = new Map(thumbnailDimensions).set(vol.volume_uuid, {
+              width: img.naturalWidth,
+              height: img.naturalHeight
+            });
+            URL.revokeObjectURL(imageUrl);
+            resolve();
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(imageUrl);
+            resolve(); // Continue even if image fails to load
+          };
+          img.src = imageUrl;
+        });
+      }
+    };
+
+    loadThumbnails();
   });
 
   // Calculate dynamic step sizes based on actual image dimensions
@@ -251,9 +254,10 @@
         <div class="relative sm:w-[325px] sm:h-[410px] sm:pt-4 sm:pb-6">
           <div class="relative sm:w-full sm:h-[385px] overflow-hidden">
             {#each stackedVolumes as vol, i (vol.volume_uuid)}
-              {#if vol.thumbnail}
+              {@const thumbnail = thumbnails.get(vol.volume_uuid)}
+              {#if thumbnail}
                 <img
-                  src={URL.createObjectURL(vol.thumbnail)}
+                  src={URL.createObjectURL(thumbnail)}
                   alt={vol.volume_title}
                   class="absolute sm:max-w-[250px] sm:max-h-[360px] h-auto bg-black border-gray-900 border"
                   style="left: {i * stepSizes.horizontal}px; top: {stepSizes.topOffset + (i * stepSizes.vertical)}px; z-index: {stackedVolumes.length - i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
