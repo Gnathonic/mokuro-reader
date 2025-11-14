@@ -113,7 +113,6 @@ export function calculateReadingSpeedFromSessions(
 ): ReadingSpeedResult {
 	// Since compaction algorithm isn't ready yet, aggregate sessions won't be populated
 	// Fall back to completed volumes calculation
-	console.warn('[Reading Speed] Legacy session calculation not available - compaction algorithm not implemented');
 
 	return {
 		charsPerMinute: 100, // Default for manga
@@ -153,21 +152,11 @@ export function calculateReadingSpeed(
 	// Step 1: Try to gather recent page-level data from recentPageTurns
 	const allTurnData: Array<{ turns: PageTurn[]; volumeId: string; volumeData: typeof volumesData[string] }> = [];
 
-	// Debug: Count volumes with page turn data
-	let volumesWithTurns = 0;
-	let volumesWithInsufficientTurns = 0;
-
 	for (const [volumeId, volumeData] of Object.entries(volumesData)) {
 		if (!volumeData.recentPageTurns || volumeData.recentPageTurns.length < 2) {
-			if (volumeData.recentPageTurns && volumeData.recentPageTurns.length > 0) {
-				volumesWithInsufficientTurns++;
-				const volumeName = formatVolumeName(volumeData, volumeId);
-				console.log(`[Reading Speed] ${volumeName} has only ${volumeData.recentPageTurns.length} page turn(s) (need 2+)`);
-			}
 			continue;
 		}
 
-		volumesWithTurns++;
 		allTurnData.push({
 			turns: volumeData.recentPageTurns,
 			volumeId,
@@ -175,31 +164,16 @@ export function calculateReadingSpeed(
 		});
 	}
 
-	console.log(`[Reading Speed] Found ${volumesWithTurns} volumes with sufficient turn data (2+ turns)`);
-	console.log(`[Reading Speed] ${volumesWithInsufficientTurns} volumes with < 2 turns`);
-
 	// Calculate stats from turn data
 	const validTurnStats = allTurnData
 		.map(({ turns, volumeId, volumeData }): TurnStatsWithVolume | null => {
 			const stats = calculateTurnStats(turns, idleTimeoutMs);
-			const volumeName = formatVolumeName(volumeData, volumeId);
-
-			// Debug logging
-			console.log(`[Reading Speed] ${volumeName} page turns:`, {
-				turnCount: turns.length,
-				pagesRead: stats.pagesRead,
-				totalSeconds: stats.totalSeconds.toFixed(1),
-				avgSecondsPerPage: stats.avgSecondsPerPage.toFixed(1),
-				charsPerMinute: stats.charsPerMinute.toFixed(1)
-			});
 
 			// Only validate CPM is reasonable (not trying to game the system)
 			if (stats.charsPerMinute <= 0 || stats.charsPerMinute > 1000) {
-				console.log(`[Reading Speed] ❌ Rejected: invalid CPM (${stats.charsPerMinute.toFixed(1)})`);
 				return null;
 			}
 
-			console.log(`[Reading Speed] ✅ Accepted`);
 			return {
 				volumeId,
 				...stats
@@ -226,8 +200,6 @@ export function calculateReadingSpeed(
 		recentTurnStats.push(stats);
 		turnMinutes += statMinutes;
 	}
-
-	console.log(`[Reading Speed] Using ${recentTurnStats.length} recent turn datasets (${turnMinutes.toFixed(1)} minutes of page-level data)`);
 
 	// Step 2: Use aggregate sessions (when compaction is implemented)
 	// For now, this will be empty since compaction isn't implemented yet
@@ -262,8 +234,6 @@ export function calculateReadingSpeed(
 		aggregateMinutes += sessionMinutes;
 	}
 
-	console.log(`[Reading Speed] Using ${recentAggregateSessions.length} aggregate sessions (${aggregateMinutes.toFixed(1)} minutes)`);
-
 	// Step 3: Fill remaining time with completed volume data
 	const remainingMinutes = ESTIMATION_MINUTES - turnMinutes - aggregateMinutes;
 
@@ -290,9 +260,6 @@ export function calculateReadingSpeed(
 		recentVolumes.push(volume);
 		volumeMinutes += volume.timeReadInMinutes;
 	}
-
-	console.log(`[Reading Speed] Using ${recentVolumes.length} completed volumes (${volumeMinutes.toFixed(1)} minutes)`);
-	console.log(`[Reading Speed] Total: ${(turnMinutes + aggregateMinutes + volumeMinutes).toFixed(1)} minutes / ${ESTIMATION_MINUTES} minutes target`);
 
 	// Step 4: Calculate combined CPM
 	if (recentTurnStats.length === 0 && recentAggregateSessions.length === 0 && recentVolumes.length === 0) {
@@ -326,7 +293,6 @@ export function calculateReadingSpeed(
 	}
 
 	const avgCPM = Math.round(totalChars / totalMinutes);
-	console.log(`[Reading Speed] Final personalized CPM: ${avgCPM} (from ${totalChars} chars / ${totalMinutes.toFixed(1)} min)`);
 
 	// Determine confidence based on total data
 	let confidence: 'high' | 'medium' | 'low' | 'none';
@@ -350,29 +316,12 @@ export function calculateReadingSpeed(
 export function calculateReadingSpeedFromCompletedVolumes(
 	volumesData: Record<string, { completed: boolean; timeReadInMinutes: number; chars: number; lastProgressUpdate: string }>
 ): ReadingSpeedResult {
-	// DEBUG: Log total volumes and completed count
-	const totalVolumes = Object.keys(volumesData).length;
-	const completedCount = Object.entries(volumesData).filter(([_, data]) => data.completed).length;
-	console.log(`[Reading Speed] Total volumes: ${totalVolumes}, Completed: ${completedCount}`);
-
 	// Filter to completed volumes only
-	let debugCount = 0;
 	const completedVolumes = Object.entries(volumesData)
 		.filter(([volumeId, data]) => {
 			const hasCompleted = data.completed;
 			const hasChars = data.chars > 0;
 			const hasTime = data.timeReadInMinutes > 0;
-
-			// DEBUG: Log filtering details for first 5 completed volumes
-			if (hasCompleted && debugCount < 5) {
-				console.log(`[Reading Speed] Volume ${volumeId}:`, {
-					completed: hasCompleted,
-					chars: data.chars,
-					timeReadInMinutes: data.timeReadInMinutes,
-					passesFilter: hasCompleted && hasChars && hasTime
-				});
-				debugCount++;
-			}
 
 			return hasCompleted && hasChars && hasTime;
 		})
@@ -380,8 +329,6 @@ export function calculateReadingSpeedFromCompletedVolumes(
 			volumeId,
 			...data
 		}));
-
-	console.log(`[Reading Speed] Volumes passing initial filter: ${completedVolumes.length}`);
 
 	if (completedVolumes.length === 0) {
 		return {
@@ -407,16 +354,11 @@ export function calculateReadingSpeedFromCompletedVolumes(
 			// Only filter out unreasonably high speeds (likely "mark all as read")
 			// No minimum - language learners read at their own pace
 			const isValid = volume.cpm > 0 && volume.cpm <= 1000;
-			console.log(`[Reading Speed] Volume CPM: ${volume.cpm.toFixed(1)} (${volume.chars} chars / ${volume.timeReadInMinutes} min) - Valid: ${isValid}`);
 			return isValid;
 		});
 
-	console.log(`[Reading Speed] Valid volumes after CPM check: ${volumesWithCPM.length}`);
-
 	// Take 3 most recent VALID volumes
 	const recentVolumes = volumesWithCPM.slice(0, 3);
-
-	console.log(`[Reading Speed] Using ${recentVolumes.length} most recent valid volumes`);
 
 	if (recentVolumes.length === 0) {
 		return {
@@ -445,7 +387,6 @@ export function calculateReadingSpeedFromCompletedVolumes(
 	}
 
 	const avgCPM = Math.round(totalCPM / validCount);
-	console.log(`[Reading Speed] Final personalized CPM: ${avgCPM} (from ${validCount} volumes)`);
 
 	// Determine confidence
 	let confidence: 'high' | 'medium' | 'low' | 'none';
