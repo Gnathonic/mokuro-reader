@@ -40,6 +40,8 @@ export type AnkiConnectSettings = {
 
 export type PageViewMode = 'single' | 'dual' | 'auto';
 
+export type PageTransition = 'instant' | 'fade' | 'slide';
+
 export type VolumeDefaults = {
   rightToLeft: boolean;
   singlePageView: PageViewMode;
@@ -63,6 +65,7 @@ export type Settings = {
   quickActions: boolean;
   fontSize: FontSize;
   zoomDefault: ZoomModes;
+  pageTransition: PageTransition;
   invertColors: boolean;
   nightMode: boolean;
   inactivityTimeoutMinutes: number;
@@ -95,6 +98,7 @@ const defaultSettings: Settings = {
   quickActions: true,
   fontSize: 'auto',
   zoomDefault: 'zoomFitToScreen',
+  pageTransition: 'fade',
   invertColors: false,
   nightMode: false,
   inactivityTimeoutMinutes: 5,

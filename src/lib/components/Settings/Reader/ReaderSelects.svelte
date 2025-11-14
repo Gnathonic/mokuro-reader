@@ -5,6 +5,7 @@
 
   let zoomModeValue = $derived($settings.zoomDefault);
   let fontSizeValue = $derived($settings.fontSize);
+  let pageTransitionValue = $derived($settings.pageTransition);
 
   let zoomModes = [
     { value: 'zoomFitToScreen', name: 'Fit to screen' },
@@ -12,6 +13,12 @@
     { value: 'zoomOriginal', name: 'Original size' },
     { value: 'keepZoom', name: 'Keep zoom' },
     { value: 'keepZoomStart', name: 'Keep zoom, pan to top' }
+  ];
+
+  let pageTransitions = [
+    { value: 'instant', name: 'Instant (no animation)' },
+    { value: 'fade', name: 'Fade' },
+    { value: 'slide', name: 'Slide' }
   ];
 
   let fontSizes = [
@@ -49,6 +56,14 @@
     items={zoomModes}
     value={zoomModeValue}
     on:change={(e) => onSelectChange(e, 'zoomDefault')}
+  />
+</div>
+<div>
+  <Label>Page transition:</Label>
+  <Select
+    items={pageTransitions}
+    value={pageTransitionValue}
+    on:change={(e) => onSelectChange(e, 'pageTransition')}
   />
 </div>
 <div>
