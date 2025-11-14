@@ -13,15 +13,17 @@
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
+  import { db } from '$lib/catalog/db';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
     right: (_e: any, ingoreTimeOut?: boolean) => void;
-    src1: File | undefined;
-    src2: File | undefined;
+    volumeUuid: string;
+    pageNumber: number; // 0-indexed
+    showSecondPage: boolean;
   }
 
-  let { left, right, src1, src2 }: Props = $props();
+  let { left, right, volumeUuid, pageNumber, showSecondPage }: Props = $props();
 
   let open = $state(false);
 
@@ -40,19 +42,29 @@
     open = false;
   }
 
-  async function onUpdateCard(src: File | undefined) {
-    if ($settings.ankiConnectSettings.enabled && src) {
+  async function onUpdateCard(pageOffset: number = 0) {
+    if (!$settings.ankiConnectSettings.enabled) return;
+
+    // Load specified page image from DB
+    const img = await db.volumes_images
+      .where('volume_uuid')
+      .equals(volumeUuid)
+      .and(img => img.page_number === pageNumber + pageOffset)
+      .first();
+
+    if (img) {
       if ($settings.ankiConnectSettings.cropImage) {
-        showCropper(URL.createObjectURL(src));
+        showCropper(URL.createObjectURL(img.image));
       } else {
         promptConfirmation('Add image to last created anki card?', async () => {
-          const imageData = await imageToWebp(src, $settings);
+          const imageData = await imageToWebp(img.image, $settings);
           updateLastCard(imageData);
         });
       }
     }
     open = false;
   }
+
 </script>
 
 {#if $settings.quickActions}
@@ -64,12 +76,12 @@
     bind:open
   >
     {#if $settings.ankiConnectSettings.enabled}
-      <SpeedDialButton name={src2 ? '1' : undefined} on:click={() => onUpdateCard(src1)}>
+      <SpeedDialButton name={showSecondPage ? '1' : undefined} on:click={() => onUpdateCard(0)}>
         <ImageOutline />
       </SpeedDialButton>
     {/if}
-    {#if $settings.ankiConnectSettings.enabled && src2}
-      <SpeedDialButton name="2" on:click={() => onUpdateCard(src2)}>
+    {#if $settings.ankiConnectSettings.enabled && showSecondPage}
+      <SpeedDialButton name="2" on:click={() => onUpdateCard(1)}>
         <ImageOutline />
       </SpeedDialButton>
     {/if}
