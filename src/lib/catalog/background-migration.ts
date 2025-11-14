@@ -78,13 +78,43 @@ export async function startBackgroundMigration(): Promise<void> {
 /**
  * Calculate characters_per_page for a single volume.
  * Loads from volumes_data table and updates volumes table.
+ * Also migrates any remaining images from volumes_data.files to volumes_images.
  */
 async function calculateCharactersPerPage(volumeUuid: string): Promise<void> {
-  // Load volume data
-  const volumeData = await db.volumes_data.get(volumeUuid);
+  // Load volume data (may have legacy files field)
+  const volumeData = await db.volumes_data.get(volumeUuid) as any;
   if (!volumeData || !volumeData.pages) {
     console.warn(`[Background Migration] No data found for volume ${volumeUuid}`);
     return;
+  }
+
+  // Migrate any remaining images from volumes_data.files to volumes_images
+  if (volumeData.files && typeof volumeData.files === 'object') {
+    const existingImages = await db.volumes_images
+      .where('volume_uuid')
+      .equals(volumeUuid)
+      .count();
+
+    // Only migrate if volumes_images is empty for this volume
+    if (existingImages === 0) {
+      const images = Object.entries(volumeData.files)
+        .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+        .map(([filename, image], pageNumber) => ({
+          volume_uuid: volumeUuid,
+          page_number: pageNumber,
+          filename,
+          image: image as File
+        }));
+
+      if (images.length > 0) {
+        await db.volumes_images.bulkAdd(images);
+        console.log(`[Background Migration] Migrated ${images.length} images for volume ${volumeUuid}`);
+      }
+    }
+
+    // Remove files field from volumes_data to save memory
+    const { files, ...cleanData } = volumeData;
+    await db.volumes_data.put(cleanData);
   }
 
   // Calculate character stats
