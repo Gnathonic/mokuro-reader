@@ -1,5 +1,6 @@
 <script lang="ts">
   import { run } from 'svelte/legacy';
+  import type { TransitionConfig } from 'svelte/transition';
 
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import { getCurrentPages } from '$lib/catalog/pages';
@@ -27,9 +28,11 @@
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
   import { beforeNavigate, goto } from '$app/navigation';
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { ImageCache } from '$lib/reader/image-cache';
+  import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
   interface Props {
@@ -151,6 +154,9 @@
       }
 
       // Valid page within this volume - navigate to it
+      // Set page direction BEFORE the page changes (for animations)
+      pageDirection = pageClamped > page ? 'forward' : 'backward';
+
       const { charCount } = getCharCount(pages, pageClamped);
       updateProgress(
         volume.volume_uuid,
@@ -364,6 +370,207 @@
   let pages = $derived(volumeData ? getCurrentPages(volumeData) : []);
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
+
+  // Track page direction for animations (set in changePage function before page changes)
+  let pageDirection = $state<'forward' | 'backward'>('forward');
+
+  // Custom page intro (new page coming in)
+  function pageIn(node: HTMLElement, { direction }: { direction: 'forward' | 'backward' }): TransitionConfig {
+    const transition = $settings.pageTransition;
+    const isRTL = volumeSettings.rightToLeft;
+    const visualDirection = (direction === 'forward') !== isRTL ? 'right' : 'left';
+
+    const durations = {
+      crossfade: 200,
+      vertical: 400,
+      pageTurn: 200,
+      swipe: 350,
+      none: 0
+    };
+
+    const duration = durations[transition] || 0;
+
+    if (transition === 'none') {
+      return { duration: 0 };
+    }
+
+    return {
+      duration,
+      easing: (t) => t, // Linear easing for consistent speed
+      css: (t) => {
+        if (transition === 'crossfade') {
+          return `opacity: ${t}`;
+        }
+
+        if (transition === 'vertical') {
+          // Slide vertically with a small gap between pages
+          const gap = 3; // Small gap between pages (in vh units)
+          const startOffset = direction === 'forward' ? 100 + gap : -(100 + gap);
+          const currentPos = startOffset * (1-t);
+          return `
+            transform: translateY(${currentPos}vh);
+          `;
+        }
+
+        if (transition === 'pageTurn') {
+          // New page wipes in on top of old page
+          // Wipe direction depends on reading direction and forward/backward
+          const clipPercent = visualDirection === 'right'
+            ? 100 * t          // Left to right wipe
+            : 100 * (1 - t);   // Right to left wipe
+
+          const clipPath = visualDirection === 'right'
+            ? `polygon(0 0, ${clipPercent}% 0, ${clipPercent}% 100%, 0 100%)`  // Left to right
+            : `polygon(${clipPercent}% 0, 100% 0, 100% 100%, ${clipPercent}% 100%)`;  // Right to left
+
+          return `clip-path: ${clipPath};`;
+        }
+
+        if (transition === 'swipe') {
+          // New page swipes in from the direction
+          const fromPos = visualDirection === 'left' ? -100 : 100;
+          const currentPos = fromPos * (1 - t);
+          const scale = 0.8 + (t * 0.2);
+          return `
+            transform: translateX(${currentPos}%) scale(${scale});
+            opacity: ${t};
+          `;
+        }
+
+        return '';
+      }
+    };
+  }
+
+  // Custom page outro (old page going out)
+  function pageOut(node: HTMLElement, { direction }: { direction: 'forward' | 'backward' }): TransitionConfig {
+    const transition = $settings.pageTransition;
+    const isRTL = volumeSettings.rightToLeft;
+    const visualDirection = (direction === 'forward') !== isRTL ? 'right' : 'left';
+
+    const durations = {
+      crossfade: 200,
+      vertical: 400,
+      pageTurn: 200,
+      swipe: 350,
+      none: 0
+    };
+
+    const duration = durations[transition] || 0;
+
+    if (transition === 'none') {
+      return { duration: 0 };
+    }
+
+    return {
+      duration,
+      easing: (t) => t, // Linear easing for consistent speed
+      css: (t) => {
+        if (transition === 'crossfade') {
+          return `opacity: ${t}`;
+        }
+
+        if (transition === 'vertical') {
+          // Slide vertically - now used for ENTERING page
+          const gap = 3; // Small gap between pages (in vh units)
+          const endOffset = direction === 'forward' ? -(100 + gap) : 100 + gap;
+          const currentPos = endOffset * (1 - t);
+          return `
+            transform: translateY(${currentPos}vh);
+          `;
+        }
+
+        if (transition === 'pageTurn') {
+          // Old page stays visible underneath new page
+          return `opacity: 1`;
+        }
+
+        if (transition === 'swipe') {
+          // Old page swipes out to the OPPOSITE direction
+          const toPos = visualDirection === 'left' ? 30 : -30;
+          const currentPos = toPos * (1 - t);
+          const scale = 1 - ((1 - t) * 0.1);
+          return `
+            transform: translateX(${currentPos}%) scale(${scale});
+            opacity: ${t};
+          `;
+        }
+
+        return '';
+      }
+    };
+  }
+
+  // Image cache for preloading
+  let imageCache = new ImageCache();
+  let cachedImageUrl1 = $state<string | null>(null);
+  let cachedImageUrl2 = $state<string | null>(null);
+  let filesArray = $state<File[]>([]);
+  let lastVolumeUuid = $state<string>('');
+
+  // Update files array when volume changes (not on every volumeData update)
+  $effect(() => {
+    const files = volumeData?.files;
+    const volumeUuid = volume?.volume_uuid;
+
+    // Only recreate filesArray when the volume UUID actually changes
+    if (volumeUuid && volumeUuid !== lastVolumeUuid) {
+      lastVolumeUuid = volumeUuid;
+      if (files) {
+        filesArray = Object.values(files);
+      } else {
+        filesArray = [];
+      }
+    } else if (files && filesArray.length === 0) {
+      // Initial load: filesArray is empty but we have files
+      filesArray = Object.values(files);
+    }
+  });
+
+  // Update cache when page or volume data changes
+  $effect(() => {
+    const currentIndex = index;
+
+    if (filesArray.length > 0 && currentIndex >= 0) {
+      // Try to get current page image synchronously first (instant if already cached)
+      const syncUrl1 = imageCache.getImageSync(currentIndex);
+
+      if (syncUrl1) {
+        cachedImageUrl1 = syncUrl1;
+      } else {
+        // Not ready yet, get it async and update when ready
+        cachedImageUrl1 = null;
+        imageCache.getImage(currentIndex).then(url => {
+          cachedImageUrl1 = url;
+        });
+      }
+
+      // Update cache (non-blocking - preloads in background)
+      imageCache.updateCache(filesArray, currentIndex);
+
+      // Try to get next page image if showing second page
+      if (showSecondPage() && currentIndex + 1 < filesArray.length) {
+        const syncUrl2 = imageCache.getImageSync(currentIndex + 1);
+        if (syncUrl2) {
+          cachedImageUrl2 = syncUrl2;
+        } else {
+          cachedImageUrl2 = null;
+          imageCache.getImage(currentIndex + 1).then(url => {
+            cachedImageUrl2 = url;
+          });
+        }
+      } else {
+        cachedImageUrl2 = null;
+      }
+    } else {
+      cachedImageUrl1 = null;
+      cachedImageUrl2 = null;
+    }
+  });
+
+  onDestroy(() => {
+    imageCache.cleanup();
+  });
 
   // Window size state for reactive auto-detection
   let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 0);
@@ -631,24 +838,40 @@
         onmouseup={right}
       ></button>
       <div
-        class="flex flex-row"
-        class:flex-row-reverse={!volumeSettings.rightToLeft}
+        class="grid"
         style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
         ondblclick={onDoubleTap}
         role="none"
         id="manga-panel"
       >
         {#key page}
-          {#if volumeData && volumeData.files}
-            {#if showSecondPage()}
-              <MangaPage page={pages[index + 1]} src={Object.values(volumeData.files)[index + 1]} volumeUuid={volume.volume_uuid} />
+          <div
+            class="flex flex-row col-start-1 row-start-1"
+            class:flex-row-reverse={!volumeSettings.rightToLeft}
+            in:pageIn={{ direction: pageDirection }}
+            out:pageOut={{ direction: pageDirection }}
+          >
+            {#if volumeData && volumeData.files}
+              {#if showSecondPage()}
+                <MangaPage
+                  page={pages[index + 1]}
+                  src={Object.values(volumeData.files)[index + 1]}
+                  cachedUrl={cachedImageUrl2}
+                  volumeUuid={volume.volume_uuid}
+                />
+              {/if}
+              <MangaPage
+                page={pages[index]}
+                src={Object.values(volumeData.files)[index]}
+                cachedUrl={cachedImageUrl1}
+                volumeUuid={volume.volume_uuid}
+              />
+            {:else}
+              <div class="flex items-center justify-center w-screen h-screen">
+                <Spinner size="12" />
+              </div>
             {/if}
-            <MangaPage page={pages[index]} src={Object.values(volumeData.files)[index]} volumeUuid={volume.volume_uuid} />
-          {:else}
-            <div class="flex items-center justify-center w-screen h-screen">
-              <Spinner size="12" />
-            </div>
-          {/if}
+          </div>
         {/key}
       </div>
     </Panzoom>

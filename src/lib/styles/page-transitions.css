@@ -1,0 +1,227 @@
+/* Page transition animations for manga reader */
+
+/* Crossfade transition */
+@keyframes page-crossfade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes page-crossfade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Slide transition */
+@keyframes page-slide-out-left {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+}
+
+@keyframes page-slide-out-right {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+@keyframes page-slide-in-left {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes page-slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Page turn transition (3D flip effect) */
+@keyframes page-turn-out-left {
+  from {
+    transform: perspective(2000px) rotateY(0deg);
+    transform-origin: left center;
+    opacity: 1;
+  }
+  to {
+    transform: perspective(2000px) rotateY(-180deg);
+    transform-origin: left center;
+    opacity: 0;
+  }
+}
+
+@keyframes page-turn-out-right {
+  from {
+    transform: perspective(2000px) rotateY(0deg);
+    transform-origin: right center;
+    opacity: 1;
+  }
+  to {
+    transform: perspective(2000px) rotateY(180deg);
+    transform-origin: right center;
+    opacity: 0;
+  }
+}
+
+@keyframes page-turn-in-left {
+  from {
+    transform: perspective(2000px) rotateY(180deg);
+    transform-origin: left center;
+    opacity: 0;
+  }
+  to {
+    transform: perspective(2000px) rotateY(0deg);
+    transform-origin: left center;
+    opacity: 1;
+  }
+}
+
+@keyframes page-turn-in-right {
+  from {
+    transform: perspective(2000px) rotateY(-180deg);
+    transform-origin: right center;
+    opacity: 0;
+  }
+  to {
+    transform: perspective(2000px) rotateY(0deg);
+    transform-origin: right center;
+    opacity: 1;
+  }
+}
+
+/* Swipe transition (like mobile app) */
+@keyframes page-swipe-out-left {
+  from {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-30%) scale(0.9);
+    opacity: 0;
+  }
+}
+
+@keyframes page-swipe-out-right {
+  from {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(30%) scale(0.9);
+    opacity: 0;
+  }
+}
+
+@keyframes page-swipe-in-left {
+  from {
+    transform: translateX(100%) scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes page-swipe-in-right {
+  from {
+    transform: translateX(-100%) scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Animation classes */
+.page-transition-crossfade-out {
+  animation: page-crossfade-out 0.3s ease-out forwards;
+}
+
+.page-transition-crossfade-in {
+  animation: page-crossfade-in 0.3s ease-in forwards;
+}
+
+.page-transition-slide-out-left {
+  animation: page-slide-out-left 0.4s ease-out forwards;
+}
+
+.page-transition-slide-out-right {
+  animation: page-slide-out-right 0.4s ease-out forwards;
+}
+
+.page-transition-slide-in-left {
+  animation: page-slide-in-left 0.4s ease-out forwards;
+}
+
+.page-transition-slide-in-right {
+  animation: page-slide-in-right 0.4s ease-out forwards;
+}
+
+.page-transition-pageturn-out-left {
+  animation: page-turn-out-left 0.6s ease-in-out forwards;
+}
+
+.page-transition-pageturn-out-right {
+  animation: page-turn-out-right 0.6s ease-in-out forwards;
+}
+
+.page-transition-pageturn-in-left {
+  animation: page-turn-in-left 0.6s ease-in-out forwards;
+}
+
+.page-transition-pageturn-in-right {
+  animation: page-turn-in-right 0.6s ease-in-out forwards;
+}
+
+.page-transition-swipe-out-left {
+  animation: page-swipe-out-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.page-transition-swipe-out-right {
+  animation: page-swipe-out-right 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.page-transition-swipe-in-left {
+  animation: page-swipe-in-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.page-transition-swipe-in-right {
+  animation: page-swipe-in-right 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Prevent flashing during transition */
+.page-transitioning {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}

@@ -70,8 +70,8 @@
     '100 Hour Reader',
     '250 Hour Reader',
     '500 Hour Reader',
+    '750 Hour Reader',
     '1000 Hour Reader',
-    '2000 Hour Reader',
     // Special achievement
     'Improving Fast'
   ];
@@ -471,8 +471,8 @@
       case '100 Hour Reader': return 'dark';     // Tier 6: Prestige Bronze
       case '250 Hour Reader': return 'dark';     // Tier 7: Prestige Silver
       case '500 Hour Reader': return 'dark';     // Tier 8: Prestige Gold
-      case '1000 Hour Reader': return 'blue';    // Tier 9: Prestige Platinum
-      case '2000 Hour Reader': return 'dark';    // Tier 10: Prismatic
+      case '750 Hour Reader': return 'blue';     // Tier 9: Prestige Platinum
+      case '1000 Hour Reader': return 'dark';    // Tier 10: Prismatic
 
       // Special achievement
       case 'Improving Fast': return 'green';
@@ -528,8 +528,8 @@
       case '100 Hour Reader': return 'Unlocked after 100 hours of reading time';
       case '250 Hour Reader': return 'Unlocked after 250 hours of reading time';
       case '500 Hour Reader': return 'Unlocked after 500 hours of reading time';
+      case '750 Hour Reader': return 'Unlocked after 750 hours of reading time';
       case '1000 Hour Reader': return 'Unlocked after 1,000 hours of reading time';
-      case '2000 Hour Reader': return 'Unlocked after 2,000 hours of reading time';
 
       // Special achievement
       case 'Improving Fast': return 'Unlocked when speed trend shows >20% improvement';
@@ -549,7 +549,7 @@
     const speedBadges = ['Beginner', '¹⁄₁₆ Native', '⅛ Native', '¼ Native', '⅜ Native', '½ Native', '⅝ Native', '¾ Native', '⅞ Native', 'Native'];
     const volumeBadges = ['First Volume', 'First Steps', 'Getting Started', 'Consistent Reader', 'Dedicated Reader', 'Veteran Reader', 'Century Club', 'Master Reader', 'Bookworm', 'Librarian'];
     const charBadges = ['10K Characters', '50K Characters', '100K Characters', 'Quarter Million', 'Half Million', 'Million Club', '2.5 Million Club', '5 Million Club', '7.5 Million Club', '10 Million Club'];
-    const timeBadges = ['1 Hour Reader', '5 Hour Reader', '10 Hour Reader', '25 Hour Reader', '50 Hour Reader', '100 Hour Reader', '250 Hour Reader', '500 Hour Reader', '1000 Hour Reader', '2000 Hour Reader'];
+    const timeBadges = ['1 Hour Reader', '5 Hour Reader', '10 Hour Reader', '25 Hour Reader', '50 Hour Reader', '100 Hour Reader', '250 Hour Reader', '500 Hour Reader', '750 Hour Reader', '1000 Hour Reader'];
 
     if (speedBadges.includes(badge)) return 'speed';
     if (volumeBadges.includes(badge)) return 'volume';
@@ -596,11 +596,11 @@
     if (tier8Badges.includes(badge)) return 'badge-gold-glow';
 
     // Tier 9 (Prestige Platinum) - Platinum pulse effect
-    const tier9Badges = ['⅞ Native', 'Bookworm', '1000 Hour Reader', '7.5 Million Club'];
+    const tier9Badges = ['⅞ Native', 'Bookworm', '750 Hour Reader', '7.5 Million Club'];
     if (tier9Badges.includes(badge)) return 'badge-platinum-pulse';
 
     // Tier 10 (Mythic Prismatic) - Ultimate rainbow prismatic effect
-    const tier10Badges = ['Native', 'Librarian', '2000 Hour Reader', '10 Million Club'];
+    const tier10Badges = ['Native', 'Librarian', '1000 Hour Reader', '10 Million Club'];
     if (tier10Badges.includes(badge)) return 'badge-prismatic';
 
     return '';
@@ -637,11 +637,11 @@
     if (tier8Badges.includes(badge)) return 'badge-tier-gold';
 
     // Tier 9 (Prestige Platinum)
-    const tier9Badges = ['⅞ Native', 'Bookworm', '1000 Hour Reader', '7.5 Million Club'];
+    const tier9Badges = ['⅞ Native', 'Bookworm', '750 Hour Reader', '7.5 Million Club'];
     if (tier9Badges.includes(badge)) return 'badge-tier-platinum';
 
     // Tier 10 (Prismatic)
-    const tier10Badges = ['Native', 'Librarian', '2000 Hour Reader', '10 Million Club'];
+    const tier10Badges = ['Native', 'Librarian', '1000 Hour Reader', '10 Million Club'];
     if (tier10Badges.includes(badge)) return 'badge-tier-prismatic';
 
     return '';

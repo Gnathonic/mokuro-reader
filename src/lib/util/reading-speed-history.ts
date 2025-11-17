@@ -371,11 +371,11 @@ export function calculateReadingSpeedStats(
 	if (totalHours >= 500) {
 		badges.push('500 Hour Reader');
 	}
+	if (totalHours >= 750) {
+		badges.push('750 Hour Reader');
+	}
 	if (totalHours >= 1000) {
 		badges.push('1000 Hour Reader');
-	}
-	if (totalHours >= 2000) {
-		badges.push('2000 Hour Reader');
 	}
 
 	// Special achievement (trend-based)

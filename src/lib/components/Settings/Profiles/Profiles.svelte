@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { changeProfile, currentProfile, profiles } from '$lib/settings';
+  import { changeProfile, currentProfile, profiles, migrateProfiles } from '$lib/settings';
   import { AccordionItem, Button, Select } from 'flowbite-svelte';
   import ManageProfilesModal from './ManageProfilesModal.svelte';
   import { showSnackbar } from '$lib/util';
@@ -39,10 +39,12 @@
 
     reader.onloadend = () => {
       const imported = JSON.parse(reader.result?.toString() || '');
+      // Migrate imported profiles to ensure all fields exist with defaults
+      const migrated = migrateProfiles(imported);
       profiles.update((prev) => {
         return {
           ...prev,
-          ...imported
+          ...migrated
         };
       });
       onClose();

@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { progressTrackerStore } from '../progress-tracker';
-import { volumesWithTrash, profiles, profilesWithTrash, parseVolumesFromJson } from '$lib/settings';
+import { volumesWithTrash, profiles, profilesWithTrash, parseVolumesFromJson, migrateProfiles } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
@@ -682,6 +682,7 @@ class UnifiedSyncService {
 	/**
 	 * Merge profiles using timestamp-based conflict resolution
 	 * Handles deletedOn timestamps to properly sync deletions across devices
+	 * Migrates profiles to ensure all settings fields exist with defaults
 	 */
 	private mergeProfiles(local: any, cloud: any): any {
 		console.log('🔍 mergeProfiles called:', {
@@ -691,22 +692,26 @@ class UnifiedSyncService {
 			cloudData: cloud
 		});
 
+		// Migrate both local and cloud profiles to ensure all fields exist
+		const migratedLocal = migrateProfiles(local || {});
+		const migratedCloud = migrateProfiles(cloud || {});
+
 		const merged: any = {};
 		const allProfileNames = new Set([
-			...Object.keys(local || {}),
-			...Object.keys(cloud || {})
+			...Object.keys(migratedLocal || {}),
+			...Object.keys(migratedCloud || {})
 		]);
 
 		allProfileNames.forEach(profileName => {
-			const localProfile = local?.[profileName];
-			const cloudProfile = cloud?.[profileName];
+			const localProfile = migratedLocal?.[profileName];
+			const cloudProfile = migratedCloud?.[profileName];
 
 			if (!localProfile) {
-				// Only in cloud - use cloud version
-				merged[profileName] = this.ensureProfileTimestamp(cloudProfile);
+				// Only in cloud - use cloud version (already migrated)
+				merged[profileName] = cloudProfile;
 			} else if (!cloudProfile) {
-				// Only in local - use local version
-				merged[profileName] = this.ensureProfileTimestamp(localProfile);
+				// Only in local - use local version (already migrated)
+				merged[profileName] = localProfile;
 			} else {
 				// In both - determine which has the most recent user action
 				// Consider all timestamps: lastUpdated (settings change), deletedOn (deletion)
@@ -762,19 +767,6 @@ class UnifiedSyncService {
 		});
 
 		return merged;
-	}
-
-	/**
-	 * Ensure profile has a timestamp (migration for old profiles)
-	 */
-	private ensureProfileTimestamp(profile: any): any {
-		if (!profile.lastUpdated) {
-			return {
-				...profile,
-				lastUpdated: new Date().toISOString()
-			};
-		}
-		return profile;
 	}
 }
 

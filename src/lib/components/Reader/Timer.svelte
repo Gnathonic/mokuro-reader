@@ -17,7 +17,7 @@
 
   // Local volumeStats to avoid circular dependency with currentVolume
   const volumeStats = derived([currentVolume, volumes], ([$currentVolume, $volumes]) => {
-    if ($currentVolume && $volumes) {
+    if ($currentVolume && $volumes && $volumes[$currentVolume.volume_uuid]) {
       const { chars, completed, timeReadInMinutes, progress, lastProgressUpdate } =
         $volumes[$currentVolume.volume_uuid];
       return { chars, completed, timeReadInMinutes, progress, lastProgressUpdate };

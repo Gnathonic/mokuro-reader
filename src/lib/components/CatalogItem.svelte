@@ -19,64 +19,45 @@
     return provider?.name || 'Cloud';
   });
 
-  let firstUnreadVolume = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter(v => !v.isPlaceholder)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-      .find(
-        (item) =>
-          item.series_uuid === series_uuid &&
-          ($progress?.[item.volume_uuid || 0] || 1) < item.page_count - 1
-      )
-  );
-
-  let firstVolume = $derived(
-    Object.values($volumesWithPlaceholders)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-      .find((item) => item.series_uuid === series_uuid)
-  );
-
-  let allSeriesVolumes = $derived(
+  // ========================================
+  // OPTIMIZED: Single source - filter to this series once, sort once
+  // ========================================
+  let seriesVolumes = $derived(
     Object.values($volumesWithPlaceholders)
       .filter(v => v.series_uuid === series_uuid)
       .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
   );
 
-  // Get up to 3 volumes for stacked thumbnail (local volumes only)
-  let stackedVolumes = $derived.by(() => {
-    const localVolumes = allSeriesVolumes.filter(v => !v.isPlaceholder);
+  // Split into local vs cloud placeholders
+  let localVolumes = $derived(seriesVolumes.filter(v => !v.isPlaceholder));
+  let hasLocalVolumes = $derived(localVolumes.length > 0);
 
-    // Check if there are any unread volumes
-    const unreadVolumes = localVolumes.filter(v =>
-      ($progress?.[v.volume_uuid] || 1) < v.page_count - 1
-    );
+  // Find unread volumes (only among local volumes)
+  let unreadVolumes = $derived(
+    localVolumes.filter(v => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
+  );
 
-    // If there are unread volumes, only show those; otherwise show all
-    const volumesToStack = unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
+  // Display volume: first unread, or first local, or first placeholder
+  let volume = $derived(unreadVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
 
-    // Take up to 3 (already sorted alphabetically, first volume will be on top/left)
-    return volumesToStack.slice(0, 3);
-  });
+  // UI state flags
+  let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
+  let isPlaceholderOnly = $derived(!hasLocalVolumes);
 
-  let volume = $derived(firstUnreadVolume ?? firstVolume);
-  let isComplete = $derived(!firstUnreadVolume);
-  let isPlaceholderOnly = $derived(volume?.isPlaceholder === true);
+  // Get up to 3 volumes for stacked thumbnail (unread if any, otherwise all local)
+  let stackedVolumes = $derived(
+    (unreadVolumes.length > 0 ? unreadVolumes : localVolumes).slice(0, 3)
+  );
 
-  // Track queue state
-  let queueState = $state($downloadQueue);
-  $effect(() => {
-    return downloadQueue.subscribe(value => {
-      queueState = value;
-    });
-  });
+  // Keep allSeriesVolumes for handleClick function
+  let allSeriesVolumes = $derived(seriesVolumes);
 
   // Check if this series is downloading or queued
-  let isDownloading = $derived.by(() => {
-    if (!volume || !isPlaceholderOnly) return false;
-
-    const seriesItems = queueState.filter(item => item.seriesTitle === volume.series_title);
-    return seriesItems.length > 0;
-  });
+  let isDownloading = $derived(
+    isPlaceholderOnly && volume
+      ? $downloadQueue.some(item => item.seriesTitle === volume.series_title)
+      : false
+  );
 
   // Calculate rendered dimensions for an image given max constraints
   function calculateRenderedDimensions(naturalWidth: number, naturalHeight: number) {
@@ -103,12 +84,16 @@
   // Load thumbnail dimensions
   $effect(() => {
     const newDimensions = new Map<string, { width: number; height: number }>();
+    const urlsToRevoke: string[] = [];
 
     const promises = stackedVolumes.map(vol => {
       if (!vol.thumbnail) return Promise.resolve();
 
       return new Promise<void>((resolve) => {
         const img = new Image();
+        const url = URL.createObjectURL(vol.thumbnail);
+        urlsToRevoke.push(url);
+
         img.onload = () => {
           newDimensions.set(vol.volume_uuid, {
             width: img.naturalWidth,
@@ -117,13 +102,18 @@
           resolve();
         };
         img.onerror = () => resolve(); // Skip on error
-        img.src = URL.createObjectURL(vol.thumbnail);
+        img.src = url;
       });
     });
 
     Promise.all(promises).then(() => {
       thumbnailDimensions = newDimensions;
     });
+
+    // Cleanup: revoke all blob URLs when effect is destroyed
+    return () => {
+      urlsToRevoke.forEach(url => URL.revokeObjectURL(url));
+    };
   });
 
   // Calculate dynamic step sizes based on actual image dimensions

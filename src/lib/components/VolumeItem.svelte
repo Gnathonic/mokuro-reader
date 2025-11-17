@@ -165,15 +165,34 @@
   async function onDeleteClicked(e: Event) {
     e.stopPropagation();
 
+    // Check if volume is backed up to cloud
+    const hasCloudBackup = hasAuthenticatedProvider && isBackedUp;
+
+    // Get provider display name
+    const providerDisplayName = cloudFile?.provider === 'google-drive' ? 'Drive' :
+                                 cloudFile?.provider === 'mega' ? 'MEGA' :
+                                 'cloud';
+
     promptConfirmation(
       `Delete ${volName}?`,
-      async (deleteStats = false) => {
+      async (deleteStats = false, deleteCloud = false) => {
         await db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete();
         await db.volumes_data.where('volume_uuid').equals(volume.volume_uuid).delete();
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {
           deleteVolume(volume.volume_uuid);
+        }
+
+        // Delete from cloud if checkbox checked
+        if (deleteCloud && hasCloudBackup && cloudFile) {
+          try {
+            await unifiedCloudManager.deleteFile(cloudFile);
+            showSnackbar(`Deleted from ${providerDisplayName}`);
+          } catch (error) {
+            console.error('Failed to delete from cloud:', error);
+            showSnackbar(`Failed to delete from ${providerDisplayName}`);
+          }
         }
 
         // Check if this was the last volume for this title
@@ -193,7 +212,12 @@
         label: "Also delete stats and progress?",
         storageKey: "deleteStatsPreference",
         defaultValue: false
-      }
+      },
+      hasCloudBackup ? {
+        label: `Also delete from ${providerDisplayName}?`,
+        storageKey: "deleteCloudPreference",
+        defaultValue: false
+      } : undefined
     );
   }
 

@@ -33,30 +33,32 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
     next: (value) => set(value),
     error: (err) => console.error(err)
   });
+
   return () => subscription.unsubscribe();
 });
 
 // Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
   [volumes, unifiedCloudManager.cloudFiles],
-  ([$volumes, $cloudFiles], set) => {
-    // Generate placeholders from cloud files
-    generatePlaceholders($cloudFiles).then(placeholders => {
-      // Combine local volumes with placeholders
-      const combined = { ...$volumes };
+  ([$volumes, $cloudFiles]) => {
+    // Skip placeholder generation if no cloud files
+    if ($cloudFiles.size === 0) {
+      return $volumes;
+    }
 
-      for (const placeholder of placeholders) {
-        combined[placeholder.volume_uuid] = placeholder;
-      }
+    // Generate placeholders synchronously
+    const placeholders = generatePlaceholders($cloudFiles, Object.values($volumes));
 
-      set(combined);
-    }).catch(error => {
-      console.error('Failed to generate placeholders:', error);
-      // On error, just use local volumes
-      set($volumes);
-    });
+    // Combine local volumes with placeholders
+    const combined = { ...$volumes };
+
+    for (const placeholder of placeholders) {
+      combined[placeholder.volume_uuid] = placeholder;
+    }
+
+    return combined;
   },
-  undefined as Record<string, VolumeMetadata> | undefined
+  {} as Record<string, VolumeMetadata>
 );
 
 // Each derived store needs to be passed as an array if using multiple inputs

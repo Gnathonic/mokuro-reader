@@ -5,19 +5,23 @@
   interface Props {
     page: Page;
     src: File;
+    cachedUrl?: string | null;
     volumeUuid: string;
   }
 
-  let { page, src, volumeUuid }: Props = $props();
+  let { page, src, cachedUrl, volumeUuid }: Props = $props();
 
   let url = $state('');
 
-  // Track blob URL and clean up properly to prevent memory leaks
+  // Use cached URL if available, otherwise create blob URL
   $effect(() => {
     let currentBlobUrl: string | null = null;
 
-    // Create new blob URL
-    if (src) {
+    if (cachedUrl) {
+      // Use pre-decoded cached URL (no cleanup needed, managed by cache)
+      url = `url(${cachedUrl})`;
+    } else if (src) {
+      // Fallback: create new blob URL
       currentBlobUrl = URL.createObjectURL(src);
       url = `url(${currentBlobUrl})`;
     } else {
@@ -26,6 +30,7 @@
 
     // Cleanup function runs on effect re-run or component unmount
     return () => {
+      // Only revoke if we created it (not from cache)
       if (currentBlobUrl) {
         URL.revokeObjectURL(currentBlobUrl);
       }

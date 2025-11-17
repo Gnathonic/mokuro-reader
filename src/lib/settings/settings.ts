@@ -25,6 +25,8 @@ export type ZoomModes =
   | 'keepZoom'
   | 'keepZoomStart';
 
+export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
+
 export type AnkiConnectSettings = {
   enabled: boolean;
   pictureField: string;
@@ -63,6 +65,7 @@ export type Settings = {
   quickActions: boolean;
   fontSize: FontSize;
   zoomDefault: ZoomModes;
+  pageTransition: PageTransition;
   invertColors: boolean;
   nightMode: boolean;
   inactivityTimeoutMinutes: number;
@@ -95,6 +98,7 @@ const defaultSettings: Settings = {
   quickActions: true,
   fontSize: 'auto',
   zoomDefault: 'zoomFitToScreen',
+  pageTransition: 'none',
   invertColors: false,
   nightMode: false,
   inactivityTimeoutMinutes: 5,
@@ -150,23 +154,39 @@ const builtInProfiles: Profiles = {
 };
 
 /**
- * Migrate old profiles without timestamps to new format
+ * Migrate old profiles to ensure all fields exist with defaults
+ * Adds missing settings fields and timestamps
  */
-function migrateProfiles(profiles: Profiles): Profiles {
+export function migrateProfiles(profiles: Profiles): Profiles {
   const migrated: Profiles = {};
 
   for (const [name, profile] of Object.entries(profiles)) {
-    if (!profile.lastUpdated) {
-      // Add timestamp to profile without one (old format)
+    // Start with defaults and overlay profile data
+    // This ensures all new fields get their default values
+    const migratedProfile: Settings = {
+      ...defaultSettings,
+      ...profile
+    };
+
+    // Ensure nested objects are properly merged (not replaced)
+    migratedProfile.volumeDefaults = {
+      ...defaultSettings.volumeDefaults,
+      ...(profile.volumeDefaults || {})
+    };
+
+    migratedProfile.ankiConnectSettings = {
+      ...defaultSettings.ankiConnectSettings,
+      ...(profile.ankiConnectSettings || {})
+    };
+
+    // Add timestamp if missing
+    if (!migratedProfile.lastUpdated) {
       const newTimestamp = new Date().toISOString();
       console.log(`📝 Profile migration: Adding timestamp to [${name}]`, newTimestamp);
-      migrated[name] = {
-        ...profile,
-        lastUpdated: newTimestamp
-      };
-    } else {
-      migrated[name] = profile;
+      migratedProfile.lastUpdated = newTimestamp;
     }
+
+    migrated[name] = migratedProfile;
   }
 
   return migrated;

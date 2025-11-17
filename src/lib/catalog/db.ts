@@ -75,25 +75,24 @@ export class CatalogDexie extends Dexie {
     // Process thumbnails in parallel
     await Promise.all(
       volumes.map(async (volume) => {
-        // Mark as processing
-        db.volumes_data.get({ volume_uuid: volume.volume_uuid }).then(async (data) => {
+        try {
+          // Properly await the data fetch
+          const data = await db.volumes_data.get({ volume_uuid: volume.volume_uuid });
           if (data && data.files) {
-            try {
-              // Get the first image file when sorted naturally
-              const fileNames = Object.keys(data.files).sort(naturalSort);
-              const firstImageFile = fileNames.length > 0 ? data.files[fileNames[0]] : null;
+            // Get the first image file when sorted naturally
+            const fileNames = Object.keys(data.files).sort(naturalSort);
+            const firstImageFile = fileNames.length > 0 ? data.files[fileNames[0]] : null;
 
-              if (firstImageFile) {
-                const thumbnail = await generateThumbnail(firstImageFile);
-                // Update the volume with the thumbnail
-                volume.thumbnail = thumbnail;
-                await this.volumes.where('volume_uuid').equals(volume.volume_uuid).modify(volume);
-              }
-            } catch (error) {
-              console.error('Failed to generate thumbnail for volume:', volume.volume_uuid, error);
+            if (firstImageFile) {
+              const thumbnail = await generateThumbnail(firstImageFile);
+              // Update the volume with the thumbnail
+              volume.thumbnail = thumbnail;
+              await this.volumes.where('volume_uuid').equals(volume.volume_uuid).modify(volume);
             }
           }
-        });
+        } catch (error) {
+          console.error('Failed to generate thumbnail for volume:', volume.volume_uuid, error);
+        }
       })
     );
 

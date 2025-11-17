@@ -1,6 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
 import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
-import { db } from './db';
 import { browser } from '$app/environment';
 
 /**
@@ -96,19 +95,17 @@ function createPlaceholder(cloudFile: CloudVolumeWithProvider, seriesUuid: strin
 }
 
 /**
- * Identify cloud-only files by comparing cloud files with local DB
+ * Identify cloud-only files by comparing cloud files with local volumes
  * Returns placeholder VolumeMetadata for files that exist in cloud but not locally
  */
-export async function generatePlaceholders(
-  cloudFilesMap: Map<string, CloudVolumeWithProvider[]>
-): Promise<VolumeMetadata[]> {
-  // Skip during SSR/build - IndexedDB is not available
+export function generatePlaceholders(
+  cloudFilesMap: Map<string, CloudVolumeWithProvider[]>,
+  localVolumes: VolumeMetadata[]
+): VolumeMetadata[] {
+  // Skip during SSR/build
   if (!browser) {
     return [];
   }
-
-  // Get all local volumes from DB
-  const localVolumes = await db.volumes.toArray();
 
   // Create a set of local volume paths for fast lookup
   const localPaths = new Set(
