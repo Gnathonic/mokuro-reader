@@ -416,12 +416,12 @@
           // New page wipes in on top of old page
           // Wipe direction depends on reading direction and forward/backward
           const clipPercent = visualDirection === 'right'
-            ? 100 * t          // Left to right wipe
-            : 100 * (1 - t);   // Right to left wipe
+            ? 100 * (1 - t)    // Right to left wipe
+            : 100 * t;         // Left to right wipe
 
           const clipPath = visualDirection === 'right'
-            ? `polygon(0 0, ${clipPercent}% 0, ${clipPercent}% 100%, 0 100%)`  // Left to right
-            : `polygon(${clipPercent}% 0, 100% 0, 100% 100%, ${clipPercent}% 100%)`;  // Right to left
+            ? `polygon(${clipPercent}% 0, 100% 0, 100% 100%, ${clipPercent}% 100%)`  // Right to left
+            : `polygon(0 0, ${clipPercent}% 0, ${clipPercent}% 100%, 0 100%)`;  // Left to right
 
           return `clip-path: ${clipPath};`;
         }

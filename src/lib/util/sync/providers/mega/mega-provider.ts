@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
 import type { SyncProvider, ProviderCredentials, ProviderStatus, CloudFileMetadata } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
-import { unifiedCloudManager } from '../../unified-cloud-manager';
+import { megaCache } from './mega-cache';
 
 interface MegaCredentials {
 	email: string;
@@ -100,8 +100,9 @@ async function retryWithCacheRefresh<T>(
 				await forceReload();
 			}
 
-			// Refresh our app's cloud cache
-			await unifiedCloudManager.fetchAllCloudVolumes();
+			// Refresh our app's cloud cache from MEGA's now-fresh storage.files
+			// Skip reinitialize since forceReload already did that
+			await megaCache.fetch(true);
 
 			// Retry the operation once with fresh cache
 			try {
@@ -389,13 +390,17 @@ export class MegaProvider implements SyncProvider {
 
 	// VOLUME STORAGE METHODS
 
-	async listCloudVolumes(): Promise<import('../../provider-interface').CloudFileMetadata[]> {
+	async listCloudVolumes(skipReinitialize = false): Promise<import('../../provider-interface').CloudFileMetadata[]> {
 		if (!this.isAuthenticated()) {
 			throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
 		}
 
 		try {
-			await this.reinitialize();
+			// Only reinitialize if needed (cache miss, initial load)
+			// Skip for post-operation refreshes where storage.files is already fresh
+			if (!skipReinitialize) {
+				await this.reinitialize();
+			}
 			await this.ensureMokuroFolder();
 
 			// Get all files from storage
@@ -508,56 +513,75 @@ export class MegaProvider implements SyncProvider {
 		}
 
 		try {
-			const mokuroFolder = await this.ensureMokuroFolder();
+			// Wrap upload in retry logic to handle stale cache
+			const fileId = await retryWithCacheRefresh(
+				async () => {
+					const mokuroFolder = await this.ensureMokuroFolder();
 
-			// Parse path: "SeriesTitle/VolumeTitle.cbz"
-			const pathParts = path.split('/');
-			const fileName = pathParts.pop() || path;
-			const seriesFolderName = pathParts.join('/');
+					// Parse path: "SeriesTitle/VolumeTitle.cbz"
+					const pathParts = path.split('/');
+					const fileName = pathParts.pop() || path;
+					const seriesFolderName = pathParts.join('/');
 
-			// Find or create series folder if path includes subfolder
-			let targetFolder = mokuroFolder;
-			if (seriesFolderName) {
-				targetFolder = await this.ensureSeriesFolder(seriesFolderName, mokuroFolder);
-			}
-
-			// Convert Blob to ArrayBuffer
-			const arrayBuffer = await blob.arrayBuffer();
-			const buffer = new Uint8Array(arrayBuffer);
-
-			// Check if file already exists
-			const children = await this.listFolder(targetFolder);
-			const existingFile = children.find((f: any) => f.name === fileName && !f.directory);
-
-			// Delete existing file if found
-			if (existingFile) {
-				await new Promise<void>((resolve, reject) => {
-					existingFile.delete(true, (error: Error | null) => {
-						if (error) reject(error);
-						else resolve();
-					});
-				});
-			}
-
-			// Upload new file
-			return new Promise((resolve, reject) => {
-				targetFolder.upload(
-					{
-						name: fileName,
-						size: buffer.length
-					},
-					buffer,
-					(error: Error | null, file: any) => {
-						if (error) {
-							reject(error);
-						} else {
-							const fileId = file?.nodeId || file?.id || '';
-							console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
-							resolve(fileId);
-						}
+					// Find or create series folder if path includes subfolder
+					let targetFolder = mokuroFolder;
+					if (seriesFolderName) {
+						targetFolder = await this.ensureSeriesFolder(seriesFolderName, mokuroFolder);
 					}
-				);
-			});
+
+					// Convert Blob to ArrayBuffer
+					const arrayBuffer = await blob.arrayBuffer();
+					const buffer = new Uint8Array(arrayBuffer);
+
+					// Check if file already exists
+					const children = await this.listFolder(targetFolder);
+					const existingFile = children.find((f: any) => f.name === fileName && !f.directory);
+
+					// Delete existing file if found
+					if (existingFile) {
+						const existingFileId = existingFile.nodeId || existingFile.id;
+						await new Promise<void>((resolve, reject) => {
+							existingFile.delete(true, (error: Error | null) => {
+								if (error) reject(error);
+								else {
+									resolve();
+									// MEGA.js doesn't remove from storage.files, so we do it manually
+									// Done after resolve() to let MEGA.js finish its internal cleanup first
+									delete this.storage.files[existingFileId];
+								}
+							});
+						});
+					}
+
+					// Upload new file
+					return new Promise<string>((resolve, reject) => {
+						targetFolder.upload(
+							{
+								name: fileName,
+								size: buffer.length
+							},
+							buffer,
+							(error: Error | null, file: any) => {
+								if (error) {
+									reject(error);
+								} else {
+									const fileId = file?.nodeId || file?.id || '';
+									console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
+									resolve(fileId);
+								}
+							}
+						);
+					});
+				},
+				`Upload ${path} to MEGA`,
+				() => this.reinitialize()
+			);
+
+			// Refresh cache from MEGA's internal storage.files (which auto-updates on upload)
+			// Skip reinitialize since storage.files is already fresh
+			await megaCache.fetch(true);
+
+			return fileId;
 		} catch (error) {
 			throw new ProviderError(
 				`Failed to upload volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -662,26 +686,38 @@ export class MegaProvider implements SyncProvider {
 		const fileId = file.fileId;
 
 		try {
-			// Find the file by ID
-			const files = Object.values(this.storage.files || {});
-			const megaFile = files.find(
-				(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
+			// Wrap delete in retry logic to handle stale cache
+			await retryWithCacheRefresh(
+				async () => {
+					// Find the file by ID
+					const files = Object.values(this.storage.files || {});
+					const megaFile = files.find(
+						(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
+					);
+
+					if (!megaFile) {
+						throw new Error('File not found');
+					}
+
+					return new Promise<void>((resolve, reject) => {
+						(megaFile as any).delete(true, (error: Error | null) => {
+							if (error) {
+								reject(error);
+							} else {
+								console.log(`✅ Deleted file from MEGA (${fileId})`);
+								resolve();
+								delete this.storage.files[fileId];
+							}
+						});
+					});
+				},
+				`Delete file ${fileId} from MEGA`,
+				() => this.reinitialize()
 			);
 
-			if (!megaFile) {
-				throw new Error('File not found');
-			}
-
-			return new Promise((resolve, reject) => {
-				(megaFile as any).delete(true, (error: Error | null) => {
-					if (error) {
-						reject(error);
-					} else {
-						console.log(`✅ Deleted file from MEGA (${fileId})`);
-						resolve();
-					}
-				});
-			});
+			// Refresh cache from MEGA's internal storage.files (which auto-updates on delete)
+			// Skip reinitialize since storage.files is already fresh
+			await megaCache.fetch(true);
 		} catch (error) {
 			throw new ProviderError(
 				`Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -708,34 +744,40 @@ export class MegaProvider implements SyncProvider {
 		}
 
 		try {
-			// Wrap the share link creation with retry logic
-			return await retryWithBackoff(
+			// Wrap with cache refresh retry for stale cache, then backoff for rate limiting
+			return await retryWithCacheRefresh(
 				async () => {
-					// Find the file by ID
-					const files = Object.values(this.storage.files || {});
-					const file = files.find(
-						(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-					);
+					return await retryWithBackoff(
+						async () => {
+							// Find the file by ID
+							const files = Object.values(this.storage.files || {});
+							const file = files.find(
+								(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
+							);
 
-					if (!file) {
-						throw new Error('File not found');
-					}
-
-					return new Promise<string>((resolve, reject) => {
-						// Create/get share link with decryption key (noKey: false is default)
-						// NOTE: If file already has a share link, MEGA API likely returns the existing one
-						(file as any).link((error: Error | null, url: string) => {
-							if (error) {
-								reject(error);
-							} else {
-								resolve(url);
+							if (!file) {
+								throw new Error('File not found');
 							}
-						});
-					});
+
+							return new Promise<string>((resolve, reject) => {
+								// Create/get share link with decryption key (noKey: false is default)
+								// NOTE: If file already has a share link, MEGA API likely returns the existing one
+								(file as any).link((error: Error | null, url: string) => {
+									if (error) {
+										reject(error);
+									} else {
+										resolve(url);
+									}
+								});
+							});
+						},
+						8, // maxRetries
+						500, // baseDelay (ms)
+						`Create MEGA share link (${fileId})`
+					);
 				},
-				8, // maxRetries
-				500, // baseDelay (ms)
-				`Create MEGA share link (${fileId})`
+				`Create MEGA share link (${fileId})`,
+				() => this.reinitialize()
 			);
 		} catch (error) {
 			throw new ProviderError(
@@ -758,27 +800,34 @@ export class MegaProvider implements SyncProvider {
 		}
 
 		try {
-			// Find the file by ID
-			const files = Object.values(this.storage.files || {});
-			const file = files.find(
-				(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-			);
+			// Wrap delete in retry logic to handle stale cache
+			await retryWithCacheRefresh(
+				async () => {
+					// Find the file by ID
+					const files = Object.values(this.storage.files || {});
+					const file = files.find(
+						(f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
+					);
 
-			if (!file) {
-				throw new Error('File not found');
-			}
-
-			return new Promise((resolve, reject) => {
-				// Unshare the file (removes the share link)
-				(file as any).unshare((error: Error | null) => {
-					if (error) {
-						reject(error);
-					} else {
-						console.log(`✅ Deleted MEGA share link for file ${fileId}`);
-						resolve();
+					if (!file) {
+						throw new Error('File not found');
 					}
-				});
-			});
+
+					return new Promise<void>((resolve, reject) => {
+						// Unshare the file (removes the share link)
+						(file as any).unshare((error: Error | null) => {
+							if (error) {
+								reject(error);
+							} else {
+								console.log(`✅ Deleted MEGA share link for file ${fileId}`);
+								resolve();
+							}
+						});
+					});
+				},
+				`Delete MEGA share link for file ${fileId}`,
+				() => this.reinitialize()
+			);
 		} catch (error) {
 			throw new ProviderError(
 				`Failed to delete share link: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -799,28 +848,39 @@ export class MegaProvider implements SyncProvider {
 		}
 
 		try {
-			const mokuroFolder = await this.ensureMokuroFolder();
+			// Wrap delete in retry logic to handle stale cache
+			await retryWithCacheRefresh(
+				async () => {
+					const mokuroFolder = await this.ensureMokuroFolder();
 
-			// Find the series folder
-			const children = await this.listFolder(mokuroFolder);
-			const seriesFolder = children.find((f: any) => f.name === seriesTitle && f.directory);
+					// Find the series folder
+					const children = await this.listFolder(mokuroFolder);
+					const seriesFolder = children.find((f: any) => f.name === seriesTitle && f.directory);
 
-			if (!seriesFolder) {
-				console.log(`Series folder '${seriesTitle}' not found in MEGA`);
-				return;
-			}
-
-			// Delete the folder (recursive delete)
-			await new Promise<void>((resolve, reject) => {
-				seriesFolder.delete(true, (error: Error | null) => {
-					if (error) {
-						reject(error);
-					} else {
-						console.log(`✅ Deleted series folder '${seriesTitle}' from MEGA`);
-						resolve();
+					if (!seriesFolder) {
+						console.log(`Series folder '${seriesTitle}' not found in MEGA`);
+						return;
 					}
-				});
-			});
+
+					// Delete the folder (recursive delete)
+					await new Promise<void>((resolve, reject) => {
+						seriesFolder.delete(true, (error: Error | null) => {
+							if (error) {
+								reject(error);
+							} else {
+								console.log(`✅ Deleted series folder '${seriesTitle}' from MEGA`);
+								resolve();
+							}
+						});
+					});
+				},
+				`Delete series folder '${seriesTitle}' from MEGA`,
+				() => this.reinitialize()
+			);
+
+			// Refresh cache from MEGA's internal storage.files (which auto-updates on delete)
+			// Skip reinitialize since storage.files is already fresh
+			await megaCache.fetch(true);
 		} catch (error) {
 			throw new ProviderError(
 				`Failed to delete series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,

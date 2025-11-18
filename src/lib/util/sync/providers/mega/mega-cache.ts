@@ -27,8 +27,9 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
 	/**
 	 * Fetch cloud volumes from MEGA provider
 	 * This queries MEGA's internal cache (storage.files)
+	 * @param skipReinitialize If true, skip reinitializing MEGA connection (use for post-operation refreshes)
 	 */
-	async fetch(): Promise<void> {
+	async fetch(skipReinitialize = false): Promise<void> {
 		if (this.fetchingFlag) {
 			console.log('MEGA cache fetch already in progress');
 			return;
@@ -43,7 +44,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
 		this.isFetchingStore.set(true);
 		try {
 			// Query MEGA provider (which reads from its internal storage.files cache)
-			const volumes = await megaProvider.listCloudVolumes();
+			const volumes = await megaProvider.listCloudVolumes(skipReinitialize);
 
 			// Group by series title (extracted from path: "SeriesTitle/VolumeTitle.cbz")
 			const cacheMap = new Map<string, CloudFileMetadata[]>();

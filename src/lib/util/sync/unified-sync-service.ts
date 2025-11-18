@@ -283,7 +283,7 @@ class UnifiedSyncService {
 	 * Download volume-data.json file from provider using generic file operations
 	 * Handles duplicate files by merging them (Google Drive specific)
 	 */
-	private async downloadVolumeDataFile(provider: SyncProvider): Promise<any | null> {
+	private async downloadVolumeDataFile(provider: SyncProvider, reloadCacheOnFileNotFound = true): Promise<any | null> {
 		try {
 			const volumeDataFiles = await this.findVolumeDataFiles(provider);
 
@@ -349,7 +349,16 @@ class UnifiedSyncService {
 				error.message.includes('404') ||
 				error.message.includes('ENOENT')
 			)) {
-				return null;
+				if (reloadCacheOnFileNotFound) {
+					console.log('📥 Download failed with file not found - refreshing cache and retrying...');
+					const cache = cacheManager.getCache(provider.type);
+					if (cache) {
+						await cache.fetch();
+					}
+					return await this.downloadVolumeDataFile(provider, false);
+				} else {
+					return null;
+				}
 			}
 			throw error;
 		}
