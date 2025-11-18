@@ -3,6 +3,7 @@
   import type { TransitionConfig } from 'svelte/transition';
 
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
+  import { getCurrentPages } from '$lib/catalog/pages';
   import {
     Panzoom,
     panzoomStore,
@@ -366,7 +367,7 @@
     }
   });
 
-  let pages = $derived(volumeData?.pages || []);
+  let pages = $derived(volumeData ? getCurrentPages(volumeData) : []);
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
@@ -750,6 +751,8 @@
     {right}
     src1={volumeData.files ? Object.values(volumeData.files)[index] : undefined}
     src2={!useSinglePage && volumeData.files ? Object.values(volumeData.files)[index + 1] : undefined}
+    currentPage={page}
+    showSecondPage={showSecondPage()}
   />
   <SettingsButton />
   <Cropper />

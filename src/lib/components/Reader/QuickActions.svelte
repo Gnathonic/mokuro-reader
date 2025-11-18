@@ -2,14 +2,15 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { toggleFullScreen, zoomFitToScreen } from '$lib/panzoom';
-  import { SpeedDial, SpeedDialButton } from 'flowbite-svelte';
+  import { SpeedDial, SpeedDialButton, Modal, Button } from 'flowbite-svelte';
   import { settings } from '$lib/settings';
   import {
     ArrowLeftOutline,
     ArrowRightOutline,
     CompressOutline,
     ImageOutline,
-    ZoomOutOutline
+    ZoomOutOutline,
+    EditOutline
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
@@ -19,11 +20,14 @@
     right: (_e: any, ingoreTimeOut?: boolean) => void;
     src1: File | undefined;
     src2: File | undefined;
+    currentPage: number;
+    showSecondPage: boolean;
   }
 
-  let { left, right, src1, src2 }: Props = $props();
+  let { left, right, src1, src2, currentPage, showSecondPage }: Props = $props();
 
   let open = $state(false);
+  let showPageSelector = $state(false);
 
   function handleZoom() {
     zoomFitToScreen();
@@ -38,6 +42,25 @@
   function handleRight(_e: Event) {
     right(_e, true);
     open = false;
+  }
+
+  function handleEditPage() {
+    open = false;
+
+    if (showSecondPage) {
+      // Show modal to select which page to edit
+      showPageSelector = true;
+    } else {
+      // Navigate directly to edit the current page
+      navigateToEditPage(currentPage - 1); // Convert to 0-based index
+    }
+  }
+
+  function navigateToEditPage(pageIndex: number) {
+    const manga = $page.params.manga;
+    const volume = $page.params.volume;
+    goto(`/${manga}/${volume}/edit/${pageIndex}`);
+    showPageSelector = false;
   }
 
   async function onUpdateCard(src: File | undefined) {
@@ -85,5 +108,27 @@
     <SpeedDialButton on:click={handleLeft}>
       <ArrowLeftOutline />
     </SpeedDialButton>
+    <SpeedDialButton on:click={handleEditPage}>
+      <EditOutline />
+    </SpeedDialButton>
   </SpeedDial>
 {/if}
+
+<Modal bind:open={showPageSelector} size="xs" autoclose={false}>
+  <div class="text-center">
+    <h3 class="mb-5 text-lg font-normal text-gray-500 dark:text-gray-400">
+      Which page do you want to edit?
+    </h3>
+    <div class="flex justify-center gap-4">
+      <Button color="blue" on:click={() => navigateToEditPage(currentPage - 1)}>
+        Left Page ({currentPage})
+      </Button>
+      <Button color="blue" on:click={() => navigateToEditPage(currentPage)}>
+        Right Page ({currentPage + 1})
+      </Button>
+    </div>
+    <div class="mt-4">
+      <Button color="alternative" on:click={() => (showPageSelector = false)}>Cancel</Button>
+    </div>
+  </div>
+</Modal>
