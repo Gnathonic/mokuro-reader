@@ -3,6 +3,7 @@ import type { CloudCache } from './cloud-cache-interface';
 import type { ProviderType } from './provider-interface';
 import { driveFilesCache, type DriveFileMetadata } from './providers/google-drive/drive-files-cache';
 import { megaCache } from './providers/mega/mega-cache';
+import { webdavCache } from './providers/webdav/webdav-cache';
 
 /**
  * Cache Manager
@@ -202,5 +203,5 @@ cacheManager.registerCache('google-drive', driveFilesCache);
 // Register MEGA cache
 cacheManager.registerCache('mega', megaCache);
 
-// Future: Register WebDAV cache
-// cacheManager.registerCache('webdav', webdavCache);
+// Register WebDAV cache
+cacheManager.registerCache('webdav', webdavCache);

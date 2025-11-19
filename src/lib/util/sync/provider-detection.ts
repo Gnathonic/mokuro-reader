@@ -1,38 +1,31 @@
 import { browser } from '$app/environment';
-import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import type { ProviderType } from './provider-interface';
 
+export const ACTIVE_PROVIDER_KEY = 'active_cloud_provider';
+
 /**
- * Synchronously check which provider (if any) has stored credentials
- * Since providers are mutually exclusive, returns the active provider type or null
- *
- * This can be called synchronously during page load to immediately show configured state
- * before async initialization completes.
+ * Get the currently active provider type
+ * Returns null if no provider is configured
  */
 export function getConfiguredProviderType(): ProviderType | null {
 	if (!browser) return null;
+	return localStorage.getItem(ACTIVE_PROVIDER_KEY) as ProviderType | null;
+}
 
-	// Check Google Drive auth history (not token validity - user needs to re-auth with expired token)
-	const hasGdriveAuth = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED) === 'true';
-	const gdriveToken = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN);
-	if (hasGdriveAuth && gdriveToken) {
-		return 'google-drive';
-	}
+/**
+ * Set the active provider type
+ * Called on successful login
+ */
+export function setActiveProvider(provider: ProviderType): void {
+	if (!browser) return;
+	localStorage.setItem(ACTIVE_PROVIDER_KEY, provider);
+}
 
-	// Check MEGA credentials
-	const megaEmail = localStorage.getItem('mega_email');
-	const megaPassword = localStorage.getItem('mega_password');
-	if (megaEmail && megaPassword) {
-		return 'mega';
-	}
-
-	// Check WebDAV credentials
-	const webdavUrl = localStorage.getItem('webdav_server_url');
-	const webdavUsername = localStorage.getItem('webdav_username');
-	const webdavPassword = localStorage.getItem('webdav_password');
-	if (webdavUrl && webdavUsername && webdavPassword) {
-		return 'webdav';
-	}
-
-	return null; // No provider has credentials
+/**
+ * Clear the active provider
+ * Called on logout
+ */
+export function clearActiveProvider(): void {
+	if (!browser) return;
+	localStorage.removeItem(ACTIVE_PROVIDER_KEY);
 }

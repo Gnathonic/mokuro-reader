@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import type { SyncProvider, ProviderCredentials, ProviderStatus, CloudFileMetadata } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
+import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
 
 interface MegaCredentials {
 	email: string;
@@ -205,6 +206,9 @@ export class MegaProvider implements SyncProvider {
 				localStorage.setItem(STORAGE_KEYS.PASSWORD, password);
 			}
 
+			// Set as active provider
+			setActiveProvider('mega');
+
 			console.log('✅ MEGA login successful');
 		} catch (error) {
 			this.storage = null;
@@ -224,10 +228,13 @@ export class MegaProvider implements SyncProvider {
 		this.mokuroFolder = null;
 
 		if (browser) {
-			localStorage.removeItem(STORAGE_KEYS.EMAIL);
+			// Keep email for convenience, only clear password
 			localStorage.removeItem(STORAGE_KEYS.PASSWORD);
 			localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
 		}
+
+		// Clear active provider
+		clearActiveProvider();
 
 		console.log('MEGA logged out');
 	}

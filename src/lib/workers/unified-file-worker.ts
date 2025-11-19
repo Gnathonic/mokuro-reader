@@ -192,13 +192,14 @@ async function downloadFromWebDAV(
 	onProgress: (loaded: number, total: number) => void
 ): Promise<ArrayBuffer> {
 	const fullUrl = `${url}${fileId}`;
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
-	const response = await fetch(fullUrl, {
-		headers: {
-			'Authorization': authHeader
-		}
-	});
+	// Build headers - only add auth if credentials provided
+	const headers: Record<string, string> = {};
+	if (username || password) {
+		headers['Authorization'] = 'Basic ' + btoa(`${username}:${password}`);
+	}
+
+	const response = await fetch(fullUrl, { headers });
 
 	if (!response.ok) {
 		throw new Error(`WebDAV download failed: ${response.status} ${response.statusText}`);
@@ -427,13 +428,17 @@ async function uploadToWebDAV(
 
 	// Upload file
 	const filePath = `${seriesFolderPath}/${filename}`;
-	const fileUrl = `${serverUrl}${filePath}`;
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+	const fileUrl = `${serverUrl}/${filePath}`;
 
 	return new Promise((resolve, reject) => {
 		const xhr = new XMLHttpRequest();
 		xhr.open('PUT', fileUrl);
-		xhr.setRequestHeader('Authorization', authHeader);
+
+		// Only set auth header if credentials are provided
+		if (username || password) {
+			const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+			xhr.setRequestHeader('Authorization', authHeader);
+		}
 		xhr.setRequestHeader('Content-Type', 'application/x-cbz');
 
 		xhr.upload.onprogress = (event) => {
@@ -467,7 +472,6 @@ async function createWebDAVFolderRecursive(
 	username: string,
 	password: string
 ): Promise<void> {
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 	const parts = path.split('/').filter(p => p);
 
 	let currentPath = '';
@@ -475,11 +479,17 @@ async function createWebDAVFolderRecursive(
 		currentPath += `/${part}`;
 		const folderUrl = `${serverUrl}${currentPath}`;
 
+		// Build headers - only add auth if credentials provided
+		const headers: Record<string, string> = {};
+		if (username || password) {
+			headers['Authorization'] = 'Basic ' + btoa(`${username}:${password}`);
+		}
+
 		// Try to create folder (MKCOL)
 		try {
 			const response = await fetch(folderUrl, {
 				method: 'MKCOL',
-				headers: { 'Authorization': authHeader }
+				headers
 			});
 
 			// 201 = created, 405 = already exists, both are OK
@@ -619,14 +629,14 @@ ctx.addEventListener('message', async (event) => {
 					}
 				);
 			} else if (provider === 'webdav') {
-				if (!credentials.webdavUrl || !credentials.webdavUsername || !credentials.webdavPassword) {
-					throw new Error('Missing WebDAV credentials');
+				if (!credentials.webdavUrl) {
+					throw new Error('Missing WebDAV server URL');
 				}
 				arrayBuffer = await downloadFromWebDAV(
 					fileId,
 					credentials.webdavUrl,
-					credentials.webdavUsername,
-					credentials.webdavPassword,
+					credentials.webdavUsername || '',
+					credentials.webdavPassword || '',
 					(loaded, total) => {
 						const progressMessage: DownloadProgressMessage = {
 							type: 'progress',
@@ -754,16 +764,16 @@ ctx.addEventListener('message', async (event) => {
 					}
 				);
 			} else if (provider === 'webdav') {
-				if (!credentials.webdavUrl || !credentials.webdavUsername || !credentials.webdavPassword) {
-					throw new Error('Missing WebDAV credentials');
+				if (!credentials.webdavUrl) {
+					throw new Error('Missing WebDAV server URL');
 				}
 				fileId = await uploadToWebDAV(
 					cbzData,
 					filename,
 					seriesTitle,
 					credentials.webdavUrl,
-					credentials.webdavUsername,
-					credentials.webdavPassword,
+					credentials.webdavUsername || '',
+					credentials.webdavPassword || '',
 					(loaded, total) => {
 						const uploadProgress = (loaded / total) * 100; // 0-100% upload
 						const progressMessage: UploadProgressMessage = {

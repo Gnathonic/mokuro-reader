@@ -4,6 +4,7 @@ import { volumesWithTrash, profiles, profilesWithTrash, parseVolumesFromJson, mi
 import { showSnackbar } from '../snackbar';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
+import { webdavProvider } from './providers/webdav/webdav-provider';
 
 export interface SyncOptions {
 	/** If true, suppress snackbar notifications */
@@ -282,10 +283,21 @@ class UnifiedSyncService {
 	/**
 	 * Download volume-data.json file from provider using generic file operations
 	 * Handles duplicate files by merging them (Google Drive specific)
+	 * For WebDAV, uses direct file access instead of cache lookup
 	 */
 	private async downloadVolumeDataFile(provider: SyncProvider, reloadCacheOnFileNotFound = true): Promise<any | null> {
 		try {
-			const volumeDataFiles = await this.findVolumeDataFiles(provider);
+			// For WebDAV, use direct file access instead of cache lookup
+			if (provider.type === 'webdav') {
+				const blob = await webdavProvider.downloadFileByPath('volume-data.json');
+				if (!blob) {
+					return null;
+				}
+				const data = await this.blobToJson(blob);
+				return parseVolumesFromJson(JSON.stringify(data));
+			}
+
+			const volumeDataFiles = this.findVolumeDataFiles(provider);
 
 			if (volumeDataFiles.length === 0) {
 				return null;
@@ -404,11 +416,25 @@ class UnifiedSyncService {
 
 	/**
 	 * Download profiles.json file from provider using generic file operations
+	 * For WebDAV, uses direct file access instead of cache lookup
 	 */
 	private async downloadProfilesFile(provider: SyncProvider): Promise<any | null> {
 		try {
+			// For WebDAV, use direct file access instead of cache lookup
+			if (provider.type === 'webdav') {
+				console.log('🔎 WebDAV: Downloading profiles.json directly...');
+				const blob = await webdavProvider.downloadFileByPath('profiles.json');
+				if (!blob) {
+					console.log('⚠️ profiles.json not found on WebDAV server');
+					return null;
+				}
+				const json = await this.blobToJson(blob);
+				console.log('✅ Successfully parsed profiles JSON from WebDAV');
+				return json;
+			}
+
 			console.log('🔎 Finding profiles.json in cache...');
-			const profilesFile = await this.findProfilesFile(provider);
+			const profilesFile = this.findProfilesFile(provider);
 			console.log('🔎 findProfilesFile result:', profilesFile);
 
 			if (!profilesFile) {

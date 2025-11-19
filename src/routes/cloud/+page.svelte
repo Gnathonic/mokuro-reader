@@ -114,8 +114,8 @@
   let megaPassword = $state('');
   let megaLoading = $state(false);
 
-  // WebDAV login state
-  let webdavUrl = $state('');
+  // WebDAV login state - pre-populate URL from last session
+  let webdavUrl = $state(webdavProvider.getLastServerUrl() || '');
   let webdavUsername = $state('');
   let webdavPassword = $state('');
   let webdavLoading = $state(false);
@@ -374,8 +374,7 @@
       await unifiedCloudManager.fetchAllCloudVolumes();
       showSnackbar('WebDAV connected');
 
-      // Clear form and trigger reactivity
-      webdavUrl = '';
+      // Clear sensitive fields (keep URL for convenience)
       webdavUsername = '';
       webdavPassword = '';
 
@@ -588,16 +587,17 @@
 
           <!-- WebDAV Option -->
           <button
-            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 opacity-50 cursor-not-allowed"
-            disabled
+            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 hover:bg-slate-800 transition-colors"
+            onclick={() => {
+              // Show WebDAV login form
+              const webdavForm = document.getElementById('webdav-login-form');
+              if (webdavForm) webdavForm.classList.toggle('hidden');
+            }}
           >
             <div class="flex items-center gap-4">
               <div class="w-8 h-8 flex items-center justify-center text-2xl">W</div>
               <div class="text-left flex-1">
-                <div class="flex items-center gap-2">
-                  <div class="font-semibold text-lg">WebDAV</div>
-                  <Badge color="yellow">Under Development</Badge>
-                </div>
+                <div class="font-semibold text-lg">WebDAV</div>
                 <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
               </div>
             </div>
@@ -621,15 +621,13 @@
               <input
                 type="text"
                 bind:value={webdavUsername}
-                placeholder="Username"
-                required
+                placeholder="Username (optional)"
                 class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
               />
               <input
                 type="password"
                 bind:value={webdavPassword}
-                placeholder="Password or App Token"
-                required
+                placeholder="Password or App Token (optional)"
                 class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
               />
               <Button type="submit" disabled={webdavLoading} color="blue" size="sm">
