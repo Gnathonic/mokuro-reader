@@ -557,10 +557,40 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
-		// Note: megajs requires Uint8Array/Buffer, not Blob or browser ReadableStream
-		// The library handles its own internal streaming, but requires the full buffer upfront
-		// This means MEGA uploads use ~2x memory compared to XHR-based uploads (Google Drive/WebDAV)
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
+		// Convert to Blob and stream chunks to MEGA to reduce memory usage
+		// Read chunks from Blob and write to MEGA's upload stream instead of passing full buffer
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+
+		// Start upload stream without data - we'll write chunks manually
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length });
+
+		// Stream chunks from Blob to MEGA upload stream
+		let offset = 0;
+		const totalSize = blob.size;
+
+		const writeNextChunk = async () => {
+			if (offset >= totalSize) {
+				// All chunks written, end the stream
+				uploadStream.end();
+				return;
+			}
+
+			// Read next chunk from Blob
+			const chunk = blob.slice(offset, Math.min(offset + CHUNK_SIZE, totalSize));
+			const arrayBuffer = await chunk.arrayBuffer();
+			const uint8Array = new Uint8Array(arrayBuffer);
+
+			// Write chunk to MEGA stream
+			uploadStream.write(uint8Array);
+			offset += uint8Array.length;
+
+			// Write next chunk
+			setImmediate(() => writeNextChunk());
+		};
+
+		// Start writing chunks
+		writeNextChunk();
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
@@ -568,7 +598,7 @@ async function uploadToMEGA(
 				// megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
 				// Use bytesUploaded for actual upload progress to server
 				const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-				const total = stats?.bytesTotal || stats?.total || cbzData.length;
+				const total = stats?.bytesTotal || stats?.total || totalSize;
 				onProgress(uploaded, total);
 			});
 
