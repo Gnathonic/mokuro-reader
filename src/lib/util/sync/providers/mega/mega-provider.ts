@@ -3,6 +3,10 @@ import type { SyncProvider, ProviderCredentials, ProviderStatus, CloudFileMetada
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
 import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
+import { cacheManager } from '../../cache-manager';
+
+// Register MEGA cache with cache manager when this module loads
+cacheManager.registerCache('mega', megaCache);
 
 interface MegaCredentials {
 	email: string;

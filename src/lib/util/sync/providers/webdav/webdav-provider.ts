@@ -3,6 +3,11 @@ import type { SyncProvider, ProviderCredentials, ProviderStatus, WebDAVFileMetad
 import { ProviderError } from '../../provider-interface';
 import type { WebDAVClient, FileStat } from 'webdav';
 import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
+import { webdavCache } from './webdav-cache';
+import { cacheManager } from '../../cache-manager';
+
+// Register WebDAV cache with cache manager when this module loads
+cacheManager.registerCache('webdav', webdavCache);
 
 interface WebDAVCredentials {
 	serverUrl: string;

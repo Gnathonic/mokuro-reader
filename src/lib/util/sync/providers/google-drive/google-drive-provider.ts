@@ -7,6 +7,10 @@ import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-fil
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getOrCreateFolder, findFile } from '$lib/util/backup';
 import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
+import { cacheManager } from '../../cache-manager';
+
+// Register Google Drive cache with cache manager when this module loads
+cacheManager.registerCache('google-drive', driveFilesCache);
 
 /**
  * Metadata for a file selected from the Google Drive file picker
