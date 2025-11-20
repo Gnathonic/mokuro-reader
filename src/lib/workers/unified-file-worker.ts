@@ -403,7 +403,10 @@ async function uploadToGoogleDrive(
 		xhr.onerror = () => reject(new Error('Network error during upload'));
 		xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-		xhr.send(cbzData);
+		// Convert Uint8Array to Blob to prevent XHR from keeping the entire buffer in memory
+		// Blob allows browser to stream the data without holding full reference
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		xhr.send(blob);
 	});
 }
 
@@ -459,7 +462,10 @@ async function uploadToWebDAV(
 		xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
 		xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
 
-		xhr.send(cbzData);
+		// Convert Uint8Array to Blob to prevent XHR from keeping the entire buffer in memory
+		// Blob allows browser to stream the data without holding full reference
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		xhr.send(blob);
 	});
 }
 
@@ -551,8 +557,12 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
+		// Convert Uint8Array to Blob to prevent memory retention issues
+		// Same issue as XHR - passing raw typed arrays can cause them to be retained in memory
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+
 		// Upload returns a stream - don't pass onProgress as third param (not supported)
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, blob);
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
