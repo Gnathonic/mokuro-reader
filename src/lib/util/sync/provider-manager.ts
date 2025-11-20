@@ -79,16 +79,21 @@ class ProviderManager {
 	 * Called once on app startup
 	 */
 	initializeCurrentProvider(): void {
+		console.log('🔍 initializeCurrentProvider: currentProvider =', this.currentProvider?.type);
 		if (this.currentProvider) return; // Already set
 
 		// Check each registered provider to see if it's already authenticated
+		console.log('🔍 Checking registered providers for authentication...');
 		for (const provider of this.providerRegistry.values()) {
-			if (provider.isAuthenticated()) {
+			const isAuth = provider.isAuthenticated();
+			console.log(`🔍 Provider ${provider.type}: isAuthenticated = ${isAuth}`);
+			if (isAuth) {
 				this.setCurrentProvider(provider);
 				console.log(`✅ Detected existing auth: ${provider.type}`);
 				return;
 			}
 		}
+		console.log('🔍 No authenticated providers found');
 	}
 
 	/**

@@ -96,14 +96,19 @@ async function doInitialize(): Promise<void> {
 	// Don't update status here - wait for providers to finish loading credentials
 	// The constructor already set initial "configured" state, don't overwrite it
 
-	// Wait for providers to be ready (all providers restore credentials on init)
-	console.log('⏳ Waiting for providers to be ready...');
-	await Promise.all([
-		googleDriveProvider.whenReady(),
-		megaProvider.whenReady(),
-		webdavProvider.whenReady()
-	]);
-	console.log('✅ Providers are ready');
+	// Wait for ONLY the active provider to be ready (only active provider should restore credentials)
+	// Other providers will initialize when user clicks their login button
+	if (activeProvider) {
+		console.log(`⏳ Waiting for active provider (${activeProvider}) to be ready...`);
+		const providerInstance =
+			activeProvider === 'google-drive' ? googleDriveProvider :
+			activeProvider === 'mega' ? megaProvider :
+			webdavProvider;
+		await providerInstance.whenReady();
+		console.log(`✅ Active provider (${activeProvider}) is ready`);
+	} else {
+		console.log('ℹ️ No active provider, skipping credential restoration');
+	}
 
 	// Update status again after providers finish authentication
 	providerManager.updateStatus();

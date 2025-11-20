@@ -231,10 +231,8 @@ export class MegaProvider implements SyncProvider {
 			// Keep email for convenience, only clear password
 			localStorage.removeItem(STORAGE_KEYS.PASSWORD);
 			localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
+			clearActiveProvider();
 		}
-
-		// Clear active provider
-		clearActiveProvider();
 
 		console.log('MEGA logged out');
 	}
