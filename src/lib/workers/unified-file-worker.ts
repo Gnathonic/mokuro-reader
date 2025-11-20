@@ -585,8 +585,8 @@ async function uploadToMEGA(
 			uploadStream.write(uint8Array);
 			offset += uint8Array.length;
 
-			// Write next chunk
-			setImmediate(() => writeNextChunk());
+			// Write next chunk (use setTimeout to avoid blocking event loop)
+			setTimeout(() => writeNextChunk(), 0);
 		};
 
 		// Start writing chunks
