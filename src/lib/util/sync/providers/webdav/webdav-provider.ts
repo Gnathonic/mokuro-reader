@@ -159,7 +159,7 @@ export class WebDAVProvider implements SyncProvider {
 			localStorage.removeItem(STORAGE_KEYS.PASSWORD);
 		}
 
-		// Clear active provider
+		// Clear active provider (this is what actually triggers UI to return to provider selection)
 		clearActiveProvider();
 
 		console.log('WebDAV logged out');

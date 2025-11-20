@@ -65,12 +65,11 @@
   let megaConfigured = $derived($providerStatusStore.providers['mega']?.hasStoredCredentials || false);
   let webdavConfigured = $derived($providerStatusStore.providers['webdav']?.hasStoredCredentials || false);
 
-  // Determine current configured provider (show UI even if still initializing)
+  // Determine current configured provider based on active provider setting
+  // This is the source of truth - not hasStoredCredentials
+  // Accessing $providerStatusStore makes this reactive (updates when status changes)
   let currentProvider = $derived(
-    googleDriveConfigured ? 'google-drive' :
-    megaConfigured ? 'mega' :
-    webdavConfigured ? 'webdav' :
-    null
+    $providerStatusStore && providerManager.getActiveProvider()?.type || null
   );
 
   // Provider display names
