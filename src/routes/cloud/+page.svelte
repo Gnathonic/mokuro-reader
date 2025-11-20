@@ -67,10 +67,8 @@
 
   // Determine current configured provider based on active provider setting
   // This is the source of truth - not hasStoredCredentials
-  // Accessing $providerStatusStore makes this reactive (updates when status changes)
-  let currentProvider = $derived(
-    $providerStatusStore && providerManager.getActiveProvider()?.type || null
-  );
+  // Use currentProviderType from the status store (set synchronously on page load)
+  let currentProvider = $derived($providerStatusStore.currentProviderType);
 
   // Provider display names
   const providerNames = {

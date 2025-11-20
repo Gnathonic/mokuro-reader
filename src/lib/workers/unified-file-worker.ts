@@ -557,12 +557,9 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
-		// Convert Uint8Array to Blob to prevent memory retention issues
-		// Same issue as XHR - passing raw typed arrays can cause them to be retained in memory
-		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
-
 		// Upload returns a stream - don't pass onProgress as third param (not supported)
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, blob);
+		// Note: megajs requires Uint8Array/Buffer, not Blob
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
