@@ -96,9 +96,10 @@ async function doInitialize(): Promise<void> {
 	// Don't update status here - wait for providers to finish loading credentials
 	// The constructor already set initial "configured" state, don't overwrite it
 
-	// Wait for providers to be ready (MEGA/WebDAV restore credentials on init)
+	// Wait for providers to be ready (all providers restore credentials on init)
 	console.log('⏳ Waiting for providers to be ready...');
 	await Promise.all([
+		googleDriveProvider.whenReady(),
 		megaProvider.whenReady(),
 		webdavProvider.whenReady()
 	]);
