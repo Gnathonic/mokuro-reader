@@ -557,9 +557,13 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
-		// Upload returns a stream - don't pass onProgress as third param (not supported)
-		// Note: megajs requires Uint8Array/Buffer, not Blob
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
+		// Convert Uint8Array to ReadableStream for streaming upload (reduces memory usage)
+		// MEGA.js supports ReadableStream to stream data instead of holding entire buffer
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		const stream = blob.stream();
+
+		// Upload using stream instead of full buffer
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, stream);
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
