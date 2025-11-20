@@ -36,27 +36,9 @@ class ProviderManager {
 	});
 
 	constructor() {
-		// Check localStorage synchronously to set initial "configured" state
-		// This prevents UI from showing "not connected" while waiting for async init
-		const configuredProvider = getConfiguredProviderType();
-		if (configuredProvider) {
-			// Set initial status to show provider is configured but still initializing
-			const initialStatus = this.statusStore;
-			initialStatus.update(status => ({
-				...status,
-				providers: {
-					...status.providers,
-					[configuredProvider]: {
-						isAuthenticated: false, // Not yet connected
-						hasStoredCredentials: true, // But we know it's configured
-						needsAttention: false,
-						statusMessage: 'Initializing...'
-					}
-				},
-				hasAnyAuthenticated: false, // Not authenticated yet
-				currentProviderType: configuredProvider
-			}));
-		}
+		// Note: We don't set initial status here anymore
+		// The status is set synchronously when providers register themselves
+		// This ensures the status always reflects the actual registered provider state
 	}
 
 	/** Observable store for provider status */

@@ -112,10 +112,15 @@ async function doInitialize(): Promise<void> {
 	console.log(`✅ Active provider (${activeProvider}) is ready`);
 
 	// Update status again after providers finish authentication
+	console.log('🔄 Updating provider status after authentication...');
 	providerManager.updateStatus();
 
 	// Initialize the current provider (detects which one is authenticated)
 	providerManager.initializeCurrentProvider();
+
+	// Final status update after initialization
+	console.log('🔄 Final provider status update...');
+	providerManager.updateStatus();
 
 	// Fetch cloud volumes cache if a provider is authenticated AND token is valid
 	const currentProvider = providerManager.getActiveProvider();
