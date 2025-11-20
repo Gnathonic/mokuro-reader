@@ -161,6 +161,11 @@ class ProviderManager {
 	 * Update the status store with current provider state
 	 */
 	updateStatus(): void {
+		// If current provider is no longer authenticated, clear it
+		if (this.currentProvider && !this.currentProvider.isAuthenticated()) {
+			this.currentProvider = null;
+		}
+
 		const status: MultiProviderStatus = {
 			providers: {
 				'google-drive': null,
