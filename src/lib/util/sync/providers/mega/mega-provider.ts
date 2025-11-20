@@ -128,14 +128,11 @@ export class MegaProvider implements SyncProvider {
 
 	private storage: any = null;
 	private mokuroFolder: any = null;
-	private initPromise: Promise<void>;
+	private initPromise: Promise<void> | null = null;
 
 	constructor() {
-		if (browser) {
-			this.initPromise = this.loadPersistedCredentials();
-		} else {
-			this.initPromise = Promise.resolve();
-		}
+		// Don't automatically load credentials in constructor
+		// Only load when whenReady() is called (which happens for active provider only)
 	}
 
 	/**
@@ -143,6 +140,10 @@ export class MegaProvider implements SyncProvider {
 	 * Use this to ensure credentials have been restored before checking authentication
 	 */
 	async whenReady(): Promise<void> {
+		// Only initialize once, on first call
+		if (!this.initPromise && browser) {
+			this.initPromise = this.loadPersistedCredentials();
+		}
 		await this.initPromise;
 	}
 
