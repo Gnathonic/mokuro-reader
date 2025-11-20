@@ -557,13 +557,10 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
-		// Convert Uint8Array to ReadableStream for streaming upload (reduces memory usage)
-		// MEGA.js supports ReadableStream to stream data instead of holding entire buffer
-		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
-		const stream = blob.stream();
-
-		// Upload using stream instead of full buffer
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, stream);
+		// Note: megajs requires Uint8Array/Buffer, not Blob or browser ReadableStream
+		// The library handles its own internal streaming, but requires the full buffer upfront
+		// This means MEGA uploads use ~2x memory compared to XHR-based uploads (Google Drive/WebDAV)
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
