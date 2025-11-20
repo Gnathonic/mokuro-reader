@@ -113,6 +113,10 @@ class ProviderManager {
 		// Update cache to use this provider's cache
 		cacheManager.setActiveProvider(provider.type);
 
+		// Persist to localStorage so it survives page refresh
+		const { setActiveProvider } = await import('./provider-detection');
+		setActiveProvider(provider.type);
+
 		this.updateStatus();
 	}
 

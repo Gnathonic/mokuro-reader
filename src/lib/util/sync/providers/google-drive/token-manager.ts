@@ -231,7 +231,7 @@ class TokenManager {
     const currentToken = this.getCurrentToken();
     if (currentToken && typeof gapi !== 'undefined' && gapi.client) {
       gapi.client.setToken({ access_token: currentToken });
-      console.log('Restored persisted token to gapi.client');
+      console.log('✅ Restored persisted token to gapi.client');
     }
   }
 
