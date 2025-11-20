@@ -37,6 +37,7 @@
   // Get store references for auto-subscription
   const providerStatusStore = providerManager.status;
   const cacheIsFetchingStore = cacheManager.isFetchingState;
+  const cacheAllFilesStore = cacheManager.allFiles;
 
   // Use Svelte's derived runes for automatic store subscriptions
   let accessToken = $derived($accessTokenStore);
@@ -44,6 +45,7 @@
   let tokenClient = $derived($tokenClientStore);
   let state = $derived($driveState);
   let cacheIsFetching = $derived($cacheIsFetchingStore);
+  let cacheAllFiles = $derived($cacheAllFilesStore); // Subscribe to cache changes for reactivity
 
   // Reactive provider authentication checks - now using provider manager for all providers
   // Use derived to reactively compute auth states from the status store
@@ -485,6 +487,8 @@
     }
 
     // Filter out already backed up volumes
+    // Reference cacheAllFiles to ensure reactivity (Svelte tracks access)
+    const _ = cacheAllFiles; // Ensure derived is accessed for reactivity
     const volumesToBackup = allVolumes.filter(vol =>
       !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
