@@ -166,6 +166,11 @@ class ProviderManager {
 			this.currentProvider = null;
 		}
 
+		// Re-sync currentProviderType from localStorage in case a provider set itself during initialization
+		// This handles the case where MEGA/WebDAV restore credentials and call setActiveProvider() before
+		// initializeCurrentProvider() is called
+		const configuredProvider = getConfiguredProviderType();
+
 		const status: MultiProviderStatus = {
 			providers: {
 				'google-drive': null,
@@ -174,7 +179,7 @@ class ProviderManager {
 			},
 			hasAnyAuthenticated: false,
 			needsAttention: false,
-			currentProviderType: this.currentProvider?.type ?? null
+			currentProviderType: configuredProvider ?? this.currentProvider?.type ?? null
 		};
 
 		// Update status for all registered providers (shows their individual states)
