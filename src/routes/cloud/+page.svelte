@@ -51,14 +51,9 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
 
-  // Check if any provider is configured (not just authenticated)
-  // This allows UI to show the provider page immediately while initializing
-  let hasAnyProvider = $derived(
-    $providerStatusStore.providers['google-drive']?.hasStoredCredentials ||
-    $providerStatusStore.providers['mega']?.hasStoredCredentials ||
-    $providerStatusStore.providers['webdav']?.hasStoredCredentials ||
-    false
-  );
+  // Check if any provider is active (based on active provider setting, not stored credentials)
+  // This determines whether to show provider selection or the provider interface
+  let hasAnyProvider = $derived(!!currentProvider);
 
   // Check if providers are configured (even if not currently connected)
   let googleDriveConfigured = $derived($providerStatusStore.providers['google-drive']?.hasStoredCredentials || false);

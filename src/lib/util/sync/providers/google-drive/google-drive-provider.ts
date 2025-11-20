@@ -36,6 +36,16 @@ export class GoogleDriveProvider implements SyncProvider {
 	private readerFolderId: string | null = null;
 	private initializePromise: Promise<void> | null = null;
 
+	/**
+	 * Wait for provider initialization to complete
+	 * For Google Drive, tokens are stored synchronously in localStorage,
+	 * so this resolves immediately (unlike MEGA which does async credential restoration)
+	 */
+	async whenReady(): Promise<void> {
+		// No async work needed - tokens are already in localStorage
+		return Promise.resolve();
+	}
+
 	isAuthenticated(): boolean {
 		return tokenManager.isAuthenticated();
 	}
