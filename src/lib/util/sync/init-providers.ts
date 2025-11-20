@@ -9,9 +9,13 @@ import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manage
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getConfiguredProviderType } from './provider-detection';
 
+// Guard to prevent multiple initializations
+let initializationPromise: Promise<void> | null = null;
+
 /**
  * Initialize all sync providers and register them with the provider manager.
  * This should be called once on app startup.
+ * Safe to call multiple times - will only initialize once.
  *
  * Strategy:
  * - Always register providers (needed for login buttons to work)
@@ -19,6 +23,17 @@ import { getConfiguredProviderType } from './provider-detection';
  * - Inactive providers will lazy-initialize when user clicks login
  */
 export async function initializeProviders(): Promise<void> {
+	// If already initialized or in progress, return the existing promise
+	if (initializationPromise) {
+		return initializationPromise;
+	}
+
+	// Start initialization and store the promise
+	initializationPromise = doInitialize();
+	return initializationPromise;
+}
+
+async function doInitialize(): Promise<void> {
 	// Always register all providers (so login buttons work, even if not logged in)
 	providerManager.registerProvider(googleDriveProvider);
 	providerManager.registerProvider(megaProvider);

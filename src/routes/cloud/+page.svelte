@@ -233,10 +233,17 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
+
+    // Ensure providers are initialized (handles direct navigation to /cloud)
+    // The root layout also calls this, but we need it here too for page refreshes
+    const { initializeProviders } = await import('$lib/util/sync/init-providers');
+    await initializeProviders().catch((error) => {
+      console.error('Failed to initialize providers on cloud page:', error);
+    });
   });
 
   // Google Drive handlers
