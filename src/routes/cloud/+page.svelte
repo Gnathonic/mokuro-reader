@@ -53,6 +53,16 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
 
+  // Debug: Log provider status changes
+  $effect(() => {
+    console.log('🔍 Provider status changed:', {
+      currentProvider,
+      megaStatus: $providerStatusStore.providers['mega'],
+      hasAnyProvider,
+      cacheSize: cacheAllFiles.size
+    });
+  });
+
   // Check if any provider is active (based on active provider setting, not stored credentials)
   // This determines whether to show provider selection or the provider interface
   let hasAnyProvider = $derived(!!currentProvider);

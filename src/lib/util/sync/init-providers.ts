@@ -150,6 +150,10 @@ async function doInitialize(): Promise<void> {
 				console.log('🔄 Syncing progress on app startup...');
 				await unifiedCloudManager.syncProgress({ silent: true });
 				console.log('✅ Initial sync completed');
+
+				// Final status update after everything is complete
+				console.log('🔄 Final status update after cache population...');
+				providerManager.updateStatus();
 			} catch (error) {
 				console.warn('⚠️ Failed to populate cloud cache or sync on startup:', error);
 			}
