@@ -37,6 +37,7 @@
   // Get store references for auto-subscription
   const providerStatusStore = providerManager.status;
   const cacheIsFetchingStore = cacheManager.isFetchingState;
+  const cacheAllFilesStore = cacheManager.allFiles;
 
   // Use Svelte's derived runes for automatic store subscriptions
   let accessToken = $derived($accessTokenStore);
@@ -44,6 +45,7 @@
   let tokenClient = $derived($tokenClientStore);
   let state = $derived($driveState);
   let cacheIsFetching = $derived($cacheIsFetchingStore);
+  let cacheAllFiles = $derived($cacheAllFilesStore); // Subscribe to cache changes for reactivity
 
   // Reactive provider authentication checks - now using provider manager for all providers
   // Use derived to reactively compute auth states from the status store
@@ -51,27 +53,29 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
 
-  // Check if any provider is configured (not just authenticated)
-  // This allows UI to show the provider page immediately while initializing
-  let hasAnyProvider = $derived(
-    $providerStatusStore.providers['google-drive']?.hasStoredCredentials ||
-    $providerStatusStore.providers['mega']?.hasStoredCredentials ||
-    $providerStatusStore.providers['webdav']?.hasStoredCredentials ||
-    false
-  );
+  // Debug: Log provider status changes
+  $effect(() => {
+    console.log('🔍 Provider status changed:', {
+      currentProvider,
+      megaStatus: $providerStatusStore.providers['mega'],
+      hasAnyProvider,
+      cacheSize: cacheAllFiles.size
+    });
+  });
+
+  // Check if any provider is active (based on active provider setting, not stored credentials)
+  // This determines whether to show provider selection or the provider interface
+  let hasAnyProvider = $derived(!!currentProvider);
 
   // Check if providers are configured (even if not currently connected)
   let googleDriveConfigured = $derived($providerStatusStore.providers['google-drive']?.hasStoredCredentials || false);
   let megaConfigured = $derived($providerStatusStore.providers['mega']?.hasStoredCredentials || false);
   let webdavConfigured = $derived($providerStatusStore.providers['webdav']?.hasStoredCredentials || false);
 
-  // Determine current configured provider (show UI even if still initializing)
-  let currentProvider = $derived(
-    googleDriveConfigured ? 'google-drive' :
-    megaConfigured ? 'mega' :
-    webdavConfigured ? 'webdav' :
-    null
-  );
+  // Determine current configured provider based on active provider setting
+  // This is the source of truth - not hasStoredCredentials
+  // Use currentProviderType from the status store (set synchronously on page load)
+  let currentProvider = $derived($providerStatusStore.currentProviderType);
 
   // Provider display names
   const providerNames = {
@@ -114,8 +118,8 @@
   let megaPassword = $state('');
   let megaLoading = $state(false);
 
-  // WebDAV login state
-  let webdavUrl = $state('');
+  // WebDAV login state - pre-populate URL from last session
+  let webdavUrl = $state(webdavProvider.getLastServerUrl() || '');
   let webdavUsername = $state('');
   let webdavPassword = $state('');
   let webdavLoading = $state(false);
@@ -236,10 +240,17 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
+
+    // Ensure providers are initialized (handles direct navigation to /cloud)
+    // The root layout also calls this, but we need it here too for page refreshes
+    const { initializeProviders } = await import('$lib/util/sync/init-providers');
+    await initializeProviders().catch((error) => {
+      console.error('Failed to initialize providers on cloud page:', error);
+    });
   });
 
   // Google Drive handlers
@@ -374,8 +385,7 @@
       await unifiedCloudManager.fetchAllCloudVolumes();
       showSnackbar('WebDAV connected');
 
-      // Clear form and trigger reactivity
-      webdavUrl = '';
+      // Clear sensitive fields (keep URL for convenience)
       webdavUsername = '';
       webdavPassword = '';
 
@@ -487,6 +497,8 @@
     }
 
     // Filter out already backed up volumes
+    // Reference cacheAllFiles to ensure reactivity (Svelte tracks access)
+    const _ = cacheAllFiles; // Ensure derived is accessed for reactivity
     const volumesToBackup = allVolumes.filter(vol =>
       !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
@@ -588,16 +600,17 @@
 
           <!-- WebDAV Option -->
           <button
-            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 opacity-50 cursor-not-allowed"
-            disabled
+            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 hover:bg-slate-800 transition-colors"
+            onclick={() => {
+              // Show WebDAV login form
+              const webdavForm = document.getElementById('webdav-login-form');
+              if (webdavForm) webdavForm.classList.toggle('hidden');
+            }}
           >
             <div class="flex items-center gap-4">
               <div class="w-8 h-8 flex items-center justify-center text-2xl">W</div>
               <div class="text-left flex-1">
-                <div class="flex items-center gap-2">
-                  <div class="font-semibold text-lg">WebDAV</div>
-                  <Badge color="yellow">Under Development</Badge>
-                </div>
+                <div class="font-semibold text-lg">WebDAV</div>
                 <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
               </div>
             </div>
@@ -621,15 +634,13 @@
               <input
                 type="text"
                 bind:value={webdavUsername}
-                placeholder="Username"
-                required
+                placeholder="Username (optional)"
                 class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
               />
               <input
                 type="password"
                 bind:value={webdavPassword}
-                placeholder="Password or App Token"
-                required
+                placeholder="Password or App Token (optional)"
                 class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
               />
               <Button type="submit" disabled={webdavLoading} color="blue" size="sm">

@@ -192,13 +192,14 @@ async function downloadFromWebDAV(
 	onProgress: (loaded: number, total: number) => void
 ): Promise<ArrayBuffer> {
 	const fullUrl = `${url}${fileId}`;
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
-	const response = await fetch(fullUrl, {
-		headers: {
-			'Authorization': authHeader
-		}
-	});
+	// Build headers - only add auth if credentials provided
+	const headers: Record<string, string> = {};
+	if (username || password) {
+		headers['Authorization'] = 'Basic ' + btoa(`${username}:${password}`);
+	}
+
+	const response = await fetch(fullUrl, { headers });
 
 	if (!response.ok) {
 		throw new Error(`WebDAV download failed: ${response.status} ${response.statusText}`);
@@ -402,7 +403,10 @@ async function uploadToGoogleDrive(
 		xhr.onerror = () => reject(new Error('Network error during upload'));
 		xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-		xhr.send(cbzData);
+		// Convert Uint8Array to Blob to prevent XHR from keeping the entire buffer in memory
+		// Blob allows browser to stream the data without holding full reference
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		xhr.send(blob);
 	});
 }
 
@@ -427,13 +431,17 @@ async function uploadToWebDAV(
 
 	// Upload file
 	const filePath = `${seriesFolderPath}/${filename}`;
-	const fileUrl = `${serverUrl}${filePath}`;
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+	const fileUrl = `${serverUrl}/${filePath}`;
 
 	return new Promise((resolve, reject) => {
 		const xhr = new XMLHttpRequest();
 		xhr.open('PUT', fileUrl);
-		xhr.setRequestHeader('Authorization', authHeader);
+
+		// Only set auth header if credentials are provided
+		if (username || password) {
+			const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+			xhr.setRequestHeader('Authorization', authHeader);
+		}
 		xhr.setRequestHeader('Content-Type', 'application/x-cbz');
 
 		xhr.upload.onprogress = (event) => {
@@ -454,7 +462,10 @@ async function uploadToWebDAV(
 		xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
 		xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
 
-		xhr.send(cbzData);
+		// Convert Uint8Array to Blob to prevent XHR from keeping the entire buffer in memory
+		// Blob allows browser to stream the data without holding full reference
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		xhr.send(blob);
 	});
 }
 
@@ -467,7 +478,6 @@ async function createWebDAVFolderRecursive(
 	username: string,
 	password: string
 ): Promise<void> {
-	const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 	const parts = path.split('/').filter(p => p);
 
 	let currentPath = '';
@@ -475,11 +485,17 @@ async function createWebDAVFolderRecursive(
 		currentPath += `/${part}`;
 		const folderUrl = `${serverUrl}${currentPath}`;
 
+		// Build headers - only add auth if credentials provided
+		const headers: Record<string, string> = {};
+		if (username || password) {
+			headers['Authorization'] = 'Basic ' + btoa(`${username}:${password}`);
+		}
+
 		// Try to create folder (MKCOL)
 		try {
 			const response = await fetch(folderUrl, {
 				method: 'MKCOL',
-				headers: { 'Authorization': authHeader }
+				headers
 			});
 
 			// 201 = created, 405 = already exists, both are OK
@@ -541,8 +557,40 @@ async function uploadToMEGA(
 	console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
 	try {
-		// Upload returns a stream - don't pass onProgress as third param (not supported)
-		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
+		// Convert to Blob and stream chunks to MEGA to reduce memory usage
+		// Read chunks from Blob and write to MEGA's upload stream instead of passing full buffer
+		const blob = new Blob([cbzData], { type: 'application/x-cbz' });
+		const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+
+		// Start upload stream without data - we'll write chunks manually
+		const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length });
+
+		// Stream chunks from Blob to MEGA upload stream
+		let offset = 0;
+		const totalSize = blob.size;
+
+		const writeNextChunk = async () => {
+			if (offset >= totalSize) {
+				// All chunks written, end the stream
+				uploadStream.end();
+				return;
+			}
+
+			// Read next chunk from Blob
+			const chunk = blob.slice(offset, Math.min(offset + CHUNK_SIZE, totalSize));
+			const arrayBuffer = await chunk.arrayBuffer();
+			const uint8Array = new Uint8Array(arrayBuffer);
+
+			// Write chunk to MEGA stream
+			uploadStream.write(uint8Array);
+			offset += uint8Array.length;
+
+			// Write next chunk (use setTimeout to avoid blocking event loop)
+			setTimeout(() => writeNextChunk(), 0);
+		};
+
+		// Start writing chunks
+		writeNextChunk();
 
 		// Wait for upload to complete and listen for progress events
 		await new Promise<void>((resolve, reject) => {
@@ -550,7 +598,7 @@ async function uploadToMEGA(
 				// megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
 				// Use bytesUploaded for actual upload progress to server
 				const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-				const total = stats?.bytesTotal || stats?.total || cbzData.length;
+				const total = stats?.bytesTotal || stats?.total || totalSize;
 				onProgress(uploaded, total);
 			});
 
@@ -619,14 +667,14 @@ ctx.addEventListener('message', async (event) => {
 					}
 				);
 			} else if (provider === 'webdav') {
-				if (!credentials.webdavUrl || !credentials.webdavUsername || !credentials.webdavPassword) {
-					throw new Error('Missing WebDAV credentials');
+				if (!credentials.webdavUrl) {
+					throw new Error('Missing WebDAV server URL');
 				}
 				arrayBuffer = await downloadFromWebDAV(
 					fileId,
 					credentials.webdavUrl,
-					credentials.webdavUsername,
-					credentials.webdavPassword,
+					credentials.webdavUsername || '',
+					credentials.webdavPassword || '',
 					(loaded, total) => {
 						const progressMessage: DownloadProgressMessage = {
 							type: 'progress',
@@ -754,16 +802,16 @@ ctx.addEventListener('message', async (event) => {
 					}
 				);
 			} else if (provider === 'webdav') {
-				if (!credentials.webdavUrl || !credentials.webdavUsername || !credentials.webdavPassword) {
-					throw new Error('Missing WebDAV credentials');
+				if (!credentials.webdavUrl) {
+					throw new Error('Missing WebDAV server URL');
 				}
 				fileId = await uploadToWebDAV(
 					cbzData,
 					filename,
 					seriesTitle,
 					credentials.webdavUrl,
-					credentials.webdavUsername,
-					credentials.webdavPassword,
+					credentials.webdavUsername || '',
+					credentials.webdavPassword || '',
 					(loaded, total) => {
 						const uploadProgress = (loaded / total) * 100; // 0-100% upload
 						const progressMessage: UploadProgressMessage = {

@@ -41,13 +41,20 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
 export const volumesWithPlaceholders = derived(
   [volumes, unifiedCloudManager.cloudFiles],
   ([$volumes, $cloudFiles]) => {
+    console.log('🔍 volumesWithPlaceholders derived:', {
+      cloudFilesSize: $cloudFiles.size,
+      localVolumesCount: Object.keys($volumes).length
+    });
+
     // Skip placeholder generation if no cloud files
     if ($cloudFiles.size === 0) {
+      console.log('⚠️ No cloud files, skipping placeholder generation');
       return $volumes;
     }
 
     // Generate placeholders synchronously
     const placeholders = generatePlaceholders($cloudFiles, Object.values($volumes));
+    console.log(`✅ Generated ${placeholders.length} placeholders`);
 
     // Combine local volumes with placeholders
     const combined = { ...$volumes };
@@ -56,6 +63,7 @@ export const volumesWithPlaceholders = derived(
       combined[placeholder.volume_uuid] = placeholder;
     }
 
+    console.log(`✅ Combined volumes: ${Object.keys(combined).length} total`);
     return combined;
   },
   {} as Record<string, VolumeMetadata>

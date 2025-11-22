@@ -2,6 +2,11 @@ import { browser } from '$app/environment';
 import type { SyncProvider, ProviderCredentials, ProviderStatus, CloudFileMetadata } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
+import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
+import { cacheManager } from '../../cache-manager';
+
+// Register MEGA cache with cache manager when this module loads
+cacheManager.registerCache('mega', megaCache);
 
 interface MegaCredentials {
 	email: string;
@@ -127,14 +132,11 @@ export class MegaProvider implements SyncProvider {
 
 	private storage: any = null;
 	private mokuroFolder: any = null;
-	private initPromise: Promise<void>;
+	private initPromise: Promise<void> | null = null;
 
 	constructor() {
-		if (browser) {
-			this.initPromise = this.loadPersistedCredentials();
-		} else {
-			this.initPromise = Promise.resolve();
-		}
+		// Don't automatically load credentials in constructor
+		// Only load when whenReady() is called (which happens for active provider only)
 	}
 
 	/**
@@ -142,6 +144,10 @@ export class MegaProvider implements SyncProvider {
 	 * Use this to ensure credentials have been restored before checking authentication
 	 */
 	async whenReady(): Promise<void> {
+		// Only initialize once, on first call
+		if (!this.initPromise && browser) {
+			this.initPromise = this.loadPersistedCredentials();
+		}
 		await this.initPromise;
 	}
 
@@ -205,6 +211,9 @@ export class MegaProvider implements SyncProvider {
 				localStorage.setItem(STORAGE_KEYS.PASSWORD, password);
 			}
 
+			// Set as active provider
+			setActiveProvider('mega');
+
 			console.log('✅ MEGA login successful');
 		} catch (error) {
 			this.storage = null;
@@ -224,9 +233,10 @@ export class MegaProvider implements SyncProvider {
 		this.mokuroFolder = null;
 
 		if (browser) {
-			localStorage.removeItem(STORAGE_KEYS.EMAIL);
+			// Keep email for convenience, only clear password
 			localStorage.removeItem(STORAGE_KEYS.PASSWORD);
 			localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
+			clearActiveProvider();
 		}
 
 		console.log('MEGA logged out');

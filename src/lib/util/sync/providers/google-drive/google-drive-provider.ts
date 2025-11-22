@@ -6,6 +6,11 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getOrCreateFolder, findFile } from '$lib/util/backup';
+import { setActiveProvider, clearActiveProvider } from '../../provider-detection';
+import { cacheManager } from '../../cache-manager';
+
+// Register Google Drive cache with cache manager when this module loads
+cacheManager.registerCache('google-drive', driveFilesCache);
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -34,6 +39,16 @@ export class GoogleDriveProvider implements SyncProvider {
 
 	private readerFolderId: string | null = null;
 	private initializePromise: Promise<void> | null = null;
+
+	/**
+	 * Wait for provider initialization to complete
+	 * For Google Drive, tokens are stored synchronously in localStorage,
+	 * so this resolves immediately (unlike MEGA which does async credential restoration)
+	 */
+	async whenReady(): Promise<void> {
+		// No async work needed - tokens are already in localStorage
+		return Promise.resolve();
+	}
 
 	isAuthenticated(): boolean {
 		return tokenManager.isAuthenticated();
@@ -128,6 +143,9 @@ export class GoogleDriveProvider implements SyncProvider {
 				});
 			});
 
+			// Set as active provider
+			setActiveProvider('google-drive');
+
 			console.log('✅ Google Drive login successful');
 		} catch (error) {
 			throw new ProviderError(
@@ -144,6 +162,10 @@ export class GoogleDriveProvider implements SyncProvider {
 		await tokenManager.logout();
 		this.readerFolderId = null;
 		this.initializePromise = null; // Reset initialization state
+
+		// Clear active provider
+		clearActiveProvider();
+
 		console.log('Google Drive logged out');
 	}
 

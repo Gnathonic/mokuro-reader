@@ -36,27 +36,9 @@ class ProviderManager {
 	});
 
 	constructor() {
-		// Check localStorage synchronously to set initial "configured" state
-		// This prevents UI from showing "not connected" while waiting for async init
-		const configuredProvider = getConfiguredProviderType();
-		if (configuredProvider) {
-			// Set initial status to show provider is configured but still initializing
-			const initialStatus = this.statusStore;
-			initialStatus.update(status => ({
-				...status,
-				providers: {
-					...status.providers,
-					[configuredProvider]: {
-						isAuthenticated: false, // Not yet connected
-						hasStoredCredentials: true, // But we know it's configured
-						needsAttention: false,
-						statusMessage: 'Initializing...'
-					}
-				},
-				hasAnyAuthenticated: false, // Not authenticated yet
-				currentProviderType: configuredProvider
-			}));
-		}
+		// Note: We don't set initial status here anymore
+		// The status is set synchronously when providers register themselves
+		// This ensures the status always reflects the actual registered provider state
 	}
 
 	/** Observable store for provider status */
@@ -79,16 +61,21 @@ class ProviderManager {
 	 * Called once on app startup
 	 */
 	initializeCurrentProvider(): void {
+		console.log('🔍 initializeCurrentProvider: currentProvider =', this.currentProvider?.type);
 		if (this.currentProvider) return; // Already set
 
 		// Check each registered provider to see if it's already authenticated
+		console.log('🔍 Checking registered providers for authentication...');
 		for (const provider of this.providerRegistry.values()) {
-			if (provider.isAuthenticated()) {
+			const isAuth = provider.isAuthenticated();
+			console.log(`🔍 Provider ${provider.type}: isAuthenticated = ${isAuth}`);
+			if (isAuth) {
 				this.setCurrentProvider(provider);
 				console.log(`✅ Detected existing auth: ${provider.type}`);
 				return;
 			}
 		}
+		console.log('🔍 No authenticated providers found');
 	}
 
 	/**
@@ -112,6 +99,10 @@ class ProviderManager {
 
 		// Update cache to use this provider's cache
 		cacheManager.setActiveProvider(provider.type);
+
+		// Persist to localStorage so it survives page refresh
+		const { setActiveProvider } = await import('./provider-detection');
+		setActiveProvider(provider.type);
 
 		this.updateStatus();
 	}
@@ -157,6 +148,16 @@ class ProviderManager {
 	 * Update the status store with current provider state
 	 */
 	updateStatus(): void {
+		// If current provider is no longer authenticated, clear it
+		if (this.currentProvider && !this.currentProvider.isAuthenticated()) {
+			this.currentProvider = null;
+		}
+
+		// Re-sync currentProviderType from localStorage in case a provider set itself during initialization
+		// This handles the case where MEGA/WebDAV restore credentials and call setActiveProvider() before
+		// initializeCurrentProvider() is called
+		const configuredProvider = getConfiguredProviderType();
+
 		const status: MultiProviderStatus = {
 			providers: {
 				'google-drive': null,
@@ -165,7 +166,7 @@ class ProviderManager {
 			},
 			hasAnyAuthenticated: false,
 			needsAttention: false,
-			currentProviderType: this.currentProvider?.type ?? null
+			currentProviderType: configuredProvider ?? this.currentProvider?.type ?? null
 		};
 
 		// Update status for all registered providers (shows their individual states)
