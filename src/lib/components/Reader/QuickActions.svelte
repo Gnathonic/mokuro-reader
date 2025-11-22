@@ -60,7 +60,7 @@
     tooltip="none"
     trigger="click"
     defaultClass="absolute end-3 bottom-3 z-50"
-    color="transparent"
+    color="light"
     bind:open
   >
     {#if $settings.ankiConnectSettings.enabled}

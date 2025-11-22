@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { changeProfile, currentProfile, profiles, migrateProfiles } from '$lib/settings';
+  import {
+    changeProfile,
+    currentProfile,
+    profiles,
+    profilesWithTrash,
+    migrateProfiles
+  } from '$lib/settings';
   import { AccordionItem, Button, Select } from 'flowbite-svelte';
   import ManageProfilesModal from './ManageProfilesModal.svelte';
   import { showSnackbar } from '$lib/util';
@@ -32,8 +38,9 @@
     showSnackbar('Profiles exported');
   }
 
-  let files: FileList = $state();
+  let files: FileList | undefined = $state(undefined);
   function importProfile() {
+    if (!files) return;
     const [file] = files;
     const reader = new FileReader();
 
@@ -41,7 +48,7 @@
       const imported = JSON.parse(reader.result?.toString() || '');
       // Migrate imported profiles to ensure all fields exist with defaults
       const migrated = migrateProfiles(imported);
-      profiles.update((prev) => {
+      profilesWithTrash.update((prev) => {
         return {
           ...prev,
           ...migrated
@@ -62,9 +69,7 @@
 <ManageProfilesModal bind:open={manageModalOpen} />
 
 <AccordionItem>
-  {#snippet header()}
-    <span>Profile</span>
-  {/snippet}
+  <span slot="header">Profile</span>
   <div class="flex flex-col gap-5">
     <div class="flex flex-col gap-2">
       <Select {items} bind:value={profile} on:change={onChange} placeholder="Select profile ..." />

@@ -27,9 +27,7 @@
 </script>
 
 <AccordionItem open>
-  {#snippet header()}
-    <span>Volume defaults</span>
-  {/snippet}
+  <span slot="header">Volume defaults</span>
   <div class="flex flex-col gap-5">
     <Helper>The default settings that are applied when you start a new volume</Helper>
     <div>

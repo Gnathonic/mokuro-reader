@@ -15,16 +15,16 @@
   let seriesId = $derived($page.params.manga || '');
 
   // Get series volumes from catalog
-  let seriesData = $derived(
-    $catalog?.find((item) => item.series_uuid === seriesId)
-  );
+  let seriesData = $derived($catalog?.find((item) => item.series_uuid === seriesId));
   let volumes = $derived(
     seriesData?.volumes
-      .filter(v => !v.isPlaceholder)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title, undefined, {
-        numeric: true,
-        sensitivity: 'base'
-      })) || []
+      .filter((v) => !v.isPlaceholder)
+      .sort((a, b) =>
+        a.volume_title.localeCompare(b.volume_title, undefined, {
+          numeric: true,
+          sensitivity: 'base'
+        })
+      ) || []
   );
 
   // Use state to track loaded data
@@ -47,7 +47,9 @@
       );
 
       // Filter out null results
-      volumesData = results.filter((item): item is { volume: VolumeMetadata; data: VolumeData } => item !== null);
+      volumesData = results.filter(
+        (item): item is { volume: VolumeMetadata; data: VolumeData } => item !== null
+      );
       dataLoaded = true;
     }
   });
@@ -75,8 +77,8 @@
         textParts.push(`─── Page ${pageIndex + 1} ───\n`);
 
         // Extract all text from blocks
-        pageData.blocks.forEach(block => {
-          block.lines.forEach(line => {
+        pageData.blocks.forEach((block) => {
+          block.lines.forEach((line) => {
             textParts.push(line);
           });
         });
@@ -118,9 +120,9 @@
       totalLines += lineCount;
 
       // Count total characters (including non-Japanese)
-      pages.forEach(pageData => {
-        pageData.blocks.forEach(block => {
-          block.lines.forEach(line => {
+      pages.forEach((pageData) => {
+        pageData.blocks.forEach((block) => {
+          block.lines.forEach((line) => {
             totalChars += line.length;
             allText += line + ' ';
           });
@@ -129,7 +131,7 @@
     });
 
     // Count words (space-separated)
-    const wordCount = allText.split(/\s+/).filter(w => w.length > 0).length;
+    const wordCount = allText.split(/\s+/).filter((w) => w.length > 0).length;
 
     // Calculate estimated reading time using utility function
     const estimatedTime = calculateEstimatedTime(totalJapaneseChars, $personalizedReadingSpeed);
@@ -236,7 +238,9 @@
               </dd>
             </div>
             <div>
-              <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Japanese Characters</dt>
+              <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
+                Japanese Characters
+              </dt>
               <dd class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
                 {stats.japaneseCharCount.toLocaleString()}
               </dd>
@@ -261,7 +265,9 @@
             </div>
             {#if stats.estimatedTime}
               <div class="col-span-2 sm:col-span-1">
-                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Est. Reading Time</dt>
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
+                  Est. Reading Time
+                </dt>
                 <dd class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
                   {stats.estimatedTime.displayText}{stats.estimatedTime.isPersonalized ? ' ⭐' : ''}
                 </dd>
@@ -271,9 +277,11 @@
           {#if stats.estimatedTime}
             <p class="mt-4 text-xs text-gray-500 dark:text-gray-400">
               {#if stats.estimatedTime.isPersonalized}
-                * Estimated based on your average speed from the last 8 hours of reading (~{$personalizedReadingSpeed.charsPerMinute} chars/min)
+                * Estimated based on your average speed from the last 8 hours of reading (~{$personalizedReadingSpeed.charsPerMinute}
+                chars/min)
               {:else}
-                * Estimated reading time based on default speed (~100 Japanese characters/minute for manga)
+                * Estimated reading time based on default speed (~100 Japanese characters/minute for
+                manga)
               {/if}
             </p>
           {/if}
@@ -283,18 +291,16 @@
       <!-- Text Content -->
       <div class="bg-white dark:bg-gray-800 rounded-lg shadow">
         <div class="p-6">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Full Series Text
-          </h2>
+          <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Full Series Text</h2>
           <div
             class="bg-gray-50 dark:bg-gray-900 rounded-lg p-6 overflow-auto max-h-[800px] border border-gray-200 dark:border-gray-700"
           >
             <pre
-              class="whitespace-pre-wrap font-mono text-sm text-gray-900 dark:text-gray-100 leading-relaxed"
-            >{formattedText}</pre>
+              class="whitespace-pre-wrap font-mono text-sm text-gray-900 dark:text-gray-100 leading-relaxed">{formattedText}</pre>
           </div>
           <p class="mt-4 text-sm text-gray-500 dark:text-gray-400">
-            Tip: Use Ctrl+F (Cmd+F on Mac) to search within the text, or use browser extensions for language analysis.
+            Tip: Use Ctrl+F (Cmd+F on Mac) to search within the text, or use browser extensions for
+            language analysis.
           </p>
         </div>
       </div>

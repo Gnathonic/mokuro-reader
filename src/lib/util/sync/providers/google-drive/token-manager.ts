@@ -49,7 +49,11 @@ class TokenManager {
       }
 
       if (expiry > now) {
-        console.log('Loaded persisted token, expires in', Math.round((expiry - now) / 60000), 'minutes');
+        console.log(
+          'Loaded persisted token, expires in',
+          Math.round((expiry - now) / 60000),
+          'minutes'
+        );
       } else {
         console.log('Token expired, needs re-authentication');
         this.needsAttentionStore.set(true);
@@ -104,13 +108,17 @@ class TokenManager {
       if (expiresIn) {
         // Debug mode: Override expiry to 30 seconds for testing
         const actualExpiresIn = GOOGLE_DRIVE_CONFIG.DEBUG_SHORT_TOKEN_EXPIRY ? 30 : expiresIn;
-        const expiresAt = Date.now() + (actualExpiresIn * 1000);
+        const expiresAt = Date.now() + actualExpiresIn * 1000;
         localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES, expiresAt.toString());
 
         if (GOOGLE_DRIVE_CONFIG.DEBUG_SHORT_TOKEN_EXPIRY) {
           console.warn('🔧 DEBUG MODE: Token will expire in 30 seconds');
         } else {
-          console.log('✅ Token set successfully, expires in', Math.round(expiresIn / 60), 'minutes');
+          console.log(
+            '✅ Token set successfully, expires in',
+            Math.round(expiresIn / 60),
+            'minutes'
+          );
         }
       }
     }
@@ -169,7 +177,7 @@ class TokenManager {
       if (Date.now() - start > maxWait) {
         throw new Error('Timeout waiting for Google Identity Services to load');
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     console.log('✅ Google Identity Services loaded');
   }
@@ -191,12 +199,17 @@ class TokenManager {
             // Clear auth history to force full consent screen on next attempt
             this.clearToken(false);
             this.needsAttentionStore.set(true);
-            showSnackbar('Google Drive access was denied. Please sign in again to grant permissions.');
+            showSnackbar(
+              'Google Drive access was denied. Please sign in again to grant permissions.'
+            );
           } else if (response.error === 'popup_closed') {
             // User closed the popup - don't clear anything, they might retry
             // Preserve all state so they can try again immediately
             showSnackbar('Sign-in cancelled. Please try again when ready.');
-          } else if (response.error === 'popup_failed_to_open' || response.error === 'popup_blocked') {
+          } else if (
+            response.error === 'popup_failed_to_open' ||
+            response.error === 'popup_blocked'
+          ) {
             // Popup was blocked by browser
             console.log('Popup was blocked by browser');
             showSnackbar('Popup blocked. Please allow popups for this site and try again.');
@@ -239,11 +252,15 @@ class TokenManager {
     const tokenClient = this.tokenClientStore;
     let client: any;
 
-    tokenClient.subscribe(value => { client = value; })();
+    tokenClient.subscribe((value) => {
+      client = value;
+    })();
 
     if (client) {
       // Determine if user has authenticated before
-      const hasAuthenticated = browser && localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED) === 'true';
+      const hasAuthenticated =
+        browser &&
+        localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED) === 'true';
 
       if (forceConsent || !hasAuthenticated) {
         // Force full consent screen (for initial auth or when explicitly requested)
@@ -278,14 +295,17 @@ class TokenManager {
 
   private getCurrentToken(): string {
     let token = '';
-    this.tokenStore.subscribe(value => { token = value; })();
+    this.tokenStore.subscribe((value) => {
+      token = value;
+    })();
     return token;
   }
 
   isAuthenticated(): boolean {
     // User is authenticated if they have auth history AND a token (even if expired)
     // This allows auto re-auth to work without forcing full logout
-    const hasAuthHistory = browser &&
+    const hasAuthHistory =
+      browser &&
       localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED) === 'true';
     const hasToken = this.getCurrentToken() !== '';
 

@@ -125,7 +125,7 @@ export async function createArchiveBlob(volumes: VolumeMetadata[]): Promise<Blob
   if (volumes.length === 1) {
     const { metadata, filesData } = await prepareVolumeData(volumes[0]);
     const uint8Array = await compressVolume(volumes[0].volume_title, metadata, filesData);
-    return new Blob([uint8Array], { type: 'application/zip' });
+    return new Blob([uint8Array as BlobPart], { type: 'application/zip' });
   }
 
   // For multiple volumes, create a single ZIP containing all volumes

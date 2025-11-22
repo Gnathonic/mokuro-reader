@@ -21,7 +21,7 @@
 
   let firstUnreadVolume = $derived(
     Object.values($volumesWithPlaceholders)
-      .filter(v => !v.isPlaceholder)
+      .filter((v) => !v.isPlaceholder)
       .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
       .find(
         (item) =>
@@ -37,8 +37,7 @@
   );
 
   let allSeriesVolumes = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter(v => v.series_uuid === series_uuid)
+    Object.values($volumesWithPlaceholders).filter((v) => v.series_uuid === series_uuid)
   );
 
   let volume = $derived(firstUnreadVolume ?? firstVolume);
@@ -48,7 +47,7 @@
   // Track queue state
   let queueState = $state($downloadQueue);
   $effect(() => {
-    return downloadQueue.subscribe(value => {
+    return downloadQueue.subscribe((value) => {
       queueState = value;
     });
   });

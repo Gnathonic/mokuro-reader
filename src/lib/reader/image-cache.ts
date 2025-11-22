@@ -4,7 +4,7 @@
  */
 
 export interface CachedImage {
-  image: HTMLImageElement;  // Image element holds decoded bitmap and blob URL (in img.src)
+  image: HTMLImageElement; // Image element holds decoded bitmap and blob URL (in img.src)
   decoded: boolean;
   loading: Promise<void> | null;
 }
@@ -43,7 +43,7 @@ export class ImageCache {
 
     // Preload all items in the window (non-blocking)
     for (let i = startIndex; i <= endIndex; i++) {
-      this.preloadImage(i).catch(err => {
+      this.preloadImage(i).catch((err) => {
         console.error(`Failed to preload image ${i}:`, err);
       });
     }
@@ -142,7 +142,8 @@ export class ImageCache {
       img.onload = () => {
         // Use decode() API for better performance
         if ('decode' in img) {
-          img.decode()
+          img
+            .decode()
             .then(() => resolve())
             .catch(() => resolve()); // Fallback if decode fails
         } else {

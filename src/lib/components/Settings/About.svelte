@@ -6,9 +6,7 @@
 </script>
 
 <AccordionItem>
-  {#snippet header()}
-    <span>About</span>
-  {/snippet}
+  <span slot="header">About</span>
   <div class="flex flex-col gap-5">
     <div class="flex flex-row justify-between">
       <p class="font-semibold">Mokuro reader {READER_VERSION} <Badge>BETA</Badge></p>

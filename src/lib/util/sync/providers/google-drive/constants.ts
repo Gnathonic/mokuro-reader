@@ -27,21 +27,21 @@ export const GOOGLE_DRIVE_CONFIG = {
   DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
   SCOPES: 'https://www.googleapis.com/auth/drive.file',
   OAUTH_ENDPOINT: 'https://oauth2.googleapis.com/revoke',
-  
+
   FOLDER_NAMES: {
     READER: 'mokuro-reader'
   },
-  
+
   FILE_NAMES: {
     VOLUME_DATA: 'volume-data.json',
     PROFILES: 'profiles.json'
   },
-  
+
   MIME_TYPES: {
     FOLDER: 'application/vnd.google-apps.folder',
     JSON: 'application/json'
   },
-  
+
   STORAGE_KEYS: {
     TOKEN: 'gdrive_token',
     TOKEN_EXPIRES: 'gdrive_token_expires',
@@ -57,10 +57,10 @@ export const GOOGLE_DRIVE_CONFIG = {
 
   // Multi-attempt refresh schedule (time before expiry -> retry if needed)
   REFRESH_SCHEDULE: [
-    { at: 15 * 60 * 1000, maxRetries: 2 },  // 45 min mark: try twice
-    { at: 10 * 60 * 1000, maxRetries: 2 },  // 50 min mark: try twice
-    { at: 5 * 60 * 1000, maxRetries: 2 },   // 55 min mark: try twice
-    { at: 2 * 60 * 1000, maxRetries: 1 }    // 58 min mark: last attempt
+    { at: 15 * 60 * 1000, maxRetries: 2 }, // 45 min mark: try twice
+    { at: 10 * 60 * 1000, maxRetries: 2 }, // 50 min mark: try twice
+    { at: 5 * 60 * 1000, maxRetries: 2 }, // 55 min mark: try twice
+    { at: 2 * 60 * 1000, maxRetries: 1 } // 58 min mark: last attempt
   ],
 
   // Debug mode: Set to true to use short-lived tokens for testing (30 seconds)

@@ -24,8 +24,7 @@ export function initPanzoom(node: HTMLElement) {
     beforeMouseDown: (e) => {
       const target = e.target as HTMLElement;
       // Check if the target is a text box or a child of a text box
-      const isTextBox = target.classList.contains('textBox') ||
-                        target.closest('.textBox') !== null;
+      const isTextBox = target.classList.contains('textBox') || target.closest('.textBox') !== null;
       // Return true to prevent panning when clicking on text boxes
       // This allows text selection within text boxes
       return isTextBox;
@@ -41,10 +40,7 @@ export function initPanzoom(node: HTMLElement) {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-expect-error
     filterKey: (e: any) => {
-      if (
-        e.key === 'ArrowLeft' ||
-        e.key === 'ArrowRight'
-      ) {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         return true;
       }
     }

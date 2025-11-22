@@ -21,7 +21,12 @@
 
 {#if isReader()}
   <div class="flex flex-col gap-2">
-    <Button color="alternative" on:click={toggleFullScreen}>Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span></Button>
-    <Button color="alternative" on:click={onClose}>Close reader <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Esc)</span></Button>
+    <Button color="alternative" on:click={toggleFullScreen}
+      >Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span
+      ></Button
+    >
+    <Button color="alternative" on:click={onClose}
+      >Close reader <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Esc)</span></Button
+    >
   </div>
 {/if}

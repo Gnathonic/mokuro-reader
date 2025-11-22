@@ -10,7 +10,7 @@ function generateUuidFromString(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32bit integer
   }
 
@@ -67,7 +67,10 @@ function parseCloudPath(
 /**
  * Generate placeholder VolumeMetadata for a cloud-only file
  */
-function createPlaceholder(cloudFile: CloudVolumeWithProvider, seriesUuid: string): VolumeMetadata | null {
+function createPlaceholder(
+  cloudFile: CloudVolumeWithProvider,
+  seriesUuid: string
+): VolumeMetadata | null {
   const parsed = parseCloudPath(cloudFile.path, cloudFile.description);
   if (!parsed) return null;
 
@@ -109,7 +112,7 @@ export function generatePlaceholders(
 
   // Create a set of local volume paths for fast lookup
   const localPaths = new Set(
-    localVolumes.map(vol => `${vol.series_title}/${vol.volume_title}.cbz`)
+    localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`)
   );
 
   // Create a map of series titles to their UUIDs from local volumes
@@ -127,7 +130,7 @@ export function generatePlaceholders(
   }
 
   // Find cloud-only files
-  const cloudOnlyFiles = cloudFiles.filter(file => !localPaths.has(file.path));
+  const cloudOnlyFiles = cloudFiles.filter((file) => !localPaths.has(file.path));
 
   // Generate placeholders
   const placeholders: VolumeMetadata[] = [];
@@ -137,8 +140,8 @@ export function generatePlaceholders(
 
     // Use existing series UUID if we have local volumes with this series title
     // Otherwise generate a deterministic UUID for a new series
-    const seriesUuid = seriesTitleToUuid.get(parsed.seriesTitle)
-      || generateUuidFromString(parsed.seriesTitle);
+    const seriesUuid =
+      seriesTitleToUuid.get(parsed.seriesTitle) || generateUuidFromString(parsed.seriesTitle);
 
     const placeholder = createPlaceholder(cloudFile, seriesUuid);
     if (placeholder) {

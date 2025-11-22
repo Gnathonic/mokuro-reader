@@ -16,9 +16,7 @@
 </script>
 
 <AccordionItem>
-  {#snippet header()}
-    <span>Reader</span>
-  {/snippet}
+  <span slot="header">Reader</span>
   <div class="flex flex-col gap-5">
     <ReaderSelects />
     <hr class="border-gray-100 opacity-10" />

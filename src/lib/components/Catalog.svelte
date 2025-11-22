@@ -16,9 +16,7 @@
   let search = $state('');
 
   // Check if any cloud provider is authenticated
-  let hasAuthenticatedProvider = $derived(
-    unifiedCloudManager.getDefaultProvider() !== null
-  );
+  let hasAuthenticatedProvider = $derived(unifiedCloudManager.getDefaultProvider() !== null);
 
   // Get active provider's display name
   let providerDisplayName = $derived.by(() => {
@@ -77,13 +75,13 @@
             ...aVolumes
               .filter((volId) => (volumesSnapshot[volId]?.progress || 0) > 1)
               .map((volId) => new Date(volumesSnapshot[volId]?.lastProgressUpdate || 0).getTime()),
-            0  // Default to 0 if no volumes have progress
+            0 // Default to 0 if no volumes have progress
           );
           const bLastUpdated = Math.max(
             ...bVolumes
               .filter((volId) => (volumesSnapshot[volId]?.progress || 0) > 1)
               .map((volId) => new Date(volumesSnapshot[volId]?.lastProgressUpdate || 0).getTime()),
-            0  // Default to 0 if no volumes have progress
+            0 // Default to 0 if no volumes have progress
           );
 
           if (aLastUpdated !== bLastUpdated) {
@@ -101,19 +99,17 @@
   });
 
   // Separate local series from placeholder-only series
-  let localSeries = $derived(sortedCatalog.filter(series =>
-    series.volumes.some(vol => !vol.isPlaceholder)
-  ));
+  let localSeries = $derived(
+    sortedCatalog.filter((series) => series.volumes.some((vol) => !vol.isPlaceholder))
+  );
 
-  let placeholderSeries = $derived(sortedCatalog.filter(series =>
-    series.volumes.every(vol => vol.isPlaceholder)
-  ));
+  let placeholderSeries = $derived(
+    sortedCatalog.filter((series) => series.volumes.every((vol) => vol.isPlaceholder))
+  );
 
   // Collect all placeholder volumes from the entire catalog
   let allPlaceholderVolumes = $derived(
-    sortedCatalog.flatMap(series =>
-      series.volumes.filter(vol => vol.isPlaceholder)
-    )
+    sortedCatalog.flatMap((series) => series.volumes.filter((vol) => vol.isPlaceholder))
   );
 
   // Count placeholders by provider for UI display
@@ -130,8 +126,8 @@
   let providerBreakdown = $derived.by(() => {
     const providerNames: Record<string, string> = {
       'google-drive': 'Drive',
-      'mega': 'MEGA',
-      'webdav': 'WebDAV'
+      mega: 'MEGA',
+      webdav: 'WebDAV'
     };
     return Object.entries(placeholdersByProvider)
       .map(([provider, count]) => `${count} ${providerNames[provider] || provider}`)
@@ -216,7 +212,9 @@
         <div class="mt-8">
           <div class="flex items-center justify-between px-4 mb-4">
             <div>
-              <h4 class="text-lg font-semibold text-gray-400">Available in {providerDisplayName} ({placeholderSeries.length} series)</h4>
+              <h4 class="text-lg font-semibold text-gray-400">
+                Available in {providerDisplayName} ({placeholderSeries.length} series)
+              </h4>
               {#if providerBreakdown}
                 <p class="text-sm text-gray-500 mt-1">{providerBreakdown}</p>
               {/if}

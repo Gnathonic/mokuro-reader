@@ -61,7 +61,8 @@
               <div class="flex justify-between text-xs mb-1">
                 <span>{Math.round(process.progress)}%</span>
                 {#if process.bytesLoaded !== undefined && process.totalBytes !== undefined}
-                  <span>{formatBytes(process.bytesLoaded)} / {formatBytes(process.totalBytes)}</span>
+                  <span>{formatBytes(process.bytesLoaded)} / {formatBytes(process.totalBytes)}</span
+                  >
                 {/if}
               </div>
 

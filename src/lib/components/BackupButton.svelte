@@ -23,16 +23,20 @@
 
   $effect(() => {
     const unsubscribers = [
-      unifiedCloudManager.cloudFiles.subscribe(value => { cloudFiles = value; }),
-      unifiedCloudManager.isFetching.subscribe(value => { isFetching = value; })
+      unifiedCloudManager.cloudFiles.subscribe((value) => {
+        cloudFiles = value;
+      }),
+      unifiedCloudManager.isFetching.subscribe((value) => {
+        isFetching = value;
+      })
     ];
-    return () => unsubscribers.forEach(unsub => unsub());
+    return () => unsubscribers.forEach((unsub) => unsub());
   });
 
   // Subscribe to provider manager status for reactive authentication state
   let providerStatus = $state({ hasAnyAuthenticated: false, providers: {}, needsAttention: false });
   $effect(() => {
-    return providerManager.status.subscribe(value => {
+    return providerManager.status.subscribe((value) => {
       providerStatus = value;
     });
   });
@@ -41,7 +45,7 @@
   // Subscribe to backup queue
   let queueItems = $state<any[]>([]);
   $effect(() => {
-    return backupQueue.subscribe(value => {
+    return backupQueue.subscribe((value) => {
       queueItems = value;
     });
   });
@@ -49,7 +53,7 @@
   // Subscribe to progress tracker
   let processes = $state<Process[]>([]);
   $effect(() => {
-    return progressTrackerStore.subscribe(value => {
+    return progressTrackerStore.subscribe((value) => {
       processes = value.processes;
     });
   });
@@ -58,18 +62,18 @@
   let cloudFile = $derived.by(() => {
     const path = `${volume.series_title}/${volume.volume_title}.cbz`;
     const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find(f => f.path === path);
+    return seriesFiles.find((f) => f.path === path);
   });
   let isBackedUp = $derived(cloudFile !== undefined);
   let backupProvider = $derived(cloudFile?.provider);
 
   // Check if this volume is in the backup queue
-  let queueItem = $derived(queueItems.find(item => item.volumeUuid === volume.volume_uuid));
+  let queueItem = $derived(queueItems.find((item) => item.volumeUuid === volume.volume_uuid));
   let isQueued = $derived(queueItem?.status === 'queued');
   let isBackingUp = $derived(queueItem?.status === 'backing-up');
 
   // Get progress for this volume's backup
-  let backupProcess = $derived(processes.find(p => p.id === `backup-${volume.volume_uuid}`));
+  let backupProcess = $derived(processes.find((p) => p.id === `backup-${volume.volume_uuid}`));
   let backupProgress = $derived(backupProcess?.progress || 0);
   let backupStatus = $derived(backupProcess?.status || '');
 
@@ -133,13 +137,7 @@
 {#if !hasAuthenticatedProvider}
   <!-- Don't render anything when not authenticated -->
 {:else if isFetching && totalFiles === 0}
-  <Button
-    color="light"
-    size="xs"
-    class={className}
-    disabled={true}
-    title="Loading cloud status..."
-  >
+  <Button color="light" size="xs" class={className} disabled={true} title="Loading cloud status...">
     <Spinner size="4" class="me-2" />
     Loading...
   </Button>
@@ -155,24 +153,12 @@
     Delete from {providerDisplayName}
   </Button>
 {:else if isQueued}
-  <Button
-    color="light"
-    size="xs"
-    class={className}
-    disabled={true}
-    title="Queued for backup"
-  >
+  <Button color="light" size="xs" class={className} disabled={true} title="Queued for backup">
     <Spinner size="4" class="me-2" />
     Queued
   </Button>
 {:else if isBackingUp}
-  <Button
-    color="light"
-    size="xs"
-    class={className}
-    disabled={true}
-    title={backupStatus}
-  >
+  <Button color="light" size="xs" class={className} disabled={true} title={backupStatus}>
     <Spinner size="4" class="me-2" />
     {Math.round(backupProgress)}% - {backupStatus}
   </Button>

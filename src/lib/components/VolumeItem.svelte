@@ -6,7 +6,14 @@
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
   import { Frame, ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
-  import { CheckCircleSolid, TrashBinSolid, FileLinesOutline, DotsVerticalOutline, CloudArrowUpOutline, ImageOutline } from 'flowbite-svelte-icons';
+  import {
+    CheckCircleSolid,
+    TrashBinSolid,
+    FileLinesOutline,
+    DotsVerticalOutline,
+    CloudArrowUpOutline,
+    ImageOutline
+  } from 'flowbite-svelte-icons';
   import { goto } from '$app/navigation';
   import { db } from '$lib/catalog/db';
   import BackupButton from './BackupButton.svelte';
@@ -41,19 +48,21 @@
   // Subscribe to cloud state for grid view
   $effect(() => {
     const unsubscribers = [
-      unifiedCloudManager.cloudFiles.subscribe(value => { cloudFiles = value; }),
-      providerManager.status.subscribe(value => {
+      unifiedCloudManager.cloudFiles.subscribe((value) => {
+        cloudFiles = value;
+      }),
+      providerManager.status.subscribe((value) => {
         hasAuthenticatedProvider = value.hasAnyAuthenticated;
       })
     ];
-    return () => unsubscribers.forEach(unsub => unsub());
+    return () => unsubscribers.forEach((unsub) => unsub());
   });
 
   // Check if this volume is backed up to cloud
   let cloudFile = $derived.by(() => {
     const path = `${volume.series_title}/${volume.volume_title}.cbz`;
     const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find(f => f.path === path);
+    return seriesFiles.find((f) => f.path === path);
   });
   let isBackedUp = $derived(cloudFile !== undefined);
 
@@ -64,7 +73,7 @@
 
   // Calculate Japanese character count from pages data (matches reading tracker)
   $effect(() => {
-    db.volumes_data.get(volume.volume_uuid).then(data => {
+    db.volumes_data.get(volume.volume_uuid).then((data) => {
       if (data?.pages) {
         const { charCount } = getCharCount(data.pages);
         if (charCount > 0) {
@@ -166,9 +175,12 @@
     const hasCloudBackup = hasAuthenticatedProvider && isBackedUp;
 
     // Get provider display name
-    const providerDisplayName = cloudFile?.provider === 'google-drive' ? 'Drive' :
-                                 cloudFile?.provider === 'mega' ? 'MEGA' :
-                                 'cloud';
+    const providerDisplayName =
+      cloudFile?.provider === 'google-drive'
+        ? 'Drive'
+        : cloudFile?.provider === 'mega'
+          ? 'MEGA'
+          : 'cloud';
 
     promptConfirmation(
       `Delete ${volName}?`,
@@ -206,15 +218,17 @@
       },
       undefined,
       {
-        label: "Also delete stats and progress?",
-        storageKey: "deleteStatsPreference",
+        label: 'Also delete stats and progress?',
+        storageKey: 'deleteStatsPreference',
         defaultValue: false
       },
-      hasCloudBackup ? {
-        label: `Also delete from ${providerDisplayName}?`,
-        storageKey: "deleteCloudPreference",
-        defaultValue: false
-      } : undefined
+      hasCloudBackup
+        ? {
+            label: `Also delete from ${providerDisplayName}?`,
+            storageKey: 'deleteCloudPreference',
+            defaultValue: false
+          }
+        : undefined
     );
   }
 
@@ -317,7 +331,10 @@
       <button
         id="volume-menu-{volume_uuid}"
         class="absolute bottom-2 right-2 p-1 rounded-full bg-gray-800/80 hover:bg-gray-700/80 z-10"
-        onclick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onclick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
       >
         <DotsVerticalOutline class="w-4 h-4 text-white" />
       </button>
@@ -352,17 +369,16 @@
               class="sm:max-w-[250px] sm:max-h-[350px] h-auto w-auto bg-black border-gray-900 border"
             />
           {:else}
-            <div class="w-full h-full bg-gray-200 dark:bg-gray-700 border border-gray-300 dark:border-gray-700 flex items-center justify-center">
+            <div
+              class="w-full h-full bg-gray-200 dark:bg-gray-700 border border-gray-300 dark:border-gray-700 flex items-center justify-center"
+            >
               <span class="text-gray-400">No thumbnail</span>
             </div>
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">
           <div class="flex items-center gap-1">
-            <div
-              class="text-sm font-medium truncate flex-1"
-              class:text-green-400={isComplete}
-            >
+            <div class="text-sm font-medium truncate flex-1" class:text-green-400={isComplete}>
               {volName}
             </div>
             {#if isComplete}
@@ -376,7 +392,8 @@
             </Badge>
           {/if}
         </div>
-        <div class="flex flex-wrap gap-x-2 items-center text-xs sm:w-[250px]"
+        <div
+          class="flex flex-wrap gap-x-2 items-center text-xs sm:w-[250px]"
           class:text-green-400={isComplete}
           class:text-gray-500={!isComplete}
           class:dark:text-gray-400={!isComplete}

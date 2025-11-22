@@ -12,7 +12,16 @@
     zoomDefaultWithLayoutWait,
     zoomFitToScreen
   } from '$lib/panzoom';
-  import { effectiveVolumeSettings, progress, settings, updateProgress, updateSetting, updateVolumeSetting, volumes, type VolumeSettings } from '$lib/settings';
+  import {
+    effectiveVolumeSettings,
+    progress,
+    settings,
+    updateProgress,
+    updateSetting,
+    updateVolumeSetting,
+    volumes,
+    type VolumeSettings
+  } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
@@ -32,6 +41,8 @@
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
+  // TODO: FlipBook component not yet implemented
+  // import FlipBook from './FlipBook.svelte';
 
   // TODO: Refactor this whole mess
   interface Props {
@@ -44,7 +55,9 @@
   let volumeData = $derived($currentVolumeData);
 
   // Use store directly for reactivity instead of prop
-  let volumeSettings = $derived($effectiveVolumeSettings[volume?.volume_uuid || ''] || _volumeSettingsProp);
+  let volumeSettings = $derived(
+    $effectiveVolumeSettings[volume?.volume_uuid || ''] || _volumeSettingsProp
+  );
 
   let start: Date;
 
@@ -147,7 +160,8 @@
           (v) => v.volume_uuid === volume.volume_uuid
         );
         const nextVolume = seriesVolumes[currentVolumeIndex + 1];
-        if (nextVolume) goto(`/${volume.series_uuid}/${nextVolume.volume_uuid}`, { invalidateAll: true });
+        if (nextVolume)
+          goto(`/${volume.series_uuid}/${nextVolume.volume_uuid}`, { invalidateAll: true });
         else goto(`/${volume.series_uuid}`);
         return;
       }
@@ -374,7 +388,10 @@
   let pageDirection = $state<'forward' | 'backward'>('forward');
 
   // Custom page intro (new page coming in)
-  function pageIn(node: HTMLElement, { direction }: { direction: 'forward' | 'backward' }): TransitionConfig {
+  function pageIn(
+    node: HTMLElement,
+    { direction }: { direction: 'forward' | 'backward' }
+  ): TransitionConfig {
     const transition = $settings.pageTransition;
     const isRTL = volumeSettings.rightToLeft;
     const visualDirection = (direction === 'forward') !== isRTL ? 'right' : 'left';
@@ -405,7 +422,7 @@
           // Slide vertically with a small gap between pages
           const gap = 3; // Small gap between pages (in vh units)
           const startOffset = direction === 'forward' ? 100 + gap : -(100 + gap);
-          const currentPos = startOffset * (1-t);
+          const currentPos = startOffset * (1 - t);
           return `
             transform: translateY(${currentPos}vh);
           `;
@@ -414,13 +431,15 @@
         if (transition === 'pageTurn') {
           // New page wipes in on top of old page
           // Wipe direction depends on reading direction and forward/backward
-          const clipPercent = visualDirection === 'right'
-            ? 100 * (1 - t)    // Right to left wipe
-            : 100 * t;         // Left to right wipe
+          const clipPercent =
+            visualDirection === 'right'
+              ? 100 * (1 - t) // Right to left wipe
+              : 100 * t; // Left to right wipe
 
-          const clipPath = visualDirection === 'right'
-            ? `polygon(${clipPercent}% 0, 100% 0, 100% 100%, ${clipPercent}% 100%)`  // Right to left
-            : `polygon(0 0, ${clipPercent}% 0, ${clipPercent}% 100%, 0 100%)`;  // Left to right
+          const clipPath =
+            visualDirection === 'right'
+              ? `polygon(${clipPercent}% 0, 100% 0, 100% 100%, ${clipPercent}% 100%)` // Right to left
+              : `polygon(0 0, ${clipPercent}% 0, ${clipPercent}% 100%, 0 100%)`; // Left to right
 
           return `clip-path: ${clipPath};`;
         }
@@ -429,7 +448,7 @@
           // New page swipes in from the direction
           const fromPos = visualDirection === 'left' ? -100 : 100;
           const currentPos = fromPos * (1 - t);
-          const scale = 0.8 + (t * 0.2);
+          const scale = 0.8 + t * 0.2;
           return `
             transform: translateX(${currentPos}%) scale(${scale});
             opacity: ${t};
@@ -442,7 +461,10 @@
   }
 
   // Custom page outro (old page going out)
-  function pageOut(node: HTMLElement, { direction }: { direction: 'forward' | 'backward' }): TransitionConfig {
+  function pageOut(
+    node: HTMLElement,
+    { direction }: { direction: 'forward' | 'backward' }
+  ): TransitionConfig {
     const transition = $settings.pageTransition;
     const isRTL = volumeSettings.rightToLeft;
     const visualDirection = (direction === 'forward') !== isRTL ? 'right' : 'left';
@@ -488,7 +510,7 @@
           // Old page swipes out to the OPPOSITE direction
           const toPos = visualDirection === 'left' ? 30 : -30;
           const currentPos = toPos * (1 - t);
-          const scale = 1 - ((1 - t) * 0.1);
+          const scale = 1 - (1 - t) * 0.1;
           return `
             transform: translateX(${currentPos}%) scale(${scale});
             opacity: ${t};
@@ -539,7 +561,7 @@
       } else {
         // Not ready yet, get it async and update when ready
         cachedImageUrl1 = null;
-        imageCache.getImage(currentIndex).then(url => {
+        imageCache.getImage(currentIndex).then((url) => {
           cachedImageUrl1 = url;
         });
       }
@@ -554,7 +576,7 @@
           cachedImageUrl2 = syncUrl2;
         } else {
           cachedImageUrl2 = null;
-          imageCache.getImage(currentIndex + 1).then(url => {
+          imageCache.getImage(currentIndex + 1).then((url) => {
             cachedImageUrl2 = url;
           });
         }
@@ -657,6 +679,11 @@
     }
   });
 
+  // Determine if we should use 3D flip book mode
+  // TODO: FlipBook component not yet implemented
+  let use3DFlip = $derived($settings.pageTransition === 'pageTurn');
+  let flipBookRef: unknown = null;
+
   // Generic notification system for setting changes
   let notificationMessage = $state<string>('');
   let notificationKey = $state<string>('');
@@ -749,7 +776,9 @@
     {left}
     {right}
     src1={volumeData.files ? Object.values(volumeData.files)[index] : undefined}
-    src2={!useSinglePage && volumeData.files ? Object.values(volumeData.files)[index + 1] : undefined}
+    src2={!useSinglePage && volumeData.files
+      ? Object.values(volumeData.files)[index + 1]
+      : undefined}
   />
   <SettingsButton />
   <Cropper />
@@ -807,73 +836,80 @@
     {/key}
   {/if}
   <div class="flex" style:background-color={$settings.backgroundColor}>
-    <Panzoom>
-      <button
-        aria-label="Previous page (left edge)"
-        class="h-full fixed -left-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
-        style:margin-left={`${$settings.edgeButtonWidth}px`}
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (right edge)"
-        class="h-full fixed -right-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
-        style:margin-right={`${$settings.edgeButtonWidth}px`}
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <button
-        aria-label="Previous page (bottom left)"
-        class="h-screen fixed top-full -left-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (bottom right)"
-        class="h-screen fixed top-full -right-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <div
-        class="grid"
-        style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
-        ondblclick={onDoubleTap}
-        role="none"
-        id="manga-panel"
-      >
-        {#key page}
-          <div
-            class="flex flex-row col-start-1 row-start-1"
-            class:flex-row-reverse={!volumeSettings.rightToLeft}
-            in:pageIn={{ direction: pageDirection }}
-            out:pageOut={{ direction: pageDirection }}
-          >
-            {#if volumeData && volumeData.files}
-              {#if showSecondPage()}
+    {#if use3DFlip && volumeData?.files && volume}
+      <!-- TODO: 3D Flip Book Mode - FlipBook component not yet implemented -->
+      <div class="flex items-center justify-center p-4 text-yellow-500">
+        3D flip book mode not yet available
+      </div>
+    {:else}
+      <Panzoom>
+        <button
+          aria-label="Previous page (left edge)"
+          class="h-full fixed -left-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
+          style:margin-left={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (right edge)"
+          class="h-full fixed -right-full z-10 w-full hover:bg-slate-400 opacity-[0.01]"
+          style:margin-right={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <button
+          aria-label="Previous page (bottom left)"
+          class="h-screen fixed top-full -left-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (bottom right)"
+          class="h-screen fixed top-full -right-full z-10 w-[150%] hover:bg-slate-400 opacity-[0.01]"
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <div
+          class="grid"
+          style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
+          ondblclick={onDoubleTap}
+          role="none"
+          id="manga-panel"
+        >
+          {#key page}
+            <div
+              class="flex flex-row col-start-1 row-start-1"
+              class:flex-row-reverse={!volumeSettings.rightToLeft}
+              in:pageIn={{ direction: pageDirection }}
+              out:pageOut={{ direction: pageDirection }}
+            >
+              {#if volumeData && volumeData.files}
+                {#if showSecondPage()}
+                  <MangaPage
+                    page={pages[index + 1]}
+                    src={Object.values(volumeData.files)[index + 1]}
+                    cachedUrl={cachedImageUrl2}
+                    volumeUuid={volume.volume_uuid}
+                  />
+                {/if}
                 <MangaPage
-                  page={pages[index + 1]}
-                  src={Object.values(volumeData.files)[index + 1]}
-                  cachedUrl={cachedImageUrl2}
+                  page={pages[index]}
+                  src={Object.values(volumeData.files)[index]}
+                  cachedUrl={cachedImageUrl1}
                   volumeUuid={volume.volume_uuid}
                 />
+              {:else}
+                <div class="flex items-center justify-center w-screen h-screen">
+                  <Spinner size="12" />
+                </div>
               {/if}
-              <MangaPage
-                page={pages[index]}
-                src={Object.values(volumeData.files)[index]}
-                cachedUrl={cachedImageUrl1}
-                volumeUuid={volume.volume_uuid}
-              />
-            {:else}
-              <div class="flex items-center justify-center w-screen h-screen">
-                <Spinner size="12" />
-              </div>
-            {/if}
-          </div>
-        {/key}
-      </div>
-    </Panzoom>
+            </div>
+          {/key}
+        </div>
+      </Panzoom>
+    {/if}
   </div>
-  {#if !$settings.mobile}
+  {#if !$settings.mobile && !use3DFlip}
     <button
       aria-label="Previous page (left edge)"
       onmousedown={mouseDown}

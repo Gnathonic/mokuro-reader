@@ -37,7 +37,11 @@
   let timeEstimate = $derived.by(() => {
     const volumeProgress = $volumes[volumeId];
     const charsRead = volumeProgress?.chars || 0;
-    return calculateVolumeTimeToFinish($currentVolumeCharacterCount, charsRead, $personalizedReadingSpeed);
+    return calculateVolumeTimeToFinish(
+      $currentVolumeCharacterCount,
+      charsRead,
+      $personalizedReadingSpeed
+    );
   });
 
   function startTimer() {

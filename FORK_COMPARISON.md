@@ -26,6 +26,7 @@
 This document provides a comprehensive analysis of the differences between the Gnathonic fork and the original ZXY101 mokuro-reader repository. All claims have been verified against the current source code to ensure accuracy.
 
 **Key Highlights**:
+
 - 498 commits ahead of upstream
 - 3 major architectural overhauls
 - 10 fully operational new features (including 3 cloud providers)
@@ -44,6 +45,7 @@ This document provides a comprehensive analysis of the differences between the G
 Complete rewrite of the database schema from a single `catalog` table to a split architecture optimized for performance and memory efficiency.
 
 **Changes**:
+
 - **Split architecture**:
   - `volumes` table: Stores metadata only (series/volume titles, UUIDs, page counts, character counts, thumbnails)
   - `volumes_data` table: Stores heavy data (OCR pages, image File objects)
@@ -53,6 +55,7 @@ Complete rewrite of the database schema from a single `catalog` table to a split
 - **UI feedback**: `isUpgrading` store for showing migration progress
 
 **Impact**:
+
 - Faster catalog loading (metadata only)
 - Reduced memory usage (data loaded on-demand)
 - Better scalability for large libraries
@@ -64,6 +67,7 @@ Complete rewrite of the database schema from a single `catalog` table to a split
 
 **Status**: ✅ **FULLY IMPLEMENTED** (Google Drive, MEGA) + 🟡 **WIP** (WebDAV)
 **Files**:
+
 - `src/lib/util/sync/provider-interface.ts`
 - `src/lib/util/sync/providers/google-drive/google-drive-provider.ts`
 - `src/lib/util/sync/providers/mega/mega-provider.ts`
@@ -91,11 +95,13 @@ Transformed from Google Drive-only to a fully extensible multi-provider cloud st
    - Provider-specific metadata types
 
 **Concurrency Limits**:
+
 - Google Drive: upload 4, download 4
 - MEGA: upload 6, download 6
 - WebDAV: upload 2, download 2
 
 **Export Pseudo-Provider**:
+
 - Special "provider" for local browser downloads
 - Works uniformly with backup queue=
 - Allows for fast multithreaded volume exports
@@ -147,6 +153,7 @@ Complete rewrite of the file upload system to handle large ZIP files without out
 **Status**: ✅ **FULLY OPERATIONAL** (Google Drive, MEGA) + 🟡 **WIP** (WebDAV)
 **Total Commits**: ~137 cloud-related commits (97 Drive, 40 MEGA)
 **Files**:
+
 - `src/lib/util/sync/providers/google-drive/*`
 - `src/lib/util/sync/providers/mega/*`
 - `src/lib/util/sync/providers/webdav/*`
@@ -165,29 +172,32 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
    - Conflict resolution
    - Cross-device sync support
 
-2.  **Volume Backup**:
-   - Upload full CBZ files to cloud storage
-   - Series backup (bulk backup entire series)
-   - Library backup
-   - Progress tracking
-   - Skip already backed up volumes
-   - Worker-based parallel downloads
-   - Progress tracking per file
-   - Memory-aware download queuing
+2. **Volume Backup**:
+
+- Upload full CBZ files to cloud storage
+- Series backup (bulk backup entire series)
+- Library backup
+- Progress tracking
+- Skip already backed up volumes
+- Worker-based parallel downloads
+- Progress tracking per file
+- Memory-aware download queuing
 
 3.  **Improved Download**:
-   - Download CBZ files from cloud to local library
-   - Worker-based parallel downloads
-   - Progress tracking per file
-   - Memory-aware download queuing
+
+- Download CBZ files from cloud to local library
+- Worker-based parallel downloads
+- Progress tracking per file
+- Memory-aware download queuing
 
 4.  **UI Features**:
-   - Connection state visibility
-   - Error indicators for connection issues
-   - Backup progress display
-   - Delete from cloud functionality
-   - Provider-specific status badges
-   - Cloud placeholders in the catalog and series pages for 1 click downloads
+
+- Connection state visibility
+- Error indicators for connection issues
+- Backup progress display
+- Delete from cloud functionality
+- Provider-specific status badges
+- Cloud placeholders in the catalog and series pages for 1 click downloads
 
 ---
 
@@ -196,6 +206,7 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 ##### **Google Drive** (✅ Fully Operational)
 
 **Authentication**:
+
 - OAuth2 implicit flow (access tokens only, no backend required)
 - Token expiry monitoring (tokens expire after ~1 hour)
 - Renewal with minimal UI
@@ -204,6 +215,7 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 - Re-auth experience: `prompt: ''` (empty) for minimal UI, not full consent screen
 
 **Unique Features**:
+
 - **Drive Cache**: Single API call instead of N+1 queries
 - **Pagination Support**: Handles >1000 files efficiently
 - **Query String Escaping**: Utility for special characters (`escapeNameForDriveQuery`)
@@ -211,6 +223,7 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 - **Token Expiry Warnings**: Proactive UI notifications
 
 **Technical Details**:
+
 - Concurrency: 4 uploads / 4 downloads
 - `supportsWorkerDownload`: `true` (workers can download directly with access token)
 - API optimizations: Bulk operations, reduced quota usage
@@ -221,11 +234,13 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 ##### **MEGA** (✅ Fully Operational)
 
 **Authentication**:
+
 - Email/password authentication
 - Credential persistence in localStorage
 - Automatic re-authentication
 
 **Unique Features**:
+
 - **Share Link System**:
   - Workers download via MEGA share links
   - Main thread creates share links
@@ -242,6 +257,7 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
   - Smart cache refresh
 
 **Technical Details**:
+
 - Concurrency: 6 uploads / 6 downloads (higher than Drive due to different constraints)
 - `supportsWorkerDownload`: `false` (MEGA SDK requires main thread auth)
 - Worker Downloads: Main thread authenticates, then workers download via share links
@@ -252,17 +268,20 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 ##### **WebDAV** (🟡 Untested / Under Development)
 
 **Authentication**:
+
 - Server URL + username/password
 - Credential persistence in localStorage
 - Support for Nextcloud, ownCloud, NAS devices
 
 **Implementation Status**:
+
 - Provider code complete
 - Marked "Under Development" in UI
 - Needs testing with real WebDAV servers
 - ~80% complete
 
 **Technical Details**:
+
 - Concurrency: 2 uploads / 2 downloads (conservative for server compatibility)
 - `supportsWorkerDownload`: `true` (workers can download with Basic Auth)
 - Basic Auth support
@@ -274,6 +293,7 @@ Complete multi-provider cloud integration for cross-device sync and cloud backup
 
 **Status**: ✅ **CONFIRMED**
 **Files**:
+
 - `src/lib/util/reading-speed.ts` (calculation logic)
 - `src/lib/util/reading-speed-history.ts` (history processing)
 - `src/routes/reading-speed/+page.svelte` (UI)
@@ -322,6 +342,7 @@ Sophisticated reading speed tracking system with personalized estimates, achieve
    - Strict validation for session data
 
 **Technical Details**:
+
 - **Idle Detection**: Configurable timeout (e.g., 5 minutes) to filter pauses
 - **Legacy Migration**: Automatically migrates old page turn data
 - 🟡 **Session Compaction**: Algorithm in progress (lines 107-124), not yet implemented
@@ -332,6 +353,7 @@ Sophisticated reading speed tracking system with personalized estimates, achieve
 
 **Status**: ✅ **CONFIRMED**
 **Files**:
+
 - `src/routes/[manga]/text/+page.svelte` (series-level)
 - `src/routes/[manga]/[volume]/text/+page.svelte` (volume-level)
 
@@ -339,6 +361,7 @@ Sophisticated reading speed tracking system with personalized estimates, achieve
 Dedicated text-only view pages for language learners to analyze OCR text without images.
 
 **Features**:
+
 - Shows all OCR text from manga pages
 - No images, pure text
 - Preserves text hierarchy from OCR blocks
@@ -350,10 +373,12 @@ Dedicated text-only view pages for language learners to analyze OCR text without
 
 **Status**: ✅ **PARTIALLY CONFIRMED**
 **Files**:
+
 - `src/routes/[manga]/+page.svelte` (line 381)
 - `src/lib/components/Reader/Reader.svelte` (lines 186, 195)
 
 **Verified Shortcuts**:
+
 - ✅ **Escape**: Navigate back from Reader to Series, and from Series to Catalog
 - ✅ **ArrowUp**: Scroll up in reader (75% of visible page height, smooth animation)
 - ✅ **ArrowDown**: Scroll down in reader (75% of visible page height, smooth animation)
@@ -363,8 +388,8 @@ Dedicated text-only view pages for language learners to analyze OCR text without
 - ✅ **I**: Toggles the invert filter
 - ✅ **C**: Toggles First image is cover
 
-
 **Scroll Behavior**:
+
 - Smooth animations for arrow key scrolling
 - 75% of visible page height per keypress
 - Bounds enabled by default
@@ -439,6 +464,7 @@ Advanced worker pool system for parallel downloads and background processing wit
 Export manga volumes from the library as CBZ files for sharing or backup.
 
 **Features**:
+
 - Export individual volumes as CBZ
 - Include mokuro JSON file
 - Proper folder structure
@@ -452,6 +478,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ### Cloud API Optimizations
 
 **Common Optimizations (All Providers)**:
+
 1. **Bulk Operations**:
    - Sort volumes before bulk backup
    - Skip already backed up volumes
@@ -465,12 +492,14 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 **Provider-Specific Optimizations**:
 
 **Google Drive**:
+
 - **Drive Cache**: Single API call instead of N+1 queries, efficient path matching
 - **Pagination**: Automatic handling for >1000 files
 - **Reduced Quota Usage**: Optimized API calls and bulk operations
 - **Service Worker Cache Clearing**: Prevents stale cached responses
 
 **MEGA**:
+
 - **Rate Limiting**: Exponential backoff with jitter, handles EAGAIN/429 errors
 - **Share Link Cleanup**: Automatic cleanup to prevent leftover public links
 - **Error Recovery**: Smart cache refresh, stale folder reference detection
@@ -588,22 +617,22 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 
 ## Summary Statistics
 
-| Category | Count | Status |
-|----------|-------|--------|
-| **Total Commits** | 498 | ✅ Verified |
-| **Major Architecture Changes** | 3 | ✅ All confirmed |
-| **Operational Features** | 10 | ✅ Code verified |
-| **Cloud Providers** | 2 operational + 1 WIP | ✅ Drive/MEGA + 🟡 WebDAV |
-| **Reverted Features** | 4 | ❌ Removed |
-| **Total Cloud Commits** | ~137 | ✅ Integrated |
-| **├─ Google Drive** | ~97 | ✅ Integrated |
-| **├─ MEGA** | ~40 | ✅ Integrated |
-| **└─ Multi-Provider Framework** | ~57 | ✅ Integrated |
-| **Stats/Achievement Commits** | ~23 | ✅ Integrated |
-| **Upload/Import Commits** | ~56 | ✅ Integrated |
-| **Performance Commits** | ~34 | ✅ Integrated |
-| **Database Commits** | ~28 | ✅ Integrated |
-| **UI/UX Commits** | ~69 | ✅ Integrated |
+| Category                        | Count                 | Status                    |
+| ------------------------------- | --------------------- | ------------------------- |
+| **Total Commits**               | 498                   | ✅ Verified               |
+| **Major Architecture Changes**  | 3                     | ✅ All confirmed          |
+| **Operational Features**        | 10                    | ✅ Code verified          |
+| **Cloud Providers**             | 2 operational + 1 WIP | ✅ Drive/MEGA + 🟡 WebDAV |
+| **Reverted Features**           | 4                     | ❌ Removed                |
+| **Total Cloud Commits**         | ~137                  | ✅ Integrated             |
+| **├─ Google Drive**             | ~97                   | ✅ Integrated             |
+| **├─ MEGA**                     | ~40                   | ✅ Integrated             |
+| **└─ Multi-Provider Framework** | ~57                   | ✅ Integrated             |
+| **Stats/Achievement Commits**   | ~23                   | ✅ Integrated             |
+| **Upload/Import Commits**       | ~56                   | ✅ Integrated             |
+| **Performance Commits**         | ~34                   | ✅ Integrated             |
+| **Database Commits**            | ~28                   | ✅ Integrated             |
+| **UI/UX Commits**               | ~69                   | ✅ Integrated             |
 
 ---
 
@@ -612,6 +641,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ### Phase 1: Core Infrastructure (Review First)
 
 **Components**:
+
 - Database v2 migration
 - Provider interface architecture
 - Worker pool system
@@ -628,6 +658,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ### Phase 2: Cloud Storage (Review Second)
 
 **Components**:
+
 - Unified cloud storage system (~137 commits)
   - Google Drive integration (97 commits)
   - MEGA integration (40 commits)
@@ -638,6 +669,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 **Why Second**: Builds on Phase 1, largest feature addition
 
 **Review Focus**:
+
 - OAuth security (Google Drive)
 - Credential storage (MEGA, WebDAV)
 - Data privacy across providers
@@ -651,6 +683,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ### Phase 3: Upload & Import (Review Third)
 
 **Components**:
+
 - Memory-efficient upload system
 - ZIP streaming
 - Nested ZIP handling
@@ -667,6 +700,7 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ### Phase 4: Features & Polish (Review Last)
 
 **Components**:
+
 - Reading speed tracking
 - Achievement badges
 - Night mode
@@ -685,22 +719,29 @@ Export manga volumes from the library as CBZ files for sharing or backup.
 ## Questions for PR Preparation
 
 ### 1. WebDAV Status
+
 Should we include WebDAV with "experimental" flag, exclude entirely, or finish implementation?
 
 ### 2. Breaking Changes
+
 How to handle database migration? Document prominently? Add backup prompt? Rollback mechanism?
 
 ### 3. Environment Setup
+
 How to handle API credentials? `.env.example`? Test credentials for reviewers? Setup guide?
 
 ### 4. Feature Flags
+
 Should incomplete features be behind flags? Remove experimental code? Document as WIP?
 
 ### 5. Dependency Changes
+
 Is Svelte 5 migration acceptable in this PR? Separate PR? Migration guide needed?
 
 ### 6. Documentation
+
 Which docs needed in PR vs follow-up?
+
 - MIGRATION_GUIDE.md
 - SETUP.md
 - MULTI_PROVIDER.md
@@ -709,15 +750,19 @@ Which docs needed in PR vs follow-up?
 - BREAKING_CHANGES.md
 
 ### 7. Testing Coverage
+
 Add tests in this PR? Follow-up PR? Critical paths only? Mock cloud APIs?
 
 ### 8. Performance Impact
+
 Should we benchmark? Baseline from ZXY101? Performance tests? Acceptable regressions?
 
 ### 9. Security Review
+
 Need security audit? Known vulnerabilities? Security documentation?
 
 ### 10. Rollout Strategy
+
 Merge all at once? Feature flags? Beta branch? Staged merge?
 
 ---
@@ -725,24 +770,28 @@ Merge all at once? Feature flags? Beta branch? Staged merge?
 ## Next Steps
 
 ### Immediate Actions
+
 1. Share this document with ZXY101
 2. Answer the 10 questions above
 3. Test database migration with real data
 4. Create `.env.example`
 
 ### Short-Term Actions
+
 5. Write MIGRATION_GUIDE.md
 6. Create test plan
 7. Generate CHANGELOG.md
 8. Draft PR description
 
 ### Before PR Submission
+
 9. Security review
 10. Performance benchmarks
 11. Documentation review
 12. Feature cleanup decisions
 
 ### After PR Submission
+
 13. Beta testing period
 14. Address feedback
 15. Follow-up PRs
