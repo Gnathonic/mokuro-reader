@@ -14,6 +14,7 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import { beforeNavigate } from '$app/navigation';
+  import AppearanceSettings from './AppearanceSettings.svelte';
 
   let transitionParams = {
     x: 320,
@@ -67,6 +68,7 @@
       <AnkiConnectSettings />
       <CatalogSettings />
       <Stats />
+      <AppearanceSettings />
       <About />
     </Accordion>
     <div class="flex flex-col gap-2">
