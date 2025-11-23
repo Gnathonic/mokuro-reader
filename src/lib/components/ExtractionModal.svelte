@@ -80,16 +80,25 @@
 <Modal bind:open size="md" autoclose outsideclose>
   <div class="text-center">
     <h3 class="mb-5 text-lg font-normal text-gray-700 dark:text-gray-300">Extract Options</h3>
-    <div class="flex flex-col gap-4 mb-5">
+    <div class="mb-5 flex flex-col gap-4">
       <div class="flex items-center justify-between">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Extract as CBZ (recommended)</span>
-        <Toggle checked={asCbz} on:change={(e) => updateAsCbz(e.target.checked)} />
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+          >Extract as CBZ (recommended)</span
+        >
+        <Toggle
+          checked={asCbz}
+          onchange={(e) => updateAsCbz((e.target as HTMLInputElement)?.checked ?? false)}
+        />
       </div>
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
           >Extract individual volumes (recommended)</span
         >
-        <Toggle checked={individualVolumes} on:change={(e) => updateIndividualVolumes(e.target.checked)} />
+        <Toggle
+          checked={individualVolumes}
+          onchange={(e) =>
+            updateIndividualVolumes((e.target as HTMLInputElement)?.checked ?? false)}
+        />
       </div>
 
       {#if individualVolumes}
@@ -97,22 +106,26 @@
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
             >Include series title in filename</span
           >
-          <Toggle checked={includeSeriesTitle} on:change={(e) => updateIncludeSeriesTitle(e.target.checked)} />
+          <Toggle
+            checked={includeSeriesTitle}
+            onchange={(e) =>
+              updateIncludeSeriesTitle((e.target as HTMLInputElement)?.checked ?? false)}
+          />
         </div>
       {/if}
 
-      <div class="mt-2 p-3 bg-gray-100 dark:bg-gray-800 rounded-md">
-        <div class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+      <div class="mt-2 rounded-md bg-gray-100 p-3 dark:bg-gray-800">
+        <div class="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">
           Filename preview:
         </div>
-        <div class="text-xs font-mono break-all text-gray-600 dark:text-gray-400">
+        <div class="font-mono text-xs break-all text-gray-600 dark:text-gray-400">
           {firstVolumePreview}
         </div>
       </div>
     </div>
     <div class="flex justify-center gap-2">
-      <Button color="blue" on:click={handleExtract}>Extract</Button>
-      <Button color="alternative" on:click={handleCancel}>Cancel</Button>
+      <Button color="blue" onclick={handleExtract}>Extract</Button>
+      <Button color="alternative" onclick={handleCancel}>Cancel</Button>
     </div>
   </div>
 </Modal>

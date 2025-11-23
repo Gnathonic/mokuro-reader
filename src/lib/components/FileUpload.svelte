@@ -26,7 +26,7 @@
 <button
   type="button"
   onclick={handleClick}
-  class="inline-flex items-center hover:underline text-primary-600 dark:text-primary-500 cursor-pointer bg-transparent border-none p-0 m-0"
+  class="m-0 inline-flex cursor-pointer items-center border-none bg-transparent p-0 text-primary-600 hover:underline dark:text-primary-500"
 >
   {#if children}{@render children()}{:else}Upload{/if}
 </button>

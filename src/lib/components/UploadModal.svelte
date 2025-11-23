@@ -12,7 +12,7 @@
   // In Svelte 5, we need to make sure the open prop is properly bindable
   let { open = $bindable(false) }: Props = $props();
 
-  let promise: Promise<void> = $state();
+  let promise: Promise<void> | undefined = $state(undefined);
   let files: FileList | undefined = $state(undefined);
   let isMobileDevice = $state(false);
 
@@ -84,7 +84,6 @@
             const file = item.getAsFile();
             if (file) {
               draggedFiles.push(file);
-              draggedFiles = draggedFiles;
             }
           }
         }
@@ -109,16 +108,14 @@
   let activeStyle = $state(defaultStyle);
 </script>
 
-<Modal title="Upload" bind:open outsideclose on:close={reset}>
+<Modal title="Upload" bind:open outsideclose onclose={reset}>
   {#await promise}
-    <h2 class="justify-center flex">Loading...</h2>
+    <h2 class="flex justify-center">Loading...</h2>
     <div class="text-center"><Spinner /></div>
   {:then}
     <Accordion flush>
       <AccordionItem>
-        {#snippet header()}
-          <span>What to upload?</span>
-        {/snippet}
+        {#snippet header()}What to upload?{/snippet}
         <div class="flex flex-col gap-5">
           <div>
             <p>
@@ -126,7 +123,7 @@
               can install it by running the following command:
             </p>
             <div role="none" onclick={toClipboard}>
-              <code class="text-primary-600 bg-slate-900"
+              <code class="bg-slate-900 text-primary-600"
                 >pip3 install git+https://github.com/kha-white/mokuro.git@web-reader</code
               >
             </div>
@@ -139,11 +136,11 @@
             {#if isMobileDevice}
               <b>Note:</b> On mobile devices, directory upload is not supported. Please zip your
               manga first and then upload it via
-              <code class="text-primary-600 bg-slate-900">choose files</code>.
+              <code class="bg-slate-900 text-primary-600">choose files</code>.
             {:else}
               On mobile devices, directory upload is not supported. If you're using a mobile device,
               you will need to zip your manga first and then upload it via
-              <code class="text-primary-600 bg-slate-900">choose files</code>.
+              <code class="bg-slate-900 text-primary-600">choose files</code>.
             {/if}
           </p>
         </div>
@@ -151,23 +148,23 @@
     </Accordion>
     <Dropzone
       id="dropzone"
-      on:drop={dropHandle}
-      on:dragover={(event) => {
+      ondrop={dropHandle}
+      ondragover={(event) => {
         event.preventDefault();
         activeStyle = highlightStyle;
       }}
-      on:dragleave={(event) => {
+      ondragleave={(event) => {
         event.preventDefault();
         activeStyle = defaultStyle;
       }}
-      on:click={(event) => {
+      onclick={(event) => {
         event.preventDefault();
       }}
-      defaultClass={activeStyle}
+      class={activeStyle}
     >
       <svg
         aria-hidden="true"
-        class="mb-3 w-10 h-10 text-gray-400"
+        class="mb-3 h-10 w-10 text-gray-400"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -196,15 +193,16 @@
           Drag and drop /
           <button
             type="button"
-            class="text-primary-600 dark:text-primary-500 hover:underline bg-transparent border-none p-0 m-0 cursor-pointer inline-flex"
+            class="m-0 inline-flex cursor-pointer border-none bg-transparent p-0 text-primary-600 hover:underline dark:text-primary-500"
             onclick={() => {
               const input = document.createElement('input');
               input.type = 'file';
               input.accept = '.mokuro,.zip,.cbz';
               input.multiple = true;
               input.onchange = (e) => {
-                if (e.target.files.length > 0) {
-                  files = e.target.files;
+                const target = e.target as HTMLInputElement;
+                if (target.files && target.files.length > 0) {
+                  files = target.files;
                 }
               };
               input.click();
@@ -216,14 +214,15 @@
           {#if !isMobileDevice}
             / <button
               type="button"
-              class="text-primary-600 dark:text-primary-500 hover:underline bg-transparent border-none p-0 m-0 cursor-pointer inline-flex"
+              class="m-0 inline-flex cursor-pointer border-none bg-transparent p-0 text-primary-600 hover:underline dark:text-primary-500"
               onclick={() => {
                 const input = document.createElement('input');
                 input.type = 'file';
                 input.setAttribute('webkitdirectory', '');
                 input.onchange = (e) => {
-                  if (e.target.files.length > 0) {
-                    files = e.target.files;
+                  const target = e.target as HTMLInputElement;
+                  if (target.files && target.files.length > 0) {
+                    files = target.files;
                   }
                 };
                 input.click();
@@ -234,17 +233,17 @@
           {/if}
 
           {#if isMobileDevice}
-            <span class="ml-1 text-xs text-gray-500 dark:text-gray-400 italic">
+            <span class="ml-1 text-xs text-gray-500 italic dark:text-gray-400">
               (directory upload not available on mobile)
             </span>
           {/if}
         </p>
       {/if}
     </Dropzone>
-    <p class=" text-sm text-gray-500 dark:text-gray-400 text-center">{storageSpace}</p>
+    <p class=" text-center text-sm text-gray-500 dark:text-gray-400">{storageSpace}</p>
     <div class="flex flex-1 flex-col gap-2">
-      <Button outline on:click={reset} {disabled} color="dark">Reset</Button>
-      <Button outline on:click={onUpload} {disabled}>Upload</Button>
+      <Button outline onclick={reset} {disabled} color="dark">Reset</Button>
+      <Button outline onclick={onUpload} {disabled}>Upload</Button>
     </div>
   {/await}
 </Modal>

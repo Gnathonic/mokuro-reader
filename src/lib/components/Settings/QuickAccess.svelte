@@ -5,13 +5,13 @@
   import { Button } from 'flowbite-svelte';
 
   interface Props {
-    hidden?: boolean;
+    open?: boolean;
   }
 
-  let { hidden = $bindable(false) }: Props = $props();
+  let { open = $bindable(false) }: Props = $props();
 
   function onClose() {
-    hidden = true;
+    open = false;
     // Extract series UUID from current URL and navigate to series page
     const pathname = window.location.pathname || '';
     const seriesUuid = pathname.split('/')[1] || '';
@@ -21,7 +21,12 @@
 
 {#if isReader()}
   <div class="flex flex-col gap-2">
-    <Button color="alternative" on:click={toggleFullScreen}>Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span></Button>
-    <Button color="alternative" on:click={onClose}>Close reader <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Esc)</span></Button>
+    <Button color="alternative" onclick={toggleFullScreen}
+      >Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span
+      ></Button
+    >
+    <Button color="alternative" onclick={onClose}
+      >Close reader <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Esc)</span></Button
+    >
   </div>
 {/if}

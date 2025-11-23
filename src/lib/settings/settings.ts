@@ -147,7 +147,7 @@ type Profiles = Record<string, Settings>;
 
 // Built-in profiles that cannot be deleted or renamed
 export const BUILT_IN_PROFILES = ['Mobile', 'Desktop'] as const;
-export type BuiltInProfile = typeof BUILT_IN_PROFILES[number];
+export type BuiltInProfile = (typeof BUILT_IN_PROFILES)[number];
 
 // Default profiles include both built-in profiles
 const builtInProfiles: Profiles = {
@@ -216,9 +216,7 @@ export const profilesWithTrash = _profilesInternal;
 // Public derived store - filters out deleted profiles (tombstones)
 // This is what UI code should use
 export const profiles = derived(_profilesInternal, ($internal) => {
-  return Object.fromEntries(
-    Object.entries($internal).filter(([_, profile]) => !profile.deletedOn)
-  );
+  return Object.fromEntries(Object.entries($internal).filter(([_, profile]) => !profile.deletedOn));
 });
 
 // Initialize current profile: use stored preference, or detect platform

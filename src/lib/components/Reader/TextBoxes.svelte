@@ -61,7 +61,7 @@
 
         // Replace manual ellipsis with proper ellipsis character (…)
         // Handle both ASCII periods (...) and full-width periods (．．．)
-        const processedLines = lines.map(line =>
+        const processedLines = lines.map((line) =>
           line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
         );
 
@@ -113,7 +113,9 @@
 
     // Check if content overflows
     const isOverflowing = () => {
-      return element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth;
+      return (
+        element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth
+      );
     };
 
     // Test nowrap mode: reduce font size until it fits
@@ -167,7 +169,8 @@
 
     const onMouseEnter = () => {
       // Skip if already processed, OCR is hidden, or using manual font size
-      if (processedTextBoxes.has(index) || display !== 'block' || $settings.fontSize !== 'auto') return;
+      if (processedTextBoxes.has(index) || display !== 'block' || $settings.fontSize !== 'auto')
+        return;
 
       // Mark as processed immediately to prevent duplicate calculations
       processedTextBoxes.add(index);

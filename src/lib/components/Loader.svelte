@@ -8,7 +8,7 @@
   let { children }: Props = $props();
 </script>
 
-<div class="flex flex-col gap-5 items-center justify-center h-full p-10">
+<div class="flex h-full flex-col items-center justify-center gap-5 p-10">
   <Spinner size={'8'} />
   {#if children}{@render children()}{:else}Loading...{/if}
 </div>

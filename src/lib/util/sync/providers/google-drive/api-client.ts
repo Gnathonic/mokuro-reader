@@ -78,18 +78,10 @@ export async function handleAuthError(status: number, retryOnAuth = true): Promi
   tokenManager.clearToken();
 
   if (retryOnAuth) {
-    throw new DriveApiError(
-      'Authentication expired. Please sign in again.',
-      status,
-      false
-    );
+    throw new DriveApiError('Authentication expired. Please sign in again.', status, false);
   }
 
-  throw new DriveApiError(
-    'Authentication error',
-    status,
-    false
-  );
+  throw new DriveApiError('Authentication error', status, false);
 }
 
 class DriveApiClient {
@@ -99,17 +91,17 @@ class DriveApiClient {
    * Wait for gapi global to be available (loaded from script tag)
    */
   private async waitForGapi(): Promise<void> {
-    if (typeof gapi !== 'undefined' && gapi?.load) return;
+    if (typeof gapi !== 'undefined' && typeof gapi.load === 'function') return;
 
     console.log('⏳ Waiting for Google API (gapi) to load...');
     const maxWait = 10000; // 10 seconds
     const start = Date.now();
 
-    while (typeof gapi === 'undefined' || !gapi?.load) {
+    while (typeof gapi === 'undefined' || typeof gapi.load !== 'function') {
       if (Date.now() - start > maxWait) {
         throw new Error('Timeout waiting for Google API (gapi) to load');
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     console.log('✅ Google API (gapi) loaded');
   }
@@ -145,7 +137,8 @@ class DriveApiClient {
       console.error('Drive API error caught:', error);
       console.error('Error details - status:', error.status, 'message:', error.message);
 
-      const isNetworkError = error.message?.toLowerCase().includes('network') ||
+      const isNetworkError =
+        error.message?.toLowerCase().includes('network') ||
         error.message?.toLowerCase().includes('offline') ||
         error.status === 0;
 
@@ -154,11 +147,7 @@ class DriveApiClient {
         await handleAuthError(error.status, retryOnAuth);
       }
 
-      throw new DriveApiError(
-        error.message || 'Unknown API error',
-        error.status,
-        isNetworkError
-      );
+      throw new DriveApiError(error.message || 'Unknown API error', error.status, isNetworkError);
     }
   }
 
@@ -292,7 +281,7 @@ class DriveApiClient {
       const response = await fetch(url, {
         method: fileId ? 'PATCH' : 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         },
         body: form
       });
@@ -324,7 +313,7 @@ class DriveApiClient {
 
   async trashFiles(fileIds: string[]): Promise<void> {
     // Batch delete by trashing each file
-    const promises = fileIds.map(fileId => this.trashFile(fileId));
+    const promises = fileIds.map((fileId) => this.trashFile(fileId));
     await Promise.all(promises);
   }
 
@@ -373,7 +362,9 @@ class DriveApiClient {
 
   private getCurrentToken(): string {
     let token = '';
-    tokenManager.token.subscribe(value => { token = value; })();
+    tokenManager.token.subscribe((value) => {
+      token = value;
+    })();
     return token;
   }
 }

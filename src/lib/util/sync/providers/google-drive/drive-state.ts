@@ -2,8 +2,8 @@ import { derived, type Readable } from 'svelte/store';
 import { tokenManager } from './token-manager';
 
 export interface DriveState {
-	isAuthenticated: boolean;
-	needsAttention: boolean;
+  isAuthenticated: boolean;
+  needsAttention: boolean;
 }
 
 /**
@@ -13,12 +13,12 @@ export interface DriveState {
  * The old dual-cache architecture (driveFilesCache) has been eliminated.
  */
 export const driveState: Readable<DriveState> = derived(
-	[tokenManager.token, tokenManager.needsAttention],
-	([$token, $needsAttention]) => {
-		const isAuthenticated = $token !== '';
-		return {
-			isAuthenticated,
-			needsAttention: $needsAttention
-		};
-	}
+  [tokenManager.token, tokenManager.needsAttention],
+  ([$token, $needsAttention]) => {
+    const isAuthenticated = $token !== '';
+    return {
+      isAuthenticated,
+      needsAttention: $needsAttention
+    };
+  }
 );

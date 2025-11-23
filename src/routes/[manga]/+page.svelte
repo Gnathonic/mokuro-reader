@@ -4,7 +4,7 @@
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import BackupButton from '$lib/components/BackupButton.svelte';
-  import { Button, Listgroup, Spinner, Badge } from 'flowbite-svelte';
+  import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
@@ -13,7 +13,16 @@
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, volumes, progress } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { CloudArrowUpOutline, TrashBinSolid, DownloadSolid, FileLinesOutline, SortOutline, GridOutline, ListOutline } from 'flowbite-svelte-icons';
+  import {
+    CloudArrowUpOutline,
+    TrashBinSolid,
+    DownloadSolid,
+    FileLinesOutline,
+    SortOutline,
+    GridOutline,
+    ListOutline,
+    DotsVerticalOutline
+  } from 'flowbite-svelte-icons';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
@@ -32,7 +41,7 @@
         (stats, volumeId) => {
           const timeReadInMinutes = $volumes[volumeId]?.timeReadInMinutes || 0;
           const chars = $volumes[volumeId]?.chars || 0;
-          const completed = $volumes[volumeId]?.completed || 0;
+          const completed = $volumes[volumeId]?.completed ? 1 : 0;
 
           stats.timeReadInMinutes = stats.timeReadInMinutes + timeReadInMinutes;
           stats.chars = stats.chars + chars;
@@ -104,13 +113,13 @@
   // View mode state (persisted to localStorage)
   type ViewMode = 'list' | 'grid';
   let viewMode = $state<ViewMode>(
-    (browser && localStorage.getItem('series-view-mode') as ViewMode) || 'grid'
+    (browser && (localStorage.getItem('series-view-mode') as ViewMode)) || 'grid'
   );
 
   // Sort mode state (persisted to localStorage)
   type SortMode = 'unread-first' | 'alphabetical';
   let sortMode = $state<SortMode>(
-    (browser && localStorage.getItem('series-sort-mode') as SortMode) || 'unread-first'
+    (browser && (localStorage.getItem('series-sort-mode') as SortMode)) || 'unread-first'
   );
 
   // Update localStorage when modes change
@@ -131,7 +140,9 @@
 
   // Reactive sorted volumes - avoids circular dependency by making sorting fully reactive
   let allVolumes = $derived.by(() => {
-    const seriesVolumes = $catalog?.find((item) => item.series_uuid === $page.params.manga)?.volumes;
+    const seriesVolumes = $catalog?.find(
+      (item) => item.series_uuid === $page.params.manga
+    )?.volumes;
     if (!seriesVolumes) return undefined;
 
     // Create a copy to sort
@@ -163,8 +174,8 @@
   });
 
   // Separate real volumes from placeholders
-  let manga = $derived(allVolumes?.filter(v => !v.isPlaceholder) || []);
-  let placeholders = $derived(allVolumes?.filter(v => v.isPlaceholder) || []);
+  let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
+  let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
 
   let loading = $state(false);
 
@@ -174,7 +185,7 @@
   let wasFetching = $state(false);
 
   $effect(() => {
-    return unifiedCloudManager.cloudFiles.subscribe(value => {
+    return unifiedCloudManager.cloudFiles.subscribe((value) => {
       console.log('[Series Page] Cloud files updated:', value.size, 'series');
       cloudFiles = value;
       // If we get files and weren't fetching, cache must already be loaded
@@ -187,7 +198,7 @@
 
   // Track when fetching completes to know when cache is loaded
   $effect(() => {
-    return unifiedCloudManager.isFetching.subscribe(isFetching => {
+    return unifiedCloudManager.isFetching.subscribe((isFetching) => {
       console.log('[Series Page] isFetching:', isFetching, 'wasFetching:', wasFetching);
       // Mark cache as loaded when fetching transitions from true to false
       if (wasFetching && !isFetching) {
@@ -206,7 +217,7 @@
   // Subscribe to provider manager status for reactive authentication state
   let providerStatus = $state({ hasAnyAuthenticated: false, providers: {}, needsAttention: false });
   $effect(() => {
-    return providerManager.status.subscribe(value => {
+    return providerManager.status.subscribe((value) => {
       console.log('[Series Page] Provider status updated:', value.hasAnyAuthenticated, value);
       providerStatus = value;
       // Reset cache loaded state when provider changes
@@ -227,7 +238,14 @@
 
   // Debug logging for reactive values
   $effect(() => {
-    console.log('[Series Page] Reactive values - hasAnyProvider:', hasAnyProvider, 'allBackedUp:', allBackedUp, 'anyBackedUp:', anyBackedUp);
+    console.log(
+      '[Series Page] Reactive values - hasAnyProvider:',
+      hasAnyProvider,
+      'allBackedUp:',
+      allBackedUp,
+      'anyBackedUp:',
+      anyBackedUp
+    );
   });
 
   // Use $effect to manually compute these values when cloudFiles changes
@@ -246,17 +264,24 @@
     const seriesTitle = manga[0].series_title;
     const seriesFiles = cloudFiles.get(seriesTitle) || [];
 
-    allBackedUp = manga.every(vol => {
+    allBackedUp = manga.every((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some(f => f.path === path);
+      return seriesFiles.some((f) => f.path === path);
     });
 
-    anyBackedUp = manga.some(vol => {
+    anyBackedUp = manga.some((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some(f => f.path === path);
+      return seriesFiles.some((f) => f.path === path);
     });
 
-    console.log('[Series Page] Backup status computed - allBackedUp:', allBackedUp, 'anyBackedUp:', anyBackedUp, 'seriesFiles:', seriesFiles.length);
+    console.log(
+      '[Series Page] Backup status computed - allBackedUp:',
+      allBackedUp,
+      'anyBackedUp:',
+      anyBackedUp,
+      'seriesFiles:',
+      seriesFiles.length
+    );
   });
 
   async function confirmDelete(deleteStats = false, deleteCloud = false) {
@@ -327,16 +352,13 @@
       return;
     }
 
-    promptConfirmation(
-      `Delete ${manga[0].series_title} from ${providerDisplayName}?`,
-      async () => {
-        await deleteSeriesFromCloud(manga);
-      }
-    );
+    promptConfirmation(`Delete ${manga[0].series_title} from ${providerDisplayName}?`, async () => {
+      await deleteSeriesFromCloud(manga);
+    });
   }
 
   function onDelete() {
-    const hasCloudBackups = manga?.some(vol =>
+    const hasCloudBackups = manga?.some((vol) =>
       unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
@@ -345,15 +367,17 @@
       confirmDelete,
       undefined,
       {
-        label: "Also delete stats and progress?",
-        storageKey: "deleteStatsPreference",
+        label: 'Also delete stats and progress?',
+        storageKey: 'deleteStatsPreference',
         defaultValue: false
       },
-      hasCloudBackups ? {
-        label: `Also delete from ${providerDisplayName}?`,
-        storageKey: "deleteCloudPreference",
-        defaultValue: false
-      } : undefined
+      hasCloudBackups
+        ? {
+            label: `Also delete from ${providerDisplayName}?`,
+            storageKey: 'deleteCloudPreference',
+            defaultValue: false
+          }
+        : undefined
     );
   }
 
@@ -382,8 +406,8 @@
     }
 
     // Filter out already backed up volumes using unified cloud manager
-    const volumesToBackup = manga.filter(vol =>
-      !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
+    const volumesToBackup = manga.filter(
+      (vol) => !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
     if (volumesToBackup.length === 0) {
@@ -506,7 +530,11 @@
     // If we have files and not fetching, cache is already loaded
     if (currentCloudFiles.length > 0 && !currentlyFetching) {
       cacheHasLoaded = true;
-      console.log('[Series Page] Cache already loaded on mount:', currentCloudFiles.length, 'files');
+      console.log(
+        '[Series Page] Cache already loaded on mount:',
+        currentCloudFiles.length,
+        'files'
+      );
     }
 
     function handleKeydown(event: KeyboardEvent) {
@@ -527,136 +555,137 @@
   <title>{manga?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
 {#if !$catalog || $catalog.length === 0}
-  <div class="flex justify-center items-center p-16">
+  <div class="flex items-center justify-center p-16">
     <Spinner size="12" />
   </div>
 {:else if manga && manga.length > 0 && mangaStats}
-  <div class="p-2 flex flex-col gap-5">
+  <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title on left, Stats on right -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-      <h3 class="text-2xl font-bold px-2 min-w-0 flex-shrink-2">{manga[0].series_title}</h3>
+    <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{manga[0].series_title}</h3>
       <div class="flex flex-row gap-2 px-2 text-base">
-        <Badge color="dark" class="!min-w-0 break-words">Volumes: {mangaStats.completed} / {manga.length}</Badge>
-        <Badge color="dark" class="!min-w-0 break-words">Characters: {mangaStats.chars}</Badge>
-        <Badge color="dark" class="!min-w-0 break-words">Time Read: {formatTime(mangaStats.timeReadInMinutes)}</Badge>
+        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
+          >Volumes: {mangaStats.completed} / {manga.length}</Badge
+        >
+        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
+          >Characters: {mangaStats.chars}</Badge
+        >
+        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
+          >Time Read: {formatTime(mangaStats.timeReadInMinutes)}</Badge
+        >
         {#if estimatedMinutesLeft !== null}
-          <Badge color="dark" class="!min-w-0 break-words">Time Left: ~{formatTime(estimatedMinutesLeft)}</Badge>
+          <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
+            >Time Left: ~{formatTime(estimatedMinutesLeft)}</Badge
+          >
         {/if}
       </div>
     </div>
 
     <!-- Actions Row: All buttons -->
-    <div class="flex flex-row gap-2 items-stretch justify-end">
+    <div class="flex flex-row items-stretch justify-end gap-2">
       <!-- Cloud buttons -->
       {#if isCloudReady && !allBackedUp}
-        <Button
-          color="light"
-          on:click={backupSeries}
-          class="!min-w-0 self-stretch"
-        >
-          <CloudArrowUpOutline class="w-4 h-4 me-2 shrink-0" />
-          <span class="break-words">{anyBackedUp ? 'Backup remaining' : `Backup to ${providerDisplayName}`}</span>
+        <Button color="light" onclick={backupSeries} class="!min-w-0 self-stretch">
+          <CloudArrowUpOutline class="me-2 h-4 w-4 shrink-0" />
+          <span class="break-words"
+            >{anyBackedUp ? 'Backup remaining' : `Backup to ${providerDisplayName}`}</span
+          >
         </Button>
       {/if}
 
-      {#if isCloudReady && anyBackedUp}
-        <Button
-          color="red"
-          on:click={onDeleteFromCloud}
-          class="!min-w-0 self-stretch"
-        >
-          <TrashBinSolid class="w-4 h-4 me-2 shrink-0" />
-          <span class="break-words">Delete from {providerDisplayName}</span>
-        </Button>
-      {/if}
-
-      <!-- Other action buttons -->
-      <Button
-        color="light"
-        on:click={onExtract}
-        disabled={loading}
-        class="!min-w-0 self-stretch"
-      >
-        <DownloadSolid class="w-4 h-4 me-2 shrink-0" />
-        <span class="break-words">{loading ? 'Extracting...' : 'Extract'}</span>
-      </Button>
-
-      <Button color="alternative" on:click={onDelete} class="!min-w-0 self-stretch">
-        <TrashBinSolid class="w-4 h-4 me-2 shrink-0" />
+      <Button color="light" onclick={onDelete} class="!min-w-0 self-stretch">
+        <TrashBinSolid class="me-2 h-4 w-4 shrink-0" />
         <span class="break-words">Remove manga</span>
       </Button>
 
-      <!-- View buttons -->
-      <Button color="alternative" on:click={goToSeriesText} class="!min-w-0 self-stretch">
-        <FileLinesOutline class="w-4 h-4 me-2 shrink-0" />
-        <span class="break-words">View Series Text</span>
+      <Button color="light" onclick={toggleSortMode} class="!min-w-0 self-stretch">
+        <SortOutline class="me-2 h-5 w-5 shrink-0" />
+        <span class="break-words">{sortMode === 'unread-first' ? 'Unread first' : 'Default'}</span>
       </Button>
 
-      <Button
-        color="alternative"
-        on:click={toggleSortMode}
-        class="!min-w-0 self-stretch"
-      >
-        <SortOutline class="w-5 h-5 me-2 shrink-0" />
-        <span class="break-words">
-          {#if sortMode === 'unread-first'}
-            Unread first
-          {:else}
-            A-Z
-          {/if}
-        </span>
-      </Button>
-
-      <Button
-        color="alternative"
-        on:click={toggleViewMode}
-        class="!min-w-0 self-stretch"
-      >
+      <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">
         {#if viewMode === 'list'}
-          <GridOutline class="w-5 h-5 me-2 shrink-0" />
+          <GridOutline class="me-2 h-5 w-5 shrink-0" />
           <span class="break-words">Grid</span>
         {:else}
-          <ListOutline class="w-5 h-5 me-2 shrink-0" />
+          <ListOutline class="me-2 h-5 w-5 shrink-0" />
           <span class="break-words">List</span>
         {/if}
       </Button>
+
+      <!-- More options menu -->
+      <Button id="series-menu" color="light" class="!min-w-0 !p-2.5">
+        <DotsVerticalOutline class="h-5 w-5" />
+      </Button>
+      <Dropdown triggeredBy="#series-menu" placement="bottom-end">
+        {#if isCloudReady && anyBackedUp}
+          <DropdownItem
+            onclick={onDeleteFromCloud}
+            class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
+          >
+            <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Delete from {providerDisplayName}</span>
+          </DropdownItem>
+        {/if}
+        <DropdownItem
+          onclick={onExtract}
+          disabled={loading}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">{loading ? 'Extracting...' : 'Extract'}</span>
+        </DropdownItem>
+        <DropdownItem
+          onclick={goToSeriesText}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">View Series Text</span>
+        </DropdownItem>
+      </Dropdown>
     </div>
 
     {#if viewMode === 'list'}
-      <Listgroup active class="flex-1 h-full w-full">
-      {#if hasDuplicates && hasAnyProvider}
-        <div class="mb-4 flex items-center justify-between px-4 py-2 bg-red-50 dark:bg-red-900/20 rounded">
-          <h4 class="text-sm font-semibold text-red-600 dark:text-red-400">Duplicates found in {providerDisplayName} ({duplicateCloudFiles.length})</h4>
-          <Button size="xs" color="red" on:click={cleanCloudDuplicates}>
-            <TrashBinSolid class="w-3 h-3 me-1" />
-            Clean Duplicates
-          </Button>
-        </div>
-      {/if}
-
-      {#each manga as volume (volume.volume_uuid)}
-        <VolumeItem {volume} variant="list" />
-      {/each}
-
-      {#if placeholders && placeholders.length > 0}
-        <div class="mt-4 mb-2 flex items-center justify-between px-4">
-          <h4 class="text-sm font-semibold text-gray-400">Available in {providerDisplayName} ({placeholders.length})</h4>
-          {#if hasAnyProvider}
-            <Button size="xs" color="blue" on:click={downloadAllPlaceholders}>
-              <DownloadSolid class="w-3 h-3 me-1" />
-              Download all
+      <Listgroup active class="h-full w-full flex-1">
+        {#if hasDuplicates && hasAnyProvider}
+          <div
+            class="mb-4 flex items-center justify-between rounded bg-red-50 px-4 py-2 dark:bg-red-900/20"
+          >
+            <h4 class="text-sm font-semibold text-red-600 dark:text-red-400">
+              Duplicates found in {providerDisplayName} ({duplicateCloudFiles.length})
+            </h4>
+            <Button size="xs" color="red" onclick={cleanCloudDuplicates}>
+              <TrashBinSolid class="me-1 h-3 w-3" />
+              Clean Duplicates
             </Button>
-          {/if}
-        </div>
-        {#each placeholders as placeholder (placeholder.volume_uuid)}
-          <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          </div>
+        {/if}
+
+        {#each manga as volume (volume.volume_uuid)}
+          <VolumeItem {volume} variant="list" />
         {/each}
-      {/if}
-    </Listgroup>
+
+        {#if placeholders && placeholders.length > 0}
+          <div class="mt-4 mb-2 flex items-center justify-between px-4">
+            <h4 class="text-sm font-semibold text-gray-400">
+              Available in {providerDisplayName} ({placeholders.length})
+            </h4>
+            {#if hasAnyProvider}
+              <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
+                <DownloadSolid class="me-1 h-3 w-3" />
+                Download all
+              </Button>
+            {/if}
+          </div>
+          {#each placeholders as placeholder (placeholder.volume_uuid)}
+            <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          {/each}
+        {/if}
+      </Listgroup>
     {:else}
       <!-- Grid view -->
       <div class="flex flex-col gap-4">
-        <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
+        <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
           {#each manga as volume (volume.volume_uuid)}
             <VolumeItem {volume} variant="grid" />
           {/each}
@@ -664,13 +693,15 @@
 
         {#if placeholders && placeholders.length > 0 && hasAnyProvider}
           <div class="flex items-center justify-between px-2 pt-4">
-            <h4 class="text-sm font-semibold text-gray-400">Available in {providerDisplayName} ({placeholders.length})</h4>
-            <Button size="xs" color="blue" on:click={downloadAllPlaceholders}>
-              <DownloadSolid class="w-3 h-3 me-1" />
+            <h4 class="text-sm font-semibold text-gray-400">
+              Available in {providerDisplayName} ({placeholders.length})
+            </h4>
+            <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
+              <DownloadSolid class="me-1 h-3 w-3" />
               Download all
             </Button>
           </div>
-          <div class="flex sm:flex-row flex-col gap-5 flex-wrap justify-center sm:justify-start">
+          <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
             {#each placeholders as placeholder (placeholder.volume_uuid)}
               <PlaceholderVolumeItem volume={placeholder} variant="grid" />
             {/each}

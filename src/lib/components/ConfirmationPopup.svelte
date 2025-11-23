@@ -18,18 +18,14 @@
         if (browser && value.checkboxOption) {
           const { storageKey, defaultValue } = value.checkboxOption;
           const savedPreference = localStorage.getItem(storageKey);
-          checkboxValue = savedPreference !== null
-            ? savedPreference === 'true'
-            : defaultValue;
+          checkboxValue = savedPreference !== null ? savedPreference === 'true' : defaultValue;
         }
 
         // Load the second checkbox value if provided
         if (browser && value.checkboxOption2) {
           const { storageKey, defaultValue } = value.checkboxOption2;
           const savedPreference = localStorage.getItem(storageKey);
-          checkboxValue2 = savedPreference !== null
-            ? savedPreference === 'true'
-            : defaultValue;
+          checkboxValue2 = savedPreference !== null ? savedPreference === 'true' : defaultValue;
         }
       }
     });
@@ -55,12 +51,12 @@
     // Always close the modal after confirmation
     open = false;
   }
-  
+
   function handleCancel() {
     if ($confirmationPopupStore?.onCancel) {
       $confirmationPopupStore.onCancel();
     }
-    
+
     // Always close the modal after cancellation
     open = false;
   }
@@ -68,27 +64,33 @@
 
 <Modal bind:open size="xs" autoclose outsideclose>
   <div class="text-center">
-    <ExclamationCircleOutline class="mx-auto mb-4 text-gray-400 w-12 h-12 dark:text-gray-200" />
+    <ExclamationCircleOutline class="mx-auto mb-4 h-12 w-12 text-gray-400 dark:text-gray-200" />
     <h3 class="mb-5 text-lg font-normal text-gray-500 dark:text-gray-400">
       {$confirmationPopupStore?.message}
     </h3>
     {#if $confirmationPopupStore?.checkboxOption}
-      <div class="flex items-center justify-center mb-4">
+      <div class="mb-4 flex items-center justify-center">
         <Checkbox bind:checked={checkboxValue} id="confirmation-checkbox" />
-        <label for="confirmation-checkbox" class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">
+        <label
+          for="confirmation-checkbox"
+          class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400"
+        >
           {$confirmationPopupStore.checkboxOption.label}
         </label>
       </div>
     {/if}
     {#if $confirmationPopupStore?.checkboxOption2}
-      <div class="flex items-center justify-center mb-4">
+      <div class="mb-4 flex items-center justify-center">
         <Checkbox bind:checked={checkboxValue2} id="confirmation-checkbox-2" />
-        <label for="confirmation-checkbox-2" class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">
+        <label
+          for="confirmation-checkbox-2"
+          class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400"
+        >
           {$confirmationPopupStore.checkboxOption2.label}
         </label>
       </div>
     {/if}
-    <Button color="red" class="mr-2" on:click={handleConfirm}>Yes</Button>
-    <Button color="alternative" on:click={handleCancel}>No</Button>
+    <Button color="red" class="mr-2" onclick={handleConfirm}>Yes</Button>
+    <Button color="alternative" onclick={handleCancel}>No</Button>
   </div>
 </Modal>

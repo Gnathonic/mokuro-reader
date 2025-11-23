@@ -8,7 +8,7 @@ import { providerManager } from './provider-manager';
  * CloudFileMetadata with provider information for placeholder generation
  */
 export interface CloudVolumeWithProvider extends CloudFileMetadata {
-	provider: ProviderType;
+  provider: ProviderType;
 }
 
 /**
@@ -26,269 +26,271 @@ export interface CloudVolumeWithProvider extends CloudFileMetadata {
  */
 
 class UnifiedCloudManager {
+  /**
+   * Store containing cloud volumes from the current provider
+   * Returns Map<seriesTitle, CloudVolumeWithProvider[]> for efficient series-based operations
+   * Delegates to cacheManager and adds provider field to each file
+   */
+  get cloudFiles(): Readable<Map<string, CloudVolumeWithProvider[]>> {
+    return derived(
+      cacheManager.allFiles,
+      ($filesMap) => {
+        const provider = this.getActiveProvider();
+        if (!provider) return new Map();
 
-	/**
-	 * Store containing cloud volumes from the current provider
-	 * Returns Map<seriesTitle, CloudVolumeWithProvider[]> for efficient series-based operations
-	 * Delegates to cacheManager and adds provider field to each file
-	 */
-	get cloudFiles(): Readable<Map<string, CloudVolumeWithProvider[]>> {
-		return derived(cacheManager.allFiles, ($filesMap) => {
-			const provider = this.getActiveProvider();
-			if (!provider) return new Map();
+        // Add provider field to each file in the map
+        const resultMap = new Map<string, CloudVolumeWithProvider[]>();
+        for (const [seriesTitle, files] of $filesMap.entries()) {
+          resultMap.set(
+            seriesTitle,
+            files.map((file) => ({
+              ...file,
+              provider: provider.type
+            }))
+          );
+        }
+        return resultMap;
+      },
+      new Map()
+    );
+  }
 
-			// Add provider field to each file in the map
-			const resultMap = new Map<string, CloudVolumeWithProvider[]>();
-			for (const [seriesTitle, files] of $filesMap.entries()) {
-				resultMap.set(seriesTitle, files.map(file => ({
-					...file,
-					provider: provider.type
-				})));
-			}
-			return resultMap;
-		}, new Map());
-	}
+  /**
+   * Store indicating whether a fetch is in progress
+   * Delegates to cacheManager's reactive fetching state
+   */
+  get isFetching(): Readable<boolean> {
+    return cacheManager.isFetchingState;
+  }
 
-	/**
-	 * Store indicating whether a fetch is in progress
-	 * Delegates to cacheManager's reactive fetching state
-	 */
-	get isFetching(): Readable<boolean> {
-		return cacheManager.isFetchingState;
-	}
+  /**
+   * Fetch all cloud volumes from the current provider
+   * Delegates to cacheManager
+   */
+  async fetchAllCloudVolumes(): Promise<void> {
+    await cacheManager.fetchAll();
+  }
 
-	/**
-	 * Fetch all cloud volumes from the current provider
-	 * Delegates to cacheManager
-	 */
-	async fetchAllCloudVolumes(): Promise<void> {
-		await cacheManager.fetchAll();
-	}
+  /**
+   * Get all cloud volumes (current cached value)
+   */
+  getAllCloudVolumes(): any[] {
+    return cacheManager.getAllFiles();
+  }
 
-	/**
-	 * Get all cloud volumes (current cached value)
-	 */
-	getAllCloudVolumes(): any[] {
-		return cacheManager.getAllFiles();
-	}
+  /**
+   * Get cloud volume by file ID
+   */
+  getCloudVolume(fileId: string): any | undefined {
+    const volumes = this.getAllCloudVolumes();
+    return volumes.find((v: any) => v.fileId === fileId);
+  }
 
-	/**
-	 * Get cloud volume by file ID
-	 */
-	getCloudVolume(fileId: string): any | undefined {
-		const volumes = this.getAllCloudVolumes();
-		return volumes.find((v: any) => v.fileId === fileId);
-	}
+  /**
+   * Get cloud volumes for a specific series
+   */
+  getCloudVolumesBySeries(seriesTitle: string): any[] {
+    return cacheManager.getBySeries(seriesTitle);
+  }
 
-	/**
-	 * Get cloud volumes for a specific series
-	 */
-	getCloudVolumesBySeries(seriesTitle: string): any[] {
-		return cacheManager.getBySeries(seriesTitle);
-	}
+  /**
+   * Get the current provider
+   */
+  getActiveProvider(): SyncProvider | null {
+    return providerManager.getActiveProvider();
+  }
 
-	/**
-	 * Get the current provider
-	 */
-	getActiveProvider(): SyncProvider | null {
-		return providerManager.getActiveProvider();
-	}
+  /**
+   * Upload a volume CBZ to the current provider
+   */
+  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
 
-	/**
-	 * Upload a volume CBZ to the current provider
-	 */
-	async uploadFile(
-		path: string,
-		blob: Blob,
-		description?: string
-	): Promise<string> {
-		const provider = this.getActiveProvider();
-		if (!provider) {
-			throw new Error('No cloud provider authenticated');
-		}
+    const fileId = await provider.uploadFile(path, blob, description);
 
-		const fileId = await provider.uploadFile(path, blob, description);
+    // Update cache via cacheManager
+    const cache = cacheManager.getCache(provider.type);
+    if (cache && cache.add) {
+      cache.add(path, {
+        fileId,
+        path,
+        modifiedTime: new Date().toISOString(),
+        size: blob.size,
+        description
+      });
+    }
 
-		// Update cache via cacheManager
-		const cache = cacheManager.getCache(provider.type);
-		if (cache && cache.add) {
-			cache.add(path, {
-				fileId,
-				path,
-				modifiedTime: new Date().toISOString(),
-				size: blob.size,
-				description
-			});
-		}
+    return fileId;
+  }
 
-		return fileId;
-	}
+  /**
+   * Download a volume CBZ using the active provider
+   */
+  async downloadFile(
+    file: CloudFileMetadata,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<Blob> {
+    const provider = this.getActiveProvider();
+    console.log('[Unified Cloud Manager] downloadFile:', {
+      fileId: file.fileId,
+      path: file.path,
+      activeProvider: provider?.type,
+      hasProvider: !!provider
+    });
 
-	/**
-	 * Download a volume CBZ using the active provider
-	 */
-	async downloadFile(
-		file: CloudFileMetadata,
-		onProgress?: (loaded: number, total: number) => void
-	): Promise<Blob> {
-		const provider = this.getActiveProvider();
-		console.log('[Unified Cloud Manager] downloadFile:', {
-			fileId: file.fileId,
-			path: file.path,
-			activeProvider: provider?.type,
-			hasProvider: !!provider
-		});
+    if (!provider) {
+      throw new Error(`No cloud provider authenticated`);
+    }
 
-		if (!provider) {
-			throw new Error(`No cloud provider authenticated`);
-		}
+    return await provider.downloadFile(file, onProgress);
+  }
 
-		return await provider.downloadFile(file, onProgress);
-	}
+  /**
+   * Delete a volume CBZ from the current provider
+   */
+  async deleteFile(file: CloudFileMetadata): Promise<void> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
 
-	/**
-	 * Delete a volume CBZ from the current provider
-	 */
-	async deleteFile(file: CloudFileMetadata): Promise<void> {
-		const provider = this.getActiveProvider();
-		if (!provider) {
-			throw new Error('No cloud provider authenticated');
-		}
+    await provider.deleteFile(file);
 
-		await provider.deleteFile(file);
+    // Remove from cache via cacheManager
+    const cache = cacheManager.getCache(provider.type);
+    if (cache && cache.removeById) {
+      cache.removeById(file.fileId);
+    }
+  }
 
-		// Remove from cache via cacheManager
-		const cache = cacheManager.getCache(provider.type);
-		if (cache && cache.removeById) {
-			cache.removeById(file.fileId);
-		}
-	}
+  /**
+   * Delete an entire series folder (all volumes in the series)
+   */
+  async deleteSeriesFolder(seriesTitle: string): Promise<{ succeeded: number; failed: number }> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
 
-	/**
-	 * Delete an entire series folder (all volumes in the series)
-	 */
-	async deleteSeriesFolder(seriesTitle: string): Promise<{ succeeded: number; failed: number }> {
-		const provider = this.getActiveProvider();
-		if (!provider) {
-			throw new Error('No cloud provider authenticated');
-		}
+    // Get all volumes for this series from the current provider
+    const seriesVolumes = this.getCloudVolumesBySeries(seriesTitle);
 
-		// Get all volumes for this series from the current provider
-		const seriesVolumes = this.getCloudVolumesBySeries(seriesTitle);
+    if (seriesVolumes.length === 0) {
+      return { succeeded: 0, failed: 0 };
+    }
 
-		if (seriesVolumes.length === 0) {
-			return { succeeded: 0, failed: 0 };
-		}
+    // Check if provider has a deleteSeriesFolder method
+    if ('deleteSeriesFolder' in provider && typeof provider.deleteSeriesFolder === 'function') {
+      try {
+        await (provider as any).deleteSeriesFolder(seriesTitle);
 
-		// Check if provider has a deleteSeriesFolder method
-		if ('deleteSeriesFolder' in provider && typeof provider.deleteSeriesFolder === 'function') {
-			try {
-				await (provider as any).deleteSeriesFolder(seriesTitle);
+        // Remove all volumes from cache
+        const cache = cacheManager.getCache(provider.type);
+        if (cache && cache.removeById) {
+          for (const volume of seriesVolumes) {
+            cache.removeById(volume.fileId);
+          }
+        }
 
-				// Remove all volumes from cache
-				const cache = cacheManager.getCache(provider.type);
-				if (cache && cache.removeById) {
-					for (const volume of seriesVolumes) {
-						cache.removeById(volume.fileId);
-					}
-				}
+        return { succeeded: seriesVolumes.length, failed: 0 };
+      } catch (error) {
+        console.error(`Failed to delete series folder:`, error);
+        return { succeeded: 0, failed: seriesVolumes.length };
+      }
+    } else {
+      // Fallback: delete individual files if provider doesn't support folder deletion
+      let successCount = 0;
+      let failCount = 0;
 
-				return { succeeded: seriesVolumes.length, failed: 0 };
-			} catch (error) {
-				console.error(`Failed to delete series folder:`, error);
-				return { succeeded: 0, failed: seriesVolumes.length };
-			}
-		} else {
-			// Fallback: delete individual files if provider doesn't support folder deletion
-			let successCount = 0;
-			let failCount = 0;
+      for (const volume of seriesVolumes) {
+        try {
+          await this.deleteFile(volume);
+          successCount++;
+        } catch (error) {
+          console.error(`Failed to delete ${volume.path}:`, error);
+          failCount++;
+        }
+      }
 
-			for (const volume of seriesVolumes) {
-				try {
-					await this.deleteFile(volume);
-					successCount++;
-				} catch (error) {
-					console.error(`Failed to delete ${volume.path}:`, error);
-					failCount++;
-				}
-			}
+      return { succeeded: successCount, failed: failCount };
+    }
+  }
 
-			return { succeeded: successCount, failed: failCount };
-		}
-	}
+  /**
+   * Check if a volume exists in the current provider by path
+   */
+  existsInCloud(seriesTitle: string, volumeTitle: string): boolean {
+    const path = `${seriesTitle}/${volumeTitle}.cbz`;
+    return cacheManager.has(path);
+  }
 
-	/**
-	 * Check if a volume exists in the current provider by path
-	 */
-	existsInCloud(seriesTitle: string, volumeTitle: string): boolean {
-		const path = `${seriesTitle}/${volumeTitle}.cbz`;
-		return cacheManager.has(path);
-	}
+  /**
+   * Get cloud file metadata by path from the current provider
+   */
+  getCloudFile(seriesTitle: string, volumeTitle: string): any | null {
+    const path = `${seriesTitle}/${volumeTitle}.cbz`;
+    return cacheManager.get(path);
+  }
 
-	/**
-	 * Get cloud file metadata by path from the current provider
-	 */
-	getCloudFile(seriesTitle: string, volumeTitle: string): any | null {
-		const path = `${seriesTitle}/${volumeTitle}.cbz`;
-		return cacheManager.get(path);
-	}
+  /**
+   * Get the default provider for uploads (the current provider)
+   */
+  getDefaultProvider(): SyncProvider | null {
+    return this.getActiveProvider();
+  }
 
-	/**
-	 * Get the default provider for uploads (the current provider)
-	 */
-	getDefaultProvider(): SyncProvider | null {
-		return this.getActiveProvider();
-	}
+  /**
+   * Clear all cached data
+   */
+  clearCache(): void {
+    cacheManager.clearAll();
+  }
 
-	/**
-	 * Clear all cached data
-	 */
-	clearCache(): void {
-		cacheManager.clearAll();
-	}
+  /**
+   * Update cache entry (e.g., after modifying description)
+   */
+  updateCacheEntry(fileId: string, updates: Partial<any>): void {
+    const provider = this.getActiveProvider();
+    if (!provider) return;
 
-	/**
-	 * Update cache entry (e.g., after modifying description)
-	 */
-	updateCacheEntry(fileId: string, updates: Partial<any>): void {
-		const provider = this.getActiveProvider();
-		if (!provider) return;
+    const cache = cacheManager.getCache(provider.type);
+    if (cache && cache.update) {
+      cache.update(fileId, updates);
+    }
+  }
 
-		const cache = cacheManager.getCache(provider.type);
-		if (cache && cache.update) {
-			cache.update(fileId, updates);
-		}
-	}
+  /**
+   * Sync progress (volume data and optionally profiles) with the current provider
+   */
+  async syncProgress(options?: SyncOptions): Promise<SyncResult> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return {
+        totalProviders: 0,
+        succeeded: 0,
+        failed: 0,
+        results: []
+      };
+    }
 
-	/**
-	 * Sync progress (volume data and optionally profiles) with the current provider
-	 */
-	async syncProgress(options?: SyncOptions): Promise<SyncResult> {
-		const provider = this.getActiveProvider();
-		if (!provider) {
-			return {
-				totalProviders: 0,
-				succeeded: 0,
-				failed: 0,
-				results: []
-			};
-		}
+    const result = await unifiedSyncService.syncProvider(provider, options);
+    return {
+      totalProviders: 1,
+      succeeded: result.success ? 1 : 0,
+      failed: result.success ? 0 : 1,
+      results: [result]
+    };
+  }
 
-		const result = await unifiedSyncService.syncProvider(provider, options);
-		return {
-			totalProviders: 1,
-			succeeded: result.success ? 1 : 0,
-			failed: result.success ? 0 : 1,
-			results: [result]
-		};
-	}
-
-	/**
-	 * Check if sync is currently in progress
-	 */
-	get isSyncing(): Readable<boolean> {
-		return unifiedSyncService.isSyncing;
-	}
+  /**
+   * Check if sync is currently in progress
+   */
+  get isSyncing(): Readable<boolean> {
+    return unifiedSyncService.isSyncing;
+  }
 }
 
 export const unifiedCloudManager = new UnifiedCloudManager();

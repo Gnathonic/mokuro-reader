@@ -6,7 +6,14 @@ import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { driveFilesCache } from './drive-files-cache';
 
 // Re-export the main modules
-export { tokenManager, driveApiClient, DriveApiError, driveState, GOOGLE_DRIVE_CONFIG, driveFilesCache };
+export {
+  tokenManager,
+  driveApiClient,
+  DriveApiError,
+  driveState,
+  GOOGLE_DRIVE_CONFIG,
+  driveFilesCache
+};
 export type { TokenInfo, DriveFile, SyncProgress } from './types';
 export type { DriveState } from './drive-state';
 export type { DriveFileMetadata } from './drive-files-cache';

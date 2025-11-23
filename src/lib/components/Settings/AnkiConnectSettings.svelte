@@ -28,9 +28,7 @@
 </script>
 
 <AccordionItem>
-  {#snippet header()}
-    <span>Anki Connect</span>
-  {/snippet}
+  {#snippet header()}Anki Connect{/snippet}
   <div class="flex flex-col gap-5">
     <Helper
       >For anki connect integration to work, you must add the reader (<code class="text-primary-500"
@@ -42,92 +40,99 @@
       any text box.
     </Helper>
     <div>
-      <Toggle bind:checked={enabled} on:change={() => updateAnkiSetting('enabled', enabled)}
+      <Toggle bind:checked={enabled} onchange={() => updateAnkiSetting('enabled', enabled)}
         >AnkiConnect Integration Enabled</Toggle
       >
     </div>
     <div>
-      <Label>Picture field:</Label>
+      <Label class="text-gray-900 dark:text-white">Picture field:</Label>
       <Input
         {disabled}
         type="text"
         bind:value={pictureField}
-        on:change={() => updateAnkiSetting('pictureField', pictureField)}
+        onchange={() => updateAnkiSetting('pictureField', pictureField)}
       />
     </div>
     <div>
-      <Label>Sentence field:</Label>
+      <Label class="text-gray-900 dark:text-white">Sentence field:</Label>
       <Input
         {disabled}
         type="text"
         bind:value={sentenceField}
-        on:change={() => updateAnkiSetting('sentenceField', sentenceField)}
+        onchange={() => updateAnkiSetting('sentenceField', sentenceField)}
       />
     </div>
     <div>
       <Toggle
         {disabled}
         bind:checked={cropImage}
-        on:change={() => updateAnkiSetting('cropImage', cropImage)}>Crop image</Toggle
+        onchange={() => updateAnkiSetting('cropImage', cropImage)}>Crop image</Toggle
       >
     </div>
     <div>
       <Toggle
         {disabled}
         bind:checked={overwriteImage}
-        on:change={() => updateAnkiSetting('overwriteImage', overwriteImage)}
-        >Overwrite image</Toggle
+        onchange={() => updateAnkiSetting('overwriteImage', overwriteImage)}>Overwrite image</Toggle
       >
     </div>
     <div>
       <Toggle
         {disabled}
         bind:checked={grabSentence}
-        on:change={() => updateAnkiSetting('grabSentence', grabSentence)}>Grab sentence</Toggle
+        onchange={() => updateAnkiSetting('grabSentence', grabSentence)}>Grab sentence</Toggle
       >
     </div>
     <div>
-      <Label>
+      <Label class="text-gray-900 dark:text-white">
         Trigger method:
         <Select
-          on:change={() => updateAnkiSetting('triggerMethod', triggerMethod)}
+          onchange={() => updateAnkiSetting('triggerMethod', triggerMethod)}
           items={triggerOptions}
           bind:value={triggerMethod}
         />
       </Label>
     </div>
-    <hr>
-    <h4>Quality Settings</h4>
+    <hr />
+    <h4 class="text-gray-900 dark:text-white">Quality Settings</h4>
     <Helper>Allows you to customize the file size stored on your devices</Helper>
     <div>
-      <Label>Max Height (0 = Ignore; 200 Recommended):</Label>
+      <Label class="text-gray-900 dark:text-white">Max Height (0 = Ignore; 200 Recommended):</Label>
       <Input
         {disabled}
         type="number"
         bind:value={heightField}
-        on:change={() => {updateAnkiSetting('heightField', heightField); if (heightField < 0) heightField = 0;}}
+        onchange={() => {
+          updateAnkiSetting('heightField', heightField);
+          if (heightField < 0) heightField = 0;
+        }}
         min={0}
       />
     </div>
     <div>
-      <Label>Max Width (0 = Ignore; 200 Recommended):</Label>
+      <Label class="text-gray-900 dark:text-white">Max Width (0 = Ignore; 200 Recommended):</Label>
       <Input
         {disabled}
         type="number"
         bind:value={widthField}
-        on:change={() => {updateAnkiSetting('widthField', widthField); if (widthField < 0) widthField = 0;}}
+        onchange={() => {
+          updateAnkiSetting('widthField', widthField);
+          if (widthField < 0) widthField = 0;
+        }}
         min={0}
       />
     </div>
     <div>
-      <Label>Quality (Between 0 and 1; 0.5 Recommended):</Label>
+      <Label class="text-gray-900 dark:text-white"
+        >Quality (Between 0 and 1; 0.5 Recommended):</Label
+      >
       <Input
         {disabled}
         type="number"
         bind:value={qualityField}
-        on:change={() => updateAnkiSetting('qualityField', qualityField)}
+        onchange={() => updateAnkiSetting('qualityField', qualityField)}
         min={0}
-        max={1} 
+        max={1}
         step="0.1"
       />
     </div>

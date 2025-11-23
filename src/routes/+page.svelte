@@ -14,6 +14,6 @@
   <title>Mokuro</title>
 </svelte:head>
 
-<div class="p-2 h-[90svh]">
+<div class="h-[90svh] p-2">
   <Catalog />
 </div>

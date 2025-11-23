@@ -65,10 +65,10 @@
   }
 </script>
 
-<Modal title="Crop image" bind:open on:close={close}>
+<Modal title="Crop image" bind:open onclose={close}>
   {#if $cropperStore?.image && !loading}
     <div class=" flex flex-col gap-2">
-      <div class="relative w-full h-[55svh] sm:h-[65svh]">
+      <div class="relative h-[55svh] w-full sm:h-[65svh]">
         <Cropper
           zoomSpeed={0.5}
           maxZoom={10}
@@ -84,8 +84,8 @@
           {$cropperStore?.sentence}
         </p>
       {/if}
-      <Button on:click={onCrop}>Crop</Button>
-      <Button on:click={close} outline color="light">Close</Button>
+      <Button onclick={onCrop}>Crop</Button>
+      <Button onclick={close} outline color="light">Close</Button>
     </div>
   {:else}
     <div class="text-center"><Spinner /></div>

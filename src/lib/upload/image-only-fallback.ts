@@ -440,10 +440,7 @@ async function getImageDimensions(imageFile: File): Promise<{ width: number; hei
 /**
  * Creates a minimal Page object for an image without mokuro data
  */
-async function createPageFromImage(
-  imageFileName: string,
-  imageFile: File
-): Promise<Page> {
+async function createPageFromImage(imageFileName: string, imageFile: File): Promise<Page> {
   try {
     const { width, height } = await getImageDimensions(imageFile);
 

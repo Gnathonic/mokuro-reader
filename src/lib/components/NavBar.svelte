@@ -1,6 +1,12 @@
 <script lang="ts">
   import { Navbar, NavBrand, Spinner } from 'flowbite-svelte';
-  import { CloudArrowUpOutline, UploadSolid, UserSettingsSolid, RefreshOutline, ChartLineUpOutline } from 'flowbite-svelte-icons';
+  import {
+    CloudArrowUpOutline,
+    UploadSolid,
+    UserSettingsSolid,
+    RefreshOutline,
+    ChartLineUpOutline
+  } from 'flowbite-svelte-icons';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import Settings from './Settings/Settings.svelte';
@@ -12,15 +18,15 @@
   import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
 
   // Use $state to make these reactive
-  let settingsHidden = $state(true);
+  let settingsOpen = $state(false);
   let uploadModalOpen = $state(false);
   let isReader = $state(false);
 
   // Read unified provider state synchronously
-  let state = $derived($unifiedProviderState);
+  let providerState = $derived($unifiedProviderState);
 
-  // Track if any cloud providers are authenticated
-  let hasAuthenticatedProviders = $derived(state.hasStoredCredentials);
+  // Track if any cloud providers are authenticated (derived from state)
+  let hasAuthenticatedProviders = $derived(providerState?.hasStoredCredentials ?? false);
 
   // Google Drive specific: Track token expiry for debug display
   let tokenMinutesLeft = $state<number | null>(null);
@@ -37,7 +43,7 @@
 
   // Subscribe to global sync state
   $effect(() => {
-    const unsubscribe = unifiedCloudManager.isSyncing.subscribe(value => {
+    const unsubscribe = unifiedCloudManager.isSyncing.subscribe((value) => {
       isSyncing = value;
     });
     return unsubscribe;
@@ -46,9 +52,6 @@
   // Check for configured providers (even if not currently connected) and determine provider type
   $effect(() => {
     const checkProviders = () => {
-      // Check if any provider has stored credentials (even if not connected)
-      hasAuthenticatedProviders = state.hasStoredCredentials;
-
       const activeProvider = unifiedCloudManager.getActiveProvider();
       isGoogleDrive = activeProvider?.type === 'google-drive';
     };
@@ -61,7 +64,7 @@
 
   // Google Drive specific: Update token minutes every 10 seconds when authenticated
   $effect(() => {
-    if (!isGoogleDrive || !state.isAuthenticated) {
+    if (!isGoogleDrive || !providerState.isAuthenticated) {
       tokenMinutesLeft = null;
       return;
     }
@@ -78,7 +81,7 @@
 
   // Define event handlers
   function openSettings() {
-    settingsHidden = false;
+    settingsOpen = true;
   }
 
   function openUploadModal() {
@@ -92,7 +95,7 @@
   function navigateToReadingSpeed() {
     goto('/reading-speed');
   }
-  
+
   async function handleSync() {
     if (isSyncing) return; // Prevent multiple simultaneous syncs
 
@@ -108,7 +111,7 @@
 
   // Google Drive specific: Manual token refresh handler
   function handleTokenRefresh() {
-    if (isGoogleDrive && state.isAuthenticated) {
+    if (isGoogleDrive && providerState.isAuthenticated) {
       tokenManager.reAuthenticate();
       showSnackbar(`Refreshing ${providerDisplayName} session...`);
     }
@@ -126,50 +129,68 @@
 </script>
 
 <div class="relative z-10">
-  <Navbar hidden={isReader}>
+  <Navbar hidden={isReader} class="bg-white dark:bg-gray-800">
     <NavBrand href="/">
-      <div class="flex flex-row gap-2 items-center">
-        <img src={Icon} alt="icon" class="w-[32px] h-[32px]" />
+      <div class="flex flex-row items-center gap-2">
+        <img src={Icon} alt="icon" class="h-[32px] w-[32px]" />
         <span class="text-xl font-semibold dark:text-white">Mokuro</span>
       </div>
     </NavBrand>
-    <div class="flex md:order-2 gap-5">
-      <button onclick={navigateToReadingSpeed} class="flex items-center justify-center w-6 h-6" title="Reading Speed Stats">
-        <ChartLineUpOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+    <div class="flex gap-5 md:order-2">
+      <button
+        onclick={navigateToReadingSpeed}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Reading Speed Stats"
+      >
+        <ChartLineUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
-      <button onclick={openSettings} class="flex items-center justify-center w-6 h-6">
-        <UserSettingsSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+      <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
+        <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
-      <button onclick={openUploadModal} class="flex items-center justify-center w-6 h-6">
-        <UploadSolid class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+      <button onclick={openUploadModal} class="flex h-6 w-6 items-center justify-center">
+        <UploadSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button
         onclick={navigateToCloud}
-        class="flex items-center justify-center w-6 h-6"
-        title={state.needsAttention ? `${providerDisplayName} - Action Required (click to sign in)` : state.isFullyConnected ? `${providerDisplayName} - Connected` : state.isAuthenticated ? `${providerDisplayName} - Loading...` : state.hasStoredCredentials ? `${providerDisplayName} - Initializing...` : `${providerDisplayName} - Not connected`}
+        class="flex h-6 w-6 items-center justify-center"
+        title={providerState.needsAttention
+          ? `${providerDisplayName} - Action Required (click to sign in)`
+          : providerState.isFullyConnected
+            ? `${providerDisplayName} - Connected`
+            : providerState.isAuthenticated
+              ? `${providerDisplayName} - Loading...`
+              : providerState.hasStoredCredentials
+                ? `${providerDisplayName} - Initializing...`
+                : `${providerDisplayName} - Not connected`}
       >
-        {#if state.needsAttention}
-          <CloudArrowUpOutline class="w-6 h-6 text-red-600 hover:text-red-700 cursor-pointer" />
-        {:else if state.isCacheLoading && !state.isCacheLoaded}
+        {#if providerState.needsAttention}
+          <CloudArrowUpOutline class="h-6 w-6 cursor-pointer text-red-600 hover:text-red-700" />
+        {:else if providerState.isCacheLoading && !providerState.isCacheLoaded}
           <Spinner size="4" />
-        {:else if state.isFullyConnected}
-          <CloudArrowUpOutline class="w-6 h-6 text-green-600 hover:text-green-700 cursor-pointer" />
-        {:else if state.isAuthenticated}
-          <CloudArrowUpOutline class="w-6 h-6 text-yellow-600 hover:text-yellow-700 cursor-pointer" />
-        {:else if state.hasStoredCredentials}
-          <CloudArrowUpOutline class="w-6 h-6 text-yellow-600 hover:text-yellow-700 cursor-pointer" />
+        {:else if providerState.isFullyConnected}
+          <CloudArrowUpOutline class="h-6 w-6 cursor-pointer text-green-600 hover:text-green-700" />
+        {:else if providerState.isAuthenticated}
+          <CloudArrowUpOutline
+            class="h-6 w-6 cursor-pointer text-yellow-600 hover:text-yellow-700"
+          />
+        {:else if providerState.hasStoredCredentials}
+          <CloudArrowUpOutline
+            class="h-6 w-6 cursor-pointer text-yellow-600 hover:text-yellow-700"
+          />
         {:else}
-          <CloudArrowUpOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer" />
+          <CloudArrowUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
         {/if}
       </button>
-      {#if isGoogleDrive && state.isAuthenticated && tokenMinutesLeft !== null}
+      {#if isGoogleDrive && providerState.isAuthenticated && tokenMinutesLeft !== null}
         {#key tokenMinutesLeft}
           <button
             onclick={handleTokenRefresh}
-            class="flex items-center justify-center px-2 py-1 rounded text-xs font-mono cursor-pointer transition-colors
-              {tokenMinutesLeft > 30 ? 'text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-900/20' :
-               tokenMinutesLeft > 10 ? 'text-yellow-600 hover:text-yellow-700 hover:bg-yellow-50 dark:hover:bg-yellow-900/20' :
-               'text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20'}"
+            class="flex cursor-pointer items-center justify-center rounded px-2 py-1 font-mono text-xs transition-colors
+              {tokenMinutesLeft > 30
+              ? 'text-green-600 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20'
+              : tokenMinutesLeft > 10
+                ? 'text-yellow-600 hover:bg-yellow-50 hover:text-yellow-700 dark:hover:bg-yellow-900/20'
+                : 'text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20'}"
             title="Token expires in {tokenMinutesLeft} minutes. Click to refresh now."
           >
             {tokenMinutesLeft}m
@@ -179,16 +200,18 @@
       {#if hasAuthenticatedProviders}
         <button
           onclick={handleSync}
-          class="flex items-center justify-center w-6 h-6"
+          class="flex h-6 w-6 items-center justify-center"
           title={isSyncing ? 'Syncing...' : `Sync read progress with ${providerDisplayName}`}
           disabled={isSyncing}
         >
-          <RefreshOutline class="w-6 h-6 hover:text-primary-700 cursor-pointer {isSyncing ? 'animate-spin' : ''}" />
+          <RefreshOutline
+            class="h-6 w-6 cursor-pointer hover:text-primary-700 {isSyncing ? 'animate-spin' : ''}"
+          />
         </button>
       {/if}
     </div>
   </Navbar>
 </div>
 
-<Settings bind:hidden={settingsHidden} />
+<Settings bind:open={settingsOpen} />
 <UploadModal bind:open={uploadModalOpen} />

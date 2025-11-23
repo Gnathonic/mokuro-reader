@@ -17,10 +17,10 @@
 
 {#if $progressTrackerStore.processes.length > 0}
   <div
-    class="fixed bottom-4 right-4 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 w-80 overflow-hidden transition-all duration-200"
+    class="fixed right-4 bottom-4 z-50 w-80 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg transition-all duration-200 dark:border-gray-700 dark:bg-gray-800"
   >
     <div
-      class="flex justify-between items-center p-3 bg-primary-100 dark:bg-primary-900 cursor-pointer"
+      class="flex cursor-pointer items-center justify-between bg-primary-100 p-3 dark:bg-primary-900"
       onclick={toggleExpanded}
       onkeydown={(e) => e.key === 'Enter' && toggleExpanded()}
       role="button"
@@ -35,33 +35,39 @@
       </div>
       <div>
         {#if expanded}
-          <CaretDownSolid class="w-4 h-4" />
+          <CaretDownSolid class="h-4 w-4" />
         {:else}
-          <CaretUpSolid class="w-4 h-4" />
+          <CaretUpSolid class="h-4 w-4" />
         {/if}
       </div>
     </div>
 
     {#if expanded}
-      <div class="p-3 max-h-96 overflow-y-auto">
+      <div class="max-h-96 overflow-y-auto p-3">
         {#each $progressTrackerStore.processes as process (process.id)}
           <div class="mb-4 last:mb-0">
-            <div class="flex justify-between items-center mb-1">
+            <div class="mb-1 flex items-center justify-between">
               <div class="text-sm font-medium">{process.description}</div>
-              <Button size="xs" color="none" class="p-1" on:click={() => removeProcess(process.id)}>
-                <CloseCircleSolid class="w-3 h-3" />
+              <Button
+                size="xs"
+                color="alternative"
+                class="p-1"
+                onclick={() => removeProcess(process.id)}
+              >
+                <CloseCircleSolid class="h-3 w-3" />
               </Button>
             </div>
 
             {#if process.status}
-              <div class="text-xs text-gray-600 dark:text-gray-400 mb-1">{process.status}</div>
+              <div class="mb-1 text-xs text-gray-600 dark:text-gray-400">{process.status}</div>
             {/if}
 
             {#if process.progress > 0}
-              <div class="flex justify-between text-xs mb-1">
+              <div class="mb-1 flex justify-between text-xs">
                 <span>{Math.round(process.progress)}%</span>
                 {#if process.bytesLoaded !== undefined && process.totalBytes !== undefined}
-                  <span>{formatBytes(process.bytesLoaded)} / {formatBytes(process.totalBytes)}</span>
+                  <span>{formatBytes(process.bytesLoaded)} / {formatBytes(process.totalBytes)}</span
+                  >
                 {/if}
               </div>
 

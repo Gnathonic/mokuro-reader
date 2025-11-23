@@ -87,7 +87,7 @@ export function getAvailableMemory() {
  * @param {number} bytes - Memory size in bytes
  * @returns {string} Formatted memory size with units
  */
-function formatMemory(bytes: number): string {
+export function formatMemory(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let size = bytes;
   let unitIndex = 0;

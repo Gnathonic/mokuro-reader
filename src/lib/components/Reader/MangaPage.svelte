@@ -43,6 +43,9 @@
   style:width={`${page.img_width}px`}
   style:height={`${page.img_height}px`}
   style:background-image={url}
+  style:background-size="contain"
+  style:background-repeat="no-repeat"
+  style:background-position="center"
   class="relative"
 >
   <TextBoxes {page} {src} {volumeUuid} />

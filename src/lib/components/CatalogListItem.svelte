@@ -21,7 +21,7 @@
 
   let firstUnreadVolume = $derived(
     Object.values($volumesWithPlaceholders)
-      .filter(v => !v.isPlaceholder)
+      .filter((v) => !v.isPlaceholder)
       .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
       .find(
         (item) =>
@@ -37,8 +37,7 @@
   );
 
   let allSeriesVolumes = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter(v => v.series_uuid === series_uuid)
+    Object.values($volumesWithPlaceholders).filter((v) => v.series_uuid === series_uuid)
   );
 
   let volume = $derived(firstUnreadVolume ?? firstVolume);
@@ -48,7 +47,7 @@
   // Track queue state
   let queueState = $state($downloadQueue);
   $effect(() => {
-    return downloadQueue.subscribe(value => {
+    return downloadQueue.subscribe((value) => {
       queueState = value;
     });
   });
@@ -87,7 +86,7 @@
   <div class:opacity-70={isPlaceholderOnly}>
     <ListgroupItem>
       <a href={series_uuid} class="h-full w-full" onclick={handleClick}>
-        <div class="flex justify-between items-center">
+        <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
             <p class:text-green-400={isComplete} class="font-semibold">{volume.series_title}</p>
             {#if isPlaceholderOnly}
@@ -95,18 +94,18 @@
             {/if}
           </div>
           {#if isPlaceholderOnly}
-            <div class="w-[50px] h-[70px] flex items-center justify-center">
+            <div class="flex h-[70px] w-[50px] items-center justify-center">
               {#if isDownloading}
                 <Spinner size="12" color="blue" />
               {:else}
-                <DownloadSolid class="w-[50px] h-[70px] text-blue-400" />
+                <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
               {/if}
             </div>
           {:else if volume.thumbnail}
             <img
               src={URL.createObjectURL(volume.thumbnail)}
               alt="img"
-              class="object-contain w-[50px] h-[70px] bg-black border-gray-900 border"
+              class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
             />
           {/if}
         </div>

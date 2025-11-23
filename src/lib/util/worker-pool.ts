@@ -37,7 +37,12 @@ export class WorkerPool {
   private workerConstructor: WorkerConstructor;
   private poolId: string; // Unique identifier for this pool
 
-  constructor(poolId: string, workerConstructor: WorkerConstructor, maxConcurrent = 4, maxMemoryMB = 500) {
+  constructor(
+    poolId: string,
+    workerConstructor: WorkerConstructor,
+    maxConcurrent = 4,
+    maxMemoryMB = 500
+  ) {
     this.poolId = poolId;
     this.workerConstructor = workerConstructor;
     this.maxConcurrent = Math.max(1, Math.min(maxConcurrent, navigator.hardwareConcurrency || 4));
@@ -45,7 +50,9 @@ export class WorkerPool {
     // Initialize shared memory manager limit (only needs to be set once, but multiple calls are safe)
     sharedMemoryManager.setMemoryLimit(maxMemoryMB);
 
-    console.log(`Worker pool [${poolId}]: ${this.maxConcurrent} workers, ${maxMemoryMB}MB shared limit`);
+    console.log(
+      `Worker pool [${poolId}]: ${this.maxConcurrent} workers, ${maxMemoryMB}MB shared limit`
+    );
 
     // Initialize workers
     for (let i = 0; i < this.maxConcurrent; i++) {
@@ -216,9 +223,7 @@ export class WorkerPool {
           `[${this.poolId}] Starting task ${eligibleTask.id}. Provider: ${eligibleTask.provider} (${currentCount + 1}/${eligibleTask.providerConcurrencyLimit || 'unlimited'})`
         );
       } else {
-        console.log(
-          `[${this.poolId}] Starting task ${eligibleTask.id}`
-        );
+        console.log(`[${this.poolId}] Starting task ${eligibleTask.id}`);
       }
 
       // Assign task to worker

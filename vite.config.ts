@@ -1,11 +1,10 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [sveltekit()],
-  server: {
-    host: true
-  },
+  plugins: [sveltekit(), tailwindcss()],
+  server: { host: true },
   optimizeDeps: {
     exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
   },
@@ -16,10 +15,12 @@ export default defineConfig({
         if (warning.code === 'SOURCEMAP_ERROR' && warning.message.includes('node_modules')) {
           return;
         }
+
         // Suppress annotation warnings from node_modules
         if (warning.code === 'INVALID_ANNOTATION' && warning.loc?.file?.includes('node_modules')) {
           return;
         }
+
         warn(warning);
       }
     }
@@ -30,13 +31,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     // Resolve Svelte 5 for browser/client context in tests
-    server: {
-      deps: {
-        inline: ['svelte']
-      }
-    }
+    server: { deps: { inline: ['svelte'] } }
   },
-  resolve: {
-    conditions: ['browser']
-  }
+  resolve: { conditions: ['browser'] }
 });

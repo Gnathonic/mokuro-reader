@@ -65,8 +65,8 @@ type VolumeDataJSON = {
   series_title?: string;
   volume_title?: string;
   // Deletion tracking for sync (mutually exclusive)
-  addedOn?: string;    // ISO datetime when volume was added/created
-  deletedOn?: string;  // ISO datetime when metadata was deleted
+  addedOn?: string; // ISO datetime when volume was added/created
+  deletedOn?: string; // ISO datetime when metadata was deleted
 };
 
 export class VolumeData implements VolumeDataJSON {
@@ -81,8 +81,8 @@ export class VolumeData implements VolumeDataJSON {
   series_uuid?: string;
   series_title?: string;
   volume_title?: string;
-  addedOn?: string;    // ISO datetime when volume was added/created
-  deletedOn?: string;  // ISO datetime when metadata was deleted
+  addedOn?: string; // ISO datetime when volume was added/created
+  deletedOn?: string; // ISO datetime when metadata was deleted
 
   constructor(data: Partial<VolumeDataJSON> = {}) {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
@@ -280,7 +280,7 @@ export async function enrichAllOrphanedVolumes() {
 
   try {
     const catalog = await db.volumes.toArray();
-    const catalogMap = new Map(catalog.map(v => [v.volume_uuid, v]));
+    const catalogMap = new Map(catalog.map((v) => [v.volume_uuid, v]));
 
     _volumesInternal.update((prev) => {
       const updated = { ...prev };
@@ -338,9 +338,7 @@ export const volumesWithTrash = _volumesInternal;
 // Public derived store - filters out deleted volumes (tombstones)
 // This is what UI and stats code should use
 export const volumes = derived(_volumesInternal, ($internal) => {
-  return Object.fromEntries(
-    Object.entries($internal).filter(([_, vol]) => !vol.deletedOn)
-  );
+  return Object.fromEntries(Object.entries($internal).filter(([_, vol]) => !vol.deletedOn));
 });
 
 export function initializeVolume(volume: string) {
@@ -406,7 +404,7 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
     const updated = { ...prev };
     const now = new Date().toISOString();
 
-    volumeIds.forEach(id => {
+    volumeIds.forEach((id) => {
       const existing = updated[id];
       if (existing) {
         // Create tombstone instead of deleting
@@ -436,7 +434,7 @@ export function updateProgress(
 
     // Get session timeout from user settings (in minutes, convert to ms)
     let sessionTimeoutMs = 30 * 60 * 1000; // Default 30 minutes
-    globalSettings.subscribe(s => {
+    globalSettings.subscribe((s) => {
       sessionTimeoutMs = s.inactivityTimeoutMinutes * 60 * 1000;
     })();
 
@@ -462,21 +460,23 @@ export function updateProgress(
     // Lazy metadata population: If metadata is missing, fetch it asynchronously
     // This ensures stats pages work even if IndexedDB is later deleted
     if (!currentVolume.series_uuid && browser) {
-      enrichVolumeDataWithMetadata(volume, currentVolume).then(enriched => {
-        if (enriched.series_uuid) {
-          _volumesInternal.update(vols => ({
-            ...vols,
-            [volume]: new VolumeData({
-              ...(vols[volume] || currentVolume),
-              series_uuid: enriched.series_uuid,
-              series_title: enriched.series_title,
-              volume_title: enriched.volume_title
-            })
-          }));
-        }
-      }).catch(err => {
-        console.warn(`Failed to enrich metadata for ${volume}:`, err);
-      });
+      enrichVolumeDataWithMetadata(volume, currentVolume)
+        .then((enriched) => {
+          if (enriched.series_uuid) {
+            _volumesInternal.update((vols) => ({
+              ...vols,
+              [volume]: new VolumeData({
+                ...(vols[volume] || currentVolume),
+                series_uuid: enriched.series_uuid,
+                series_title: enriched.series_title,
+                volume_title: enriched.volume_title
+              })
+            }));
+          }
+        })
+        .catch((err) => {
+          console.warn(`Failed to enrich metadata for ${volume}:`, err);
+        });
     }
 
     return {

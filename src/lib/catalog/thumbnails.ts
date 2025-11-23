@@ -37,9 +37,13 @@ export async function generateThumbnail(
   // Convert canvas directly to File to avoid intermediate Blob
   // Use toBlob callback to immediately create File without storing Blob separately
   return new Promise<File>((resolve) => {
-    canvas.toBlob((blob) => {
-      if (!blob) throw new Error('Failed to create thumbnail blob');
-      resolve(new File([blob], `thumbnail_${file.name}`, { type: file.type }));
-    }, file.type, 0.8);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) throw new Error('Failed to create thumbnail blob');
+        resolve(new File([blob], `thumbnail_${file.name}`, { type: file.type }));
+      },
+      file.type,
+      0.8
+    );
   });
 }

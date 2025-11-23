@@ -15,16 +15,16 @@
   let seriesId = $derived($page.params.manga || '');
 
   // Get series volumes from catalog
-  let seriesData = $derived(
-    $catalog?.find((item) => item.series_uuid === seriesId)
-  );
+  let seriesData = $derived($catalog?.find((item) => item.series_uuid === seriesId));
   let volumes = $derived(
     seriesData?.volumes
-      .filter(v => !v.isPlaceholder)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title, undefined, {
-        numeric: true,
-        sensitivity: 'base'
-      })) || []
+      .filter((v) => !v.isPlaceholder)
+      .sort((a, b) =>
+        a.volume_title.localeCompare(b.volume_title, undefined, {
+          numeric: true,
+          sensitivity: 'base'
+        })
+      ) || []
   );
 
   // Use state to track loaded data
@@ -47,7 +47,9 @@
       );
 
       // Filter out null results
-      volumesData = results.filter((item): item is { volume: VolumeMetadata; data: VolumeData } => item !== null);
+      volumesData = results.filter(
+        (item): item is { volume: VolumeMetadata; data: VolumeData } => item !== null
+      );
       dataLoaded = true;
     }
   });
@@ -75,8 +77,8 @@
         textParts.push(`─── Page ${pageIndex + 1} ───\n`);
 
         // Extract all text from blocks
-        pageData.blocks.forEach(block => {
-          block.lines.forEach(line => {
+        pageData.blocks.forEach((block) => {
+          block.lines.forEach((line) => {
             textParts.push(line);
           });
         });
@@ -118,9 +120,9 @@
       totalLines += lineCount;
 
       // Count total characters (including non-Japanese)
-      pages.forEach(pageData => {
-        pageData.blocks.forEach(block => {
-          block.lines.forEach(line => {
+      pages.forEach((pageData) => {
+        pageData.blocks.forEach((block) => {
+          block.lines.forEach((line) => {
             totalChars += line.length;
             allText += line + ' ';
           });
@@ -129,7 +131,7 @@
     });
 
     // Count words (space-separated)
-    const wordCount = allText.split(/\s+/).filter(w => w.length > 0).length;
+    const wordCount = allText.split(/\s+/).filter((w) => w.length > 0).length;
 
     // Calculate estimated reading time using utility function
     const estimatedTime = calculateEstimatedTime(totalJapaneseChars, $personalizedReadingSpeed);
@@ -178,26 +180,26 @@
 </svelte:head>
 
 {#if dataLoaded && volumesData.length > 0 && seriesData}
-  <div class="min-h-screen bg-gray-50 dark:bg-gray-900 py-8">
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="min-h-screen bg-gray-50 py-8 dark:bg-gray-900">
+    <div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
       <!-- Header -->
       <div class="mb-8">
         <!-- Navigation Buttons -->
-        <div class="flex flex-wrap gap-2 mb-4">
-          <Button size="sm" color="alternative" on:click={goBackToSeries}>
-            <ArrowLeftOutline class="w-3.5 h-3.5 mr-2" />
+        <div class="mb-4 flex flex-wrap gap-2">
+          <Button size="sm" color="alternative" onclick={goBackToSeries}>
+            <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
             Back to Series
           </Button>
-          <Button size="sm" color="alternative" on:click={goBackToCatalog}>
-            <ArrowLeftOutline class="w-3.5 h-3.5 mr-2" />
+          <Button size="sm" color="alternative" onclick={goBackToCatalog}>
+            <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
             Back to Catalog
           </Button>
-          <Button size="sm" color="primary" on:click={copyText}>
+          <Button size="sm" color="primary" onclick={copyText}>
             {#if copySuccess}
-              <CheckOutline class="w-3.5 h-3.5 mr-2" />
+              <CheckOutline class="mr-2 h-3.5 w-3.5" />
               Copied!
             {:else}
-              <ClipboardOutline class="w-3.5 h-3.5 mr-2" />
+              <ClipboardOutline class="mr-2 h-3.5 w-3.5" />
               Copy All Text
             {/if}
           </Button>
@@ -210,16 +212,16 @@
         {/if}
 
         <!-- Series Title -->
-        <h1 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+        <h1 class="mb-2 text-3xl font-bold text-gray-900 dark:text-white">
           {seriesData.title}
         </h1>
-        <p class="text-lg text-gray-600 dark:text-gray-400 mb-4">
+        <p class="mb-4 text-lg text-gray-600 dark:text-gray-400">
           All volumes combined in a single text view for language analysis and searching
         </p>
 
         <!-- Stats -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-3">
+        <div class="rounded-lg bg-white p-6 shadow dark:bg-gray-800">
+          <h2 class="mb-3 text-lg font-semibold text-gray-900 dark:text-white">
             Series Statistics
           </h2>
           <dl class="grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -236,7 +238,9 @@
               </dd>
             </div>
             <div>
-              <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Japanese Characters</dt>
+              <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
+                Japanese Characters
+              </dt>
               <dd class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
                 {stats.japaneseCharCount.toLocaleString()}
               </dd>
@@ -261,7 +265,9 @@
             </div>
             {#if stats.estimatedTime}
               <div class="col-span-2 sm:col-span-1">
-                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Est. Reading Time</dt>
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
+                  Est. Reading Time
+                </dt>
                 <dd class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
                   {stats.estimatedTime.displayText}{stats.estimatedTime.isPersonalized ? ' ⭐' : ''}
                 </dd>
@@ -271,9 +277,11 @@
           {#if stats.estimatedTime}
             <p class="mt-4 text-xs text-gray-500 dark:text-gray-400">
               {#if stats.estimatedTime.isPersonalized}
-                * Estimated based on your average speed from the last 8 hours of reading (~{$personalizedReadingSpeed.charsPerMinute} chars/min)
+                * Estimated based on your average speed from the last 8 hours of reading (~{$personalizedReadingSpeed.charsPerMinute}
+                chars/min)
               {:else}
-                * Estimated reading time based on default speed (~100 Japanese characters/minute for manga)
+                * Estimated reading time based on default speed (~100 Japanese characters/minute for
+                manga)
               {/if}
             </p>
           {/if}
@@ -281,38 +289,36 @@
       </div>
 
       <!-- Text Content -->
-      <div class="bg-white dark:bg-gray-800 rounded-lg shadow">
+      <div class="rounded-lg bg-white shadow dark:bg-gray-800">
         <div class="p-6">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Full Series Text
-          </h2>
+          <h2 class="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Full Series Text</h2>
           <div
-            class="bg-gray-50 dark:bg-gray-900 rounded-lg p-6 overflow-auto max-h-[800px] border border-gray-200 dark:border-gray-700"
+            class="max-h-[800px] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-6 dark:border-gray-700 dark:bg-gray-900"
           >
             <pre
-              class="whitespace-pre-wrap font-mono text-sm text-gray-900 dark:text-gray-100 leading-relaxed"
-            >{formattedText}</pre>
+              class="font-mono text-sm leading-relaxed whitespace-pre-wrap text-gray-900 dark:text-gray-100">{formattedText}</pre>
           </div>
           <p class="mt-4 text-sm text-gray-500 dark:text-gray-400">
-            Tip: Use Ctrl+F (Cmd+F on Mac) to search within the text, or use browser extensions for language analysis.
+            Tip: Use Ctrl+F (Cmd+F on Mac) to search within the text, or use browser extensions for
+            language analysis.
           </p>
         </div>
       </div>
     </div>
   </div>
 {:else if !seriesData}
-  <div class="flex items-center justify-center w-screen h-screen">
+  <div class="flex h-screen w-screen items-center justify-center">
     <div class="text-center">
       <Spinner size="12" />
       <p class="mt-4 text-gray-600 dark:text-gray-400">Loading series...</p>
     </div>
   </div>
 {:else}
-  <div class="flex items-center justify-center w-screen h-screen">
+  <div class="flex h-screen w-screen items-center justify-center">
     <div class="text-center">
       <p class="text-gray-600 dark:text-gray-400">No volumes available for this series.</p>
-      <Button class="mt-4" color="alternative" on:click={goBackToCatalog}>
-        <ArrowLeftOutline class="w-3.5 h-3.5 mr-2" />
+      <Button class="mt-4" color="alternative" onclick={goBackToCatalog}>
+        <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
         Back to Catalog
       </Button>
     </div>
