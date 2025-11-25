@@ -402,7 +402,7 @@
             {/if}
           </div>
           {#if volumeHasEdits}
-            <Badge color="yellow" class="!px-1.5 !py-0.5 flex-shrink-0">
+            <Badge color="yellow" class="flex-shrink-0 !px-1.5 !py-0.5">
               <PenSolid class="h-3 w-3" />
             </Badge>
           {/if}

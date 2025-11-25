@@ -5,19 +5,19 @@ import type { VolumeData, Page } from '$lib/types';
  * Returns edited version if it exists, otherwise original.
  */
 export function getCurrentPages(volumeData: VolumeData): Page[] {
-	return volumeData.edited_pages ?? volumeData.pages;
+  return volumeData.edited_pages ?? volumeData.pages;
 }
 
 /**
  * Check if volume has edits
  */
 export function hasEdits(volumeData: VolumeData): boolean {
-	return volumeData.edited_pages !== undefined;
+  return volumeData.edited_pages !== undefined;
 }
 
 /**
  * Get original pages (for reference in editor)
  */
 export function getOriginalPages(volumeData: VolumeData): Page[] {
-	return volumeData.pages;
+  return volumeData.pages;
 }
