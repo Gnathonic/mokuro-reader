@@ -17,10 +17,10 @@
   // Function to apply the night mode filter
   function applyNightModeFilter() {
     if (!browser) return;
-    
+
     // Detect Firefox
     isFirefox = detectFirefox();
-    
+
     if (isFirefox) {
       // Firefox approach: Use overlays with blend modes
       if ($settings.nightMode) {
@@ -40,7 +40,7 @@
           grayscaleLayer.style.display = 'block';
           document.body.appendChild(grayscaleLayer);
         }
-        
+
         // Create red overlay if it doesn't exist
         if (!redOverlay) {
           redOverlay = document.createElement('div');
@@ -71,7 +71,7 @@
     } else {
       // Non-Firefox approach: Use CSS variables with SVG filter
       const rootElement = document.documentElement;
-      
+
       if ($settings.nightMode) {
         rootElement.style.setProperty('--night-mode-filter', 'url(#night-mode-filter)');
       } else {

@@ -1,11 +1,10 @@
 <script lang="ts">
   import { volumesWithPlaceholders } from '$lib/catalog';
   import { progress } from '$lib/settings';
-  import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { Spinner } from 'flowbite-svelte';
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
 
   interface Props {
     series_uuid: string;
@@ -24,17 +23,17 @@
   // ========================================
   let seriesVolumes = $derived(
     Object.values($volumesWithPlaceholders)
-      .filter(v => v.series_uuid === series_uuid)
+      .filter((v) => v.series_uuid === series_uuid)
       .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
   );
 
   // Split into local vs cloud placeholders
-  let localVolumes = $derived(seriesVolumes.filter(v => !v.isPlaceholder));
+  let localVolumes = $derived(seriesVolumes.filter((v) => !v.isPlaceholder));
   let hasLocalVolumes = $derived(localVolumes.length > 0);
 
   // Find unread volumes (only among local volumes)
   let unreadVolumes = $derived(
-    localVolumes.filter(v => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
+    localVolumes.filter((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
   );
 
   // Display volume: first unread, or first local, or first placeholder
@@ -55,7 +54,7 @@
   // Check if this series is downloading or queued
   let isDownloading = $derived(
     isPlaceholderOnly && volume
-      ? $downloadQueue.some(item => item.seriesTitle === volume.series_title)
+      ? $downloadQueue.some((item) => item.seriesTitle === volume.series_title)
       : false
   );
 
@@ -86,12 +85,12 @@
     const newDimensions = new Map<string, { width: number; height: number }>();
     const urlsToRevoke: string[] = [];
 
-    const promises = stackedVolumes.map(vol => {
+    const promises = stackedVolumes.map((vol) => {
       if (!vol.thumbnail) return Promise.resolve();
 
       return new Promise<void>((resolve) => {
         const img = new Image();
-        const url = URL.createObjectURL(vol.thumbnail);
+        const url = URL.createObjectURL(vol.thumbnail!);
         urlsToRevoke.push(url);
 
         img.onload = () => {
@@ -112,7 +111,7 @@
 
     // Cleanup: revoke all blob URLs when effect is destroyed
     return () => {
-      urlsToRevoke.forEach(url => URL.revokeObjectURL(url));
+      urlsToRevoke.forEach((url) => URL.revokeObjectURL(url));
     };
   });
 
@@ -136,7 +135,7 @@
 
     // Calculate rendered dimensions and aspect ratios for all volumes
     const renderedData = stackedVolumes
-      .map(vol => {
+      .map((vol) => {
         const dims = thumbnailDimensions.get(vol.volume_uuid);
         if (!dims) return null;
 
@@ -147,7 +146,7 @@
           aspectRatio: rendered.width / rendered.height
         };
       })
-      .filter(d => d !== null);
+      .filter((d) => d !== null);
 
     if (renderedData.length === 0) {
       return {
@@ -158,10 +157,11 @@
     }
 
     // Use the tallest rendered height
-    const maxRenderedHeight = Math.max(...renderedData.map(d => d.height));
+    const maxRenderedHeight = Math.max(...renderedData.map((d) => d.height));
 
     // Calculate average aspect ratio
-    const avgAspectRatio = renderedData.reduce((sum, d) => sum + d.aspectRatio, 0) / renderedData.length;
+    const avgAspectRatio =
+      renderedData.reduce((sum, d) => sum + d.aspectRatio, 0) / renderedData.length;
 
     // Preferred aspect ratio for manga (250:350)
     const preferredAspect = 250 / 350; // 0.714
@@ -181,9 +181,8 @@
 
     // Calculate step size using effective height: (effectiveHeight - maxHeight) / (numVolumes - 1)
     const numVolumes = stackedVolumes.length;
-    const verticalStep = numVolumes > 1
-      ? Math.max(0, (effectiveHeight - maxRenderedHeight) / (numVolumes - 1))
-      : 0;
+    const verticalStep =
+      numVolumes > 1 ? Math.max(0, (effectiveHeight - maxRenderedHeight) / (numVolumes - 1)) : 0;
 
     // Center the stack: unused space is split equally top/bottom
     const unusedSpace = containerHeight - effectiveHeight;
@@ -223,41 +222,44 @@
     <div
       class:text-green-400={isComplete}
       class:opacity-70={isPlaceholderOnly}
-      class="flex flex-col gap-[5px] text-center items-center bg-slate-900 pb-1 bg-opacity-50 border border-slate-950 relative"
+      class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 border-transparent p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
       class:cursor-pointer={isPlaceholderOnly}
     >
       {#if isPlaceholderOnly}
-        <div class="sm:w-[325px] sm:h-[385px] bg-black border-gray-900 border flex items-center justify-center">
-          <div class="w-24 h-24 flex items-center justify-center">
-            {#if isDownloading}
-              <Spinner size="16" color="blue" />
-            {:else}
-              <DownloadSolid class="w-24 h-24 text-blue-400" />
-            {/if}
-          </div>
+        <!-- Stacked placeholder layout to show volume count -->
+        <div class="relative sm:h-[410px] sm:w-[325px] sm:pt-4 sm:pb-6">
+          <PlaceholderThumbnail
+            count={seriesVolumes.length}
+            {isDownloading}
+            showDownloadUI={true}
+          />
         </div>
       {:else if stackedVolumes.length > 0}
         <!-- Stacked diagonal layout: dynamic stepping based on image aspect ratios -->
-        <div class="relative sm:w-[325px] sm:h-[410px] sm:pt-4 sm:pb-6">
-          <div class="relative sm:w-full sm:h-[385px] overflow-hidden">
+        <div class="relative sm:h-[410px] sm:w-[325px] sm:pt-4 sm:pb-6">
+          <div class="relative overflow-hidden sm:h-[385px] sm:w-full">
             {#each stackedVolumes as vol, i (vol.volume_uuid)}
               {#if vol.thumbnail}
                 <img
                   src={URL.createObjectURL(vol.thumbnail)}
                   alt={vol.volume_title}
-                  class="absolute sm:max-w-[250px] sm:max-h-[360px] h-auto bg-black border-gray-900 border"
-                  style="left: {i * stepSizes.horizontal}px; top: {stepSizes.topOffset + (i * stepSizes.vertical)}px; z-index: {stackedVolumes.length - i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
+                  class="absolute h-auto border border-gray-900 bg-black sm:max-h-[360px] sm:max-w-[250px]"
+                  style="left: {i * stepSizes.horizontal}px; top: {stepSizes.topOffset +
+                    i * stepSizes.vertical}px; z-index: {stackedVolumes.length -
+                    i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
                 />
               {/if}
             {/each}
           </div>
         </div>
       {/if}
-      <p class="font-semibold sm:w-[325px] line-clamp-1">
+      <p class="line-clamp-2 font-semibold sm:w-[325px]">
         {volume.series_title}
       </p>
       {#if isPlaceholderOnly}
-        <p class="text-xs text-blue-400">In {providerDisplayName}</p>
+        <p class="text-xs text-blue-400">
+          {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerDisplayName}
+        </p>
       {/if}
     </div>
   </a>

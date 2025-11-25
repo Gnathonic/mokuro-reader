@@ -27,13 +27,11 @@
 </script>
 
 <AccordionItem open>
-  {#snippet header()}
-    <span>Volume defaults</span>
-  {/snippet}
+  {#snippet header()}Volume defaults{/snippet}
   <div class="flex flex-col gap-5">
     <Helper>The default settings that are applied when you start a new volume</Helper>
     <div>
-      <Label for="default-page-view-mode" class="mb-2">
+      <Label for="default-page-view-mode" class="mb-2 text-gray-900 dark:text-white">
         Page view mode
         <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(P)</span>
       </Label>
@@ -42,11 +40,11 @@
         size="sm"
         items={pageViewModes}
         bind:value={$settings.volumeDefaults.singlePageView}
-        on:change={onPageViewModeChange}
+        onchange={onPageViewModeChange}
       />
     </div>
     {#each toggles as { key, text, value }}
-      <Toggle size="small" checked={value} on:change={() => updateVolumeDefaults(key, !value)}
+      <Toggle size="small" checked={value} onchange={() => updateVolumeDefaults(key, !value)}
         >{text}</Toggle
       >
     {/each}

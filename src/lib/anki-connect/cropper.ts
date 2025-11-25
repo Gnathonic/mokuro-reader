@@ -35,7 +35,12 @@ function getRadianAngle(degreeValue: number) {
 
 export type Pixels = { width: number; height: number; x: number; y: number };
 
-export async function getCroppedImg(imageSrc: string, pixelCrop: Pixels, settings: Settings, rotation = 0 ) {
+export async function getCroppedImg(
+  imageSrc: string,
+  pixelCrop: Pixels,
+  settings: Settings,
+  rotation = 0
+) {
   const image = await createImage(imageSrc);
   const canvas = new OffscreenCanvas(image.width, image.height);
   const ctx = canvas.getContext('2d');
@@ -72,9 +77,17 @@ export async function getCroppedImg(imageSrc: string, pixelCrop: Pixels, setting
     Math.round(0 - safeArea / 2 + image.width * 0.5 - pixelCrop.x),
     Math.round(0 - safeArea / 2 + image.height * 0.5 - pixelCrop.y)
   );
-  
-  await imageResize(canvas, ctx, settings.ankiConnectSettings.widthField, settings.ankiConnectSettings.heightField);
-  const blob = await canvas.convertToBlob({ type: 'image/webp', quality: settings.ankiConnectSettings.qualityField });
+
+  await imageResize(
+    canvas,
+    ctx,
+    settings.ankiConnectSettings.widthField,
+    settings.ankiConnectSettings.heightField
+  );
+  const blob = await canvas.convertToBlob({
+    type: 'image/webp',
+    quality: settings.ankiConnectSettings.qualityField
+  });
 
   return await blobToBase64(blob);
 }

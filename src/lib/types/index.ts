@@ -14,7 +14,7 @@ export type Page = {
 };
 
 export interface VolumeMetadata {
-  mokuro_version: string;
+  mokuro_version: string; // Empty string '' indicates image-only volume without OCR
   series_title: string;
   series_uuid: string;
   volume_title: string;

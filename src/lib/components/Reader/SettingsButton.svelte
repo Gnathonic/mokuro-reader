@@ -2,18 +2,18 @@
   import Settings from '$lib/components/Settings/Settings.svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
 
-  let settingsHidden = $state(true);
+  let settingsOpen = $state(false);
 
   function openSettings() {
-    settingsHidden = false;
+    settingsOpen = true;
   }
 </script>
 
 <button
   onclick={openSettings}
-  class="hover:text-primary-700 hover:mix-blend-normal mix-blend-difference z-10 fixed opacity-50 hover:opacity-100 right-10 top-5 p-10 m-[-2.5rem]"
+  class="fixed top-3 right-3 z-10 p-2 opacity-50 mix-blend-difference hover:text-primary-700 hover:opacity-100 hover:mix-blend-normal"
 >
-  <UserSettingsSolid />
+  <UserSettingsSolid size="xl" />
 </button>
 
-<Settings bind:hidden={settingsHidden} />
+<Settings bind:open={settingsOpen} />

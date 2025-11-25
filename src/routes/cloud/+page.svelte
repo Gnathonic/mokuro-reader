@@ -17,9 +17,10 @@
     API_KEY
   } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import type { ProviderType } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
-  import { driveState, tokenManager } from '$lib/util/google-drive';
-  import type { DriveState } from '$lib/util/google-drive';
+  import { driveState, tokenManager } from '$lib/util/sync/providers/google-drive';
+  import type { DriveState } from '$lib/util/sync/providers/google-drive';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { get } from 'svelte/store';
   import { Badge, Button, Radio, Toggle, Spinner } from 'flowbite-svelte';
@@ -29,7 +30,12 @@
   import type { VolumeMetadata } from '$lib/types';
 
   // Import multi-provider sync
-  import { providerManager, megaProvider, webdavProvider, googleDriveProvider } from '$lib/util/sync';
+  import {
+    providerManager,
+    megaProvider,
+    webdavProvider,
+    googleDriveProvider
+  } from '$lib/util/sync';
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
@@ -42,12 +48,14 @@
   let accessToken = $derived($accessTokenStore);
   // Note: readerFolderId, volumeDataId, profilesId removed - legacy Drive-specific stores (now use unified provider system)
   let tokenClient = $derived($tokenClientStore);
-  let state = $derived($driveState);
+  let driveStateValue = $derived($driveState);
   let cacheIsFetching = $derived($cacheIsFetchingStore);
 
   // Reactive provider authentication checks - now using provider manager for all providers
   // Use derived to reactively compute auth states from the status store
-  let googleDriveAuth = $derived($providerStatusStore.providers['google-drive']?.isAuthenticated || false);
+  let googleDriveAuth = $derived(
+    $providerStatusStore.providers['google-drive']?.isAuthenticated || false
+  );
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
 
@@ -55,29 +63,38 @@
   // This allows UI to show the provider page immediately while initializing
   let hasAnyProvider = $derived(
     $providerStatusStore.providers['google-drive']?.hasStoredCredentials ||
-    $providerStatusStore.providers['mega']?.hasStoredCredentials ||
-    $providerStatusStore.providers['webdav']?.hasStoredCredentials ||
-    false
+      $providerStatusStore.providers['mega']?.hasStoredCredentials ||
+      $providerStatusStore.providers['webdav']?.hasStoredCredentials ||
+      false
   );
 
   // Check if providers are configured (even if not currently connected)
-  let googleDriveConfigured = $derived($providerStatusStore.providers['google-drive']?.hasStoredCredentials || false);
-  let megaConfigured = $derived($providerStatusStore.providers['mega']?.hasStoredCredentials || false);
-  let webdavConfigured = $derived($providerStatusStore.providers['webdav']?.hasStoredCredentials || false);
+  let googleDriveConfigured = $derived(
+    $providerStatusStore.providers['google-drive']?.hasStoredCredentials || false
+  );
+  let megaConfigured = $derived(
+    $providerStatusStore.providers['mega']?.hasStoredCredentials || false
+  );
+  let webdavConfigured = $derived(
+    $providerStatusStore.providers['webdav']?.hasStoredCredentials || false
+  );
 
   // Determine current configured provider (show UI even if still initializing)
-  let currentProvider = $derived(
-    googleDriveConfigured ? 'google-drive' :
-    megaConfigured ? 'mega' :
-    webdavConfigured ? 'webdav' :
-    null
+  let currentProvider = $derived<ProviderType | null>(
+    googleDriveConfigured
+      ? 'google-drive'
+      : megaConfigured
+        ? 'mega'
+        : webdavConfigured
+          ? 'webdav'
+          : null
   );
 
   // Provider display names
-  const providerNames = {
+  const providerNames: Record<ProviderType, string> = {
     'google-drive': 'Google Drive',
-    'mega': 'MEGA Cloud Storage',
-    'webdav': 'WebDAV Server'
+    mega: 'MEGA Cloud Storage',
+    webdav: 'WebDAV Server'
   };
 
   // Provider info
@@ -90,14 +107,14 @@
         'Auto re-authentication support'
       ]
     },
-    'mega': {
+    mega: {
       items: [
         '20GB free storage',
         'End-to-end encryption',
         'Persistent login (no re-authentication needed)'
       ]
     },
-    'webdav': {
+    webdav: {
       items: [
         'Compatible with Nextcloud, ownCloud, and NAS devices',
         'Persistent login (no re-authentication needed)',
@@ -135,33 +152,35 @@
     if ('caches' in window) {
       try {
         console.log('Clearing service worker cache for Google Drive downloads...');
-        
+
         // Get all cache keys
         const cacheKeys = await caches.keys();
         console.log('Found caches:', cacheKeys);
-        
+
         for (const cacheName of cacheKeys) {
           const cache = await caches.open(cacheName);
-          
+
           // Get all cache entries
           const requests = await cache.keys();
           console.log(`Cache ${cacheName} has ${requests.length} entries`);
-          
+
           // Filter for Google Drive API requests
-          const driveRequests = requests.filter(request => 
-            request.url.includes('googleapis.com/drive') || 
-            request.url.includes('alt=media')
+          const driveRequests = requests.filter(
+            (request) =>
+              request.url.includes('googleapis.com/drive') || request.url.includes('alt=media')
           );
-          
-          console.log(`Found ${driveRequests.length} Google Drive API requests in cache ${cacheName}`);
-          
+
+          console.log(
+            `Found ${driveRequests.length} Google Drive API requests in cache ${cacheName}`
+          );
+
           // Delete each Google Drive API request from the cache
           for (const request of driveRequests) {
             console.log(`Deleting cached request: ${request.url}`);
             await cache.delete(request);
           }
         }
-        
+
         console.log('Service worker cache cleared for Google Drive downloads');
       } catch (error) {
         console.error('Error clearing service worker cache:', error);
@@ -184,12 +203,13 @@
       // Queue volumes for download via the unified queue system
       queueVolumesFromCloudFiles(cloudFiles);
 
-      showSnackbar(`Queued ${cloudFiles.length} file${cloudFiles.length === 1 ? '' : 's'} for download`);
+      showSnackbar(
+        `Queued ${cloudFiles.length} file${cloudFiles.length === 1 ? '' : 's'} for download`
+      );
     } catch (error) {
       handleDriveError(error, 'selecting files');
     }
   }
-
 
   let isSyncingProfiles = $state(false);
 
@@ -261,7 +281,7 @@
           reject(new Error('Login timeout'));
         }, 90000); // 90 second timeout for OAuth popup
 
-        unsubscribe = accessTokenStore.subscribe(token => {
+        unsubscribe = accessTokenStore.subscribe((token) => {
           if (token) {
             clearTimeout(timeout);
             unsubscribe?.(); // Use optional chaining in case callback fires immediately
@@ -477,8 +497,10 @@
 
     // Get all volumes from catalog
     const allVolumes: VolumeMetadata[] = [];
-    for (const series of $catalog) {
-      allVolumes.push(...series.volumes);
+    if ($catalog) {
+      for (const series of $catalog) {
+        allVolumes.push(...series.volumes);
+      }
     }
 
     if (allVolumes.length === 0) {
@@ -487,8 +509,8 @@
     }
 
     // Filter out already backed up volumes
-    const volumesToBackup = allVolumes.filter(vol =>
-      !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
+    const volumesToBackup = allVolumes.filter(
+      (vol) => !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
     const skippedCount = allVolumes.length - volumesToBackup.length;
@@ -502,9 +524,10 @@
     backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
 
     // Show notification
-    const message = skippedCount > 0
-      ? `Added ${volumesToBackup.length} volumes to backup queue (${skippedCount} already backed up)`
-      : `Added ${volumesToBackup.length} volumes to backup queue`;
+    const message =
+      skippedCount > 0
+        ? `Added ${volumesToBackup.length} volumes to backup queue (${skippedCount} already backed up)`
+        : `Added ${volumesToBackup.length} volumes to backup queue`;
     showSnackbar(message);
   }
 </script>
@@ -513,17 +536,17 @@
   <title>Cloud</title>
 </svelte:head>
 
-<div class="p-2 h-[90svh]">
+<div class="h-[90svh] p-2">
   {#if !hasAnyProvider}
     <!-- Provider Selection Screen (like sign-in options) -->
     <div class="flex justify-center pt-0 sm:pt-20">
       <div class="w-full max-w-md">
-        <h2 class="text-2xl font-semibold text-center mb-8">Choose a Cloud Storage Provider</h2>
+        <h2 class="mb-8 text-center text-2xl font-semibold">Choose a Cloud Storage Provider</h2>
 
         <div class="flex flex-col gap-3">
           <!-- Google Drive Option -->
           <button
-            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             onclick={handleGoogleDriveLogin}
             disabled={googleDriveLoading}
           >
@@ -533,8 +556,8 @@
               {:else}
                 <GoogleSolid size="xl" />
               {/if}
-              <div class="text-left flex-1">
-                <div class="font-semibold text-lg">Google Drive</div>
+              <div class="flex-1 text-left">
+                <div class="text-lg font-semibold">Google Drive</div>
                 <div class="text-sm text-gray-400">15GB free • Requires re-auth every hour</div>
               </div>
             </div>
@@ -542,7 +565,7 @@
 
           <!-- MEGA Option -->
           <button
-            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 hover:bg-slate-800 transition-colors"
+            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800"
             onclick={() => {
               // Show MEGA login form
               const megaForm = document.getElementById('mega-login-form');
@@ -550,15 +573,15 @@
             }}
           >
             <div class="flex items-center gap-4">
-              <div class="w-8 h-8 flex items-center justify-center text-2xl">M</div>
-              <div class="text-left flex-1">
-                <div class="font-semibold text-lg">MEGA</div>
+              <div class="flex h-8 w-8 items-center justify-center text-2xl">M</div>
+              <div class="flex-1 text-left">
+                <div class="text-lg font-semibold">MEGA</div>
                 <div class="text-sm text-gray-400">20GB free • Persistent login</div>
               </div>
             </div>
           </button>
 
-          <div id="mega-login-form" class="hidden pl-12 pr-4 pb-4">
+          <div id="mega-login-form" class="hidden pr-4 pb-4 pl-12">
             <form
               onsubmit={(e) => {
                 e.preventDefault();
@@ -571,14 +594,14 @@
                 bind:value={megaEmail}
                 placeholder="Email"
                 required
-                class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
+                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <input
                 type="password"
                 bind:value={megaPassword}
                 placeholder="Password"
                 required
-                class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
+                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <Button type="submit" disabled={megaLoading} color="blue" size="sm">
                 {megaLoading ? 'Connecting...' : 'Connect to MEGA'}
@@ -588,14 +611,14 @@
 
           <!-- WebDAV Option -->
           <button
-            class="w-full border rounded-lg border-slate-600 p-6 border-opacity-50 opacity-50 cursor-not-allowed"
+            class="border-opacity-50 w-full cursor-not-allowed rounded-lg border border-slate-600 p-6 opacity-50"
             disabled
           >
             <div class="flex items-center gap-4">
-              <div class="w-8 h-8 flex items-center justify-center text-2xl">W</div>
-              <div class="text-left flex-1">
+              <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
+              <div class="flex-1 text-left">
                 <div class="flex items-center gap-2">
-                  <div class="font-semibold text-lg">WebDAV</div>
+                  <div class="text-lg font-semibold">WebDAV</div>
                   <Badge color="yellow">Under Development</Badge>
                 </div>
                 <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
@@ -603,7 +626,7 @@
             </div>
           </button>
 
-          <div id="webdav-login-form" class="hidden pl-12 pr-4 pb-4">
+          <div id="webdav-login-form" class="hidden pr-4 pb-4 pl-12">
             <form
               onsubmit={(e) => {
                 e.preventDefault();
@@ -616,21 +639,21 @@
                 bind:value={webdavUrl}
                 placeholder="Server URL (e.g., https://cloud.example.com/remote.php/dav)"
                 required
-                class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
+                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <input
                 type="text"
                 bind:value={webdavUsername}
                 placeholder="Username"
                 required
-                class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
+                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <input
                 type="password"
                 bind:value={webdavPassword}
                 placeholder="Password or App Token"
                 required
-                class="bg-gray-700 border border-gray-600 text-white rounded-lg p-2.5 text-sm"
+                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <Button type="submit" disabled={webdavLoading} color="blue" size="sm">
                 {webdavLoading ? 'Connecting...' : 'Connect to WebDAV'}
@@ -643,10 +666,10 @@
   {:else}
     <!-- Unified Connected Provider Interface -->
     {#if currentProvider}
-      <div class="flex justify-center items-center flex-col gap-6">
+      <div class="flex flex-col items-center justify-center gap-6">
         <div class="w-full max-w-3xl">
           <!-- Header with provider name and logout -->
-          <div class="flex justify-between items-center mb-6">
+          <div class="mb-6 flex items-center justify-between">
             <div class="flex items-center gap-3">
               <h2 class="text-3xl font-semibold">{providerNames[currentProvider]}</h2>
               {#if $providerStatusStore.providers[currentProvider]?.needsAttention}
@@ -659,51 +682,78 @@
                 <Badge color="green">Connected</Badge>
               {/if}
             </div>
-            <Button color="red" on:click={handleLogout}>Log out</Button>
+            <Button color="red" onclick={handleLogout}>Log out</Button>
           </div>
 
           <div class="flex flex-col gap-4">
             <!-- Provider-specific instructions -->
             {#if currentProvider === 'google-drive'}
               <p class="text-center text-gray-300">
-                Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700">{READER_FOLDER}</span> folder in your Google Drive.
+                Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700"
+                  >{READER_FOLDER}</span
+                > folder in your Google Drive.
               </p>
               <p class="text-center text-sm text-gray-500">
                 You can select multiple ZIP/CBZ files or entire folders at once.
               </p>
             {:else}
-              <p class="text-center text-gray-300 mb-2">
+              <p class="mb-2 text-center text-gray-300">
                 Your read progress is synced with {providerNames[currentProvider]}.
               </p>
             {/if}
 
             <!-- Download Manga button (Google Drive only) -->
             {#if currentProvider === 'google-drive'}
-              <Button color="blue" on:click={createPicker}>Download Manga</Button>
+              <Button color="blue" onclick={createPicker}>Download Manga</Button>
             {/if}
 
             <!-- Turbo Mode toggle with RAM configuration -->
             <div class="flex flex-col gap-2">
               <div class="flex items-center gap-3">
-                <Toggle bind:checked={$miscSettings.turboMode} on:change={() => updateMiscSetting('turboMode', $miscSettings.turboMode)}>
+                <Toggle
+                  bind:checked={$miscSettings.turboMode}
+                  onchange={() => updateMiscSetting('turboMode', $miscSettings.turboMode)}
+                >
                   Turbo Mode
                 </Toggle>
               </div>
               <p class="text-xs text-gray-500">
-                For users with fast internet and a lack of patience. Enables parallel downloads/uploads.
+                For users with fast internet and a lack of patience. Enables parallel
+                downloads/uploads.
               </p>
 
               {#if $miscSettings.turboMode}
-                <div class="flex flex-col gap-2 mt-2">
+                <div class="mt-2 flex flex-col gap-2">
                   <div class="text-sm font-medium">Device RAM Configuration</div>
                   <div class="flex gap-4">
-                    <Radio name="ram-config-{currentProvider}" value={4} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio>
-                    <Radio name="ram-config-{currentProvider}" value={8} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio>
-                    <Radio name="ram-config-{currentProvider}" value={16} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio>
-                    <Radio name="ram-config-{currentProvider}" value={32} bind:group={$miscSettings.deviceRamGB} on:change={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio>
+                    <Radio
+                      name="ram-config-{currentProvider}"
+                      value={4}
+                      bind:group={$miscSettings.deviceRamGB}
+                      onchange={() => updateMiscSetting('deviceRamGB', 4)}>4GB</Radio
+                    >
+                    <Radio
+                      name="ram-config-{currentProvider}"
+                      value={8}
+                      bind:group={$miscSettings.deviceRamGB}
+                      onchange={() => updateMiscSetting('deviceRamGB', 8)}>8GB</Radio
+                    >
+                    <Radio
+                      name="ram-config-{currentProvider}"
+                      value={16}
+                      bind:group={$miscSettings.deviceRamGB}
+                      onchange={() => updateMiscSetting('deviceRamGB', 16)}>16GB</Radio
+                    >
+                    <Radio
+                      name="ram-config-{currentProvider}"
+                      value={32}
+                      bind:group={$miscSettings.deviceRamGB}
+                      onchange={() => updateMiscSetting('deviceRamGB', 32)}>32GB+</Radio
+                    >
                   </div>
                   <p class="text-xs text-gray-500">
-                    Configure your device's RAM to optimize parallel download performance and prevent memory issues.
+                    Configure your device's RAM to optimize parallel download performance and
+                    prevent memory issues.
                   </p>
                 </div>
               {/if}
@@ -713,23 +763,31 @@
             {#if currentProvider === 'google-drive'}
               <div class="flex flex-col gap-2">
                 <div class="flex items-center gap-3">
-                  <Toggle bind:checked={$miscSettings.gdriveAutoReAuth} on:change={() => updateMiscSetting('gdriveAutoReAuth', $miscSettings.gdriveAutoReAuth)}>
+                  <Toggle
+                    bind:checked={$miscSettings.gdriveAutoReAuth}
+                    onchange={() =>
+                      updateMiscSetting('gdriveAutoReAuth', $miscSettings.gdriveAutoReAuth)}
+                  >
                     Auto re-authenticate on token expiration
                   </Toggle>
                 </div>
                 <p class="text-xs text-gray-500">
-                  Keeps your progress synced during long reading sessions. Automatically prompts re-authentication when your session expires (~1 hour).
+                  Keeps your progress synced during long reading sessions. Automatically prompts
+                  re-authentication when your session expires (~1 hour).
                 </p>
 
                 {#if $miscSettings.gdriveAutoReAuth}
-                  <div class="mt-2 p-3 bg-yellow-900/30 border border-yellow-700/50 rounded-lg">
-                    <h4 class="text-sm font-semibold text-yellow-200 mb-2">⚠️ Popup Permission Required ({browserInfo.name})</h4>
-                    <p class="text-xs text-gray-300 mb-3">
-                      For auto re-authentication to work, you must allow popups for this site. Otherwise, the browser will block automatic re-authentication attempts.
+                  <div class="mt-2 rounded-lg border border-yellow-700/50 bg-yellow-900/30 p-3">
+                    <h4 class="mb-2 text-sm font-semibold text-yellow-200">
+                      ⚠️ Popup Permission Required ({browserInfo.name})
+                    </h4>
+                    <p class="mb-3 text-xs text-gray-300">
+                      For auto re-authentication to work, you must allow popups for this site.
+                      Otherwise, the browser will block automatic re-authentication attempts.
                     </p>
-                    <div class="text-xs text-gray-300 space-y-1 mb-3">
+                    <div class="mb-3 space-y-1 text-xs text-gray-300">
                       <p class="font-medium">To enable popups:</p>
-                      <ol class="list-decimal list-inside pl-2 space-y-1">
+                      <ol class="list-inside list-decimal space-y-1 pl-2">
                         {#each browserInfo.instructions as instruction}
                           <li>{instruction}</li>
                         {/each}
@@ -740,7 +798,7 @@
                             <span
                               role="button"
                               tabindex="0"
-                              class="text-yellow-400 underline cursor-pointer hover:text-yellow-300 font-mono"
+                              class="cursor-pointer font-mono text-yellow-400 underline hover:text-yellow-300"
                               onclick={() => {
                                 navigator.clipboard.writeText(browserInfo.settingsUrl);
                                 showSnackbar(`Copied! Paste this into your address bar`);
@@ -762,16 +820,22 @@
                     <Button
                       size="xs"
                       color="yellow"
-                      on:click={() => {
-                        showSnackbar('Testing in 5 seconds... Do NOT click or interact until the popup appears!');
+                      onclick={() => {
+                        showSnackbar(
+                          'Testing in 5 seconds... Do NOT click or interact until the popup appears!'
+                        );
                         // Use 5 second timeout to escape Chrome's user gesture window (~2-5 seconds)
                         // This properly tests if popups are allowed for true background triggers (like auto re-auth)
                         setTimeout(() => {
                           try {
                             tokenManager.reAuthenticate();
-                            showSnackbar('✅ Test triggered - if you see the Google auth popup, popups are allowed!');
+                            showSnackbar(
+                              '✅ Test triggered - if you see the Google auth popup, popups are allowed!'
+                            );
                           } catch (error) {
-                            showSnackbar('❌ Test failed - popup was blocked! Please enable popups for this site.');
+                            showSnackbar(
+                              '❌ Test failed - popup was blocked! Please enable popups for this site.'
+                            );
                           }
                         }, 5000);
                       }}
@@ -784,24 +848,24 @@
             {/if}
 
             <!-- Sync read progress button -->
-            <Button color="dark" on:click={currentProvider === 'google-drive' ? performSync : handleProviderSync}>
+            <Button
+              color="dark"
+              onclick={currentProvider === 'google-drive' ? performSync : handleProviderSync}
+            >
               Sync read progress
             </Button>
 
             <!-- Backup all series button -->
             <Button
               color="purple"
-              on:click={() => promptConfirmation('Backup all series to cloud storage?', backupAllSeries)}
+              onclick={() =>
+                promptConfirmation('Backup all series to cloud storage?', backupAllSeries)}
             >
               Backup all series to cloud
             </Button>
 
             <!-- Profile sync button -->
-            <Button
-              color="blue"
-              on:click={syncProfiles}
-              disabled={isSyncingProfiles}
-            >
+            <Button color="blue" onclick={syncProfiles} disabled={isSyncingProfiles}>
               {#if isSyncingProfiles}
                 <Spinner size="4" class="mr-2" />
                 Syncing profiles...
@@ -811,9 +875,9 @@
             </Button>
 
             <!-- Provider info box -->
-            <div class="mt-4 p-4 bg-gray-800 rounded-lg">
-              <h3 class="font-semibold mb-2">About {providerNames[currentProvider]}</h3>
-              <ul class="text-sm text-gray-300 space-y-1">
+            <div class="mt-4 rounded-lg bg-gray-800 p-4">
+              <h3 class="mb-2 font-semibold">About {providerNames[currentProvider]}</h3>
+              <ul class="space-y-1 text-sm text-gray-300">
                 {#each providerInfo[currentProvider].items as item}
                   <li>{item}</li>
                 {/each}

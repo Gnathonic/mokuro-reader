@@ -25,6 +25,7 @@
 
   let fontSizes = [
     { value: 'auto', name: 'auto' },
+    { value: 'original', name: 'original' },
     { value: '9', name: '9' },
     { value: '10', name: '10' },
     { value: '11', name: '11' },
@@ -50,33 +51,29 @@
 </script>
 
 <div>
-  <Label>
+  <Label class="text-gray-900 dark:text-white">
     On page zoom:
     <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Z)</span>
   </Label>
   <Select
     items={zoomModes}
     value={zoomModeValue}
-    on:change={(e) => onSelectChange(e, 'zoomDefault')}
+    onchange={(e) => onSelectChange(e, 'zoomDefault')}
   />
 </div>
 <div>
-  <Label>Page transition:</Label>
+  <Label class="text-gray-900 dark:text-white">Page transition:</Label>
   <Select
     items={pageTransitions}
     value={pageTransitionValue}
-    on:change={(e) => onSelectChange(e, 'pageTransition')}
+    onchange={(e) => onSelectChange(e, 'pageTransition')}
   />
 </div>
 <div>
-  <Label>Fontsize:</Label>
-  <Select
-    items={fontSizes}
-    value={fontSizeValue}
-    on:change={(e) => onSelectChange(e, 'fontSize')}
-  />
+  <Label class="text-gray-900 dark:text-white">Fontsize:</Label>
+  <Select items={fontSizes} value={fontSizeValue} onchange={(e) => onSelectChange(e, 'fontSize')} />
 </div>
 <div>
-  <Label>Background color:</Label>
-  <Input type="color" on:change={onBackgroundColor} value={$settings.backgroundColor} />
+  <Label class="text-gray-900 dark:text-white">Background color:</Label>
+  <Input type="color" onchange={onBackgroundColor} value={$settings.backgroundColor} />
 </div>

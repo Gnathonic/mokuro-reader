@@ -1,0 +1,91 @@
+/* Tailwind CSS v4 - Import and Configuration */
+@import 'tailwindcss';
+
+/* Tailwind plugins */
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+@plugin 'flowbite/plugin';
+
+/* Custom dark mode variant */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Flowbite component sources */
+@source '../node_modules/flowbite-svelte/dist';
+@source '../node_modules/flowbite-svelte-icons/dist';
+
+@theme {
+  --font-sans: Verdana, Geneva, Tahoma, sans-serif;
+
+  --color-primary-50: #fff5f2;
+  --color-primary-100: #fff1ee;
+  --color-primary-200: #ffe4de;
+  --color-primary-300: #ffd5cc;
+  --color-primary-400: #ffbcad;
+  --color-primary-500: #fe795d;
+  --color-primary-600: #ef562f;
+  --color-primary-700: #eb4f27;
+  --color-primary-800: #cc4522;
+  --color-primary-900: #a5371b;
+
+  /* Flowbite uses these CSS variables for form elements like range sliders */
+  --color-brand: #2563eb;
+  --color-body: #6b7280;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* Custom styles for Range component */
+  input[type='range'] {
+    @apply cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-700;
+  }
+
+  input[type='range']::-webkit-slider-thumb {
+    @apply h-4 w-4 appearance-none rounded-full bg-blue-600;
+  }
+
+  input[type='range']::-moz-range-thumb {
+    @apply h-4 w-4 rounded-full border-0 bg-blue-600;
+  }
+}
+
+/* Custom styles for Radio component - fix for Tailwind v4 forms plugin override */
+input[type='radio'] {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 1rem !important;
+  height: 1rem !important;
+  border-radius: 50% !important;
+  border: 1px solid var(--color-gray-300) !important;
+  background-color: var(--color-gray-100) !important;
+  background-image: none !important;
+}
+
+input[type='radio']::before,
+input[type='radio']::after {
+  display: none !important;
+  content: none !important;
+}
+
+.dark input[type='radio'] {
+  border-color: var(--color-gray-600) !important;
+  background-color: var(--color-gray-700) !important;
+}
+
+input[type='radio']:checked {
+  border-color: var(--color-primary-600) !important;
+  background-color: var(--color-primary-600) !important;
+  background-image: url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3ccircle cx='8' cy='8' r='3'/%3e%3c/svg%3e") !important;
+  background-size: 100% 100% !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}
+
+input[type='radio']:checked::before,
+input[type='radio']:checked::after {
+  display: none !important;
+  content: none !important;
+}

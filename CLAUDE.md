@@ -9,6 +9,7 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 ## Development Commands
 
 ### Essential Commands
+
 - `npm run dev` - Start development server
 - `npm run build` - Build for production
 - `npm run preview` - Preview production build
@@ -20,11 +21,14 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 - `npm run format` - Format code with Prettier
 
 ### Preview Server Port Management
+
 **CRITICAL**: The preview server MUST always run on port 4173 for Google OAuth to work correctly.
 
 Before starting a new preview server:
+
 1. Kill all existing preview processes to free up port 4173
 2. Use these commands to find and kill processes:
+
 ```bash
 # Find process on port 4173
 netstat -ano | findstr :4173 | awk '{print $5}' | head -1
@@ -35,6 +39,7 @@ taskkill //F //PID <PID>
 # Kill processes on multiple ports if needed (4173-4178)
 netstat -ano | findstr :4174 | awk '{print $5}' | head -1 | xargs -I {} taskkill //F //PID {}
 ```
+
 3. Then start the preview server: `npm run preview`
 
 **Why this matters**: Vite's preview server auto-increments the port if 4173 is occupied. Google OAuth is configured for localhost:4173 specifically, so any other port will break authentication.
@@ -123,17 +128,20 @@ const query = `name='${folderName}' and ...`;
 ```
 
 **Important**: The `prompt` parameter in OAuth requests determines the user experience:
+
 - `prompt: 'consent'` - Forces full consent screen every time (use only for initial sign-in)
 - `prompt: ''` (empty) - Minimal UI, reuses existing permissions (use for re-authentication after token expiry)
 - `silent: true` - Attempts completely silent refresh with no UI
 
 **Google Drive API Query Pattern**:
+
 - Our broad queries like `(name contains '.cbz' or mimeType='folder') and trashed=false` are intentionally designed this way
 - Google automatically scopes results to only what the app has permission to access - we don't need manual folder restrictions
 - This pattern (broad query + client-side filtering) is the CORRECT approach - it minimizes API calls while working within OAuth permission constraints
 - If you think folder scoping might be needed, ask first - broad queries are almost always the right solution
 
 **Svelte 5 Reactive Performance**:
+
 - `$derived` and `$derived.by()` functions run for EVERY instance of a component
 - If a component appears N times (e.g., BackupButton for each volume), operations inside derived run N times
 - Expensive operations or console logging in derived can cause severe performance issues with repeated components
@@ -151,6 +159,7 @@ The application uses Web Workers for parallel downloads from Google Drive:
 ### Database Migrations
 
 Dexie handles schema migrations. Current version is 2:
+
 - Version 1: Old `catalog` table (deprecated)
 - Version 2: Split into `volumes` (metadata) and `volumes_data` (pages/files)
 
@@ -161,6 +170,7 @@ When adding new fields or tables, increment the version number and provide an up
 ### Mokuro File Format
 
 Mokuro generates a `.mokuro` JSON file with this structure:
+
 ```typescript
 {
   version: string,
@@ -178,6 +188,7 @@ Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and O
 ### Settings Architecture
 
 Three-tier settings system:
+
 1. **Global defaults**: Hardcoded in settings.ts
 2. **Profile overrides**: User-created profiles with custom settings
 3. **Volume-specific overrides**: Per-volume settings that override profile
@@ -185,6 +196,7 @@ Three-tier settings system:
 ### Stat Tracking
 
 Tracked per volume in the `volumes` store:
+
 - Pages read
 - Characters read (cumulative from mokuro data)
 - Time spent reading (tracked by Timer component)
@@ -193,6 +205,7 @@ Tracked per volume in the `volumes` store:
 ### Text Selection Handling
 
 The reader has complex text selection logic to prevent interference with panzoom drag:
+
 - `beforeMouseDown` handler in MangaPage.svelte checks if click is on text
 - Text selection is only allowed within text boxes, not on background
 - See `src/routes/[manga]/[volume]/+page.svelte` for implementation
@@ -200,6 +213,7 @@ The reader has complex text selection logic to prevent interference with panzoom
 ## Environment Variables
 
 Create a `.env` file for Google Drive integration:
+
 ```
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
@@ -226,6 +240,7 @@ These are required for Google Drive features to work.
 ### Adding Google Drive Features
 
 The Google Drive module is already refactored. To extend:
+
 1. Add new API methods to `api-client.ts`
 2. Add new sync logic to `sync-service.ts`
 3. Update types in `types.ts`
@@ -234,6 +249,7 @@ The Google Drive module is already refactored. To extend:
 ### Working with IndexedDB
 
 Always use the Dexie instance from `src/lib/catalog/db.ts`:
+
 ```typescript
 import { db } from '$lib/catalog/db';
 
@@ -254,6 +270,7 @@ This app is designed for Japanese learning extensions (Yomitan, Migaku, etc.) th
 ### The Problem
 
 Japanese learning extensions aggressively mutate the DOM:
+
 - **Yomitan**: Wraps text in `<span>` tags for dictionary lookups (relatively clean)
 - **Migaku**: Aggressively mutates text based on user settings (very invasive)
   - Causes text carryover between manga pages
@@ -265,6 +282,7 @@ Japanese learning extensions aggressively mutate the DOM:
 Use Svelte's `{#key}` blocks to force DOM recreation when extensions interfere. When a key changes, Svelte destroys the old DOM and creates a fresh one, bypassing extension mutations.
 
 **Why This Works for This App:**
+
 - Page changes are discrete user actions (not continuous scrolling)
 - No form state to preserve during reading
 - Performance cost acceptable for intentional page transitions
@@ -273,6 +291,7 @@ Use Svelte's `{#key}` blocks to force DOM recreation when extensions interfere. 
 ### Required Keying
 
 **Manga Page Layout** (prevents text carryover):
+
 ```svelte
 {#key currentPage}
   <MangaPage {pageData} />
@@ -280,6 +299,7 @@ Use Svelte's `{#key}` blocks to force DOM recreation when extensions interfere. 
 ```
 
 **Status Indicators** (counters, timers, badges):
+
 ```svelte
 {#key tokenMinutesLeft}
   <span>{tokenMinutesLeft}m</span>
@@ -295,6 +315,7 @@ Use Svelte's `{#key}` blocks to force DOM recreation when extensions interfere. 
 ### When NOT to Use Keyed Blocks
 
 Don't use keyed blocks for:
+
 - Form inputs (will lose focus/state)
 - Large component trees (performance impact)
 - Static content (unnecessary)

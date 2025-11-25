@@ -10,7 +10,10 @@
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <script src="https://apis.google.com/js/api.js"></script>
     <script src="https://accounts.google.com/gsi/client"></script>
     %sveltekit.head%
@@ -19,22 +22,24 @@
       :root {
         --night-mode-filter: none; /* Default: no filter */
       }
-      
+
       /* Apply the filter to the html element */
       html {
         filter: var(--night-mode-filter);
       }
     </style>
     <!-- SVG filter for night mode - included directly in the HTML -->
-    <svg width="0" height="0" style="position: absolute; z-index: -9999; visibility: hidden;">
+    <svg width="0" height="0" style="position: absolute; z-index: -9999; visibility: hidden">
       <defs>
         <filter id="night-mode-filter" color-interpolation-filters="sRGB">
           <!-- Convert to grayscale first -->
-          <feColorMatrix type="matrix" 
+          <feColorMatrix
+            type="matrix"
             values="0.2126 0.7152 0.0722 0 0
                     0 0 0 0 0
                     0 0 0 0 0
-                    0 0 0 1 0" />
+                    0 0 0 1 0"
+          />
         </filter>
       </defs>
     </svg>

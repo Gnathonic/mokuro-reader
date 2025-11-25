@@ -22,7 +22,7 @@ class ActivityTracker {
   constructor() {
     if (browser) {
       // Subscribe to activity state changes
-      this.isActive.subscribe(active => {
+      this.isActive.subscribe((active) => {
         if (active) {
           this.callbacks?.onActive();
         } else {
@@ -111,7 +111,7 @@ class ActivityTracker {
     const hasActiveProvider = unifiedCloudManager.getActiveProvider() !== null;
     if (hasActiveProvider) {
       console.log('Auto-syncing after 5s inactivity...');
-      unifiedCloudManager.syncProgress({ silent: true }).catch(error => {
+      unifiedCloudManager.syncProgress({ silent: true }).catch((error) => {
         console.error('Auto-sync failed:', error);
       });
     }

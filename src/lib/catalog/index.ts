@@ -86,9 +86,17 @@ export const currentVolume = derived([page, volumes], ([$page, $volumes]) => {
 export const currentVolumeData: Readable<VolumeData | undefined> = derived(
   [currentVolume],
   ([$currentVolume], set: (value: VolumeData | undefined) => void) => {
-    // CRITICAL: Immediately clear old data synchronously to prevent state leaks
-    // This ensures old volume data doesn't persist during the async gap
-    set(undefined);
+    // Track the last volume UUID to avoid unnecessary clears
+    // This prevents flash when unrelated volumes are added to the database
+    const newUuid = $currentVolume?.volume_uuid;
+
+    // Only clear data when actually navigating to a different volume
+    // Don't clear if the store just emitted a new object reference for the same volume
+    if (newUuid !== currentVolumeDataLastUuid) {
+      currentVolumeDataLastUuid = newUuid;
+      // Clear old data synchronously to prevent state leaks between volumes
+      set(undefined);
+    }
 
     if ($currentVolume) {
       db.volumes_data.get($currentVolume.volume_uuid).then((data) => {
@@ -100,6 +108,9 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
   },
   undefined // Initial value
 );
+
+// Track last volume UUID to prevent unnecessary data clears
+let currentVolumeDataLastUuid: string | undefined;
 
 /**
  * Japanese character count for current volume

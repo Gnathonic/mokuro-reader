@@ -11,6 +11,29 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
+// Mock the backup queue to avoid Worker issues
+vi.mock('./backup-queue', () => ({
+  backupQueue: {
+    queueVolumeForExport: vi.fn()
+  }
+}));
+
+// Mock the compression module to avoid real zip operations
+vi.mock('./compress-volume', () => ({
+  compressVolume: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]))
+}));
+
+// Mock @zip.js/zip.js to avoid real compression
+vi.mock('@zip.js/zip.js', () => ({
+  BlobReader: vi.fn(),
+  Uint8ArrayWriter: vi.fn(),
+  TextReader: vi.fn(),
+  ZipWriter: vi.fn().mockImplementation(() => ({
+    add: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]))
+  }))
+}));
+
 // Mock the DOM APIs
 globalThis.URL.createObjectURL = vi.fn(() => 'blob:test');
 globalThis.URL.revokeObjectURL = vi.fn();
@@ -47,7 +70,7 @@ describe('zipManga', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // @ts-ignore
+    // @ts-expect-error - Mock type mismatch
     db.volumes_data.get.mockResolvedValue(mockVolumeData);
   });
 
@@ -61,14 +84,16 @@ describe('zipManga', () => {
     expect(link.download).toBe('Test Manga.zip');
   });
 
-  it('should create individual archives when individualVolumes is true', async () => {
+  it('should queue individual archives when individualVolumes is true', async () => {
+    const { backupQueue } = await import('./backup-queue');
     const result = await zipManga([mockVolume], false, true, true);
     expect(result).toBe(false);
-    expect(document.createElement).toHaveBeenCalledWith('a');
-    // Get the actual mock element that was created and used
-    const mockCalls = vi.mocked(document.createElement).mock.results;
-    const link = mockCalls[mockCalls.length - 1].value;
-    expect(link.download).toBe('Test Manga - Volume 1.zip');
+    // Individual volumes use the queue instead of direct download
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume,
+      'Test Manga - Volume 1.zip',
+      'zip'
+    );
   });
 
   it('should use cbz extension when asCbz is true', async () => {
@@ -82,26 +107,32 @@ describe('zipManga', () => {
   });
 
   it('should include series title in filename when includeSeriesTitle is true', async () => {
+    const { backupQueue } = await import('./backup-queue');
     const result = await zipManga([mockVolume], false, true, true);
     expect(result).toBe(false);
-    expect(document.createElement).toHaveBeenCalledWith('a');
-    // Get the actual mock element that was created and used
-    const mockCalls = vi.mocked(document.createElement).mock.results;
-    const link = mockCalls[mockCalls.length - 1].value;
-    expect(link.download).toBe('Test Manga - Volume 1.zip');
+    // Individual volumes use the queue
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume,
+      'Test Manga - Volume 1.zip',
+      'zip'
+    );
   });
 
   it('should exclude series title from filename when includeSeriesTitle is false', async () => {
+    const { backupQueue } = await import('./backup-queue');
     const result = await zipManga([mockVolume], false, true, false);
     expect(result).toBe(false);
-    expect(document.createElement).toHaveBeenCalledWith('a');
-    // Get the actual mock element that was created and used
-    const mockCalls = vi.mocked(document.createElement).mock.results;
-    const link = mockCalls[mockCalls.length - 1].value;
-    expect(link.download).toBe('Volume 1.zip');
+    // Individual volumes use the queue
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume,
+      'Volume 1.zip',
+      'zip'
+    );
   });
 
   it('should handle multiple volumes correctly when individualVolumes is true', async () => {
+    const { backupQueue } = await import('./backup-queue');
+
     // Create a second mock volume
     const mockVolume2 = {
       ...mockVolume,
@@ -110,52 +141,40 @@ describe('zipManga', () => {
       page_count: 1
     };
 
-    // Mock the document.createElement to track calls
-    const originalCreateElement = document.createElement;
-    const mockCreateElement = vi.fn().mockImplementation((tag) => {
-      if (tag === 'a') {
-        return {
-          href: '',
-          download: '',
-          click: vi.fn()
-        };
-      }
-      return {};
-    });
-    document.createElement = mockCreateElement;
-
-    // Mock the database get for the second volume
-    // @ts-ignore
-    db.volumes_data.get.mockImplementation((uuid) => {
-      if (uuid === 'test-uuid') {
-        return Promise.resolve(mockVolumeData);
-      } else if (uuid === 'test-uuid-2') {
-        return Promise.resolve(mockVolumeData);
-      }
-      return Promise.resolve(null);
-    });
-
     const result = await zipManga([mockVolume, mockVolume2], false, true, true);
     expect(result).toBe(false);
 
-    // Should have created 2 download links
-    expect(mockCreateElement).toHaveBeenCalledTimes(2);
-
-    // Restore the original function
-    document.createElement = originalCreateElement;
+    // Should have queued 2 volumes
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledTimes(2);
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume,
+      'Test Manga - Volume 1.zip',
+      'zip'
+    );
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume2,
+      'Test Manga - Volume 2.zip',
+      'zip'
+    );
   });
 
-  it('should use the same internal structure for both single and multiple archives', async () => {
-    // This test verifies that we're using the same function to add files to the archive
-    // regardless of whether we're creating a single archive or multiple archives
+  it('should use direct download for single archive vs queue for individual', async () => {
+    const { backupQueue } = await import('./backup-queue');
+
+    // Single archive (individualVolumes = false) uses direct download
     const singleArchiveResult = await zipManga([mockVolume], false, false, true);
-    const multipleArchiveResult = await zipManga([mockVolume], false, true, true);
-
     expect(singleArchiveResult).toBe(false);
-    expect(multipleArchiveResult).toBe(false);
+    expect(document.createElement).toHaveBeenCalledWith('a');
 
-    // Both should call the database get method the same number of times
-    expect(db.volumes_data.get).toHaveBeenCalledTimes(2);
-    expect(db.volumes_data.get).toHaveBeenCalledWith(mockVolume.volume_uuid);
+    vi.clearAllMocks();
+
+    // Individual volumes uses queue
+    const individualResult = await zipManga([mockVolume], false, true, true);
+    expect(individualResult).toBe(false);
+    expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
+      mockVolume,
+      'Test Manga - Volume 1.zip',
+      'zip'
+    );
   });
 });

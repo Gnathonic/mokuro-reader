@@ -18,13 +18,28 @@
     { key: 'mobile', text: 'Mobile', value: $settings.mobile },
     { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
     { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
-    { key: 'invertColors', text: 'Invert colors of the images', value: $settings.invertColors, shortcut: 'I' },
-    { key: 'nightMode', text: 'Night mode (strong red filter)', value: $settings.nightMode, shortcut: 'N' }
+    {
+      key: 'swapWheelBehavior',
+      text: 'Swap mouse wheel scroll/zoom',
+      value: $settings.swapWheelBehavior
+    },
+    {
+      key: 'invertColors',
+      text: 'Invert colors of the images',
+      value: $settings.invertColors,
+      shortcut: 'I'
+    },
+    {
+      key: 'nightMode',
+      text: 'Night mode (strong red filter)',
+      value: $settings.nightMode,
+      shortcut: 'N'
+    }
   ] as { key: SettingsKey; text: string; value: any; shortcut?: string }[]);
 </script>
 
 {#each toggles as { key, text, value, shortcut }}
-  <Toggle size="small" checked={value} on:change={() => updateSetting(key, !value)}>
+  <Toggle size="small" checked={value} onchange={() => updateSetting(key, !value)}>
     {text}
     {#if shortcut}
       <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">({shortcut})</span>
@@ -33,14 +48,17 @@
 {/each}
 
 <div class="mt-4">
-  <Label class="mb-2">
+  <Label class="mb-2 text-gray-900 dark:text-white">
     Inactivity timeout: {$settings.inactivityTimeoutMinutes} minutes
-    <span class="text-xs text-gray-500 ml-2">(Auto-stop timer and sync after inactivity)</span>
+    <span class="ml-2 text-xs text-gray-500 dark:text-gray-400"
+      >(Auto-stop timer and sync after inactivity)</span
+    >
   </Label>
   <Range
     min="1"
     max="30"
     value={$settings.inactivityTimeoutMinutes}
-    on:change={(e) => updateSetting('inactivityTimeoutMinutes', Number(e.target.value))}
+    onchange={(e) =>
+      updateSetting('inactivityTimeoutMinutes', Number((e.target as HTMLInputElement).value))}
   />
 </div>

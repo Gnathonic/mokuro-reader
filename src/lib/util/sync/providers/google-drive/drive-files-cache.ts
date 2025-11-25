@@ -1,9 +1,9 @@
 import { writable, derived } from 'svelte/store';
 import { driveApiClient } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
-import { unifiedCloudManager } from '../sync/unified-cloud-manager';
-import type { CloudCache } from '../sync/cloud-cache-interface';
-import type { DriveFileMetadata } from '../sync/provider-interface';
+import { unifiedCloudManager } from '../../unified-cloud-manager';
+import type { CloudCache } from '../../cloud-cache-interface';
+import type { DriveFileMetadata } from '../../provider-interface';
 
 // Re-export for convenience
 export type { DriveFileMetadata };
@@ -75,157 +75,164 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     // Create promise for this fetch operation
     this.fetchPromise = (async () => {
-    try {
-      console.log('Fetching all Drive file metadata...');
+      try {
+        console.log('Fetching all Drive file metadata...');
 
-      // Get only files owned by the user (guarantees edit permissions)
-      // This filters out viewer-only shared files while keeping shared files with edit access that user owns
-      const allItems = await driveApiClient.listFiles(
-        `'me' in owners and trashed=false`,
-        'files(id,name,mimeType,modifiedTime,size,parents,description)'
-      );
-      console.log('Found items:', allItems);
-
-      // Count by file type
-      const typeCounts: Record<string, number> = {};
-      const cbzFiles: any[] = [];
-      const volumeDataFiles: any[] = [];
-      const profilesFiles: any[] = [];
-      const folderNames = new Map<string, string>();
-      const foundFolderNames: string[] = [];
-
-      for (const item of allItems) {
-        const ext = item.name && item.name.includes('.') ? item.name.split('.').pop() || 'no-extension' : 'no-extension';
-        typeCounts[ext] = (typeCounts[ext] || 0) + 1;
-
-        if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
-          folderNames.set(item.id, item.name);
-          foundFolderNames.push(item.name);
-
-          // Capture mokuro-reader folder ID
-          if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
-            this.readerFolderId = item.id;
-            console.log('Found mokuro-reader folder ID:', item.id);
-          }
-        } else if (item.name.endsWith('.cbz')) {
-          cbzFiles.push(item);
-        } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
-          volumeDataFiles.push(item);
-        } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
-          profilesFiles.push(item);
-        }
-      }
-
-      // Log warning if duplicates found
-      if (volumeDataFiles.length > 1) {
-        console.warn(`Found ${volumeDataFiles.length} volume-data.json files - duplicates will be merged and cleaned up during sync`);
-      }
-
-      console.log('File type counts:', typeCounts);
-      console.log(`Found ${cbzFiles.length} .cbz files and ${folderNames.size} folders`);
-      console.log('Folder names:', foundFolderNames);
-
-      // Build cache from files using the folder map
-      // Group by series title (folder name) for efficient series-based operations
-      const cacheMap = new Map<string, DriveFileMetadata[]>();
-
-      // Add .cbz files (group by series title)
-      for (const file of cbzFiles) {
-        const parentId = file.parents?.[0];
-        const parentName = parentId ? folderNames.get(parentId) : null;
-
-        if (parentName) {
-          const path = `${parentName}/${file.name}`;
-          const metadata: DriveFileMetadata = {
-            provider: 'google-drive',
-            fileId: file.id,
-            name: file.name,
-            modifiedTime: file.modifiedTime || new Date().toISOString(),
-            size: file.size ? parseInt(file.size) : 0,
-            path: path,
-            description: file.description,
-            parentId: parentId
-          };
-
-          // Group by series title (parentName) instead of full path
-          const existing = cacheMap.get(parentName);
-          if (existing) {
-            existing.push(metadata);
-          } else {
-            cacheMap.set(parentName, [metadata]);
-          }
-        }
-      }
-
-      // Add volume-data.json files as an array
-      if (volumeDataFiles.length > 0) {
-        const volumeDataMetadata = volumeDataFiles.map(file => {
-          console.log('Volume data file from API:', file);
-          const metadata: DriveFileMetadata = {
-            provider: 'google-drive',
-            fileId: file.id,
-            name: file.name,
-            modifiedTime: file.modifiedTime || new Date().toISOString(),
-            size: file.size ? parseInt(file.size) : 0,
-            path: file.name
-          };
-          return metadata;
-        });
-
-        console.log('Cached volume data metadata:', volumeDataMetadata);
-        cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA, volumeDataMetadata);
-      }
-
-      // Add profiles.json files as an array
-      if (profilesFiles.length > 0) {
-        const profilesMetadata = profilesFiles.map(file => {
-          console.log('Profiles file from API:', file);
-          const metadata: DriveFileMetadata = {
-            provider: 'google-drive',
-            fileId: file.id,
-            name: file.name,
-            modifiedTime: file.modifiedTime || new Date().toISOString(),
-            size: file.size ? parseInt(file.size) : 0,
-            path: file.name
-          };
-          return metadata;
-        });
-
-        console.log('Cached profiles metadata:', profilesMetadata);
-        cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES, profilesMetadata);
-      }
-
-      console.log(`Cached ${cbzFiles.length} .cbz files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`);
-      this.cache.set(cacheMap);
-      this.lastFetchTime = Date.now();
-      this.cacheLoadedStore.set(true);
-
-    } catch (error) {
-      console.error('Failed to fetch Drive files cache:', error);
-      console.error('Error details:', error);
-      if (error instanceof Error) {
-        console.error('Error message:', error.message);
-        console.error('Error stack:', error.stack);
-      }
-      // Don't clear cache on error, keep stale data
-    } finally {
-      this.fetchingFlag = false;
-      this.isFetchingStore.set(false);
-      this.fetchPromise = null;
-
-      // Check if sync was requested after login (do this in finally to ensure fetch is complete)
-      const shouldSync = typeof window !== 'undefined' &&
-        localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.SYNC_AFTER_LOGIN) === 'true';
-
-      if (shouldSync) {
-        console.log('Cache loaded, triggering requested sync...');
-        localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.SYNC_AFTER_LOGIN);
-
-        unifiedCloudManager.syncProgress({ silent: false }).catch((err: Error) =>
-          console.error('Sync after login failed:', err)
+        // Get only files owned by the user (guarantees edit permissions)
+        // This filters out viewer-only shared files while keeping shared files with edit access that user owns
+        const allItems = await driveApiClient.listFiles(
+          `'me' in owners and trashed=false`,
+          'files(id,name,mimeType,modifiedTime,size,parents,description)'
         );
+        console.log('Found items:', allItems);
+
+        // Count by file type
+        const typeCounts: Record<string, number> = {};
+        const cbzFiles: any[] = [];
+        const volumeDataFiles: any[] = [];
+        const profilesFiles: any[] = [];
+        const folderNames = new Map<string, string>();
+        const foundFolderNames: string[] = [];
+
+        for (const item of allItems) {
+          const ext =
+            item.name && item.name.includes('.')
+              ? item.name.split('.').pop() || 'no-extension'
+              : 'no-extension';
+          typeCounts[ext] = (typeCounts[ext] || 0) + 1;
+
+          if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
+            folderNames.set(item.id, item.name);
+            foundFolderNames.push(item.name);
+
+            // Capture mokuro-reader folder ID
+            if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
+              this.readerFolderId = item.id;
+              console.log('Found mokuro-reader folder ID:', item.id);
+            }
+          } else if (item.name.endsWith('.cbz')) {
+            cbzFiles.push(item);
+          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
+            volumeDataFiles.push(item);
+          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
+            profilesFiles.push(item);
+          }
+        }
+
+        // Log warning if duplicates found
+        if (volumeDataFiles.length > 1) {
+          console.warn(
+            `Found ${volumeDataFiles.length} volume-data.json files - duplicates will be merged and cleaned up during sync`
+          );
+        }
+
+        console.log('File type counts:', typeCounts);
+        console.log(`Found ${cbzFiles.length} .cbz files and ${folderNames.size} folders`);
+        console.log('Folder names:', foundFolderNames);
+
+        // Build cache from files using the folder map
+        // Group by series title (folder name) for efficient series-based operations
+        const cacheMap = new Map<string, DriveFileMetadata[]>();
+
+        // Add .cbz files (group by series title)
+        for (const file of cbzFiles) {
+          const parentId = file.parents?.[0];
+          const parentName = parentId ? folderNames.get(parentId) : null;
+
+          if (parentName) {
+            const path = `${parentName}/${file.name}`;
+            const metadata: DriveFileMetadata = {
+              provider: 'google-drive',
+              fileId: file.id,
+              name: file.name,
+              modifiedTime: file.modifiedTime || new Date().toISOString(),
+              size: file.size ? parseInt(file.size) : 0,
+              path: path,
+              description: file.description,
+              parentId: parentId
+            };
+
+            // Group by series title (parentName) instead of full path
+            const existing = cacheMap.get(parentName);
+            if (existing) {
+              existing.push(metadata);
+            } else {
+              cacheMap.set(parentName, [metadata]);
+            }
+          }
+        }
+
+        // Add volume-data.json files as an array
+        if (volumeDataFiles.length > 0) {
+          const volumeDataMetadata = volumeDataFiles.map((file) => {
+            console.log('Volume data file from API:', file);
+            const metadata: DriveFileMetadata = {
+              provider: 'google-drive',
+              fileId: file.id,
+              name: file.name,
+              modifiedTime: file.modifiedTime || new Date().toISOString(),
+              size: file.size ? parseInt(file.size) : 0,
+              path: file.name
+            };
+            return metadata;
+          });
+
+          console.log('Cached volume data metadata:', volumeDataMetadata);
+          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA, volumeDataMetadata);
+        }
+
+        // Add profiles.json files as an array
+        if (profilesFiles.length > 0) {
+          const profilesMetadata = profilesFiles.map((file) => {
+            console.log('Profiles file from API:', file);
+            const metadata: DriveFileMetadata = {
+              provider: 'google-drive',
+              fileId: file.id,
+              name: file.name,
+              modifiedTime: file.modifiedTime || new Date().toISOString(),
+              size: file.size ? parseInt(file.size) : 0,
+              path: file.name
+            };
+            return metadata;
+          });
+
+          console.log('Cached profiles metadata:', profilesMetadata);
+          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES, profilesMetadata);
+        }
+
+        console.log(
+          `Cached ${cbzFiles.length} .cbz files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
+        );
+        this.cache.set(cacheMap);
+        this.lastFetchTime = Date.now();
+        this.cacheLoadedStore.set(true);
+      } catch (error) {
+        console.error('Failed to fetch Drive files cache:', error);
+        console.error('Error details:', error);
+        if (error instanceof Error) {
+          console.error('Error message:', error.message);
+          console.error('Error stack:', error.stack);
+        }
+        // Don't clear cache on error, keep stale data
+      } finally {
+        this.fetchingFlag = false;
+        this.isFetchingStore.set(false);
+        this.fetchPromise = null;
+
+        // Check if sync was requested after login (do this in finally to ensure fetch is complete)
+        const shouldSync =
+          typeof window !== 'undefined' &&
+          localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.SYNC_AFTER_LOGIN) === 'true';
+
+        if (shouldSync) {
+          console.log('Cache loaded, triggering requested sync...');
+          localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.SYNC_AFTER_LOGIN);
+
+          unifiedCloudManager
+            .syncProgress({ silent: false })
+            .catch((err: Error) => console.error('Sync after login failed:', err));
+        }
       }
-    }
     })();
 
     return this.fetchPromise;
@@ -311,7 +318,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.some(f => f.path === path) || false;
+    return seriesFiles?.some((f) => f.path === path) || false;
   }
 
   /**
@@ -326,7 +333,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.find(f => f.path === path);
+    return seriesFiles?.find((f) => f.path === path);
   }
 
   /**
@@ -341,7 +348,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.filter(f => f.path === path) || [];
+    return seriesFiles?.filter((f) => f.path === path) || [];
   }
 
   /**
@@ -386,7 +393,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
       if (existing) {
         // Check if this file ID already exists, replace it
-        const index = existing.findIndex(f => f.fileId === metadata.fileId);
+        const index = existing.findIndex((f) => f.fileId === metadata.fileId);
         if (index >= 0) {
           existing[index] = metadata;
         } else {
@@ -408,7 +415,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
-        const filtered = files.filter(f => f.fileId !== fileId);
+        const filtered = files.filter((f) => f.fileId !== fileId);
         if (filtered.length === 0) {
           newCache.delete(path);
         } else if (filtered.length !== files.length) {
@@ -430,7 +437,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const seriesFiles = newCache.get(seriesTitle);
 
       if (seriesFiles) {
-        const filtered = seriesFiles.filter(f => f.path !== path);
+        const filtered = seriesFiles.filter((f) => f.path !== path);
         if (filtered.length === 0) {
           newCache.delete(seriesTitle);
         } else {
@@ -450,10 +457,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
-        const updated = files.map(file =>
-          file.fileId === fileId
-            ? { ...file, description }
-            : file
+        const updated = files.map((file) =>
+          file.fileId === fileId ? { ...file, description } : file
         );
         newCache.set(path, updated);
       }
@@ -504,7 +509,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.some(f => f.path === path) || false;
+    return seriesFiles?.some((f) => f.path === path) || false;
   }
 
   /**
@@ -520,7 +525,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.find(f => f.path === path) || null;
+    return seriesFiles?.find((f) => f.path === path) || null;
   }
 
   /**
@@ -536,7 +541,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Extract series title from path and find all matches within that series
     const seriesTitle = path.split('/')[0];
     const seriesFiles = currentCache.get(seriesTitle);
-    return seriesFiles?.filter(f => f.path === path) || [];
+    return seriesFiles?.filter((f) => f.path === path) || [];
   }
 
   /**
@@ -626,10 +631,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
-        const updated = files.map(file =>
-          file.fileId === fileId
-            ? { ...file, ...updates }
-            : file
+        const updated = files.map((file) =>
+          file.fileId === fileId ? { ...file, ...updates } : file
         );
         newCache.set(path, updated);
       }

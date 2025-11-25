@@ -55,7 +55,6 @@
       completed++;
     }
     files.push(mokuroFile);
-    files = files;
     message = 'Adding to catalog...';
 
     processFiles(files).then(() => {

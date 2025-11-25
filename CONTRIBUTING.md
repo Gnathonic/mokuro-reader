@@ -11,6 +11,7 @@ Thank you for your interest in contributing to Mokuro Reader!
 The project is not compatible with Node.js 19+ or earlier versions. Please ensure you have the correct version installed before proceeding.
 
 You can check your Node.js version with:
+
 ```bash
 node --version
 ```
@@ -28,6 +29,7 @@ nvm use 18
 ```
 
 The project includes an `.nvmrc` file, so if you have nvm installed, you can simply run:
+
 ```bash
 nvm use
 ```
@@ -35,17 +37,20 @@ nvm use
 ### Installation
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/ZXY101/mokuro-reader
 cd mokuro-reader
 ```
 
 2. Install dependencies:
+
 ```bash
 npm install
 ```
 
 3. Start the development server:
+
 ```bash
 npm run dev
 ```

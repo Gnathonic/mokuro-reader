@@ -5,7 +5,7 @@ export * from './modals';
 export * from './zip';
 export * from './cloud';
 export * from './sync-store';
-export * from './google-drive';
+export * from './sync/providers/google-drive';
 export * from './activity-tracker';
 export * from './backup';
 export * from './platform';

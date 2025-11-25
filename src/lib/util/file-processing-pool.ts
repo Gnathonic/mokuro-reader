@@ -25,17 +25,17 @@ let poolInitPromise: Promise<WorkerPool> | null = null;
 let poolUserCount = 0; // Reference counting for safe termination
 
 // Subscribe to settings changes to update memory limit dynamically
-miscSettings.subscribe(value => {
-	const turboMode = value.turboMode ?? false;
+miscSettings.subscribe((value) => {
+  const turboMode = value.turboMode ?? false;
 
-	// Turbo mode: use normal RAM-based limit (for impatient users with fast internet)
-	// Non-turbo: use 1MB limit to force single-operation mode (patient users)
-	const memoryLimitMB = turboMode
-		? (value.deviceRamGB ?? 4) * 1024 / 8  // Turbo: RAM-based
-		: 1;  // Non-turbo: 1MB (forces single operation)
+  // Turbo mode: use normal RAM-based limit (for impatient users with fast internet)
+  // Non-turbo: use 1MB limit to force single-operation mode (patient users)
+  const memoryLimitMB = turboMode
+    ? ((value.deviceRamGB ?? 4) * 1024) / 8 // Turbo: RAM-based
+    : 1; // Non-turbo: 1MB (forces single operation)
 
-	// Update shared memory manager limit
-	sharedMemoryManager.setMemoryLimit(memoryLimitMB);
+  // Update shared memory manager limit
+  sharedMemoryManager.setMemoryLimit(memoryLimitMB);
 });
 
 /**
@@ -55,61 +55,56 @@ miscSettings.subscribe(value => {
  * @returns Promise<WorkerPool> The shared worker pool instance
  */
 export async function getFileProcessingPool(): Promise<WorkerPool> {
-	// Return existing pool if already created
-	if (sharedPool) {
-		return sharedPool;
-	}
+  // Return existing pool if already created
+  if (sharedPool) {
+    return sharedPool;
+  }
 
-	// If already initializing, wait for that to complete
-	if (poolInitPromise) {
-		return poolInitPromise;
-	}
+  // If already initializing, wait for that to complete
+  if (poolInitPromise) {
+    return poolInitPromise;
+  }
 
-	// Start initialization and store the promise
-	poolInitPromise = (async () => {
-		// Get user's current settings
-		let deviceRamGB = 4; // Default
-		let turboMode = false; // Default
-		miscSettings.subscribe(value => {
-			deviceRamGB = value.deviceRamGB ?? 4;
-			turboMode = value.turboMode ?? false;
-		})();
+  // Start initialization and store the promise
+  poolInitPromise = (async () => {
+    // Get user's current settings
+    let deviceRamGB = 4; // Default
+    let turboMode = false; // Default
+    miscSettings.subscribe((value) => {
+      deviceRamGB = value.deviceRamGB ?? 4;
+      turboMode = value.turboMode ?? false;
+    })();
 
-		// Memory limit calculation (same logic as the subscription above)
-		// Turbo mode: use normal RAM-based limit (for impatient users with fast internet)
-		// Non-turbo: use 1MB limit to force single-operation mode (patient users)
-		const memoryLimitMB = turboMode
-			? (deviceRamGB * 1024) / 8  // Turbo: RAM-based
-			: 1;  // Non-turbo: 1MB (forces single operation)
+    // Memory limit calculation (same logic as the subscription above)
+    // Turbo mode: use normal RAM-based limit (for impatient users with fast internet)
+    // Non-turbo: use 1MB limit to force single-operation mode (patient users)
+    const memoryLimitMB = turboMode
+      ? (deviceRamGB * 1024) / 8 // Turbo: RAM-based
+      : 1; // Non-turbo: 1MB (forces single operation)
 
-		// Worker count: scale with CPU cores
-		// Use 1.5x RAM in GB as base (e.g., 4GB = 6 workers, 16GB = 24 workers)
-		// Cap at hardware concurrency to avoid oversubscription
-		const calculatedWorkers = Math.max(2, Math.floor(deviceRamGB * 1.5));
-		const maxWorkers = Math.min(calculatedWorkers, navigator.hardwareConcurrency || 4);
+    // Worker count: scale with CPU cores
+    // Use 1.5x RAM in GB as base (e.g., 4GB = 6 workers, 16GB = 24 workers)
+    // Cap at hardware concurrency to avoid oversubscription
+    const calculatedWorkers = Math.max(2, Math.floor(deviceRamGB * 1.5));
+    const maxWorkers = Math.min(calculatedWorkers, navigator.hardwareConcurrency || 4);
 
-		console.log(
-			`[File Processing Pool] Initializing: ${maxWorkers} workers, ${memoryLimitMB}MB shared limit ` +
-			`(turbo: ${turboMode ? 'ON' : 'OFF'}, ${deviceRamGB}GB RAM, ${navigator.hardwareConcurrency || 4} CPU cores)`
-		);
+    console.log(
+      `[File Processing Pool] Initializing: ${maxWorkers} workers, ${memoryLimitMB}MB shared limit ` +
+        `(turbo: ${turboMode ? 'ON' : 'OFF'}, ${deviceRamGB}GB RAM, ${navigator.hardwareConcurrency || 4} CPU cores)`
+    );
 
-		// Create the shared pool with unified worker
-		sharedPool = new WorkerPool(
-			'file-processing',
-			UnifiedFileWorker,
-			maxWorkers,
-			memoryLimitMB
-		);
+    // Create the shared pool with unified worker
+    sharedPool = new WorkerPool('file-processing', UnifiedFileWorker, maxWorkers, memoryLimitMB);
 
-		return sharedPool;
-	})();
+    return sharedPool;
+  })();
 
-	try {
-		return await poolInitPromise;
-	} finally {
-		// Clear the promise after completion (success or failure)
-		poolInitPromise = null;
-	}
+  try {
+    return await poolInitPromise;
+  } finally {
+    // Clear the promise after completion (success or failure)
+    poolInitPromise = null;
+  }
 }
 
 /**
@@ -124,8 +119,8 @@ export async function getFileProcessingPool(): Promise<WorkerPool> {
  * @returns void
  */
 export function incrementPoolUsers(): void {
-	poolUserCount++;
-	console.log(`[File Processing Pool] Users: ${poolUserCount} (pool active)`);
+  poolUserCount++;
+  console.log(`[File Processing Pool] Users: ${poolUserCount} (pool active)`);
 }
 
 /**
@@ -143,14 +138,14 @@ export function incrementPoolUsers(): void {
  * @returns void
  */
 export function decrementPoolUsers(): void {
-	poolUserCount = Math.max(0, poolUserCount - 1);
-	console.log(`[File Processing Pool] Users: ${poolUserCount}`);
+  poolUserCount = Math.max(0, poolUserCount - 1);
+  console.log(`[File Processing Pool] Users: ${poolUserCount}`);
 
-	if (poolUserCount === 0 && sharedPool) {
-		console.log(`[File Processing Pool] No users remaining, terminating pool`);
-		sharedPool.terminate();
-		sharedPool = null;
-	}
+  if (poolUserCount === 0 && sharedPool) {
+    console.log(`[File Processing Pool] No users remaining, terminating pool`);
+    sharedPool.terminate();
+    sharedPool = null;
+  }
 }
 
 /**
@@ -160,21 +155,21 @@ export function decrementPoolUsers(): void {
  * @returns Pool stats or null
  */
 export function getPoolStats(): {
-	activeTaskCount: number;
-	queuedTaskCount: number;
-	totalPendingTasks: number;
-	maxWorkers: number;
-	userCount: number;
+  activeTaskCount: number;
+  queuedTaskCount: number;
+  totalPendingTasks: number;
+  maxWorkers: number;
+  userCount: number;
 } | null {
-	if (!sharedPool) {
-		return null;
-	}
+  if (!sharedPool) {
+    return null;
+  }
 
-	return {
-		activeTaskCount: sharedPool.activeTaskCount,
-		queuedTaskCount: sharedPool.queuedTaskCount,
-		totalPendingTasks: sharedPool.totalPendingTasks,
-		maxWorkers: sharedPool.maxConcurrentWorkers,
-		userCount: poolUserCount
-	};
+  return {
+    activeTaskCount: sharedPool.activeTaskCount,
+    queuedTaskCount: sharedPool.queuedTaskCount,
+    totalPendingTasks: sharedPool.totalPendingTasks,
+    maxWorkers: sharedPool.maxConcurrentWorkers,
+    userCount: poolUserCount
+  };
 }

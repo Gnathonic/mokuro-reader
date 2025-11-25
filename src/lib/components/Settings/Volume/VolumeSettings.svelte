@@ -11,9 +11,9 @@
   import { zoomDefault } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
 
-  const volumeId = $page.params.volume;
+  const volumeId = $page.params.volume!;
 
-  let settings = $derived($effectiveVolumeSettings[$page.params.volume]);
+  let settings = $derived($effectiveVolumeSettings[volumeId]);
 
   let toggles = $derived([
     { key: 'rightToLeft', text: 'Right to left', value: settings.rightToLeft },
@@ -45,13 +45,11 @@
 </script>
 
 <AccordionItem open>
-  {#snippet header()}
-    <span>Volume settings</span>
-  {/snippet}
+  {#snippet header()}Volume settings{/snippet}
   <div class="flex flex-col gap-5">
     <Helper>These settings only apply to this volume</Helper>
     <div>
-      <Label for="page-view-mode" class="mb-2">
+      <Label for="page-view-mode" class="mb-2 text-gray-900 dark:text-white">
         Page view mode
         <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(P)</span>
       </Label>
@@ -60,11 +58,11 @@
         size="sm"
         items={pageViewModes}
         bind:value={settings.singlePageView}
-        on:change={onPageViewModeChange}
+        onchange={onPageViewModeChange}
       />
     </div>
     {#each toggles as { key, text, value, shortcut }}
-      <Toggle size="small" checked={value} on:change={() => onChange(key, value)}>
+      <Toggle size="small" checked={value} onchange={() => onChange(key, value)}>
         {text}
         {#if shortcut}
           <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">({shortcut})</span>

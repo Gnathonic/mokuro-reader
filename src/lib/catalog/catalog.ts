@@ -30,11 +30,6 @@ export function deriveSeriesFromVolumes(volumeEntries: Array<VolumeMetadata>) {
   // Convert map to array and sort everything
   const titles = Array.from(titleMap.values());
 
-  // Sort volumes within each title
-  for (const title of titles) {
-    title.volumes;
-  }
-
   // Sort titles
   titles.sort(sortTitles);
 

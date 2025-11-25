@@ -7,6 +7,7 @@
 ## Executive Summary
 
 Implement session-based reading tracking to enable:
+
 - Accurate reading speed calculation (chars/minute)
 - Time-to-finish estimates (personalized)
 - Historical performance tracking
@@ -16,12 +17,14 @@ Implement session-based reading tracking to enable:
 ## Core Problems Solved
 
 Current limitations:
+
 - ❌ No session boundaries → can't separate struggling early attempts from later mastery
 - ❌ Rereading pollutes metrics → time keeps accumulating
 - ❌ Too coarse (minutes only) → can't filter "marked as read" vs actually read
 - ❌ No historical view → can't show improvement over time
 
 What we need:
+
 - ✅ Session-level granularity with automatic boundaries
 - ✅ Page-read timestamps while session is active
 - ✅ Automatic compaction when session ends
@@ -39,15 +42,15 @@ What we need:
 ```typescript
 // Super compact: just [timestamp, page]
 // Char count looked up from volume data when needed
-type PageTurn = [number, number];  // [timestamp_ms, page_number]
+type PageTurn = [number, number]; // [timestamp_ms, page_number]
 ```
 
 ### Reading Session
 
 ```typescript
 type ReadingSession = {
-  id: string;               // UUID for uniqueness
-  volumeId: string;         // Which volume this session is for
+  id: string; // UUID for uniqueness
+  volumeId: string; // Which volume this session is for
 
   // Compact page turn log: [[timestamp, page], [timestamp, page], ...]
   // Duration calculated as difference between consecutive timestamps
@@ -57,6 +60,7 @@ type ReadingSession = {
 ```
 
 **Benefits:**
+
 - 2 numbers per page turn instead of 4 fields
 - No redundant data (duration calculated on-demand, chars looked up)
 - Smaller JSON serialization
@@ -67,17 +71,17 @@ type ReadingSession = {
 ```typescript
 type VolumeData = {
   // === BACKWARD COMPATIBLE: Keep existing fields ===
-  progress: number;              // Current page
-  chars: number;                 // Total chars read
-  completed: boolean;            // Ever completed?
-  timeReadInMinutes: number;     // Aggregate time (for compatibility)
-  lastProgressUpdate: string;    // ISO timestamp
+  progress: number; // Current page
+  chars: number; // Total chars read
+  completed: boolean; // Ever completed?
+  timeReadInMinutes: number; // Aggregate time (for compatibility)
+  lastProgressUpdate: string; // ISO timestamp
   settings: VolumeSettings;
 
   // === NEW: Session-based tracking ===
-  activeSession?: ReadingSession;     // Current session (with detailed events)
-  sessions: ReadingSession[];         // Historical sessions (with full events)
-  totalSessions: number;              // Counter for sessionNumber
+  activeSession?: ReadingSession; // Current session (with detailed events)
+  sessions: ReadingSession[]; // Historical sessions (with full events)
+  totalSessions: number; // Counter for sessionNumber
 };
 ```
 
@@ -100,6 +104,7 @@ Using compact `[timestamp, page]` tuples:
 ### 1. Session Start (Automatic Detection)
 
 **New session starts when:**
+
 - No `activeSession` exists
 - Last activity was > 30 minutes ago (configurable)
 - User navigates to volume from catalog (intentional start)
@@ -110,7 +115,7 @@ function startNewSession(volumeId: string, initialPage: number) {
   const session: ReadingSession = {
     id: generateUUID(),
     volumeId,
-    turns: [[now, initialPage]]  // First page turn
+    turns: [[now, initialPage]] // First page turn
   };
 
   volumes[volumeId].activeSession = session;
@@ -144,6 +149,7 @@ function onPageChange(volumeId: string, newPage: number) {
 ### 3. Session End
 
 **Session ends when:**
+
 - Inactivity timeout (30+ min)
 - User navigates away from volume
 - User closes tab (beforeunload, best effort)
@@ -196,17 +202,20 @@ function calculateSessionStats(session: ReadingSession, volumeData: VolumePageDa
 The `[timestamp, page]` format captures actual behavior, including:
 
 **Skimming/Preview:** User jumps ahead to preview, then returns to read properly
+
 ```
 [[1000, 10], [1030, 15], [1040, 16], [1070, 10], [1100, 11], ...]
          └─ jumped to 15-16 ─┘  └─ returned to read from 10 ─┘
 ```
 
 **Strategy for time attribution:**
+
 1. Group turns by page number: `{10: [1000, 1070], 11: [1100], 15: [1030], 16: [1040]}`
 2. For pages visited multiple times, sum all durations leading to that page
 3. This accurately captures "time actually spent reading page 10" even if interrupted
 
 **Example calculation for page 10:**
+
 - First visit: `1030 - 1000 = 30s` (then jumped to preview)
 - Second visit: `1100 - 1070 = 30s` (actually reading)
 - Total time on page 10: `60s`
@@ -224,18 +233,21 @@ interface ReadingSpeedResult {
   recentSessions?: ReadingSession[];
 }
 
-function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]): ReadingSpeedResult {
+function calculateReadingSpeed(
+  volumes: Volumes,
+  volumesData: VolumePageData[]
+): ReadingSpeedResult {
   const MAX_BREAK_MS = 5 * 60 * 1000; // 5 min
 
   // Gather all historical sessions across all volumes
   const allSessions = Object.entries(volumes)
     .flatMap(([volumeId, volumeData]) =>
-      volumeData.sessions.map(s => ({
+      volumeData.sessions.map((s) => ({
         session: s,
-        pageData: volumesData.find(v => v.volume_uuid === volumeId)
+        pageData: volumesData.find((v) => v.volume_uuid === volumeId)
       }))
     )
-    .filter(item => item.session.turns.length >= 2 && item.pageData);
+    .filter((item) => item.session.turns.length >= 2 && item.pageData);
 
   // Calculate stats and filter invalid sessions
   const validSessions = allSessions
@@ -279,7 +291,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
         charsPerMinute
       };
     })
-    .filter(stats => {
+    .filter((stats) => {
       // Must have read enough to be meaningful
       if (stats.pagesRead < 10) return false;
 
@@ -338,7 +350,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
     isPersonalized: true,
     confidence,
     sessionsUsed: recentSessions.length,
-    recentSessions: recentSessions.map(stats => stats.session)
+    recentSessions: recentSessions.map((stats) => stats.session)
   };
 }
 ```
@@ -353,9 +365,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 <script>
   let readingSpeed = $derived(calculateReadingSpeed($volumes));
   let remainingChars = $derived(volumeData.totalChars - $volumes[volumeId].chars);
-  let estimatedMinutes = $derived(
-    Math.ceil(remainingChars / readingSpeed.charsPerMinute)
-  );
+  let estimatedMinutes = $derived(Math.ceil(remainingChars / readingSpeed.charsPerMinute));
 
   let displayText = $derived(() => {
     if (estimatedMinutes < 60) {
@@ -388,7 +398,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
     const readingSpeed = calculateReadingSpeed($volumes);
 
     let totalRemainingChars = 0;
-    seriesVolumes.forEach(volume => {
+    seriesVolumes.forEach((volume) => {
       const volumeData = $volumes[volume.volume_uuid];
       const remainingChars = volume.char_count - (volumeData?.chars || 0);
       totalRemainingChars += remainingChars;
@@ -419,6 +429,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 ### MVP Stats Page Route: `/stats`
 
 **Overall Statistics:**
+
 - Total volumes completed
 - Total pages read
 - Total characters read
@@ -427,20 +438,24 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 - All-time fastest/slowest sessions
 
 **Reading Speed Trends:**
+
 - Line chart: CPM over time (last 30 sessions)
 - X-axis: Session date
 - Y-axis: Characters per minute
 - Trend line indicating improvement
 
 **Volume Performance:**
+
 - Bar chart: Sessions per volume
 - Show which volumes took multiple attempts
 - Tooltip: Session details (date, duration, CPM)
 
 **Recent Activity:**
+
 - List of last 10 sessions with details
 
 **Achievements/Milestones:**
+
 - "Speed Demon" - Read at 1000+ CPM
 - "Marathon Reader" - 3+ hour session
 - "Dedicated" - 10 volumes completed
@@ -451,6 +466,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 ## Implementation Phases
 
 ### Phase 1: Core Session Tracking (Week 1)
+
 - [ ] Update `VolumeData` type with session fields
 - [ ] Add session start/end logic to reader
 - [ ] Implement page event tracking
@@ -460,6 +476,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 > **Note:** Automatic compaction deferred to future phase. All sessions retain full event data.
 
 ### Phase 2: Reading Speed & Estimates (Week 2)
+
 - [ ] Create `reading-speed.ts` utility
 - [ ] Implement smart session filtering
 - [ ] Add time-to-finish to reader UI
@@ -467,6 +484,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 - [ ] Add personalized indicator tooltips
 
 ### Phase 3: Stats Page (Week 3)
+
 - [ ] Create `/stats` route
 - [ ] Implement overall statistics display
 - [ ] Add CPM trend chart (using Chart.js)
@@ -475,6 +493,7 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 - [ ] Polish UI and responsive design
 
 ### Phase 4: Advanced Features (Future)
+
 - [ ] Session data compaction/compression (when needed)
 - [ ] Reading goals & challenges
 - [ ] Export stats as CSV/JSON
@@ -487,12 +506,14 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 ## Success Metrics
 
 **Technical:**
+
 - ✅ No performance degradation in reader
 - ✅ 100% backward compatibility
 - ✅ Reliable session end detection (>95%)
 - ✅ Storage usage acceptable for typical usage patterns (<5 MB for most users)
 
 **User Experience:**
+
 - ✅ Time estimates within 20% accuracy
 - ✅ Visible improvement trend after 5+ sessions
 - ✅ Stats page loads < 500ms
@@ -514,11 +535,13 @@ function calculateReadingSpeed(volumes: Volumes, volumesData: VolumePageData[]):
 ## Files to Modify
 
 ### New Files
+
 - `src/lib/util/reading-speed.ts` - Reading speed calculation logic
 - `src/lib/util/session-tracking.ts` - Session lifecycle management
 - `src/routes/stats/+page.svelte` - Stats page (Phase 3)
 
 ### Modified Files
+
 - `src/lib/settings/volume-data.ts` - Add session fields to VolumeData
 - `src/lib/components/Reader/Reader.svelte` - Integrate session tracking
 - `src/lib/components/Reader/Timer.svelte` - Add time-to-finish display

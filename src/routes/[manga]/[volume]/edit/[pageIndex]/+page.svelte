@@ -332,51 +332,54 @@
 				You have unsaved changes. Save before leaving?
 			</h3>
 			<div class="flex justify-center gap-4">
-				<Button color="green" on:click={saveAndNavigate}>Save & Continue</Button>
-				<Button color="red" on:click={discardAndNavigate}>Discard</Button>
-				<Button color="alternative" on:click={cancelNavigation}>Cancel</Button>
+				<Button color="green" onclick={saveAndNavigate}>Save & Continue</Button>
+				<Button color="red" onclick={discardAndNavigate}>Discard</Button>
+				<Button color="alternative" onclick={cancelNavigation}>Cancel</Button>
 			</div>
 		</div>
 	</Modal>
 
 	<!-- Success Toast -->
-	<Toast
-		color="green"
-		position="top-right"
-		open={isMounted && showSaveSuccess}
-		class="fixed top-20 right-4 z-50"
-	>
-		<svelte:fragment slot="icon">
-			<CheckCircleSolid class="w-5 h-5" />
-		</svelte:fragment>
-		Edits saved successfully
-	</Toast>
+	{#if isMounted && showSaveSuccess}
+		<Toast
+			color="green"
+			position="top-right"
+			class="fixed top-20 right-4 z-50"
+		>
+			{#snippet icon()}
+				<CheckCircleSolid class="w-5 h-5" />
+			{/snippet}
+			Edits saved successfully
+		</Toast>
+	{/if}
 
 	<!-- Error Toast -->
-	<Toast
-		color="red"
-		position="top-right"
-		open={isMounted && showSaveError}
-		class="fixed top-20 right-4 z-50"
-	>
-		<svelte:fragment slot="icon">
-			<CloseCircleSolid class="w-5 h-5" />
-		</svelte:fragment>
-		Failed to save: {saveErrorMessage}
-	</Toast>
+	{#if isMounted && showSaveError}
+		<Toast
+			color="red"
+			position="top-right"
+			class="fixed top-20 right-4 z-50"
+		>
+			{#snippet icon()}
+				<CloseCircleSolid class="w-5 h-5" />
+			{/snippet}
+			Failed to save: {saveErrorMessage}
+		</Toast>
+	{/if}
 
 	<!-- Revert Success Toast -->
-	<Toast
-		color="green"
-		position="top-right"
-		open={isMounted && showRevertSuccess}
-		class="fixed top-20 right-4 z-50"
-	>
-		<svelte:fragment slot="icon">
-			<CheckCircleSolid class="w-5 h-5" />
-		</svelte:fragment>
-		Reverted to original
-	</Toast>
+	{#if isMounted && showRevertSuccess}
+		<Toast
+			color="green"
+			position="top-right"
+			class="fixed top-20 right-4 z-50"
+		>
+			{#snippet icon()}
+				<CheckCircleSolid class="w-5 h-5" />
+			{/snippet}
+			Reverted to original
+		</Toast>
+	{/if}
 {:else}
 	<div class="flex items-center justify-center w-screen h-screen">
 		<p class="text-xl">Failed to load page data</p>

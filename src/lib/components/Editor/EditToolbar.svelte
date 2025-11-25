@@ -85,7 +85,7 @@
 				size="sm"
 				class="w-40"
 				value={zoomMode}
-				on:change={handleZoomChange}
+				onchange={handleZoomChange}
 				items={zoomOptions}
 			/>
 		</div>

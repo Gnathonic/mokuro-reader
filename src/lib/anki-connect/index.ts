@@ -1,7 +1,7 @@
-import type { Settings } from "$lib/settings/settings";
-import { settings } from "$lib/settings";
-import { showSnackbar } from "$lib/util"
-import { get } from "svelte/store";
+import type { Settings } from '$lib/settings/settings';
+import { settings } from '$lib/settings';
+import { showSnackbar } from '$lib/util';
+import { get } from 'svelte/store';
 
 export * from './cropper';
 
@@ -58,33 +58,50 @@ export async function imageToWebp(source: File, settings: Settings) {
 
   if (context) {
     context.drawImage(image, 0, 0);
-    await imageResize(canvas, context, settings.ankiConnectSettings.widthField, settings.ankiConnectSettings.heightField);
-    const blob = await canvas.convertToBlob({ type: 'image/webp', quality: settings.ankiConnectSettings.qualityField });
+    await imageResize(
+      canvas,
+      context,
+      settings.ankiConnectSettings.widthField,
+      settings.ankiConnectSettings.heightField
+    );
+    const blob = await canvas.convertToBlob({
+      type: 'image/webp',
+      quality: settings.ankiConnectSettings.qualityField
+    });
     image.close();
 
     return await blobToBase64(blob);
   }
 }
 
-export async function imageResize(canvas: OffscreenCanvas,  ctx: OffscreenCanvasRenderingContext2D, maxWidth: number, maxHeight: number): Promise<OffscreenCanvas> {
+export async function imageResize(
+  canvas: OffscreenCanvas,
+  ctx: OffscreenCanvasRenderingContext2D,
+  maxWidth: number,
+  maxHeight: number
+): Promise<OffscreenCanvas> {
   return new Promise((resolve, reject) => {
     const widthRatio = maxWidth <= 0 ? 1 : maxWidth / canvas.width;
     const heightRatio = maxHeight <= 0 ? 1 : maxHeight / canvas.height;
     const ratio = Math.min(1, Math.min(widthRatio, heightRatio));
 
     if (ratio < 1) {
-        const newWidth = canvas.width * ratio;
-        const newHeight = canvas.height * ratio;
-        createImageBitmap(canvas, { resizeWidth: newWidth, resizeHeight: newHeight, resizeQuality: 'high' })
-            .then((sprite) => {
-                canvas.width = newWidth;
-                canvas.height = newHeight;
-                ctx.drawImage(sprite, 0, 0);
-                resolve(canvas);
-            })
-            .catch((e) => reject(e));
+      const newWidth = canvas.width * ratio;
+      const newHeight = canvas.height * ratio;
+      createImageBitmap(canvas, {
+        resizeWidth: newWidth,
+        resizeHeight: newHeight,
+        resizeQuality: 'high'
+      })
+        .then((sprite) => {
+          canvas.width = newWidth;
+          canvas.height = newHeight;
+          ctx.drawImage(sprite, 0, 0);
+          resolve(canvas);
+        })
+        .catch((e) => reject(e));
     } else {
-        resolve(canvas);
+      resolve(canvas);
     }
   });
 }

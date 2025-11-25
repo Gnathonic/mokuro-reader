@@ -1,5 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
-import { driveApiClient, escapeNameForDriveQuery } from './google-drive/api-client';
+import { driveApiClient, escapeNameForDriveQuery } from './sync/providers/google-drive/api-client';
 import { createArchiveBlob } from './zip';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { ProviderType } from './sync/provider-interface';
@@ -31,7 +31,7 @@ export async function uploadCbzToDrive(
     {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${access_token}`,
+        Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(metadata)
@@ -97,10 +97,7 @@ export async function getOrCreateFolder(
  * @param parentFolderId Optional parent folder ID
  * @returns Promise resolving to the file ID if it exists, or null
  */
-export async function findFile(
-  fileName: string,
-  parentFolderId?: string
-): Promise<string | null> {
+export async function findFile(fileName: string, parentFolderId?: string): Promise<string | null> {
   const escapedFileName = escapeNameForDriveQuery(fileName);
 
   const query = parentFolderId
