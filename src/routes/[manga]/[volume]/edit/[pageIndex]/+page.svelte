@@ -65,7 +65,7 @@
         volumeData = data;
         // Initialize working blocks with current page's blocks (edited or original)
         const currentPages = getCurrentPages(data);
-        workingBlocks = structuredClone(currentPages[pageIndex]?.blocks || []);
+        workingBlocks = JSON.parse(JSON.stringify(currentPages[pageIndex]?.blocks || []));
       }
     } catch (error) {
       console.error('Failed to load volume data:', error);
@@ -88,7 +88,7 @@
   }
 
   function cloneBlock(index: number): number {
-    const clonedBlock = structuredClone(workingBlocks[index]);
+    const clonedBlock = JSON.parse(JSON.stringify(workingBlocks[index]));
     // Offset the cloned box slightly
     const offset = 20;
     clonedBlock.box = [
