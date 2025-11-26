@@ -1,4 +1,3 @@
-import { page } from '$app/stores';
 import { db } from '$lib/catalog/db';
 import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
@@ -6,6 +5,7 @@ import { derived, readable, type Readable } from 'svelte/store';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
+import { routeParams } from '$lib/util/navigation';
 
 function sortVolumes(a: VolumeMetadata, b: VolumeMetadata) {
   if (a.volume_title < b.volume_title) {
@@ -70,15 +70,15 @@ export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlacehol
   return deriveSeriesFromVolumes(Object.values($volumesWithPlaceholders));
 });
 
-export const currentSeries = derived([page, catalog], ([$page, $catalog]) =>
-  ($catalog?.find((volume) => volume.series_uuid === $page.params.manga)?.volumes || []).sort(
+export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) =>
+  ($catalog?.find((volume) => volume.series_uuid === $routeParams.manga)?.volumes || []).sort(
     sortVolumes
   )
 );
 
-export const currentVolume = derived([page, volumes], ([$page, $volumes]) => {
-  if ($page && $volumes && $page.params.volume) {
-    return $volumes[$page.params.volume]; // Direct lookup instead of find()
+export const currentVolume = derived([routeParams, volumes], ([$routeParams, $volumes]) => {
+  if ($routeParams && $volumes && $routeParams.volume) {
+    return $volumes[$routeParams.volume]; // Direct lookup instead of find()
   }
   return undefined;
 });

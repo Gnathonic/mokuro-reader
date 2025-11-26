@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { page } from '$app/stores';
   import Reader from '$lib/components/Reader/Reader.svelte';
   import Timer from '$lib/components/Reader/Timer.svelte';
   import { effectiveVolumeSettings, initializeVolume, settings, volumes } from '$lib/settings';
@@ -7,8 +6,9 @@
   import { activityTracker } from '$lib/util/activity-tracker';
   import { Spinner } from 'flowbite-svelte';
   import type { PageViewMode } from '$lib/settings/settings';
+  import { routeParams } from '$lib/util/navigation';
 
-  let volumeId = $derived($page.params.volume || '');
+  let volumeId = $derived($routeParams.volume || '');
   let count: undefined | number = $state(undefined);
 
   // Cache volume settings to prevent flash when unrelated volumes are added.

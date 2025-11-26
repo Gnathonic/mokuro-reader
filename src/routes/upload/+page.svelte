@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import Loader from '$lib/components/Loader.svelte';
   import { getItems, processFiles } from '$lib/upload';
   import { promptConfirmation, showSnackbar } from '$lib/util';
+  import { nav } from '$lib/util/navigation';
   import { P, Progressbar } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   export const BASE_URL = $page.url.searchParams.get('source') || 'https://mokuro.moe/manga';
@@ -58,12 +58,12 @@
     message = 'Adding to catalog...';
 
     processFiles(files).then(() => {
-      goto('/', { replaceState: true });
+      nav.toCatalog({ replaceState: true });
     });
   }
 
   function onCancel() {
-    goto('/', { replaceState: true });
+    nav.toCatalog({ replaceState: true });
   }
 
   onMount(() => {

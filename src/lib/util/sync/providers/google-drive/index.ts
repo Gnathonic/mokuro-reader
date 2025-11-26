@@ -65,8 +65,10 @@ export async function signOutFromGoogleDrive(): Promise<void> {
   // Dynamic imports to avoid circular dependency
   const { unifiedCloudManager } = await import('../../unified-cloud-manager');
   const { providerManager } = await import('../../provider-manager');
+  const { clearActiveProviderKey } = await import('../../provider-detection');
 
   unifiedCloudManager.clearCache();
+  clearActiveProviderKey();
   providerManager.updateStatus();
 }
 

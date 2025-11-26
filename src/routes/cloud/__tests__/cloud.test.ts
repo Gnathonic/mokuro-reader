@@ -41,9 +41,9 @@ describe('Cloud Component', () => {
     expect(getByText('MEGA')).toBeTruthy();
     expect(getByText(/20GB free/)).toBeTruthy();
 
-    // Check WebDAV provider (disabled)
+    // Check WebDAV provider
     expect(getByText('WebDAV')).toBeTruthy();
-    expect(getByText('Under Development')).toBeTruthy();
+    expect(getByText(/Nextcloud.*Persistent login/)).toBeTruthy();
   });
 
   it('should show provider as authenticated when credentials exist in store', async () => {

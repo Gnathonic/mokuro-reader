@@ -1,6 +1,17 @@
 {
   "name": "Mokuro",
   "short_name": "Mokuro",
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "application/vnd.comicbook+zip": [".cbz"]
+      }
+    }
+  ],
+  "launch_handler": {
+    "client_mode": ["focus-existing", "navigate-existing", "auto"]
+  },
   "icons": [
     {
       "src": "icons/icon-72x72.png",

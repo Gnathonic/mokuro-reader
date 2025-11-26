@@ -1,11 +1,6 @@
-import { derived, readable, writable, type Readable } from 'svelte/store';
+import { derived, writable, type Readable } from 'svelte/store';
 import type { CloudCache } from './cloud-cache-interface';
 import type { ProviderType } from './provider-interface';
-import {
-  driveFilesCache,
-  type DriveFileMetadata
-} from './providers/google-drive/drive-files-cache';
-import { megaCache } from './providers/mega/mega-cache';
 
 /**
  * Cache Manager
@@ -205,13 +200,5 @@ class CacheManager {
 }
 
 // Create singleton instance
+// Note: Caches are registered by their provider modules when loaded (self-registration pattern)
 export const cacheManager = new CacheManager();
-
-// Register Google Drive cache
-cacheManager.registerCache('google-drive', driveFilesCache);
-
-// Register MEGA cache
-cacheManager.registerCache('mega', megaCache);
-
-// Future: Register WebDAV cache
-// cacheManager.registerCache('webdav', webdavCache);

@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { derived, get, writable } from 'svelte/store';
+import { derived, get, readable, writable } from 'svelte/store';
 import { isMobilePlatform } from '$lib/util/platform';
 
 export type FontSize =
@@ -41,6 +41,12 @@ export type AnkiConnectSettings = {
   triggerMethod: 'rightClick' | 'doubleTap' | 'both';
 };
 
+export type TimeSchedule = {
+  enabled: boolean;
+  startTime: string; // HH:MM format
+  endTime: string; // HH:MM format
+};
+
 export type PageViewMode = 'single' | 'dual' | 'auto';
 
 export type VolumeDefaults = {
@@ -67,8 +73,10 @@ export type Settings = {
   fontSize: FontSize;
   zoomDefault: ZoomModes;
   pageTransition: PageTransition;
-  invertColors: boolean;
   nightMode: boolean;
+  nightModeSchedule: TimeSchedule;
+  invertColors: boolean;
+  invertColorsSchedule: TimeSchedule;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   volumeDefaults: VolumeDefaults;
@@ -82,6 +90,10 @@ export type SettingsKey = keyof Settings;
 export type AnkiSettingsKey = keyof AnkiConnectSettings;
 
 export type VolumeDefaultsKey = keyof VolumeDefaults;
+
+export type TimeScheduleKey = keyof TimeSchedule;
+
+export type ScheduleSettingKey = 'nightModeSchedule' | 'invertColorsSchedule';
 
 const defaultSettings: Settings = {
   defaultFullscreen: false,
@@ -101,8 +113,18 @@ const defaultSettings: Settings = {
   fontSize: 'auto',
   zoomDefault: 'zoomFitToScreen',
   pageTransition: 'none',
-  invertColors: false,
   nightMode: false,
+  nightModeSchedule: {
+    enabled: false,
+    startTime: '21:00',
+    endTime: '06:00'
+  },
+  invertColors: false,
+  invertColorsSchedule: {
+    enabled: false,
+    startTime: '21:00',
+    endTime: '06:00'
+  },
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   volumeDefaults: {
@@ -182,6 +204,16 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.ankiConnectSettings || {})
     };
 
+    migratedProfile.nightModeSchedule = {
+      ...defaultSettings.nightModeSchedule,
+      ...(profile.nightModeSchedule || {})
+    };
+
+    migratedProfile.invertColorsSchedule = {
+      ...defaultSettings.invertColorsSchedule,
+      ...(profile.invertColorsSchedule || {})
+    };
+
     // Add timestamp if missing
     if (!migratedProfile.lastUpdated) {
       const newTimestamp = new Date().toISOString();
@@ -244,6 +276,53 @@ export const settings = derived([profiles, currentProfile], ([profiles, currentP
   return profiles[currentProfile];
 });
 
+// A store that updates every minute to trigger schedule checks
+const currentMinute = readable(Date.now(), (set) => {
+  if (!browser) return;
+  const interval = setInterval(() => set(Date.now()), 60000);
+  return () => clearInterval(interval);
+});
+
+/**
+ * Check if the current time falls within a schedule's time range.
+ * Handles schedules that cross midnight (e.g., 21:00 - 06:00).
+ */
+export function isWithinSchedule(schedule: TimeSchedule): boolean {
+  if (!schedule.enabled) return false;
+
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const [startHour, startMin] = schedule.startTime.split(':').map(Number);
+  const [endHour, endMin] = schedule.endTime.split(':').map(Number);
+
+  const startMinutes = startHour * 60 + startMin;
+  const endMinutes = endHour * 60 + endMin;
+
+  if (startMinutes <= endMinutes) {
+    // Same day range (e.g., 09:00 - 17:00)
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  } else {
+    // Crosses midnight (e.g., 21:00 - 06:00)
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+}
+
+// Derived stores for effective state (manual mode uses toggle, scheduled mode uses time check)
+export const nightModeActive = derived([settings, currentMinute], ([$settings, _]) => {
+  if ($settings.nightModeSchedule.enabled) {
+    return isWithinSchedule($settings.nightModeSchedule);
+  }
+  return $settings.nightMode;
+});
+
+export const invertColorsActive = derived([settings, currentMinute], ([$settings, _]) => {
+  if ($settings.invertColorsSchedule.enabled) {
+    return isWithinSchedule($settings.invertColorsSchedule);
+  }
+  return $settings.invertColors;
+});
+
 /**
  * Helper function to update a profile's timestamp
  */
@@ -292,6 +371,26 @@ export function updateAnkiSetting(key: AnkiSettingsKey, value: any) {
         ...profiles[profileId],
         ankiConnectSettings: {
           ...profiles[profileId].ankiConnectSettings,
+          [key]: value
+        }
+      })
+    };
+  });
+}
+
+export function updateScheduleSetting(
+  scheduleKey: ScheduleSettingKey,
+  key: TimeScheduleKey,
+  value: any
+) {
+  _profilesInternal.update((profiles) => {
+    const profileId = get(currentProfile);
+    return {
+      ...profiles,
+      [profileId]: touchProfile({
+        ...profiles[profileId],
+        [scheduleKey]: {
+          ...profiles[profileId][scheduleKey],
           [key]: value
         }
       })

@@ -12,8 +12,8 @@ import { providerManager } from './provider-manager';
 export interface UnifiedProviderState {
   /** Whether a provider is authenticated and connected */
   isAuthenticated: boolean;
-  /** Whether credentials are configured (even if not currently connected) */
-  hasStoredCredentials: boolean;
+  /** Whether there's an active provider configured (via active_cloud_provider key) */
+  hasActiveProvider: boolean;
   /** Whether the cache is currently loading */
   isCacheLoading: boolean;
   /** Whether the cache has been loaded at least once */
@@ -43,22 +43,16 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
       }
       wasLoading = $isCacheLoading;
 
-      // Check if ANY provider has stored credentials (synchronous, immediate on page load)
-      // This ensures UI shows yellow "Initializing..." immediately
-      const hasStoredCredentials =
-        $providerStatus.providers['google-drive']?.hasStoredCredentials ||
-        $providerStatus.providers['mega']?.hasStoredCredentials ||
-        $providerStatus.providers['webdav']?.hasStoredCredentials ||
-        false;
-
-      // Get the configured provider type (if any)
+      // Get the configured provider type from active_cloud_provider key
+      // This is the authoritative source - properly clears on logout
       const configuredType = $providerStatus.currentProviderType;
+      const hasActiveProvider = configuredType !== null;
 
       // If no provider configured, return minimal state
       if (!configuredType) {
         return {
           isAuthenticated: false,
-          hasStoredCredentials,
+          hasActiveProvider: false,
           isCacheLoading: $isCacheLoading,
           isCacheLoaded: hasLoadedOnce,
           isFullyConnected: false,
@@ -70,11 +64,11 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
       // Get status for the configured provider
       const status = $providerStatus.providers[configuredType];
 
-      // If status not yet available, return credentials-only state
+      // If status not yet available, return initializing state
       if (!status) {
         return {
           isAuthenticated: false,
-          hasStoredCredentials,
+          hasActiveProvider,
           isCacheLoading: $isCacheLoading,
           isCacheLoaded: hasLoadedOnce,
           isFullyConnected: false,
@@ -87,7 +81,7 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
 
       return {
         isAuthenticated: status.isAuthenticated,
-        hasStoredCredentials: status.hasStoredCredentials,
+        hasActiveProvider,
         isCacheLoading: $isCacheLoading,
         isCacheLoaded: hasLoadedOnce,
         isFullyConnected,

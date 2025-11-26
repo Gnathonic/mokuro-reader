@@ -7,8 +7,7 @@
     RefreshOutline,
     ChartLineUpOutline
   } from 'flowbite-svelte-icons';
-  import { afterNavigate, goto } from '$app/navigation';
-  import { page } from '$app/stores';
+  import { nav, isOnReader } from '$lib/util/navigation';
   import Settings from './Settings/Settings.svelte';
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
@@ -25,8 +24,8 @@
   // Read unified provider state synchronously
   let providerState = $derived($unifiedProviderState);
 
-  // Track if any cloud providers are authenticated (derived from state)
-  let hasAuthenticatedProviders = $derived(providerState?.hasStoredCredentials ?? false);
+  // Track if any cloud providers are configured (derived from active_cloud_provider key)
+  let hasActiveProvider = $derived(providerState?.hasActiveProvider ?? false);
 
   // Google Drive specific: Track token expiry for debug display
   let tokenMinutesLeft = $state<number | null>(null);
@@ -89,11 +88,11 @@
   }
 
   function navigateToCloud() {
-    goto('/cloud');
+    nav.toCloud();
   }
 
   function navigateToReadingSpeed() {
-    goto('/reading-speed');
+    nav.toReadingSpeed();
   }
 
   async function handleSync() {
@@ -117,8 +116,10 @@
     }
   }
 
-  afterNavigate(() => {
-    isReader = $page.route.id === '/[manga]/[volume]';
+  // Reactively update reader state - works for both browser mode (URL-based)
+  // and PWA mode (view state-based)
+  $effect(() => {
+    isReader = $isOnReader;
 
     if (isReader) {
       window.document.body.classList.add('reader');
@@ -159,7 +160,7 @@
             ? `${providerDisplayName} - Connected`
             : providerState.isAuthenticated
               ? `${providerDisplayName} - Loading...`
-              : providerState.hasStoredCredentials
+              : providerState.hasActiveProvider
                 ? `${providerDisplayName} - Initializing...`
                 : `${providerDisplayName} - Not connected`}
       >
@@ -173,7 +174,7 @@
           <CloudArrowUpOutline
             class="h-6 w-6 cursor-pointer text-yellow-600 hover:text-yellow-700"
           />
-        {:else if providerState.hasStoredCredentials}
+        {:else if providerState.hasActiveProvider}
           <CloudArrowUpOutline
             class="h-6 w-6 cursor-pointer text-yellow-600 hover:text-yellow-700"
           />
@@ -197,7 +198,7 @@
           </button>
         {/key}
       {/if}
-      {#if hasAuthenticatedProviders}
+      {#if hasActiveProvider}
         <button
           onclick={handleSync}
           class="flex h-6 w-6 items-center justify-center"

@@ -9,15 +9,13 @@
     showSnackbar,
     accessTokenStore,
     tokenClientStore,
-    signIn,
-    logout,
     syncReadProgress,
     READER_FOLDER,
     CLIENT_ID,
     API_KEY
   } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import type { ProviderType } from '$lib/util/sync/provider-interface';
+  import type { ProviderType, StorageQuota } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
   import { driveState, tokenManager } from '$lib/util/sync/providers/google-drive';
   import type { DriveState } from '$lib/util/sync/providers/google-drive';
@@ -30,12 +28,8 @@
   import type { VolumeMetadata } from '$lib/types';
 
   // Import multi-provider sync
-  import {
-    providerManager,
-    megaProvider,
-    webdavProvider,
-    googleDriveProvider
-  } from '$lib/util/sync';
+  // Note: Provider instances are lazy-loaded via providerManager.getOrLoadProvider()
+  import { providerManager } from '$lib/util/sync';
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
@@ -59,36 +53,12 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
 
-  // Check if any provider is configured (not just authenticated)
-  // This allows UI to show the provider page immediately while initializing
-  let hasAnyProvider = $derived(
-    $providerStatusStore.providers['google-drive']?.hasStoredCredentials ||
-      $providerStatusStore.providers['mega']?.hasStoredCredentials ||
-      $providerStatusStore.providers['webdav']?.hasStoredCredentials ||
-      false
-  );
+  // Use active_cloud_provider key (via currentProviderType) for UI state
+  // This properly clears on logout unlike hasStoredCredentials
+  let currentProvider = $derived<ProviderType | null>($providerStatusStore.currentProviderType);
 
-  // Check if providers are configured (even if not currently connected)
-  let googleDriveConfigured = $derived(
-    $providerStatusStore.providers['google-drive']?.hasStoredCredentials || false
-  );
-  let megaConfigured = $derived(
-    $providerStatusStore.providers['mega']?.hasStoredCredentials || false
-  );
-  let webdavConfigured = $derived(
-    $providerStatusStore.providers['webdav']?.hasStoredCredentials || false
-  );
-
-  // Determine current configured provider (show UI even if still initializing)
-  let currentProvider = $derived<ProviderType | null>(
-    googleDriveConfigured
-      ? 'google-drive'
-      : megaConfigured
-        ? 'mega'
-        : webdavConfigured
-          ? 'webdav'
-          : null
-  );
+  // Show provider UI if there's an active provider
+  let hasAnyProvider = $derived(currentProvider !== null);
 
   // Provider display names
   const providerNames: Record<ProviderType, string> = {
@@ -103,7 +73,7 @@
       items: [
         '15GB free storage',
         'Seamless Google account integration',
-        'File picker for easy selection',
+        'Back up from app, download on any device',
         'Auto re-authentication support'
       ]
     },
@@ -136,6 +106,51 @@
   let webdavUsername = $state('');
   let webdavPassword = $state('');
   let webdavLoading = $state(false);
+
+  // Storage quota state
+  let storageQuota = $state<StorageQuota | null>(null);
+  let quotaLoading = $state(false);
+
+  /**
+   * Format bytes to human-readable string
+   */
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Fetch storage quota from the active provider
+   */
+  async function fetchStorageQuota() {
+    const provider = providerManager.getActiveProvider();
+    if (!provider) return;
+
+    quotaLoading = true;
+    try {
+      storageQuota = await provider.getStorageQuota();
+    } catch (error) {
+      console.error('Failed to fetch storage quota:', error);
+      storageQuota = null;
+    } finally {
+      quotaLoading = false;
+    }
+  }
+
+  // Reactively fetch storage quota when provider auth state changes
+  $effect(() => {
+    // Track auth state for any provider
+    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth;
+
+    if (isAuthenticated) {
+      fetchStorageQuota();
+    } else {
+      storageQuota = null;
+    }
+  });
 
   // Use constants from the google-drive utility
   const type = 'application/json';
@@ -190,15 +205,27 @@
 
   async function createPicker() {
     try {
+      // Lazy-load Google Drive provider for file picker functionality
+      const provider = await providerManager.getOrLoadProvider('google-drive');
+      // Cast to access Drive-specific methods
+      const driveProvider = provider as typeof provider & {
+        showFilePicker: () => Promise<
+          Array<{ id: string; name: string | undefined; mimeType: string | undefined }>
+        >;
+        getCloudFileMetadata: (
+          files: Array<{ id: string; name: string | undefined; mimeType: string | undefined }>
+        ) => Promise<import('$lib/util/sync/provider-interface').CloudFileMetadata[]>;
+      };
+
       // Use provider's file picker - it handles all the Drive-specific logic
-      const pickedFiles = await googleDriveProvider.showFilePicker();
+      const pickedFiles = await driveProvider.showFilePicker();
 
       if (pickedFiles.length === 0) {
         return; // User cancelled or no files selected
       }
 
       // Fetch full metadata from Drive API
-      const cloudFiles = await googleDriveProvider.getCloudFileMetadata(pickedFiles);
+      const cloudFiles = await driveProvider.getCloudFileMetadata(pickedFiles);
 
       // Queue volumes for download via the unified queue system
       queueVolumesFromCloudFiles(cloudFiles);
@@ -246,6 +273,7 @@
   /**
    * Common post-login handler for all providers
    * Automatically syncs progress after successful login
+   * (Storage quota is fetched reactively via $effect when auth state changes)
    */
   async function handlePostLogin() {
     try {
@@ -256,47 +284,36 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
+    // Storage quota is fetched reactively via $effect when auth state changes
+
+    // Pre-fill WebDAV form fields from last session (Issue #206 Lesson #10)
+    try {
+      const webdavProviderInstance = await providerManager.getOrLoadProvider('webdav');
+      const lastUrl = (webdavProviderInstance as any).getLastServerUrl?.();
+      const lastUsername = (webdavProviderInstance as any).getLastUsername?.();
+      if (lastUrl) webdavUrl = lastUrl;
+      if (lastUsername) webdavUsername = lastUsername;
+    } catch {
+      // Provider not loadable, ignore
+    }
   });
 
   // Google Drive handlers
   async function handleGoogleDriveLogin() {
     googleDriveLoading = true;
     try {
-      // Trigger OAuth flow (initialize and show OAuth popup)
-      await signIn();
-
-      // Hide spinner once popup appears - user is now interacting with Google's dialog
-      googleDriveLoading = false;
-
-      // Wait for authentication to complete by watching the accessToken store
-      await new Promise<void>((resolve, reject) => {
-        let unsubscribe: (() => void) | undefined;
-
-        const timeout = setTimeout(() => {
-          unsubscribe?.(); // Clean up subscription on timeout
-          reject(new Error('Login timeout'));
-        }, 90000); // 90 second timeout for OAuth popup
-
-        unsubscribe = accessTokenStore.subscribe((token) => {
-          if (token) {
-            clearTimeout(timeout);
-            unsubscribe?.(); // Use optional chaining in case callback fires immediately
-            resolve();
-          }
-        });
-      });
+      // Lazy-load Google Drive provider and login (handles OAuth popup + waiting + key setting)
+      const googleDriveProvider = await providerManager.getOrLoadProvider('google-drive');
+      await googleDriveProvider.login();
 
       // Set as current provider (auto-logs out any other provider)
-      const provider = providerManager.getProviderInstance('google-drive');
-      if (provider) {
-        await providerManager.setCurrentProvider(provider);
-      }
+      await providerManager.setCurrentProvider(googleDriveProvider);
 
-      // After successful login, populate unified cache for placeholders
+      // Populate unified cache for rest of app to use
       showSnackbar('Connected to Google Drive - loading cloud data...');
       await unifiedCloudManager.fetchAllCloudVolumes();
 
@@ -318,6 +335,8 @@
   async function handleMegaLogin() {
     megaLoading = true;
     try {
+      // Lazy-load MEGA provider
+      const megaProvider = await providerManager.getOrLoadProvider('mega');
       await megaProvider.login({ email: megaEmail, password: megaPassword });
 
       // Set as current provider (auto-logs out any other provider)
@@ -345,24 +364,26 @@
     }
   }
 
-  // Unified logout handler
+  // Unified logout handler - all providers use providerManager.logout()
+  // (Storage quota is cleared reactively via $effect when auth state changes)
   async function handleLogout() {
-    if (currentProvider === 'google-drive') {
-      await logout();
-    } else if (currentProvider === 'mega') {
-      await handleMegaLogout();
-    } else if (currentProvider === 'webdav') {
-      await handleWebDAVLogout();
-    }
-  }
+    const provider = currentProvider;
 
-  async function handleMegaLogout() {
-    await megaProvider.logout();
-    megaEmail = '';
-    megaPassword = '';
-    unifiedCloudManager.clearCache();
-    providerManager.updateStatus();
-    showSnackbar('Logged out of MEGA');
+    // Use providerManager.logout() for all providers
+    // This properly clears currentProvider, active_cloud_provider key, and updates status
+    await providerManager.logout();
+
+    // Provider-specific cleanup
+    if (provider === 'mega') {
+      megaEmail = '';
+      megaPassword = '';
+      showSnackbar('Logged out of MEGA');
+    } else if (provider === 'webdav') {
+      webdavPassword = '';
+      showSnackbar('Logged out of WebDAV');
+    } else if (provider === 'google-drive') {
+      showSnackbar('Logged out of Google Drive');
+    }
   }
 
   async function handleProviderSync() {
@@ -380,6 +401,8 @@
   async function handleWebDAVLogin() {
     webdavLoading = true;
     try {
+      // Lazy-load WebDAV provider
+      const webdavProvider = await providerManager.getOrLoadProvider('webdav');
       await webdavProvider.login({
         serverUrl: webdavUrl,
         username: webdavUsername,
@@ -407,16 +430,6 @@
     } finally {
       webdavLoading = false;
     }
-  }
-
-  async function handleWebDAVLogout() {
-    await webdavProvider.logout();
-    webdavUrl = '';
-    webdavUsername = '';
-    webdavPassword = '';
-    unifiedCloudManager.clearCache();
-    providerManager.updateStatus();
-    showSnackbar('Logged out of WebDAV');
   }
 
   // Browser detection and settings URL generation
@@ -611,16 +624,16 @@
 
           <!-- WebDAV Option -->
           <button
-            class="border-opacity-50 w-full cursor-not-allowed rounded-lg border border-slate-600 p-6 opacity-50"
-            disabled
+            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800"
+            onclick={() => {
+              const webdavForm = document.getElementById('webdav-login-form');
+              if (webdavForm) webdavForm.classList.toggle('hidden');
+            }}
           >
             <div class="flex items-center gap-4">
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
-                <div class="flex items-center gap-2">
-                  <div class="text-lg font-semibold">WebDAV</div>
-                  <Badge color="yellow">Under Development</Badge>
-                </div>
+                <div class="text-lg font-semibold">WebDAV</div>
                 <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
               </div>
             </div>
@@ -644,15 +657,13 @@
               <input
                 type="text"
                 bind:value={webdavUsername}
-                placeholder="Username"
-                required
+                placeholder="Username (optional for some servers)"
                 class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <input
                 type="password"
                 bind:value={webdavPassword}
                 placeholder="Password or App Token"
-                required
                 class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
               <Button type="submit" disabled={webdavLoading} color="blue" size="sm">
@@ -689,22 +700,24 @@
             <!-- Provider-specific instructions -->
             {#if currentProvider === 'google-drive'}
               <p class="text-center text-gray-300">
-                Add your zipped manga files (ZIP or CBZ) to the <span class="text-primary-700"
-                  >{READER_FOLDER}</span
-                > folder in your Google Drive.
+                Back up volumes from any series page, then tap placeholders in your catalog to
+                download on other devices.
               </p>
               <p class="text-center text-sm text-gray-500">
-                You can select multiple ZIP/CBZ files or entire folders at once.
+                Or use the picker to download ZIP/CBZ files you've added to the <span
+                  class="text-primary-600">{READER_FOLDER}</span
+                > folder in Drive.
               </p>
             {:else}
-              <p class="mb-2 text-center text-gray-300">
-                Your read progress is synced with {providerNames[currentProvider]}.
+              <p class="text-center text-gray-300">
+                Back up volumes from any series page, then tap placeholders in your catalog to
+                download on other devices.
               </p>
             {/if}
 
-            <!-- Download Manga button (Google Drive only) -->
+            <!-- File picker button (Google Drive only) -->
             {#if currentProvider === 'google-drive'}
-              <Button color="blue" onclick={createPicker}>Download Manga</Button>
+              <Button color="dark" onclick={createPicker}>Open file picker</Button>
             {/if}
 
             <!-- Turbo Mode toggle with RAM configuration -->
@@ -873,6 +886,48 @@
                 Sync profiles
               {/if}
             </Button>
+
+            <!-- Storage quota section -->
+            <div class="mt-4 rounded-lg bg-gray-800 p-4">
+              <h3 class="mb-2 font-semibold">Storage</h3>
+              {#if quotaLoading}
+                <div class="flex items-center gap-2 text-sm text-gray-400">
+                  <Spinner size="4" />
+                  Loading storage info...
+                </div>
+              {:else if storageQuota && storageQuota.total !== null}
+                <div class="space-y-2">
+                  <div class="flex justify-between text-sm">
+                    <span class="text-gray-300">{formatBytes(storageQuota.used)} used</span>
+                    <span class="text-gray-300"
+                      >{formatBytes(storageQuota.available ?? 0)} available</span
+                    >
+                  </div>
+                  <div class="h-2.5 w-full rounded-full bg-gray-700">
+                    <div
+                      class="h-2.5 rounded-full transition-all duration-300"
+                      class:bg-blue-500={(storageQuota.used / storageQuota.total) * 100 < 80}
+                      class:bg-yellow-500={(storageQuota.used / storageQuota.total) * 100 >= 80 &&
+                        (storageQuota.used / storageQuota.total) * 100 < 95}
+                      class:bg-red-500={(storageQuota.used / storageQuota.total) * 100 >= 95}
+                      style="width: {Math.min(
+                        (storageQuota.used / storageQuota.total) * 100,
+                        100
+                      )}%"
+                    ></div>
+                  </div>
+                  <div class="text-center text-xs text-gray-500">
+                    {formatBytes(storageQuota.total)} total ({Math.round(
+                      (storageQuota.used / storageQuota.total) * 100
+                    )}% used)
+                  </div>
+                </div>
+              {:else if storageQuota && storageQuota.used > 0}
+                <p class="text-sm text-gray-300">{formatBytes(storageQuota.used)} used</p>
+              {:else}
+                <p class="text-sm text-gray-500">Storage information unavailable</p>
+              {/if}
+            </div>
 
             <!-- Provider info box -->
             <div class="mt-4 rounded-lg bg-gray-800 p-4">

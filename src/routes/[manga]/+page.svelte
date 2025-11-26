@@ -1,6 +1,5 @@
 <script lang="ts">
   import { catalog } from '$lib/catalog';
-  import { goto } from '$app/navigation';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import BackupButton from '$lib/components/BackupButton.svelte';
@@ -9,9 +8,9 @@
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { page } from '$app/stores';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, volumes, progress } from '$lib/settings';
+  import { nav, routeParams, navigateBack } from '$lib/util/navigation';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     CloudArrowUpOutline,
@@ -141,7 +140,7 @@
   // Reactive sorted volumes - avoids circular dependency by making sorting fully reactive
   let allVolumes = $derived.by(() => {
     const seriesVolumes = $catalog?.find(
-      (item) => item.series_uuid === $page.params.manga
+      (item) => item.series_uuid === $routeParams.manga
     )?.volumes;
     if (!seriesVolumes) return undefined;
 
@@ -303,7 +302,7 @@
         await deleteSeriesFromCloud(manga);
       }
 
-      goto('/');
+      nav.toCatalog();
     }
   }
 
@@ -519,7 +518,8 @@
   }
 
   function goToSeriesText() {
-    goto(`/${$page.params.manga}/text`);
+    const seriesId = $routeParams.manga;
+    if (seriesId) nav.toSeriesText(seriesId);
   }
 
   onMount(() => {
@@ -539,7 +539,7 @@
 
     function handleKeydown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        goto('/');
+        navigateBack();
       }
     }
 

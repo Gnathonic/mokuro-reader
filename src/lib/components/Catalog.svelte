@@ -3,7 +3,13 @@
   import { Button, Listgroup, Search } from 'flowbite-svelte';
   import CatalogItem from './CatalogItem.svelte';
   import Loader from './Loader.svelte';
-  import { GridOutline, ListOutline, SortOutline, DownloadSolid } from 'flowbite-svelte-icons';
+  import {
+    GridOutline,
+    ListOutline,
+    SortOutline,
+    DownloadSolid,
+    UploadSolid
+  } from 'flowbite-svelte-icons';
   import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
@@ -251,6 +257,9 @@
       <p>Upgrading and optimizing manga catalog... Please wait.</p>
     {:else}
       <p>Your catalog is currently empty.</p>
+      <p class="text-sm text-gray-500">
+        To add manga, click the <UploadSolid class="inline h-4 w-4" /> button in the top right.
+      </p>
     {/if}
   </div>
 {/if}

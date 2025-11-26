@@ -214,14 +214,27 @@ async function downloadFromWebDAV(
   const chunks: Uint8Array[] = [];
   let receivedLength = 0;
 
+  // Throttle progress updates to ~15/second (matches XHR behavior)
+  let lastProgressUpdate = 0;
+  const PROGRESS_THROTTLE_MS = 67; // ~15 updates per second
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
     chunks.push(value);
     receivedLength += value.length;
-    onProgress(receivedLength, contentLength || receivedLength);
+
+    // Only send progress update if enough time has passed
+    const now = Date.now();
+    if (now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
+      onProgress(receivedLength, contentLength || receivedLength);
+      lastProgressUpdate = now;
+    }
   }
+
+  // Always send final progress update at 100%
+  onProgress(receivedLength, contentLength || receivedLength);
 
   // Combine chunks into a single ArrayBuffer
   const combinedLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
@@ -406,7 +419,10 @@ async function uploadToGoogleDrive(
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-    xhr.send(cbzData as unknown as XMLHttpRequestBodyInit);
+    // Convert Uint8Array to Blob to allow browser to stream the data
+    // instead of holding the entire buffer in memory until request completes
+    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
+    xhr.send(blob);
   });
 }
 
@@ -458,7 +474,10 @@ async function uploadToWebDAV(
     xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
     xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
 
-    xhr.send(cbzData as unknown as XMLHttpRequestBodyInit);
+    // Convert Uint8Array to Blob to allow browser to stream the data
+    // instead of holding the entire buffer in memory until request completes
+    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
+    xhr.send(blob);
   });
 }
 
@@ -541,20 +560,26 @@ async function uploadToMEGA(
     seriesFolder = await mokuroFolder.mkdir(seriesTitle);
   }
 
-  // Upload file to series folder
+  // Upload file to series folder using chunked streaming to avoid OOM
   console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
 
   try {
-    // Upload returns a stream - don't pass onProgress as third param (not supported)
-    const uploadStream = seriesFolder.upload({ name: filename, size: cbzData.length }, cbzData);
+    // Convert to Blob to enable chunked streaming (releases memory as chunks are processed)
+    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
+    const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
-    // Wait for upload to complete and listen for progress events
+    // Create upload stream without passing data - we'll write chunks manually
+    const uploadStream = seriesFolder.upload({ name: filename, size: blob.size });
+
+    // Wait for upload to complete while streaming chunks
     await new Promise<void>((resolve, reject) => {
+      let offset = 0;
+
       uploadStream.on('progress', (stats: any) => {
         // megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
         // Use bytesUploaded for actual upload progress to server
         const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-        const total = stats?.bytesTotal || stats?.total || cbzData.length;
+        const total = stats?.bytesTotal || stats?.total || blob.size;
         onProgress(uploaded, total);
       });
 
@@ -567,6 +592,24 @@ async function uploadToMEGA(
         console.error('Worker: MEGA upload stream error:', err);
         reject(err);
       });
+
+      // Stream chunks to MEGA
+      const writeNextChunk = async () => {
+        if (offset >= blob.size) {
+          uploadStream.end();
+          return;
+        }
+
+        const chunk = blob.slice(offset, Math.min(offset + CHUNK_SIZE, blob.size));
+        const arrayBuffer = await chunk.arrayBuffer();
+        uploadStream.write(new Uint8Array(arrayBuffer));
+        offset += CHUNK_SIZE;
+
+        // Use setTimeout to avoid blocking event loop and allow GC
+        setTimeout(() => writeNextChunk(), 0);
+      };
+
+      writeNextChunk();
     });
 
     // After upload completes, find the file in the folder's children

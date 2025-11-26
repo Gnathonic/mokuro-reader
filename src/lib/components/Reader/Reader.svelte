@@ -15,6 +15,7 @@
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
+    invertColorsActive,
     progress,
     settings,
     updateProgress,
@@ -36,7 +37,8 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
-  import { beforeNavigate, goto } from '$app/navigation';
+  import { beforeNavigate } from '$app/navigation';
+  import { nav, navigateBack } from '$lib/util/navigation';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
@@ -149,8 +151,8 @@
         );
         const previousVolume = seriesVolumes[currentVolumeIndex - 1];
         if (previousVolume)
-          goto(`/${volume.series_uuid}/${previousVolume.volume_uuid}`, { invalidateAll: true });
-        else goto(`/${volume.series_uuid}`);
+          nav.toReader(volume.series_uuid, previousVolume.volume_uuid, { invalidateAll: true });
+        else nav.toSeries(volume.series_uuid);
         return;
       } else if (newPage > pages.length && page === pages.length) {
         // Already on last page, trying to go forward - navigate to next volume
@@ -160,8 +162,8 @@
         );
         const nextVolume = seriesVolumes[currentVolumeIndex + 1];
         if (nextVolume)
-          goto(`/${volume.series_uuid}/${nextVolume.volume_uuid}`, { invalidateAll: true });
-        else goto(`/${volume.series_uuid}`);
+          nav.toReader(volume.series_uuid, nextVolume.volume_uuid, { invalidateAll: true });
+        else nav.toSeries(volume.series_uuid);
         return;
       }
 
@@ -230,10 +232,23 @@
         toggleFullScreen();
         return;
       case 'KeyI':
-        updateSetting('invertColors', !$settings.invertColors);
+        if ($settings.invertColorsSchedule.enabled) {
+          showNotification('Invert is on automatic schedule', 'invert-scheduled');
+        } else {
+          updateSetting('invertColors', !$settings.invertColors);
+          showNotification($settings.invertColors ? 'Invert Off' : 'Invert On', 'invert-toggle');
+        }
         return;
       case 'KeyN':
-        updateSetting('nightMode', !$settings.nightMode);
+        if ($settings.nightModeSchedule.enabled) {
+          showNotification('Night mode is on automatic schedule', 'nightmode-scheduled');
+        } else {
+          updateSetting('nightMode', !$settings.nightMode);
+          showNotification(
+            $settings.nightMode ? 'Night Mode Off' : 'Night Mode On',
+            'nightmode-toggle'
+          );
+        }
         return;
       case 'KeyC':
         if (volume) {
@@ -247,9 +262,7 @@
         rotateZoomMode();
         return;
       case 'Escape':
-        if (volume) {
-          goto(`/${volume.series_uuid}`);
-        }
+        navigateBack();
         return;
       default:
         break;
@@ -861,7 +874,7 @@
       ></button>
       <div
         class="grid"
-        style:filter={`invert(${$settings.invertColors ? 1 : 0})`}
+        style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
         role="none"
         id="manga-panel"

@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
   import { currentVolume, currentVolumeData } from '$lib/catalog';
+  import { nav, routeParams } from '$lib/util/navigation';
   import { getCharCount } from '$lib/util/count-chars';
   import { Button, Alert } from 'flowbite-svelte';
   import { ArrowLeftOutline, ClipboardOutline, CheckOutline } from 'flowbite-svelte-icons';
@@ -11,7 +10,7 @@
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
 
-  let volumeId = $derived($page.params.volume || '');
+  let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);
 
   // Use state instead of derived to wait for data to fully load
@@ -124,11 +123,11 @@
   }
 
   function goBackToReader() {
-    goto(`/${volume?.series_uuid}/${volumeId}`);
+    if (volume?.series_uuid && volumeId) nav.toReader(volume.series_uuid, volumeId);
   }
 
   function goBackToSeries() {
-    goto(`/${volume?.series_uuid}`);
+    if (volume?.series_uuid) nav.toSeries(volume.series_uuid);
   }
 </script>
 

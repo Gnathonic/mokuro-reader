@@ -27,6 +27,11 @@
       html {
         filter: var(--night-mode-filter);
       }
+
+      /* Also apply to dialog elements in the top layer (showModal promotes dialogs outside the html filter) */
+      dialog {
+        filter: var(--night-mode-filter);
+      }
     </style>
     <!-- SVG filter for night mode - included directly in the HTML -->
     <svg width="0" height="0" style="position: absolute; z-index: -9999; visibility: hidden">

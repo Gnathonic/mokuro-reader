@@ -1,7 +1,7 @@
 import { writable, type Readable } from 'svelte/store';
 import type { SyncProvider, ProviderType, ProviderStatus } from './provider-interface';
 import { cacheManager } from './cache-manager';
-import { getConfiguredProviderType } from './provider-detection';
+import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
 
 export interface MultiProviderStatus {
   providers: Record<ProviderType, ProviderStatus | null>;
@@ -134,6 +134,28 @@ class ProviderManager {
   }
 
   /**
+   * Get provider instance by type, loading it dynamically if not registered yet.
+   * Use this for login operations when the provider may not be loaded.
+   * @param type Provider type
+   * @returns The provider instance
+   */
+  async getOrLoadProvider(type: ProviderType): Promise<SyncProvider> {
+    // Return existing provider if already registered
+    const existing = this.providerRegistry.get(type);
+    if (existing) {
+      return existing;
+    }
+
+    // Lazy-load the provider module
+    console.log(`🔧 Lazy-loading ${type} provider...`);
+    const { loadProvider } = await import('./init-providers');
+    const provider = await loadProvider(type);
+    this.registerProvider(provider);
+    console.log(`✅ ${type} provider loaded`);
+    return provider;
+  }
+
+  /**
    * Check if any provider is authenticated
    */
   hasAnyAuthenticated(): boolean {
@@ -148,6 +170,9 @@ class ProviderManager {
       await this.currentProvider.logout();
       this.currentProvider = null;
       cacheManager.clearAll();
+      // Safety net: clear active provider key (providers should do this in their logout,
+      // but ensure it's cleared even if provider's logout doesn't)
+      clearActiveProviderKey();
       this.updateStatus();
     }
   }
@@ -156,6 +181,10 @@ class ProviderManager {
    * Update the status store with current provider state
    */
   updateStatus(): void {
+    // Use current provider type if set, otherwise check localStorage
+    // This ensures UI shows the configured provider even before it finishes loading
+    const currentProviderType = this.currentProvider?.type ?? getConfiguredProviderType();
+
     const status: MultiProviderStatus = {
       providers: {
         'google-drive': null,
@@ -164,7 +193,7 @@ class ProviderManager {
       },
       hasAnyAuthenticated: false,
       needsAttention: false,
-      currentProviderType: this.currentProvider?.type ?? null
+      currentProviderType
     };
 
     // Update status for all registered providers (shows their individual states)

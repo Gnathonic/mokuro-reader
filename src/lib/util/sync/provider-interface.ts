@@ -83,6 +83,10 @@ class ExportProvider {
   async deleteFile(_file: CloudFileMetadata): Promise<void> {
     throw new Error('Export provider does not support cloud operations');
   }
+
+  async getStorageQuota(): Promise<StorageQuota> {
+    throw new Error('Export provider does not support cloud operations');
+  }
 }
 
 /**
@@ -96,6 +100,18 @@ export interface ProviderStatus {
   hasStoredCredentials: boolean;
   needsAttention: boolean;
   statusMessage: string;
+}
+
+/**
+ * Storage quota information from cloud provider
+ */
+export interface StorageQuota {
+  /** Storage used in bytes */
+  used: number;
+  /** Total storage capacity in bytes (null if unlimited or unknown) */
+  total: number | null;
+  /** Remaining available storage in bytes (null if unknown) */
+  available: number | null;
 }
 
 export interface ProviderCredentials {
@@ -239,6 +255,12 @@ export interface SyncProvider {
    * @param file Cloud file metadata (provider extracts internal ID)
    */
   deleteFile(file: CloudFileMetadata): Promise<void>;
+
+  /**
+   * Get storage quota information from the provider
+   * @returns Storage quota with used, total, and available bytes
+   */
+  getStorageQuota(): Promise<StorageQuota>;
 }
 
 export class ProviderError extends Error {

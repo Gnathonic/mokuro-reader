@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { page } from '$app/stores';
   import {
     effectiveVolumeSettings,
     updateProgress,
@@ -10,8 +9,9 @@
   } from '$lib/settings';
   import { zoomDefault } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
+  import { routeParams } from '$lib/util/navigation';
 
-  const volumeId = $page.params.volume!;
+  const volumeId = $routeParams.volume!;
 
   let settings = $derived($effectiveVolumeSettings[volumeId]);
 

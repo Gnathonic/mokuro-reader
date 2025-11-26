@@ -12,7 +12,17 @@ export type { GenericCloudFile } from './cache-manager';
 export { unifiedProviderState } from './unified-provider-state';
 export type { UnifiedProviderState } from './unified-provider-state';
 
-// Export provider instances
-export { googleDriveProvider } from './providers/google-drive/google-drive-provider';
-export { megaProvider } from './providers/mega/mega-provider';
-export { webdavProvider } from './providers/webdav/webdav-provider';
+// Export lazy-loading function for provider modules
+export { loadProvider } from './init-providers';
+
+// Export key management helpers from provider detection
+export {
+  setActiveProviderKey,
+  clearActiveProviderKey,
+  getActiveProviderKey,
+  getConfiguredProviderType,
+  ACTIVE_PROVIDER_KEY
+} from './provider-detection';
+
+// Note: Provider instances are NOT exported directly to enable lazy-loading.
+// Use providerManager.getOrLoadProvider(type) to get a provider instance.

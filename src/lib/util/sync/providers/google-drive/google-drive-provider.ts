@@ -3,7 +3,8 @@ import type {
   SyncProvider,
   ProviderStatus,
   CloudFileMetadata,
-  DriveFileMetadata
+  DriveFileMetadata,
+  StorageQuota
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
@@ -11,6 +12,8 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getOrCreateFolder, findFile } from '$lib/util/backup';
+import { cacheManager } from '../../cache-manager';
+import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -139,6 +142,8 @@ export class GoogleDriveProvider implements SyncProvider {
         });
       });
 
+      // Set the active provider key for lazy loading on next startup
+      setActiveProviderKey('google-drive');
       console.log('✅ Google Drive login successful');
     } catch (error) {
       throw new ProviderError(
@@ -155,6 +160,8 @@ export class GoogleDriveProvider implements SyncProvider {
     await tokenManager.logout();
     this.readerFolderId = null;
     this.initializePromise = null; // Reset initialization state
+    // Clear the active provider key
+    clearActiveProviderKey();
     console.log('Google Drive logged out');
   }
 
@@ -622,6 +629,46 @@ export class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
+   * Get storage quota information from Google Drive
+   * Returns used, total, and available storage in bytes
+   */
+  async getStorageQuota(): Promise<StorageQuota> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+
+    await this.ensureInitialized();
+
+    try {
+      const response = await gapi.client.drive.about.get({
+        fields: 'storageQuota'
+      });
+
+      const quota = response.result.storageQuota;
+      if (!quota) {
+        throw new Error('No storage quota information available');
+      }
+
+      const used = parseInt(quota.usage || '0', 10);
+      const total = quota.limit ? parseInt(quota.limit, 10) : null;
+
+      return {
+        used,
+        total,
+        available: total !== null ? total - used : null
+      };
+    } catch (error) {
+      throw new ProviderError(
+        `Failed to get storage quota: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'google-drive',
+        'QUOTA_FETCH_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  /**
    * Ensure the mokuro-reader folder exists in Google Drive
    * Uses cache to avoid race conditions from simultaneous calls
    */
@@ -654,3 +701,6 @@ export class GoogleDriveProvider implements SyncProvider {
 }
 
 export const googleDriveProvider = new GoogleDriveProvider();
+
+// Self-register cache when module is loaded
+cacheManager.registerCache('google-drive', driveFilesCache);

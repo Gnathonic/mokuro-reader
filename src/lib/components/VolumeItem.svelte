@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { page } from '$app/stores';
   import { deleteVolume, progress, volumes } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
@@ -15,8 +14,9 @@
     ImageOutline,
     PenSolid
   } from 'flowbite-svelte-icons';
-  import { goto } from '$app/navigation';
   import { db } from '$lib/catalog/db';
+  import { nav, routeParams } from '$lib/util/navigation';
+  import { isPWA } from '$lib/util/pwa';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
@@ -47,6 +47,7 @@
   // Cloud backup state (for grid view menu)
   let cloudFiles = $state<Map<string, CloudVolumeWithProvider[]>>(new Map());
   let hasAuthenticatedProvider = $state(false);
+  let isFetchingCloud = $state(false);
 
   // Subscribe to cloud state for grid view
   $effect(() => {
@@ -54,12 +55,27 @@
       unifiedCloudManager.cloudFiles.subscribe((value) => {
         cloudFiles = value;
       }),
+      unifiedCloudManager.isFetching.subscribe((value) => {
+        isFetchingCloud = value;
+      }),
       providerManager.status.subscribe((value) => {
         hasAuthenticatedProvider = value.hasAnyAuthenticated;
       })
     ];
     return () => unsubscribers.forEach((unsub) => unsub());
   });
+
+  // Count total files in the Map for loading check
+  let totalCloudFiles = $derived.by(() => {
+    let count = 0;
+    for (const files of cloudFiles.values()) {
+      count += files.length;
+    }
+    return count;
+  });
+
+  // Check if cloud cache is still loading (fetching with no files yet)
+  let isCloudLoading = $derived(isFetchingCloud && totalCloudFiles === 0);
 
   // Check if this volume is backed up to cloud
   let cloudFile = $derived.by(() => {
@@ -218,10 +234,10 @@
           .equals(volume.series_uuid)
           .count();
 
-        if (remainingVolumes > 0) {
-          goto(`/${$page.params.manga}`);
+        if (remainingVolumes > 0 && $routeParams.manga) {
+          nav.toSeries($routeParams.manga);
         } else {
-          goto('/');
+          nav.toCatalog();
         }
       },
       undefined,
@@ -242,7 +258,8 @@
 
   function onViewTextClicked(e: Event) {
     e.stopPropagation();
-    goto(`/${$page.params.manga}/${volume_uuid}/text`);
+    const seriesId = $routeParams.manga;
+    if (seriesId) nav.toVolumeText(seriesId, volume_uuid);
   }
 
   async function onBackupClicked(e: Event) {
@@ -274,12 +291,15 @@
   }
 </script>
 
-{#if $page.params.manga}
+{#if $routeParams.manga}
   {#if variant === 'list'}
     <div
       class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
     >
-      <ListgroupItem onclick={() => goto(`/${$page.params.manga}/${volume_uuid}`)} class="py-4">
+      <ListgroupItem
+        onclick={() => $routeParams.manga && nav.toReader($routeParams.manga, volume_uuid)}
+        class="py-4"
+      >
         {#if volume.thumbnail}
           <img
             src={URL.createObjectURL(volume.thumbnail)}
@@ -359,17 +379,24 @@
           <span class="flex-1 text-left">View text</span>
         </DropdownItem>
         {#if hasAuthenticatedProvider}
-          <DropdownItem onclick={onBackupClicked} class="flex w-full items-center">
-            {#if isBackedUp}
+          {#if isCloudLoading}
+            <DropdownItem class="flex w-full items-center opacity-50" disabled>
+              <span class="me-2 h-5 w-5 flex-shrink-0 animate-spin">⏳</span>
+              <span class="flex-1 text-left text-gray-500">Loading cloud status...</span>
+            </DropdownItem>
+          {:else if isBackedUp}
+            <DropdownItem onclick={onBackupClicked} class="flex w-full items-center">
               <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0 text-red-500" />
               <span class="flex-1 text-left text-red-500">Delete from cloud</span>
-            {:else}
+            </DropdownItem>
+          {:else}
+            <DropdownItem onclick={onBackupClicked} class="flex w-full items-center">
               <CloudArrowUpOutline
                 class="me-2 h-5 w-5 flex-shrink-0 text-gray-700 dark:text-gray-200"
               />
               <span class="flex-1 text-left text-gray-700 dark:text-gray-200">Backup to cloud</span>
-            {/if}
-          </DropdownItem>
+            </DropdownItem>
+          {/if}
         {/if}
         <DropdownItem
           onclick={onDeleteClicked}
@@ -380,7 +407,14 @@
         </DropdownItem>
       </Dropdown>
 
-      <a href="/{$page.params.manga}/{volume_uuid}" class="flex flex-col gap-2">
+      <a
+        href={$isPWA ? undefined : `/${$routeParams.manga}/${volume_uuid}`}
+        onclick={(e) => {
+          if ($isPWA) e.preventDefault();
+          if ($routeParams.manga) nav.toReader($routeParams.manga, volume_uuid);
+        }}
+        class="flex flex-col gap-2"
+      >
         <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
           {#if volume.thumbnail}
             <img

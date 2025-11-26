@@ -2,8 +2,8 @@
   import { AccordionItem, Button } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
   import { promptConfirmation } from '$lib/util';
-  import { goto } from '$app/navigation';
   import { clearVolumes } from '$lib/settings';
+  import { nav } from '$lib/util/navigation';
 
   function onConfirm() {
     clearVolumes();
@@ -13,7 +13,7 @@
 
   function onClear() {
     promptConfirmation('Are you sure you want to clear your catalog?', onConfirm);
-    goto('/');
+    nav.toCatalog();
   }
 </script>
 

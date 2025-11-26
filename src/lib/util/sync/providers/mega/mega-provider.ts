@@ -3,10 +3,13 @@ import type {
   SyncProvider,
   ProviderCredentials,
   ProviderStatus,
-  CloudFileMetadata
+  CloudFileMetadata,
+  StorageQuota
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
+import { cacheManager } from '../../cache-manager';
+import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 
 interface MegaCredentials {
   email: string;
@@ -214,6 +217,8 @@ export class MegaProvider implements SyncProvider {
         localStorage.setItem(STORAGE_KEYS.PASSWORD, password);
       }
 
+      // Set the active provider key for lazy loading on next startup
+      setActiveProviderKey('mega');
       console.log('✅ MEGA login successful');
     } catch (error) {
       this.storage = null;
@@ -238,6 +243,8 @@ export class MegaProvider implements SyncProvider {
       localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
     }
 
+    // Clear the active provider key
+    clearActiveProviderKey();
     console.log('MEGA logged out');
   }
 
@@ -901,6 +908,38 @@ export class MegaProvider implements SyncProvider {
   }
 
   /**
+   * Get storage quota information from MEGA
+   * Returns used, total, and available storage in bytes
+   */
+  async getStorageQuota(): Promise<StorageQuota> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    try {
+      // Use getAccountInfo() for accurate quota information
+      const info = await this.storage.getAccountInfo();
+
+      const used = info.spaceUsed || 0;
+      const total = info.spaceTotal || null;
+
+      return {
+        used,
+        total,
+        available: total !== null ? total - used : null
+      };
+    } catch (error) {
+      throw new ProviderError(
+        `Failed to get storage quota: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'mega',
+        'QUOTA_FETCH_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  /**
    * Ensure a series folder exists (may be nested path like "Series/Subseries")
    */
   private async ensureSeriesFolder(folderPath: string, mokuroFolder: any): Promise<any> {
@@ -931,3 +970,6 @@ export class MegaProvider implements SyncProvider {
 }
 
 export const megaProvider = new MegaProvider();
+
+// Self-register cache when module is loaded
+cacheManager.registerCache('mega', megaCache);

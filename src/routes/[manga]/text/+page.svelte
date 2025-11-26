@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
   import { catalog } from '$lib/catalog';
+  import { nav, routeParams, navigateBack } from '$lib/util/navigation';
   import { db } from '$lib/catalog/db';
   import { getCharCount } from '$lib/util/count-chars';
   import { Button, Alert } from 'flowbite-svelte';
@@ -12,7 +11,7 @@
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
 
-  let seriesId = $derived($page.params.manga || '');
+  let seriesId = $derived($routeParams.manga || '');
 
   // Get series volumes from catalog
   let seriesData = $derived($catalog?.find((item) => item.series_uuid === seriesId));
@@ -167,11 +166,11 @@
   }
 
   function goBackToSeries() {
-    goto(`/${seriesId}`);
+    if (seriesId) nav.toSeries(seriesId);
   }
 
   function goBackToCatalog() {
-    goto('/');
+    nav.toCatalog();
   }
 </script>
 

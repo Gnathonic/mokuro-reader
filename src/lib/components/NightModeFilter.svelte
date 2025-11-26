@@ -1,29 +1,109 @@
 <script lang="ts">
-  import { settings } from '$lib/settings';
+  /* eslint-disable no-undef */
+  import { nightModeActive } from '$lib/settings';
   import { browser } from '$app/environment';
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
 
   // Elements for Firefox overlay approach
   let grayscaleLayer: HTMLDivElement | null = null;
   let redOverlay: HTMLDivElement | null = null;
-  let isFirefox = false;
+  let dialogObserver: MutationObserver | null = null;
+  let isFirefox = browser && navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 
-  // Function to detect Firefox
-  function detectFirefox() {
-    if (!browser) return false;
-    return navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+  // Firefox: Apply overlays inside a dialog for top-layer support
+  function applyFirefoxOverlaysToDialog(dialog: HTMLDialogElement, active: boolean) {
+    const existingGrayscale = dialog.querySelector('#dialog-grayscale-layer');
+    const existingRed = dialog.querySelector('#dialog-red-overlay');
+
+    if (active) {
+      if (!existingGrayscale) {
+        const grayscale = document.createElement('div');
+        grayscale.id = 'dialog-grayscale-layer';
+        grayscale.style.position = 'fixed';
+        grayscale.style.top = '0';
+        grayscale.style.left = '0';
+        grayscale.style.width = '100vw';
+        grayscale.style.height = '100vh';
+        grayscale.style.backgroundColor = 'rgba(0, 0, 0, 1)';
+        grayscale.style.pointerEvents = 'none';
+        grayscale.style.zIndex = '999998';
+        grayscale.style.mixBlendMode = 'saturation';
+        dialog.appendChild(grayscale);
+      }
+      if (!existingRed) {
+        const red = document.createElement('div');
+        red.id = 'dialog-red-overlay';
+        red.style.position = 'fixed';
+        red.style.top = '0';
+        red.style.left = '0';
+        red.style.width = '100vw';
+        red.style.height = '100vh';
+        red.style.backgroundColor = 'rgba(255, 0, 0, 1)';
+        red.style.pointerEvents = 'none';
+        red.style.zIndex = '999999';
+        red.style.mixBlendMode = 'multiply';
+        dialog.appendChild(red);
+      }
+    } else {
+      existingGrayscale?.remove();
+      existingRed?.remove();
+    }
+  }
+
+  // Firefox: Update all open dialogs
+  function updateFirefoxDialogs(active: boolean) {
+    document.querySelectorAll('dialog[open]').forEach((dialog) => {
+      applyFirefoxOverlaysToDialog(dialog as HTMLDialogElement, active);
+    });
+  }
+
+  // Firefox: Set up observer to watch for dialog open/close
+  function setupDialogObserver(active: boolean) {
+    if (!isFirefox || !browser) return;
+
+    // Clean up existing observer
+    dialogObserver?.disconnect();
+
+    if (active) {
+      dialogObserver = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'attributes' && mutation.attributeName === 'open') {
+            const dialog = mutation.target as HTMLDialogElement;
+            if (dialog.tagName === 'DIALOG') {
+              applyFirefoxOverlaysToDialog(dialog, dialog.hasAttribute('open'));
+            }
+          }
+          // Also check for new dialogs being added to the DOM
+          mutation.addedNodes.forEach((node) => {
+            if (node instanceof HTMLDialogElement && node.hasAttribute('open')) {
+              applyFirefoxOverlaysToDialog(node, true);
+            }
+          });
+        });
+      });
+
+      dialogObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['open']
+      });
+
+      // Apply to any already-open dialogs
+      updateFirefoxDialogs(true);
+    } else {
+      // Remove overlays from all dialogs
+      updateFirefoxDialogs(false);
+    }
   }
 
   // Function to apply the night mode filter
-  function applyNightModeFilter() {
+  function applyNightModeFilter(active: boolean) {
     if (!browser) return;
-
-    // Detect Firefox
-    isFirefox = detectFirefox();
 
     if (isFirefox) {
       // Firefox approach: Use overlays with blend modes
-      if ($settings.nightMode) {
+      if (active) {
         // Create grayscale layer if it doesn't exist
         if (!grayscaleLayer) {
           grayscaleLayer = document.createElement('div');
@@ -68,11 +148,14 @@
           redOverlay = null;
         }
       }
+
+      // Also handle dialogs in top layer for Firefox
+      setupDialogObserver(active);
     } else {
       // Non-Firefox approach: Use CSS variables with SVG filter
       const rootElement = document.documentElement;
 
-      if ($settings.nightMode) {
+      if (active) {
         rootElement.style.setProperty('--night-mode-filter', 'url(#night-mode-filter)');
       } else {
         rootElement.style.setProperty('--night-mode-filter', 'none');
@@ -80,15 +163,10 @@
     }
   }
 
-  // Watch for changes to the night mode setting
-  $: if (browser && $settings) {
-    applyNightModeFilter();
+  // React to nightModeActive store changes (includes schedule-based activation)
+  $: if (browser) {
+    applyNightModeFilter($nightModeActive);
   }
-
-  // Set up
-  onMount(() => {
-    applyNightModeFilter();
-  });
 
   // Clean up
   onDestroy(() => {
@@ -99,6 +177,11 @@
       if (redOverlay) {
         redOverlay.remove();
       }
+      dialogObserver?.disconnect();
+      // Clean up dialog overlays
+      document.querySelectorAll('#dialog-grayscale-layer, #dialog-red-overlay').forEach((el) => {
+        el.remove();
+      });
     }
   });
 </script>

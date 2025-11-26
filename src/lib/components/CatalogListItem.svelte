@@ -6,6 +6,8 @@
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { nav } from '$lib/util/navigation';
+  import { isPWA } from '$lib/util/pwa';
 
   interface Props {
     series_uuid: string;
@@ -78,6 +80,10 @@
 
       // Queue all series volumes for download
       queueSeriesVolumes(allSeriesVolumes);
+    } else if ($isPWA) {
+      // In PWA mode, use navigation system instead of href
+      e.preventDefault();
+      nav.toSeries(series_uuid);
     }
   }
 </script>

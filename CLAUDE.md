@@ -325,6 +325,10 @@ Don't use keyed blocks for:
 
 Test with Migaku enabled to catch DOM mutation issues.
 
+## Git Workflow
+
+**Don't auto-push during active development**: If `npm run dev` or `npm run preview` is running, the user is actively iterating on changes. Only commit locally and wait for explicit instruction to push. This keeps the commit history clean and allows for squashing/amending before pushing.
+
 ## Known Issues and Considerations
 
 - Google Drive auth expires every hour (access token limitation without backend), but re-auth should be minimal (just account selection, not full consent)

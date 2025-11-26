@@ -1,44 +1,65 @@
-import { browser } from '$app/environment';
 import { providerManager } from './provider-manager';
-import { googleDriveProvider } from './providers/google-drive/google-drive-provider';
-import { megaProvider } from './providers/mega/mega-provider';
-import { webdavProvider } from './providers/webdav/webdav-provider';
 import { unifiedCloudManager } from './unified-cloud-manager';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getConfiguredProviderType } from './provider-detection';
+import type { SyncProvider, ProviderType } from './provider-interface';
 
 /**
- * Initialize all sync providers and register them with the provider manager.
- * This should be called once on app startup.
+ * Dynamically load a provider module by type.
+ * This enables lazy-loading of provider code - only the active provider is loaded on startup.
+ *
+ * When a provider module is loaded, it self-registers its cache with the cache manager.
+ */
+export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
+  switch (type) {
+    case 'google-drive': {
+      const { googleDriveProvider } = await import(
+        './providers/google-drive/google-drive-provider'
+      );
+      return googleDriveProvider;
+    }
+    case 'mega': {
+      const { megaProvider } = await import('./providers/mega/mega-provider');
+      return megaProvider;
+    }
+    case 'webdav': {
+      const { webdavProvider } = await import('./providers/webdav/webdav-provider');
+      return webdavProvider;
+    }
+  }
+}
+
+/**
+ * Initialize sync providers on app startup.
  *
  * Strategy:
- * - Always register providers (needed for login buttons to work)
- * - Only initialize API for the active provider (since providers are mutually exclusive)
- * - Inactive providers will lazy-initialize when user clicks login
+ * - Only load the active provider (reduces initial bundle size)
+ * - Inactive providers are lazy-loaded when user clicks login button
+ * - Provider modules self-register their caches when loaded
  */
 export async function initializeProviders(): Promise<void> {
-  // Always register all providers (so login buttons work, even if not logged in)
-  providerManager.registerProvider(googleDriveProvider);
-  providerManager.registerProvider(megaProvider);
-  providerManager.registerProvider(webdavProvider);
-
-  console.log('✅ Sync providers registered');
-
   // Check which provider (if any) is active
-  // Providers are mutually exclusive - only one can be logged in at a time
-  const activeProvider = getConfiguredProviderType();
+  const activeProviderType = getConfiguredProviderType();
 
-  // If no provider is active, we're done - providers will lazy-init when user clicks login
-  if (!activeProvider) {
-    console.log('ℹ️ No active provider. Providers will initialize on login.');
+  // If no provider is active, we're done - providers will lazy-load when user clicks login
+  if (!activeProviderType) {
+    console.log('ℹ️ No active provider configured. Providers will load on login.');
     return;
   }
 
-  // Only initialize Google Drive API if it's the active provider (for auto-restore)
-  // MEGA and WebDAV handle their own initialization in whenReady()
-  if (activeProvider === 'google-drive') {
+  console.log(`🔧 Loading ${activeProviderType} provider...`);
+
+  // Dynamically load only the active provider module
+  // This also triggers self-registration of the provider's cache
+  const activeProvider = await loadProvider(activeProviderType);
+  providerManager.registerProvider(activeProvider);
+
+  console.log(`✅ ${activeProviderType} provider loaded and registered`);
+
+  // Provider-specific initialization
+  if (activeProviderType === 'google-drive') {
     console.log('🔧 Initializing Google Drive API client for auto-restore...');
     try {
       await driveApiClient.initialize();
@@ -76,27 +97,23 @@ export async function initializeProviders(): Promise<void> {
     } catch (error) {
       console.warn('⚠️ Failed to initialize Google Drive API client:', error);
     }
+  } else if (activeProviderType === 'mega' || activeProviderType === 'webdav') {
+    // MEGA and WebDAV restore credentials in their constructors via whenReady()
+    console.log(`⏳ Waiting for ${activeProviderType} to restore credentials...`);
+    await (activeProvider as any).whenReady();
+    console.log(`✅ ${activeProviderType} credentials restored`);
   }
 
-  // Don't update status here - wait for providers to finish loading credentials
-  // The constructor already set initial "configured" state, don't overwrite it
-
-  // Wait for providers to be ready (MEGA/WebDAV restore credentials on init)
-  console.log('⏳ Waiting for providers to be ready...');
-  await Promise.all([megaProvider.whenReady(), webdavProvider.whenReady()]);
-  console.log('✅ Providers are ready');
-
-  // Update status again after providers finish authentication
+  // Update status after provider finishes authentication
   providerManager.updateStatus();
 
   // Initialize the current provider (detects which one is authenticated)
   providerManager.initializeCurrentProvider();
 
-  // Fetch cloud volumes cache if a provider is authenticated AND token is valid
+  // Fetch cloud volumes cache if provider is authenticated AND token is valid
   const currentProvider = providerManager.getActiveProvider();
   if (currentProvider) {
     // For Google Drive, check if token is still valid before trying to use it
-    // For other providers, they handle their own token validity
     let shouldFetch = true;
     if (currentProvider.type === 'google-drive') {
       const gdriveExpiry = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES);
@@ -124,6 +141,6 @@ export async function initializeProviders(): Promise<void> {
       }
     }
   } else {
-    console.log('ℹ️ No provider authenticated, skipping cache population and sync');
+    console.log('ℹ️ Provider not authenticated after restore, skipping cache population and sync');
   }
 }
