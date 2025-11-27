@@ -52,8 +52,10 @@
 
   // Create blob URL from inline thumbnail
   let thumbnailUrl = $state<string | undefined>(undefined);
+  // Only create URL when dimensions are set (thumbnail fully processed)
+  // This prevents race conditions with background thumbnail regeneration
   $effect(() => {
-    if (!volume?.thumbnail) {
+    if (!volume?.thumbnail || !volume.thumbnail_width || !volume.thumbnail_height) {
       thumbnailUrl = undefined;
       return;
     }

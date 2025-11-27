@@ -58,46 +58,45 @@
       : false
   );
 
-  // Store blob URLs and dimensions for thumbnails
+  // Store blob URLs for thumbnails (dimensions come from volume metadata)
   let thumbnailUrls = $state<Map<string, string>>(new Map());
-  let thumbnailDimensions = $state<Map<string, { width: number; height: number }>>(new Map());
 
-  // Create blob URLs and load dimensions for stacked volumes
+  // Create blob URLs synchronously - no async Image loading needed since
+  // dimensions are stored in volume metadata (thumbnail_width, thumbnail_height)
+  // This prevents race conditions between cleanup and async callbacks
   $effect(() => {
     const newUrls = new Map<string, string>();
-    const newDimensions = new Map<string, { width: number; height: number }>();
-    const urlsToRevoke: string[] = [];
 
-    const promises = stackedVolumes.map((vol) => {
-      if (!vol.thumbnail) return Promise.resolve();
+    for (const vol of stackedVolumes) {
+      // Skip if no thumbnail OR if dimensions aren't set (still being processed)
+      if (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height) continue;
 
-      return new Promise<void>((resolve) => {
-        const url = URL.createObjectURL(vol.thumbnail!);
-        urlsToRevoke.push(url);
-        newUrls.set(vol.volume_uuid, url);
+      const url = URL.createObjectURL(vol.thumbnail);
+      newUrls.set(vol.volume_uuid, url);
+    }
 
-        const img = new Image();
-        img.onload = () => {
-          newDimensions.set(vol.volume_uuid, {
-            width: img.naturalWidth,
-            height: img.naturalHeight
-          });
-          resolve();
-        };
-        img.onerror = () => resolve();
-        img.src = url;
-      });
-    });
+    thumbnailUrls = newUrls;
 
-    Promise.all(promises).then(() => {
-      thumbnailUrls = newUrls;
-      thumbnailDimensions = newDimensions;
-    });
-
-    // Cleanup: revoke all blob URLs when effect is destroyed
+    // Cleanup: revoke all blob URLs when effect re-runs or is destroyed
     return () => {
-      urlsToRevoke.forEach((url) => URL.revokeObjectURL(url));
+      for (const url of newUrls.values()) {
+        URL.revokeObjectURL(url);
+      }
     };
+  });
+
+  // Get dimensions from volume metadata (no async loading needed)
+  let thumbnailDimensions = $derived.by(() => {
+    const dims = new Map<string, { width: number; height: number }>();
+    for (const vol of stackedVolumes) {
+      if (vol.thumbnail_width && vol.thumbnail_height) {
+        dims.set(vol.volume_uuid, {
+          width: vol.thumbnail_width,
+          height: vol.thumbnail_height
+        });
+      }
+    }
+    return dims;
   });
 
   // Base thumbnail dimensions
