@@ -40,10 +40,11 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
   metadata: MokuroMetadata;
   filesData: { filename: string; data: Uint8Array }[];
 }> {
-  // Get volume data from the database
-  const volumeData = await db.volumes_data.get(volume.volume_uuid);
-  if (!volumeData) {
-    throw new Error(`Volume data not found for ${volume.volume_uuid}`);
+  // Get OCR and files data from separate tables
+  const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
+  const volumeFiles = await db.volume_files.get(volume.volume_uuid);
+  if (!volumeOcr) {
+    throw new Error(`Volume OCR data not found for ${volume.volume_uuid}`);
   }
 
   // Create mokuro metadata in the standard format
@@ -53,14 +54,14 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
     title_uuid: volume.series_uuid,
     volume: volume.volume_title,
     volume_uuid: volume.volume_uuid,
-    pages: volumeData.pages,
+    pages: volumeOcr.pages,
     chars: volume.character_count
   };
 
   // Convert File objects to Uint8Arrays
   const filesData: { filename: string; data: Uint8Array }[] = [];
-  if (volumeData.files) {
-    for (const [filename, file] of Object.entries(volumeData.files)) {
+  if (volumeFiles?.files) {
+    for (const [filename, file] of Object.entries(volumeFiles.files)) {
       const arrayBuffer = await file.arrayBuffer();
       filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
     }
@@ -76,10 +77,11 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
  * @returns Promise resolving to an array of promises for adding files
  */
 async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: VolumeMetadata) {
-  // Get volume data from the database
-  const volumeData = await db.volumes_data.get(volume.volume_uuid);
-  if (!volumeData) {
-    console.error(`Volume data not found for ${volume.volume_uuid}`);
+  // Get OCR and files data from separate tables
+  const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
+  const volumeFiles = await db.volume_files.get(volume.volume_uuid);
+  if (!volumeOcr) {
+    console.error(`Volume OCR data not found for ${volume.volume_uuid}`);
     return [];
   }
 
@@ -90,7 +92,7 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
     title_uuid: volume.series_uuid,
     volume: volume.volume_title,
     volume_uuid: volume.volume_uuid,
-    pages: volumeData.pages,
+    pages: volumeOcr.pages,
     chars: volume.character_count
   };
 
@@ -98,8 +100,8 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
   const folderName = `${volume.volume_title}`;
 
   // Add image files inside the folder
-  const imagePromises = volumeData.files
-    ? Object.entries(volumeData.files).map(([filename, file]) => {
+  const imagePromises = volumeFiles?.files
+    ? Object.entries(volumeFiles.files).map(([filename, file]) => {
         // Extract just the basename to avoid nested folders from original CBZ structure
         const basename = filename.split('/').pop() || filename;
         return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));

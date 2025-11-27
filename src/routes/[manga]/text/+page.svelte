@@ -36,8 +36,11 @@
       const results = await Promise.all(
         volumes.map(async (volume) => {
           try {
-            const data = await db.volumes_data.get(volume.volume_uuid);
-            return data ? { volume, data } : null;
+            const ocr = await db.volume_ocr.get(volume.volume_uuid);
+            if (!ocr) return null;
+            // Create a minimal data object with just pages for text extraction
+            const data = { volume_uuid: volume.volume_uuid, pages: ocr.pages };
+            return { volume, data };
           } catch (error) {
             console.error(`Failed to load data for ${volume.volume_title}:`, error);
             return null;

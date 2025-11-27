@@ -11,6 +11,10 @@ export function isReader() {
   return get(page).route.id === '/[manga]/[volume]';
 }
 
+export function isCatalog() {
+  return get(page).route.id === '/';
+}
+
 let timer: any;
 
 export function debounce(func: () => void, timeout = 50) {

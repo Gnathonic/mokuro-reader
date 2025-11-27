@@ -409,11 +409,12 @@ async function prepareVolumeDataForWorker(volumeUuid: string): Promise<{
   metadata: any;
   filesData: { filename: string; data: ArrayBuffer }[];
 }> {
-  // Get volume metadata and data
+  // Get volume metadata, OCR data, and files from separate tables
   const volume = await db.volumes.where('volume_uuid').equals(volumeUuid).first();
-  const volumeData = await db.volumes_data.where('volume_uuid').equals(volumeUuid).first();
+  const volumeOcr = await db.volume_ocr.get(volumeUuid);
+  const volumeFiles = await db.volume_files.get(volumeUuid);
 
-  if (!volume || !volumeData) {
+  if (!volume || !volumeOcr) {
     throw new Error('Volume not found in database');
   }
 
@@ -424,14 +425,14 @@ async function prepareVolumeDataForWorker(volumeUuid: string): Promise<{
     title_uuid: volume.series_uuid,
     volume: volume.volume_title,
     volume_uuid: volume.volume_uuid,
-    pages: volumeData.pages,
+    pages: volumeOcr.pages,
     chars: volume.character_count
   };
 
   // Convert File objects to ArrayBuffers for transfer
   const filesData: { filename: string; data: ArrayBuffer }[] = [];
-  if (volumeData.files) {
-    for (const [filename, file] of Object.entries(volumeData.files)) {
+  if (volumeFiles?.files) {
+    for (const [filename, file] of Object.entries(volumeFiles.files)) {
       const arrayBuffer = await file.arrayBuffer();
       filesData.push({ filename, data: arrayBuffer });
     }

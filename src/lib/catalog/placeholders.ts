@@ -87,6 +87,7 @@ function createPlaceholder(
     volume_uuid: volumeUuid,
     page_count: 0, // Unknown until downloaded
     character_count: 0, // Unknown until downloaded
+    page_char_counts: [], // Empty until downloaded and calculated
 
     // Placeholder-specific fields
     isPlaceholder: true,

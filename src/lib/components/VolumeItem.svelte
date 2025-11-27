@@ -94,7 +94,7 @@
   // Calculate Japanese character count from pages data (matches reading tracker)
   // Also check if volume has edits
   $effect(() => {
-    db.volumes_data.get(volume.volume_uuid).then((data) => {
+    db.volume_ocr.get(volume.volume_uuid).then((data) => {
       if (data?.pages) {
         const { charCount } = getCharCount(data.pages);
         if (charCount > 0) {
@@ -105,6 +105,18 @@
         volumeHasEdits = hasEdits(data);
       }
     });
+  });
+
+  // Create blob URL from inline thumbnail
+  let thumbnailUrl = $state<string | undefined>(undefined);
+  $effect(() => {
+    if (!volume.thumbnail) {
+      thumbnailUrl = undefined;
+      return;
+    }
+    const url = URL.createObjectURL(volume.thumbnail);
+    thumbnailUrl = url;
+    return () => URL.revokeObjectURL(url);
   });
 
   // Get current reading speed
@@ -209,8 +221,12 @@
     promptConfirmation(
       `Delete ${volName}?`,
       async (deleteStats = false, deleteCloud = false) => {
-        await db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete();
-        await db.volumes_data.where('volume_uuid').equals(volume.volume_uuid).delete();
+        // Delete from all 3 tables
+        await Promise.all([
+          db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete(),
+          db.volume_ocr.delete(volume.volume_uuid),
+          db.volume_files.delete(volume.volume_uuid)
+        ]);
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {
@@ -300,9 +316,9 @@
         onclick={() => $routeParams.manga && nav.toReader($routeParams.manga, volume_uuid)}
         class="py-4"
       >
-        {#if volume.thumbnail}
+        {#if thumbnailUrl}
           <img
-            src={URL.createObjectURL(volume.thumbnail)}
+            src={thumbnailUrl}
             alt="img"
             style="margin-right:10px;"
             class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
@@ -416,9 +432,9 @@
         class="flex flex-col gap-2"
       >
         <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
-          {#if volume.thumbnail}
+          {#if thumbnailUrl}
             <img
-              src={URL.createObjectURL(volume.thumbnail)}
+              src={thumbnailUrl}
               alt={volName}
               class="h-auto w-auto border border-gray-900 bg-black sm:max-h-[350px] sm:max-w-[250px]"
             />

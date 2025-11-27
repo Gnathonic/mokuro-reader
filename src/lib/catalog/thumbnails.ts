@@ -1,13 +1,19 @@
+import Pica from 'pica';
+
+export interface ThumbnailResult {
+  file: File;
+  width: number;
+  height: number;
+}
+
+// Singleton pica instance
+const pica = new Pica();
+
 export async function generateThumbnail(
   file: File,
-  maxWidth = 500,
-  maxHeight = 700
-): Promise<File> {
-  // Create a canvas element
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Could not get canvas context');
-
+  maxWidth = 250,
+  maxHeight = 350
+): Promise<ThumbnailResult> {
   // Create an image element and load the file
   const img = new Image();
   const imgUrl = URL.createObjectURL(file);
@@ -18,32 +24,41 @@ export async function generateThumbnail(
   });
   URL.revokeObjectURL(imgUrl);
 
-  // Calculate thumbnail dimensions maintaining aspect ratio
-  let width = img.width;
-  let height = img.height;
-  while (width > maxWidth * 2 || height > maxHeight * 2) {
-    width = width / 2;
-    height = height / 2;
-  }
-  width = Math.round(width);
-  height = Math.round(height);
+  // Calculate target dimensions maintaining aspect ratio
+  const scaleW = maxWidth / img.width;
+  const scaleH = maxHeight / img.height;
+  const scale = Math.min(scaleW, scaleH, 1); // Don't scale up
 
-  canvas.width = width;
-  canvas.height = height;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, width, height);
+  const targetWidth = Math.round(img.width * scale);
+  const targetHeight = Math.round(img.height * scale);
 
-  // Convert canvas directly to File to avoid intermediate Blob
-  // Use toBlob callback to immediately create File without storing Blob separately
-  return new Promise<File>((resolve) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) throw new Error('Failed to create thumbnail blob');
-        resolve(new File([blob], `thumbnail_${file.name}`, { type: file.type }));
-      },
-      file.type,
-      0.8
-    );
+  // Create source canvas from image
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = img.width;
+  srcCanvas.height = img.height;
+  const srcCtx = srcCanvas.getContext('2d');
+  if (!srcCtx) throw new Error('Could not get canvas context');
+  srcCtx.drawImage(img, 0, 0);
+
+  // Create destination canvas
+  const destCanvas = document.createElement('canvas');
+  destCanvas.width = targetWidth;
+  destCanvas.height = targetHeight;
+
+  // Use pica for high-quality Lanczos3 resampling
+  await pica.resize(srcCanvas, destCanvas, {
+    filter: 'lanczos3',
+    unsharpAmount: 80,
+    unsharpRadius: 0.6,
+    unsharpThreshold: 2
   });
+
+  // Convert to blob
+  const blob = await pica.toBlob(destCanvas, file.type, 0.85);
+
+  return {
+    file: new File([blob], `thumbnail_${file.name}`, { type: file.type }),
+    width: targetWidth,
+    height: targetHeight
+  };
 }

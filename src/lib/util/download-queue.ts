@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { VolumeMetadata, VolumeData } from '$lib/types';
+import type { VolumeMetadata } from '$lib/types';
 import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
@@ -7,6 +7,7 @@ import { tokenManager } from './sync/providers/google-drive/token-manager';
 import { showSnackbar } from './snackbar';
 import { db } from '$lib/catalog/db';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
+import { calculateCumulativeCharCounts } from '$lib/catalog/migration';
 import { driveApiClient } from './sync/providers/google-drive/api-client';
 import { driveFilesCache } from './sync/providers/google-drive/drive-files-cache';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
@@ -208,6 +209,7 @@ export function queueVolumesFromCloudFiles(
       volume_uuid: volumeUuid,
       page_count: 0, // Placeholder - will be updated after download
       character_count: 0, // Placeholder - will be updated after download
+      page_char_counts: [], // Placeholder - will be updated after download
       isPlaceholder: true,
       cloudProvider: file.provider,
       cloudFileId: file.fileId,
@@ -322,6 +324,9 @@ async function processVolumeData(
   const mokuroText = new TextDecoder().decode(mokuroEntry.data);
   const mokuroData: MokuroData = JSON.parse(mokuroText);
 
+  // Calculate cumulative page character counts
+  const pageCharCounts = calculateCumulativeCharCounts(mokuroData.pages);
+
   // Create VolumeMetadata from mokuro data
   const metadata: VolumeMetadata = {
     mokuro_version: mokuroData.version,
@@ -330,7 +335,8 @@ async function processVolumeData(
     volume_title: mokuroData.volume,
     volume_uuid: mokuroData.volume_uuid,
     page_count: mokuroData.pages.length,
-    character_count: mokuroData.chars
+    character_count: mokuroData.chars,
+    page_char_counts: pageCharCounts
   };
 
   // Convert image entries to File objects
@@ -355,28 +361,36 @@ async function processVolumeData(
     }
   }
 
-  // Create VolumeData
-  const volumeData: VolumeData = {
-    volume_uuid: mokuroData.volume_uuid,
-    pages: mokuroData.pages,
-    files
-  };
-
   // Generate thumbnail from first image
   const fileNames = Object.keys(files).sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
   );
+  let thumbnailResult: { file: File; width: number; height: number } | undefined;
   if (fileNames.length > 0) {
-    metadata.thumbnail = await generateThumbnail(files[fileNames[0]]);
+    thumbnailResult = await generateThumbnail(files[fileNames[0]]);
   }
 
-  // Save to IndexedDB
+  // Save to IndexedDB (3 tables: volumes, volume_ocr, volume_files)
   const existingVolume = await db.volumes.where('volume_uuid').equals(metadata.volume_uuid).first();
 
   if (!existingVolume) {
-    await db.transaction('rw', db.volumes, db.volumes_data, async () => {
-      await db.volumes.add(metadata);
-      await db.volumes_data.add(volumeData);
+    await db.transaction('rw', db.volumes, db.volume_ocr, db.volume_files, async () => {
+      // Add thumbnail and dimensions to metadata
+      const metadataWithThumbnail: VolumeMetadata = {
+        ...metadata,
+        thumbnail: thumbnailResult?.file,
+        thumbnail_width: thumbnailResult?.width,
+        thumbnail_height: thumbnailResult?.height
+      };
+      await db.volumes.add(metadataWithThumbnail);
+      await db.volume_ocr.add({
+        volume_uuid: mokuroData.volume_uuid,
+        pages: mokuroData.pages
+      });
+      await db.volume_files.add({
+        volume_uuid: mokuroData.volume_uuid,
+        files
+      });
     });
   }
 

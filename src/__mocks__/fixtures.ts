@@ -74,6 +74,7 @@ export function createVolumeMetadata(overrides: Partial<VolumeMetadata> = {}): V
     volume_title: 'Volume 1',
     page_count: 100,
     character_count: 5000,
+    page_char_counts: [], // Empty cumulative char counts by default
     mokuro_version: '0.2.0',
     ...overrides
   };

@@ -1,7 +1,7 @@
 <script lang="ts">
   /* eslint-disable no-undef */
   import '../app.css';
-  import { dev } from '$app/environment';
+  import { browser, dev } from '$app/environment';
   import { inject } from '@vercel/analytics';
   import { onMount } from 'svelte';
   import { beforeNavigate, afterNavigate } from '$app/navigation';
@@ -14,12 +14,18 @@
   import NightModeFilter from '$lib/components/NightModeFilter.svelte';
   import GlobalDropZone from '$lib/components/GlobalDropZone.svelte';
   import ViewRouter from '$lib/components/ViewRouter.svelte';
+  import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initViewFromUrl, navigateBack, currentView, urlToView } from '$lib/util/navigation';
+  import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
   import { isPWA } from '$lib/util/pwa';
+
+  // Migration state
+  let migrationNeeded: 1 | 2 | null = $state(null);
+  let migrationChecked = $state(false);
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -96,8 +102,29 @@
     history.pushState(null, '', '/');
   }
 
+  // Handle migration completion
+  function handleMigrationComplete() {
+    // Reload the page to use the new database
+    window.location.reload();
+  }
+
   // Initialize sync providers on app startup (non-blocking)
-  onMount(() => {
+  onMount(async () => {
+    // Check if migration is needed first
+    if (browser) {
+      try {
+        migrationNeeded = await checkMigrationNeeded();
+      } catch (error) {
+        console.error('Failed to check migration:', error);
+      }
+      migrationChecked = true;
+
+      // If migration is needed, don't initialize the rest of the app
+      if (migrationNeeded !== null) {
+        return;
+      }
+    }
+
     // Fire and forget - don't block app initialization
     initializeProviders().catch((error) => {
       console.error('Failed to initialize providers:', error);
@@ -120,16 +147,25 @@
 
 <svelte:window onkeydown={handleKeydown} onpopstate={handlePopState} />
 
-<div class=" h-full min-h-[100svh] text-white">
-  <NavBar />
-  <ViewRouter>
-    {@render children?.()}
-  </ViewRouter>
-  <Snackbar />
-  <ConfirmationPopup />
-  <ExtractionModal />
-  <ImageOnlyImportModal />
-  <ProgressTracker />
-  <NightModeFilter />
-  <GlobalDropZone />
-</div>
+{#if migrationNeeded !== null}
+  <MigrationBlocker sourceVersion={migrationNeeded} onComplete={handleMigrationComplete} />
+{:else if !migrationChecked}
+  <!-- Show loading while checking for migration -->
+  <div class="flex h-full min-h-[100svh] items-center justify-center bg-gray-900 text-white">
+    <p>Loading...</p>
+  </div>
+{:else}
+  <div class=" h-full min-h-[100svh] text-white">
+    <NavBar />
+    <ViewRouter>
+      {@render children?.()}
+    </ViewRouter>
+    <Snackbar />
+    <ConfirmationPopup />
+    <ExtractionModal />
+    <ImageOnlyImportModal />
+    <ProgressTracker />
+    <NightModeFilter />
+    <GlobalDropZone />
+  </div>
+{/if}

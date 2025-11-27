@@ -201,13 +201,13 @@
       <!-- Local series -->
       <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
         {#if $miscSettings.galleryLayout === 'grid'}
-          {#each localSeries as { series_uuid } (series_uuid)}
-            <CatalogItem {series_uuid} />
+          {#each localSeries as { series_uuid, volumes } (series_uuid)}
+            <CatalogItem {series_uuid} {volumes} providerName={providerDisplayName} />
           {/each}
         {:else}
           <Listgroup active class="w-full">
-            {#each localSeries as { series_uuid } (series_uuid)}
-              <CatalogListItem {series_uuid} />
+            {#each localSeries as { series_uuid, volumes } (series_uuid)}
+              <CatalogListItem {series_uuid} {volumes} providerName={providerDisplayName} />
             {/each}
           </Listgroup>
         {/if}
@@ -236,13 +236,13 @@
             class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
           >
             {#if $miscSettings.galleryLayout === 'grid'}
-              {#each placeholderSeries as { series_uuid } (series_uuid)}
-                <CatalogItem {series_uuid} />
+              {#each placeholderSeries as { series_uuid, volumes } (series_uuid)}
+                <CatalogItem {series_uuid} {volumes} providerName={providerDisplayName} />
               {/each}
             {:else}
               <Listgroup active class="w-full">
-                {#each placeholderSeries as { series_uuid } (series_uuid)}
-                  <CatalogListItem {series_uuid} />
+                {#each placeholderSeries as { series_uuid, volumes } (series_uuid)}
+                  <CatalogListItem {series_uuid} {volumes} providerName={providerDisplayName} />
                 {/each}
               </Listgroup>
             {/if}

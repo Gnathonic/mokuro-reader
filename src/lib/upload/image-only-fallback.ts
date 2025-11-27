@@ -511,7 +511,8 @@ export async function generateFallbackVolumeData(
     volume_title: volumeTitle,
     volume_uuid: volumeUuid,
     page_count: pages.length,
-    character_count: 0 // No OCR data means no characters
+    character_count: 0, // No OCR data means no characters
+    page_char_counts: new Array(pages.length).fill(0) // All zeros for image-only
   };
 
   const data: Partial<VolumeData> = {

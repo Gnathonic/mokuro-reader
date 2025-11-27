@@ -1,32 +1,26 @@
 <script lang="ts">
-  import { volumesWithPlaceholders } from '$lib/catalog';
+  import type { VolumeMetadata } from '$lib/types';
   import { progress } from '$lib/settings';
+  import { miscSettings } from '$lib/settings/misc';
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
   import { nav } from '$lib/util/navigation';
   import { isPWA } from '$lib/util/pwa';
+  import { Spinner } from 'flowbite-svelte';
+  import { DownloadSolid } from 'flowbite-svelte-icons';
 
   interface Props {
     series_uuid: string;
+    volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
+    providerName?: string; // Shared across all items - avoids repeated lookups
   }
 
-  let { series_uuid }: Props = $props();
+  let { series_uuid, volumes, providerName = 'Cloud' }: Props = $props();
 
-  // Get active provider's display name
-  let providerDisplayName = $derived.by(() => {
-    const provider = unifiedCloudManager.getActiveProvider();
-    return provider?.name || 'Cloud';
-  });
-
-  // ========================================
-  // OPTIMIZED: Single source - filter to this series once, sort once
-  // ========================================
+  // Volumes are already filtered by parent, just need to sort once
   let seriesVolumes = $derived(
-    Object.values($volumesWithPlaceholders)
-      .filter((v) => v.series_uuid === series_uuid)
-      .sort((a, b) => a.volume_title.localeCompare(b.volume_title))
+    [...volumes].sort((a, b) => a.volume_title.localeCompare(b.volume_title))
   );
 
   // Split into local vs cloud placeholders
@@ -45,10 +39,15 @@
   let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
   let isPlaceholderOnly = $derived(!hasLocalVolumes);
 
-  // Get up to 3 volumes for stacked thumbnail (unread if any, otherwise all local)
-  let stackedVolumes = $derived(
-    (unreadVolumes.length > 0 ? unreadVolumes : localVolumes).slice(0, 3)
-  );
+  // Get volumes for stacked thumbnail based on settings
+  let stackedVolumes = $derived.by(() => {
+    const hideRead = $miscSettings.catalogHideReadVolumes;
+    const stackCount = $miscSettings.catalogStackCount;
+    // If hiding read volumes and there are unread ones, show those; otherwise show all local
+    const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
+    // stackCount of 0 means show all volumes
+    return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
+  });
 
   // Keep allSeriesVolumes for handleClick function
   let allSeriesVolumes = $derived(seriesVolumes);
@@ -60,30 +59,13 @@
       : false
   );
 
-  // Calculate rendered dimensions for an image given max constraints
-  function calculateRenderedDimensions(naturalWidth: number, naturalHeight: number) {
-    const maxW = 250;
-    const maxH = 360;
-
-    // Calculate scale factors needed to fit within constraints
-    const scaleW = maxW / naturalWidth;
-    const scaleH = maxH / naturalHeight;
-
-    // Use the smaller scale factor (more restrictive constraint)
-    // Don't scale up (max scale = 1)
-    const scale = Math.min(scaleW, scaleH, 1);
-
-    return {
-      width: naturalWidth * scale,
-      height: naturalHeight * scale
-    };
-  }
-
-  // Store thumbnail dimensions
+  // Store blob URLs and dimensions for thumbnails
+  let thumbnailUrls = $state<Map<string, string>>(new Map());
   let thumbnailDimensions = $state<Map<string, { width: number; height: number }>>(new Map());
 
-  // Load thumbnail dimensions
+  // Create blob URLs and load dimensions for stacked volumes
   $effect(() => {
+    const newUrls = new Map<string, string>();
     const newDimensions = new Map<string, { width: number; height: number }>();
     const urlsToRevoke: string[] = [];
 
@@ -91,10 +73,11 @@
       if (!vol.thumbnail) return Promise.resolve();
 
       return new Promise<void>((resolve) => {
-        const img = new Image();
         const url = URL.createObjectURL(vol.thumbnail!);
         urlsToRevoke.push(url);
+        newUrls.set(vol.volume_uuid, url);
 
+        const img = new Image();
         img.onload = () => {
           newDimensions.set(vol.volume_uuid, {
             width: img.naturalWidth,
@@ -102,12 +85,13 @@
           });
           resolve();
         };
-        img.onerror = () => resolve(); // Skip on error
+        img.onerror = () => resolve();
         img.src = url;
       });
     });
 
     Promise.all(promises).then(() => {
+      thumbnailUrls = newUrls;
       thumbnailDimensions = newDimensions;
     });
 
@@ -117,82 +101,226 @@
     };
   });
 
-  // Calculate dynamic step sizes based on actual image dimensions
+  // Base thumbnail dimensions
+  const BASE_WIDTH = 250;
+  const BASE_HEIGHT = 360;
+  const OUTER_PADDING = 25; // pt-4 pb-6 ≈ 25px
+
+  // Check if cloud series should use compact layout
+  let useCompactForCloud = $derived(isPlaceholderOnly && $miscSettings.catalogCompactCloudSeries);
+
+  // Calculate container dimensions based on settings
+  let containerDimensions = $derived.by(() => {
+    // Use compact settings for cloud series if enabled
+    if (useCompactForCloud) {
+      return {
+        innerWidth: BASE_WIDTH,
+        innerHeight: BASE_HEIGHT,
+        outerWidth: BASE_WIDTH,
+        outerHeight: BASE_HEIGHT + OUTER_PADDING
+      };
+    }
+
+    const stackCountSetting = $miscSettings.catalogStackCount;
+    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
+    // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
+    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
+
+    // Use actual volume count when stackCount is 0 (all volumes)
+    // For placeholders, use seriesVolumes; for real thumbnails, use stackedVolumes
+    const volumeCount = isPlaceholderOnly ? seriesVolumes.length : stackedVolumes.length;
+    const effectiveStackCount = stackCountSetting === 0 ? volumeCount : stackCountSetting;
+
+    // Extra space needed for stacking: offset% × base × (count - 1)
+    const extraWidth = BASE_WIDTH * hOffsetPercent * (effectiveStackCount - 1);
+    const extraHeight = BASE_HEIGHT * vOffsetPercent * (effectiveStackCount - 1);
+
+    // Inner container (thumbnail area)
+    const innerWidth = Math.round(BASE_WIDTH + extraWidth);
+    const innerHeight = Math.round(BASE_HEIGHT + extraHeight);
+
+    // Outer container (with padding)
+    const outerWidth = innerWidth;
+    const outerHeight = innerHeight + OUTER_PADDING;
+
+    return {
+      innerWidth,
+      innerHeight,
+      outerWidth,
+      outerHeight
+    };
+  });
+
+  // Calculate rendered dimensions for an image given max constraints
+  function getRenderedDimensions(naturalWidth: number, naturalHeight: number) {
+    const scaleW = BASE_WIDTH / naturalWidth;
+    const scaleH = BASE_HEIGHT / naturalHeight;
+    const scale = Math.min(scaleW, scaleH, 1);
+    return {
+      width: naturalWidth * scale,
+      height: naturalHeight * scale
+    };
+  }
+
+  // Calculate uniform height when vertical offset is 0 or stack count is 0 (spine mode)
+  let uniformHeight = $derived.by(() => {
+    const vOffsetPercent = $miscSettings.catalogVerticalStep;
+    const stackCountSetting = $miscSettings.catalogStackCount;
+    // Force uniform height when stack count is 0 (all volumes) or v.offset is 0
+    if ((vOffsetPercent !== 0 && stackCountSetting !== 0) || thumbnailDimensions.size === 0)
+      return null;
+
+    // Calculate average rendered height
+    let totalHeight = 0;
+    let count = 0;
+    for (const vol of stackedVolumes) {
+      const dims = thumbnailDimensions.get(vol.volume_uuid);
+      if (dims) {
+        const rendered = getRenderedDimensions(dims.width, dims.height);
+        totalHeight += rendered.height;
+        count++;
+      }
+    }
+
+    return count > 0 ? totalHeight / count : BASE_HEIGHT;
+  });
+
+  // Calculate step sizes and centering/spreading offsets
   let stepSizes = $derived.by(() => {
-    const containerWidth = 325;
-    const containerHeight = 385;
+    const stackCountSetting = $miscSettings.catalogStackCount;
+    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
+    // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
+    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
+    const centerHorizontal = $miscSettings.catalogCenterHorizontal;
+    const centerVertical = $miscSettings.catalogCenterVertical;
 
-    // Default horizontal step (11% of width)
-    const horizontalStep = containerWidth * 0.11;
+    // Default step in pixels based on base thumbnail size
+    let horizontalStep = BASE_WIDTH * hOffsetPercent;
+    let verticalStep = BASE_HEIGHT * vOffsetPercent;
 
-    // Calculate vertical step to fill height exactly
-    if (stackedVolumes.length === 0 || thumbnailDimensions.size === 0) {
-      // Fallback to default 11%
-      return {
-        horizontal: horizontalStep,
-        vertical: containerHeight * 0.11,
-        topOffset: 0
-      };
+    const actualCount = stackedVolumes.length;
+    // Use actual count when stackCount is 0 (all volumes)
+    const effectiveStackCount = stackCountSetting === 0 ? actualCount : stackCountSetting;
+    const { innerWidth, innerHeight } = containerDimensions;
+
+    // Calculate horizontal layout
+    let leftOffset = 0;
+    if (actualCount < effectiveStackCount && actualCount > 1) {
+      if (centerHorizontal) {
+        // Center: keep step size, add offset
+        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
+        leftOffset = (innerWidth - actualStackWidth) / 2;
+      } else {
+        // Spread: recalculate step to fill width evenly
+        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
+      }
     }
 
-    // Calculate rendered dimensions and aspect ratios for all volumes
-    const renderedData = stackedVolumes
-      .map((vol) => {
+    // Get max rendered height from actual thumbnails (or uniform height if in spine mode)
+    let maxRenderedHeight = uniformHeight ?? BASE_HEIGHT;
+    if (uniformHeight === null && thumbnailDimensions.size > 0) {
+      // Start at 0 to find actual max, not clamped to BASE_HEIGHT
+      let actualMaxHeight = 0;
+      for (const vol of stackedVolumes) {
         const dims = thumbnailDimensions.get(vol.volume_uuid);
-        if (!dims) return null;
-
-        const rendered = calculateRenderedDimensions(dims.width, dims.height);
-        return {
-          height: rendered.height,
-          width: rendered.width,
-          aspectRatio: rendered.width / rendered.height
-        };
-      })
-      .filter((d) => d !== null);
-
-    if (renderedData.length === 0) {
-      return {
-        horizontal: horizontalStep,
-        vertical: containerHeight * 0.11,
-        topOffset: 0
-      };
+        if (dims) {
+          const rendered = getRenderedDimensions(dims.width, dims.height);
+          actualMaxHeight = Math.max(actualMaxHeight, rendered.height);
+        }
+      }
+      // Use actual max if we found dimensions, otherwise keep BASE_HEIGHT default
+      if (actualMaxHeight > 0) {
+        maxRenderedHeight = actualMaxHeight;
+      }
     }
 
-    // Use the tallest rendered height
-    const maxRenderedHeight = Math.max(...renderedData.map((d) => d.height));
+    // Calculate vertical layout
+    let topOffset = 0;
+    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
+    const extraVerticalSpace = innerHeight - actualStackHeight;
 
-    // Calculate average aspect ratio
-    const avgAspectRatio =
-      renderedData.reduce((sum, d) => sum + d.aspectRatio, 0) / renderedData.length;
+    if (actualCount > 0 && extraVerticalSpace > 0) {
+      // Spreading only works with 2+ volumes and v.offset > 0
+      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
 
-    // Preferred aspect ratio for manga (250:350)
-    const preferredAspect = 250 / 350; // 0.714
-
-    // Apply height penalty for squat images
-    let effectiveHeight = containerHeight;
-    if (avgAspectRatio > preferredAspect) {
-      // How much squatter than preferred (0 = perfect, higher = more squat)
-      const excessAspect = avgAspectRatio - preferredAspect;
-
-      // Gentle penalty: ~100px per 1.0 excess aspect (so square gets ~28.6px penalty)
-      // Capped at 60px to still favor filling
-      const penalty = Math.min(excessAspect * 100, 60);
-
-      effectiveHeight = containerHeight - penalty;
+      if (canSpread) {
+        // Spread: recalculate step to fill height evenly
+        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
+      } else {
+        // Center: for single volumes, v.offset = 0, or when centering enabled
+        topOffset = extraVerticalSpace / 2;
+      }
     }
-
-    // Calculate step size using effective height: (effectiveHeight - maxHeight) / (numVolumes - 1)
-    const numVolumes = stackedVolumes.length;
-    const verticalStep =
-      numVolumes > 1 ? Math.max(0, (effectiveHeight - maxRenderedHeight) / (numVolumes - 1)) : 0;
-
-    // Center the stack: unused space is split equally top/bottom
-    const unusedSpace = containerHeight - effectiveHeight;
-    const topOffset = unusedSpace / 2;
 
     return {
       horizontal: horizontalStep,
       vertical: verticalStep,
+      leftOffset,
+      topOffset
+    };
+  });
+
+  // Calculate step sizes for placeholder thumbnails (same logic but uses all series volumes)
+  let placeholderStepSizes = $derived.by(() => {
+    // Use compact settings for cloud series if enabled
+    if (useCompactForCloud) {
+      return {
+        count: 1,
+        horizontal: 0,
+        vertical: 0,
+        leftOffset: 0,
+        topOffset: 0
+      };
+    }
+
+    const stackCountSetting = $miscSettings.catalogStackCount;
+    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
+    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
+    const centerHorizontal = $miscSettings.catalogCenterHorizontal;
+    const centerVertical = $miscSettings.catalogCenterVertical;
+
+    let horizontalStep = BASE_WIDTH * hOffsetPercent;
+    let verticalStep = BASE_HEIGHT * vOffsetPercent;
+
+    // For placeholders, use seriesVolumes.length as actual count
+    const actualCount =
+      stackCountSetting === 0
+        ? seriesVolumes.length
+        : Math.min(seriesVolumes.length, stackCountSetting);
+    const effectiveStackCount = stackCountSetting === 0 ? seriesVolumes.length : stackCountSetting;
+    const { innerWidth, innerHeight } = containerDimensions;
+
+    // Calculate horizontal layout
+    let leftOffset = 0;
+    if (actualCount < effectiveStackCount && actualCount > 1) {
+      if (centerHorizontal) {
+        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
+        leftOffset = (innerWidth - actualStackWidth) / 2;
+      } else {
+        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
+      }
+    }
+
+    // For placeholders, height is always BASE_HEIGHT (uniform boxes)
+    const maxRenderedHeight = BASE_HEIGHT;
+    let topOffset = 0;
+    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
+    const extraVerticalSpace = innerHeight - actualStackHeight;
+
+    if (actualCount > 0 && extraVerticalSpace > 0) {
+      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
+      if (canSpread) {
+        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
+      } else {
+        topOffset = extraVerticalSpace / 2;
+      }
+    }
+
+    return {
+      count: actualCount,
+      horizontal: horizontalStep,
+      vertical: verticalStep,
+      leftOffset,
       topOffset
     };
   });
@@ -232,25 +360,58 @@
       class:cursor-pointer={isPlaceholderOnly}
     >
       {#if isPlaceholderOnly}
-        <!-- Stacked placeholder layout to show volume count -->
-        <div class="relative sm:h-[410px] sm:w-[325px] sm:pt-4 sm:pb-6">
-          <PlaceholderThumbnail
-            count={seriesVolumes.length}
-            {isDownloading}
-            showDownloadUI={true}
-          />
+        <!-- Stacked placeholder layout using same positioning as real thumbnails -->
+        <div
+          class="relative pt-4 pb-6"
+          style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
+        >
+          <div
+            class="relative overflow-hidden"
+            style="width: {containerDimensions.innerWidth}px; height: {containerDimensions.innerHeight}px;"
+          >
+            {#each Array(placeholderStepSizes.count) as _, i}
+              <div
+                class="absolute flex items-center justify-center border border-gray-300 bg-gray-200 dark:border-gray-600 dark:bg-gray-800"
+                style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {placeholderStepSizes.leftOffset +
+                  i * placeholderStepSizes.horizontal}px; top: {placeholderStepSizes.topOffset +
+                  i * placeholderStepSizes.vertical}px; z-index: {placeholderStepSizes.count -
+                  i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
+              >
+                {#if i === 0}
+                  <div class="flex flex-col items-center gap-3">
+                    {#if isDownloading}
+                      <Spinner size="16" color="blue" />
+                      <span class="text-sm text-gray-300">Downloading...</span>
+                    {:else}
+                      <DownloadSolid class="h-16 w-16 text-blue-400" />
+                      <span class="text-sm text-gray-300">Click to download</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
       {:else if stackedVolumes.length > 0}
-        <!-- Stacked diagonal layout: dynamic stepping based on image aspect ratios -->
-        <div class="relative sm:h-[410px] sm:w-[325px] sm:pt-4 sm:pb-6">
-          <div class="relative overflow-hidden sm:h-[385px] sm:w-full">
+        <!-- Stacked diagonal layout: dynamic stepping based on settings -->
+        <div
+          class="relative pt-4 pb-6"
+          style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
+        >
+          <div
+            class="relative overflow-hidden"
+            style="width: {containerDimensions.innerWidth}px; height: {containerDimensions.innerHeight}px;"
+          >
             {#each stackedVolumes as vol, i (vol.volume_uuid)}
-              {#if vol.thumbnail}
+              {#if thumbnailUrls.get(vol.volume_uuid)}
                 <img
-                  src={URL.createObjectURL(vol.thumbnail)}
+                  src={thumbnailUrls.get(vol.volume_uuid)}
                   alt={vol.volume_title}
-                  class="absolute h-auto border border-gray-900 bg-black sm:max-h-[360px] sm:max-w-[250px]"
-                  style="left: {i * stepSizes.horizontal}px; top: {stepSizes.topOffset +
+                  class="absolute border border-gray-900 bg-black"
+                  style="max-width: {BASE_WIDTH}px; {uniformHeight !== null
+                    ? `height: ${uniformHeight}px; width: auto;`
+                    : `max-height: ${BASE_HEIGHT}px; height: auto;`} left: {stepSizes.leftOffset +
+                    i * stepSizes.horizontal}px; top: {stepSizes.topOffset +
                     i * stepSizes.vertical}px; z-index: {stackedVolumes.length -
                     i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
                 />
@@ -259,12 +420,12 @@
           </div>
         </div>
       {/if}
-      <p class="line-clamp-2 font-semibold sm:w-[325px]">
+      <p class="line-clamp-2 font-semibold" style="width: {containerDimensions.outerWidth}px;">
         {volume.series_title}
       </p>
       {#if isPlaceholderOnly}
         <p class="text-xs text-blue-400">
-          {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerDisplayName}
+          {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerName}
         </p>
       {/if}
     </div>

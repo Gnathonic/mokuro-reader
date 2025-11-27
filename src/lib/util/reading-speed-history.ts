@@ -10,7 +10,7 @@ export interface VolumeSpeedData {
   durationMinutes: number;
   charsRead: number;
   charsPerMinute: number;
-  thumbnail?: File;
+  // Note: thumbnail is loaded separately from volume_thumbnails table
 
   // Badges
   isPersonalBest: boolean;
@@ -124,10 +124,6 @@ export function processVolumeSpeedData(
       }
     }
 
-    // Get thumbnail from catalog (never stored in progress data to keep JSON small)
-    const volumeInfo = catalogMap.get(volumeId);
-    const thumbnail = volumeInfo?.thumbnail;
-
     completed.push({
       volumeId,
       volumeTitle,
@@ -137,7 +133,6 @@ export function processVolumeSpeedData(
       durationMinutes: timeInMinutes,
       charsRead: data.chars,
       charsPerMinute: cpm,
-      thumbnail,
       isPersonalBest: false,
       isSlowest: false,
       percentVsAverage: 0

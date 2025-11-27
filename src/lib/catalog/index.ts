@@ -99,9 +99,17 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
     }
 
     if ($currentVolume) {
-      db.volumes_data.get($currentVolume.volume_uuid).then((data) => {
-        if (data) {
-          set(data);
+      // Assemble VolumeData from volume_ocr and volume_files tables
+      Promise.all([
+        db.volume_ocr.get($currentVolume.volume_uuid),
+        db.volume_files.get($currentVolume.volume_uuid)
+      ]).then(([ocr, files]) => {
+        if (ocr) {
+          set({
+            volume_uuid: $currentVolume.volume_uuid,
+            pages: ocr.pages,
+            files: files?.files
+          });
         }
       });
     }
@@ -113,18 +121,22 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
 let currentVolumeDataLastUuid: string | undefined;
 
 /**
- * Japanese character count for current volume
- * Always calculates from pages to ensure consistency with reading speed tracking
+ * Japanese character count for current volume.
+ * Uses page_char_counts from metadata for O(1) lookup when available.
  */
 export const currentVolumeCharacterCount = derived(
   [currentVolume, currentVolumeData],
   ([$currentVolume, $currentVolumeData]) => {
     if (!$currentVolume) return 0;
 
-    // Always calculate Japanese characters from pages
+    // Use pre-calculated cumulative char counts from metadata (v3)
+    if ($currentVolume.page_char_counts && $currentVolume.page_char_counts.length > 0) {
+      // Last element of cumulative array is the total
+      return $currentVolume.page_char_counts[$currentVolume.page_char_counts.length - 1];
+    }
+
+    // Fallback: calculate from pages if page_char_counts not available
     if ($currentVolumeData && $currentVolumeData.pages) {
-      // Use getCharCount for consistency with reading tracker
-      // Import inline to avoid circular dependency
       const japaneseRegex =
         /[○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
 

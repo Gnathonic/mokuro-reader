@@ -39,14 +39,14 @@ async function migratePageTurnData(
   console.log(`[Migration] Attempting to migrate ${volumeName} (${turns.length} turns)`);
 
   try {
-    // Load pages from IndexedDB
-    const volumePagesData = await db.volumes_data.get(volumeId);
-    if (!volumePagesData || !volumePagesData.pages) {
+    // Load pages from IndexedDB (from volume_ocr table)
+    const volumeOcr = await db.volume_ocr.get(volumeId);
+    if (!volumeOcr || !volumeOcr.pages) {
       console.log(`[Migration] Failed - no pages in IndexedDB for ${volumeName}`);
       return null;
     }
 
-    const pages = volumePagesData.pages as Page[];
+    const pages = volumeOcr.pages as Page[];
 
     // Helper to get character count for a page
     const getPageChars = (pageNum: number): number => {

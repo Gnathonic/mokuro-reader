@@ -872,33 +872,6 @@ describe('processVolumeSpeedData', () => {
     expect(vol2!.percentVsSeriesAvg).toBeCloseTo(33.33, 1);
   });
 
-  it('should get thumbnail from catalog', () => {
-    const volumesData = {
-      'vol-1': {
-        completed: true,
-        timeReadInMinutes: 60,
-        chars: 6000,
-        lastProgressUpdate: '2024-01-01T00:00:00Z',
-        series_title: 'Series A',
-        series_uuid: 'series-a',
-        volume_title: 'Volume 1'
-      }
-    };
-
-    const catalog = [
-      {
-        volume_uuid: 'vol-1',
-        series_uuid: 'series-a',
-        series_title: 'Series A',
-        volume_title: 'Volume 1',
-        page_count: 100,
-        chars: 6000,
-        thumbnail: 'data:image/png;base64,abc123'
-      }
-    ];
-
-    const result = processVolumeSpeedData(volumesData, catalog as any);
-
-    expect(result[0].thumbnail).toBe('data:image/png;base64,abc123');
-  });
+  // Note: Thumbnail test removed - thumbnails are now loaded from a separate table (volume_thumbnails)
+  // and must be loaded asynchronously by the UI component displaying the reading speed history
 });

@@ -63,9 +63,9 @@
       const charCounts = new Map<string, number>();
 
       for (const vol of manga) {
-        const volumeData = await db.volumes_data.get(vol.volume_uuid);
-        if (volumeData?.pages) {
-          const { charCount } = getCharCount(volumeData.pages);
+        const volumeOcr = await db.volume_ocr.get(vol.volume_uuid);
+        if (volumeOcr?.pages) {
+          const { charCount } = getCharCount(volumeOcr.pages);
           charCounts.set(vol.volume_uuid, charCount);
         }
       }
@@ -288,8 +288,10 @@
     if (seriesUuid) {
       manga?.forEach((vol) => {
         const volId = vol.volume_uuid;
-        db.volumes_data.where('volume_uuid').equals(vol.volume_uuid).delete();
+        // Delete from all 3 tables in v3 schema
         db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
+        db.volume_ocr.delete(vol.volume_uuid);
+        db.volume_files.delete(vol.volume_uuid);
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {

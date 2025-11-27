@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zipManga } from './zip';
 import { db } from '$lib/catalog/db';
 
-// Mock the database
+// Mock the database with v3 tables
 vi.mock('$lib/catalog/db', () => ({
   db: {
-    volumes_data: {
+    volume_ocr: {
+      get: vi.fn()
+    },
+    volume_files: {
       get: vi.fn()
     }
   }
@@ -58,11 +61,17 @@ describe('zipManga', () => {
     volume_title: 'Volume 1',
     mokuro_version: '1.0',
     character_count: 100,
-    page_count: 1
+    page_count: 1,
+    page_char_counts: [] as number[]
   };
 
-  const mockVolumeData = {
-    pages: [{ width: 100, height: 100 }],
+  const mockOcrData = {
+    volume_uuid: 'test-uuid',
+    pages: [{ width: 100, height: 100 }]
+  };
+
+  const mockFilesData = {
+    volume_uuid: 'test-uuid',
     files: {
       'page1.jpg': new Blob(['test'], { type: 'image/jpeg' })
     }
@@ -71,7 +80,9 @@ describe('zipManga', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // @ts-expect-error - Mock type mismatch
-    db.volumes_data.get.mockResolvedValue(mockVolumeData);
+    db.volume_ocr.get.mockResolvedValue(mockOcrData);
+    // @ts-expect-error - Mock type mismatch
+    db.volume_files.get.mockResolvedValue(mockFilesData);
   });
 
   it('should create a single archive when individualVolumes is false', async () => {
@@ -138,7 +149,8 @@ describe('zipManga', () => {
       ...mockVolume,
       volume_uuid: 'test-uuid-2',
       volume_title: 'Volume 2',
-      page_count: 1
+      page_count: 1,
+      page_char_counts: [] as number[]
     };
 
     const result = await zipManga([mockVolume, mockVolume2], false, true, true);
