@@ -61,5 +61,6 @@ export interface VolumeFiles {
 export interface VolumeData {
   volume_uuid: string;
   pages: Page[];
+  edited_pages?: Page[];
   files?: Record<string, File>;
 }

@@ -11,7 +11,8 @@
     FileLinesOutline,
     DotsVerticalOutline,
     CloudArrowUpOutline,
-    ImageOutline
+    ImageOutline,
+    PenSolid
   } from 'flowbite-svelte-icons';
   import { db } from '$lib/catalog/db';
   import { nav, routeParams } from '$lib/util/hash-router';
@@ -21,6 +22,7 @@
   import { backupQueue } from '$lib/util/backup-queue';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
+  import { hasEdits } from '$lib/catalog/pages';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
 
   interface Props {
@@ -86,8 +88,10 @@
   let timeReadMinutes = $derived(volumeData?.timeReadInMinutes || 0);
   let charsRead = $derived(volumeData?.chars || 0);
   let totalChars = $state<number | undefined>(undefined);
+  let volumeHasEdits = $state(false);
 
   // Calculate Japanese character count from pages data (matches reading tracker)
+  // Also check if volume has edits
   $effect(() => {
     db.volume_ocr.get(volume.volume_uuid).then((data) => {
       if (data?.pages) {
@@ -95,6 +99,9 @@
         if (charCount > 0) {
           totalChars = charCount;
         }
+      }
+      if (data) {
+        volumeHasEdits = hasEdits(data);
       }
     });
   });
@@ -314,6 +321,11 @@
           <div>
             <div class="mb-1 flex items-center gap-2">
               <p class="font-semibold" class:text-white={!isComplete}>{volName}</p>
+              {#if volumeHasEdits}
+                <Badge color="yellow" class="!px-1.5 !py-0.5">
+                  <PenSolid class="h-3 w-3" />
+                </Badge>
+              {/if}
               {#if isImageOnly}
                 <Badge color="blue" class="text-xs">
                   <ImageOutline class="me-1 inline h-3 w-3" />
@@ -429,6 +441,11 @@
               <CheckCircleSolid class="h-5 w-5 flex-shrink-0 text-green-400" />
             {/if}
           </div>
+          {#if volumeHasEdits}
+            <Badge color="yellow" class="flex-shrink-0 !px-1.5 !py-0.5">
+              <PenSolid class="h-3 w-3" />
+            </Badge>
+          {/if}
           {#if isImageOnly}
             <Badge color="blue" class="w-fit text-xs">
               <ImageOutline class="me-1 inline h-3 w-3" />

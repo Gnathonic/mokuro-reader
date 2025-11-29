@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { toggleFullScreen, zoomFitToScreen } from '$lib/panzoom';
+  import { Modal, Button } from 'flowbite-svelte';
   import { settings } from '$lib/settings';
   import {
     ArrowLeftOutline,
@@ -7,7 +10,8 @@
     CompressOutline,
     ImageOutline,
     ZoomOutOutline,
-    PlusOutline
+    PlusOutline,
+    EditOutline
   } from 'flowbite-svelte-icons';
   import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
   import { promptConfirmation } from '$lib/util';
@@ -17,11 +21,14 @@
     right: (_e: any, ingoreTimeOut?: boolean) => void;
     src1: File | undefined;
     src2: File | undefined;
+    currentPage: number;
+    showSecondPage: boolean;
   }
 
-  let { left, right, src1, src2 }: Props = $props();
+  let { left, right, src1, src2, currentPage, showSecondPage }: Props = $props();
 
   let open = $state(false);
+  let showPageSelector = $state(false);
 
   function handleZoom() {
     zoomFitToScreen();
@@ -36,6 +43,25 @@
   function handleRight(_e: Event) {
     right(_e, true);
     open = false;
+  }
+
+  function handleEditPage() {
+    open = false;
+
+    if (showSecondPage) {
+      // Show modal to select which page to edit
+      showPageSelector = true;
+    } else {
+      // Navigate directly to edit the current page
+      navigateToEditPage(currentPage - 1); // Convert to 0-based index
+    }
+  }
+
+  function navigateToEditPage(pageIndex: number) {
+    const manga = $page.params.manga;
+    const volume = $page.params.volume;
+    goto(`/${manga}/${volume}/edit/${pageIndex}`);
+    showPageSelector = false;
   }
 
   async function onUpdateCard(src: File | undefined) {
@@ -118,6 +144,13 @@
         >
           <ArrowLeftOutline size="xl" />
         </button>
+        <button
+          onclick={handleEditPage}
+          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          aria-label="Edit page"
+        >
+          <EditOutline size="xl" />
+        </button>
       </div>
     {/if}
 
@@ -132,3 +165,22 @@
     </button>
   </div>
 {/if}
+
+<Modal bind:open={showPageSelector} size="xs" autoclose={false}>
+  <div class="text-center">
+    <h3 class="mb-5 text-lg font-normal text-gray-500 dark:text-gray-400">
+      Which page do you want to edit?
+    </h3>
+    <div class="flex justify-center gap-4">
+      <Button color="blue" onclick={() => navigateToEditPage(currentPage - 1)}>
+        Left Page ({currentPage})
+      </Button>
+      <Button color="blue" onclick={() => navigateToEditPage(currentPage)}>
+        Right Page ({currentPage + 1})
+      </Button>
+    </div>
+    <div class="mt-4">
+      <Button color="alternative" onclick={() => (showPageSelector = false)}>Cancel</Button>
+    </div>
+  </div>
+</Modal>
