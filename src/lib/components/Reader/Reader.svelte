@@ -435,22 +435,27 @@
       return { duration: 0 };
     }
 
+    // Easing functions
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const linear = (t: number) => t;
+
+    // Use ease-out for vertical (feels like natural scroll deceleration)
+    const easing = transition === 'vertical' ? easeOutCubic : linear;
+
     return {
       duration,
-      easing: (t) => t, // Linear easing for consistent speed
+      easing,
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
         }
 
         if (transition === 'vertical') {
-          // Slide vertically with a small gap between pages
-          const gap = 3; // Small gap between pages (in vh units)
-          const startOffset = direction === 'forward' ? 100 + gap : -(100 + gap);
+          // PDF-style scroll: new page slides in from below (forward) or above (backward)
+          // Use % for element-relative translation
+          const startOffset = direction === 'forward' ? 100 : -100;
           const currentPos = startOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
+          return `transform: translateY(${currentPos}%);`;
         }
 
         if (transition === 'pageTurn') {
@@ -508,22 +513,27 @@
       return { duration: 0 };
     }
 
+    // Easing functions
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const linear = (t: number) => t;
+
+    // Use ease-out for vertical (feels like natural scroll deceleration)
+    const easing = transition === 'vertical' ? easeOutCubic : linear;
+
     return {
       duration,
-      easing: (t) => t, // Linear easing for consistent speed
+      easing,
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
         }
 
         if (transition === 'vertical') {
-          // Slide vertically - now used for ENTERING page
-          const gap = 3; // Small gap between pages (in vh units)
-          const endOffset = direction === 'forward' ? -(100 + gap) : 100 + gap;
+          // PDF-style scroll: old page slides out above (forward) or below (backward)
+          // Use % for element-relative translation
+          const endOffset = direction === 'forward' ? -100 : 100;
           const currentPos = endOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
+          return `transform: translateY(${currentPos}%);`;
         }
 
         if (transition === 'pageTurn') {
@@ -891,7 +901,7 @@
         onmouseup={right}
       ></button>
       <div
-        class="grid"
+        class="grid overflow-hidden"
         style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
         role="none"
