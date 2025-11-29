@@ -1,7 +1,7 @@
 <script lang="ts">
   import Loader from '$lib/components/Loader.svelte';
   import { getItems, processFiles } from '$lib/upload';
-  import { promptConfirmation, showSnackbar } from '$lib/util';
+  import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { nav } from '$lib/util/hash-router';
   import { P, Progressbar } from 'flowbite-svelte';
   import { onMount } from 'svelte';
@@ -23,12 +23,15 @@
   let progress = $derived(Math.floor((completed / max) * 100).toString());
 
   async function onImport() {
+    const normalizedVolume = normalizeFilename(volume || '');
     const mokuroRes = await fetch(url + '.mokuro', { cache: 'no-store' });
     const mokuroBlob = await mokuroRes.blob();
-    const mokuroFile = new File([mokuroBlob], volume + '.mokuro', { type: mokuroBlob.type });
+    const mokuroFile = new File([mokuroBlob], normalizedVolume + '.mokuro', {
+      type: mokuroBlob.type
+    });
 
     Object.defineProperty(mokuroFile, 'webkitRelativePath', {
-      value: '/' + volume + '.mokuro'
+      value: '/' + normalizedVolume + '.mokuro'
     });
 
     const res = await fetch(url + '/');
@@ -46,9 +49,10 @@
       if (imageTypes.includes(itemFileExtension || '')) {
         const image = await fetch(url + item.pathname);
         const blob = await image.blob();
-        const file = new File([blob], item.pathname.substring(1));
+        const normalizedPath = normalizeFilename(item.pathname);
+        const file = new File([blob], normalizedPath.substring(1));
         Object.defineProperty(file, 'webkitRelativePath', {
-          value: '/' + volume + item.pathname
+          value: '/' + normalizedVolume + normalizedPath
         });
 
         files.push(file);
