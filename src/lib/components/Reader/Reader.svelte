@@ -194,7 +194,33 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
+    // Ignore shortcuts when user is in a text input, editable field, text box, or UI overlay
+    const target = event.target as HTMLElement;
+    if (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      target.closest('#settings') || // Settings drawer
+      target.closest('[data-popover]') || // Page number popover and other popovers
+      target.closest('.textBox') // OCR text boxes (even when not editable)
+    ) {
+      return;
+    }
+
     const action = event.code || event.key;
+
+    // For letter keys and nav keys, ignore if any modifier key is pressed
+    // (e.g., Ctrl+C for copy, Shift+Arrow for text selection)
+    const isLetterKey = action.startsWith('Key');
+    const isNavKey = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(
+      action
+    );
+    if (
+      (isLetterKey || isNavKey) &&
+      (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
+    ) {
+      return;
+    }
 
     // Keys that should prevent default browser scrolling behavior
     const scrollKeys = [
