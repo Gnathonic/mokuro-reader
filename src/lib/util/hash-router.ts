@@ -25,32 +25,40 @@ export const currentView = writable<View>({ type: 'catalog' });
 
 /**
  * Parse a hash URL into a View object
+ * Falls back to catalog if URL cannot be parsed (e.g., malformed percent-encoding)
  */
 export function parseHash(hash: string): View {
-  const path = hash.replace(/^#\/?/, '');
-  const segments = path.split('/').filter(Boolean);
+  try {
+    const path = hash.replace(/^#\/?/, '');
+    const segments = path.split('/').filter(Boolean);
 
-  if (segments.length === 0 || segments[0] === 'catalog') {
+    if (segments.length === 0 || segments[0] === 'catalog') {
+      return { type: 'catalog' };
+    }
+    if (segments[0] === 'cloud') return { type: 'cloud' };
+    if (segments[0] === 'upload') return { type: 'upload' };
+    if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
+
+    if (segments[0] === 'series' && segments.length >= 2) {
+      const seriesId = decodeURIComponent(segments[1]);
+      if (segments[2] === 'text') return { type: 'series-text', seriesId };
+      return { type: 'series', seriesId };
+    }
+
+    if (segments[0] === 'reader' && segments.length >= 3) {
+      const seriesId = decodeURIComponent(segments[1]);
+      const volumeId = decodeURIComponent(segments[2]);
+      if (segments[3] === 'text') return { type: 'volume-text', seriesId, volumeId };
+      return { type: 'reader', seriesId, volumeId };
+    }
+
+    return { type: 'catalog' };
+  } catch {
+    // decodeURIComponent can throw URIError on malformed percent-encoding
+    // Fall back to catalog page if URL cannot be parsed
+    console.warn('Failed to parse URL hash, redirecting to catalog:', hash);
     return { type: 'catalog' };
   }
-  if (segments[0] === 'cloud') return { type: 'cloud' };
-  if (segments[0] === 'upload') return { type: 'upload' };
-  if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
-
-  if (segments[0] === 'series' && segments.length >= 2) {
-    const seriesId = decodeURIComponent(segments[1]);
-    if (segments[2] === 'text') return { type: 'series-text', seriesId };
-    return { type: 'series', seriesId };
-  }
-
-  if (segments[0] === 'reader' && segments.length >= 3) {
-    const seriesId = decodeURIComponent(segments[1]);
-    const volumeId = decodeURIComponent(segments[2]);
-    if (segments[3] === 'text') return { type: 'volume-text', seriesId, volumeId };
-    return { type: 'reader', seriesId, volumeId };
-  }
-
-  return { type: 'catalog' };
 }
 
 /**
