@@ -200,6 +200,13 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  * Call this on app initialization, returns cleanup function
  */
 export function initRouter(): () => void {
+  // Handle legacy pathname-based routes from before hash router migration
+  // Redirect all legacy routes to catalog, except /upload which is online-only
+  const pathname = window.location.pathname;
+  if (pathname && pathname !== '/' && !pathname.startsWith('/upload')) {
+    window.history.replaceState(null, '', '/#/catalog');
+  }
+
   // Parse initial hash
   const initialView = parseHash(window.location.hash);
   currentView.set(initialView);

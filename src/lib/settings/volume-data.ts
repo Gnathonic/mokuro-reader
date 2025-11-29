@@ -1,7 +1,6 @@
 import { browser } from '$app/environment';
 import { derived, writable, readable } from 'svelte/store';
 import { zoomDefault } from '$lib/panzoom';
-import { page } from '$app/stores';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 
@@ -601,8 +600,8 @@ export function updateVolumeSetting(volume: string, key: VolumeSettingsKey, valu
   zoomDefault();
 }
 
-export const totalStats = derived([volumes, page], ([$volumes, $page]) => {
-  if ($page && $volumes) {
+export const totalStats = derived(volumes, ($volumes) => {
+  if ($volumes) {
     return Object.values($volumes).reduce<TotalStats>(
       (stats, { chars, completed, timeReadInMinutes, progress }) => {
         if (completed) {

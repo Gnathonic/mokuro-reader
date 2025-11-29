@@ -4,6 +4,7 @@
   import { sineIn } from 'svelte/easing';
   import { resetSettings } from '$lib/settings';
   import { isReader, promptConfirmation } from '$lib/util';
+  import { currentView } from '$lib/util/hash-router';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
@@ -13,7 +14,6 @@
   import VolumeSettings from './Volume/VolumeSettings.svelte';
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
-  import { beforeNavigate } from '$app/navigation';
 
   let transitionParams = {
     x: 320,
@@ -37,10 +37,15 @@
     open = false;
   }
 
-  beforeNavigate((nav) => {
-    if (open) {
-      nav.cancel();
-      open = false;
+  // Close drawer on navigation (hash route change)
+  let previousViewType = $state($currentView.type);
+  $effect(() => {
+    const viewType = $currentView.type;
+    if (viewType !== previousViewType) {
+      previousViewType = viewType;
+      if (open) {
+        open = false;
+      }
     }
   });
 </script>

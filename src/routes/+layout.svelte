@@ -1,5 +1,4 @@
 <script lang="ts">
-  /* eslint-disable no-undef */
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import { inject } from '@vercel/analytics';
@@ -13,8 +12,10 @@
   import NightModeFilter from '$lib/components/NightModeFilter.svelte';
   import GlobalDropZone from '$lib/components/GlobalDropZone.svelte';
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
+  import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { initFileHandler } from '$lib/util/file-handler';
+  import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { get } from 'svelte/store';
@@ -79,6 +80,9 @@
 
     // Initialize file handler for PWA file associations
     initFileHandler();
+
+    // Initialize service worker update detection
+    initSwUpdateDetection();
   });
 </script>
 
@@ -102,5 +106,6 @@
     <ProgressTracker />
     <NightModeFilter />
     <GlobalDropZone />
+    <SwUpdateBanner />
   </div>
 {/if}

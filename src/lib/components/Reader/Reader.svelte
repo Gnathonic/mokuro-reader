@@ -23,7 +23,7 @@
     volumes,
     type VolumeSettings
   } from '$lib/settings';
-  import { clamp, debounce, fireExstaticEvent } from '$lib/util';
+  import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import {
@@ -196,6 +196,23 @@
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     const action = event.code || event.key;
 
+    // Keys that should prevent default browser scrolling behavior
+    const scrollKeys = [
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+      'Space'
+    ];
+
+    if (scrollKeys.includes(action)) {
+      event.preventDefault();
+    }
+
     switch (action) {
       case 'ArrowLeft':
         left(event, true);
@@ -326,20 +343,19 @@
 
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
-      tick().then(() => {
-        requestAnimationFrame(() => {
-          if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch((err) => {
-              console.error('Failed to enter fullscreen:', err);
-            });
-          }
-        });
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error('Failed to enter fullscreen:', err);
       });
     }
+
+    // Prevent scrollbars from appearing when in reader mode
+    document.documentElement.style.overflow = 'hidden';
 
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
+      // Restore overflow when leaving reader
+      document.documentElement.style.overflow = '';
     };
   });
 
@@ -778,9 +794,16 @@
     windowHeight = window.innerHeight;
     zoomDefaultWithLayoutWait();
   }}
-  onkeyup={handleShortcuts}
+  onkeydown={handleShortcuts}
   ontouchstart={handleTouchStart}
   ontouchend={handlePointerUp}
+  onscroll={() => {
+    // Detect and fix scroll position drift caused by scrolling in overlays
+    // (e.g., settings menu) that affects the underlying document
+    if (window.scrollX !== 0 || window.scrollY !== 0) {
+      resetScrollPosition();
+    }
+  }}
 />
 <svelte:head>
   <title>{volume?.volume_title || 'Volume'}</title>
@@ -833,7 +856,7 @@
       </div>
     </div>
   </Popover>
-  <button class="absolute top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+  <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
     {#key page}
       <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
       <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
@@ -842,7 +865,7 @@
   {#if notificationMessage}
     {#key notificationKey}
       <div
-        class="absolute top-5 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
+        class="fixed top-5 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
         style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
       >
         <p class="text-sm font-medium whitespace-nowrap">{notificationMessage}</p>
