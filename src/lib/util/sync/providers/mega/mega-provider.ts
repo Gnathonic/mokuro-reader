@@ -425,12 +425,6 @@ export class MegaProvider implements SyncProvider {
       // Get all files from storage
       const files = Object.values(this.storage.files || {});
 
-      const rootItems = files.filter((f: any) => !f.parent);
-
-      const allCbzFiles = files.filter(
-        (f: any) => !f.directory && (f.name || '').toLowerCase().endsWith('.cbz')
-      );
-
       // Find ALL mokuro-reader folders (there may be multiple from different sessions)
       // Note: We don't check parent because MEGA's root folder location varies by account/locale
       const mokuroFolders = files.filter((f: any) => f.name === MOKURO_FOLDER && f.directory);

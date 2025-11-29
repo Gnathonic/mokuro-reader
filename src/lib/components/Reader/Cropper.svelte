@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { afterNavigate, beforeNavigate } from '$app/navigation';
+  import { currentView } from '$lib/util/hash-router';
   import { cropperStore, getCroppedImg, type Pixels, updateLastCard } from '$lib/anki-connect';
   import { settings } from '$lib/settings';
   import { Button, Modal, Spinner } from 'flowbite-svelte';
@@ -12,14 +12,15 @@
   let crop = $state({ x: 0, y: 0 });
   let zoom = $state(1);
 
-  afterNavigate(() => {
-    close();
-  });
-
-  beforeNavigate((nav) => {
-    if (open) {
-      nav.cancel();
-      close();
+  // Close modal on navigation (hash route change)
+  let previousViewType = $state($currentView.type);
+  $effect(() => {
+    const viewType = $currentView.type;
+    if (viewType !== previousViewType) {
+      previousViewType = viewType;
+      if (open) {
+        close();
+      }
     }
   });
 

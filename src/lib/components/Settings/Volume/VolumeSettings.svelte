@@ -9,7 +9,7 @@
   } from '$lib/settings';
   import { zoomDefault } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
-  import { routeParams } from '$lib/util/navigation';
+  import { routeParams } from '$lib/util/hash-router';
 
   const volumeId = $routeParams.volume!;
 

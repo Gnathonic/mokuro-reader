@@ -5,7 +5,7 @@ import { derived, readable, type Readable } from 'svelte/store';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
-import { routeParams } from '$lib/util/navigation';
+import { routeParams } from '$lib/util/hash-router';
 
 function sortVolumes(a: VolumeMetadata, b: VolumeMetadata) {
   if (a.volume_title < b.volume_title) {

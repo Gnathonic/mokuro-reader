@@ -6,8 +6,7 @@
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { nav } from '$lib/util/navigation';
-  import { isPWA } from '$lib/util/pwa';
+  import { nav } from '$lib/util/hash-router';
 
   interface Props {
     series_uuid: string;
@@ -80,8 +79,7 @@
 
       // Queue all series volumes for download
       queueSeriesVolumes(sortedVolumes);
-    } else if ($isPWA) {
-      // In PWA mode, use navigation system instead of href
+    } else {
       e.preventDefault();
       nav.toSeries(series_uuid);
     }
@@ -91,7 +89,7 @@
 {#if volume}
   <div class:opacity-70={isPlaceholderOnly}>
     <ListgroupItem>
-      <a href={series_uuid} class="h-full w-full" onclick={handleClick}>
+      <a href="#/series/{series_uuid}" class="h-full w-full" onclick={handleClick}>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
             <p class:text-green-400={isComplete} class="font-semibold">{volume.series_title}</p>

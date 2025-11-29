@@ -29,12 +29,8 @@ export function initPanzoom(node: HTMLElement) {
       // This allows text selection within text boxes
       return isTextBox;
     },
-    // When swapWheelBehavior is true: zoom without modifier, scroll with Ctrl
-    // When swapWheelBehavior is false (default): scroll without modifier, zoom with Ctrl
-    beforeWheel: (e) => {
-      const swapWheelBehavior = get(settings).swapWheelBehavior;
-      return swapWheelBehavior ? e.ctrlKey : !e.ctrlKey;
-    },
+    // Disable library's wheel zoom - we handle it ourselves for symmetric zoom
+    beforeWheel: () => true,
     onTouch: (e) => e.touches.length > 1,
     // Panzoom typing is wrong here
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -51,20 +47,56 @@ export function initPanzoom(node: HTMLElement) {
   pz.on('pan', () => keepInBounds());
   pz.on('zoom', () => keepInBounds());
 
-  // Add custom wheel handler for panning/zooming based on swapWheelBehavior
+  // Custom wheel handler for panning/zooming
+  // We implement our own zoom because panzoom's default is asymmetric
+  // (zoom in by 1.125x and out by 0.875x don't cancel out)
   const wheelHandler = (e: WheelEvent) => {
-    if (pz) {
-      const swapWheelBehavior = get(settings).swapWheelBehavior;
-      const shouldPan = swapWheelBehavior ? e.ctrlKey : !e.ctrlKey;
+    if (!pz) return;
 
-      if (shouldPan) {
-        e.preventDefault();
-        const { x, y } = pz.getTransform();
-        // Pan vertically based on wheel deltaY
-        pz.moveTo(x, y - e.deltaY);
-        keepInBounds();
+    const swapWheelBehavior = get(settings).swapWheelBehavior;
+    // When swapWheelBehavior is true: zoom without modifier, pan with Ctrl
+    // When swapWheelBehavior is false (default): pan without modifier, zoom with Ctrl
+    const shouldZoom = swapWheelBehavior ? !e.ctrlKey : e.ctrlKey;
+
+    e.preventDefault();
+
+    if (shouldZoom) {
+      // Symmetric zoom using exponential scaling
+      // Using base 1.002 gives smooth, small steps
+      // Math.pow(1.002, 100) ≈ 1.22 for a typical wheel delta
+      const zoomBase = 1.002;
+      const delta = e.deltaMode > 0 ? e.deltaY * 100 : e.deltaY;
+      let scaleMultiplier = Math.pow(zoomBase, -delta);
+
+      // In bounds mode, limit zoom out to the smaller of:
+      // 1. Fit-to-screen scale (so large content can fill viewport)
+      // 2. 1.0 (100% zoom - small content can't go below pixel-for-pixel)
+      const { mobile, bounds } = get(settings);
+      if ((mobile || bounds) && container) {
+        const currentScale = pz.getTransform().scale;
+        const { innerWidth, innerHeight } = window;
+        const fitScaleX = innerWidth / container.offsetWidth;
+        const fitScaleY = innerHeight / container.offsetHeight;
+        const fitScale = Math.min(fitScaleX, fitScaleY);
+        // Large images (fitScale < 1): can zoom out to fit
+        // Small images (fitScale > 1): can't zoom out past 100%
+        const minScale = Math.min(fitScale, 1.0);
+
+        const newScale = currentScale * scaleMultiplier;
+        if (newScale < minScale) {
+          // Clamp to minimum scale
+          scaleMultiplier = minScale / currentScale;
+        }
       }
+
+      // Zoom centered on mouse position (zoomTo expects client coordinates)
+      pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
+    } else {
+      // Pan vertically based on wheel deltaY
+      const { x, y } = pz.getTransform();
+      pz.moveTo(x, y - e.deltaY);
     }
+    keepInBounds();
   };
 
   node.addEventListener('wheel', wheelHandler, { passive: false });
@@ -206,42 +238,48 @@ export function keepInBounds() {
   const width = container.offsetWidth * scale;
   const height = container.offsetHeight * scale;
 
-  const marginX = innerWidth * 0.001;
-  const marginY = innerHeight * 0.01;
-
-  let minX = innerWidth - width - marginX;
-  let maxX = marginX;
-  let minY = innerHeight - height - marginY;
-  let maxY = marginY;
-
+  let minX: number;
+  let maxX: number;
+  let minY: number;
+  let maxY: number;
+  let forceCenterX = false;
   let forceCenterY = false;
 
-  if (width + 2 * marginX <= innerWidth) {
-    minX = marginX;
-    maxX = innerWidth - width - marginX;
+  // Content fits horizontally - center it and prevent panning
+  if (width <= innerWidth) {
+    forceCenterX = true;
+    minX = 0;
+    maxX = 0;
   } else {
-    minX = innerWidth - width - marginX;
-    maxX = marginX;
+    // Content is wider than viewport - allow panning edge to edge
+    minX = innerWidth - width;
+    maxX = 0;
   }
 
-  if (height + 2 * marginY <= innerHeight) {
-    minY = marginY;
-    maxY = innerHeight - height - marginY;
+  // Content fits vertically - center it and prevent panning
+  if (height <= innerHeight) {
     forceCenterY = true;
+    minY = 0;
+    maxY = 0;
   } else {
-    minY = innerHeight - height - marginY;
-    maxY = marginY;
+    // Content is taller than viewport - allow panning edge to edge
+    minY = innerHeight - height;
+    maxY = 0;
   }
 
-  if (x < minX) {
-    transform.x = minX;
-  }
-  if (x > maxX) {
-    transform.x = maxX;
+  if (forceCenterX) {
+    transform.x = (innerWidth - width) / 2;
+  } else {
+    if (x < minX) {
+      transform.x = minX;
+    }
+    if (x > maxX) {
+      transform.x = maxX;
+    }
   }
 
   if (forceCenterY) {
-    transform.y = innerHeight / 2 - height / 2;
+    transform.y = (innerHeight - height) / 2;
   } else {
     if (y < minY) {
       transform.y = minY;

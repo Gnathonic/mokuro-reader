@@ -19,7 +19,7 @@ export function escapeNameForDriveQuery(name: string): string {
   return name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-export class DriveApiError extends Error {
+class DriveApiError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
@@ -38,7 +38,7 @@ export class DriveApiError extends Error {
  * @param retryOnAuth Whether to allow retry (prevents infinite loops)
  * @throws DriveApiError with appropriate message
  */
-export async function handleAuthError(status: number, retryOnAuth = true): Promise<never> {
+async function handleAuthError(status: number, retryOnAuth = true): Promise<never> {
   console.log('API call failed with auth error, token may be expired');
 
   // Check if auto re-auth is enabled
@@ -294,40 +294,11 @@ class DriveApiClient {
     });
   }
 
-  async trashFile(fileId: string): Promise<void> {
-    return this.handleApiCall(async () => {
-      await gapi.client.drive.files.update({
-        fileId,
-        resource: { trashed: true }
-      });
-    });
-  }
-
   async deleteFile(fileId: string): Promise<void> {
     return this.handleApiCall(async () => {
       await gapi.client.drive.files.delete({
         fileId
       });
-    });
-  }
-
-  async trashFiles(fileIds: string[]): Promise<void> {
-    // Batch delete by trashing each file
-    const promises = fileIds.map((fileId) => this.trashFile(fileId));
-    await Promise.all(promises);
-  }
-
-  /**
-   * Check if the current user can edit a file
-   * Returns false for viewer-only shared files
-   */
-  async canEditFile(fileId: string): Promise<boolean> {
-    return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.get({
-        fileId,
-        fields: 'capabilities/canEdit'
-      });
-      return result.capabilities?.canEdit ?? false;
     });
   }
 

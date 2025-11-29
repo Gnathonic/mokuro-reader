@@ -13,7 +13,7 @@ https://github.com/ZXY101/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-
 - **Smart Page Mode Detection** - Automatically switches between single and dual-page modes based on screen orientation and image content analysis
 - **Page Preloading** - Non-blocking preload system for smooth page transitions
 - **Smooth Page Transitions** - Configurable animations (instant/fade/slide) for page changes
-- **Night Mode & Color Inversion** - Built-in visual comfort options
+- **Night Mode & Color Inversion** - Built-in visual comfort options with optional scheduling
 - **Automatic Text Sizing** - Intelligent text wrapping and resizing for oversized OCR text
 - **Auto-Pause Timer** - Configurable timer that pauses after inactivity (1-30 minutes, default 5)
 - **Seamless Navigation** - Paging past volume end automatically loads next volume or returns to series page
@@ -33,7 +33,7 @@ https://github.com/ZXY101/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-
 - **Google Drive Sync** - Full integration with automatic token refresh and reconnection
 - **MEGA Support** - Alternative cloud storage option
 - **Automatic Progress Sync** - Seamlessly sync read progress and stats across devices
-- **Easy Backup** - Backup your entire library to Google Drive, MEGA, or WebDAV (coming soon)
+- **Easy Backup** - Backup your entire library to Google Drive, MEGA, or WebDAV
 - **Smart Placeholder System** - Backed up volumes appear as downloadable placeholders in your catalog
 - **One-Tap Downloads** - Download cloud volumes directly from your catalog on your other devices
 - **Cross-Device Continuity** - Pick up exactly where you left off on any device
@@ -42,8 +42,8 @@ https://github.com/ZXY101/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-
 
 - **User Profiles** - Multiple reading profiles with independent settings
 - **Per-Volume Settings** - Override global settings for specific volumes
+- **Catalog Display Presets** - Choose from Compact, Default, or Spine Showcase layouts
 - **Extensive Reader Options** - Customize text display, zoom behavior, page mode, and more
-- **Profile-Based Defaults** - Different default settings for different reading styles
 
 ### 🔧 Power Features
 
@@ -104,21 +104,12 @@ pip install mokuro
 
 ### Cloud Sync Setup
 
-**Google Drive:**
+Connect to **Google Drive**, **MEGA**, or **WebDAV** from the Cloud page in settings. All three providers support:
 
-1. Navigate to the Cloud page in settings
-2. Click "Connect to Google Drive"
-3. Authorize the application
-4. Your volumes and progress will automatically sync
-
-The reader remembers your connection and can auto-refresh tokens when they expire.
-
-**MEGA:**
-
-1. Navigate to the Cloud page in settings
-2. Enter your MEGA credentials
-3. Upload volumes directly from the reader or use MEGA's interface
-4. Cloud volumes appear as downloadable placeholders in your catalog
+- Automatic progress and profile sync across devices
+- Volume backup with one-tap restore on other devices
+- Cloud-only volumes appear as downloadable placeholders in your catalog
+- High-speed series backup and downloads using web workers
 
 ### Reading Speed Features
 
@@ -184,59 +175,6 @@ For Google Drive integration, create a `.env` file:
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 ```
-
-## 📈 What's New in v1.0.0
-
-This release represents a major overhaul of Mokuro Reader with significant improvements across all areas:
-
-### Major Features Added
-
-- 📊 Complete reading speed tracking system with history, graphs, and achievements
-- 🤖 Automatic single/dual page mode detection based on content analysis
-- ⌨️ Comprehensive keyboard shortcut system (N/I/P/C/Z/Esc)
-- ☁️ Enhanced cloud integration with placeholder system and one-tap downloads
-- 🎨 Page transition animations with multiple styles (instant/fade/slide)
-- 📝 Volume and series text analysis pages
-- ⏱️ Auto-pause timer with configurable timeout
-- 🎯 Time-to-finish estimates based on reading speed
-
-### Performance Improvements
-
-- 🚀 Complete database restructure - now handles 2000+ volumes with ease
-- ⚡ Worker pool architecture for parallel downloads and processing
-- 💾 Advanced memory management with throttle modes for low-end devices
-- 🖼️ Image caching system for faster page loads
-- 📦 Restructured database to prevent out-of-memory errors
-
-### UI/UX Enhancements
-
-- 🖼️ Series now display with up to 3 stacked thumbnails
-- ✅ Series completion markers in catalog
-- 🔢 Character counts and time estimates on volume cards
-- 📑 Advanced sorting options for catalog and series pages
-- 🎨 Night mode and color inversion toggles
-- 🔄 Improved navigation with seamless volume-to-volume transitions
-
-### Cloud & Sync
-
-- ☁️ Automatic progress synchronization across devices
-- 🔄 Persistent Google Drive connection with auto token refresh
-- 📥 Smart placeholder system for cloud-only volumes
-- 🌐 Full MEGA integration alongside Google Drive
-
-### Technical Improvements
-
-- ⬆️ Updated to latest Svelte 5 and Node.js versions
-- 🧠 Shared memory manager for better resource utilization
-- 🔧 Much more robust file and folder name handling
-- 📦 Flexible import system handling various ZIP/CBZ/folder arrangements
-- 🔒 Better error handling and recovery mechanisms
-
-### Bug Fixes
-
-- Fixed upload issues on weaker devices
-- Resolved memory issues with long series
-- Improved stability across all operations
 
 ## 💬 Community
 

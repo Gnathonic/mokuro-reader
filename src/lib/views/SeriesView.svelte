@@ -9,7 +9,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume, volumes, progress } from '$lib/settings';
-  import { nav, routeParams, navigateBack } from '$lib/util/navigation';
+  import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     CloudArrowUpOutline,

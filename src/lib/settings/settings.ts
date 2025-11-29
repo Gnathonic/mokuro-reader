@@ -55,6 +55,19 @@ export type VolumeDefaults = {
   hasCover: boolean;
 };
 
+export type CatalogStackingPreset = 'compact' | 'default' | 'spine' | 'custom';
+
+export type CatalogSettings = {
+  stackingPreset: CatalogStackingPreset;
+  horizontalStep: number;
+  verticalStep: number;
+  stackCount: number;
+  hideReadVolumes: boolean;
+  centerHorizontal: boolean;
+  centerVertical: boolean;
+  compactCloudSeries: boolean;
+};
+
 export type Settings = {
   defaultFullscreen: boolean;
   textEditable: boolean;
@@ -81,6 +94,7 @@ export type Settings = {
   swapWheelBehavior: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
+  catalogSettings: CatalogSettings;
   lastUpdated?: string; // ISO 8601 timestamp for sync conflict resolution
   deletedOn?: string; // ISO 8601 timestamp when profile was deleted (tombstone)
 };
@@ -90,6 +104,8 @@ export type SettingsKey = keyof Settings;
 export type AnkiSettingsKey = keyof AnkiConnectSettings;
 
 export type VolumeDefaultsKey = keyof VolumeDefaults;
+
+export type CatalogSettingsKey = keyof CatalogSettings;
 
 export type TimeScheduleKey = keyof TimeSchedule;
 
@@ -143,6 +159,16 @@ const defaultSettings: Settings = {
     widthField: 0,
     qualityField: 1,
     triggerMethod: 'both'
+  },
+  catalogSettings: {
+    stackingPreset: 'default',
+    horizontalStep: 11,
+    verticalStep: 5,
+    stackCount: 3,
+    hideReadVolumes: true,
+    centerHorizontal: true,
+    centerVertical: false,
+    compactCloudSeries: false
   }
 };
 
@@ -199,6 +225,12 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.volumeDefaults || {})
     };
 
+    // Validate singlePageView: convert legacy boolean to 'auto', or use default for any invalid value
+    const validPageViewModes = ['single', 'dual', 'auto'];
+    if (!validPageViewModes.includes(migratedProfile.volumeDefaults.singlePageView)) {
+      migratedProfile.volumeDefaults.singlePageView = 'auto';
+    }
+
     migratedProfile.ankiConnectSettings = {
       ...defaultSettings.ankiConnectSettings,
       ...(profile.ankiConnectSettings || {})
@@ -213,6 +245,23 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...defaultSettings.invertColorsSchedule,
       ...(profile.invertColorsSchedule || {})
     };
+
+    migratedProfile.catalogSettings = {
+      ...defaultSettings.catalogSettings,
+      ...(profile.catalogSettings || {})
+    };
+
+    // Reset unstable "spine showcase" settings to defaults on page load
+    // stackCount=0 causes performance issues and can make the app unusable
+    if (
+      migratedProfile.catalogSettings.stackCount === 0 ||
+      migratedProfile.catalogSettings.stackingPreset === 'spine'
+    ) {
+      console.log(
+        `⚠️ Profile migration: Resetting unstable spine showcase settings to defaults for [${name}]`
+      );
+      migratedProfile.catalogSettings = { ...defaultSettings.catalogSettings };
+    }
 
     // Add timestamp if missing
     if (!migratedProfile.lastUpdated) {
@@ -272,9 +321,27 @@ currentProfile.subscribe((currentProfile) => {
   }
 });
 
-export const settings = derived([profiles, currentProfile], ([profiles, currentProfile]) => {
-  return profiles[currentProfile];
-});
+export const settings = derived(
+  [profiles, currentProfile],
+  ([$profiles, $currentProfile], set: (value: Settings) => void) => {
+    if ($profiles[$currentProfile]) {
+      set($profiles[$currentProfile]);
+    } else {
+      // Fall back to Desktop or Mobile profile if current profile doesn't exist
+      const fallbackProfile = $profiles['Desktop'] ? 'Desktop' : 'Mobile';
+      if ($profiles[fallbackProfile]) {
+        currentProfile.set(fallbackProfile);
+        set($profiles[fallbackProfile]);
+      } else {
+        // Ultimate fallback to default settings
+        set(defaultSettings);
+      }
+    }
+  }
+);
+
+// Derived store for easy access to catalog settings
+export const catalogSettings = derived(settings, ($settings) => $settings?.catalogSettings);
 
 // A store that updates every minute to trigger schedule checks
 const currentMinute = readable(Date.now(), (set) => {
@@ -310,17 +377,19 @@ export function isWithinSchedule(schedule: TimeSchedule): boolean {
 
 // Derived stores for effective state (manual mode uses toggle, scheduled mode uses time check)
 export const nightModeActive = derived([settings, currentMinute], ([$settings, _]) => {
-  if ($settings.nightModeSchedule.enabled) {
+  if (!$settings) return false;
+  if ($settings.nightModeSchedule?.enabled) {
     return isWithinSchedule($settings.nightModeSchedule);
   }
-  return $settings.nightMode;
+  return $settings.nightMode ?? false;
 });
 
 export const invertColorsActive = derived([settings, currentMinute], ([$settings, _]) => {
-  if ($settings.invertColorsSchedule.enabled) {
+  if (!$settings) return false;
+  if ($settings.invertColorsSchedule?.enabled) {
     return isWithinSchedule($settings.invertColorsSchedule);
   }
-  return $settings.invertColors;
+  return $settings.invertColors ?? false;
 });
 
 /**
@@ -371,6 +440,22 @@ export function updateAnkiSetting(key: AnkiSettingsKey, value: any) {
         ...profiles[profileId],
         ankiConnectSettings: {
           ...profiles[profileId].ankiConnectSettings,
+          [key]: value
+        }
+      })
+    };
+  });
+}
+
+export function updateCatalogSetting(key: CatalogSettingsKey, value: any) {
+  _profilesInternal.update((profiles) => {
+    const profileId = get(currentProfile);
+    return {
+      ...profiles,
+      [profileId]: touchProfile({
+        ...profiles[profileId],
+        catalogSettings: {
+          ...profiles[profileId].catalogSettings,
           [key]: value
         }
       })

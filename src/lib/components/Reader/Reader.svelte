@@ -24,7 +24,7 @@
     volumes,
     type VolumeSettings
   } from '$lib/settings';
-  import { clamp, debounce, fireExstaticEvent } from '$lib/util';
+  import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import {
@@ -37,8 +37,7 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
-  import { beforeNavigate } from '$app/navigation';
-  import { nav, navigateBack } from '$lib/util/navigation';
+  import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
@@ -150,8 +149,7 @@
           (v) => v.volume_uuid === volume.volume_uuid
         );
         const previousVolume = seriesVolumes[currentVolumeIndex - 1];
-        if (previousVolume)
-          nav.toReader(volume.series_uuid, previousVolume.volume_uuid, { invalidateAll: true });
+        if (previousVolume) nav.toReader(volume.series_uuid, previousVolume.volume_uuid);
         else nav.toSeries(volume.series_uuid);
         return;
       } else if (newPage > pages.length && page === pages.length) {
@@ -161,8 +159,7 @@
           (v) => v.volume_uuid === volume.volume_uuid
         );
         const nextVolume = seriesVolumes[currentVolumeIndex + 1];
-        if (nextVolume)
-          nav.toReader(volume.series_uuid, nextVolume.volume_uuid, { invalidateAll: true });
+        if (nextVolume) nav.toReader(volume.series_uuid, nextVolume.volume_uuid);
         else nav.toSeries(volume.series_uuid);
         return;
       }
@@ -199,6 +196,23 @@
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     const action = event.code || event.key;
+
+    // Keys that should prevent default browser scrolling behavior
+    const scrollKeys = [
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+      'Space'
+    ];
+
+    if (scrollKeys.includes(action)) {
+      event.preventDefault();
+    }
 
     switch (action) {
       case 'ArrowLeft':
@@ -330,20 +344,19 @@
 
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
-      tick().then(() => {
-        requestAnimationFrame(() => {
-          if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch((err) => {
-              console.error('Failed to enter fullscreen:', err);
-            });
-          }
-        });
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error('Failed to enter fullscreen:', err);
       });
     }
+
+    // Prevent scrollbars from appearing when in reader mode
+    document.documentElement.style.overflow = 'hidden';
 
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
+      // Restore overflow when leaving reader
+      document.documentElement.style.overflow = '';
     };
   });
 
@@ -375,7 +388,8 @@
     }
   });
 
-  beforeNavigate(() => {
+  // Fire reader closed event when component is destroyed (navigating away)
+  onDestroy(() => {
     if (volume) {
       const { charCount, lineCount } = getCharCount(pages, page);
 
@@ -771,9 +785,16 @@
     windowHeight = window.innerHeight;
     zoomDefaultWithLayoutWait();
   }}
-  onkeyup={handleShortcuts}
+  onkeydown={handleShortcuts}
   ontouchstart={handleTouchStart}
   ontouchend={handlePointerUp}
+  onscroll={() => {
+    // Detect and fix scroll position drift caused by scrolling in overlays
+    // (e.g., settings menu) that affects the underlying document
+    if (window.scrollX !== 0 || window.scrollY !== 0) {
+      resetScrollPosition();
+    }
+  }}
 />
 <svelte:head>
   <title>{volume?.volume_title || 'Volume'}</title>
@@ -828,7 +849,7 @@
       </div>
     </div>
   </Popover>
-  <button class="absolute top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+  <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
     {#key page}
       <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
       <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
@@ -837,7 +858,7 @@
   {#if notificationMessage}
     {#key notificationKey}
       <div
-        class="absolute top-5 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
+        class="fixed top-5 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
         style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
       >
         <p class="text-sm font-medium whitespace-nowrap">{notificationMessage}</p>

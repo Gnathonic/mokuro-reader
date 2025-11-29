@@ -1,23 +1,12 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
-export type CatalogStackingPreset = 'compact' | 'default' | 'spine' | 'custom';
-
 export type MiscSettings = {
   galleryLayout: 'grid' | 'list';
   gallerySorting: 'ASC' | 'DESC' | 'SMART';
   deviceRamGB: 4 | 8 | 16 | 32;
   turboMode: boolean;
   gdriveAutoReAuth: boolean;
-  // Catalog layout settings
-  catalogStackingPreset: CatalogStackingPreset; // Preset selection
-  catalogHorizontalStep: number; // Horizontal offset percentage (default 11)
-  catalogVerticalStep: number; // Vertical offset percentage (default 11)
-  catalogStackCount: number; // Number of volumes to show (0 = all, default 3)
-  catalogHideReadVolumes: boolean; // Hide read volumes from in-progress series stack
-  catalogCenterHorizontal: boolean; // Center horizontally when fewer volumes than stack count
-  catalogCenterVertical: boolean; // Center vertically when thumbnails don't fill height
-  catalogCompactCloudSeries: boolean; // Show cloud-only series as compact (single thumbnail)
 };
 
 export type MiscSettingsKey = keyof MiscSettings;
@@ -41,16 +30,7 @@ const defaultSettings: MiscSettings = {
   gallerySorting: 'SMART',
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
-  gdriveAutoReAuth: true, // Keep users synced during long reading sessions
-  // Catalog layout defaults (matches 'default' preset)
-  catalogStackingPreset: 'default',
-  catalogHorizontalStep: 11,
-  catalogVerticalStep: 5,
-  catalogStackCount: 3,
-  catalogHideReadVolumes: true,
-  catalogCenterHorizontal: true,
-  catalogCenterVertical: false, // spread vertically
-  catalogCompactCloudSeries: false // cloud-only series show as single thumbnail
+  gdriveAutoReAuth: true // Keep users synced during long reading sessions
 };
 
 const stored = browser ? window.localStorage.getItem('miscSettings') : undefined;

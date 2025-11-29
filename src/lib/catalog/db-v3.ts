@@ -2,6 +2,7 @@ import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
+import { progressTrackerStore } from '$lib/util/progress-tracker';
 
 function naturalSort(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
@@ -24,6 +25,8 @@ export class CatalogDexieV3 extends Dexie {
   }
 
   async processThumbnails(batchSize: number = 5): Promise<void> {
+    const processId = 'thumbnail-generation';
+
     // Get volumes that need thumbnail generation/regeneration
     // Missing any of thumbnail, width, or height indicates need for (re)generation
     const volumesNeedingThumbnails = await this.volumes
@@ -32,37 +35,58 @@ export class CatalogDexieV3 extends Dexie {
 
     if (volumesNeedingThumbnails.length === 0) return;
 
-    // Process in batches
-    const batch = volumesNeedingThumbnails.slice(0, batchSize);
+    const total = volumesNeedingThumbnails.length;
+    let processed = 0;
 
-    await Promise.all(
-      batch.map(async (volumeUuid) => {
-        try {
-          const files = await this.volume_files.get(volumeUuid as string);
-          if (files && files.files) {
-            // Get the first image file when sorted naturally
-            const fileNames = Object.keys(files.files).sort(naturalSort);
-            const firstImageFile = fileNames.length > 0 ? files.files[fileNames[0]] : null;
+    // Add process to tracker
+    progressTrackerStore.addProcess({
+      id: processId,
+      description: 'Generating thumbnails',
+      status: `0 / ${total}`,
+      progress: 0
+    });
 
-            if (firstImageFile) {
-              const thumbnailResult = await generateThumbnail(firstImageFile);
-              // Store thumbnail and dimensions directly in volumes table
-              await this.volumes.update(volumeUuid as string, {
-                thumbnail: thumbnailResult.file,
-                thumbnail_width: thumbnailResult.width,
-                thumbnail_height: thumbnailResult.height
-              });
+    try {
+      // Process all volumes in batches
+      for (let i = 0; i < total; i += batchSize) {
+        const batch = volumesNeedingThumbnails.slice(i, i + batchSize);
+
+        await Promise.all(
+          batch.map(async (volumeUuid) => {
+            try {
+              const files = await this.volume_files.get(volumeUuid as string);
+              if (files && files.files) {
+                // Get the first image file when sorted naturally
+                const fileNames = Object.keys(files.files).sort(naturalSort);
+                const firstImageFile = fileNames.length > 0 ? files.files[fileNames[0]] : null;
+
+                if (firstImageFile) {
+                  const thumbnailResult = await generateThumbnail(firstImageFile);
+                  // Store thumbnail and dimensions directly in volumes table
+                  await this.volumes.update(volumeUuid as string, {
+                    thumbnail: thumbnailResult.file,
+                    thumbnail_width: thumbnailResult.width,
+                    thumbnail_height: thumbnailResult.height
+                  });
+                }
+              }
+            } catch (error) {
+              console.error('Failed to generate thumbnail for volume:', volumeUuid, error);
             }
-          }
-        } catch (error) {
-          console.error('Failed to generate thumbnail for volume:', volumeUuid, error);
-        }
-      })
-    );
+          })
+        );
 
-    // Continue processing remaining volumes
-    if (volumesNeedingThumbnails.length > batchSize) {
-      await this.processThumbnails(batchSize);
+        // Update progress after each batch
+        processed += batch.length;
+        const percent = Math.round((processed / total) * 100);
+        progressTrackerStore.updateProcess(processId, {
+          status: `${processed} / ${total}`,
+          progress: percent
+        });
+      }
+    } finally {
+      // Remove process from tracker after a short delay
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 2000);
     }
   }
 }

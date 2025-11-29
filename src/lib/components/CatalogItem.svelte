@@ -1,12 +1,10 @@
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
-  import { progress } from '$lib/settings';
-  import { miscSettings } from '$lib/settings/misc';
+  import { progress, catalogSettings } from '$lib/settings';
   import { showSnackbar } from '$lib/util';
   import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { nav } from '$lib/util/navigation';
-  import { isPWA } from '$lib/util/pwa';
+  import { nav } from '$lib/util/hash-router';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
 
@@ -41,8 +39,8 @@
 
   // Get volumes for stacked thumbnail based on settings
   let stackedVolumes = $derived.by(() => {
-    const hideRead = $miscSettings.catalogHideReadVolumes;
-    const stackCount = $miscSettings.catalogStackCount;
+    const hideRead = $catalogSettings?.hideReadVolumes ?? true;
+    const stackCount = $catalogSettings?.stackCount ?? 3;
     // If hiding read volumes and there are unread ones, show those; otherwise show all local
     const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
     // stackCount of 0 means show all volumes
@@ -107,7 +105,9 @@
   const OUTER_PADDING = 25; // pt-4 pb-6 ≈ 25px
 
   // Check if cloud series should use compact layout
-  let useCompactForCloud = $derived(isPlaceholderOnly && $miscSettings.catalogCompactCloudSeries);
+  let useCompactForCloud = $derived(
+    isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
+  );
 
   // Calculate container dimensions based on settings
   let containerDimensions = $derived.by(() => {
@@ -121,10 +121,11 @@
       };
     }
 
-    const stackCountSetting = $miscSettings.catalogStackCount;
-    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
+    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
+    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
     // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
-    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
+    const vOffsetPercent =
+      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
 
     // Use actual volume count when stackCount is 0 (all volumes)
     // For placeholders, use seriesVolumes; for real thumbnails, use stackedVolumes
@@ -164,8 +165,8 @@
 
   // Calculate uniform height when vertical offset is 0 or stack count is 0 (spine mode)
   let uniformHeight = $derived.by(() => {
-    const vOffsetPercent = $miscSettings.catalogVerticalStep;
-    const stackCountSetting = $miscSettings.catalogStackCount;
+    const vOffsetPercent = $catalogSettings?.verticalStep ?? 5;
+    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
     // Force uniform height when stack count is 0 (all volumes) or v.offset is 0
     if ((vOffsetPercent !== 0 && stackCountSetting !== 0) || thumbnailDimensions.size === 0)
       return null;
@@ -187,12 +188,13 @@
 
   // Calculate step sizes and centering/spreading offsets
   let stepSizes = $derived.by(() => {
-    const stackCountSetting = $miscSettings.catalogStackCount;
-    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
+    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
+    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
     // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
-    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
-    const centerHorizontal = $miscSettings.catalogCenterHorizontal;
-    const centerVertical = $miscSettings.catalogCenterVertical;
+    const vOffsetPercent =
+      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
+    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
+    const centerVertical = $catalogSettings?.centerVertical ?? false;
 
     // Default step in pixels based on base thumbnail size
     let horizontalStep = BASE_WIDTH * hOffsetPercent;
@@ -273,11 +275,12 @@
       };
     }
 
-    const stackCountSetting = $miscSettings.catalogStackCount;
-    const hOffsetPercent = $miscSettings.catalogHorizontalStep / 100;
-    const vOffsetPercent = stackCountSetting === 0 ? 0 : $miscSettings.catalogVerticalStep / 100;
-    const centerHorizontal = $miscSettings.catalogCenterHorizontal;
-    const centerVertical = $miscSettings.catalogCenterVertical;
+    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
+    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
+    const vOffsetPercent =
+      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
+    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
+    const centerVertical = $catalogSettings?.centerVertical ?? false;
 
     let horizontalStep = BASE_WIDTH * hOffsetPercent;
     let verticalStep = BASE_HEIGHT * vOffsetPercent;
@@ -343,8 +346,8 @@
 
       // Queue all series volumes for download
       queueSeriesVolumes(allSeriesVolumes);
-    } else if ($isPWA) {
-      // In PWA mode, use navigation system instead of href
+    } else {
+      // Use hash-based navigation
       e.preventDefault();
       nav.toSeries(series_uuid);
     }
@@ -352,7 +355,7 @@
 </script>
 
 {#if volume}
-  <a href={series_uuid} onclick={handleClick}>
+  <a href="#/series/{series_uuid}" onclick={handleClick}>
     <div
       class:text-green-400={isComplete}
       class:opacity-70={isPlaceholderOnly}

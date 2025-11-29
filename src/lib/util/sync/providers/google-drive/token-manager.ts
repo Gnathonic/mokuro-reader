@@ -1,9 +1,7 @@
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
-import { GOOGLE_DRIVE_CONFIG, type TokenInfo } from './constants';
+import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { showSnackbar } from '$lib/util/snackbar';
-import { miscSettings } from '$lib/settings/misc';
-import { get } from 'svelte/store';
 
 class TokenManager {
   private tokenStore = writable<string>('');
@@ -21,10 +19,6 @@ class TokenManager {
 
   get token() {
     return this.tokenStore;
-  }
-
-  get tokenClient() {
-    return this.tokenClientStore;
   }
 
   get needsAttention() {

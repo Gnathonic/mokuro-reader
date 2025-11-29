@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 import { browser } from '$app/environment';
 import type {
   SyncProvider,

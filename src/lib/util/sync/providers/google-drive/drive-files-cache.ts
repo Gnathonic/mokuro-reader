@@ -1,12 +1,9 @@
-import { writable, derived } from 'svelte/store';
+import { writable } from 'svelte/store';
 import { driveApiClient } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CloudCache } from '../../cloud-cache-interface';
 import type { DriveFileMetadata } from '../../provider-interface';
-
-// Re-export for convenience
-export type { DriveFileMetadata };
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -265,45 +262,6 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   setReaderFolderId(folderId: string): void {
     this.readerFolderId = folderId;
-  }
-
-  /**
-   * Recursively list all .cbz files and build their paths
-   */
-  private async listAllCbzFiles(
-    folderId: string,
-    parentPath: string = ''
-  ): Promise<DriveFileMetadata[]> {
-    const files: DriveFileMetadata[] = [];
-
-    // Get all items in this folder
-    const response = await driveApiClient.listFiles(
-      `'${folderId}' in parents and trashed=false`,
-      'id, name, mimeType, modifiedTime, size'
-    );
-
-    if (!response) return files;
-
-    for (const item of response) {
-      const currentPath = parentPath ? `${parentPath}/${item.name}` : item.name;
-
-      if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
-        // Recurse into subfolders
-        const subFiles = await this.listAllCbzFiles(item.id, currentPath);
-        files.push(...subFiles);
-      } else if (item.name.endsWith('.cbz')) {
-        files.push({
-          provider: 'google-drive',
-          fileId: item.id,
-          name: item.name,
-          modifiedTime: item.modifiedTime || new Date().toISOString(),
-          size: item.size ? parseInt(item.size) : 0,
-          path: currentPath
-        });
-      }
-    }
-
-    return files;
   }
 
   /**

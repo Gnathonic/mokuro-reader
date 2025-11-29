@@ -17,6 +17,17 @@ self.addEventListener('install', (event) => {
   }
 
   event.waitUntil(addFilesToCache());
+
+  // Don't call skipWaiting() here - we want to show an "Update Available" banner
+  // and let the user choose when to update. skipWaiting will be triggered via
+  // a message from the client when the user clicks "Update".
+});
+
+// Listen for messages from the client
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -28,6 +39,9 @@ self.addEventListener('activate', (event) => {
   }
 
   event.waitUntil(deleteOldCaches());
+
+  // Take control of all clients immediately (don't wait for reload)
+  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {

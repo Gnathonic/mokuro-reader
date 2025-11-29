@@ -3,14 +3,18 @@
   import { db } from '$lib/catalog/db';
   import { promptConfirmation } from '$lib/util';
   import { clearVolumes } from '$lib/settings';
-  import { miscSettings, updateMiscSetting, type CatalogStackingPreset } from '$lib/settings/misc';
-  import { nav } from '$lib/util/navigation';
+  import {
+    catalogSettings,
+    updateCatalogSetting,
+    type CatalogStackingPreset
+  } from '$lib/settings/settings';
+  import { nav } from '$lib/util/hash-router';
   import { isCatalog } from '$lib/util';
 
   const presetOptions = [
     { value: 'compact', name: 'Compact' },
     { value: 'default', name: 'Default' },
-    { value: 'spine', name: 'Spine Showcase' },
+    { value: 'spine', name: 'Spine Showcase (Alpha)' },
     { value: 'custom', name: 'Custom' }
   ];
 
@@ -57,23 +61,23 @@
   };
 
   function applyPreset(preset: CatalogStackingPreset) {
-    updateMiscSetting('catalogStackingPreset', preset);
+    updateCatalogSetting('stackingPreset', preset);
     if (preset !== 'custom') {
       const config = presets[preset];
-      updateMiscSetting('catalogStackCount', config.stackCount);
-      updateMiscSetting('catalogHorizontalStep', config.horizontalStep);
-      updateMiscSetting('catalogVerticalStep', config.verticalStep);
-      updateMiscSetting('catalogHideReadVolumes', config.hideReadVolumes);
-      updateMiscSetting('catalogCenterHorizontal', config.centerHorizontal);
-      updateMiscSetting('catalogCenterVertical', config.centerVertical);
-      updateMiscSetting('catalogCompactCloudSeries', config.compactCloudSeries);
+      updateCatalogSetting('stackCount', config.stackCount);
+      updateCatalogSetting('horizontalStep', config.horizontalStep);
+      updateCatalogSetting('verticalStep', config.verticalStep);
+      updateCatalogSetting('hideReadVolumes', config.hideReadVolumes);
+      updateCatalogSetting('centerHorizontal', config.centerHorizontal);
+      updateCatalogSetting('centerVertical', config.centerVertical);
+      updateCatalogSetting('compactCloudSeries', config.compactCloudSeries);
     }
   }
 
   function handleSettingChange() {
     // When any setting changes manually, switch to custom preset
-    if ($miscSettings.catalogStackingPreset !== 'custom') {
-      updateMiscSetting('catalogStackingPreset', 'custom');
+    if ($catalogSettings?.stackingPreset !== 'custom') {
+      updateCatalogSetting('stackingPreset', 'custom');
     }
   }
 
@@ -89,8 +93,8 @@
     nav.toCatalog();
   }
 
-  let isCustom = $derived($miscSettings.catalogStackingPreset === 'custom');
-  let isAllVolumes = $derived($miscSettings.catalogStackCount === 0);
+  let isCustom = $derived($catalogSettings?.stackingPreset === 'custom');
+  let isAllVolumes = $derived($catalogSettings?.stackCount === 0);
 </script>
 
 <AccordionItem>
@@ -104,7 +108,7 @@
         <Select
           class="mb-4"
           items={presetOptions}
-          value={$miscSettings.catalogStackingPreset}
+          value={$catalogSettings?.stackingPreset}
           onchange={(e) => applyPreset(e.currentTarget.value as CatalogStackingPreset)}
         />
 
@@ -112,16 +116,16 @@
           <!-- Stack count -->
           <div class="mb-4">
             <Label class="mb-2"
-              >Stack count: {$miscSettings.catalogStackCount === 0
+              >Stack count: {$catalogSettings?.stackCount === 0
                 ? 'All'
-                : $miscSettings.catalogStackCount}</Label
+                : $catalogSettings?.stackCount}</Label
             >
             <Range
               min={0}
               max={10}
-              value={$miscSettings.catalogStackCount}
+              value={$catalogSettings?.stackCount ?? 3}
               oninput={(e) => {
-                updateMiscSetting('catalogStackCount', parseInt(e.currentTarget.value));
+                updateCatalogSetting('stackCount', parseInt(e.currentTarget.value));
                 handleSettingChange();
               }}
             />
@@ -131,9 +135,9 @@
           <!-- Hide completed -->
           <div class="mb-4">
             <Toggle
-              checked={$miscSettings.catalogHideReadVolumes}
+              checked={$catalogSettings?.hideReadVolumes ?? true}
               onchange={(e) => {
-                updateMiscSetting('catalogHideReadVolumes', e.currentTarget.checked);
+                updateCatalogSetting('hideReadVolumes', e.currentTarget.checked);
                 handleSettingChange();
               }}
             >
@@ -145,27 +149,27 @@
           <div class="mb-4 rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
             <Label class="mb-2 text-xs text-gray-500 uppercase">Horizontal</Label>
             <div class="mb-2">
-              <Label class="mb-1">Offset: {$miscSettings.catalogHorizontalStep}%</Label>
+              <Label class="mb-1">Offset: {$catalogSettings?.horizontalStep ?? 11}%</Label>
               <Range
                 min={0}
                 max={30}
-                value={$miscSettings.catalogHorizontalStep}
+                value={$catalogSettings?.horizontalStep ?? 11}
                 oninput={(e) => {
-                  updateMiscSetting('catalogHorizontalStep', parseInt(e.currentTarget.value));
+                  updateCatalogSetting('horizontalStep', parseInt(e.currentTarget.value));
                   handleSettingChange();
                 }}
               />
             </div>
             <Toggle
-              checked={$miscSettings.catalogCenterHorizontal}
+              checked={$catalogSettings?.centerHorizontal ?? true}
               disabled={isAllVolumes}
               onchange={(e) => {
-                updateMiscSetting('catalogCenterHorizontal', e.currentTarget.checked);
+                updateCatalogSetting('centerHorizontal', e.currentTarget.checked);
                 handleSettingChange();
               }}
             >
               <span class:opacity-50={isAllVolumes}>
-                {$miscSettings.catalogCenterHorizontal ? 'Center' : 'Spread'}
+                {$catalogSettings?.centerHorizontal ? 'Center' : 'Spread'}
               </span>
             </Toggle>
           </div>
@@ -175,37 +179,37 @@
             <Label class="mb-2 text-xs text-gray-500 uppercase">Vertical</Label>
             <div class="mb-2">
               <Label class="mb-1"
-                >Offset: {isAllVolumes ? 0 : $miscSettings.catalogVerticalStep}%</Label
+                >Offset: {isAllVolumes ? 0 : ($catalogSettings?.verticalStep ?? 5)}%</Label
               >
               <Range
                 min={0}
                 max={30}
                 disabled={isAllVolumes}
-                value={$miscSettings.catalogVerticalStep}
+                value={$catalogSettings?.verticalStep ?? 5}
                 oninput={(e) => {
-                  updateMiscSetting('catalogVerticalStep', parseInt(e.currentTarget.value));
+                  updateCatalogSetting('verticalStep', parseInt(e.currentTarget.value));
                   handleSettingChange();
                 }}
               />
             </div>
             <Toggle
-              checked={$miscSettings.catalogCenterVertical}
+              checked={$catalogSettings?.centerVertical ?? false}
               disabled={isAllVolumes}
               onchange={(e) => {
-                updateMiscSetting('catalogCenterVertical', e.currentTarget.checked);
+                updateCatalogSetting('centerVertical', e.currentTarget.checked);
                 handleSettingChange();
               }}
             >
-              {$miscSettings.catalogCenterVertical ? 'Center' : 'Spread'}
+              {$catalogSettings?.centerVertical ? 'Center' : 'Spread'}
             </Toggle>
           </div>
 
           <!-- Cloud series display -->
           <div class="mt-4">
             <Toggle
-              checked={$miscSettings.catalogCompactCloudSeries}
+              checked={$catalogSettings?.compactCloudSeries ?? false}
               onchange={(e) => {
-                updateMiscSetting('catalogCompactCloudSeries', e.currentTarget.checked);
+                updateCatalogSetting('compactCloudSeries', e.currentTarget.checked);
                 handleSettingChange();
               }}
             >

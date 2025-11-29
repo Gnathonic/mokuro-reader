@@ -6,6 +6,7 @@
 {@render children?.()}
 
 <style>
+  :global(html:has(body.reader)),
   :global(body.reader) {
     overflow: hidden !important;
     overscroll-behavior: contain;

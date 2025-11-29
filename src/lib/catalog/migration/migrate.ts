@@ -4,6 +4,69 @@ import { CatalogDexieV3 } from '../db-v3';
 import { countChars } from '$lib/util/count-chars';
 import { deleteOldDatabase } from './detection';
 import type { MigrationProgressCallback } from './types';
+import { generateThumbnail, type ThumbnailResult } from '../thumbnails';
+
+function naturalSort(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/**
+ * Get the first image file from a files record (sorted naturally).
+ */
+function getFirstImageFile(files: Record<string, File> | undefined): File | null {
+  if (!files) return null;
+  const fileNames = Object.keys(files).sort(naturalSort);
+  return fileNames.length > 0 ? files[fileNames[0]] : null;
+}
+
+/**
+ * Get dimensions from an existing image file.
+ */
+async function getImageDimensions(file: File): Promise<{ width: number; height: number } | null> {
+  try {
+    const img = new Image();
+    const imgUrl = URL.createObjectURL(file);
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = reject;
+      img.src = imgUrl;
+    });
+    URL.revokeObjectURL(imgUrl);
+    return { width: img.width, height: img.height };
+  } catch (error) {
+    console.error('Failed to get image dimensions:', error);
+    return null;
+  }
+}
+
+/**
+ * Ensure we have a thumbnail with dimensions.
+ * - If thumbnail exists, get its dimensions
+ * - If no thumbnail but files exist, generate one
+ */
+async function ensureThumbnail(
+  existingThumbnail: File | undefined,
+  files: Record<string, File> | undefined
+): Promise<ThumbnailResult | null> {
+  // If we have an existing thumbnail, just get its dimensions
+  if (existingThumbnail) {
+    const dims = await getImageDimensions(existingThumbnail);
+    if (dims) {
+      return { file: existingThumbnail, width: dims.width, height: dims.height };
+    }
+    return null;
+  }
+
+  // No thumbnail - try to generate one from files
+  const firstImage = getFirstImageFile(files);
+  if (!firstImage) return null;
+  try {
+    return await generateThumbnail(firstImage);
+  } catch (error) {
+    console.error('Failed to generate thumbnail during migration:', error);
+    return null;
+  }
+}
 
 const DEBUG_LOG_KEY = 'mokuro_migration_debug_log';
 
@@ -85,6 +148,7 @@ class LegacyDexieV2 extends Dexie {
 interface VolumeDataForMigration {
   metadata: Omit<VolumeMetadata, 'page_char_counts'>;
   thumbnail?: File;
+  thumbnailResult?: ThumbnailResult | null;
   pages: Page[];
   files?: Record<string, File>;
 }
@@ -106,10 +170,17 @@ async function writeVolumeBatchToV3(
     for (const { volumeData, pageCharCounts } of batch) {
       const uuid = volumeData.metadata.volume_uuid;
 
+      // thumbnailResult contains either existing thumbnail with dimensions or newly generated one
+      const thumbnail = volumeData.thumbnailResult?.file;
+      const thumbnailWidth = volumeData.thumbnailResult?.width;
+      const thumbnailHeight = volumeData.thumbnailResult?.height;
+
       await newDb.volumes.add({
         ...volumeData.metadata,
         page_char_counts: pageCharCounts,
-        thumbnail: volumeData.thumbnail
+        thumbnail,
+        thumbnail_width: thumbnailWidth,
+        thumbnail_height: thumbnailHeight
       });
 
       await newDb.volume_ocr.add({
@@ -217,6 +288,9 @@ async function migrateFromV1(
         continue;
       }
 
+      // Generate thumbnail if missing
+      const generatedThumbnail = await ensureThumbnail(volume.thumbnail, volume.files);
+
       const volumeData: VolumeDataForMigration = {
         metadata: {
           mokuro_version: volume.mokuroData.version,
@@ -228,6 +302,7 @@ async function migrateFromV1(
           character_count: volume.mokuroData.chars || 0
         },
         thumbnail: volume.thumbnail,
+        thumbnailResult: generatedThumbnail,
         pages: volume.mokuroData.pages || [],
         files: volume.files
       };
@@ -331,9 +406,13 @@ async function migrateFromV2(
       const data = await oldDb.volumes_data.get(uuid);
       const { thumbnail, ...metadataWithoutThumbnail } = metadata;
 
+      // Generate thumbnail if missing
+      const generatedThumbnail = await ensureThumbnail(thumbnail, data?.files);
+
       const volumeData: VolumeDataForMigration = {
         metadata: metadataWithoutThumbnail,
         thumbnail,
+        thumbnailResult: generatedThumbnail,
         pages: data?.pages || [],
         files: data?.files
       };

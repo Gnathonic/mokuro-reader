@@ -7,7 +7,7 @@
     RefreshOutline,
     ChartLineUpOutline
   } from 'flowbite-svelte-icons';
-  import { nav, isOnReader } from '$lib/util/navigation';
+  import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
@@ -79,6 +79,10 @@
   });
 
   // Define event handlers
+  function navigateToCatalog() {
+    nav.toCatalog();
+  }
+
   function openSettings() {
     settingsOpen = true;
   }
@@ -131,11 +135,11 @@
 
 <div class="relative z-10">
   <Navbar hidden={isReader} class="bg-white dark:bg-gray-800">
-    <NavBrand href="/">
-      <div class="flex flex-row items-center gap-2">
+    <NavBrand>
+      <button onclick={navigateToCatalog} class="flex cursor-pointer flex-row items-center gap-2">
         <img src={Icon} alt="icon" class="h-[32px] w-[32px]" />
         <span class="text-xl font-semibold dark:text-white">Mokuro</span>
-      </div>
+      </button>
     </NavBrand>
     <div class="flex gap-5 md:order-2">
       <button

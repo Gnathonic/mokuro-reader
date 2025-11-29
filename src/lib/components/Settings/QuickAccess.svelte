@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toggleFullScreen } from '$lib/panzoom';
   import { isReader } from '$lib/util';
+  import { navigateBack } from '$lib/util/hash-router';
 
   import { Button } from 'flowbite-svelte';
 
@@ -12,10 +13,7 @@
 
   function onClose() {
     open = false;
-    // Extract series UUID from current URL and navigate to series page
-    const pathname = window.location.pathname || '';
-    const seriesUuid = pathname.split('/')[1] || '';
-    window.location.href = `/${seriesUuid}`;
+    navigateBack();
   }
 </script>
 

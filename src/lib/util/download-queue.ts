@@ -603,21 +603,25 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
  * When a download completes, processQueue() is called again to start the next item
  */
 async function processQueue(): Promise<void> {
-  // CRITICAL: Take queue snapshot BEFORE any await points
-  // This prevents race conditions where multiple processQueue() calls interleave
-  const queue = get(queueStore);
-  const queuedItems = queue.filter((item) => item.status === 'queued');
+  // Check if there are queued items and initialize pool if needed
+  // Take initial snapshot just to check if we need to initialize
+  const initialQueue = get(queueStore);
+  const hasQueuedItems = initialQueue.some((item) => item.status === 'queued');
 
   // Mark processing as started and register as pool user if we have queued items
-  if (queuedItems.length > 0 && !processingStarted) {
+  if (hasQueuedItems && !processingStarted) {
     processingStarted = true;
     incrementPoolUsers();
 
     // Pre-initialize the pool BEFORE processing any items
-    // This prevents the race condition where multiple downloads wait for pool initialization
-    // and then resume in scrambled order
     await getFileProcessingPool();
   }
+
+  // CRITICAL: Re-fetch queue state AFTER any await points
+  // This prevents race conditions where multiple processQueue() calls interleave
+  // and process the same item using stale snapshots
+  const queue = get(queueStore);
+  const queuedItems = queue.filter((item) => item.status === 'queued');
 
   // Process only the FIRST queued item to preserve ordering
   // When it completes, it will call processQueue() again to process the next item

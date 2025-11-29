@@ -33,7 +33,7 @@ interface PickedFile {
  * Wraps existing Google Drive integration into the unified SyncProvider interface.
  * This allows Drive to work alongside MEGA and WebDAV providers.
  */
-export class GoogleDriveProvider implements SyncProvider {
+class GoogleDriveProvider implements SyncProvider {
   readonly type = 'google-drive' as const;
   readonly name = 'Google Drive';
   readonly supportsWorkerDownload = true; // Workers can download directly with access token
