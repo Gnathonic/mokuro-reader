@@ -304,9 +304,13 @@
     ondblclick={(e) => onDoubleTap(e, lines)}
     {contenteditable}
   >
-    {#each lines as line}
-      <p>{line}</p>
-    {/each}
+    {#if $settings.removeNewlines}
+      <p>{lines.join("").replace(/[\n\r\s]/g, '')}</p>
+    {:else}
+      {#each lines as line}
+        <p>{line}</p>
+      {/each}
+    {/if}
   </div>
 {/each}
 

@@ -30,7 +30,8 @@
       key: 'swapWheelBehavior',
       text: 'Swap mouse wheel scroll/zoom',
       value: $settings.swapWheelBehavior
-    }
+    },
+    { key: 'removeNewlines', text: 'Remove newlines', value: $settings.removeNewlines }
   ] as { key: SettingsKey; text: string; value: any; shortcut?: string }[]);
 
   // Mode selection: 'manual' or 'scheduled'
