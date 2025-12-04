@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6
+
+### Patch Changes
+
+- [#265](https://github.com/Gnathonic/mokuro-reader/pull/265) [`41ce39b`](https://github.com/Gnathonic/mokuro-reader/commit/41ce39b5c5d8602b536b60ee3fef0bab22391b78) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Add detailed WebDAV error modal with network error troubleshooting. Shows collapsible sections for CORS, SSL, DNS, and connection issues with specific console error codes to look for and fix instructions.
+
 ## [1.0.4] - 2025-12-03
 
 ### Added
