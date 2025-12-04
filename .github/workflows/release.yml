@@ -42,11 +42,15 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+          # Get first line of commit message (handles multiline messages)
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          echo "Commit message: $COMMIT_MSG"
+
           # Check if tag already exists
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
             echo "Tag v$VERSION already exists"
             echo "should_release=false" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event.head_commit.message }}" == "chore: version packages"* ]]; then
+          elif [[ "$COMMIT_MSG" == "chore: version packages"* ]]; then
             echo "Version commit detected, will create release for v$VERSION"
             echo "should_release=true" >> $GITHUB_OUTPUT
           else
