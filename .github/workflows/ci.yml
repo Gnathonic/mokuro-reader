@@ -177,7 +177,7 @@ jobs:
           echo "The version in package.json changed from $MAIN_VERSION to $PR_VERSION"
           echo ""
           echo "To change the version, use changesets:"
-          echo "  1. Run 'npx changeset' to create a changeset"
+          echo "  1. Run 'npm run changeset' and choose fix/feature/major"
           echo "  2. Merge your PR"
           echo "  3. Merge the 'Version Packages' PR created by the bot"
           echo ""

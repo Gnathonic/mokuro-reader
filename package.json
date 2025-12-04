@@ -12,7 +12,7 @@
     "format": "prettier --plugin-search-dir . --write .",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "changeset": "changeset",
+    "changeset": "node scripts/changeset.mjs",
     "changeset:version": "changeset version",
     "changeset:publish": "changeset tag",
     "prepare": "husky"
