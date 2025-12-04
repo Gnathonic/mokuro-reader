@@ -266,7 +266,7 @@ export interface SyncProvider {
 }
 
 // WebDAV-specific error types for detailed modal guidance
-export type WebDAVErrorType = 'cors' | 'auth' | 'connection' | 'permission' | 'unknown';
+export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
 
 export class ProviderError extends Error {
   constructor(

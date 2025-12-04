@@ -118,7 +118,7 @@ export function promptImportMismatch(
 }
 
 // WebDAV error modal - for detailed error guidance
-export type WebDAVErrorType = 'cors' | 'auth' | 'connection' | 'permission' | 'unknown';
+export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
 
 type WebDAVErrorModal = {
   open: boolean;

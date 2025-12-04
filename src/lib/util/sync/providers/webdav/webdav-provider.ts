@@ -168,9 +168,9 @@ export class WebDAVProvider implements SyncProvider {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
       // Classify error type for detailed modal guidance
-      // CORS errors appear as generic network errors from fetch()
-      // They don't include "CORS" in the message - browsers show "Failed to fetch" or "NetworkError"
-      const isCorsError =
+      // CORS, SSL, and DNS errors all appear as opaque network errors from fetch()
+      // Browser shows "Failed to fetch" or "NetworkError" - specific cause only visible in DevTools console
+      const isOpaqueNetworkError =
         (errorMessage.includes('Failed to fetch') ||
           errorMessage.includes('NetworkError') ||
           errorMessage.includes('Network request failed') ||
@@ -198,9 +198,9 @@ export class WebDAVProvider implements SyncProvider {
       let userMessage = errorMessage;
       let webdavErrorType: import('../../provider-interface').WebDAVErrorType = 'unknown';
 
-      if (isCorsError) {
-        userMessage = 'CORS configuration required on your WebDAV server';
-        webdavErrorType = 'cors';
+      if (isOpaqueNetworkError) {
+        userMessage = 'Network error - check browser console (F12) for details';
+        webdavErrorType = 'network';
       } else if (isAuthError) {
         userMessage = 'Authentication failed - check your credentials';
         webdavErrorType = 'auth';
@@ -214,7 +214,7 @@ export class WebDAVProvider implements SyncProvider {
         'webdav',
         'LOGIN_FAILED',
         isAuthError,
-        isConnectionError || isCorsError,
+        isConnectionError || isOpaqueNetworkError,
         webdavErrorType
       );
     }
