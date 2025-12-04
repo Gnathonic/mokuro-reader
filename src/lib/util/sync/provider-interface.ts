@@ -265,13 +265,17 @@ export interface SyncProvider {
   getStorageQuota(): Promise<StorageQuota>;
 }
 
+// WebDAV-specific error types for detailed modal guidance
+export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
+
 export class ProviderError extends Error {
   constructor(
     message: string,
     public readonly providerType: ProviderType,
     public readonly code?: string,
     public readonly isAuthError: boolean = false,
-    public readonly isNetworkError: boolean = false
+    public readonly isNetworkError: boolean = false,
+    public readonly webdavErrorType?: WebDAVErrorType
   ) {
     super(message);
     this.name = 'ProviderError';

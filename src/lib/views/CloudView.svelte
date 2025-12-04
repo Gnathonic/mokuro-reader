@@ -1,9 +1,19 @@
 <script lang="ts">
   import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
 
-  import { promptConfirmation, showSnackbar, syncReadProgress, READER_FOLDER } from '$lib/util';
+  import {
+    promptConfirmation,
+    showSnackbar,
+    syncReadProgress,
+    READER_FOLDER,
+    showWebDAVError
+  } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import type { ProviderType, StorageQuota } from '$lib/util/sync/provider-interface';
+  import {
+    ProviderError,
+    type ProviderType,
+    type StorageQuota
+  } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
   import { tokenManager } from '$lib/util/sync/providers/google-drive';
   import { Alert, Badge, Button, Radio, Toggle, Spinner } from 'flowbite-svelte';
@@ -382,6 +392,7 @@
   // WebDAV handlers
   async function handleWebDAVLogin() {
     webdavLoading = true;
+    const attemptedUrl = webdavUrl; // Capture URL before clearing
     try {
       // Lazy-load WebDAV provider
       const webdavProvider = await providerManager.getOrLoadProvider('webdav');
@@ -407,8 +418,19 @@
       // Automatically sync after login
       await handlePostLogin();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      showSnackbar(message);
+      // Show detailed error modal for WebDAV errors
+      if (error instanceof ProviderError && error.providerType === 'webdav') {
+        showWebDAVError(
+          error.webdavErrorType || 'unknown',
+          error.message,
+          attemptedUrl,
+          () => handleWebDAVLogin() // Retry callback
+        );
+      } else {
+        // Fallback for non-ProviderError
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        showWebDAVError('unknown', message, attemptedUrl, () => handleWebDAVLogin());
+      }
     } finally {
       webdavLoading = false;
     }

@@ -167,19 +167,56 @@ export class WebDAVProvider implements SyncProvider {
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Provide user-friendly error messages
-      let userMessage = `WebDAV login failed: ${errorMessage}`;
-      if (errorMessage.includes('401')) {
-        userMessage = 'Invalid username or password';
-      } else if (errorMessage.includes('404') || errorMessage.includes('ENOTFOUND')) {
-        userMessage = 'Server not found. Check the server URL';
-      } else if (errorMessage.includes('CORS')) {
-        userMessage = 'CORS error. Your WebDAV server may need CORS configuration';
-      } else if (errorMessage.includes('abort') || errorMessage.includes('timeout')) {
-        userMessage = 'Connection timed out. Server may be unresponsive';
+      // Classify error type for detailed modal guidance
+      // CORS, SSL, and DNS errors all appear as opaque network errors from fetch()
+      // Browser shows "Failed to fetch" or "NetworkError" - specific cause only visible in DevTools console
+      const isOpaqueNetworkError =
+        (errorMessage.includes('Failed to fetch') ||
+          errorMessage.includes('NetworkError') ||
+          errorMessage.includes('Network request failed') ||
+          errorMessage.includes('Load failed')) &&
+        !errorMessage.includes('401') &&
+        !errorMessage.includes('403') &&
+        !errorMessage.includes('404') &&
+        !errorMessage.includes('timeout') &&
+        !errorMessage.includes('abort');
+
+      const isAuthError =
+        errorMessage.includes('401') ||
+        errorMessage.includes('403') ||
+        errorMessage.includes('Unauthorized') ||
+        errorMessage.includes('Forbidden');
+
+      const isConnectionError =
+        errorMessage.includes('404') ||
+        errorMessage.includes('ENOTFOUND') ||
+        errorMessage.includes('abort') ||
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('ECONNREFUSED');
+
+      // Determine error type and user message
+      let userMessage = errorMessage;
+      let webdavErrorType: import('../../provider-interface').WebDAVErrorType = 'unknown';
+
+      if (isOpaqueNetworkError) {
+        userMessage = 'Network error - check browser console (F12) for details';
+        webdavErrorType = 'network';
+      } else if (isAuthError) {
+        userMessage = 'Authentication failed - check your credentials';
+        webdavErrorType = 'auth';
+      } else if (isConnectionError) {
+        userMessage = 'Could not connect to server';
+        webdavErrorType = 'connection';
       }
 
-      throw new ProviderError(userMessage, 'webdav', 'LOGIN_FAILED', true);
+      throw new ProviderError(
+        userMessage,
+        'webdav',
+        'LOGIN_FAILED',
+        isAuthError,
+        isConnectionError || isOpaqueNetworkError,
+        webdavErrorType
+      );
     }
   }
 
@@ -559,7 +596,8 @@ export class WebDAVProvider implements SyncProvider {
           'webdav',
           'PERMISSION_DENIED',
           false,
-          false
+          false,
+          'permission'
         );
       }
 
@@ -568,7 +606,8 @@ export class WebDAVProvider implements SyncProvider {
         'webdav',
         'UPLOAD_FAILED',
         false,
-        true
+        true,
+        'unknown'
       );
     }
   }
@@ -666,7 +705,8 @@ export class WebDAVProvider implements SyncProvider {
           'webdav',
           'PERMISSION_DENIED',
           false,
-          false
+          false,
+          'permission'
         );
       }
 
@@ -675,7 +715,8 @@ export class WebDAVProvider implements SyncProvider {
         'webdav',
         'DELETE_FAILED',
         false,
-        true
+        true,
+        'unknown'
       );
     }
   }

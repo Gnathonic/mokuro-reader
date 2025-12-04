@@ -116,3 +116,35 @@ export function promptImportMismatch(
     onDismiss
   });
 }
+
+// WebDAV error modal - for detailed error guidance
+export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
+
+type WebDAVErrorModal = {
+  open: boolean;
+  errorType: WebDAVErrorType;
+  errorMessage: string;
+  serverUrl?: string;
+  onRetry?: () => void;
+};
+
+export const webdavErrorModalStore = writable<WebDAVErrorModal | undefined>(undefined);
+
+export function showWebDAVError(
+  errorType: WebDAVErrorType,
+  errorMessage: string,
+  serverUrl?: string,
+  onRetry?: () => void
+) {
+  webdavErrorModalStore.set({
+    open: true,
+    errorType,
+    errorMessage,
+    serverUrl,
+    onRetry
+  });
+}
+
+export function closeWebDAVError() {
+  webdavErrorModalStore.set(undefined);
+}
