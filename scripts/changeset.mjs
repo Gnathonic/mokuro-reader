@@ -79,7 +79,7 @@ ${summary.trim()}
 
   const typeLabel = bumpType === 'patch' ? 'fix' : bumpType === 'minor' ? 'feature' : 'major';
   console.log(`\n✅ Created ${typeLabel} changeset: .changeset/${filename}`);
-  console.log('\nDon\'t forget to commit this file with your changes!');
+  console.log("\nDon't forget to commit this file with your changes!");
 
   rl.close();
 }
