@@ -134,3 +134,54 @@ jobs:
           exit 1
         env:
           GH_TOKEN: ${{ github.token }}
+
+  version-protection:
+    name: Version Protection
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for manual version changes
+        run: |
+          # Get the version from main branch
+          MAIN_VERSION=$(git show origin/main:package.json | grep '"version"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+          # Get the version from this PR
+          PR_VERSION=$(grep '"version"' package.json | sed 's/.*: *"\([^"]*\)".*/\1/')
+
+          echo "Main version: $MAIN_VERSION"
+          echo "PR version: $PR_VERSION"
+
+          if [ "$MAIN_VERSION" = "$PR_VERSION" ]; then
+            echo "✅ Version unchanged"
+            exit 0
+          fi
+
+          # Version changed - check if this is the changeset bot's "Version Packages" PR
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          if [ "$PR_TITLE" = "Version Packages" ]; then
+            echo "✅ Version change from changeset bot allowed"
+            exit 0
+          fi
+
+          # Check for override label (for emergencies like fixing a bad version)
+          if gh pr view ${{ github.event.pull_request.number }} --json labels -q '.labels[].name' | grep -q "version-override"; then
+            echo "⚠️ Version change allowed via version-override label"
+            exit 0
+          fi
+
+          echo "❌ Manual version changes are not allowed!"
+          echo ""
+          echo "The version in package.json changed from $MAIN_VERSION to $PR_VERSION"
+          echo ""
+          echo "To change the version, use changesets:"
+          echo "  1. Run 'npx changeset' to create a changeset"
+          echo "  2. Merge your PR"
+          echo "  3. Merge the 'Version Packages' PR created by the bot"
+          echo ""
+          echo "If this is an emergency fix, add the 'version-override' label."
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}
