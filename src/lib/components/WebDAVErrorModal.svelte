@@ -72,9 +72,10 @@ Access-Control-Allow-Credentials: true`);
           The request failed before reaching the server. This can happen for several reasons.
         </p>
 
-        <div class="rounded bg-blue-900/30 border border-blue-700 p-3">
+        <div class="rounded border border-blue-700 bg-blue-900/30 p-3">
           <p class="text-sm text-blue-300">
-            <strong>Tip:</strong> Press <kbd class="rounded bg-gray-700 px-1.5 py-0.5 text-xs">F12</kbd>
+            <strong>Tip:</strong> Press
+            <kbd class="rounded bg-gray-700 px-1.5 py-0.5 text-xs">F12</kbd>
             to open DevTools, then check the <strong>Console</strong> tab for the specific error
             (look for <code class="text-blue-200">net::ERR_*</code> messages).
           </p>
@@ -84,20 +85,19 @@ Access-Control-Allow-Credentials: true`);
 
         <Accordion>
           <AccordionItem open>
-            {#snippet header()}<span class="text-gray-200">CORS Not Configured (most common)</span>{/snippet}
+            {#snippet header()}<span class="text-gray-200">CORS Not Configured (most common)</span
+              >{/snippet}
             <div class="space-y-3">
               <p class="text-sm text-gray-400">
                 Console shows: <code class="text-red-400">net::ERR_FAILED</code> with a CORS policy message
               </p>
               <p class="text-gray-300">
-                Your WebDAV server is blocking requests from this web app. This is a browser security
-                feature called <strong>CORS</strong> (Cross-Origin Resource Sharing).
+                Your WebDAV server is blocking requests from this web app. This is a browser
+                security feature called <strong>CORS</strong> (Cross-Origin Resource Sharing).
               </p>
 
               <div class="space-y-2">
-                <p class="text-sm text-gray-400">
-                  Your server needs to send these HTTP headers:
-                </p>
+                <p class="text-sm text-gray-400">Your server needs to send these HTTP headers:</p>
                 <div class="relative">
                   <pre
                     class="overflow-x-auto rounded bg-gray-800 p-3 text-xs text-gray-300">{requiredHeaders}</pre>
@@ -127,7 +127,8 @@ Access-Control-Allow-Credentials: true`);
             {#snippet header()}<span class="text-gray-200">SSL Certificate Issue</span>{/snippet}
             <div class="space-y-3">
               <p class="text-sm text-gray-400">
-                Console shows: <code class="text-red-400">net::ERR_SSL_*</code> or <code class="text-red-400">net::ERR_CERT_*</code>
+                Console shows: <code class="text-red-400">net::ERR_SSL_*</code> or
+                <code class="text-red-400">net::ERR_CERT_*</code>
               </p>
               <p class="text-gray-300">
                 The server's SSL certificate is invalid, expired, or not trusted by your browser.
@@ -137,7 +138,10 @@ Access-Control-Allow-Credentials: true`);
                 <ul class="list-inside list-disc space-y-1">
                   <li>Check if the certificate has expired</li>
                   <li>Ensure the certificate matches the domain name</li>
-                  <li>Try visiting the URL directly in a new tab - if you see a security warning, the cert is the issue</li>
+                  <li>
+                    Try visiting the URL directly in a new tab - if you see a security warning, the
+                    cert is the issue
+                  </li>
                   <li>If self-signed, you may need to add an exception in your browser first</li>
                 </ul>
               </div>
@@ -150,9 +154,7 @@ Access-Control-Allow-Credentials: true`);
               <p class="text-sm text-gray-400">
                 Console shows: <code class="text-red-400">net::ERR_NAME_NOT_RESOLVED</code>
               </p>
-              <p class="text-gray-300">
-                The domain name could not be resolved to an IP address.
-              </p>
+              <p class="text-gray-300">The domain name could not be resolved to an IP address.</p>
               <div class="text-sm text-gray-400">
                 <p class="mb-2 font-medium text-gray-300">How to fix:</p>
                 <ul class="list-inside list-disc space-y-1">
@@ -169,11 +171,10 @@ Access-Control-Allow-Credentials: true`);
             {#snippet header()}<span class="text-gray-200">Server Unreachable</span>{/snippet}
             <div class="space-y-3">
               <p class="text-sm text-gray-400">
-                Console shows: <code class="text-red-400">net::ERR_CONNECTION_REFUSED</code> or <code class="text-red-400">net::ERR_CONNECTION_TIMED_OUT</code>
+                Console shows: <code class="text-red-400">net::ERR_CONNECTION_REFUSED</code> or
+                <code class="text-red-400">net::ERR_CONNECTION_TIMED_OUT</code>
               </p>
-              <p class="text-gray-300">
-                The server is not responding or is blocking connections.
-              </p>
+              <p class="text-gray-300">The server is not responding or is blocking connections.</p>
               <div class="text-sm text-gray-400">
                 <p class="mb-2 font-medium text-gray-300">How to fix:</p>
                 <ul class="list-inside list-disc space-y-1">
