@@ -10,7 +10,8 @@
     toggleFullScreen,
     zoomDefault,
     zoomDefaultWithLayoutWait,
-    zoomFitToScreen
+    zoomFitToScreen,
+    zoomNotification
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
@@ -730,6 +731,14 @@
       notificationKey = '';
     }, 2000);
   }
+
+  // Subscribe to zoom notifications from panzoom
+  $effect(() => {
+    const zoom = $zoomNotification;
+    if (zoom) {
+      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
+    }
+  });
 
   function rotatePageMode() {
     if (!volume) return;

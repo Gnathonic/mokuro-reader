@@ -12,6 +12,9 @@ export const panzoomStore = writable<PanZoom | undefined>(undefined);
 // undefined = not set yet (initial load), true/false = explicit state from user or navigation
 export const sessionFullscreenState = writable<boolean | undefined>(undefined);
 
+// Store for zoom level notifications
+export const zoomNotification = writable<{ percent: number; timestamp: number } | null>(null);
+
 export function initPanzoom(node: HTMLElement) {
   container = node;
 
@@ -86,52 +89,49 @@ export function initPanzoom(node: HTMLElement) {
     e.preventDefault();
 
     if (shouldZoom) {
-      // Normalize wheel delta to pixels across browsers (based on Facebook's normalize-wheel)
-      // https://github.com/basilfx/normalize-wheel
-      const LINE_HEIGHT = 25; // Tuned to match Chrome's zoom steps
-      const PAGE_HEIGHT = 800; // Approximate pixels per page
-      let pixelDelta: number;
-      if (e.deltaMode === 1) {
-        // Lines (Firefox) - convert to pixels
-        pixelDelta = e.deltaY * LINE_HEIGHT;
-      } else if (e.deltaMode === 2) {
-        // Pages - convert to pixels
-        pixelDelta = e.deltaY * PAGE_HEIGHT;
-      } else {
-        // Already in pixels (Chrome, Edge, Safari)
-        pixelDelta = e.deltaY;
-      }
+      // Normalize wheel delta to ~15% zoom per typical tick
+      // Actual observed deltas: Chrome ~15, Firefox ~1
+      const baseMultiplier = e.deltaMode === 1 ? 0.15 : e.deltaMode ? 1 : 0.01;
 
-      // Calculate zoom multiplier (based on anvaka/panzoom approach)
-      // speed * delta / 128, capped at 0.25 (25% max per event)
-      const zoomSpeed = 0.2;
-      const sign = Math.sign(pixelDelta);
-      const deltaAdjustedSpeed = Math.min(0.25, Math.abs((zoomSpeed * pixelDelta) / 128));
-      let scaleMultiplier = 1 - sign * deltaAdjustedSpeed;
+      // Only apply 10x boost for trackpad pinch gestures on macOS
+      // Trackpad pinch: deltaMode=0 (pixels), very small deltas (<10), ctrlKey set by OS
+      // Chrome mouse wheel: deltaMode=0 but larger deltas (15-45)
+      // Firefox uses deltaMode=1 (lines) - never trackpad
+      const isTrackpadPinch = e.deltaMode === 0 && e.ctrlKey && Math.abs(e.deltaY) < 10;
+      const ctrlMultiplier = isTrackpadPinch ? 10 : 1;
 
-      // In bounds mode, limit zoom out to the smaller of:
-      // 1. Fit-to-screen scale (so large content can fill viewport)
-      // 2. 1.0 (100% zoom - small content can't go below pixel-for-pixel)
+      const normalizedDelta = -e.deltaY * baseMultiplier * ctrlMultiplier;
+
+      // Linear scaling: directly use normalized delta as percentage change
+      // e.g., normalizedDelta of 0.2 = 20% zoom change
+      let scaleMultiplier = 1 + normalizedDelta;
+
+      // Clamp resulting scale to bounds (d3-zoom's scaleExtent approach)
+      const currentScale = pz.getTransform().scale;
+      const maxZoom = 10;
+
+      // Calculate minimum scale based on bounds mode
       const { mobile, bounds } = get(settings);
+      let minScale = 0.1;
       if ((mobile || bounds) && container) {
-        const currentScale = pz.getTransform().scale;
         const { innerWidth, innerHeight } = window;
         const fitScaleX = innerWidth / container.offsetWidth;
         const fitScaleY = innerHeight / container.offsetHeight;
         const fitScale = Math.min(fitScaleX, fitScaleY);
         // Large images (fitScale < 1): can zoom out to fit
         // Small images (fitScale > 1): can't zoom out past 100%
-        const minScale = Math.min(fitScale, 1.0);
-
-        const newScale = currentScale * scaleMultiplier;
-        if (newScale < minScale) {
-          // Clamp to minimum scale
-          scaleMultiplier = minScale / currentScale;
-        }
+        minScale = Math.min(fitScale, 1.0);
       }
+
+      // Clamp the new scale and adjust multiplier accordingly
+      const newScale = Math.max(minScale, Math.min(maxZoom, currentScale * scaleMultiplier));
+      scaleMultiplier = newScale / currentScale;
 
       // Zoom centered on mouse position (zoomTo expects client coordinates)
       pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
+
+      // Emit zoom notification for UI feedback
+      zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now() });
     } else {
       // Pan vertically based on wheel deltaY
       const { x, y } = pz.getTransform();
