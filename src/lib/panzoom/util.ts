@@ -13,7 +13,11 @@ export const panzoomStore = writable<PanZoom | undefined>(undefined);
 export const sessionFullscreenState = writable<boolean | undefined>(undefined);
 
 // Store for zoom level notifications
-export const zoomNotification = writable<{ percent: number; timestamp: number } | null>(null);
+export const zoomNotification = writable<{
+  percent: number;
+  timestamp: number;
+  debug?: string;
+} | null>(null);
 
 export function initPanzoom(node: HTMLElement) {
   container = node;
@@ -130,8 +134,9 @@ export function initPanzoom(node: HTMLElement) {
       // Zoom centered on mouse position (zoomTo expects client coordinates)
       pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
 
-      // Emit zoom notification for UI feedback
-      zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now() });
+      // Emit zoom notification for UI feedback (with debug)
+      const debug = `${Math.round(newScale * 100)}% (δ=${e.deltaY.toFixed(1)}, mode=${e.deltaMode}, ctrl=${e.ctrlKey}, pinch=${isTrackpadPinch})`;
+      zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now(), debug });
     } else {
       // Pan vertically based on wheel deltaY
       const { x, y } = pz.getTransform();

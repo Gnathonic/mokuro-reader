@@ -736,7 +736,7 @@
   $effect(() => {
     const zoom = $zoomNotification;
     if (zoom) {
-      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
+      showNotification(zoom.debug ?? `${zoom.percent}%`, `zoom-${zoom.timestamp}`);
     }
   });
 
