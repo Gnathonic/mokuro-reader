@@ -281,10 +281,14 @@ async function processMokuroFile(file: File): Promise<{
   titleUuid: string;
 }> {
   const mokuroData: MokuroData = JSON.parse(await file.text());
+
+  // Use volume title as fallback for empty series title
+  const seriesTitle = mokuroData.title || mokuroData.volume || file.name.replace('.mokuro', '');
+
   return {
     metadata: {
       mokuro_version: mokuroData.version,
-      series_title: mokuroData.title,
+      series_title: seriesTitle,
       series_uuid: mokuroData.title_uuid,
       page_count: mokuroData.pages.length,
       character_count: mokuroData.chars,
@@ -610,9 +614,19 @@ export async function processFiles(
     fileStack.push({ path, file });
   });
 
-  fileStack = fileStack.sort((a, b) =>
-    a.file.name.localeCompare(b.file.name, undefined, { numeric: true })
-  );
+  // Sort files: images and zips first, then mokuro files last
+  // This ensures images are stored in pendingImagesByPath before mokuro files try to match them
+  fileStack = fileStack.sort((a, b) => {
+    const aIsMokuro = isMokuro(a.file.name);
+    const bIsMokuro = isMokuro(b.file.name);
+
+    // Mokuro files should come after non-mokuro files
+    if (aIsMokuro && !bIsMokuro) return 1;
+    if (!aIsMokuro && bIsMokuro) return -1;
+
+    // Within each group, sort alphabetically
+    return a.file.name.localeCompare(b.file.name, undefined, { numeric: true });
+  });
 
   for (const file of fileStack) {
     await processFile(file, volumesByPath, volumesDataByPath, pendingImagesByPath);
