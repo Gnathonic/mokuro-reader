@@ -10,7 +10,9 @@
     toggleFullScreen,
     zoomDefault,
     zoomDefaultWithLayoutWait,
-    zoomFitToScreen
+    zoomFitToScreen,
+    zoomNotification,
+    handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
@@ -363,6 +365,16 @@
     }
   }
 
+  // Wheel handler wrapper that excludes settings drawer and popovers
+  function handleWheelEvent(e: WheelEvent) {
+    const target = e.target as HTMLElement;
+    // Don't capture wheel events from settings drawer or popovers
+    if (target.closest('#settings') || target.closest('[data-popover]')) {
+      return;
+    }
+    panzoomHandleWheel(e);
+  }
+
   onMount(() => {
     // Set the timeout duration from settings
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
@@ -377,11 +389,17 @@
     // Prevent scrollbars from appearing when in reader mode
     document.documentElement.style.overflow = 'hidden';
 
+    // Add wheel listener with capture to intercept ctrl+wheel before browser handles it
+    // passive: false is required to allow preventDefault()
+    window.addEventListener('wheel', handleWheelEvent, { capture: true, passive: false });
+
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
+      // Remove wheel listener
+      window.removeEventListener('wheel', handleWheelEvent, { capture: true });
     };
   });
 
@@ -730,6 +748,14 @@
       notificationKey = '';
     }, 2000);
   }
+
+  // Subscribe to zoom notifications from panzoom
+  $effect(() => {
+    const zoom = $zoomNotification;
+    if (zoom) {
+      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
+    }
+  });
 
   function rotatePageMode() {
     if (!volume) return;
