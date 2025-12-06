@@ -125,8 +125,37 @@ export function initPanzoom(node: HTMLElement) {
       const newScale = Math.max(minScale, Math.min(maxZoom, currentScale * scaleMultiplier));
       scaleMultiplier = newScale / currentScale;
 
-      // Zoom centered on mouse position (zoomTo expects client coordinates)
-      pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
+      // Edge-aware zoom: blend zoom point toward center when near edges
+      // This prevents corners from being pushed off-screen when zooming
+      const { x: tx, y: ty } = pz.getTransform();
+      const contentWidth = container.offsetWidth * currentScale;
+      const contentHeight = container.offsetHeight * currentScale;
+
+      // Calculate cursor position relative to content (0-1 range)
+      const relX = (e.clientX - tx) / contentWidth;
+      const relY = (e.clientY - ty) / contentHeight;
+
+      // Calculate edge proximity (0 = center, 1 = edge)
+      // Using a smooth curve that ramps up near edges
+      const edgeThreshold = 0.2; // Start blending within 20% of edge
+      const edgeProximityX =
+        Math.max(0, Math.max(edgeThreshold - relX, relX - (1 - edgeThreshold))) / edgeThreshold;
+      const edgeProximityY =
+        Math.max(0, Math.max(edgeThreshold - relY, relY - (1 - edgeThreshold))) / edgeThreshold;
+      const edgeProximity = Math.max(edgeProximityX, edgeProximityY);
+
+      // Blend zoom point AWAY from viewport center (toward edge) when near edges
+      // This keeps corners visible by making them the anchor point
+      const viewportCenterX = window.innerWidth / 2;
+      const viewportCenterY = window.innerHeight / 2;
+      const blendFactor = Math.min(1, edgeProximity); // 0 = cursor, 1 = toward edge
+
+      // Push zoom point away from center (opposite direction)
+      const zoomX = e.clientX - (viewportCenterX - e.clientX) * blendFactor * 0.5;
+      const zoomY = e.clientY - (viewportCenterY - e.clientY) * blendFactor * 0.5;
+
+      // Zoom centered on blended position
+      pz.zoomTo(zoomX, zoomY, scaleMultiplier);
 
       // Emit zoom notification for UI feedback
       zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now() });
@@ -306,26 +335,34 @@ export function keepInBounds() {
     maxY = 0;
   }
 
+  let newX = x;
+  let newY = y;
+
   if (forceCenterX) {
-    transform.x = (innerWidth - width) / 2;
+    newX = (innerWidth - width) / 2;
   } else {
     if (x < minX) {
-      transform.x = minX;
+      newX = minX;
     }
     if (x > maxX) {
-      transform.x = maxX;
+      newX = maxX;
     }
   }
 
   if (forceCenterY) {
-    transform.y = (innerHeight - height) / 2;
+    newY = (innerHeight - height) / 2;
   } else {
     if (y < minY) {
-      transform.y = minY;
+      newY = minY;
     }
     if (y > maxY) {
-      transform.y = maxY;
+      newY = maxY;
     }
+  }
+
+  // Apply the corrected position if it changed
+  if (newX !== x || newY !== y) {
+    pz.moveTo(newX, newY);
   }
 }
 
