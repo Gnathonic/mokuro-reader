@@ -97,14 +97,7 @@ export function initPanzoom(node: HTMLElement) {
       // Actual observed deltas: Chrome ~15, Firefox ~1
       const baseMultiplier = e.deltaMode === 1 ? 0.15 : e.deltaMode ? 1 : 0.01;
 
-      // Only apply 10x boost for trackpad pinch gestures on macOS
-      // Trackpad pinch: deltaMode=0 (pixels), very small deltas (<10), ctrlKey set by OS
-      // Chrome mouse wheel: deltaMode=0 but larger deltas (15-45)
-      // Firefox uses deltaMode=1 (lines) - never trackpad
-      const isTrackpadPinch = e.deltaMode === 0 && e.ctrlKey && Math.abs(e.deltaY) < 10;
-      const ctrlMultiplier = isTrackpadPinch ? 10 : 1;
-
-      const normalizedDelta = -e.deltaY * baseMultiplier * ctrlMultiplier;
+      const normalizedDelta = -e.deltaY * baseMultiplier;
 
       // Linear scaling: directly use normalized delta as percentage change
       // e.g., normalizedDelta of 0.2 = 20% zoom change
@@ -135,7 +128,7 @@ export function initPanzoom(node: HTMLElement) {
       pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
 
       // Emit zoom notification for UI feedback (with debug)
-      const debug = `${Math.round(newScale * 100)}% (δ=${e.deltaY.toFixed(1)}, mode=${e.deltaMode}, ctrl=${e.ctrlKey}, pinch=${isTrackpadPinch})`;
+      const debug = `${Math.round(newScale * 100)}% (δ=${e.deltaY.toFixed(1)}, mode=${e.deltaMode}, ctrl=${e.ctrlKey})`;
       zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now(), debug });
     } else {
       // Pan vertically based on wheel deltaY
