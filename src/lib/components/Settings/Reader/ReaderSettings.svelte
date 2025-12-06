@@ -1,13 +1,20 @@
 <script lang="ts">
-  import { AccordionItem, Label, Range } from 'flowbite-svelte';
+  import { AccordionItem, Label, Range, Select } from 'flowbite-svelte';
   import ReaderSelects from './ReaderSelects.svelte';
   import ReaderToggles from './ReaderToggles.svelte';
-  import { settings, updateSetting } from '$lib/settings';
+  import { settings, updateSetting, type SwipeSensitivity } from '$lib/settings';
 
-  let swipeThresholdValue = $state($settings.swipeThreshold);
+  let swipeSensitivityValue = $state($settings.swipeSensitivity);
   let edgeButtonWidthValue = $state($settings.edgeButtonWidth);
+
+  const sensitivityOptions: { value: SwipeSensitivity; name: string }[] = [
+    { value: 'low', name: 'Low - Requires faster swipes' },
+    { value: 'medium', name: 'Medium - Balanced' },
+    { value: 'high', name: 'High - Responds to light swipes' }
+  ];
+
   function onSwipeChange() {
-    updateSetting('swipeThreshold', swipeThresholdValue);
+    updateSetting('swipeSensitivity', swipeSensitivityValue);
   }
 
   function onWidthChange() {
@@ -23,15 +30,14 @@
     <ReaderToggles />
     <div>
       <Label>
-        Swipe threshold
+        Swipe sensitivity
         <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Mobile only)</span>
       </Label>
-      <Range
+      <Select
+        items={sensitivityOptions}
+        bind:value={swipeSensitivityValue}
         onchange={onSwipeChange}
-        min={20}
-        max={90}
         disabled={!$settings.mobile}
-        bind:value={swipeThresholdValue}
       />
     </div>
     <div>
