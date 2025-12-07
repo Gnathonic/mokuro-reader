@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.0
+
+### Minor Changes
+
+- [#271](https://github.com/Gnathonic/mokuro-reader/pull/271) [`32b3f8b`](https://github.com/Gnathonic/mokuro-reader/commit/32b3f8b84485152464722ec9d3930e0cd3849ffe) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Improved mobile touch gestures
+  - Swipe-to-page now works reliably on high-refresh-rate and high-DPI devices (e.g., Galaxy Fold 5)
+  - Pinch-zoom no longer accidentally triggers page turns
+  - Added pan-while-pinch: move two fingers together to pan while zooming
+  - Pinch-zoom now respects screen bounds (can't zoom out past fit-to-screen)
+  - New "Swipe sensitivity" setting replaces the old threshold slider
+
+### Patch Changes
+
+- [#272](https://github.com/Gnathonic/mokuro-reader/pull/272) [`eeeff29`](https://github.com/Gnathonic/mokuro-reader/commit/eeeff29cc35c8089eb19d6cc0fd58bd3b6147dc6) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Fix import failure when mokuro file has empty series name (falls back to volume name)
+
+- [#271](https://github.com/Gnathonic/mokuro-reader/pull/271) [`1aa7c3c`](https://github.com/Gnathonic/mokuro-reader/commit/1aa7c3cfe7e9dd4cef901ef64fcc737770ca4c77) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Fix text box interactions in reader:
+  - Double-clicking text boxes no longer triggers zoom
+  - Crop image popup now works on first page load without needing to page first
+
+- [#271](https://github.com/Gnathonic/mokuro-reader/pull/271) [`f12e5dc`](https://github.com/Gnathonic/mokuro-reader/commit/f12e5dc1a6fb6038f39cef68b1ab40e2e55cb919) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Fix timer continuing to run against previous volume when paging into next volume
+
+- [#271](https://github.com/Gnathonic/mokuro-reader/pull/271) [`3dc5fe3`](https://github.com/Gnathonic/mokuro-reader/commit/3dc5fe3bc8217e8bea8bf6aa0251bfe4aa193ea8) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Fix Yomitan Anki sentence capture having double linebreaks when copying text from OCR boxes
+
+- [#271](https://github.com/Gnathonic/mokuro-reader/pull/271) [`207e084`](https://github.com/Gnathonic/mokuro-reader/commit/207e0841780b5728f6089891b5f24878704eea38) Thanks [@Gnathonic](https://github.com/Gnathonic)! - Fix wheel zoom normalization across browsers and platforms. Normalizes scroll delta between Chrome and Firefox, adds platform-specific speed adjustment, implements edge-aware zoom to keep corners visible, and captures wheel events at window level to prevent browser zoom when hovering over UI elements.
+
 ## 1.0.5
 
 ### Patch Changes
