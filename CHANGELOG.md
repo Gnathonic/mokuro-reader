@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.5.8] - 2025-12-07
+
+### Fixed
+
+- Normalize wheel zoom across browsers and platforms (consistent zoom steps in Firefox/Chrome)
+- Handle empty series name in mokuro file import
+- Stop timer when navigating between volumes
+- Improve text box interactions in reader (better double-click handling)
+- Remove double linebreaks when copying OCR text (fixes Yomitan sentence capture)
+
+### Reverted
+
+- Rolled back mobile swipe/pinch-zoom changes from 1.0.6 that broke textbox touch visibility
+
 ## 1.0.5
 
 ### Patch Changes
