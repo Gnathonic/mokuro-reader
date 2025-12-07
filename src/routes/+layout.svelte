@@ -21,6 +21,7 @@
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { get } from 'svelte/store';
+  import { settings } from '$lib/settings';
 
   // Migration state
   let migrationNeeded: 1 | 2 | null = $state(null);
@@ -33,6 +34,18 @@
   let { children }: Props = $props();
 
   inject({ mode: dev ? 'development' : 'production' });
+
+  // Toggle dark mode class on document root based on settings
+  // Default to dark mode (which existed prior to adding the theme option)
+  $effect(() => {
+    if (!browser) return;
+    const darkMode = $settings?.darkMode ?? true;
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  });
 
   // Handle global Escape key for back navigation
   function handleKeydown(event: KeyboardEvent) {
@@ -98,7 +111,7 @@
     <p>Loading...</p>
   </div>
 {:else}
-  <div class="h-full min-h-[100svh] text-white">
+  <div class="h-full min-h-[100svh] text-black dark:text-white">
     <NavBar />
     {@render children?.()}
     <Snackbar />

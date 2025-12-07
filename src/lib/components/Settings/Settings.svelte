@@ -14,6 +14,7 @@
   import VolumeSettings from './Volume/VolumeSettings.svelte';
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
+  import AppearanceSettings from './AppearanceSettings.svelte';
 
   let transitionParams = {
     x: 320,
@@ -76,6 +77,7 @@
       <AnkiConnectSettings />
       <CatalogSettings />
       <Stats />
+      <AppearanceSettings />
       <About />
     </Accordion>
     <div class="flex flex-col gap-2">

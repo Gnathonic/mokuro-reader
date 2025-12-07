@@ -93,6 +93,7 @@ export type Settings = {
   nightModeSchedule: TimeSchedule;
   invertColors: boolean;
   invertColorsSchedule: TimeSchedule;
+  darkMode: boolean;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   volumeDefaults: VolumeDefaults;
@@ -145,6 +146,7 @@ const defaultSettings: Settings = {
     startTime: '21:00',
     endTime: '06:00'
   },
+  darkMode: true,
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   volumeDefaults: {

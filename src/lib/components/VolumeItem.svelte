@@ -323,7 +323,13 @@
         >
           <div>
             <div class="mb-1 flex items-center gap-2">
-              <p class="font-semibold" class:text-white={!isComplete}>{volName}</p>
+              <p
+                class="font-semibold"
+                class:text-black={!isComplete}
+                class:dark:text-white={!isComplete}
+              >
+                {volName}
+              </p>
               {#if isImageOnly}
                 <Badge color="blue" class="text-xs">
                   <ImageOutline class="me-1 inline h-3 w-3" />
