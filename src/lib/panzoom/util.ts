@@ -6,17 +6,11 @@ import { get, writable } from 'svelte/store';
 let pz: PanZoom | undefined;
 let container: HTMLElement | undefined;
 
-// Flag to skip bounds checking during programmatic zoom (resize, fit-to-screen, etc.)
-let skipBoundsCheck = false;
-
 export const panzoomStore = writable<PanZoom | undefined>(undefined);
 
 // Session-only store to track fullscreen state across volume navigation
 // undefined = not set yet (initial load), true/false = explicit state from user or navigation
 export const sessionFullscreenState = writable<boolean | undefined>(undefined);
-
-// Store for zoom level notifications
-export const zoomNotification = writable<{ percent: number; timestamp: number } | null>(null);
 
 export function initPanzoom(node: HTMLElement) {
   container = node;
@@ -38,9 +32,7 @@ export function initPanzoom(node: HTMLElement) {
     },
     // Disable library's wheel zoom - we handle it ourselves for symmetric zoom
     beforeWheel: () => true,
-    // Let panzoom handle all touch events including pinch-zoom
-    // Our swipe detection uses velocity + multi-touch cooldown to avoid conflicts
-    pinchSpeed: 1,
+    onTouch: (e) => e.touches.length > 1,
     // Panzoom typing is wrong here
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-expect-error
@@ -79,15 +71,81 @@ export function initPanzoom(node: HTMLElement) {
 
   pz.on('pan', () => keepInBounds());
   pz.on('zoom', () => keepInBounds());
-  pz.on('panend', () => keepInBounds());
-  pz.on('zoomend', () => keepInBounds());
 
-  // Wheel handler is registered at window level in Reader.svelte
-  // to capture events from all UI elements and prevent browser zoom
+  // Custom wheel handler for panning/zooming
+  // We implement our own zoom because panzoom's default is asymmetric
+  // (zoom in by 1.125x and out by 0.875x don't cancel out)
+  const wheelHandler = (e: WheelEvent) => {
+    if (!pz) return;
+
+    const swapWheelBehavior = get(settings).swapWheelBehavior;
+    // When swapWheelBehavior is true: zoom without modifier, pan with Ctrl
+    // When swapWheelBehavior is false (default): pan without modifier, zoom with Ctrl
+    const shouldZoom = swapWheelBehavior ? !e.ctrlKey : e.ctrlKey;
+
+    e.preventDefault();
+
+    if (shouldZoom) {
+      // Normalize wheel delta to pixels across browsers (based on Facebook's normalize-wheel)
+      // https://github.com/basilfx/normalize-wheel
+      const LINE_HEIGHT = 25; // Tuned to match Chrome's zoom steps
+      const PAGE_HEIGHT = 800; // Approximate pixels per page
+      let pixelDelta: number;
+      if (e.deltaMode === 1) {
+        // Lines (Firefox) - convert to pixels
+        pixelDelta = e.deltaY * LINE_HEIGHT;
+      } else if (e.deltaMode === 2) {
+        // Pages - convert to pixels
+        pixelDelta = e.deltaY * PAGE_HEIGHT;
+      } else {
+        // Already in pixels (Chrome, Edge, Safari)
+        pixelDelta = e.deltaY;
+      }
+
+      // Calculate zoom multiplier (based on anvaka/panzoom approach)
+      // speed * delta / 128, capped at 0.25 (25% max per event)
+      const zoomSpeed = 0.2;
+      const sign = Math.sign(pixelDelta);
+      const deltaAdjustedSpeed = Math.min(0.25, Math.abs((zoomSpeed * pixelDelta) / 128));
+      let scaleMultiplier = 1 - sign * deltaAdjustedSpeed;
+
+      // In bounds mode, limit zoom out to the smaller of:
+      // 1. Fit-to-screen scale (so large content can fill viewport)
+      // 2. 1.0 (100% zoom - small content can't go below pixel-for-pixel)
+      const { mobile, bounds } = get(settings);
+      if ((mobile || bounds) && container) {
+        const currentScale = pz.getTransform().scale;
+        const { innerWidth, innerHeight } = window;
+        const fitScaleX = innerWidth / container.offsetWidth;
+        const fitScaleY = innerHeight / container.offsetHeight;
+        const fitScale = Math.min(fitScaleX, fitScaleY);
+        // Large images (fitScale < 1): can zoom out to fit
+        // Small images (fitScale > 1): can't zoom out past 100%
+        const minScale = Math.min(fitScale, 1.0);
+
+        const newScale = currentScale * scaleMultiplier;
+        if (newScale < minScale) {
+          // Clamp to minimum scale
+          scaleMultiplier = minScale / currentScale;
+        }
+      }
+
+      // Zoom centered on mouse position (zoomTo expects client coordinates)
+      pz.zoomTo(e.clientX, e.clientY, scaleMultiplier);
+    } else {
+      // Pan vertically based on wheel deltaY
+      const { x, y } = pz.getTransform();
+      pz.moveTo(x, y - e.deltaY);
+    }
+    keepInBounds();
+  };
+
+  node.addEventListener('wheel', wheelHandler, { passive: false });
 
   // Return cleanup function
   return {
     destroy() {
+      node.removeEventListener('wheel', wheelHandler);
       pz?.dispose();
     }
   };
@@ -138,18 +196,15 @@ export function panAlign(alignX: PanX, alignY: PanY) {
 }
 
 export function zoomOriginal() {
-  skipBoundsCheck = true;
   pz?.moveTo(0, 0);
   pz?.zoomTo(0, 0, 1 / pz.getTransform().scale);
   panAlign('center', 'center');
-  skipBoundsCheck = false;
 }
 
 export function zoomFitToWidth() {
   if (!pz || !container) {
     return;
   }
-  skipBoundsCheck = true;
   const { innerWidth } = window;
 
   const scale = (1 / pz.getTransform().scale) * (innerWidth / container.offsetWidth);
@@ -157,14 +212,12 @@ export function zoomFitToWidth() {
   pz.moveTo(0, 0);
   pz.zoomTo(0, 0, scale);
   panAlign('center', 'top');
-  skipBoundsCheck = false;
 }
 
 export function zoomFitToScreen() {
   if (!pz || !container) {
     return;
   }
-  skipBoundsCheck = true;
   const { innerWidth, innerHeight } = window;
   const scaleX = innerWidth / container.offsetWidth;
   const scaleY = innerHeight / container.offsetHeight;
@@ -172,7 +225,6 @@ export function zoomFitToScreen() {
   pz.moveTo(0, 0);
   pz.zoomTo(0, 0, scale);
   panAlign('center', 'center');
-  skipBoundsCheck = false;
 }
 
 export function keepZoomStart() {
@@ -201,7 +253,6 @@ export function zoomDefaultWithLayoutWait() {
   // Double RAF ensures browser has completed layout reflow
   // First RAF: waits for current layout calculations to finish
   // Second RAF: ensures next paint frame has correct dimensions
-  // skipBoundsCheck is set by the individual zoom functions
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       zoomDefault();
@@ -210,7 +261,7 @@ export function zoomDefaultWithLayoutWait() {
 }
 
 export function keepInBounds() {
-  if (!pz || !container || skipBoundsCheck) {
+  if (!pz || !container) {
     return;
   }
 
@@ -221,29 +272,9 @@ export function keepInBounds() {
   }
 
   const transform = pz.getTransform();
-  let { x, y, scale } = transform;
+
+  const { x, y, scale } = transform;
   const { innerWidth, innerHeight } = window;
-
-  // Enforce minimum zoom level (can't zoom out past fit-to-screen)
-  // This is needed for pinch-zoom; wheel zoom has its own limits in handleWheel
-  const fitScaleX = innerWidth / container.offsetWidth;
-  const fitScaleY = innerHeight / container.offsetHeight;
-  const fitScale = Math.min(fitScaleX, fitScaleY);
-  // Large images (fitScale < 1): can zoom out to fit
-  // Small images (fitScale > 1): can't zoom out past 100%
-  const minScale = Math.min(fitScale, 1.0);
-  const maxScale = 10;
-
-  if (scale < minScale) {
-    // Zoom back to minimum, centered
-    const zoomMultiplier = minScale / scale;
-    pz.zoomTo(innerWidth / 2, innerHeight / 2, zoomMultiplier);
-    scale = minScale;
-  } else if (scale > maxScale) {
-    const zoomMultiplier = maxScale / scale;
-    pz.zoomTo(innerWidth / 2, innerHeight / 2, zoomMultiplier);
-    scale = maxScale;
-  }
 
   const width = container.offsetWidth * scale;
   const height = container.offsetHeight * scale;
@@ -277,34 +308,26 @@ export function keepInBounds() {
     maxY = 0;
   }
 
-  let newX = x;
-  let newY = y;
-
   if (forceCenterX) {
-    newX = (innerWidth - width) / 2;
+    transform.x = (innerWidth - width) / 2;
   } else {
     if (x < minX) {
-      newX = minX;
+      transform.x = minX;
     }
     if (x > maxX) {
-      newX = maxX;
+      transform.x = maxX;
     }
   }
 
   if (forceCenterY) {
-    newY = (innerHeight - height) / 2;
+    transform.y = (innerHeight - height) / 2;
   } else {
     if (y < minY) {
-      newY = minY;
+      transform.y = minY;
     }
     if (y > maxY) {
-      newY = maxY;
+      transform.y = maxY;
     }
-  }
-
-  // Apply the corrected position if it changed
-  if (newX !== x || newY !== y) {
-    pz.moveTo(newX, newY);
   }
 }
 
@@ -331,98 +354,4 @@ export function toggleFullScreen() {
     document.exitFullscreen();
     sessionFullscreenState.set(false);
   }
-}
-
-/**
- * Handle wheel events for panning and zooming.
- * Called from window-level listener to capture events from all UI elements.
- * Must be registered with { capture: true, passive: false } to intercept before browser.
- */
-export function handleWheel(e: WheelEvent): void {
-  if (!pz || !container) return;
-
-  const swapWheelBehavior = get(settings).swapWheelBehavior;
-  // When swapWheelBehavior is true: zoom without modifier, pan with Ctrl
-  // When swapWheelBehavior is false (default): pan without modifier, zoom with Ctrl
-  const shouldZoom = swapWheelBehavior ? !e.ctrlKey : e.ctrlKey;
-
-  e.preventDefault();
-
-  if (shouldZoom) {
-    // Normalize wheel delta to ~15% zoom per typical tick
-    // Actual observed deltas: Chrome ~15, Firefox ~1
-    const baseMultiplier = e.deltaMode === 1 ? 0.15 : e.deltaMode ? 1 : 0.01;
-
-    // Mac trackpad/mouse feels correct at full speed, but Windows/Linux
-    // mice with discrete scroll wheels are too aggressive - halve the speed
-    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
-    const platformMultiplier = isMac ? 1 : 0.5;
-
-    const normalizedDelta = -e.deltaY * baseMultiplier * platformMultiplier;
-
-    // Linear scaling: directly use normalized delta as percentage change
-    // e.g., normalizedDelta of 0.2 = 20% zoom change
-    let scaleMultiplier = 1 + normalizedDelta;
-
-    // Clamp resulting scale to bounds (d3-zoom's scaleExtent approach)
-    const currentScale = pz.getTransform().scale;
-    const maxZoom = 10;
-
-    // Calculate minimum scale based on bounds mode
-    const { mobile, bounds } = get(settings);
-    let minScale = 0.1;
-    if ((mobile || bounds) && container) {
-      const { innerWidth, innerHeight } = window;
-      const fitScaleX = innerWidth / container.offsetWidth;
-      const fitScaleY = innerHeight / container.offsetHeight;
-      const fitScale = Math.min(fitScaleX, fitScaleY);
-      // Large images (fitScale < 1): can zoom out to fit
-      // Small images (fitScale > 1): can't zoom out past 100%
-      minScale = Math.min(fitScale, 1.0);
-    }
-
-    // Clamp the new scale and adjust multiplier accordingly
-    const newScale = Math.max(minScale, Math.min(maxZoom, currentScale * scaleMultiplier));
-    scaleMultiplier = newScale / currentScale;
-
-    // Edge-aware zoom: blend zoom point toward center when near edges
-    // This prevents corners from being pushed off-screen when zooming
-    const { x: tx, y: ty } = pz.getTransform();
-    const contentWidth = container.offsetWidth * currentScale;
-    const contentHeight = container.offsetHeight * currentScale;
-
-    // Calculate cursor position relative to content (0-1 range)
-    const relX = (e.clientX - tx) / contentWidth;
-    const relY = (e.clientY - ty) / contentHeight;
-
-    // Calculate edge proximity (0 = center, 1 = edge)
-    // Using a smooth curve that ramps up near edges
-    const edgeThreshold = 0.2; // Start blending within 20% of edge
-    const edgeProximityX =
-      Math.max(0, Math.max(edgeThreshold - relX, relX - (1 - edgeThreshold))) / edgeThreshold;
-    const edgeProximityY =
-      Math.max(0, Math.max(edgeThreshold - relY, relY - (1 - edgeThreshold))) / edgeThreshold;
-    const edgeProximity = Math.max(edgeProximityX, edgeProximityY);
-
-    // Blend zoom point AWAY from viewport center (toward edge) when near edges
-    // This keeps corners visible by making them the anchor point
-    const viewportCenterX = window.innerWidth / 2;
-    const viewportCenterY = window.innerHeight / 2;
-    const blendFactor = Math.min(1, edgeProximity); // 0 = cursor, 1 = toward edge
-
-    // Push zoom point away from center (opposite direction)
-    const zoomX = e.clientX - (viewportCenterX - e.clientX) * blendFactor * 0.5;
-    const zoomY = e.clientY - (viewportCenterY - e.clientY) * blendFactor * 0.5;
-
-    // Zoom centered on blended position
-    pz.zoomTo(zoomX, zoomY, scaleMultiplier);
-
-    // Emit zoom notification for UI feedback
-    zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now() });
-  } else {
-    // Pan vertically based on wheel deltaY
-    const { x, y } = pz.getTransform();
-    pz.moveTo(x, y - e.deltaY);
-  }
-  keepInBounds();
 }

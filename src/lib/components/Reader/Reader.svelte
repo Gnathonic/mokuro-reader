@@ -10,9 +10,7 @@
     toggleFullScreen,
     zoomDefault,
     zoomDefaultWithLayoutWait,
-    zoomFitToScreen,
-    zoomNotification,
-    handleWheel as panzoomHandleWheel
+    zoomFitToScreen
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
@@ -25,7 +23,7 @@
     volumes,
     type VolumeSettings
   } from '$lib/settings';
-  import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import {
@@ -312,121 +310,43 @@
 
   let startX = 0;
   let startY = 0;
-  let touchStartTime = 0;
-  let isValidSwipeGesture = false; // Only true for clean single-finger gestures
-
-  // For pan-while-pinch: track centroid of two fingers
-  let lastCentroidX = 0;
-  let lastCentroidY = 0;
-  let isMultiTouch = false;
+  let touchStart: Date;
 
   function handleTouchStart(event: TouchEvent) {
-    if (!$settings.mobile) return;
-
-    // Multi-touch: track centroid for pan-while-pinch
-    if (event.touches.length > 1) {
-      isValidSwipeGesture = false;
-      isMultiTouch = true;
-      // Calculate initial centroid
-      const t1 = event.touches[0];
-      const t2 = event.touches[1];
-      lastCentroidX = (t1.clientX + t2.clientX) / 2;
-      lastCentroidY = (t1.clientY + t2.clientY) / 2;
-      return;
-    }
-
-    // Start tracking a potential swipe (single finger, fresh gesture)
-    if (event.touches.length === 1) {
+    if ($settings.mobile) {
       const { clientX, clientY } = event.touches[0];
-      touchStartTime = Date.now();
+      touchStart = new Date();
+
       startX = clientX;
       startY = clientY;
-      isValidSwipeGesture = true;
-      isMultiTouch = false;
     }
   }
-
-  function handleTouchMove(event: TouchEvent) {
-    if (!$settings.mobile) return;
-
-    // Pan-while-pinch: track centroid movement and apply pan
-    if (event.touches.length > 1) {
-      isValidSwipeGesture = false;
-
-      const t1 = event.touches[0];
-      const t2 = event.touches[1];
-      const centroidX = (t1.clientX + t2.clientX) / 2;
-      const centroidY = (t1.clientY + t2.clientY) / 2;
-
-      // If we were already in multi-touch, apply pan based on centroid movement
-      if (isMultiTouch && $panzoomStore) {
-        const dx = centroidX - lastCentroidX;
-        const dy = centroidY - lastCentroidY;
-        if (dx !== 0 || dy !== 0) {
-          $panzoomStore.moveBy(dx, dy, false);
-        }
-      }
-
-      lastCentroidX = centroidX;
-      lastCentroidY = centroidY;
-      isMultiTouch = true;
-    }
-  }
-
-  // Velocity thresholds for swipe sensitivity levels
-  const SWIPE_SENSITIVITY = {
-    low: { minVelocity: 1.6, minDistance: 200 },
-    medium: { minVelocity: 1.0, minDistance: 120 },
-    high: { minVelocity: 0.6, minDistance: 80 }
-  };
 
   function handlePointerUp(event: TouchEvent) {
-    // Early exit if not mobile mode or still touching
-    if (!$settings.mobile || event.touches.length > 0) return;
+    if ($settings.mobile) {
+      debounce(() => {
+        if (event.touches.length === 0) {
+          const { clientX, clientY } = event.changedTouches[0];
 
-    // Only process swipes from valid single-finger gestures
-    if (!isValidSwipeGesture) {
-      return;
-    }
+          const distanceX = clientX - startX;
+          const distanceY = clientY - startY;
 
-    // Reset flag for next gesture
-    isValidSwipeGesture = false;
+          const isSwipe = distanceY < 200 && distanceY > 200 * -1;
 
-    const { clientX, clientY } = event.changedTouches[0];
+          const end = new Date();
+          const touchDuration = end.getTime() - touchStart?.getTime();
 
-    const distanceX = clientX - startX;
-    const distanceY = clientY - startY;
-    const absDistanceX = Math.abs(distanceX);
-    const absDistanceY = Math.abs(distanceY);
+          if (isSwipe && touchDuration < 500) {
+            const swipeThreshold = Math.abs(($settings.swipeThreshold / 100) * window.innerWidth);
 
-    // Calculate elapsed time and velocity
-    const elapsed = Date.now() - touchStartTime;
-    if (elapsed <= 0) return; // Guard against zero/negative time
-
-    const velocity = absDistanceX / elapsed; // pixels per millisecond
-
-    // Get thresholds based on sensitivity setting
-    const sensitivity = $settings.swipeSensitivity || 'medium';
-    const { minVelocity, minDistance } = SWIPE_SENSITIVITY[sensitivity];
-
-    // Max vertical ratio: allow up to 75% vertical movement relative to horizontal
-    // This replaces the fixed 200px check with a ratio that works on any screen
-    const maxVerticalRatio = 0.75;
-
-    // Check swipe conditions:
-    // 1. Must be predominantly horizontal (vertical movement < 75% of horizontal)
-    // 2. Must meet minimum velocity (fast enough to be intentional)
-    // 3. Must travel minimum distance (to distinguish from taps)
-    const isHorizontal = absDistanceX > 0 && absDistanceY / absDistanceX < maxVerticalRatio;
-    const isFastEnough = velocity >= minVelocity;
-    const isFarEnough = absDistanceX >= minDistance;
-
-    if (isHorizontal && isFastEnough && isFarEnough) {
-      if (distanceX > 0) {
-        left(event, true);
-      } else {
-        right(event, true);
-      }
+            if (distanceX > swipeThreshold) {
+              left(event, true);
+            } else if (distanceX < swipeThreshold * -1) {
+              right(event, true);
+            }
+          }
+        }
+      });
     }
   }
 
@@ -443,16 +363,6 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer and popovers
-  function handleWheelEvent(e: WheelEvent) {
-    const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer or popovers
-    if (target.closest('#settings') || target.closest('[data-popover]')) {
-      return;
-    }
-    panzoomHandleWheel(e);
-  }
-
   onMount(() => {
     // Set the timeout duration from settings
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
@@ -467,27 +377,11 @@
     // Prevent scrollbars from appearing when in reader mode
     document.documentElement.style.overflow = 'hidden';
 
-    // Add wheel listener with capture to intercept ctrl+wheel before browser handles it
-    // passive: false is required to allow preventDefault()
-    window.addEventListener('wheel', handleWheelEvent, { capture: true, passive: false });
-
-    // Add touch listeners with capture phase to track gestures before panzoom handles them
-    // This ensures we can detect swipes even when panzoom is handling pan/zoom
-    window.addEventListener('touchstart', handleTouchStart, { capture: true, passive: true });
-    window.addEventListener('touchmove', handleTouchMove, { capture: true, passive: true });
-    window.addEventListener('touchend', handlePointerUp, { capture: true, passive: true });
-
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
-      // Remove wheel listener
-      window.removeEventListener('wheel', handleWheelEvent, { capture: true });
-      // Remove touch listeners
-      window.removeEventListener('touchstart', handleTouchStart, { capture: true });
-      window.removeEventListener('touchmove', handleTouchMove, { capture: true });
-      window.removeEventListener('touchend', handlePointerUp, { capture: true });
     };
   });
 
@@ -837,14 +731,6 @@
     }, 2000);
   }
 
-  // Subscribe to zoom notifications from panzoom
-  $effect(() => {
-    const zoom = $zoomNotification;
-    if (zoom) {
-      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
-    }
-  });
-
   function rotatePageMode() {
     if (!volume) return;
 
@@ -905,6 +791,8 @@
     zoomDefaultWithLayoutWait();
   }}
   onkeydown={handleShortcuts}
+  ontouchstart={handleTouchStart}
+  ontouchend={handlePointerUp}
   onscroll={() => {
     // Detect and fix scroll position drift caused by scrolling in overlays
     // (e.g., settings menu) that affects the underlying document

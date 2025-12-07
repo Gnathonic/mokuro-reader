@@ -28,8 +28,6 @@ export type ZoomModes =
 
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
-export type SwipeSensitivity = 'low' | 'medium' | 'high';
-
 export type AnkiConnectSettings = {
   enabled: boolean;
   pictureField: string;
@@ -81,8 +79,7 @@ export type Settings = {
   bounds: boolean;
   mobile: boolean;
   backgroundColor: string;
-  swipeThreshold: number; // Deprecated: kept for migration, use swipeSensitivity
-  swipeSensitivity: SwipeSensitivity;
+  swipeThreshold: number;
   edgeButtonWidth: number;
   showTimer: boolean;
   quickActions: boolean;
@@ -125,8 +122,7 @@ const defaultSettings: Settings = {
   mobile: false,
   bounds: true,
   backgroundColor: '#030712',
-  swipeThreshold: 50, // Deprecated
-  swipeSensitivity: 'medium',
+  swipeThreshold: 50,
   edgeButtonWidth: 40,
   showTimer: false,
   quickActions: true,
@@ -183,7 +179,7 @@ const mobileDefaultSettings: Settings = {
   defaultFullscreen: true,
   edgeButtonWidth: 60,
   showTimer: false,
-  swipeSensitivity: 'medium'
+  swipeThreshold: 50
 };
 
 // Desktop-optimized default settings
@@ -193,7 +189,7 @@ const desktopDefaultSettings: Settings = {
   defaultFullscreen: false,
   edgeButtonWidth: 40,
   showTimer: true,
-  swipeSensitivity: 'medium'
+  swipeThreshold: 50
 };
 
 type Profiles = Record<string, Settings>;

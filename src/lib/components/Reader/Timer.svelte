@@ -80,17 +80,6 @@
     }
   }
 
-  // Clean up timer when volumeId changes (e.g., navigating to next volume)
-  // This prevents the old interval from continuing to run against the previous volume
-  $effect(() => {
-    // Track volumeId to trigger cleanup when it changes
-    volumeId;
-
-    return () => {
-      stopTimer();
-    };
-  });
-
   onMount(() => {
     // Initialize activity tracker callbacks
     activityTracker.initialize({
