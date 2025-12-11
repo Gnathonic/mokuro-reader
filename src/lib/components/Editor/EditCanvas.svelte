@@ -110,10 +110,8 @@
     if (e.target !== e.currentTarget) return;
 
     // Blur focus if clicking empty space
-    if (ocrState.ocrMode === 'TEXT') {
-      ocrState.setFocus(null);
-      ocrState.setMode('BOX');
-    }
+    ocrState.setFocus(null);
+    ocrState.setMode('BOX');
 
     // Clear Selection
     const selection = window.getSelection();

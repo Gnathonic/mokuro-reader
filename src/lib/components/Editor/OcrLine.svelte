@@ -174,6 +174,8 @@
   };
 
   const handleDragStart = (startEvent: PointerEvent) => {
+    onFocusRequest(startEvent.currentTarget as HTMLElement); // focus block on first click
+
     // Double click hybrid handling
     if (isPendingDoubleClick) {
       handleDoubleClick(startEvent);

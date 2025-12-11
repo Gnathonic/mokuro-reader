@@ -49,6 +49,7 @@
 
   // 1. Block Drag
   const handleBlockDragStart = (startEvent: PointerEvent) => {
+    ocrState.setFocus(block); // Select box
     if (isPendingDoubleClick) {
       // put whatever future doubleclick handling here
       startEvent.stopPropagation();
