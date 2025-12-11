@@ -49,6 +49,7 @@ export interface VolumeMetadata {
 export interface VolumeOCR {
   volume_uuid: string;
   pages: Page[];
+  edited_pages?: Page[];
 }
 
 // v3 table: volume_files

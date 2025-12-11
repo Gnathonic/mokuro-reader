@@ -40,9 +40,12 @@
       : ''
   );
 
-  onMount(async () => {
-    await loadVolumeData();
-    isMounted = true;
+  // Initialize data whenever volumeUuid changes
+  $effect(() => {
+    if (volumeUuid && !isMounted) {
+      loadVolumeData();
+      isMounted = true;
+    }
   });
 
   // Reload working blocks when page index changes
@@ -59,13 +62,31 @@
 
   async function loadVolumeData() {
     isLoading = true;
+
     try {
-      const data = await db.volumes_data.get(volumeUuid);
-      if (data) {
-        volumeData = data;
-        // Initialize working blocks with current page's blocks (edited or original)
-        const currentPages = getCurrentPages(data);
-        workingBlocks = JSON.parse(JSON.stringify(currentPages[pageIndex]?.blocks || []));
+      // Fetch volume data from the two separate V3 tables
+      const [ocrData, filesData] = await Promise.all([
+        db.volume_ocr.get(volumeUuid),
+        db.volume_files.get(volumeUuid)
+      ]);
+
+      if (ocrData && filesData) {
+        // Construct the VolumeData object
+        volumeData = {
+          volume_uuid: volumeUuid,
+          pages: ocrData.pages,
+          edited_pages: ocrData.edited_pages,
+          files: filesData.files
+        };
+
+        const currentPages = getCurrentPages(volumeData);
+        if (currentPages[pageIndex]) {
+          workingBlocks = JSON.parse(JSON.stringify(currentPages[pageIndex].blocks || []));
+        } else {
+          console.error(`[Editor] Page index ${pageIndex} out of bounds.`);
+        }
+      } else {
+        console.warn('[Editor] Volume data partial or missing in V3 tables');
       }
     } catch (error) {
       console.error('Failed to load volume data:', error);
@@ -105,36 +126,26 @@
 
   async function saveEdits() {
     if (!volumeData) return;
-
     try {
-      // Get current pages (edited or original)
       const currentPages = getCurrentPages(volumeData);
-
-      // Create a copy and update the current page's blocks
-      // Use JSON parse/stringify to avoid cloning issues with IndexedDB objects and Svelte proxies
       const updatedPages = JSON.parse(JSON.stringify(currentPages));
       updatedPages[pageIndex].blocks = JSON.parse(JSON.stringify(workingBlocks));
 
-      // Save to edited_pages field
-      await db.volumes_data.update(volumeUuid, {
+      // Update 'volume_ocr' table
+      await db.volume_ocr.update(volumeUuid, {
         edited_pages: updatedPages
       });
 
-      // Update local volumeData
+      // Update local state
       volumeData.edited_pages = updatedPages;
       hasUnsavedChanges = false;
 
-      // Show success toast
       showSaveSuccess = true;
       setTimeout(() => {
         showSaveSuccess = false;
       }, 3000);
-
-      console.log('Edits saved successfully');
     } catch (error) {
       console.error('Failed to save edits:', error);
-
-      // Show error toast
       saveErrorMessage = error instanceof Error ? error.message : 'Unknown error';
       showSaveError = true;
       setTimeout(() => {
@@ -221,18 +232,16 @@
 
   async function revertToOriginal() {
     if (!volumeData) return;
-
     promptConfirmation('Revert all edits to original? This cannot be undone.', async () => {
       try {
-        // Remove edited_pages field from database
-        await db.volumes_data.update(volumeUuid, {
+        // Update 'volume_ocr' table
+        await db.volume_ocr.update(volumeUuid, {
           edited_pages: undefined
         });
 
-        // Reload the page to show original data
+        // Reload to refresh state
         await loadVolumeData();
 
-        // Show success toast
         showRevertSuccess = true;
         setTimeout(() => {
           showRevertSuccess = false;
@@ -247,7 +256,6 @@
       }
     });
   }
-
   async function exportMokuro() {
     if (!volumeData) return;
 
