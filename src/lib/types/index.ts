@@ -3,6 +3,7 @@ export type Block = {
   vertical: boolean;
   font_size: number;
   lines: string[];
+  lines_coords?: number[][][];
 };
 
 export type Page = {

@@ -4,7 +4,6 @@
   import { db } from '$lib/catalog/db';
   import { getCurrentPages, hasEdits } from '$lib/catalog/pages';
   import type { VolumeData, Page, Block } from '$lib/types';
-  import { onMount } from 'svelte';
   import { Button, Modal, Spinner, Toast } from 'flowbite-svelte';
   import { CheckCircleSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
   import EditToolbar from '$lib/components/Editor/EditToolbar.svelte';
@@ -19,7 +18,8 @@
 
   let volumeData = $state<VolumeData | undefined>(undefined);
   let workingBlocks = $state<Block[]>([]);
-  let selectedIndex = $state<number | null>(null);
+  let focusedBlock = $state<Block | null>(null);
+
   let hasUnsavedChanges = $state(false);
   let isLoading = $state(true);
   let showUnsavedWarning = $state(false);
@@ -30,6 +30,9 @@
   let saveErrorMessage = $state('');
   let showRevertSuccess = $state(false);
   let isMounted = $state(false);
+
+  // Reference to the Canvas component
+  let canvasRef: ReturnType<typeof EditCanvas> | undefined = $state();
 
   let pageData = $derived(volumeData ? getCurrentPages(volumeData)[pageIndex] : undefined);
   let totalPages = $derived(volumeData ? getCurrentPages(volumeData).length : 0);
@@ -54,7 +57,7 @@
       const currentPages = getCurrentPages(volumeData);
       if (currentPages[pageIndex]) {
         workingBlocks = JSON.parse(JSON.stringify(currentPages[pageIndex].blocks || []));
-        selectedIndex = null;
+        focusedBlock = null; // no need to notify children since they are refreshed anyway
         hasUnsavedChanges = false;
       }
     }
@@ -64,14 +67,12 @@
     isLoading = true;
 
     try {
-      // Fetch volume data from the two separate V3 tables
       const [ocrData, filesData] = await Promise.all([
         db.volume_ocr.get(volumeUuid),
         db.volume_files.get(volumeUuid)
       ]);
 
       if (ocrData && filesData) {
-        // Construct the VolumeData object
         volumeData = {
           volume_uuid: volumeUuid,
           pages: ocrData.pages,
@@ -95,33 +96,16 @@
     }
   }
 
-  function updateBlock(index: number, updatedBlock: Block) {
-    workingBlocks[index] = updatedBlock;
-    hasUnsavedChanges = true;
-    workingBlocks = [...workingBlocks]; // Trigger reactivity
+  // --- CRUD Handlers ---
+  // Note: Most updates happen via binding workingBlocks directly.
+  // These handlers are used for explicit Toolbar actions.
+
+  function handleDeleteRequest() {
+    canvasRef?.deleteFocusedBlock();
   }
 
-  function deleteBlock(index: number) {
-    workingBlocks.splice(index, 1);
-    hasUnsavedChanges = true;
-    selectedIndex = null;
-    workingBlocks = [...workingBlocks]; // Trigger reactivity
-  }
-
-  function cloneBlock(index: number): number {
-    const clonedBlock = JSON.parse(JSON.stringify(workingBlocks[index]));
-    // Offset the cloned box slightly
-    const offset = 20;
-    clonedBlock.box = [
-      clonedBlock.box[0] + offset,
-      clonedBlock.box[1] + offset,
-      clonedBlock.box[2] + offset,
-      clonedBlock.box[3] + offset
-    ];
-    workingBlocks.push(clonedBlock);
-    hasUnsavedChanges = true;
-    workingBlocks = [...workingBlocks]; // Trigger reactivity
-    return workingBlocks.length - 1; // Return new index
+  function addTextbox() {
+    canvasRef?.addTextboxToCenter();
   }
 
   async function saveEdits() {
@@ -131,12 +115,10 @@
       const updatedPages = JSON.parse(JSON.stringify(currentPages));
       updatedPages[pageIndex].blocks = JSON.parse(JSON.stringify(workingBlocks));
 
-      // Update 'volume_ocr' table
       await db.volume_ocr.update(volumeUuid, {
         edited_pages: updatedPages
       });
 
-      // Update local state
       volumeData.edited_pages = updatedPages;
       hasUnsavedChanges = false;
 
@@ -201,45 +183,14 @@
     pendingNavigation = null;
   }
 
-  function addTextbox() {
-    if (!pageData) return;
-
-    // Create a new empty textbox in the center of the page
-    const centerX = pageData.img_width / 2;
-    const centerY = pageData.img_height / 2;
-    const defaultWidth = 200;
-    const defaultHeight = 100;
-
-    const newBlock: Block = {
-      box: [
-        centerX - defaultWidth / 2,
-        centerY - defaultHeight / 2,
-        centerX + defaultWidth / 2,
-        centerY + defaultHeight / 2
-      ],
-      vertical: false,
-      font_size: 20,
-      lines: ['']
-    };
-
-    workingBlocks.push(newBlock);
-    workingBlocks = [...workingBlocks]; // Trigger reactivity
-    hasUnsavedChanges = true;
-
-    // Auto-select the new box
-    selectedIndex = workingBlocks.length - 1;
-  }
-
   async function revertToOriginal() {
     if (!volumeData) return;
     promptConfirmation('Revert all edits to original? This cannot be undone.', async () => {
       try {
-        // Update 'volume_ocr' table
         await db.volume_ocr.update(volumeUuid, {
           edited_pages: undefined
         });
 
-        // Reload to refresh state
         await loadVolumeData();
 
         showRevertSuccess = true;
@@ -256,6 +207,7 @@
       }
     });
   }
+
   async function exportMokuro() {
     if (!volumeData) return;
 
@@ -293,6 +245,11 @@
       console.error('Failed to export .mokuro file:', error);
     }
   }
+
+  // --- Focus Handler ---
+  function handleBlockFocus(block: Block | null) {
+    focusedBlock = block;
+  }
 </script>
 
 <svelte:head>
@@ -309,6 +266,7 @@
     {totalPages}
     {hasUnsavedChanges}
     hasEdits={volumeHasEdits}
+    isBlockSelected={focusedBlock !== null}
     bind:zoomMode
     onPrev={() => navigatePage(pageIndex - 1)}
     onNext={() => navigatePage(pageIndex + 1)}
@@ -317,18 +275,20 @@
     onExit={exitToReader}
     onRevert={revertToOriginal}
     onAddBox={addTextbox}
+    onDelete={handleDeleteRequest}
     onZoomChange={(mode) => (zoomMode = mode)}
   />
 
   <EditCanvas
+    bind:this={canvasRef}
     {pageData}
     {pageImage}
     {zoomMode}
     bind:workingBlocks
-    bind:selectedIndex
-    {updateBlock}
-    {deleteBlock}
-    {cloneBlock}
+    onBlockFocus={handleBlockFocus}
+    onOcrChange={() => {
+      hasUnsavedChanges = true;
+    }}
   />
 
   <Modal bind:open={showUnsavedWarning} size="xs" autoclose={false}>
@@ -344,7 +304,6 @@
     </div>
   </Modal>
 
-  <!-- Success Toast -->
   {#if isMounted && showSaveSuccess}
     <Toast color="green" position="top-right" class="fixed top-20 right-4 z-50">
       {#snippet icon()}
@@ -354,7 +313,6 @@
     </Toast>
   {/if}
 
-  <!-- Error Toast -->
   {#if isMounted && showSaveError}
     <Toast color="red" position="top-right" class="fixed top-20 right-4 z-50">
       {#snippet icon()}
@@ -364,7 +322,6 @@
     </Toast>
   {/if}
 
-  <!-- Revert Success Toast -->
   {#if isMounted && showRevertSuccess}
     <Toast color="green" position="top-right" class="fixed top-20 right-4 z-50">
       {#snippet icon()}
