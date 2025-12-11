@@ -23,9 +23,12 @@
     src2: File | undefined;
     currentPage: number;
     showSecondPage: boolean;
+    seriesId: string;
+    volumeId: string;
   }
 
-  let { left, right, src1, src2, currentPage, showSecondPage }: Props = $props();
+  let { left, right, src1, src2, currentPage, showSecondPage, seriesId, volumeId }: Props =
+    $props();
 
   let open = $state(false);
   let showPageSelector = $state(false);
@@ -58,9 +61,7 @@
   }
 
   function navigateToEditPage(pageIndex: number) {
-    const manga = $page.params.manga;
-    const volume = $page.params.volume;
-    goto(`/${manga}/${volume}/edit/${pageIndex}`);
+    goto(`/${seriesId}/${volumeId}/edit/${pageIndex}`);
     showPageSelector = false;
   }
 

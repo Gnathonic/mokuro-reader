@@ -809,6 +809,8 @@
       : undefined}
     currentPage={page}
     showSecondPage={showSecondPage()}
+    seriesId={volume.series_uuid}
+    volumeId={volume.volume_uuid}
   />
   <SettingsButton />
   <Cropper />
