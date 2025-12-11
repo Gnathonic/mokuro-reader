@@ -101,8 +101,8 @@
 
       // 1. Visual Update (Screen Space)
       const currentZoom = ocrState.currentScale;
-      totalScreenDeltaX += deltaX / currentZoom / devicePixelRatio;
-      totalScreenDeltaY += deltaY / currentZoom / devicePixelRatio;
+      totalScreenDeltaX += deltaX / currentZoom;
+      totalScreenDeltaY += deltaY / currentZoom;
 
       if (blockElement) {
         blockElement.style.transform = `translate(${totalScreenDeltaX}px, ${totalScreenDeltaY}px)`;
