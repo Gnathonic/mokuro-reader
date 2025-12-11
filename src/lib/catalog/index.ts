@@ -108,6 +108,7 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
           set({
             volume_uuid: $currentVolume.volume_uuid,
             pages: ocr.pages,
+            edited_pages: ocr.edited_pages,
             files: files?.files
           });
         }
