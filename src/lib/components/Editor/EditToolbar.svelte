@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Button, Toolbar, ToolbarGroup, Select, Tooltip } from 'flowbite-svelte';
+  import { tick } from 'svelte';
   import {
     CaretLeftSolid,
     CaretRightSolid,
@@ -11,7 +12,7 @@
     TrashBinSolid
   } from 'flowbite-svelte-icons';
 
-  type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
+  type ZoomMode = 'fit-screen' | 'fit-width' | 'original' | number;
 
   interface Props {
     pageIndex: number;
@@ -28,7 +29,6 @@
     onRevert: () => void;
     onAddBox: () => void;
     onDelete: () => void;
-    onZoomChange: (mode: ZoomMode) => void;
   }
 
   let {
@@ -45,8 +45,7 @@
     onExit,
     onRevert,
     onAddBox,
-    onDelete,
-    onZoomChange
+    onDelete
   }: Props = $props();
 
   const zoomOptions = [
@@ -55,9 +54,19 @@
     { value: 'original', name: 'Original Size' }
   ];
 
-  function handleZoomChange(event: Event) {
-    const target = event.target as HTMLSelectElement;
-    onZoomChange(target.value as ZoomMode);
+  async function handleZoomChange(e: Event) {
+    const target = e.target as HTMLSelectElement;
+    const newValue = target.value as ZoomMode;
+
+    // Update State
+    zoomMode = newValue;
+
+    // Wait for Svelte to remove the old <option> from the DOM
+    await tick();
+
+    // 3. Force the browser to recognize the new value
+    // (This fixes the empty display glitch)
+    target.value = String(newValue);
   }
 </script>
 
@@ -94,13 +103,19 @@
     </Button>
 
     <div class="ml-2 hidden sm:block">
-      <Select
-        size="sm"
-        class="w-36"
-        value={zoomMode}
-        onchange={handleZoomChange}
-        items={zoomOptions}
-      />
+      <Select size="sm" class="w-36" value={zoomMode} onchange={handleZoomChange} placeholder="">
+        {#if typeof zoomMode === 'number'}
+          <option value={zoomMode} selected>
+            {Math.round(zoomMode * 100)}%
+          </option>
+        {/if}
+
+        {#each zoomOptions as option}
+          <option value={option.value}>
+            {option.name}
+          </option>
+        {/each}
+      </Select>
     </div>
   </ToolbarGroup>
 

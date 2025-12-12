@@ -5,7 +5,7 @@
   import OcrBlock from './OcrBlock.svelte';
   import { OcrState } from '$lib/states/OcrState.svelte';
 
-  type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
+  type ZoomMode = 'fit-screen' | 'fit-width' | 'original' | number;
 
   interface Props {
     pageData: Page;
@@ -21,7 +21,7 @@
     pageData,
     pageImage,
     workingBlocks = $bindable(),
-    zoomMode,
+    zoomMode = $bindable(),
     onBlockFocus,
     onOcrChange
   }: Props = $props();
@@ -85,6 +85,9 @@
       case 'original': {
         newScale = 1;
         break;
+      }
+      default: {
+        newScale = zoomMode;
       }
     }
 
@@ -169,6 +172,26 @@
     ocrState.setFocus(newBlock);
     ocrState.markDirty();
   };
+
+  const handleWheel = (e: WheelEvent) => {
+    // Only intercept if Ctrl is pressed (Zoom intent)
+    if (!e.ctrlKey || !scale) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Zoom Logic
+    const scroll = e.deltaY > 0 ? -1 : 1;
+    const zoomStep = 0.3;
+    const scaleAmount = 1 + scroll * zoomStep;
+    const currentScale = scale;
+    const newScale = Math.max(Math.min(currentScale * scaleAmount, 10), 0.5);
+
+    // Apply changes
+    zoomMode = newScale;
+  };
 </script>
 
 <div
@@ -179,6 +202,7 @@
     class="m-auto"
     style:width="{pageData.img_width * scale}px"
     style:height="{pageData.img_height * scale}px"
+    onwheel={handleWheel}
   >
     <div
       class="relative top-0 left-0"

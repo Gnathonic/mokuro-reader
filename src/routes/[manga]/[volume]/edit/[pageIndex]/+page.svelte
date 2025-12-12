@@ -10,7 +10,7 @@
   import EditCanvas from '$lib/components/Editor/EditCanvas.svelte';
   import { promptConfirmation } from '$lib/util';
 
-  type ZoomMode = 'fit-screen' | 'fit-width' | 'original';
+  type ZoomMode = 'fit-screen' | 'fit-width' | 'original' | number;
 
   let volumeUuid = $derived($page.params.volume || '');
   let pageIndexParam = $derived($page.params.pageIndex || '0');
@@ -276,14 +276,13 @@
     onRevert={revertToOriginal}
     onAddBox={addTextbox}
     onDelete={handleDeleteRequest}
-    onZoomChange={(mode) => (zoomMode = mode)}
   />
 
   <EditCanvas
     bind:this={canvasRef}
     {pageData}
     {pageImage}
-    {zoomMode}
+    bind:zoomMode
     bind:workingBlocks
     onBlockFocus={handleBlockFocus}
     onOcrChange={() => {
