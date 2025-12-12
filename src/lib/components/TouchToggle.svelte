@@ -1,13 +1,11 @@
 <script lang="ts">
   let {
     forceVisible = false,
-    mode = 'overlay',
     class: className = '',
     trigger,
     children
   } = $props<{
     forceVisible?: boolean;
-    mode?: 'overlay' | 'stack'; // 'stack' reserved for future layouts
     class?: string;
     trigger?: import('svelte').Snippet;
     children?: import('svelte').Snippet;

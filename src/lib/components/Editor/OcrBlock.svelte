@@ -361,7 +361,6 @@
     class="relative h-full w-full"
     forceVisible={ocrState.ocrMode === 'BOX' ||
       (ocrState.ocrMode === 'TEXT' && ocrState.focusedBlock === block)}
-    mode="overlay"
   >
     {#snippet trigger()}
       <div
