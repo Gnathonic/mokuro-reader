@@ -3,6 +3,7 @@ export type Block = {
   vertical: boolean;
   font_size: number;
   lines: string[];
+  lines_coords?: number[][][];
 };
 
 export type Page = {
@@ -49,6 +50,7 @@ export interface VolumeMetadata {
 export interface VolumeOCR {
   volume_uuid: string;
   pages: Page[];
+  edited_pages?: Page[];
 }
 
 // v3 table: volume_files
