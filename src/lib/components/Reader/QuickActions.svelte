@@ -25,10 +25,20 @@
     showSecondPage: boolean;
     seriesId: string;
     volumeId: string;
+    rightToLeft: boolean;
   }
 
-  let { left, right, src1, src2, currentPage, showSecondPage, seriesId, volumeId }: Props =
-    $props();
+  let {
+    left,
+    right,
+    src1,
+    src2,
+    currentPage,
+    showSecondPage,
+    seriesId,
+    volumeId,
+    rightToLeft
+  }: Props = $props();
 
   let open = $state(false);
   let showPageSelector = $state(false);
@@ -173,11 +183,17 @@
       Which page do you want to edit?
     </h3>
     <div class="flex justify-center gap-4">
-      <Button color="blue" onclick={() => navigateToEditPage(currentPage - 1)}>
-        Left Page ({currentPage})
+      <Button
+        color="blue"
+        onclick={() => navigateToEditPage(rightToLeft ? currentPage : currentPage - 1)}
+      >
+        Left Page ({rightToLeft ? currentPage + 1 : currentPage})
       </Button>
-      <Button color="blue" onclick={() => navigateToEditPage(currentPage)}>
-        Right Page ({currentPage + 1})
+      <Button
+        color="blue"
+        onclick={() => navigateToEditPage(rightToLeft ? currentPage - 1 : currentPage)}
+      >
+        Right Page ({rightToLeft ? currentPage : currentPage + 1})
       </Button>
     </div>
     <div class="mt-4">
