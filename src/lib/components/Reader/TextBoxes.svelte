@@ -329,9 +329,9 @@
     ondblclick={(e) => onDoubleTap(e, lines)}
     {contenteditable}
   >
-    <p
-      >{#each lines as line, i}{line}{#if i < lines.length - 1}<br />{/if}{/each}</p
-    >
+    <p>
+      {#each lines as line, i}{line}{#if i < lines.length - 1}<br />{/if}{/each}
+    </p>
   </div>
 {/each}
 
