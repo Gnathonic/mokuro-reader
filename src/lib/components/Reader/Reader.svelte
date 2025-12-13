@@ -313,42 +313,50 @@
   let startX = 0;
   let startY = 0;
   let touchStart: Date;
+  let lastMultiTouchTime = 0; // Timestamp of last multi-touch event
 
   function handleTouchStart(event: TouchEvent) {
-    if ($settings.mobile) {
-      const { clientX, clientY } = event.touches[0];
-      touchStart = new Date();
+    if (!$settings.mobile) return;
+    if (event.touches.length > 1) return; // Ignore multi-touch starts
 
-      startX = clientX;
-      startY = clientY;
-    }
+    // Capture start position for single-finger gesture
+    const { clientX, clientY } = event.touches[0];
+    touchStart = new Date();
+    startX = clientX;
+    startY = clientY;
   }
 
   function handlePointerUp(event: TouchEvent) {
-    if ($settings.mobile) {
-      debounce(() => {
-        if (event.touches.length === 0) {
-          const { clientX, clientY } = event.changedTouches[0];
+    if (!$settings.mobile) return;
 
-          const distanceX = clientX - startX;
-          const distanceY = clientY - startY;
+    // If fingers remain, this was a multi-touch gesture - mark it and wait
+    if (event.touches.length !== 0) {
+      lastMultiTouchTime = Date.now();
+      return;
+    }
 
-          const isSwipe = distanceY < 200 && distanceY > 200 * -1;
+    // Ignore swipes within 200ms of a multi-touch gesture (pinch-zoom)
+    if (Date.now() - lastMultiTouchTime < 200) return;
 
-          const end = new Date();
-          const touchDuration = end.getTime() - touchStart?.getTime();
+    const { clientX, clientY } = event.changedTouches[0];
 
-          if (isSwipe && touchDuration < 500) {
-            const swipeThreshold = Math.abs(($settings.swipeThreshold / 100) * window.innerWidth);
+    const distanceX = clientX - startX;
+    const distanceY = clientY - startY;
 
-            if (distanceX > swipeThreshold) {
-              left(event, true);
-            } else if (distanceX < swipeThreshold * -1) {
-              right(event, true);
-            }
-          }
-        }
-      });
+    // Vertical threshold scales with viewport for consistent feel across devices
+    const verticalThreshold = Math.min(200, window.innerHeight * 0.3);
+    const isSwipe = Math.abs(distanceY) < verticalThreshold;
+
+    const touchDuration = Date.now() - touchStart?.getTime();
+
+    if (isSwipe && touchDuration < 500) {
+      const swipeThreshold = ($settings.swipeThreshold / 100) * window.innerWidth;
+
+      if (distanceX > swipeThreshold) {
+        left(event, true);
+      } else if (distanceX < -swipeThreshold) {
+        right(event, true);
+      }
     }
   }
 

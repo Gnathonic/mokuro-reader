@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.6] - 2025-12-12
+
+### Fixed
+
+- Made swipe page turn reliable on high-end mobile devices
+
 ## [1.0.5.8] - 2025-12-07
 
 ### Fixed
