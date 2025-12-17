@@ -357,7 +357,8 @@ async function processVolumeData(
         bmp: 'image/bmp',
         avif: 'image/avif',
         tif: 'image/tiff',
-        tiff: 'image/tiff'
+        tiff: 'image/tiff',
+        jxl: 'image/jxl'
       };
       const mimeType = mimeTypes[extension] || 'application/octet-stream';
 

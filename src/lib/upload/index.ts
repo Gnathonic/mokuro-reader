@@ -85,7 +85,7 @@ function groupOrphanedImagesBySeries(
 export * from './web-import';
 
 const zipTypes = ['zip', 'cbz'];
-const imageExtensions = ['jpg', 'jpeg', 'png', 'webp', 'avif', 'tif', 'tiff', 'gif', 'bmp'];
+const imageExtensions = ['jpg', 'jpeg', 'png', 'webp', 'avif', 'tif', 'tiff', 'gif', 'bmp', 'jxl'];
 
 function getDetails(file: File) {
   const { webkitRelativePath, name } = file;
