@@ -21,6 +21,9 @@ export type FontSize =
 
 export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 'keepZoom';
 
+// Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
+export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
+
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
 export type AnkiConnectSettings = {
@@ -94,6 +97,7 @@ export type Settings = {
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
+  continuousZoomDefault: ContinuousZoomMode;
   scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
@@ -148,6 +152,7 @@ const defaultSettings: Settings = {
   swapWheelBehavior: false,
   textBoxContextMenu: true,
   continuousScroll: false,
+  continuousZoomDefault: 'zoomFitToWidth',
   scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',

@@ -31,7 +31,11 @@
   // ============================================
 
   // Transform state - NOT using panzoom, we control everything
+  // Note: In continuous mode, scale is a user zoom MULTIPLIER on top of per-spread calculated scales
   let transform = $state({ x: 0, y: 0, scale: 1 });
+
+  // User zoom multiplier (applied on top of per-spread scales)
+  let userZoomMultiplier = $state(1);
 
   // Canvas refs
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -75,6 +79,9 @@
   let hasCover = $derived(volumeSettings.hasCover ?? true);
   let rtl = $derived(volumeSettings.rightToLeft ?? true);
 
+  // Continuous zoom mode setting
+  let continuousZoomMode = $derived($settings.continuousZoomDefault);
+
   // Calculate pairing offset based on current page
   // Current page should always be first of its spread
   let pairingOffset = $derived.by(() => {
@@ -116,17 +123,36 @@
 
   interface SpreadLayout {
     spreadIndex: number;
-    yOffset: number; // Cumulative Y position in content space
-    width: number;
-    height: number;
+    yOffset: number; // Cumulative Y position in SCALED content space
+    width: number; // Native width
+    height: number; // Native height
+    scale: number; // Per-spread scale based on zoom mode
+    scaledWidth: number; // width * scale
+    scaledHeight: number; // height * scale
     pageLayouts: PageLayout[];
   }
 
+  // Calculate scale for a spread based on zoom mode
+  function calculateSpreadScale(width: number, height: number): number {
+    switch (continuousZoomMode) {
+      case 'zoomFitToWidth':
+        return viewportWidth / width;
+      case 'zoomFitToScreen':
+        return Math.min(viewportWidth / width, viewportHeight / height);
+      case 'zoomOriginal':
+        return 1;
+      default:
+        return viewportWidth / width;
+    }
+  }
+
   // Calculate spread layout (all spreads stacked vertically)
+  // Each spread gets its own scale based on zoom mode
+  // yOffset accumulates using SCALED heights
   let spreadLayout = $derived.by((): SpreadLayout[] => {
     const layouts: SpreadLayout[] = [];
     let yOffset = 0;
-    const pageGap = 20; // Gap between spreads
+    const pageGap = 20; // Gap between spreads (in screen pixels)
 
     for (let i = 0; i < spreads.length; i++) {
       const spread = spreads[i];
@@ -135,26 +161,34 @@
       if (spread.type === 'single') {
         const page = spread.pages[0];
         const pageIdx = spread.pageIndices[0];
+        const width = page.img_width;
+        const height = page.img_height;
+        const scale = calculateSpreadScale(width, height);
+
         pageLayouts.push({
           pageIndex: pageIdx,
           xOffset: 0,
-          width: page.img_width,
-          height: page.img_height
+          width,
+          height
         });
         layouts.push({
           spreadIndex: i,
           yOffset,
-          width: page.img_width,
-          height: page.img_height,
+          width,
+          height,
+          scale,
+          scaledWidth: width * scale,
+          scaledHeight: height * scale,
           pageLayouts
         });
-        yOffset += page.img_height + pageGap;
+        yOffset += height * scale + pageGap;
       } else {
         // Dual spread
         const [page1, page2] = spread.pages;
         const [idx1, idx2] = spread.pageIndices;
         const height = Math.max(page1.img_height, page2.img_height);
         const width = page1.img_width + page2.img_width;
+        const scale = calculateSpreadScale(width, height);
 
         // RTL: right page first, then left page
         if (rtl) {
@@ -190,19 +224,23 @@
           yOffset,
           width,
           height,
+          scale,
+          scaledWidth: width * scale,
+          scaledHeight: height * scale,
           pageLayouts
         });
-        yOffset += height + pageGap;
+        yOffset += height * scale + pageGap;
       }
     }
 
     return layouts;
   });
 
-  // Total content height
+  // Total content height (in scaled space, before userZoomMultiplier)
   let totalContentHeight = $derived(
     spreadLayout.length > 0
-      ? spreadLayout[spreadLayout.length - 1].yOffset + spreadLayout[spreadLayout.length - 1].height
+      ? spreadLayout[spreadLayout.length - 1].yOffset +
+          spreadLayout[spreadLayout.length - 1].scaledHeight
       : 0
   );
 
@@ -242,12 +280,23 @@
     }
   });
 
-  // Watch for zoom mode changes
+  // Watch for zoom mode changes (standard reader)
   let lastZoomMode = $state($settings.zoomDefault);
   $effect(() => {
     const zoomMode = $settings.zoomDefault;
     if (zoomMode !== lastZoomMode) {
       lastZoomMode = zoomMode;
+      applyZoomMode();
+    }
+  });
+
+  // Watch for continuous zoom mode changes
+  let lastContinuousZoomMode = $state($settings.continuousZoomDefault);
+  $effect(() => {
+    const zoomMode = $settings.continuousZoomDefault;
+    if (zoomMode !== lastContinuousZoomMode) {
+      lastContinuousZoomMode = zoomMode;
+      // Reset user zoom and reposition - spreadLayout will recalculate with new scales
       applyZoomMode();
     }
   });
@@ -445,20 +494,24 @@
     // 2. Calculate which spreads are visible
     const visibleSpreads = getVisibleSpreads();
 
-    // 3. Draw each visible spread
+    // 3. Draw each visible spread (each with its own scale)
     for (const sl of visibleSpreads) {
+      // Effective scale = per-spread scale * user zoom multiplier
+      const effectiveScale = sl.scale * userZoomMultiplier;
+
       // Calculate spread center X position (in CSS pixels)
-      const spreadScreenX = (viewportWidth - sl.width * transform.scale) / 2;
+      const spreadScreenX = (viewportWidth - sl.width * effectiveScale) / 2;
 
       for (const pl of sl.pageLayouts) {
         const source = pageCanvases.get(pl.pageIndex);
         if (!source) continue;
 
         // Calculate positions in CSS pixels
-        const screenX = spreadScreenX + pl.xOffset * transform.scale;
-        const screenY = sl.yOffset * transform.scale + transform.y;
-        const screenW = pl.width * transform.scale;
-        const screenH = pl.height * transform.scale;
+        // yOffset is already in scaled space, apply user zoom on top
+        const screenX = spreadScreenX + pl.xOffset * effectiveScale;
+        const screenY = sl.yOffset * userZoomMultiplier + transform.y;
+        const screenW = pl.width * effectiveScale;
+        const screenH = pl.height * effectiveScale;
 
         // Culling: skip if completely off-screen (in CSS pixels)
         if (screenX + screenW < 0 || screenX > viewportWidth) continue;
@@ -480,8 +533,9 @@
     const result: SpreadLayout[] = [];
 
     for (const sl of spreadLayout) {
-      const screenY = sl.yOffset * transform.scale + transform.y;
-      const screenH = sl.height * transform.scale;
+      // yOffset is already in scaled space, apply userZoomMultiplier
+      const screenY = sl.yOffset * userZoomMultiplier + transform.y;
+      const screenH = sl.scaledHeight * userZoomMultiplier;
 
       // Check if spread is visible (with some buffer)
       if (screenY + screenH >= -viewportHeight && screenY <= viewportHeight * 2) {
@@ -494,8 +548,9 @@
 
   function updateTextOverlayPosition(): void {
     if (!textOverlayEl) return;
-    // Position the text overlay container to match the canvas transform
-    textOverlayEl.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+    // Position the text overlay container - only apply Y translation
+    // Each spread overlay handles its own scale via inline styles
+    textOverlayEl.style.transform = `translateY(${transform.y}px)`;
   }
 
   // Trigger draw when bitmaps become ready
@@ -569,15 +624,15 @@
     }
   }
 
-  // Zoom at point
+  // Zoom at point (modifies userZoomMultiplier, not per-spread scales)
   function zoomAt(clientX: number, clientY: number, scaleDelta: number): void {
-    const newScale = Math.max(0.1, Math.min(10, transform.scale * scaleDelta));
-    const ratio = newScale / transform.scale;
+    const newZoom = Math.max(0.1, Math.min(10, userZoomMultiplier * scaleDelta));
+    const ratio = newZoom / userZoomMultiplier;
 
     // Keep point under cursor stationary
     transform.x = clientX - (clientX - transform.x) * ratio;
     transform.y = clientY - (clientY - transform.y) * ratio;
-    transform.scale = newScale;
+    userZoomMultiplier = newZoom;
 
     draw();
   }
@@ -585,7 +640,7 @@
   // Touch handling
   let activeTouches: Touch[] = [];
   let initialPinchDistance = 0;
-  let initialScale = 1;
+  let initialZoom = 1;
   let initialPinchCenter = { x: 0, y: 0 };
 
   // Velocity tracking for inertial scrolling
@@ -627,7 +682,7 @@
       // Two fingers - start pinch
       isDragging = false;
       initialPinchDistance = getTouchDistance(activeTouches[0], activeTouches[1]);
-      initialScale = transform.scale;
+      initialZoom = userZoomMultiplier;
       initialPinchCenter = getTouchCenter(activeTouches[0], activeTouches[1]);
     }
   }
@@ -662,13 +717,13 @@
 
       const newDistance = getTouchDistance(newTouches[0], newTouches[1]);
       const newCenter = getTouchCenter(newTouches[0], newTouches[1]);
-      const scale = (newDistance / initialPinchDistance) * initialScale;
+      const newZoom = (newDistance / initialPinchDistance) * initialZoom;
 
       // Zoom towards pinch center
-      const ratio = scale / transform.scale;
+      const ratio = newZoom / userZoomMultiplier;
       transform.x = newCenter.x - (newCenter.x - transform.x) * ratio;
       transform.y = newCenter.y - (newCenter.y - transform.y) * ratio;
-      transform.scale = scale;
+      userZoomMultiplier = newZoom;
 
       // Also pan based on center movement
       const centerDx = newCenter.x - initialPinchCenter.x;
@@ -836,8 +891,9 @@
 
     cancelSnapAnimation(); // Cancel any ongoing animation
 
-    const scaledHeight = spread.height * transform.scale;
-    const topY = -spread.yOffset * transform.scale;
+    // Use per-spread scale with userZoomMultiplier
+    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
+    const topY = -spread.yOffset * userZoomMultiplier;
     const bottomY = topY + viewportHeight - scaledHeight;
 
     // How much we want to pan (60% of viewport)
@@ -944,11 +1000,13 @@
 
   function getCurrentSpreadIndex(): number {
     // Find which spread is most visible based on viewport center
-    const viewCenterY = (-transform.y + viewportHeight / 2) / transform.scale;
+    // yOffset is in scaled space (before userZoomMultiplier)
+    const viewCenterY = (-transform.y + viewportHeight / 2) / userZoomMultiplier;
 
     for (let i = 0; i < spreadLayout.length; i++) {
       const s = spreadLayout[i];
-      if (viewCenterY >= s.yOffset && viewCenterY < s.yOffset + s.height) {
+      // yOffset and scaledHeight are in per-spread scaled space
+      if (viewCenterY >= s.yOffset && viewCenterY < s.yOffset + s.scaledHeight) {
         return i;
       }
     }
@@ -994,20 +1052,21 @@
     const spread = spreadLayout[index];
     if (!spread) return;
 
-    const scaledHeight = spread.height * transform.scale;
+    // Use per-spread scale with userZoomMultiplier
+    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
     let targetY: number;
 
     if (position === 'bottom') {
       // Position so bottom of spread aligns with bottom of viewport
       // (or center if spread fits in viewport)
       if (scaledHeight <= viewportHeight) {
-        targetY = -spread.yOffset * transform.scale + (viewportHeight - scaledHeight) / 2;
+        targetY = -spread.yOffset * userZoomMultiplier + (viewportHeight - scaledHeight) / 2;
       } else {
-        targetY = -spread.yOffset * transform.scale + viewportHeight - scaledHeight;
+        targetY = -spread.yOffset * userZoomMultiplier + viewportHeight - scaledHeight;
       }
     } else {
       // Position spread at top of viewport
-      targetY = -spread.yOffset * transform.scale;
+      targetY = -spread.yOffset * userZoomMultiplier;
     }
 
     // Notify parent
@@ -1034,21 +1093,13 @@
     const spread = spreadLayout[localSpreadIndex];
     if (!spread) return;
 
-    switch ($settings.zoomDefault) {
-      case 'zoomFitToScreen':
-        transform.scale = Math.min(viewportWidth / spread.width, viewportHeight / spread.height);
-        break;
-      case 'zoomFitToWidth':
-        transform.scale = viewportWidth / spread.width;
-        break;
-      case 'zoomOriginal':
-        transform.scale = 1;
-        break;
-    }
+    // Reset user zoom multiplier - per-spread scales handle the zoom mode
+    userZoomMultiplier = 1;
 
     // Center horizontally and position at top of spread
+    // yOffset is already in per-spread scaled space
     transform.x = 0; // Centering handled in draw()
-    transform.y = -spread.yOffset * transform.scale;
+    transform.y = -spread.yOffset * userZoomMultiplier;
 
     draw();
   }
@@ -1081,16 +1132,17 @@
     const spread = spreadLayout[localSpreadIndex];
     if (!spread) return;
 
-    const scaledHeight = spread.height * transform.scale;
+    // Use per-spread scale with userZoomMultiplier
+    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
     let targetY: number;
 
     // Calculate target position
     if (scaledHeight <= viewportHeight) {
       // Content fits - center it
-      targetY = -spread.yOffset * transform.scale + (viewportHeight - scaledHeight) / 2;
+      targetY = -spread.yOffset * userZoomMultiplier + (viewportHeight - scaledHeight) / 2;
     } else {
       // Snap to nearest boundary (top or bottom)
-      const topY = -spread.yOffset * transform.scale;
+      const topY = -spread.yOffset * userZoomMultiplier;
       const bottomY = topY + viewportHeight - scaledHeight;
 
       if (transform.y > topY) {
@@ -1213,12 +1265,15 @@
     {#each visibleTextBoxData as spreadData (spreadData.spreadIndex)}
       {@const sl = spreadLayout[spreadData.spreadIndex]}
       {#if sl}
+        {@const effectiveScale = sl.scale * userZoomMultiplier}
         <div
           class="spread-overlay"
-          style:top={`${sl.yOffset}px`}
-          style:left={`${(viewportWidth / transform.scale - sl.width) / 2}px`}
+          style:top={`${sl.yOffset * userZoomMultiplier}px`}
+          style:left={`${(viewportWidth - sl.width * effectiveScale) / 2}px`}
           style:width={`${sl.width}px`}
           style:height={`${sl.height}px`}
+          style:transform={`scale(${effectiveScale})`}
+          style:transform-origin="0 0"
         >
           {#each spreadData.pageLayouts as pl (pl.pageIndex)}
             <div
