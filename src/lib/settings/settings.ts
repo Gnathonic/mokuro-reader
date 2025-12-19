@@ -93,6 +93,8 @@ export type Settings = {
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
+  continuousScroll: boolean;
+  scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
   catalogSettings: CatalogSettings;
@@ -145,6 +147,8 @@ const defaultSettings: Settings = {
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
+  continuousScroll: false,
+  scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',
     rightToLeft: true,
