@@ -3,9 +3,12 @@
     effectiveVolumeSettings,
     updateProgress,
     updateVolumeSetting,
+    updateSetting,
+    settings as globalSettings,
     volumes,
     type VolumeSettingsKey,
-    type PageViewMode
+    type PageViewMode,
+    type SettingsKey
   } from '$lib/settings';
   import { zoomDefault } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
@@ -19,6 +22,10 @@
     { key: 'rightToLeft', text: 'Right to left', value: settings.rightToLeft },
     { key: 'hasCover', text: 'First page is cover', value: settings.hasCover, shortcut: 'C' }
   ] as { key: VolumeSettingsKey; text: string; value: any; shortcut?: string }[]);
+
+  // Global settings for continuous scroll mode
+  let continuousScroll = $derived($globalSettings.continuousScroll);
+  let scrollSnap = $derived($globalSettings.scrollSnap);
 
   const pageViewModes: { value: PageViewMode; name: string }[] = [
     { value: 'single', name: 'Single page' },
@@ -69,5 +76,28 @@
         {/if}
       </Toggle>
     {/each}
+
+    <div class="mt-2 border-t border-gray-200 pt-4 dark:border-gray-700">
+      <Helper class="mb-3">Scroll mode (applies to all volumes)</Helper>
+      <Toggle
+        size="small"
+        checked={continuousScroll}
+        onchange={() => updateSetting('continuousScroll', !continuousScroll)}
+      >
+        Continuous scroll
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(V)</span>
+      </Toggle>
+      {#if continuousScroll}
+        <div class="mt-3">
+          <Toggle
+            size="small"
+            checked={scrollSnap}
+            onchange={() => updateSetting('scrollSnap', !scrollSnap)}
+          >
+            Snap to page boundaries
+          </Toggle>
+        </div>
+      {/if}
+    </div>
   </div>
 </AccordionItem>
