@@ -8,7 +8,8 @@
     volumes,
     type VolumeSettingsKey,
     type PageViewMode,
-    type SettingsKey
+    type SettingsKey,
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { zoomDefault } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
@@ -25,6 +26,7 @@
 
   // Global settings for continuous scroll mode
   let continuousScroll = $derived($globalSettings.continuousScroll);
+  let continuousZoomDefault = $derived($globalSettings.continuousZoomDefault);
   let scrollSnap = $derived($globalSettings.scrollSnap);
 
   const pageViewModes: { value: PageViewMode; name: string }[] = [
@@ -32,6 +34,17 @@
     { value: 'dual', name: 'Dual page' },
     { value: 'auto', name: 'Auto (detect orientation & spreads)' }
   ];
+
+  const continuousZoomModes: { value: ContinuousZoomMode; name: string }[] = [
+    { value: 'zoomFitToWidth', name: 'Fit to width' },
+    { value: 'zoomFitToScreen', name: 'Fit to screen' },
+    { value: 'zoomOriginal', name: 'Original size (1:1)' }
+  ];
+
+  function onContinuousZoomChange(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    updateSetting('continuousZoomDefault', target.value as ContinuousZoomMode);
+  }
 
   function onChange(key: VolumeSettingsKey, value: any) {
     if (key === 'hasCover') {
@@ -88,7 +101,19 @@
         <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(V)</span>
       </Toggle>
       {#if continuousScroll}
-        <div class="mt-3">
+        <div class="mt-3 flex flex-col gap-3">
+          <div>
+            <Label for="continuous-zoom-mode" class="mb-2 text-gray-900 dark:text-white">
+              Zoom mode
+            </Label>
+            <Select
+              id="continuous-zoom-mode"
+              size="sm"
+              items={continuousZoomModes}
+              value={continuousZoomDefault}
+              onchange={onContinuousZoomChange}
+            />
+          </div>
           <Toggle
             size="small"
             checked={scrollSnap}

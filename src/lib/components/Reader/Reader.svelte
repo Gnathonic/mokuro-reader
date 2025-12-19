@@ -23,7 +23,8 @@
     updateSetting,
     updateVolumeSetting,
     volumes,
-    type VolumeSettings
+    type VolumeSettings,
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
@@ -801,6 +802,12 @@
   }
 
   function rotateZoomMode() {
+    // Continuous mode has its own zoom settings
+    if ($settings.continuousScroll) {
+      rotateContinuousZoomMode();
+      return;
+    }
+
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
@@ -826,6 +833,29 @@
       zoomOriginal: 'Original Size',
       keepZoom: 'Keep Zoom',
       keepZoomStart: 'Keep Zoom, Pan to Top'
+    };
+    showNotification(labels[nextMode], `zoommode-${nextMode}`);
+  }
+
+  function rotateContinuousZoomMode() {
+    const currentMode = $settings.continuousZoomDefault;
+    let nextMode: ContinuousZoomMode;
+
+    // Rotate through: fitToWidth -> fitToScreen -> original -> fitToWidth
+    if (currentMode === 'zoomFitToWidth') {
+      nextMode = 'zoomFitToScreen';
+    } else if (currentMode === 'zoomFitToScreen') {
+      nextMode = 'zoomOriginal';
+    } else {
+      nextMode = 'zoomFitToWidth';
+    }
+
+    updateSetting('continuousZoomDefault', nextMode);
+
+    const labels: Record<ContinuousZoomMode, string> = {
+      zoomFitToWidth: 'Fit to Width',
+      zoomFitToScreen: 'Fit to Screen',
+      zoomOriginal: 'Original Size'
     };
     showNotification(labels[nextMode], `zoommode-${nextMode}`);
   }
