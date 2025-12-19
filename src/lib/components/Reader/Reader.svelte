@@ -38,6 +38,7 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import PureCanvasReader from './PureCanvasReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -301,6 +302,9 @@
         return;
       case 'KeyZ':
         rotateZoomMode();
+        return;
+      case 'KeyV':
+        toggleContinuousScroll();
         return;
       case 'Escape':
         navigateBack();
@@ -601,8 +605,8 @@
 
   // Image cache for preloading
   let imageCache = new ImageCache();
-  let cachedImageUrl1 = $state<string | null>(null);
-  let cachedImageUrl2 = $state<string | null>(null);
+  let cachedBitmap1 = $state<ImageBitmap | null>(null);
+  let cachedBitmap2 = $state<ImageBitmap | null>(null);
 
   // Update cache when page or volume data changes
   $effect(() => {
@@ -611,38 +615,38 @@
     const pgs = pages;
 
     if (files && pgs.length > 0 && currentIndex >= 0) {
-      // Update cache first (non-blocking - preloads in background)
+      // Update cache first (non-blocking - preloads in background via createImageBitmap)
       imageCache.updateCache(files, pgs, currentIndex);
 
-      // Try to get current page image synchronously (instant if already cached)
-      const syncUrl1 = imageCache.getImageSync(currentIndex);
-      if (syncUrl1) {
-        cachedImageUrl1 = syncUrl1;
+      // Try to get current page bitmap synchronously (instant if already cached)
+      const syncBitmap1 = imageCache.getBitmapSync(currentIndex);
+      if (syncBitmap1) {
+        cachedBitmap1 = syncBitmap1;
       } else {
         // Not ready yet, get it async and update when ready
-        cachedImageUrl1 = null;
-        imageCache.getImage(currentIndex).then((url) => {
-          cachedImageUrl1 = url;
+        cachedBitmap1 = null;
+        imageCache.getBitmap(currentIndex).then((bitmap) => {
+          cachedBitmap1 = bitmap;
         });
       }
 
-      // Try to get next page image if showing second page
+      // Try to get next page bitmap if showing second page
       if (showSecondPage()) {
-        const syncUrl2 = imageCache.getImageSync(currentIndex + 1);
-        if (syncUrl2) {
-          cachedImageUrl2 = syncUrl2;
+        const syncBitmap2 = imageCache.getBitmapSync(currentIndex + 1);
+        if (syncBitmap2) {
+          cachedBitmap2 = syncBitmap2;
         } else {
-          cachedImageUrl2 = null;
-          imageCache.getImage(currentIndex + 1).then((url) => {
-            cachedImageUrl2 = url;
+          cachedBitmap2 = null;
+          imageCache.getBitmap(currentIndex + 1).then((bitmap) => {
+            cachedBitmap2 = bitmap;
           });
         }
       } else {
-        cachedImageUrl2 = null;
+        cachedBitmap2 = null;
       }
     } else {
-      cachedImageUrl1 = null;
-      cachedImageUrl2 = null;
+      cachedBitmap1 = null;
+      cachedBitmap2 = null;
     }
   });
 
@@ -787,6 +791,15 @@
     showNotification(labels[nextMode], `pagemode-${nextMode}`);
   }
 
+  function toggleContinuousScroll() {
+    const newValue = !$settings.continuousScroll;
+    updateSetting('continuousScroll', newValue);
+    showNotification(
+      newValue ? 'Continuous Scroll On' : 'Continuous Scroll Off',
+      'continuous-scroll-toggle'
+    );
+  }
+
   function rotateZoomMode() {
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
@@ -815,6 +828,30 @@
       keepZoomStart: 'Keep Zoom, Pan to Top'
     };
     showNotification(labels[nextMode], `zoommode-${nextMode}`);
+  }
+
+  // Callback for ContinuousReader page changes
+  function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
+    if (!volume) return;
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    activityTracker.recordActivity();
+  }
+
+  // Callback for ContinuousReader volume navigation
+  function handleContinuousVolumeNav(direction: 'prev' | 'next') {
+    if (!volume) return;
+    let seriesVolumes = $currentSeries;
+    const currentVolumeIndex = seriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid);
+
+    if (direction === 'prev') {
+      const previousVolume = seriesVolumes[currentVolumeIndex - 1];
+      if (previousVolume) nav.toReader(volume.series_uuid, previousVolume.volume_uuid);
+      else nav.toSeries(volume.series_uuid);
+    } else {
+      const nextVolume = seriesVolumes[currentVolumeIndex + 1];
+      if (nextVolume) nav.toReader(volume.series_uuid, nextVolume.volume_uuid);
+      else nav.toSeries(volume.series_uuid);
+    }
   }
 </script>
 
@@ -900,88 +937,102 @@
       </div>
     {/key}
   {/if}
-  <div class="flex" style:background-color={$settings.backgroundColor}>
-    <Panzoom>
+  {#if $settings.continuousScroll && volumeData?.files}
+    <!-- Continuous scroll mode (Pure Canvas) -->
+    <PureCanvasReader
+      {pages}
+      files={volumeData.files}
+      {volume}
+      {volumeSettings}
+      currentPage={page}
+      onPageChange={handleContinuousPageChange}
+      onVolumeNav={handleContinuousVolumeNav}
+    />
+  {:else}
+    <!-- Page-based mode -->
+    <div class="flex" style:background-color={$settings.backgroundColor}>
+      <Panzoom>
+        <button
+          aria-label="Previous page (left edge)"
+          class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-left={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (right edge)"
+          class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-right={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <button
+          aria-label="Previous page (bottom left)"
+          class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (bottom right)"
+          class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <div
+          class="grid"
+          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+          ondblclick={onDoubleTap}
+          role="none"
+          id="manga-panel"
+        >
+          {#key page}
+            <div
+              class="col-start-1 row-start-1 flex flex-row"
+              class:flex-row-reverse={!volumeSettings.rightToLeft}
+              in:pageIn={{ direction: pageDirection }}
+              out:pageOut={{ direction: pageDirection }}
+            >
+              {#if volumeData?.files}
+                {#if showSecondPage()}
+                  <MangaPage
+                    page={pages[index + 1]}
+                    src={imageCache.getFile(index + 1)!}
+                    cachedBitmap={cachedBitmap2}
+                    volumeUuid={volume.volume_uuid}
+                  />
+                {/if}
+                <MangaPage
+                  page={pages[index]}
+                  src={imageCache.getFile(index)!}
+                  cachedBitmap={cachedBitmap1}
+                  volumeUuid={volume.volume_uuid}
+                />
+              {:else}
+                <div class="flex h-screen w-screen items-center justify-center">
+                  <Spinner size="12" />
+                </div>
+              {/if}
+            </div>
+          {/key}
+        </div>
+      </Panzoom>
+    </div>
+    {#if !$settings.mobile}
       <button
         aria-label="Previous page (left edge)"
-        class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-left={`${$settings.edgeButtonWidth}px`}
         onmousedown={mouseDown}
         onmouseup={left}
+        class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
       <button
         aria-label="Next page (right edge)"
-        class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-right={`${$settings.edgeButtonWidth}px`}
         onmousedown={mouseDown}
         onmouseup={right}
+        class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
-      <button
-        aria-label="Previous page (bottom left)"
-        class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (bottom right)"
-        class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <div
-        class="grid"
-        style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-        ondblclick={onDoubleTap}
-        role="none"
-        id="manga-panel"
-      >
-        {#key page}
-          <div
-            class="col-start-1 row-start-1 flex flex-row"
-            class:flex-row-reverse={!volumeSettings.rightToLeft}
-            in:pageIn={{ direction: pageDirection }}
-            out:pageOut={{ direction: pageDirection }}
-          >
-            {#if volumeData?.files}
-              {#if showSecondPage()}
-                <MangaPage
-                  page={pages[index + 1]}
-                  src={imageCache.getFile(index + 1)!}
-                  cachedUrl={cachedImageUrl2}
-                  volumeUuid={volume.volume_uuid}
-                />
-              {/if}
-              <MangaPage
-                page={pages[index]}
-                src={imageCache.getFile(index)!}
-                cachedUrl={cachedImageUrl1}
-                volumeUuid={volume.volume_uuid}
-              />
-            {:else}
-              <div class="flex h-screen w-screen items-center justify-center">
-                <Spinner size="12" />
-              </div>
-            {/if}
-          </div>
-        {/key}
-      </div>
-    </Panzoom>
-  </div>
-  {#if !$settings.mobile}
-    <button
-      aria-label="Previous page (left edge)"
-      onmousedown={mouseDown}
-      onmouseup={left}
-      class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
-    <button
-      aria-label="Next page (right edge)"
-      onmousedown={mouseDown}
-      onmouseup={right}
-      class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
+    {/if}
   {/if}
 {:else}
   <div class="fixed top-1/2 left-1/2 z-50">

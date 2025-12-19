@@ -5,36 +5,30 @@
   interface Props {
     page: Page;
     src: File;
-    cachedUrl?: string | null;
+    cachedBitmap?: ImageBitmap | null;
     volumeUuid: string;
+    showTextBoxes?: boolean;
   }
 
-  let { page, src, cachedUrl, volumeUuid }: Props = $props();
+  let { page, src, cachedBitmap, volumeUuid, showTextBoxes = true }: Props = $props();
 
-  let url = $state('');
+  let canvasEl: HTMLCanvasElement | undefined = $state();
 
-  // Use cached URL if available, otherwise create blob URL
+  // Draw pre-decoded bitmap to canvas when ready
+  // Defer to next frame to avoid blocking during spread transitions
   $effect(() => {
-    let currentBlobUrl: string | null = null;
+    if (!canvasEl || !cachedBitmap) return;
 
-    if (cachedUrl) {
-      // Use pre-decoded cached URL (no cleanup needed, managed by cache)
-      url = `url(${cachedUrl})`;
-    } else if (src) {
-      // Fallback: create new blob URL
-      currentBlobUrl = URL.createObjectURL(src);
-      url = `url(${currentBlobUrl})`;
-    } else {
-      url = '';
-    }
+    // Capture refs for closure
+    const canvas = canvasEl;
+    const bitmap = cachedBitmap;
 
-    // Cleanup function runs on effect re-run or component unmount
-    return () => {
-      // Only revoke if we created it (not from cache)
-      if (currentBlobUrl) {
-        URL.revokeObjectURL(currentBlobUrl);
+    requestAnimationFrame(() => {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(bitmap, 0, 0);
       }
-    };
+    });
   });
 </script>
 
@@ -42,11 +36,16 @@
   draggable="false"
   style:width={`${page.img_width}px`}
   style:height={`${page.img_height}px`}
-  style:background-image={url}
-  style:background-size="contain"
-  style:background-repeat="no-repeat"
-  style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} {src} {volumeUuid} />
+  <canvas
+    bind:this={canvasEl}
+    width={page.img_width}
+    height={page.img_height}
+    class="absolute inset-0 h-full w-full"
+    style="object-fit: contain;"
+  ></canvas>
+  {#if showTextBoxes}
+    <TextBoxes {page} {src} {volumeUuid} />
+  {/if}
 </div>
