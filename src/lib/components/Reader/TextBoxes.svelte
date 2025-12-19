@@ -132,8 +132,15 @@
     const minFontSize = 8; // Minimum font size in px
     const maxFontSize = 200; // Maximum font size to try when scaling up
 
-    // Convert to px for consistent handling
-    const originalInPx = unit === 'pt' ? originalSize * 1.333 : originalSize;
+    // Convert to px for consistent handling, rounding to integer
+    // Integer font sizes ensure the binary search always makes progress
+    let originalInPx = Math.round(unit === 'pt' ? originalSize * 1.333 : originalSize);
+
+    // Guard against invalid font sizes that would cause infinite loops
+    // (0, negative, NaN, or Infinity would break the binary search)
+    if (!Number.isFinite(originalInPx) || originalInPx < minFontSize) {
+      originalInPx = minFontSize;
+    }
 
     // Check if content overflows at a given font size
     const isOverflowingAt = (size: number) => {

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.7] - 2025-12-17
+
+### Added
+
+- JPEG XL (.jxl) image support
+
+### Fixed
+
+- Fix infinite loop causing browser freeze on some mokuro pages
+- Fix timer continuing to run after leaving a volume
+
 ## [1.0.6] - 2025-12-12
 
 ### Fixed
