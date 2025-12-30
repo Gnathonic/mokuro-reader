@@ -17,7 +17,8 @@ export type View =
   | { type: 'cloud' }
   | { type: 'upload' }
   | { type: 'reading-speed' }
-  | { type: 'merge-series' };
+  | { type: 'merge-series' }
+  | { type: 'progress-tracker' };
 
 /**
  * Current view state
@@ -40,6 +41,7 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'upload') return { type: 'upload' };
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
+    if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
 
     if (segments[0] === 'series' && segments.length >= 2) {
       const seriesId = decodeURIComponent(segments[1]);
@@ -86,6 +88,8 @@ export function viewToHash(view: View): string {
       return '#/reading-speed';
     case 'merge-series':
       return '#/merge-series';
+    case 'progress-tracker':
+      return '#/progress-tracker';
   }
 }
 
@@ -145,7 +149,10 @@ export const nav = {
   toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options),
 
   /** Navigate to merge series page */
-  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options)
+  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
+
+  /** Navigate to progress tracker page */
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options)
 };
 
 /**
@@ -161,6 +168,7 @@ export const nav = {
  * - reading-speed -> catalog
  * - upload -> catalog
  * - merge-series -> catalog
+ * - progress-tracker -> catalog
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -183,6 +191,7 @@ export function navigateBack(): void {
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
+    case 'progress-tracker':
       nav.toCatalog();
       break;
     case 'catalog':
