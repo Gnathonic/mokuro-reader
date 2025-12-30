@@ -245,8 +245,8 @@ export const IMAGE_MIME_TYPES: Record<string, string> = {
 /** Supported image extensions (derived from MIME types map) */
 export const IMAGE_EXTENSIONS = new Set(Object.keys(IMAGE_MIME_TYPES));
 
-/** Supported archive extensions */
-export const ARCHIVE_EXTENSIONS = new Set(['zip', 'cbz', 'cbr', 'rar', '7z']);
+/** Supported archive extensions (ZIP-based formats only - we use zip.js) */
+export const ARCHIVE_EXTENSIONS = new Set(['zip', 'cbz']);
 
 /** Check if extension is an image */
 export function isImageExtension(ext: string): boolean {
