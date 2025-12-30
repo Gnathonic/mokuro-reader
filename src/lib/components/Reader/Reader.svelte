@@ -435,6 +435,9 @@
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
+  // Set of missing page paths for checking if current page is a placeholder
+  let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
+
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
 
@@ -915,6 +918,7 @@
                   src={imageCache.getFile(index + 1)!}
                   cachedUrl={cachedImageUrl2}
                   volumeUuid={volume.volume_uuid}
+                  forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                 />
               {/if}
               <MangaPage
@@ -922,6 +926,7 @@
                 src={imageCache.getFile(index)!}
                 cachedUrl={cachedImageUrl1}
                 volumeUuid={volume.volume_uuid}
+                forceVisible={missingPagePaths.has(pages[index]?.img_path)}
               />
             {:else}
               <div class="flex h-screen w-screen items-center justify-center">

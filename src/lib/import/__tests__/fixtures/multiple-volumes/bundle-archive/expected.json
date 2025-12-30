@@ -1,0 +1,11 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "archive",
+      "hasMokuro": false,
+      "basePathContains": "bundle",
+      "imageOnly": false
+    }
+  ]
+}

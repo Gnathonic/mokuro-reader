@@ -1,6 +1,7 @@
 <script lang="ts">
   import Loader from '$lib/components/Loader.svelte';
-  import { getItems, processFiles } from '$lib/upload';
+  import { getItems } from '$lib/upload';
+  import { importFiles } from '$lib/import';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { nav } from '$lib/util/hash-router';
   import { P, Progressbar } from 'flowbite-svelte';
@@ -62,7 +63,7 @@
     files.push(mokuroFile);
     message = 'Adding to catalog...';
 
-    processFiles(files).then(() => {
+    importFiles(files).then(() => {
       nav.toCatalog({ replaceState: true });
     });
   }

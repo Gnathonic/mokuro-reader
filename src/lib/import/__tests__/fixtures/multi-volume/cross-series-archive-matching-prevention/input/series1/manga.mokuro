@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "title": "Series 1",
+  "title_uuid": "0551d1bc-145f-4526-9c10-df5377533ea1",
+  "volume": "Volume 1",
+  "volume_uuid": "de23e848-ce95-49e0-8222-21eb2983721f",
+  "pages": [
+    {
+      "version": "0.1.7",
+      "img_width": 600,
+      "img_height": 849,
+      "blocks": [
+        {
+          "box": [
+            100,
+            100,
+            200,
+            200
+          ],
+          "vertical": true,
+          "font_size": 30,
+          "lines_coords": [
+            [
+              [
+                100,
+                100
+              ],
+              [
+                200,
+                100
+              ],
+              [
+                200,
+                200
+              ],
+              [
+                100,
+                200
+              ]
+            ]
+          ],
+          "lines": [
+            "テストページ1"
+          ]
+        }
+      ],
+      "img_path": "page001.jpg"
+    }
+  ]
+}

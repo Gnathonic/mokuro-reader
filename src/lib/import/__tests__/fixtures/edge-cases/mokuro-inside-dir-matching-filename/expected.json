@@ -1,0 +1,12 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "Series/Volume01",
+      "imageOnly": false,
+      "fileCount": 2
+    }
+  ]
+}

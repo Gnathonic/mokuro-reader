@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { processFiles, scanFiles } from '$lib/upload';
+  import { scanFiles } from '$lib/upload';
+  import { importFiles } from '$lib/import';
   import { showSnackbar } from '$lib/util/snackbar';
 
   let isDragging = $state(false);
@@ -84,7 +85,7 @@
     showSnackbar(`Importing ${files.length} file(s)...`, 3000);
 
     try {
-      await processFiles(files);
+      await importFiles(files);
     } catch (error) {
       console.error('Error processing dropped files:', error);
       showSnackbar('Failed to import files', 3000);

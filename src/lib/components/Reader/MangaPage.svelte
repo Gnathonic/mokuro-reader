@@ -7,9 +7,11 @@
     src: File;
     cachedUrl?: string | null;
     volumeUuid: string;
+    /** Force text visibility (for placeholder/missing pages) */
+    forceVisible?: boolean;
   }
 
-  let { page, src, cachedUrl, volumeUuid }: Props = $props();
+  let { page, src, cachedUrl, volumeUuid, forceVisible = false }: Props = $props();
 
   let url = $state('');
 
@@ -48,5 +50,5 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} {src} {volumeUuid} />
+  <TextBoxes {page} {src} {volumeUuid} {forceVisible} />
 </div>

@@ -1,0 +1,11 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "archive",
+      "hasMokuro": true,
+      "basePathContains": "My Manga [Author]",
+      "imageOnly": false
+    }
+  ]
+}

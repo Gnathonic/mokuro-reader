@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "title": "My Manga",
+  "title_uuid": "9e9237a6-f772-4e3c-afc6-edf4de9ec27d",
+  "volume": "Volume 1",
+  "volume_uuid": "6101c22a-72a9-45dc-b35a-2919b03a2d73",
+  "pages": [
+    {
+      "version": "0.1.7",
+      "img_width": 600,
+      "img_height": 849,
+      "blocks": [
+        {
+          "box": [
+            100,
+            100,
+            200,
+            200
+          ],
+          "vertical": true,
+          "font_size": 30,
+          "lines_coords": [
+            [
+              [
+                100,
+                100
+              ],
+              [
+                200,
+                100
+              ],
+              [
+                200,
+                200
+              ],
+              [
+                100,
+                200
+              ]
+            ]
+          ],
+          "lines": [
+            "テストページ1"
+          ]
+        }
+      ],
+      "img_path": "page001.jpg"
+    }
+  ]
+}

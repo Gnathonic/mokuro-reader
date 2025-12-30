@@ -116,3 +116,35 @@ export function promptImportMismatch(
     onDismiss
   });
 }
+
+// Missing files warning modal - shows when importing a volume with missing images
+export type MissingFilesInfo = {
+  volumeName: string;
+  missingFiles: string[];
+  totalPages: number;
+};
+
+type MissingFilesModal = {
+  open: boolean;
+  info: MissingFilesInfo;
+  onImportAnyway?: () => void;
+  onCancel?: () => void;
+};
+
+export const missingFilesModalStore = writable<MissingFilesModal | undefined>(undefined);
+
+/**
+ * Show missing files warning modal with import anyway option
+ */
+export function promptMissingFiles(
+  info: MissingFilesInfo,
+  onImportAnyway?: () => void,
+  onCancel?: () => void
+) {
+  missingFilesModalStore.set({
+    open: true,
+    info,
+    onImportAnyway,
+    onCancel
+  });
+}
