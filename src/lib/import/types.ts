@@ -236,7 +236,10 @@ export const IMAGE_EXTENSIONS = new Set([
 	'webp',
 	'gif',
 	'bmp',
-	'avif'
+	'avif',
+	'tif',
+	'tiff',
+	'jxl'
 ]);
 
 /** Supported archive extensions */
