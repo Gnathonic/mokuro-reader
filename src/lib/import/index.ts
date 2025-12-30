@@ -29,10 +29,12 @@ export type {
 // Type utilities
 export {
 	IMAGE_EXTENSIONS,
+	IMAGE_MIME_TYPES,
 	ARCHIVE_EXTENSIONS,
 	isImageExtension,
 	isArchiveExtension,
 	isMokuroExtension,
+	getImageMimeType,
 	parseFilePath,
 	categorizeFile
 } from './types';

@@ -228,19 +228,22 @@ export interface ImportQueueItem {
 // UTILITY TYPES
 // ============================================
 
-/** Supported image extensions */
-export const IMAGE_EXTENSIONS = new Set([
-	'jpg',
-	'jpeg',
-	'png',
-	'webp',
-	'gif',
-	'bmp',
-	'avif',
-	'tif',
-	'tiff',
-	'jxl'
-]);
+/** Image extension to MIME type mapping - single source of truth */
+export const IMAGE_MIME_TYPES: Record<string, string> = {
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	png: 'image/png',
+	webp: 'image/webp',
+	gif: 'image/gif',
+	bmp: 'image/bmp',
+	avif: 'image/avif',
+	tif: 'image/tiff',
+	tiff: 'image/tiff',
+	jxl: 'image/jxl'
+};
+
+/** Supported image extensions (derived from MIME types map) */
+export const IMAGE_EXTENSIONS = new Set(Object.keys(IMAGE_MIME_TYPES));
 
 /** Supported archive extensions */
 export const ARCHIVE_EXTENSIONS = new Set(['zip', 'cbz', 'cbr', 'rar', '7z']);
@@ -248,6 +251,11 @@ export const ARCHIVE_EXTENSIONS = new Set(['zip', 'cbz', 'cbr', 'rar', '7z']);
 /** Check if extension is an image */
 export function isImageExtension(ext: string): boolean {
 	return IMAGE_EXTENSIONS.has(ext.toLowerCase());
+}
+
+/** Get MIME type for an image extension */
+export function getImageMimeType(ext: string): string {
+	return IMAGE_MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
 }
 
 /** Check if extension is an archive */

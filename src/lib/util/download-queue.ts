@@ -25,6 +25,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { normalizeFilename, remapPagePaths } from './misc';
+import { getImageMimeType } from '$lib/import';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -346,21 +347,9 @@ async function processVolumeData(
   const files: Record<string, File> = {};
   for (const entry of entries) {
     if (!entry.filename.endsWith('.mokuro') && !entry.filename.includes('__MACOSX')) {
-      // Determine MIME type from file extension
+      // Determine MIME type from file extension using shared utility
       const extension = entry.filename.toLowerCase().split('.').pop() || '';
-      const mimeTypes: Record<string, string> = {
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        png: 'image/png',
-        gif: 'image/gif',
-        webp: 'image/webp',
-        bmp: 'image/bmp',
-        avif: 'image/avif',
-        tif: 'image/tiff',
-        tiff: 'image/tiff',
-        jxl: 'image/jxl'
-      };
-      const mimeType = mimeTypes[extension] || 'application/octet-stream';
+      const mimeType = getImageMimeType(extension);
 
       // Normalize filename to handle URL-encoded Unicode characters
       const normalizedFilename = normalizeFilename(entry.filename);
