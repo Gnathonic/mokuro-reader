@@ -14,7 +14,8 @@
     cloud: () => import('$lib/views/CloudView.svelte'),
     upload: () => import('$lib/views/UploadView.svelte'),
     'reading-speed': () => import('$lib/views/ReadingSpeedView.svelte'),
-    'merge-series': () => import('$lib/views/MergeSeriesView.svelte')
+    'merge-series': () => import('$lib/views/MergeSeriesView.svelte'),
+    'progress-tracker': () => import('$lib/views/ProgressTrackerView.svelte')
   };
 
   // Currently loaded component
