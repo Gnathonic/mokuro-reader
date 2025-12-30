@@ -6,7 +6,7 @@
 
   interface Props {
     page: Page;
-    src: File;
+    src?: File;
     volumeUuid: string;
     /** Force text visibility (for placeholder/missing pages) */
     forceVisible?: boolean;
@@ -124,8 +124,15 @@
     const minFontSize = 8; // Minimum font size in px
     const maxFontSize = 200; // Maximum font size to try when scaling up
 
-    // Convert to px for consistent handling
-    const originalInPx = unit === 'pt' ? originalSize * 1.333 : originalSize;
+    // Convert to px for consistent handling, rounding to integer
+    // Integer font sizes ensure the binary search always makes progress
+    let originalInPx = Math.round(unit === 'pt' ? originalSize * 1.333 : originalSize);
+
+    // Guard against invalid font sizes that would cause infinite loops
+    // (0, negative, NaN, or Infinity would break the binary search)
+    if (!Number.isFinite(originalInPx) || originalInPx < minFontSize) {
+      originalInPx = minFontSize;
+    }
 
     // Check if content overflows at a given font size
     const isOverflowingAt = (size: number) => {
@@ -256,12 +263,35 @@
     };
   }
 
-  async function onUpdateCard(lines: string[]) {
+  function getImageUrlFromElement(element: HTMLElement): string | null {
+    // Traverse up to find the MangaPage div with background-image
+    let current: HTMLElement | null = element;
+    while (current) {
+      const bgImage = getComputedStyle(current).backgroundImage;
+      if (bgImage && bgImage !== 'none') {
+        // Extract URL from "url(...)"
+        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+        if (match) {
+          return match[1];
+        }
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  async function onUpdateCard(event: Event, lines: string[]) {
     if ($settings.ankiConnectSettings.enabled) {
       const sentence = lines.join(' ');
       if ($settings.ankiConnectSettings.cropImage) {
-        showCropper(URL.createObjectURL(src), sentence);
-      } else {
+        // Get image URL from rendered page, fallback to creating from src
+        const url =
+          getImageUrlFromElement(event.target as HTMLElement) ||
+          (src ? URL.createObjectURL(src) : null);
+        if (url) {
+          showCropper(url, sentence);
+        }
+      } else if (src) {
         promptConfirmation('Add image to last created anki card?', async () => {
           const imageData = await imageToWebp(src, $settings);
           updateLastCard(imageData, sentence);
@@ -273,14 +303,16 @@
   function onContextMenu(event: Event, lines: string[]) {
     if (triggerMethod === 'both' || triggerMethod === 'rightClick') {
       event.preventDefault();
-      onUpdateCard(lines);
+      onUpdateCard(event, lines);
     }
   }
 
   function onDoubleTap(event: Event, lines: string[]) {
+    // Always stop propagation to prevent zoom from triggering
+    event.stopPropagation();
     if (triggerMethod === 'both' || triggerMethod === 'doubleTap') {
       event.preventDefault();
-      onUpdateCard(lines);
+      onUpdateCard(event, lines);
     }
   }
 </script>
@@ -307,9 +339,9 @@
     ondblclick={(e) => onDoubleTap(e, lines)}
     {contenteditable}
   >
-    {#each lines as line}
-      <p>{line}</p>
-    {/each}
+    <p>
+      {#each lines as line, i}{line}{#if i < lines.length - 1}<br />{/if}{/each}
+    </p>
   </div>
 {/each}
 
@@ -344,7 +376,6 @@
     /* Word wrapping controlled dynamically by JavaScript */
     letter-spacing: 0.1em;
     line-height: 1.1em;
-    margin: 0;
     background-color: rgb(255, 255, 255);
     font-weight: var(--bold);
     font-family: 'Noto Sans JP', sans-serif;

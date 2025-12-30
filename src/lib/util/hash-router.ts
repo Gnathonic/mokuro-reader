@@ -94,13 +94,16 @@ interface NavigateOptions {
 
 /**
  * Navigate to a view - updates hash and view state
+ * Always navigates to root path (/) to ensure hash routing works correctly
  */
 export function navigate(view: View, options?: NavigateOptions): void {
   const hash = viewToHash(view);
+  // Always use root path to avoid issues when navigating from legacy paths like /upload
+  const url = '/' + hash;
   if (options?.replaceState) {
-    window.history.replaceState(null, '', hash);
+    window.history.replaceState(null, '', url);
   } else {
-    window.history.pushState(null, '', hash);
+    window.history.pushState(null, '', url);
   }
   currentView.set(view);
 }
@@ -209,9 +212,15 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  */
 export function initRouter(): () => void {
   // Handle legacy pathname-based routes from before hash router migration
-  // Redirect all legacy routes to catalog, except /upload which is online-only
   const pathname = window.location.pathname;
-  if (pathname && pathname !== '/' && !pathname.startsWith('/upload')) {
+
+  // Handle /upload path: redirect to hash-based #/upload while preserving query params
+  // This supports cross-site imports like /upload?manga=X&volume=Y
+  if (pathname.startsWith('/upload')) {
+    const newUrl = '/' + window.location.search + '#/upload';
+    window.history.replaceState(null, '', newUrl);
+  } else if (pathname && pathname !== '/') {
+    // Redirect all other legacy routes to catalog
     window.history.replaceState(null, '', '/#/catalog');
   }
 

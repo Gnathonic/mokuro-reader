@@ -3,6 +3,7 @@ import { derived, writable, readable } from 'svelte/store';
 import { zoomDefault } from '$lib/panzoom';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
+import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 
 import type { PageViewMode } from './settings';
 
@@ -213,7 +214,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
   try {
     const parsed = JSON.parse(storedData);
     return Object.fromEntries(
-      Object.entries(parsed).map(([key, value]) => [key, VolumeData.fromJSON(value)])
+      Object.entries(parsed)
+        // Filter out entries with empty/invalid volume IDs (bug cleanup)
+        .filter(([key]) => key && key.length > 0)
+        .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
     return {};
@@ -431,30 +435,12 @@ export function updateProgress(
     const currentVolume = prev[volume] || new VolumeData();
     const now = Date.now();
 
-    // Get session timeout from user settings (in minutes, convert to ms)
-    let sessionTimeoutMs = 30 * 60 * 1000; // Default 30 minutes
-    globalSettings.subscribe((s) => {
-      sessionTimeoutMs = s.inactivityTimeoutMinutes * 60 * 1000;
-    })();
-
-    // Session tracking logic - just add to recentPageTurns
-    // Compaction into aggregate sessions will happen later
-    let recentPageTurns = currentVolume.recentPageTurns;
-
-    // Check if we need to clear old turns (session timeout)
-    if (recentPageTurns.length > 0) {
-      const lastTurn = recentPageTurns[recentPageTurns.length - 1];
-      if (now - lastTurn[0] > sessionTimeoutMs) {
-        // TODO: Compact recentPageTurns into an aggregate session before clearing
-        // For now, just clear
-        recentPageTurns = [];
-      }
-    }
-
     // Add new turn with cumulative character count
+    // Page turns accumulate indefinitely - idle gaps are filtered during time calculation
     // Store cumulative chars so we can calculate reading speed even if volume is deleted from IndexedDB
     const cumulativeChars = chars ?? currentVolume.chars;
-    recentPageTurns = [...recentPageTurns, [now, progress, cumulativeChars]];
+    const newTurn: PageTurn = [now, progress, cumulativeChars];
+    const recentPageTurns = [...currentVolume.recentPageTurns, newTurn];
 
     // Lazy metadata population: If metadata is missing, fetch it asynchronously
     // This ensures stats pages work even if IndexedDB is later deleted
@@ -493,6 +479,12 @@ export function updateProgress(
 }
 
 export function startCount(volume: string) {
+  // Guard against null/undefined/empty volume IDs
+  if (!volume) {
+    console.warn('[startCount] Called with empty volume ID, skipping timer');
+    return undefined;
+  }
+
   return setInterval(() => {
     _volumesInternal.update((prev) => {
       const currentVolume = prev[volume] || new VolumeData();
@@ -600,17 +592,19 @@ export function updateVolumeSetting(volume: string, key: VolumeSettingsKey, valu
   zoomDefault();
 }
 
-export const totalStats = derived(volumes, ($volumes) => {
+export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
   if ($volumes) {
+    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
+
     return Object.values($volumes).reduce<TotalStats>(
-      (stats, { chars, completed, timeReadInMinutes, progress }) => {
-        if (completed) {
+      (stats, volumeData) => {
+        if (volumeData.completed) {
           stats.completed++;
         }
 
-        stats.pagesRead += progress;
-        stats.minutesRead += timeReadInMinutes;
-        stats.charsRead += chars;
+        stats.pagesRead += volumeData.progress;
+        stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
+        stats.charsRead += volumeData.chars;
 
         return stats;
       },

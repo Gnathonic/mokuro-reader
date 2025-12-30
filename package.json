@@ -1,6 +1,6 @@
 {
-  "name": "z-reader",
-  "version": "1.0.0",
+  "name": "mokuro-reader",
+  "version": "1.0.7",
   "private": true,
   "scripts": {
     "dev": "vite dev",
@@ -11,9 +11,15 @@
     "lint": "prettier --plugin-search-dir . --check . && eslint .",
     "format": "prettier --plugin-search-dir . --write .",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "changeset tag",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
     "@sveltejs/adapter-auto": "^4.0.0",
     "@sveltejs/kit": "^2.5.27",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
@@ -36,7 +42,9 @@
     "flowbite": "^4.0.1",
     "flowbite-svelte": "^1.28.1",
     "flowbite-svelte-icons": "^3.0.0",
+    "husky": "^9.1.7",
     "jsdom": "^26.0.0",
+    "lint-staged": "^16.2.7",
     "postcss": "^8.4.24",
     "postcss-load-config": "^6.0.1",
     "prettier": "^3.1.0",
@@ -70,5 +78,8 @@
       "esbuild",
       "@tailwindcss/oxide"
     ]
+  },
+  "lint-staged": {
+    "*.{js,ts,svelte,md,json,css,html}": "prettier --write"
   }
 }

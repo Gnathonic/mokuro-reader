@@ -8,7 +8,8 @@
   import { promptExtraction } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
-  import { deleteVolume, volumes, progress } from '$lib/settings';
+  import { deleteVolume, volumes, progress, settings } from '$lib/settings';
+  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
@@ -33,13 +34,18 @@
   let mangaStats = $derived.by(() => {
     if (!manga || manga.length === 0 || !$volumes) return null;
 
+    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
+
     return manga
       .map((vol) => vol.volume_uuid)
       .reduce(
         (stats, volumeId) => {
-          const timeReadInMinutes = $volumes[volumeId]?.timeReadInMinutes || 0;
-          const chars = $volumes[volumeId]?.chars || 0;
-          const completed = $volumes[volumeId]?.completed ? 1 : 0;
+          const volumeData = $volumes[volumeId];
+          const timeReadInMinutes = volumeData
+            ? getEffectiveReadingTime(volumeData, idleTimeoutMs)
+            : 0;
+          const chars = volumeData?.chars || 0;
+          const completed = volumeData?.completed ? 1 : 0;
 
           stats.timeReadInMinutes = stats.timeReadInMinutes + timeReadInMinutes;
           stats.chars = stats.chars + chars;

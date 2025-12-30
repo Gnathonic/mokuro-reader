@@ -10,6 +10,7 @@
   import ImageOnlyImportModal from '$lib/components/ImageOnlyImportModal.svelte';
   import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
+  import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import ProgressTracker from '$lib/components/ProgressTracker.svelte';
   import NightModeFilter from '$lib/components/NightModeFilter.svelte';
   import GlobalDropZone from '$lib/components/GlobalDropZone.svelte';
@@ -107,6 +108,7 @@
     <ImageOnlyImportModal />
     <ImportMismatchModal />
     <MissingFilesModal />
+    <WebDAVErrorModal />
     <ProgressTracker />
     <NightModeFilter />
     <GlobalDropZone />

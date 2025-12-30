@@ -94,3 +94,69 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  release-check:
+    name: Release Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for version and changelog updates
+        run: |
+          # Check for skip label
+          if gh pr view ${{ github.event.pull_request.number }} --json labels -q '.labels[].name' | grep -q "skip-release-check"; then
+            echo "⏭️ Skipping release check (skip-release-check label)"
+            exit 0
+          fi
+
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+
+          # Check for version change
+          MAIN_VERSION=$(git show origin/main:package.json | grep '"version"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+          PR_VERSION=$(grep '"version"' package.json | sed 's/.*: *"\([^"]*\)".*/\1/')
+
+          VERSION_CHANGED=false
+          if [ "$MAIN_VERSION" != "$PR_VERSION" ]; then
+            VERSION_CHANGED=true
+            echo "✅ Version changed: $MAIN_VERSION → $PR_VERSION"
+          fi
+
+          # Check for changelog update
+          CHANGELOG_CHANGED=false
+          if echo "$CHANGED_FILES" | grep -q "^CHANGELOG.md$"; then
+            CHANGELOG_CHANGED=true
+            echo "✅ CHANGELOG.md updated"
+          fi
+
+          # Both must be present, or neither (for non-release PRs)
+          if [ "$VERSION_CHANGED" = true ] && [ "$CHANGELOG_CHANGED" = true ]; then
+            echo ""
+            echo "✅ Release PR: version bumped and changelog updated"
+            exit 0
+          elif [ "$VERSION_CHANGED" = false ] && [ "$CHANGELOG_CHANGED" = false ]; then
+            echo ""
+            echo "✅ Non-release PR: no version or changelog changes"
+            exit 0
+          else
+            echo ""
+            echo "❌ Incomplete release changes!"
+            echo ""
+            if [ "$VERSION_CHANGED" = true ]; then
+              echo "   - Version was changed but CHANGELOG.md was not updated"
+            else
+              echo "   - CHANGELOG.md was updated but version was not bumped"
+            fi
+            echo ""
+            echo "For a release, you must update BOTH:"
+            echo "  1. version in package.json"
+            echo "  2. CHANGELOG.md with release notes"
+            echo ""
+            echo "Or add the 'skip-release-check' label to bypass this check."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

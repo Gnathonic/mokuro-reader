@@ -276,8 +276,8 @@ describe('calculateReadingSpeedStats', () => {
     ];
 
     const allVolumesData = {
-      'vol-1': { completed: true, chars: 6000 },
-      'vol-2': { completed: true, chars: 9000 }
+      'vol-1': { completed: true, chars: 6000, timeReadInMinutes: 60 },
+      'vol-2': { completed: true, chars: 9000, timeReadInMinutes: 90 }
     };
 
     const result = calculateReadingSpeedStats(volumeData, 100, allVolumesData);
@@ -493,7 +493,7 @@ describe('calculateReadingSpeedStats', () => {
       ];
 
       const result = calculateReadingSpeedStats(volumeData, 100, {
-        'vol-1': { completed: true, chars: 120000 }
+        'vol-1': { completed: true, chars: 120000, timeReadInMinutes: 1200 }
       });
 
       expect(result.badges).toContain('1 Hour Reader');

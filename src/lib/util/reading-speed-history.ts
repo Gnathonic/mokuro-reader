@@ -187,20 +187,30 @@ export function processVolumeSpeedData(
 export function calculateReadingSpeedStats(
   volumeData: VolumeSpeedData[],
   currentPersonalizedSpeed: number,
-  allVolumesData: Record<string, any>
+  allVolumesData: Record<string, any>,
+  isSpeedPersonalized: boolean = true
 ): ReadingSpeedStats {
-  // Count ALL completed volumes (including marked-as-read) for achievements
+  // Count volumes and aggregate stats from ALL volumes
   let allCompletedCount = 0;
-  let allCompletedChars = 0;
+  let allCharsRead = 0;
+  let allVolumesTime = 0;
 
   for (const [volumeId, data] of Object.entries(allVolumesData)) {
+    // Skip entries with empty/invalid volume IDs (bug from null timer)
+    if (!volumeId) continue;
+
+    // Use timeReadInMinutes directly (already updated by Timer component)
+    allVolumesTime += data.timeReadInMinutes || 0;
+
+    // Count chars from ALL volumes (not just completed)
+    allCharsRead += data.chars || 0;
+
     if (data.completed && data.chars > 0) {
       allCompletedCount++;
-      allCompletedChars += data.chars;
     }
   }
 
-  if (volumeData.length === 0 && allCompletedCount === 0) {
+  if (volumeData.length === 0 && allCharsRead === 0 && allVolumesTime === 0) {
     return {
       totalTimeMinutes: 0,
       averageSpeed: 0,
@@ -213,8 +223,9 @@ export function calculateReadingSpeedStats(
     };
   }
 
-  const totalTime = volumeData.reduce((sum, v) => sum + v.durationMinutes, 0);
-  const totalChars = allCompletedChars; // Use total from ALL completed volumes
+  // Use totals from all volumes (not just completed)
+  const totalTime = allVolumesTime;
+  const totalChars = allCharsRead;
   const avgSpeed =
     volumeData.length > 0
       ? volumeData.reduce((sum, v) => sum + v.charsPerMinute, 0) / volumeData.length
@@ -246,36 +257,38 @@ export function calculateReadingSpeedStats(
   // Calculate badges/achievements
   const badges: string[] = [];
 
-  // Speed-based achievements (10 levels: Grey -> Bronze -> Silver -> Gold -> Platinum -> Prestige Bronze -> Prestige Silver -> Prestige Gold -> Prestige Platinum -> Prismatic)
-  if (currentPersonalizedSpeed > 10) {
-    badges.push('Beginner');
-  }
-  if (currentPersonalizedSpeed > 25) {
-    badges.push('¹⁄₁₆ Native');
-  }
-  if (currentPersonalizedSpeed > 50) {
-    badges.push('⅛ Native');
-  }
-  if (currentPersonalizedSpeed > 100) {
-    badges.push('¼ Native');
-  }
-  if (currentPersonalizedSpeed > 150) {
-    badges.push('⅜ Native');
-  }
-  if (currentPersonalizedSpeed > 200) {
-    badges.push('½ Native');
-  }
-  if (currentPersonalizedSpeed > 250) {
-    badges.push('⅝ Native');
-  }
-  if (currentPersonalizedSpeed > 300) {
-    badges.push('¾ Native');
-  }
-  if (currentPersonalizedSpeed > 350) {
-    badges.push('⅞ Native');
-  }
-  if (currentPersonalizedSpeed > 400) {
-    badges.push('Native');
+  // Speed-based achievements (10 levels) - only award if speed is personalized
+  if (isSpeedPersonalized) {
+    if (currentPersonalizedSpeed > 10) {
+      badges.push('Beginner');
+    }
+    if (currentPersonalizedSpeed > 25) {
+      badges.push('¹⁄₁₆ Native');
+    }
+    if (currentPersonalizedSpeed > 50) {
+      badges.push('⅛ Native');
+    }
+    if (currentPersonalizedSpeed > 100) {
+      badges.push('¼ Native');
+    }
+    if (currentPersonalizedSpeed > 150) {
+      badges.push('⅜ Native');
+    }
+    if (currentPersonalizedSpeed > 200) {
+      badges.push('½ Native');
+    }
+    if (currentPersonalizedSpeed > 250) {
+      badges.push('⅝ Native');
+    }
+    if (currentPersonalizedSpeed > 300) {
+      badges.push('¾ Native');
+    }
+    if (currentPersonalizedSpeed > 350) {
+      badges.push('⅞ Native');
+    }
+    if (currentPersonalizedSpeed > 400) {
+      badges.push('Native');
+    }
   }
 
   // Volume count achievements (10 levels) - Use ALL completed volumes

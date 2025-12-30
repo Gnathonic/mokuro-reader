@@ -9,7 +9,6 @@
   import { routeParams } from '$lib/util/hash-router';
 
   let volumeId = $derived($routeParams.volume || '');
-  let count: undefined | number = $state(undefined);
 
   // Cache volume settings to prevent flash when unrelated volumes are added.
   // The effectiveVolumeSettings store emits a new object whenever ANY volume changes,
@@ -56,15 +55,6 @@
     }
   });
 
-  // Record activity when volumeId changes to trigger timer via activity tracker
-  $effect(() => {
-    if (!volumeId) return;
-
-    // Record activity when volume changes - this will trigger the timer
-    // via the activity tracker in the Timer component
-    activityTracker.recordActivity();
-  });
-
   onMount(() => {
     // Set up activity tracker timeout
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
@@ -77,10 +67,8 @@
 </script>
 
 {#if cachedVolumeSettings}
-  {#if $settings.showTimer}
-    <Timer bind:count {volumeId} />
-  {/if}
   {#key volumeId}
+    <Timer {volumeId} visible={$settings.showTimer} />
     <Reader volumeSettings={cachedVolumeSettings} />
   {/key}
 {:else}

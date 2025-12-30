@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { deleteVolume, progress, volumes } from '$lib/settings';
+  import { deleteVolume, progress, volumes, settings } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
+  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
@@ -91,7 +92,11 @@
   let isBackedUp = $derived(cloudFile !== undefined);
 
   // Time statistics
-  let timeReadMinutes = $derived(volumeData?.timeReadInMinutes || 0);
+  let timeReadMinutes = $derived.by(() => {
+    if (!volumeData) return 0;
+    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
+    return getEffectiveReadingTime(volumeData, idleTimeoutMs);
+  });
   let charsRead = $derived(volumeData?.chars || 0);
   let totalChars = $state<number | undefined>(undefined);
 

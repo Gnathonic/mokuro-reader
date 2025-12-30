@@ -4,7 +4,13 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [sveltekit(), tailwindcss()],
-  server: { host: true },
+  server: {
+    host: true,
+    fs: {
+      // Allow serving package.json for version info import
+      allow: ['..']
+    }
+  },
   optimizeDeps: {
     exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
   },
