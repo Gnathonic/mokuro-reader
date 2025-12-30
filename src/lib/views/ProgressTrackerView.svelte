@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Card } from 'flowbite-svelte';
   import { BookSolid } from 'flowbite-svelte-icons';
+  import { nav } from '$lib/util/hash-router';
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
   import { volumes as catalogVolumes } from '$lib/catalog';
 
@@ -50,23 +51,37 @@
       <p class="text-sm text-gray-400">Start reading to track your reading speed!</p>
     </Card>
   {:else}
-    {#each volumeEntries as [volumeId, volumeData]}
-      <div class="mb-4 rounded-lg border border-gray-700 bg-gray-800 p-4">
-        <h3 class="mb-2 font-semibold">{volumeData.volume_title}</h3>
-        {#if thumbnailUrls.get(volumeId)}
-          <img
-            src={thumbnailUrls.get(volumeId)}
-            alt={volumeData.volume_title || 'Volume cover'}
-            class="mb-3 rounded"
-            style="max-width: 125px; max-height: 180px; height: auto;"
-          />
-        {/if}
-        <p>
-          {$catalogVolumes[volumeId]?.page_count
-            ? ((($progress[volumeId] ?? 0) / $catalogVolumes[volumeId].page_count) * 100).toFixed(0)
-            : 0}% ({($catalogVolumes[volumeId]?.page_count ?? 0) - ($progress[volumeId] ?? 0)}p)
-        </p>
-      </div>
-    {/each}
+    <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
+      {#each volumeEntries as [volume_uuid, volumeData]}
+        <a
+          href="#/reader/{volumeData.series_uuid}/{volume_uuid}"
+          onclick={(e) => {
+            e.preventDefault();
+            if (volumeData.series_uuid) nav.toReader(volumeData.series_uuid, volume_uuid);
+          }}
+          class="flex flex-col gap-2"
+        >
+          <div class="mb-4 p-1">
+            {#if thumbnailUrls.get(volume_uuid)}
+              <img
+                src={thumbnailUrls.get(volume_uuid)}
+                alt={volumeData.volume_title || 'Volume cover'}
+                class="mb-3 rounded"
+                style="max-width: 125px; max-height: 180px; height: auto;"
+              />
+            {/if}
+            <p>
+              {$catalogVolumes[volume_uuid]?.page_count
+                ? (
+                    (($progress[volume_uuid] ?? 0) / $catalogVolumes[volume_uuid].page_count) *
+                    100
+                  ).toFixed(0)
+                : 0}% ({($catalogVolumes[volume_uuid]?.page_count ?? 0) -
+                ($progress[volume_uuid] ?? 0)}p)
+            </p>
+          </div>
+        </a>
+      {/each}
+    </div>
   {/if}
 </div>
