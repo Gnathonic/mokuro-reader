@@ -19,6 +19,7 @@
   import { initFileHandler } from '$lib/util/file-handler';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
+  import { isTauri } from '$lib/util/tauri';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { get } from 'svelte/store';
 
@@ -32,7 +33,10 @@
 
   let { children }: Props = $props();
 
-  inject({ mode: dev ? 'development' : 'production' });
+  // Only inject Vercel analytics in web context (not in Tauri desktop app)
+  if (!isTauri()) {
+    inject({ mode: dev ? 'development' : 'production' });
+  }
 
   // Handle global Escape key for back navigation
   function handleKeydown(event: KeyboardEvent) {
@@ -80,11 +84,14 @@
       console.error('Failed to initialize providers:', error);
     });
 
-    // Initialize file handler for PWA file associations
-    initFileHandler();
+    // PWA-only features - skip in Tauri
+    if (!isTauri()) {
+      // Initialize file handler for PWA file associations
+      initFileHandler();
 
-    // Initialize service worker update detection
-    initSwUpdateDetection();
+      // Initialize service worker update detection
+      initSwUpdateDetection();
+    }
   });
 </script>
 

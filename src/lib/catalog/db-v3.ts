@@ -47,37 +47,32 @@ export class CatalogDexieV3 extends Dexie {
     });
 
     try {
-      // Process all volumes in batches
-      for (let i = 0; i < total; i += batchSize) {
-        const batch = volumesNeedingThumbnails.slice(i, i + batchSize);
+      // Process thumbnails sequentially to avoid Pica instance conflicts
+      // (parallel processing causes corrupted thumbnails due to shared state)
+      for (const volumeUuid of volumesNeedingThumbnails) {
+        try {
+          const files = await this.volume_files.get(volumeUuid as string);
+          if (files && files.files) {
+            // Get the first image file when sorted naturally
+            const fileNames = Object.keys(files.files).sort(naturalSort);
+            const firstImageFile = fileNames.length > 0 ? files.files[fileNames[0]] : null;
 
-        await Promise.all(
-          batch.map(async (volumeUuid) => {
-            try {
-              const files = await this.volume_files.get(volumeUuid as string);
-              if (files && files.files) {
-                // Get the first image file when sorted naturally
-                const fileNames = Object.keys(files.files).sort(naturalSort);
-                const firstImageFile = fileNames.length > 0 ? files.files[fileNames[0]] : null;
-
-                if (firstImageFile) {
-                  const thumbnailResult = await generateThumbnail(firstImageFile);
-                  // Store thumbnail and dimensions directly in volumes table
-                  await this.volumes.update(volumeUuid as string, {
-                    thumbnail: thumbnailResult.file,
-                    thumbnail_width: thumbnailResult.width,
-                    thumbnail_height: thumbnailResult.height
-                  });
-                }
-              }
-            } catch (error) {
-              console.error('Failed to generate thumbnail for volume:', volumeUuid, error);
+            if (firstImageFile) {
+              const thumbnailResult = await generateThumbnail(firstImageFile);
+              // Store thumbnail and dimensions directly in volumes table
+              await this.volumes.update(volumeUuid as string, {
+                thumbnail: thumbnailResult.file,
+                thumbnail_width: thumbnailResult.width,
+                thumbnail_height: thumbnailResult.height
+              });
             }
-          })
-        );
+          }
+        } catch (error) {
+          console.error('Failed to generate thumbnail for volume:', volumeUuid, error);
+        }
 
-        // Update progress after each batch
-        processed += batch.length;
+        // Update progress after each volume
+        processed++;
         const percent = Math.round((processed / total) * 100);
         progressTrackerStore.updateProcess(processId, {
           status: `${processed} / ${total}`,

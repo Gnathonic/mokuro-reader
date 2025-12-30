@@ -63,16 +63,16 @@
 
   // Create blob URLs and load dimensions for stacked volumes
   $effect(() => {
+    // Track if this effect run has been superseded
+    let isStale = false;
     const newUrls = new Map<string, string>();
     const newDimensions = new Map<string, { width: number; height: number }>();
-    const urlsToRevoke: string[] = [];
 
     const promises = stackedVolumes.map((vol) => {
       if (!vol.thumbnail) return Promise.resolve();
 
       return new Promise<void>((resolve) => {
         const url = URL.createObjectURL(vol.thumbnail!);
-        urlsToRevoke.push(url);
         newUrls.set(vol.volume_uuid, url);
 
         const img = new Image();
@@ -89,13 +89,21 @@
     });
 
     Promise.all(promises).then(() => {
+      // Don't update state if this effect has been superseded
+      if (isStale) {
+        // Revoke URLs since we won't use them
+        newUrls.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
       thumbnailUrls = newUrls;
       thumbnailDimensions = newDimensions;
     });
 
-    // Cleanup: revoke all blob URLs when effect is destroyed
+    // Cleanup: mark as stale and revoke URLs that are in use
     return () => {
-      urlsToRevoke.forEach((url) => URL.revokeObjectURL(url));
+      isStale = true;
+      // Revoke the URLs that are currently displayed
+      thumbnailUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   });
 
