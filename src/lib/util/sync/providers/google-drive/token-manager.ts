@@ -2,6 +2,14 @@ import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { showSnackbar } from '$lib/util/snackbar';
+import { isTauri } from '$lib/util/tauri';
+import {
+	initTauriOAuth,
+	startTauriOAuth,
+	setTokenCallback,
+	setErrorCallback,
+	refreshAccessToken
+} from './tauri-oauth';
 
 class TokenManager {
   private tokenStore = writable<string>('');
@@ -14,7 +22,45 @@ class TokenManager {
     if (browser) {
       this.loadPersistedToken();
       this.setupTokenRefreshInterval();
+      this.setupTauriOAuth();
     }
+  }
+
+  private setupTauriOAuth(): void {
+    if (!isTauri()) return;
+
+    // Set up callbacks for Tauri OAuth (with refresh token support)
+    setTokenCallback((token: string, expiresIn: number, refreshToken?: string) => {
+      this.setToken(token, expiresIn, refreshToken);
+
+      // Also set token in gapi.client if available
+      if (typeof gapi !== 'undefined' && gapi.client) {
+        gapi.client.setToken({ access_token: token });
+      }
+
+      // Update provider manager to trigger reactive updates
+      import('../../provider-manager').then(({ providerManager }) => {
+        providerManager.updateStatus();
+      });
+    });
+
+    setErrorCallback((error: string) => {
+      console.error('Tauri OAuth error:', error);
+      this.needsAttentionStore.set(true);
+
+      if (error === 'access_denied') {
+        this.clearToken(false);
+        showSnackbar('Google Drive access was denied. Please sign in again to grant permissions.');
+      } else {
+        this.clearToken(true);
+        showSnackbar('Authentication failed. Please try signing in again.');
+      }
+    });
+
+    // Initialize Tauri OAuth listener
+    initTauriOAuth().catch((error) => {
+      console.error('Failed to initialize Tauri OAuth:', error);
+    });
   }
 
   get token() {
@@ -42,15 +88,15 @@ class TokenManager {
         gapi.client.setToken({ access_token: token });
       }
 
-      if (expiry > now) {
-        console.log(
-          'Loaded persisted token, expires in',
-          Math.round((expiry - now) / 60000),
-          'minutes'
-        );
-      } else {
-        console.log('Token expired, needs re-authentication');
-        this.needsAttentionStore.set(true);
+      if (expiry <= now) {
+        // Token expired - try silent refresh in Tauri
+        const refreshToken = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN);
+        if (isTauri() && refreshToken) {
+          // Defer silent refresh to after initialization
+          setTimeout(() => this.silentRefresh(), 100);
+        } else {
+          this.needsAttentionStore.set(true);
+        }
         // DON'T clear the token - keep it for auth history
       }
     }
@@ -62,8 +108,8 @@ class TokenManager {
       clearInterval(this.refreshIntervalId);
     }
 
-    // Simple token expiry monitor - just checks if token is expired and sets attention flag
-    this.refreshIntervalId = window.setInterval(() => {
+    // Token expiry monitor with silent refresh for Tauri
+    this.refreshIntervalId = window.setInterval(async () => {
       const expiresAt = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES);
       if (!expiresAt || !this.isAuthenticated()) return;
 
@@ -71,25 +117,67 @@ class TokenManager {
       const expiry = parseInt(expiresAt, 10);
       const timeUntilExpiry = expiry - now;
 
-      // Token expired - set attention flag
-      // Auto re-auth happens in api-client.ts when user actually tries to use Drive
-      if (timeUntilExpiry <= 0) {
-        console.log('❌ Token expired');
-        this.needsAttentionStore.set(true);
-        return;
+      // In Tauri with refresh token: silently refresh 5 minutes before expiry
+      if (isTauri() && !this.isRefreshing) {
+        const refreshToken = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN);
+
+        if (refreshToken && timeUntilExpiry <= 5 * 60 * 1000 && timeUntilExpiry > 0) {
+          await this.silentRefresh();
+          return;
+        }
+
+        // Token expired but we have refresh token - try to refresh
+        if (refreshToken && timeUntilExpiry <= 0) {
+          const success = await this.silentRefresh();
+          if (!success) {
+            this.needsAttentionStore.set(true);
+          }
+          return;
+        }
       }
 
-      // Show warning when getting close to expiry
-      if (timeUntilExpiry <= GOOGLE_DRIVE_CONFIG.TOKEN_WARNING_BUFFER_MS) {
-        const minutesLeft = Math.round(timeUntilExpiry / 60000);
-        if (minutesLeft > 0 && minutesLeft <= 10 && minutesLeft % 5 === 0) {
-          console.warn(`⚠️ Token expires in ${minutesLeft} minutes`);
-        }
+      // Token expired - set attention flag (web app behavior)
+      if (timeUntilExpiry <= 0) {
+        this.needsAttentionStore.set(true);
+        return;
       }
     }, GOOGLE_DRIVE_CONFIG.TOKEN_REFRESH_CHECK_INTERVAL_MS);
   }
 
-  setToken(token: string, expiresIn?: number): void {
+  /**
+   * Silently refresh the access token using refresh token (Tauri only)
+   */
+  private async silentRefresh(): Promise<boolean> {
+    if (!isTauri() || this.isRefreshing) return false;
+
+    const refreshToken = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN);
+    if (!refreshToken) return false;
+
+    this.isRefreshing = true;
+
+    try {
+      const result = await refreshAccessToken(refreshToken);
+
+      if (result) {
+        this.setToken(result.accessToken, result.expiresIn);
+
+        // Update gapi.client
+        if (typeof gapi !== 'undefined' && gapi.client) {
+          gapi.client.setToken({ access_token: result.accessToken });
+        }
+
+        this.isRefreshing = false;
+        return true;
+      }
+    } catch (error) {
+      console.error('Silent refresh failed:', error);
+    }
+
+    this.isRefreshing = false;
+    return false;
+  }
+
+  setToken(token: string, expiresIn?: number, refreshToken?: string): void {
     this.tokenStore.set(token);
     this.isRefreshing = false;
     this.needsAttentionStore.set(false); // Clear attention flag when token is set
@@ -99,21 +187,16 @@ class TokenManager {
       localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.LAST_AUTH_TIME, Date.now().toString());
       localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED, 'true');
 
+      // Store refresh token if provided (Tauri only)
+      if (refreshToken) {
+        localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN, refreshToken);
+      }
+
       if (expiresIn) {
         // Debug mode: Override expiry to 30 seconds for testing
         const actualExpiresIn = GOOGLE_DRIVE_CONFIG.DEBUG_SHORT_TOKEN_EXPIRY ? 30 : expiresIn;
         const expiresAt = Date.now() + actualExpiresIn * 1000;
         localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES, expiresAt.toString());
-
-        if (GOOGLE_DRIVE_CONFIG.DEBUG_SHORT_TOKEN_EXPIRY) {
-          console.warn('🔧 DEBUG MODE: Token will expire in 30 seconds');
-        } else {
-          console.log(
-            '✅ Token set successfully, expires in',
-            Math.round(expiresIn / 60),
-            'minutes'
-          );
-        }
       }
     }
   }
@@ -127,9 +210,10 @@ class TokenManager {
       localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES);
       localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.LAST_AUTH_TIME);
 
-      // Only clear auth history on explicit logout
+      // Only clear auth history and refresh token on explicit logout
       if (!keepAuthHistory) {
         localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED);
+        localStorage.removeItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN);
       }
     }
 
@@ -163,7 +247,6 @@ class TokenManager {
   private async waitForGoogleIdentity(): Promise<void> {
     if (typeof google !== 'undefined' && google?.accounts?.oauth2) return;
 
-    console.log('⏳ Waiting for Google Identity Services to load...');
     const maxWait = 10000; // 10 seconds
     const start = Date.now();
 
@@ -173,10 +256,19 @@ class TokenManager {
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    console.log('✅ Google Identity Services loaded');
   }
 
   async initTokenClient(): Promise<void> {
+    // In Tauri, we use our own OAuth flow - just set up gapi token if we have one
+    if (isTauri()) {
+      // If we have a persisted token, set it in gapi.client
+      const currentToken = this.getCurrentToken();
+      if (currentToken && typeof gapi !== 'undefined' && gapi.client) {
+        gapi.client.setToken({ access_token: currentToken });
+      }
+      return;
+    }
+
     // Wait for google Identity Services to be available
     await this.waitForGoogleIdentity();
 
@@ -238,11 +330,19 @@ class TokenManager {
     const currentToken = this.getCurrentToken();
     if (currentToken && typeof gapi !== 'undefined' && gapi.client) {
       gapi.client.setToken({ access_token: currentToken });
-      console.log('Restored persisted token to gapi.client');
     }
   }
 
   requestNewToken(forceConsent = false): void {
+    // In Tauri, use the loopback OAuth flow
+    if (isTauri()) {
+      startTauriOAuth().catch((error) => {
+        console.error('Failed to start Tauri OAuth:', error);
+        showSnackbar('Failed to open authentication page');
+      });
+      return;
+    }
+
     const tokenClient = this.tokenClientStore;
     let client: any;
 
@@ -258,11 +358,9 @@ class TokenManager {
 
       if (forceConsent || !hasAuthenticated) {
         // Force full consent screen (for initial auth or when explicitly requested)
-        console.log('→ Using full consent screen (prompt: "consent")');
         client.requestAccessToken({ prompt: 'consent' });
       } else {
         // Re-authentication: minimal UI, just account selection, reuse existing permissions
-        console.log('→ Using minimal re-auth (no prompt parameter = default select_account)');
         client.requestAccessToken({});
       }
     } else {
@@ -301,9 +399,18 @@ class TokenManager {
     const hasAuthHistory =
       browser &&
       localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED) === 'true';
-    const hasToken = this.getCurrentToken() !== '';
+    const currentToken = this.getCurrentToken();
+    const hasToken = currentToken !== '';
 
     return hasAuthHistory && hasToken;
+  }
+
+  /**
+   * Check if we have a refresh token available (Tauri only)
+   */
+  hasRefreshToken(): boolean {
+    if (!isTauri()) return false;
+    return !!localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.REFRESH_TOKEN);
   }
 
   getTimeUntilExpiry(): number | null {
@@ -321,7 +428,6 @@ class TokenManager {
 
   // Manual re-authentication (minimal UI, reuses existing permissions)
   reAuthenticate(): void {
-    console.log('🔄 reAuthenticate() called');
     this.requestNewToken(false);
   }
 }

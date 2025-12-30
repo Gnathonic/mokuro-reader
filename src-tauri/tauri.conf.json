@@ -1,0 +1,53 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Mokuro Reader",
+  "version": "1.0.0",
+  "identifier": "app.mokuro.reader",
+  "build": {
+    "frontendDist": "../build",
+    "devUrl": "http://localhost:5174",
+    "beforeDevCommand": "npm run dev -- --port 5174",
+    "beforeBuildCommand": "TAURI_ENV=true npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Mokuro Reader",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 400,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' https://apis.google.com https://accounts.google.com; connect-src 'self' https://*.googleapis.com https://*.google.com wss://*.mega.co.nz https://*.mega.co.nz; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; frame-src https://accounts.google.com https://content.googleapis.com;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mokuro-reader"]
+      },
+      "mobile": []
+    }
+  }
+}

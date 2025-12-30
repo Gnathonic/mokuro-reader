@@ -15,6 +15,7 @@
   import { tokenManager } from '$lib/util/sync/providers/google-drive';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
+  import { isTauri } from '$lib/util/tauri';
 
   // Use $state to make these reactive
   let settingsOpen = $state(false);
@@ -186,7 +187,7 @@
           <CloudArrowUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
         {/if}
       </button>
-      {#if isGoogleDrive && providerState.isAuthenticated && tokenMinutesLeft !== null}
+      {#if isGoogleDrive && providerState.isAuthenticated && tokenMinutesLeft !== null && !isTauri()}
         {#key tokenMinutesLeft}
           <button
             onclick={handleTokenRefresh}
