@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [sveltekit(), tailwindcss()],
   server: {
     host: true,
+    port: 5173,
+    strictPort: true,
     fs: {
       // Allow serving package.json for version info import
       allow: ['..']

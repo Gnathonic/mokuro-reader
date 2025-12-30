@@ -71,9 +71,7 @@ class GoogleDriveProvider implements SyncProvider {
     // Need to initialize - create promise and store it to prevent concurrent inits
     this.initializePromise = (async () => {
       try {
-        console.log('🔧 Initializing Drive API for existing auth...');
         await driveApiClient.initialize();
-        console.log('✅ Drive API initialized');
       } catch (error) {
         console.error('Failed to initialize Drive API:', error);
         this.initializePromise = null;
@@ -144,7 +142,6 @@ class GoogleDriveProvider implements SyncProvider {
 
       // Set the active provider key for lazy loading on next startup
       setActiveProviderKey('google-drive');
-      console.log('✅ Google Drive login successful');
     } catch (error) {
       throw new ProviderError(
         `Google Drive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -304,7 +301,6 @@ class GoogleDriveProvider implements SyncProvider {
         await driveApiClient.updateFileDescription(result.id, description);
       }
 
-      console.log(`✅ Uploaded ${fileName} to Google Drive (${result.id})`);
       return result.id;
     } catch (error) {
       throw new ProviderError(
@@ -333,9 +329,7 @@ class GoogleDriveProvider implements SyncProvider {
 
     try {
       // Use api-client's downloadFile method (includes auth error handling)
-      const blob = await driveApiClient.downloadFile(fileId, onProgress);
-      console.log(`✅ Downloaded file from Google Drive (${fileId})`);
-      return blob;
+      return await driveApiClient.downloadFile(fileId, onProgress);
     } catch (error) {
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -367,8 +361,6 @@ class GoogleDriveProvider implements SyncProvider {
         '$lib/util/sync/providers/google-drive/drive-files-cache'
       );
       driveFilesCache.removeById(fileId);
-
-      console.log(`✅ Deleted file from Google Drive (${fileId})`);
     } catch (error) {
       throw new ProviderError(
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -405,15 +397,12 @@ class GoogleDriveProvider implements SyncProvider {
       const folders = await driveApiClient.listFiles(query, 'files(id)');
 
       if (folders.length === 0) {
-        console.log(`Series folder '${seriesTitle}' not found in Google Drive`);
         return;
       }
 
       // Delete the folder
       const folderId = folders[0].id;
       await driveApiClient.deleteFile(folderId);
-
-      console.log(`✅ Deleted series folder '${seriesTitle}' from Google Drive`);
     } catch (error) {
       throw new ProviderError(
         `Failed to delete series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,

@@ -10,10 +10,12 @@ export interface DriveFile {
 
 export const GOOGLE_DRIVE_CONFIG = {
   CLIENT_ID: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+  CLIENT_SECRET: import.meta.env.VITE_GDRIVE_CLIENT_SECRET, // For Tauri refresh tokens
   API_KEY: import.meta.env.VITE_GDRIVE_API_KEY,
   DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
   SCOPES: 'https://www.googleapis.com/auth/drive.file',
   OAUTH_ENDPOINT: 'https://oauth2.googleapis.com/revoke',
+  TOKEN_ENDPOINT: 'https://oauth2.googleapis.com/token',
 
   FOLDER_NAMES: {
     READER: 'mokuro-reader'
@@ -32,6 +34,7 @@ export const GOOGLE_DRIVE_CONFIG = {
   STORAGE_KEYS: {
     TOKEN: 'gdrive_token',
     TOKEN_EXPIRES: 'gdrive_token_expires',
+    REFRESH_TOKEN: 'gdrive_refresh_token', // Tauri only - for silent token refresh
     SYNC_AFTER_LOGIN: 'sync_after_login',
     LAST_AUTH_TIME: 'gdrive_last_auth_time',
     HAS_AUTHENTICATED: 'gdrive_has_authenticated' // Track if user has ever authenticated

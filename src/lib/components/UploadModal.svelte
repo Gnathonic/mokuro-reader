@@ -5,6 +5,8 @@
   import { onMount } from 'svelte';
   import { formatBytes } from '$lib/util/upload';
   import { toClipboard } from '$lib/util';
+  import { isTauri } from '$lib/util/tauri';
+  import { pickFilesTauri, pickFolderTauri } from '$lib/util/tauri-files';
 
   interface Props {
     open?: boolean;
@@ -33,21 +35,39 @@
     );
   }
 
+  let importError = $state<string | null>(null);
+
   async function onImport() {
-    if (files) {
-      promise = processFiles([...files]).then(() => {
-        open = false;
-      });
-    } else if (draggedFiles) {
-      promise = processFiles(draggedFiles).then(() => {
-        open = false;
-      });
+    importError = null;
+    const filesToProcess = files ? [...files] : draggedFiles;
+
+    if (!filesToProcess || filesToProcess.length === 0) {
+      importError = 'No files selected';
+      return;
     }
+
+    console.log('[Import] Starting import of', filesToProcess.length, 'files');
+    filesToProcess.forEach((f, i) => {
+      console.log(`[Import] File ${i}:`, f.name, 'size:', f.size, 'type:', f.type);
+    });
+
+    promise = processFiles(filesToProcess)
+      .then((result) => {
+        console.log('[Import] processFiles completed:', result);
+        if (result.success) {
+          open = false;
+        }
+      })
+      .catch((error) => {
+        console.error('[Import] processFiles failed:', error);
+        importError = error?.message || 'Import failed - check console for details';
+      });
   }
 
   function reset() {
     files = undefined;
     draggedFiles = undefined;
+    importError = null;
   }
 
   let storageSpace = $state('');
@@ -69,6 +89,12 @@
   let disabled = $derived(loading || (!draggedFiles && !files));
 
   const dropHandle = async (event: DragEvent) => {
+    // In Tauri, drag-drop is handled by the native event listener
+    if (isTauri()) {
+      event.preventDefault();
+      return;
+    }
+
     loading = true;
     draggedFiles = [];
     filePromises = [];
@@ -113,6 +139,11 @@
   {#await promise}
     <h2 class="flex justify-center">Importing...</h2>
     <div class="text-center"><Spinner /></div>
+  {:catch error}
+    <div class="rounded-lg bg-red-100 p-4 text-red-700 dark:bg-red-900 dark:text-red-200">
+      <p class="font-semibold">Import failed</p>
+      <p class="text-sm">{error?.message || 'Unknown error - check console'}</p>
+    </div>
   {:then}
     <Accordion flush>
       <AccordionItem>
@@ -192,6 +223,12 @@
         </div>
       </AccordionItem>
     </Accordion>
+    {#if importError}
+      <div class="mb-4 rounded-lg bg-red-100 p-4 text-red-700 dark:bg-red-900 dark:text-red-200">
+        <p class="font-semibold">Import failed</p>
+        <p class="text-sm">{importError}</p>
+      </div>
+    {/if}
     <Dropzone
       id="dropzone"
       ondrop={dropHandle}
@@ -227,18 +264,32 @@
           <button
             type="button"
             class="m-0 inline-flex cursor-pointer border-none bg-transparent p-0 text-primary-600 hover:underline dark:text-primary-500"
-            onclick={() => {
-              const input = document.createElement('input');
-              input.type = 'file';
-              input.accept = '.mokuro,.zip,.cbz';
-              input.multiple = true;
-              input.onchange = (e) => {
-                const target = e.target as HTMLInputElement;
-                if (target.files && target.files.length > 0) {
-                  files = target.files;
+            onclick={async () => {
+              if (isTauri()) {
+                loading = true;
+                try {
+                  const pickedFiles = await pickFilesTauri();
+                  if (pickedFiles.length > 0) {
+                    draggedFiles = pickedFiles;
+                  }
+                } catch (error) {
+                  console.error('Failed to pick files:', error);
+                } finally {
+                  loading = false;
                 }
-              };
-              input.click();
+              } else {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.mokuro,.zip,.cbz';
+                input.multiple = true;
+                input.onchange = (e) => {
+                  const target = e.target as HTMLInputElement;
+                  if (target.files && target.files.length > 0) {
+                    files = target.files;
+                  }
+                };
+                input.click();
+              }
             }}
           >
             choose files
@@ -248,17 +299,31 @@
             / <button
               type="button"
               class="m-0 inline-flex cursor-pointer border-none bg-transparent p-0 text-primary-600 hover:underline dark:text-primary-500"
-              onclick={() => {
-                const input = document.createElement('input');
-                input.type = 'file';
-                input.setAttribute('webkitdirectory', '');
-                input.onchange = (e) => {
-                  const target = e.target as HTMLInputElement;
-                  if (target.files && target.files.length > 0) {
-                    files = target.files;
+              onclick={async () => {
+                if (isTauri()) {
+                  loading = true;
+                  try {
+                    const pickedFiles = await pickFolderTauri();
+                    if (pickedFiles.length > 0) {
+                      draggedFiles = pickedFiles;
+                    }
+                  } catch (error) {
+                    console.error('Failed to pick folder:', error);
+                  } finally {
+                    loading = false;
                   }
-                };
-                input.click();
+                } else {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.setAttribute('webkitdirectory', '');
+                  input.onchange = (e) => {
+                    const target = e.target as HTMLInputElement;
+                    if (target.files && target.files.length > 0) {
+                      files = target.files;
+                    }
+                  };
+                  input.click();
+                }
               }}
             >
               choose folder

@@ -47,14 +47,7 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
   const { showSnackbar } = await import('$lib/util/snackbar');
 
   const settings = getStore(miscSettings);
-  console.log('🔍 Auto re-auth check:', {
-    gdriveAutoReAuth: settings.gdriveAutoReAuth,
-    retryOnAuth,
-    willAttemptReauth: settings.gdriveAutoReAuth && retryOnAuth
-  });
-
   if (settings.gdriveAutoReAuth && retryOnAuth) {
-    console.log('🚀 Auto re-auth enabled, triggering re-authentication...');
     showSnackbar('Session expired. Re-authenticating...');
 
     // Trigger re-authentication WITHOUT clearing the token first
@@ -74,7 +67,6 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
   }
 
   // If auto re-auth is disabled, clear the token and throw error
-  console.log('⚠️ Auto re-auth disabled or retryOnAuth=false, clearing token');
   tokenManager.clearToken();
 
   if (retryOnAuth) {
@@ -93,7 +85,6 @@ class DriveApiClient {
   private async waitForGapi(): Promise<void> {
     if (typeof gapi !== 'undefined' && typeof gapi.load === 'function') return;
 
-    console.log('⏳ Waiting for Google API (gapi) to load...');
     const maxWait = 10000; // 10 seconds
     const start = Date.now();
 
@@ -103,7 +94,6 @@ class DriveApiClient {
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    console.log('✅ Google API (gapi) loaded');
   }
 
   async initialize(): Promise<void> {
@@ -124,6 +114,7 @@ class DriveApiClient {
           this.isInitialized = true;
           resolve();
         } catch (error) {
+          console.error('Google Drive API initialization failed:', error);
           reject(new DriveApiError('Failed to initialize Google Drive API', undefined, true));
         }
       });

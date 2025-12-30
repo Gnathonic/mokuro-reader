@@ -1,11 +1,70 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { processFiles, scanFiles } from '$lib/upload';
   import { showSnackbar } from '$lib/util/snackbar';
+  import { isTauri } from '$lib/util/tauri';
+  import { readFilesFromPaths } from '$lib/util/tauri-files';
 
   let isDragging = $state(false);
   let dragCounter = 0; // Track enter/leave for nested elements
 
+  // Tauri drag-drop cleanup function
+  let tauriDragDropUnlisten: (() => void) | undefined;
+
+  // Set up Tauri drag-drop listener
+  onMount(async () => {
+    console.log('[GlobalDropZone] onMount, isTauri:', isTauri());
+    if (!isTauri()) return;
+
+    try {
+      console.log('[GlobalDropZone] Setting up Tauri drag-drop listener...');
+      const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const webview = getCurrentWebviewWindow();
+      console.log('[GlobalDropZone] Got webview:', webview);
+
+      tauriDragDropUnlisten = await webview.onDragDropEvent(async (event) => {
+        console.log('[GlobalDropZone] Drag-drop event:', event.payload.type, event.payload);
+        const eventType = event.payload.type;
+
+        if (eventType === 'drop') {
+          isDragging = false;
+
+          try {
+            const paths = event.payload.paths;
+            if (paths && paths.length > 0) {
+              showSnackbar(`Importing ${paths.length} file(s)...`, 3000);
+              const files = await readFilesFromPaths(paths);
+              if (files.length > 0) {
+                await processFiles(files);
+              } else {
+                showSnackbar('No supported files found', 3000);
+              }
+            }
+          } catch (error) {
+            console.error('Failed to process dropped files:', error);
+            showSnackbar('Failed to import files', 3000);
+          }
+        } else if (eventType === 'over' || eventType === 'enter') {
+          isDragging = true;
+        } else if (eventType === 'leave' || eventType === 'cancel') {
+          isDragging = false;
+        }
+      });
+      console.log('[GlobalDropZone] Drag-drop listener set up successfully');
+    } catch (error) {
+      console.error('[GlobalDropZone] Failed to set up Tauri drag-drop:', error);
+    }
+  });
+
+  onDestroy(() => {
+    if (tauriDragDropUnlisten) {
+      tauriDragDropUnlisten();
+    }
+  });
+
   function handleDragEnter(event: DragEvent) {
+    // Skip browser drag events in Tauri - handled natively
+    if (isTauri()) return;
     event.preventDefault();
     dragCounter++;
 
@@ -16,6 +75,7 @@
   }
 
   function handleDragLeave(event: DragEvent) {
+    if (isTauri()) return;
     event.preventDefault();
     dragCounter--;
 
@@ -25,6 +85,7 @@
   }
 
   function handleDragOver(event: DragEvent) {
+    if (isTauri()) return;
     event.preventDefault();
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'copy';
@@ -32,6 +93,7 @@
   }
 
   async function handleDrop(event: DragEvent) {
+    if (isTauri()) return;
     event.preventDefault();
     isDragging = false;
     dragCounter = 0;

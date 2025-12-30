@@ -9,7 +9,8 @@ import {
 } from '$lib/util/modals';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { normalizeFilename, remapPagePaths, comparePagePathsToFiles } from '$lib/util/misc';
-import { getMimeType, ZipReaderStream } from '@zip.js/zip.js';
+import { getMimeType, ZipReaderStream, ZipReader, BlobReader, BlobWriter, Uint8ArrayWriter } from '@zip.js/zip.js';
+import { isTauri } from '$lib/util/tauri';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { calculateCumulativeCharCounts } from '$lib/catalog/migration';
 import {
@@ -397,26 +398,84 @@ async function processZipFile(
   volumesByPath: Record<string, Partial<VolumeMetadata>>,
   pendingImagesByPath: Record<string, Record<string, File>>
 ): Promise<void> {
-  // Cast to any to workaround TypeScript type definition limitation
-  // ZipReaderStream does support async iteration at runtime
-  for await (const entry of zipFile.file.stream().pipeThrough(new ZipReaderStream()) as any) {
-    // Skip directories as we're only creating File objects
-    if (entry.directory) continue;
+  console.log('[ZIP] Processing:', zipFile.file.name, 'size:', zipFile.file.size);
 
-    // Process file entries
-    if (entry.readable) {
-      // Convert readable stream to ArrayBuffer to avoid intermediate Blob disk writes
-      const arrayBuffer = await new Response(entry.readable).arrayBuffer();
-
-      // Create a File object directly from ArrayBuffer
-      const fileBlob = new File([arrayBuffer], entry.filename, {
-        lastModified: entry.lastModified?.getTime() || Date.now()
-      });
-      const path = zipFile.path === '' ? entry.filename : `${zipFile.path}/${entry.filename}`;
-      const file = { path: path, file: fileBlob };
-
-      await processFile(file, volumesByPath, volumesDataByPath, pendingImagesByPath);
+  // Try streaming API first (better memory efficiency), fall back to ZipReader if unsupported
+  // Some WebViews (e.g., Tauri) don't support ReadableStream.pipeThrough()
+  try {
+    const stream = zipFile.file.stream();
+    if (typeof stream?.pipeThrough !== 'function') {
+      throw new Error('pipeThrough not supported');
     }
+
+    console.log('[ZIP] Using streaming API');
+    let entryCount = 0;
+    for await (const entry of stream.pipeThrough(new ZipReaderStream()) as any) {
+      if (entry.directory) continue;
+
+      if (entry.readable) {
+        const arrayBuffer = await new Response(entry.readable).arrayBuffer();
+        const fileBlob = new File([arrayBuffer], entry.filename, {
+          lastModified: entry.lastModified?.getTime() || Date.now()
+        });
+        const path = zipFile.path === '' ? entry.filename : `${zipFile.path}/${entry.filename}`;
+        await processFile({ path, file: fileBlob }, volumesByPath, volumesDataByPath, pendingImagesByPath);
+        entryCount++;
+      }
+    }
+    console.log('[ZIP] Streaming complete, processed', entryCount, 'entries');
+  } catch (streamError) {
+    // Fallback for environments without pipeThrough (e.g., Tauri WebView)
+    console.log('[ZIP] Streaming failed, using ZipReader fallback:', streamError);
+
+    const zipReader = new ZipReader(new BlobReader(zipFile.file));
+    const entries = await zipReader.getEntries();
+    console.log('[ZIP] ZipReader found', entries.length, 'entries');
+
+    console.log('[ZIP] Starting entry loop');
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      console.log(`[ZIP] Entry ${i}: ${entry.filename}, dir=${entry.directory}`);
+      if (entry.directory) continue;
+
+      try {
+        console.log(`[ZIP] Getting data for: ${entry.filename}`);
+        // Use Uint8ArrayWriter in Tauri (BlobWriter hangs), BlobWriter elsewhere
+        const path = zipFile.path === '' ? entry.filename : `${zipFile.path}/${entry.filename}`;
+
+        if (isTauri()) {
+          const uint8Array = await entry.getData!(new Uint8ArrayWriter());
+          console.log(`[ZIP] Got uint8array, length: ${uint8Array.length}`);
+          const fileBlob = new File([uint8Array], entry.filename, {
+            lastModified: entry.lastModDate?.getTime() || Date.now()
+          });
+          console.log(`[ZIP] Calling processFile for: ${entry.filename}`);
+          await processFile({ path, file: fileBlob }, volumesByPath, volumesDataByPath, pendingImagesByPath);
+          // Yield every file in Tauri to prevent memory buildup
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        } else {
+          const blob = await entry.getData!(new BlobWriter());
+          console.log(`[ZIP] Got blob, size: ${blob.size}`);
+          const fileBlob = new File([blob], entry.filename, {
+            lastModified: entry.lastModDate?.getTime() || Date.now()
+          });
+          console.log(`[ZIP] Calling processFile for: ${entry.filename}`);
+          await processFile({ path, file: fileBlob }, volumesByPath, volumesDataByPath, pendingImagesByPath);
+        }
+        console.log(`[ZIP] Done with: ${entry.filename}`);
+
+        if ((i + 1) % 10 === 0) {
+          console.log('[ZIP] Processed', i + 1, '/', entries.length, 'entries');
+          // Yield to event loop to prevent UI freeze
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      } catch (entryError) {
+        console.error('[ZIP] Failed to process entry:', entry.filename, entryError);
+      }
+    }
+
+    await zipReader.close();
+    console.log('[ZIP] ZipReader complete');
   }
 }
 
@@ -628,8 +687,22 @@ export async function processFiles(
     return a.file.name.localeCompare(b.file.name, undefined, { numeric: true });
   });
 
-  for (const file of fileStack) {
-    await processFile(file, volumesByPath, volumesDataByPath, pendingImagesByPath);
+  console.log('[processFiles] Starting to process', fileStack.length, 'files');
+
+  for (let i = 0; i < fileStack.length; i++) {
+    const file = fileStack[i];
+    try {
+      console.log(`[processFiles] Processing file ${i + 1}/${fileStack.length}:`, file.file.name);
+      await processFile(file, volumesByPath, volumesDataByPath, pendingImagesByPath);
+      console.log(`[processFiles] Completed file ${i + 1}/${fileStack.length}`);
+      // Give GC a chance to run between volumes (especially important in Tauri)
+      if (isTauri()) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    } catch (error) {
+      console.error(`[processFiles] Error processing file ${i + 1}:`, file.file.name, error);
+      // Continue with next file instead of failing entirely
+    }
   }
 
   // Process orphaned images (images without .mokuro files) as image-only volumes

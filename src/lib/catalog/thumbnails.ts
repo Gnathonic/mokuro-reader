@@ -1,4 +1,5 @@
 import Pica from 'pica';
+import { isTauri } from '$lib/util/tauri';
 
 export interface ThumbnailResult {
   file: File;
@@ -7,14 +8,16 @@ export interface ThumbnailResult {
 }
 
 // Resize strategy levels - we escalate through these on failure
-type ResizeStrategy = 'default' | 'js-only' | 'prescale' | 'canvas-native';
+type ResizeStrategy = 'default' | 'wasm' | 'js-only' | 'prescale' | 'canvas-native';
 
 // Remember what works - persists across calls within session
-let currentStrategy: ResizeStrategy = 'default';
+// Initialized lazily since isTauri() needs browser context
+let currentStrategy: ResizeStrategy | null = null;
 
-// Pica instances - created lazily as needed
-let picaDefault: ReturnType<typeof Pica> | null = null;
-let picaJsOnly: ReturnType<typeof Pica> | null = null;
+function getInitialStrategy(): ResizeStrategy {
+  // In Tauri, use WASM mode (fast, no web workers which don't work in Tauri's WebView)
+  return isTauri() ? 'wasm' : 'default';
+}
 
 // Safe canvas size limit for mobile (4 megapixels is conservative)
 const SAFE_CANVAS_PIXELS = 4_000_000;
@@ -27,14 +30,18 @@ function isMobileBrowser(): boolean {
 
 type PicaInstance = ReturnType<typeof Pica>;
 
+// Create fresh Pica instances each time to avoid state corruption in Tauri
 function getPicaDefault(): PicaInstance {
-  if (!picaDefault) picaDefault = new Pica();
-  return picaDefault;
+  return new Pica();
+}
+
+function getPicaWasm(): PicaInstance {
+  // WASM + JS fallback, no web workers (ww causes issues in Tauri WebView)
+  return new Pica({ features: ['wasm', 'js'] });
 }
 
 function getPicaJsOnly(): PicaInstance {
-  if (!picaJsOnly) picaJsOnly = new Pica({ features: ['js'] });
-  return picaJsOnly;
+  return new Pica({ features: ['js'] });
 }
 
 const PICA_OPTIONS = {
@@ -137,6 +144,11 @@ export async function generateThumbnail(
   const mimeType = file.type || 'image/jpeg';
   const sourcePixels = img.width * img.height;
 
+  // Lazy init of strategy (needs browser context for isTauri check)
+  if (currentStrategy === null) {
+    currentStrategy = getInitialStrategy();
+  }
+
   // On mobile with large images, skip straight to prescale strategy
   if (
     isMobileBrowser() &&
@@ -150,7 +162,7 @@ export async function generateThumbnail(
   let startStrategy = currentStrategy;
 
   // Try strategies in order, starting from our current known-good level
-  const strategies: ResizeStrategy[] = ['default', 'js-only', 'prescale', 'canvas-native'];
+  const strategies: ResizeStrategy[] = ['default', 'wasm', 'js-only', 'prescale', 'canvas-native'];
   const startIndex = strategies.indexOf(startStrategy);
 
   for (let i = startIndex; i < strategies.length; i++) {
@@ -160,6 +172,10 @@ export async function generateThumbnail(
       switch (strategy) {
         case 'default':
           blob = await resizeWithPica(getPicaDefault(), srcCanvas, destCanvas, mimeType);
+          break;
+
+        case 'wasm':
+          blob = await resizeWithPica(getPicaWasm(), srcCanvas, destCanvas, mimeType);
           break;
 
         case 'js-only':
