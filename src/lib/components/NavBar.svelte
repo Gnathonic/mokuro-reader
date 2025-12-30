@@ -5,7 +5,8 @@
     UploadSolid,
     UserSettingsSolid,
     RefreshOutline,
-    ChartLineUpOutline
+    ChartLineUpOutline,
+    RectangleListOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
@@ -99,6 +100,10 @@
     nav.toReadingSpeed();
   }
 
+  function navigateToProgressTracker() {
+    nav.toProgressTracker();
+  }
+
   async function handleSync() {
     if (isSyncing) return; // Prevent multiple simultaneous syncs
 
@@ -148,6 +153,13 @@
         title="Reading Speed Stats"
       >
         <ChartLineUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
+      </button>
+      <button
+        onclick={navigateToProgressTracker}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Progress Tracker"
+      >
+        <RectangleListOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
