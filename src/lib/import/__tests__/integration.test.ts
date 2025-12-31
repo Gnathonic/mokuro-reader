@@ -84,11 +84,6 @@ vi.mock('$lib/catalog/thumbnails', () => ({
 	})
 }));
 
-// Mock snackbar
-vi.mock('$lib/util/snackbar', () => ({
-	showSnackbar: vi.fn()
-}));
-
 // Mock progress tracker
 vi.mock('$lib/util/progress-tracker', () => ({
 	progressTrackerStore: {
@@ -131,7 +126,6 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 
 // Import after mocks are set up
 import { importFiles, importQueue, isImporting, clearCompletedImports } from '../import-service';
-import { showSnackbar } from '$lib/util/snackbar';
 
 // ============================================
 // TEST HELPERS
@@ -243,7 +237,6 @@ describe('importFiles integration', () => {
 
 			// Multiple items go to queue
 			expect(result.imported).toBe(2);
-			expect(showSnackbar).toHaveBeenCalledWith(expect.stringContaining('Queued 2 volumes'));
 		});
 
 		it('queues multiple image-only directories', async () => {
@@ -342,8 +335,8 @@ describe('importFiles integration', () => {
 
 			const result = await importFiles(files);
 
-			// Should show "no importable volumes" since mokuro has no images
-			expect(showSnackbar).toHaveBeenCalledWith('No importable volumes found');
+			// Should return with no imported volumes since mokuro has no images
+			expect(result.imported).toBe(0);
 		});
 	});
 
@@ -364,14 +357,6 @@ describe('importFiles integration', () => {
 			expect(get(isImporting)).toBe(false);
 		});
 
-		it('shows success snackbar after import', async () => {
-			const fixture = await loadFixture('basic', 'mokuro-inside-dir');
-			const files = fixtureToFiles(fixture);
-
-			await importFiles(files);
-
-			expect(showSnackbar).toHaveBeenCalledWith(expect.stringContaining('Added'));
-		});
 	});
 
 	describe('database operations', () => {

@@ -19,7 +19,6 @@ import type {
 	DecompressedVolume,
 	ProcessedVolume
 } from './types';
-import { showSnackbar } from '$lib/util/snackbar';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { isImageExtension, isMokuroExtension, isArchiveExtension, parseFilePath } from './types';
 import {
@@ -443,7 +442,6 @@ async function processArchiveContents(
 				// Save to database
 				await saveVolume(processed);
 				successCount++;
-				showSnackbar(`Added "${processed.metadata.volume}" to catalog`);
 			}
 
 			// Collect nested sources
@@ -627,8 +625,6 @@ async function processSingleVolume(
 
 		onProgress?.('Complete', 100);
 
-		showSnackbar(`Added "${processed.metadata.volume}" to catalog`);
-
 		// Queue nested archives for processing
 		// Add at FRONT of queue so nested archives complete before moving to other items
 		if (processed.nestedSources.length > 0) {
@@ -724,7 +720,6 @@ async function processQueue(): Promise<void> {
 					)
 				);
 				markProgressTrackerError(nextItem.id, result.error || 'Unknown error');
-				showSnackbar(`Failed to import: ${result.error}`);
 			}
 
 			// Log timing for this item
@@ -800,7 +795,6 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 		}
 
 		if (pairingResult.pairings.length === 0) {
-			showSnackbar('No importable volumes found');
 			return result;
 		}
 
@@ -821,7 +815,6 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 		const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
 
 		if (allPairings.length === 0) {
-			showSnackbar('No volumes to import');
 			return result;
 		}
 
@@ -877,8 +870,6 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 			queueItems.forEach(addToProgressTracker);
 			importQueue.update((q) => [...q, ...queueItems]);
 
-			showSnackbar(`Queued ${queueItems.length} volumes for import`);
-
 			// Start processing queue
 			processQueue();
 
@@ -889,7 +880,6 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 		return result;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : 'Unknown error';
-		showSnackbar(`Import failed: ${message}`);
 		result.success = false;
 		result.errors.push(message);
 		return result;
