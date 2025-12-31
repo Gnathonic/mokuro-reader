@@ -872,6 +872,9 @@
     {right}
     src1={imageCache.getFile(index)}
     src2={!useSinglePage ? imageCache.getFile(index + 1) : undefined}
+    volumeUuid={volume.volume_uuid}
+    page1={pages[index]}
+    page2={!useSinglePage ? pages[index + 1] : undefined}
   />
   <SettingsButton />
   <Cropper />

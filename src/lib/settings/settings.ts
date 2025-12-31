@@ -30,6 +30,7 @@ export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 's
 
 export type AnkiConnectSettings = {
   enabled: boolean;
+  url: string;
   pictureField: string;
   sentenceField: string;
   heightField: number;
@@ -38,7 +39,11 @@ export type AnkiConnectSettings = {
   cropImage: boolean;
   overwriteImage: boolean;
   grabSentence: boolean;
-  triggerMethod: 'rightClick' | 'doubleTap' | 'both';
+  triggerMethod: 'rightClick' | 'doubleTap' | 'both' | 'neither';
+  tags: string;
+  cardMode: 'update' | 'create';
+  deckName: string;
+  modelName: string;
 };
 
 export type TimeSchedule = {
@@ -154,15 +159,20 @@ const defaultSettings: Settings = {
   },
   ankiConnectSettings: {
     enabled: false,
+    url: 'http://127.0.0.1:8765',
     cropImage: false,
-    grabSentence: false,
+    grabSentence: true,
     overwriteImage: true,
     pictureField: 'Picture',
     sentenceField: 'Sentence',
     heightField: 0,
     widthField: 0,
     qualityField: 1,
-    triggerMethod: 'both'
+    triggerMethod: 'both',
+    tags: '{series}',
+    cardMode: 'update',
+    deckName: 'Default',
+    modelName: 'Basic'
   },
   catalogSettings: {
     stackingPreset: 'default',

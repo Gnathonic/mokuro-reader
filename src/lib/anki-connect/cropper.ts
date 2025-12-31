@@ -1,21 +1,37 @@
 import { showSnackbar } from '$lib/util';
 import { writable } from 'svelte/store';
-import { blobToBase64, imageResize } from '.';
+import { blobToBase64, imageResize, type VolumeMetadata } from '.';
 import type { Settings } from '$lib/settings/settings';
+import type { Page } from '$lib/types';
 
 type CropperModal = {
   open: boolean;
   image?: string;
-  sentence?: string;
+  selectedText?: string; // The selected/highlighted text (for Front field)
+  sentence?: string; // The full sentence/all lines (for Sentence field)
+  tags?: string;
+  metadata?: VolumeMetadata;
+  pages?: Page[]; // Available pages with textboxes for visual selection
 };
 
 export const cropperStore = writable<CropperModal | undefined>(undefined);
 
-export function showCropper(image: string, sentence?: string) {
+export function showCropper(
+  image: string,
+  selectedText?: string,
+  sentence?: string,
+  tags?: string,
+  metadata?: VolumeMetadata,
+  pages?: Page[]
+) {
   cropperStore.set({
     open: true,
     image,
-    sentence
+    selectedText,
+    sentence,
+    tags,
+    metadata,
+    pages
   });
 }
 
