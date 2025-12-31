@@ -5,8 +5,6 @@ import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
 import { tokenManager } from './sync/providers/google-drive/token-manager';
 import { db } from '$lib/catalog/db';
-import { generateThumbnail } from '$lib/catalog/thumbnails';
-import { calculateCumulativeCharCounts } from '$lib/catalog/migration';
 import { driveApiClient } from './sync/providers/google-drive/api-client';
 import { driveFilesCache } from './sync/providers/google-drive/drive-files-cache';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
@@ -17,14 +15,14 @@ import {
   getCloudModifiedTime
 } from './cloud-fields';
 import type { ProviderType } from './sync/provider-interface';
-import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
-import { normalizeFilename, remapPagePaths } from './misc';
-import { getImageMimeType } from '$lib/import';
+import { normalizeFilename } from './misc';
+import { getImageMimeType, processVolume, saveVolume, isSystemFile } from '$lib/import';
+import type { DecompressedVolume } from '$lib/import';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -41,16 +39,6 @@ interface SeriesQueueStatus {
   hasDownloading: boolean;
   queuedCount: number;
   downloadingCount: number;
-}
-
-interface MokuroData {
-  version: string;
-  title: string;
-  title_uuid: string;
-  pages: any[];
-  chars: number;
-  volume: string;
-  volume_uuid: string;
 }
 
 interface DecompressedEntry {
@@ -246,29 +234,6 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
 }
 
 /**
- * Decompress a CBZ file blob into entries
- */
-async function decompressCbz(blob: Blob): Promise<DecompressedEntry[]> {
-  const reader = new BlobReader(blob);
-  const zipReader = new ZipReader(reader);
-  const entries = await zipReader.getEntries();
-
-  const decompressed: DecompressedEntry[] = [];
-  for (const entry of entries) {
-    if (entry.directory || !entry.getData) continue;
-
-    const uint8Array = await entry.getData(new Uint8ArrayWriter());
-    decompressed.push({
-      filename: entry.filename,
-      data: uint8Array.buffer as ArrayBuffer
-    });
-  }
-
-  await zipReader.close();
-  return decompressed;
-}
-
-/**
  * Get provider credentials for worker downloads
  * For MEGA, creates a temporary share link instead of passing credentials
  * Implements rate limiting to prevent API congestion
@@ -309,89 +274,74 @@ async function getProviderCredentials(provider: ProviderType, fileId: string): P
 }
 
 /**
- * Process mokuro data and save volume to IndexedDB
+ * Convert worker decompressed entries to DecompressedVolume format
+ * for use with the unified import system
+ */
+function entriesToDecompressedVolume(
+  entries: DecompressedEntry[],
+  basePath: string
+): DecompressedVolume {
+  let mokuroFile: File | null = null;
+  const imageFiles = new Map<string, File>();
+  const nestedArchives: File[] = [];
+
+  for (const entry of entries) {
+    // Skip system files (macOS metadata, etc.)
+    if (isSystemFile(entry.filename)) {
+      continue;
+    }
+
+    const normalizedFilename = normalizeFilename(entry.filename);
+    const extension = normalizedFilename.toLowerCase().split('.').pop() || '';
+
+    if (normalizedFilename.endsWith('.mokuro')) {
+      // Found mokuro file
+      mokuroFile = new File([entry.data], normalizedFilename, { type: 'application/json' });
+    } else if (['zip', 'cbz', 'cbr', 'rar', '7z'].includes(extension)) {
+      // Nested archive
+      nestedArchives.push(new File([entry.data], normalizedFilename));
+    } else {
+      // Image file - determine MIME type
+      const mimeType = getImageMimeType(extension);
+      if (mimeType) {
+        imageFiles.set(normalizedFilename, new File([entry.data], normalizedFilename, { type: mimeType }));
+      }
+    }
+  }
+
+  return {
+    mokuroFile,
+    imageFiles,
+    basePath,
+    sourceType: 'cloud',
+    nestedArchives
+  };
+}
+
+/**
+ * Process downloaded volume data using unified import system
+ * Handles missing pages, image-only volumes, and all other import scenarios
  */
 async function processVolumeData(
   entries: DecompressedEntry[],
   placeholder: VolumeMetadata
 ): Promise<void> {
-  // Find .mokuro file
-  const mokuroEntry = entries.find((e) => e.filename.endsWith('.mokuro'));
-  if (!mokuroEntry) {
-    throw new Error('No .mokuro file found in CBZ');
-  }
+  // Convert entries to DecompressedVolume format
+  const decompressedVolume = entriesToDecompressedVolume(entries, placeholder.volume_title);
 
-  // Parse mokuro JSON
-  const mokuroText = new TextDecoder().decode(mokuroEntry.data);
-  const mokuroData: MokuroData = JSON.parse(mokuroText);
+  // Use unified import system to process the volume
+  // This handles missing pages, image-only volumes, placeholder generation, etc.
+  const processedVolume = await processVolume(decompressedVolume);
 
-  // Calculate cumulative page character counts
-  const pageCharCounts = calculateCumulativeCharCounts(mokuroData.pages);
-
-  // Create VolumeMetadata from mokuro data
-  const metadata: VolumeMetadata = {
-    mokuro_version: mokuroData.version,
-    series_title: mokuroData.title,
-    series_uuid: mokuroData.title_uuid,
-    volume_title: mokuroData.volume,
-    volume_uuid: mokuroData.volume_uuid,
-    page_count: mokuroData.pages.length,
-    character_count: mokuroData.chars,
-    page_char_counts: pageCharCounts
-  };
-
-  // Convert image entries to File objects
-  // Create File objects directly from ArrayBuffers with proper MIME types
-  // Normalize filenames to decode URL-encoded Unicode characters
-  const files: Record<string, File> = {};
-  for (const entry of entries) {
-    if (!entry.filename.endsWith('.mokuro') && !entry.filename.includes('__MACOSX')) {
-      // Determine MIME type from file extension using shared utility
-      const extension = entry.filename.toLowerCase().split('.').pop() || '';
-      const mimeType = getImageMimeType(extension);
-
-      // Normalize filename to handle URL-encoded Unicode characters
-      const normalizedFilename = normalizeFilename(entry.filename);
-
-      // Create File directly from ArrayBuffer with proper MIME type
-      files[normalizedFilename] = new File([entry.data], normalizedFilename, { type: mimeType });
-    }
-  }
-
-  // Remap page img_path values if image formats have changed (e.g., png->webp)
-  const remappedPages = remapPagePaths(mokuroData.pages, files);
-
-  // Generate thumbnail from first image
-  const fileNames = Object.keys(files).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
-  let thumbnailResult: { file: File; width: number; height: number } | undefined;
-  if (fileNames.length > 0) {
-    thumbnailResult = await generateThumbnail(files[fileNames[0]]);
-  }
-
-  // Save to IndexedDB (3 tables: volumes, volume_ocr, volume_files)
-  const existingVolume = await db.volumes.where('volume_uuid').equals(metadata.volume_uuid).first();
+  // Check if volume already exists
+  const existingVolume = await db.volumes
+    .where('volume_uuid')
+    .equals(processedVolume.metadata.volumeUuid)
+    .first();
 
   if (!existingVolume) {
-    await db.transaction('rw', db.volumes, db.volume_ocr, db.volume_files, async () => {
-      // Add thumbnail and dimensions to metadata
-      const metadataWithThumbnail: VolumeMetadata = {
-        ...metadata,
-        thumbnail: thumbnailResult?.file,
-        thumbnail_width: thumbnailResult?.width,
-        thumbnail_height: thumbnailResult?.height
-      };
-      await db.volumes.add(metadataWithThumbnail);
-      await db.volume_ocr.add({
-        volume_uuid: mokuroData.volume_uuid,
-        pages: remappedPages
-      });
-      await db.volume_files.add({
-        volume_uuid: mokuroData.volume_uuid,
-        files
-      });
-    });
+    // Save using unified database function
+    await saveVolume(processedVolume);
   }
 
   // Update cloud file description if folder name doesn't match series title
@@ -401,7 +351,7 @@ async function processVolumeData(
   if (cloudFileId && cloudProvider) {
     try {
       const folderName = placeholder.series_title;
-      const actualSeriesTitle = mokuroData.title;
+      const actualSeriesTitle = processedVolume.metadata.series;
 
       if (folderName !== actualSeriesTitle && cloudProvider === 'google-drive') {
         // Only Drive supports description updates currently

@@ -84,6 +84,11 @@ vi.mock('$lib/catalog/thumbnails', () => ({
 	})
 }));
 
+// Mock snackbar
+vi.mock('$lib/util/snackbar', () => ({
+	showSnackbar: vi.fn()
+}));
+
 // Mock progress tracker
 vi.mock('$lib/util/progress-tracker', () => ({
 	progressTrackerStore: {
@@ -126,6 +131,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 
 // Import after mocks are set up
 import { importFiles, importQueue, isImporting, clearCompletedImports } from '../import-service';
+import { showSnackbar } from '$lib/util/snackbar';
 
 // ============================================
 // TEST HELPERS
@@ -335,7 +341,8 @@ describe('importFiles integration', () => {
 
 			const result = await importFiles(files);
 
-			// Should return with no imported volumes since mokuro has no images
+			// Should show "no importable volumes" since mokuro has no images
+			expect(showSnackbar).toHaveBeenCalledWith('No importable volumes found');
 			expect(result.imported).toBe(0);
 		});
 	});

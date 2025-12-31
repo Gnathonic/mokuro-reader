@@ -334,6 +334,51 @@ interface ExtractFilter {
 }
 
 /**
+ * System files and directories that should never be extracted.
+ * These are commonly found in archives created on various operating systems.
+ */
+const EXCLUDED_SYSTEM_PATTERNS = new Set([
+  // macOS
+  '__MACOSX', '.DS_Store', '.Trashes', '.Spotlight-V100', '.fseventsd',
+  '.TemporaryItems', '.Trash',
+  // Windows
+  'System Volume Information', '$RECYCLE.BIN', 'Thumbs.db',
+  'desktop.ini', 'Desktop.ini', 'RECYCLER', 'RECYCLED',
+  // Linux
+  '.Trash-1000', '.thumbnails', '.directory',
+  // Cloud storage
+  '.dropbox', '.dropbox.cache',
+  // Version control
+  '.git', '.svn'
+]);
+
+const EXCLUDED_EXTENSIONS = new Set(['bak', 'tmp', 'temp']);
+
+/**
+ * Check if a path contains any system files/directories that should be excluded.
+ */
+function isSystemFile(path: string): boolean {
+  const normalizedPath = path.replace(/\\/g, '/');
+  const segments = normalizedPath.split('/');
+
+  for (const segment of segments) {
+    if (!segment) continue;
+    if (segment.startsWith('._')) return true;
+    if (segment.endsWith('~')) return true;
+    if (EXCLUDED_SYSTEM_PATTERNS.has(segment)) return true;
+  }
+
+  const filename = segments[segments.length - 1] || '';
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot >= 0) {
+    const ext = filename.slice(lastDot + 1).toLowerCase();
+    if (EXCLUDED_EXTENSIONS.has(ext)) return true;
+  }
+
+  return false;
+}
+
+/**
  * Check if a filename matches the filter criteria
  */
 function matchesFilter(filename: string, filter?: ExtractFilter): boolean {
@@ -392,6 +437,8 @@ async function decompressCbz(
 
   for (const entry of entries) {
     if (entry.directory) continue;
+    // Skip system files (macOS, Windows, Linux metadata)
+    if (isSystemFile(entry.filename)) continue;
 
     const matchesFilterCriteria = matchesFilter(entry.filename, filter);
 
@@ -449,56 +496,6 @@ async function decompressCbz(
 
   await zipReader.close();
   return decompressedEntries;
-}
-
-/**
- * Stream extraction - opens zip once and sends entries one at a time to main thread.
- * This prevents memory exhaustion by never holding more than one file in worker memory.
- */
-async function streamExtractCbz(
-  blob: Blob,
-  filter?: ExtractFilter,
-  onEntry?: (entry: DecompressedEntry) => void
-): Promise<{ extracted: number; skipped: number; errors: number }> {
-  console.log(`Worker: Stream extracting CBZ (${(blob.size / 1024 / 1024).toFixed(1)} MB)...`);
-
-  const zipReader = new ZipReader(new BlobReader(blob));
-  const entries = await zipReader.getEntries();
-
-  let extracted = 0;
-  let skipped = 0;
-  let errors = 0;
-
-  for (const entry of entries) {
-    if (entry.directory) continue;
-
-    if (!matchesFilter(entry.filename, filter)) {
-      skipped++;
-      continue;
-    }
-
-    try {
-      const uint8Array = await entry.getData!(new Uint8ArrayWriter());
-
-      // Send immediately to main thread, don't accumulate
-      if (onEntry) {
-        onEntry({
-          filename: entry.filename,
-          data: uint8Array.buffer as ArrayBuffer
-        });
-      }
-
-      extracted++;
-    } catch (err) {
-      console.error(`Worker: Error extracting ${entry.filename}:`, err);
-      errors++;
-    }
-  }
-
-  await zipReader.close();
-  console.log(`Worker: Stream extracted ${extracted} files (skipped ${skipped}, errors ${errors})`);
-
-  return { extracted, skipped, errors };
 }
 
 // ===========================
@@ -918,6 +915,8 @@ ctx.addEventListener('message', async (event) => {
 
       for (const entry of entries) {
         if (entry.directory) continue;
+        // Skip system files (macOS, Windows, Linux metadata)
+        if (isSystemFile(entry.filename)) continue;
 
         // Check if this entry belongs to any of the requested volumes
         let matchedVolumeId: string | null = null;

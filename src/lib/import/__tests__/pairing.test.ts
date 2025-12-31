@@ -271,3 +271,83 @@ describe('all fixtures', () => {
 		}
 	});
 });
+
+// ============================================
+// SYSTEM FILE FILTERING TESTS
+// ============================================
+
+describe('system file filtering', () => {
+	it('should exclude __MACOSX directories from pairing', async () => {
+		const entries = [
+			{ path: 'manga/page1.jpg', file: new File([''], 'page1.jpg') },
+			{ path: 'manga/page2.jpg', file: new File([''], 'page2.jpg') },
+			{ path: '__MACOSX/manga/._page1.jpg', file: new File([''], '._page1.jpg') },
+			{ path: '__MACOSX/._manga', file: new File([''], '._manga') }
+		];
+
+		const result = await pairMokuroWithSources(entries);
+
+		// Should only have one pairing for the manga folder
+		expect(result.pairings.length).toBe(1);
+		expect(result.pairings[0].basePath).toBe('manga');
+
+		// __MACOSX should NOT be paired as image-only
+		const macosxPairing = result.pairings.find(p => p.basePath.includes('MACOSX'));
+		expect(macosxPairing).toBeUndefined();
+	});
+
+	it('should exclude .DS_Store from image count', async () => {
+		const entries = [
+			{ path: 'manga/page1.jpg', file: new File([''], 'page1.jpg') },
+			{ path: 'manga/.DS_Store', file: new File([''], '.DS_Store') }
+		];
+
+		const result = await pairMokuroWithSources(entries);
+
+		expect(result.pairings.length).toBe(1);
+		if (result.pairings[0].source.type === 'directory') {
+			// Should only have the image, not .DS_Store
+			expect(result.pairings[0].source.files.size).toBe(1);
+		}
+	});
+
+	it('should exclude Thumbs.db from image directories', async () => {
+		const entries = [
+			{ path: 'manga/page1.jpg', file: new File([''], 'page1.jpg') },
+			{ path: 'manga/Thumbs.db', file: new File([''], 'Thumbs.db') }
+		];
+
+		const result = await pairMokuroWithSources(entries);
+
+		expect(result.pairings.length).toBe(1);
+		if (result.pairings[0].source.type === 'directory') {
+			expect(result.pairings[0].source.files.size).toBe(1);
+		}
+	});
+
+	it('should exclude resource fork files (._prefix)', async () => {
+		const entries = [
+			{ path: 'manga/page1.jpg', file: new File([''], 'page1.jpg') },
+			{ path: 'manga/._page1.jpg', file: new File([''], '._page1.jpg') }
+		];
+
+		const result = await pairMokuroWithSources(entries);
+
+		expect(result.pairings.length).toBe(1);
+		if (result.pairings[0].source.type === 'directory') {
+			expect(result.pairings[0].source.files.size).toBe(1);
+		}
+	});
+
+	it('should not create pairings for system-only directories', async () => {
+		const entries = [
+			{ path: '__MACOSX/._file', file: new File([''], '._file') },
+			{ path: '.Trash/file.jpg', file: new File([''], 'file.jpg') }
+		];
+
+		const result = await pairMokuroWithSources(entries);
+
+		// All entries are system files, no valid pairings
+		expect(result.pairings.length).toBe(0);
+	});
+});

@@ -26,7 +26,7 @@ import type {
 	ArchiveSource,
 	TocDirectorySource
 } from './types';
-import { categorizeFile, parseFilePath } from './types';
+import { categorizeFile, parseFilePath, isSystemFile } from './types';
 import { generateUUID } from '$lib/util/uuid';
 
 /**
@@ -49,8 +49,11 @@ export interface PairingResult {
  * @returns Paired sources ready for processing
  */
 export async function pairMokuroWithSources(entries: FileEntry[]): Promise<PairingResult> {
+	// Filter out system files before processing
+	const filteredEntries = entries.filter((e) => !isSystemFile(e.path));
+
 	// Categorize all files
-	const categorized = entries.map(categorizeFile);
+	const categorized = filteredEntries.map(categorizeFile);
 
 	// Group by category
 	const mokuroFiles = categorized.filter((f) => f.category === 'mokuro');

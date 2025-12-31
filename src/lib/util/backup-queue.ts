@@ -4,15 +4,15 @@ import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import { tokenManager } from './sync/providers/google-drive/token-manager';
 import { showSnackbar } from './snackbar';
-import { db } from '$lib/catalog/db';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
-import { isRealProvider, isPseudoProvider, exportProvider } from './sync/provider-interface';
+import { isPseudoProvider, exportProvider } from './sync/provider-interface';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+import { prepareVolumeData } from './zip';
 
 // Type for provider instances (real or export)
 type ProviderInstance = SyncProvider | typeof exportProvider;
@@ -403,45 +403,6 @@ async function getProviderCredentials(provider: BackupProviderType): Promise<any
 }
 
 /**
- * Read volume data from IndexedDB and prepare for worker
- */
-async function prepareVolumeDataForWorker(volumeUuid: string): Promise<{
-  metadata: any;
-  filesData: { filename: string; data: ArrayBuffer }[];
-}> {
-  // Get volume metadata, OCR data, and files from separate tables
-  const volume = await db.volumes.where('volume_uuid').equals(volumeUuid).first();
-  const volumeOcr = await db.volume_ocr.get(volumeUuid);
-  const volumeFiles = await db.volume_files.get(volumeUuid);
-
-  if (!volume || !volumeOcr) {
-    throw new Error('Volume not found in database');
-  }
-
-  // Prepare mokuro metadata
-  const metadata = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
-
-  // Convert File objects to ArrayBuffers for transfer
-  const filesData: { filename: string; data: ArrayBuffer }[] = [];
-  if (volumeFiles?.files) {
-    for (const [filename, file] of Object.entries(volumeFiles.files)) {
-      const arrayBuffer = await file.arrayBuffer();
-      filesData.push({ filename, data: arrayBuffer });
-    }
-  }
-
-  return { metadata, filesData };
-}
-
-/**
  * Handle backup errors consistently
  */
 function handleBackupError(item: BackupQueueItem, processId: string, errorMessage: string): void {
@@ -528,7 +489,14 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           status: 'Reading volume data...'
         });
 
-        const { metadata, filesData } = await prepareVolumeDataForWorker(item.volumeUuid);
+        // Use shared prepareVolumeData function (single source of truth for export data)
+        const { metadata, filesData: uint8FilesData } = await prepareVolumeData(item.volumeUuid);
+
+        // Convert Uint8Array to ArrayBuffer for worker transfer (Transferable objects)
+        const filesData = uint8FilesData.map(({ filename, data }) => ({
+          filename,
+          data: data.buffer as ArrayBuffer
+        }));
 
         // Handle export-for-download (pseudo-provider)
         if (isExport) {

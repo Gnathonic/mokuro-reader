@@ -248,6 +248,81 @@ export const IMAGE_EXTENSIONS = new Set(Object.keys(IMAGE_MIME_TYPES));
 /** Supported archive extensions */
 export const ARCHIVE_EXTENSIONS = new Set(['zip', 'cbz', 'cbr', 'rar', '7z']);
 
+/**
+ * System files and directories that should never be imported.
+ * These are commonly found in archives created on various operating systems.
+ */
+export const EXCLUDED_SYSTEM_PATTERNS = new Set([
+	// macOS
+	'__MACOSX',
+	'.DS_Store',
+	'.Trashes',
+	'.Spotlight-V100',
+	'.fseventsd',
+	'.TemporaryItems',
+	'.Trash',
+	// Windows
+	'System Volume Information',
+	'$RECYCLE.BIN',
+	'Thumbs.db',
+	'desktop.ini',
+	'Desktop.ini',
+	'RECYCLER',
+	'RECYCLED',
+	// Linux
+	'.Trash-1000',
+	'.thumbnails',
+	'.directory',
+	// Cloud storage
+	'.dropbox',
+	'.dropbox.cache',
+	// Version control
+	'.git',
+	'.svn'
+]);
+
+/**
+ * File extensions that indicate temporary/backup files
+ */
+const EXCLUDED_EXTENSIONS = new Set(['bak', 'tmp', 'temp']);
+
+/**
+ * Check if a path contains any system files/directories that should be excluded.
+ * This filters out OS metadata, version control, temporary files, etc.
+ *
+ * @param path - The file path to check
+ * @returns true if the path should be excluded from import
+ */
+export function isSystemFile(path: string): boolean {
+	// Normalize path separators
+	const normalizedPath = path.replace(/\\/g, '/');
+	const segments = normalizedPath.split('/');
+
+	for (const segment of segments) {
+		// Skip empty segments
+		if (!segment) continue;
+
+		// Check for Mac resource fork files (start with "._")
+		if (segment.startsWith('._')) return true;
+
+		// Check for backup files (end with "~")
+		if (segment.endsWith('~')) return true;
+
+		// Check exact matches against excluded patterns
+		if (EXCLUDED_SYSTEM_PATTERNS.has(segment)) return true;
+	}
+
+	// Check for excluded extensions on the filename
+	const filename = segments[segments.length - 1] || '';
+	const lastDot = filename.lastIndexOf('.');
+	if (lastDot >= 0) {
+		const ext = filename.slice(lastDot + 1).toLowerCase();
+		if (EXCLUDED_EXTENSIONS.has(ext)) return true;
+	}
+
+	return false;
+}
+
 /** Check if extension is an image */
 export function isImageExtension(ext: string): boolean {
 	return IMAGE_EXTENSIONS.has(ext.toLowerCase());

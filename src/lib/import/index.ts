@@ -36,7 +36,8 @@ export {
 	isMokuroExtension,
 	getImageMimeType,
 	parseFilePath,
-	categorizeFile
+	categorizeFile,
+	isSystemFile
 } from './types';
 
 // Pairing

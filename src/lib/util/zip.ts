@@ -33,13 +33,30 @@ export async function zipManga(
 
 /**
  * Prepares volume data for compression (loads from DB, converts to Uint8Array)
- * @param volume The volume metadata
- * @returns Promise resolving to metadata and files data
+ * This is the SINGLE source of truth for preparing export data.
+ * Used by both direct export (zip.ts) and cloud backup (backup-queue.ts).
+ *
+ * @param volumeOrUuid Either a VolumeMetadata object or a volume UUID string
+ * @returns Promise resolving to metadata (null for image-only) and files data
  */
-async function prepareVolumeData(volume: VolumeMetadata): Promise<{
-  metadata: MokuroMetadata;
+export async function prepareVolumeData(
+  volumeOrUuid: VolumeMetadata | string
+): Promise<{
+  metadata: MokuroMetadata | null;
   filesData: { filename: string; data: Uint8Array }[];
 }> {
+  // Resolve volume metadata - either use passed object or fetch from DB
+  const volume =
+    typeof volumeOrUuid === 'string'
+      ? await db.volumes.where('volume_uuid').equals(volumeOrUuid).first()
+      : volumeOrUuid;
+
+  if (!volume) {
+    throw new Error(
+      `Volume not found: ${typeof volumeOrUuid === 'string' ? volumeOrUuid : volumeOrUuid.volume_uuid}`
+    );
+  }
+
   // Get OCR and files data from separate tables
   const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
   const volumeFiles = await db.volume_files.get(volume.volume_uuid);
@@ -47,21 +64,33 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
     throw new Error(`Volume OCR data not found for ${volume.volume_uuid}`);
   }
 
-  // Create mokuro metadata in the standard format
-  const metadata: MokuroMetadata = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
+  // Check if this is an image-only volume (no mokuro data)
+  const isImageOnly = volume.mokuro_version === '';
 
-  // Convert File objects to Uint8Arrays
+  // Create mokuro metadata only for volumes that had mokuro data
+  const metadata: MokuroMetadata | null = isImageOnly
+    ? null
+    : {
+        version: volume.mokuro_version,
+        title: volume.series_title,
+        title_uuid: volume.series_uuid,
+        volume: volume.volume_title,
+        volume_uuid: volume.volume_uuid,
+        pages: volumeOcr.pages,
+        chars: volume.character_count
+      };
+
+  // Get set of placeholder page paths to exclude from export
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+
+  // Convert File objects to Uint8Arrays, excluding placeholder pages
   const filesData: { filename: string; data: Uint8Array }[] = [];
   if (volumeFiles?.files) {
     for (const [filename, file] of Object.entries(volumeFiles.files)) {
+      // Skip placeholder pages - they shouldn't be exported
+      if (placeholderPaths.has(filename)) {
+        continue;
+      }
       const arrayBuffer = await file.arrayBuffer();
       filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
     }
@@ -85,6 +114,31 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
     return [];
   }
 
+  // Check if this is an image-only volume
+  const isImageOnly = volume.mokuro_version === '';
+
+  // Get set of placeholder page paths to exclude from export
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+
+  // Create folder name for images (same as mokuro file name without extension)
+  const folderName = `${volume.volume_title}`;
+
+  // Add image files inside the folder, excluding placeholders
+  const imagePromises = volumeFiles?.files
+    ? Object.entries(volumeFiles.files)
+        .filter(([filename]) => !placeholderPaths.has(filename))
+        .map(([filename, file]) => {
+          // Extract just the basename to avoid nested folders from original CBZ structure
+          const basename = filename.split('/').pop() || filename;
+          return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
+        })
+    : [];
+
+  // Only add mokuro file for volumes that had mokuro data
+  if (isImageOnly) {
+    return imagePromises;
+  }
+
   // Create mokuro data in the old format for compatibility
   const mokuroData = {
     version: volume.mokuro_version,
@@ -95,18 +149,6 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
     pages: volumeOcr.pages,
     chars: volume.character_count
   };
-
-  // Create folder name for images (same as mokuro file name without extension)
-  const folderName = `${volume.volume_title}`;
-
-  // Add image files inside the folder
-  const imagePromises = volumeFiles?.files
-    ? Object.entries(volumeFiles.files).map(([filename, file]) => {
-        // Extract just the basename to avoid nested folders from original CBZ structure
-        const basename = filename.split('/').pop() || filename;
-        return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
-      })
-    : [];
 
   // Add mokuro data file in the root directory (for both ZIP and CBZ)
   return [

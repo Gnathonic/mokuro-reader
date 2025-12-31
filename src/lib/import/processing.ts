@@ -104,6 +104,43 @@ async function readFileAsText(file: File | Blob): Promise<string> {
 }
 
 /**
+ * Get image dimensions from a File
+ * Used for image-only volumes where mokuro data isn't available
+ */
+async function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
+	// Try createImageBitmap first (most efficient, works in workers too)
+	if (typeof createImageBitmap === 'function') {
+		try {
+			const bitmap = await createImageBitmap(file);
+			const { width, height } = bitmap;
+			bitmap.close();
+			return { width, height };
+		} catch {
+			// Fall through to Image approach
+		}
+	}
+
+	// Fallback to Image element (works in browser main thread)
+	if (typeof Image !== 'undefined') {
+		const img = new Image();
+		const imgUrl = URL.createObjectURL(file);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				img.onload = () => resolve();
+				img.onerror = () => reject(new Error('Failed to load image'));
+				img.src = imgUrl;
+			});
+			return { width: img.naturalWidth, height: img.naturalHeight };
+		} finally {
+			URL.revokeObjectURL(imgUrl);
+		}
+	}
+
+	// Default dimensions if we can't determine them
+	return { width: 1000, height: 1400 };
+}
+
+/**
  * Parse a mokuro JSON file and extract metadata
  *
  * @param file - The mokuro File object
@@ -515,16 +552,37 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 		pageCount = mokuroData.pages.length;
 		totalChars = mokuroData.chars || cumulativeCounts[cumulativeCounts.length - 1] || 0;
 	} else {
-		// Image-only: sort images and create minimal pages
+		// Image-only: sort images and create minimal pages with dimensions
 		const sortedImages = Array.from(imageFiles.keys()).sort((a, b) =>
 			a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 		);
 
-		pages = sortedImages.map((imgPath) => ({
-			img_path: imgPath,
-			blocks: [],
-			cumulativeChars: 0
-		}));
+		// Get dimensions for each image
+		pages = await Promise.all(
+			sortedImages.map(async (imgPath) => {
+				const file = imageFiles.get(imgPath);
+				let width = 1000;
+				let height = 1400;
+
+				if (file && file.size > 0) {
+					try {
+						const dims = await getImageDimensions(file);
+						width = dims.width;
+						height = dims.height;
+					} catch {
+						// Use defaults if dimension reading fails
+					}
+				}
+
+				return {
+					img_path: imgPath,
+					img_width: width,
+					img_height: height,
+					blocks: [],
+					cumulativeChars: 0
+				};
+			})
+		);
 
 		matchResult = {
 			matched: sortedImages,

@@ -15,25 +15,25 @@ export interface MokuroMetadata {
 
 /**
  * Shared compression function that works in both main thread and Web Workers
- * Creates a CBZ file (ZIP with manga pages + mokuro metadata)
+ * Creates a CBZ file (ZIP with manga pages + optional mokuro metadata)
  *
  * @param volumeTitle The title of the volume (used for folder name)
- * @param metadata Mokuro metadata object
+ * @param metadata Mokuro metadata object (null for image-only volumes)
  * @param filesData Array of files with filenames and Uint8Array data
  * @param onProgress Optional progress callback (completed items, total items)
  * @returns Promise resolving to compressed CBZ as Uint8Array
  */
 export async function compressVolume(
   volumeTitle: string,
-  metadata: MokuroMetadata,
+  metadata: MokuroMetadata | null,
   filesData: { filename: string; data: Uint8Array }[],
   onProgress?: (completed: number, total: number) => void
 ): Promise<Uint8Array> {
   // Create zip writer with Uint8Array output
   const zipWriter = new ZipWriter(new Uint8ArrayWriter());
 
-  // Total items to add: all files + mokuro file
-  const totalItems = filesData.length + 1;
+  // Total items to add: all files + mokuro file (if present)
+  const totalItems = filesData.length + (metadata ? 1 : 0);
   let completedItems = 0;
 
   // Add image files inside a folder
@@ -48,11 +48,13 @@ export async function compressVolume(
     }
   }
 
-  // Add mokuro metadata file
-  await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
-  completedItems++;
-  if (onProgress) {
-    onProgress(completedItems, totalItems);
+  // Add mokuro metadata file only for volumes that had mokuro data
+  if (metadata) {
+    await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
+    completedItems++;
+    if (onProgress) {
+      onProgress(completedItems, totalItems);
+    }
   }
 
   // Close and get the compressed data
