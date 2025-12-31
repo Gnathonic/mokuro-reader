@@ -27,6 +27,7 @@ import type {
 	TocDirectorySource
 } from './types';
 import { categorizeFile, parseFilePath } from './types';
+import { generateUUID } from '$lib/util/uuid';
 
 /**
  * Result of the pairing operation
@@ -311,7 +312,7 @@ function createDirectoryPairing(
 	};
 
 	return {
-		id: crypto.randomUUID(),
+		id: generateUUID(),
 		mokuroFile,
 		source,
 		basePath,
@@ -336,7 +337,7 @@ function createArchivePairing(
 	const estimatedSize = archive.file.size * 2.5 + (mokuroFile?.size || 0);
 
 	return {
-		id: crypto.randomUUID(),
+		id: generateUUID(),
 		mokuroFile,
 		source,
 		basePath: archive.stem,
@@ -367,7 +368,7 @@ function createTocPairing(
 	};
 
 	return {
-		id: crypto.randomUUID(),
+		id: generateUUID(),
 		mokuroFile,
 		source,
 		basePath,

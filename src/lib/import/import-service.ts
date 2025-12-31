@@ -28,6 +28,7 @@ import {
 } from '$lib/util/file-processing-pool';
 import { promptImageOnlyImport, type SeriesImportInfo } from '$lib/util/modals';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import { generateUUID } from '$lib/util/uuid';
 
 // ============================================
 // QUEUE STORE
@@ -156,7 +157,7 @@ async function decompressArchiveRaw(
 	// Pass File directly to worker - BlobReader will stream it without loading into ArrayBuffer
 	// This avoids the 2GB ArrayBuffer limit and reduces memory pressure
 	const entries = await new Promise<DecompressedEntry[]>((resolve, reject) => {
-		const taskId = crypto.randomUUID();
+		const taskId = generateUUID();
 
 		pool.addTask({
 			id: taskId,
@@ -226,7 +227,7 @@ async function streamExtractAllVolumes(
 	}
 
 	return new Promise((resolve, reject) => {
-		const taskId = crypto.randomUUID();
+		const taskId = generateUUID();
 
 		// Create a dedicated worker for streaming
 		const worker = new Worker(
@@ -484,7 +485,7 @@ async function processArchiveContents(
 			const filename = entry.filename.split('/').pop() || entry.filename;
 			const file = new File([entry.data], filename, { lastModified: Date.now() });
 			allNestedSources.push({
-				id: crypto.randomUUID(),
+				id: generateUUID(),
 				mokuroFile: null,
 				source: { type: 'archive', file },
 				basePath: filename.replace(/\.(zip|cbz|cbr|rar|7z)$/i, ''),

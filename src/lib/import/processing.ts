@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import { generateUUID } from '$lib/util/uuid';
 
 // ============================================
 // TYPES
@@ -596,7 +597,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 		const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
 
 		return {
-			id: crypto.randomUUID(),
+			id: generateUUID(),
 			mokuroFile: null,
 			source: archiveSource,
 			basePath: archiveStem,
@@ -621,7 +622,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 	}
 
 	const metadata: ProcessedMetadata = {
-		volumeUuid: mokuroData?.volumeUuid || crypto.randomUUID(),
+		volumeUuid: mokuroData?.volumeUuid || generateUUID(),
 		seriesUuid,
 		series: seriesName,
 		volume: volumeInfo.volume,
