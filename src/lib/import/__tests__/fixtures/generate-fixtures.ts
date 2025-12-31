@@ -943,6 +943,31 @@ async function createNestedArchiveZip(
 }
 
 /**
+ * Create a deeply nested archive: catalog.zip > series.zip > volume.cbz
+ * Simulates a backup archive containing multiple series, each with multiple volumes
+ */
+async function createDeeplyNestedArchive(
+	series: Array<{
+		name: string;
+		volumes: Array<{ title: string; volume: string; pageCount: number }>;
+	}>
+): Promise<Buffer> {
+	const catalogWriter = new ZipWriter(new BlobWriter('application/zip'));
+
+	// Create each series as a nested ZIP containing CBZs
+	for (const s of series) {
+		const seriesZip = await createNestedArchiveZip(s.volumes);
+		const seriesFilename = `${s.name.replace(/\s+/g, '_')}.zip`;
+		await catalogWriter.add(seriesFilename, new Uint8ArrayReader(new Uint8Array(seriesZip)));
+	}
+
+	await catalogWriter.close();
+	const blob = await (catalogWriter as any).writer.getData();
+	const arrayBuffer = await blob.arrayBuffer();
+	return Buffer.from(arrayBuffer);
+}
+
+/**
  * Create async fixtures that require dynamic CBZ generation
  */
 async function createAsyncFixtures(): Promise<void> {
@@ -1011,6 +1036,41 @@ async function createAsyncFixtures(): Promise<void> {
 				sourceType: 'archive',
 				hasMokuro: false,
 				basePathContains: 'bundle',
+				imageOnly: false
+			}
+		])
+	);
+
+	// 7. deeply-nested-archives (catalog.zip > series.zip > volume.cbz)
+	// Tests multi-level nesting - e.g., backup archive containing series archives
+	const deeplyNestedZip = await createDeeplyNestedArchive([
+		{
+			name: 'Series A',
+			volumes: [
+				{ title: 'Series A', volume: 'Volume 1', pageCount: 2 },
+				{ title: 'Series A', volume: 'Volume 2', pageCount: 2 }
+			]
+		},
+		{
+			name: 'Series B',
+			volumes: [
+				{ title: 'Series B', volume: 'Volume 1', pageCount: 2 }
+			]
+		}
+	]);
+	createFixture(
+		'edge-cases',
+		'deeply-nested-archives',
+		{
+			'catalog.zip': deeplyNestedZip
+		},
+		// Initial pairing sees catalog.zip with nested series ZIPs
+		// Each series ZIP contains CBZs - requires recursive extraction
+		createExpected(1, [
+			{
+				sourceType: 'archive',
+				hasMokuro: false,
+				basePathContains: 'catalog',
 				imageOnly: false
 			}
 		])
