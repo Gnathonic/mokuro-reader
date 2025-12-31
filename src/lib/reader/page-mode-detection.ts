@@ -49,18 +49,20 @@ export function shouldShowSinglePage(
   isFirstPage: boolean = false,
   hasCover: boolean = false
 ): boolean {
-  // Explicit mode overrides
+  // Explicit single mode override
   if (mode === 'single') return true;
+
+  // First page with cover should always be single, regardless of mode
+  // This ensures proper page pairing alignment for the entire volume
+  if (isFirstPage && hasCover) {
+    return true;
+  }
+
+  // Dual mode: pair all pages (except cover handled above)
   if (mode === 'dual') return false;
 
   // Auto mode logic
   if (mode === 'auto') {
-    // Special case: First page with cover should always be single
-    // This ensures covers don't get paired with spreads or other exceptions
-    if (isFirstPage && hasCover) {
-      return true;
-    }
-
     // Portrait orientation → single page
     if (isPortraitOrientation()) {
       return true;
