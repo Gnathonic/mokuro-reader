@@ -228,7 +228,8 @@
             onclick={() => {
               const input = document.createElement('input');
               input.type = 'file';
-              input.accept = '.mokuro,.zip,.cbz';
+              // Include both extensions and MIME types for iOS compatibility
+              input.accept = '.mokuro,.zip,.cbz,application/zip,application/x-zip-compressed,application/octet-stream';
               input.multiple = true;
               input.onchange = (e) => {
                 const target = e.target as HTMLInputElement;

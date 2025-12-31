@@ -20,6 +20,7 @@ import type {
 	ProcessedVolume
 } from './types';
 import { showSnackbar } from '$lib/util/snackbar';
+import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { isImageExtension, isMokuroExtension, isArchiveExtension, parseFilePath } from './types';
 import {
 	getFileProcessingPool,
@@ -49,6 +50,53 @@ export const currentImport = writable<ImportQueueItem | null>(null);
 export const isImporting = writable<boolean>(false);
 
 // ============================================
+// PROGRESS TRACKER SYNC
+// ============================================
+
+/**
+ * Add an import item to the global progress tracker
+ */
+function addToProgressTracker(item: ImportQueueItem): void {
+	progressTrackerStore.addProcess({
+		id: `import-${item.id}`,
+		description: `Importing ${item.displayTitle}`,
+		status: 'Queued',
+		progress: 0
+	});
+}
+
+/**
+ * Update an import item's progress in the global tracker
+ */
+function updateProgressTracker(id: string, status: string, progress: number): void {
+	progressTrackerStore.updateProcess(`import-${id}`, {
+		status,
+		progress
+	});
+}
+
+/**
+ * Remove an import item from the global progress tracker
+ */
+function removeFromProgressTracker(id: string): void {
+	progressTrackerStore.removeProcess(`import-${id}`);
+}
+
+/**
+ * Mark an import as failed in the progress tracker (keeps visible briefly)
+ */
+function markProgressTrackerError(id: string, error: string): void {
+	progressTrackerStore.updateProcess(`import-${id}`, {
+		status: `Failed: ${error}`,
+		progress: 0
+	});
+	// Remove after delay so user can see the error
+	setTimeout(() => {
+		removeFromProgressTracker(id);
+	}, 5000);
+}
+
+// ============================================
 // FILE CONVERSION
 // ============================================
 
@@ -73,23 +121,41 @@ interface DecompressedEntry {
 }
 
 /**
- * Decompress an archive file into a DecompressedVolume using the worker pool
+ * Filter options for selective extraction
  */
-async function decompressArchive(
+interface ExtractFilter {
+	extensions?: string[];
+	pathPrefixes?: string[];
+}
+
+/**
+ * Raw decompression result - entries from the archive
+ */
+interface RawDecompressedArchive {
+	entries: DecompressedEntry[];
+}
+
+/**
+ * Decompress an archive and return raw entries
+ * Uses streaming via BlobReader - handles large files (>2GB) without ArrayBuffer limits
+ * Optional filter allows extracting only specific files (mokuro first, then images per volume)
+ * If listOnly is true, returns file list without extracting content (for planning)
+ * If listAllExtractFiltered is true, lists ALL files but only extracts content for filtered ones
+ */
+async function decompressArchiveRaw(
 	archiveFile: File,
-	mokuroFile: File | null,
-	basePath: string,
-	onProgress?: (status: string, progress: number) => void
-): Promise<DecompressedVolume> {
-	onProgress?.('Decompressing...', 10);
+	onProgress?: (status: string, progress: number) => void,
+	filter?: ExtractFilter,
+	listOnly?: boolean,
+	listAllExtractFiltered?: boolean
+): Promise<RawDecompressedArchive> {
+	onProgress?.(listOnly ? 'Scanning...' : 'Decompressing...', 10);
 
 	// Get the worker pool
 	const pool = await getFileProcessingPool();
 
-	// Convert File to ArrayBuffer for transfer to worker
-	const arrayBuffer = await archiveFile.arrayBuffer();
-
-	// Use a promise to wrap the worker task
+	// Pass File directly to worker - BlobReader will stream it without loading into ArrayBuffer
+	// This avoids the 2GB ArrayBuffer limit and reduces memory pressure
 	const entries = await new Promise<DecompressedEntry[]>((resolve, reject) => {
 		const taskId = crypto.randomUUID();
 
@@ -99,14 +165,16 @@ async function decompressArchive(
 				mode: 'decompress-only',
 				fileId: taskId,
 				fileName: archiveFile.name,
-				blob: arrayBuffer
+				blob: archiveFile, // Pass File directly - it's a Blob subclass
+				filter, // Optional filter for selective extraction
+				listOnly, // If true, return file list without content
+				listAllExtractFiltered // If true, list all but only extract filtered
 			},
-			memoryRequirement: archiveFile.size * 3, // Estimate: compressed + decompressed + overhead
+			memoryRequirement: listOnly ? 1024 * 1024 : (filter ? archiveFile.size * 0.1 : archiveFile.size * 3),
 			onProgress: (progress) => {
-				// Worker doesn't send progress for decompress-only, but handle it if it does
 				if (progress.loaded && progress.total) {
 					const pct = Math.round((progress.loaded / progress.total) * 40) + 10;
-					onProgress?.('Decompressing...', pct);
+					onProgress?.(listOnly ? 'Scanning...' : 'Decompressing...', pct);
 				}
 			},
 			onComplete: (result, completeTask) => {
@@ -123,40 +191,311 @@ async function decompressArchive(
 		});
 	});
 
-	onProgress?.('Processing files...', 50);
+	return { entries };
+}
 
-	// Convert entries to our format
-	const imageFiles = new Map<string, File>();
-	const nestedArchives: File[] = [];
-	let foundMokuro: File | null = mokuroFile;
+/**
+ * Volume definition for multi-volume extraction
+ */
+interface VolumeExtractDef {
+	id: string;
+	pathPrefix: string;
+}
+
+/**
+ * Stream extract images for ALL volumes in a single archive pass
+ * Opens the archive ONCE, extracts images for all volumes, groups by volume ID
+ * Much faster than opening archive N times for N volumes
+ */
+async function streamExtractAllVolumes(
+	archiveFile: File,
+	volumes: VolumeExtractDef[],
+	onProgress?: (status: string, progress: number) => void
+): Promise<Map<string, Map<string, File>>> {
+	// Map of volumeId → (relativePath → File)
+	const allVolumeFiles = new Map<string, Map<string, File>>();
+
+	// Initialize maps for each volume
+	for (const vol of volumes) {
+		allVolumeFiles.set(vol.id, new Map());
+	}
+
+	// Build prefix → volumeId lookup
+	const prefixToVolume = new Map<string, { id: string; prefix: string }>();
+	for (const vol of volumes) {
+		prefixToVolume.set(vol.pathPrefix, { id: vol.id, prefix: vol.pathPrefix });
+	}
+
+	return new Promise((resolve, reject) => {
+		const taskId = crypto.randomUUID();
+
+		// Create a dedicated worker for streaming
+		const worker = new Worker(
+			new URL('$lib/workers/unified-file-worker.ts', import.meta.url),
+			{ type: 'module' }
+		);
+
+		const cleanup = () => {
+			worker.terminate();
+		};
+
+		worker.onmessage = (event) => {
+			const msg = event.data;
+
+			if (msg.type === 'stream-entry') {
+				// Find which volume this belongs to
+				const volumeFiles = allVolumeFiles.get(msg.volumeId);
+				if (volumeFiles) {
+					// Find the prefix for this volume to calculate relative path
+					const vol = volumes.find(v => v.id === msg.volumeId);
+					const prefix = vol?.pathPrefix || '';
+
+					const filename = msg.entry.filename.split('/').pop() || msg.entry.filename;
+					const relativePath = msg.entry.filename.startsWith(prefix + '/')
+						? msg.entry.filename.slice(prefix.length + 1)
+						: msg.entry.filename;
+					const file = new File([msg.entry.data], filename, { lastModified: Date.now() });
+					volumeFiles.set(relativePath, file);
+				}
+			} else if (msg.type === 'progress' && msg.fileId === taskId) {
+				const pct = Math.round((msg.loaded / msg.total) * 100);
+				onProgress?.(`Extracting... ${pct}%`, pct);
+			} else if (msg.type === 'stream-complete' && msg.fileId === taskId) {
+				cleanup();
+				resolve(allVolumeFiles);
+			} else if (msg.type === 'error') {
+				cleanup();
+				reject(new Error(msg.error || 'Stream extraction failed'));
+			}
+		};
+
+		worker.onerror = (err) => {
+			cleanup();
+			reject(new Error(`Worker error: ${err.message}`));
+		};
+
+		// Start streaming extraction for ALL volumes at once
+		worker.postMessage({
+			mode: 'stream-extract',
+			fileId: taskId,
+			fileName: archiveFile.name,
+			blob: archiveFile,
+			volumes: volumes.map(v => ({ id: v.id, pathPrefix: v.pathPrefix }))
+		});
+	});
+}
+
+/**
+ * Convert raw decompressed entries to FileEntry format for pairing
+ */
+function entriesToFileEntries(entries: DecompressedEntry[]): FileEntry[] {
+	const fileEntries: FileEntry[] = [];
 
 	for (const entry of entries) {
 		const filename = entry.filename;
-		const { extension } = parseFilePath(filename);
 
 		// Skip problematic files
 		if (filename.includes('__MACOSX') || filename.startsWith('._')) continue;
+		// Skip directory entries (end with /)
+		if (filename.endsWith('/')) continue;
 
-		// Create File from ArrayBuffer
+		// Create File from ArrayBuffer, preserving the full path in the name
 		const file = new File([entry.data], filename.split('/').pop() || filename, {
 			lastModified: Date.now()
 		});
 
-		if (isMokuroExtension(extension) && !foundMokuro) {
-			foundMokuro = file;
-		} else if (isImageExtension(extension)) {
-			imageFiles.set(filename, file);
-		} else if (isArchiveExtension(extension)) {
-			nestedArchives.push(file);
+		fileEntries.push({
+			path: filename,
+			file
+		});
+	}
+
+	return fileEntries;
+}
+
+/**
+ * Process an archive using streaming extraction for memory efficiency.
+ * Opens archive once to scan + extract mokuro files, then streams images.
+ */
+async function processArchiveContents(
+	archiveFile: File,
+	externalMokuroFile: File | null,
+	onProgress?: (status: string, progress: number) => void
+): Promise<{
+	success: boolean;
+	error?: string;
+	nestedSources?: PairedSource[];
+}> {
+	onProgress?.('Scanning archive...', 5);
+
+	// PASS 1: Single pass - list ALL files and extract mokuro files only
+	// Uses listAllExtractFiltered to scan file list while extracting mokuro content
+	const scanResult = await decompressArchiveRaw(
+		archiveFile,
+		undefined,
+		{ extensions: ['mokuro'] },
+		false, // not listOnly
+		true   // listAllExtractFiltered - list all, extract only mokuro
+	);
+
+	onProgress?.('Analyzing structure...', 15);
+
+	// Build file entries from scan result
+	// Mokuro files have data, other files have empty ArrayBuffers (listed only)
+	const fileEntries: FileEntry[] = [];
+	const nestedArchivePaths: string[] = [];
+
+	for (const entry of scanResult.entries) {
+		const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
+		const filename = entry.filename.split('/').pop() || entry.filename;
+
+		if (isMokuroExtension(ext)) {
+			// Mokuro file - has actual content
+			const file = new File([entry.data], filename, { lastModified: Date.now() });
+			fileEntries.push({ path: entry.filename, file });
+		} else if (isImageExtension(ext)) {
+			// Image file - placeholder only (empty data)
+			const file = new File([], filename, { lastModified: Date.now() });
+			fileEntries.push({ path: entry.filename, file });
+		} else if (isArchiveExtension(ext)) {
+			// Track nested archives for later
+			nestedArchivePaths.push(entry.filename);
+		}
+	}
+
+	// Add external mokuro if provided
+	if (externalMokuroFile) {
+		fileEntries.push({ path: externalMokuroFile.name, file: externalMokuroFile });
+	}
+
+	// Run pairing logic
+	const pairingResult = await pairMokuroWithSources(fileEntries);
+
+	if (pairingResult.warnings.length > 0) {
+		pairingResult.warnings.forEach((warning) => {
+			console.warn('[Archive Import]', warning);
+		});
+	}
+
+	if (pairingResult.pairings.length === 0) {
+		return { success: false, error: 'No importable volumes found in archive' };
+	}
+
+	// PASS 2: Extract ALL volumes' images in a single archive pass
+	// This is much faster than opening the archive N times
+	const allNestedSources: PairedSource[] = [];
+	let successCount = 0;
+	let lastError: string | undefined;
+	const totalVolumes = pairingResult.pairings.length;
+	const volumeTimes: number[] = [];
+	console.log(`[Streaming Import] Starting extraction of ${totalVolumes} volumes`);
+
+	// Build volume definitions for extraction
+	const volumeDefs: VolumeExtractDef[] = pairingResult.pairings.map((pairing, i) => ({
+		id: `vol-${i}`,
+		pathPrefix: pairing.basePath
+	}));
+
+	onProgress?.(`Extracting ${totalVolumes} volumes...`, 20);
+
+	// Single-pass extraction for all volumes
+	const extractStart = performance.now();
+	const allVolumeFiles = await streamExtractAllVolumes(
+		archiveFile,
+		volumeDefs,
+		(status, progress) => {
+			// Extraction is 20-70% of total progress
+			const overallProgress = 20 + (progress / 100) * 50;
+			onProgress?.(status, overallProgress);
+		}
+	);
+	const extractTime = performance.now() - extractStart;
+	console.log(`[Streaming Import] Extraction complete: ${(extractTime / 1000).toFixed(1)}s`);
+
+	// Process each volume sequentially (to manage memory during processing)
+	console.log(`[Streaming Import] Starting processing of ${totalVolumes} volumes`);
+	for (let i = 0; i < pairingResult.pairings.length; i++) {
+		const volumeStart = performance.now();
+		const pairing = pairingResult.pairings[i];
+		const volumeId = `vol-${i}`;
+		const volumeImageFiles = allVolumeFiles.get(volumeId) || new Map();
+
+		const processingProgress = 70 + (i / totalVolumes) * 25;
+		onProgress?.(`Processing ${i + 1}/${totalVolumes}: ${pairing.basePath}...`, processingProgress);
+
+		// Create DecompressedVolume for processing
+		const decompressed: DecompressedVolume = {
+			mokuroFile: pairing.mokuroFile,
+			imageFiles: volumeImageFiles,
+			basePath: pairing.basePath,
+			sourceType: 'local',
+			nestedArchives: []
+		};
+
+		try {
+			// Process the volume
+			const processed = await processVolume(decompressed);
+
+			// Check for duplicates
+			if (await volumeExists(processed.metadata.volumeUuid)) {
+				lastError = `Volume "${processed.metadata.volume}" already exists`;
+			} else {
+				// Save to database
+				await saveVolume(processed);
+				successCount++;
+				showSnackbar(`Added "${processed.metadata.volume}" to catalog`);
+			}
+
+			// Collect nested sources
+			if (processed.nestedSources.length > 0) {
+				allNestedSources.push(...processed.nestedSources);
+			}
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : 'Unknown error';
+			console.error(`[Archive Import] Error processing volume ${i + 1}:`, err);
+		}
+
+		const volumeTime = performance.now() - volumeStart;
+		volumeTimes.push(volumeTime);
+		const avg = volumeTimes.reduce((a, b) => a + b, 0) / volumeTimes.length;
+		console.log(`[Streaming Import] Volume ${i + 1}/${totalVolumes}: ${volumeTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms)`);
+
+		// Clear this volume's files to free memory before next volume
+		volumeImageFiles.clear();
+		allVolumeFiles.delete(volumeId);
+	}
+
+	const processTime = volumeTimes.reduce((a, b) => a + b, 0);
+	console.log(`[Streaming Import] Processing complete: ${totalVolumes} volumes in ${(processTime / 1000).toFixed(1)}s (avg: ${(processTime / totalVolumes).toFixed(0)}ms/vol)`);
+	console.log(`[Streaming Import] Total: extraction ${(extractTime / 1000).toFixed(1)}s + processing ${(processTime / 1000).toFixed(1)}s = ${((extractTime + processTime) / 1000).toFixed(1)}s`);
+
+	// Extract nested archives if any
+	if (nestedArchivePaths.length > 0) {
+		onProgress?.('Extracting nested archives...', 95);
+		const nestedResult = await decompressArchiveRaw(
+			archiveFile,
+			undefined,
+			{ extensions: ['zip', 'cbz', 'cbr', 'rar', '7z'] }
+		);
+
+		for (const entry of nestedResult.entries) {
+			const filename = entry.filename.split('/').pop() || entry.filename;
+			const file = new File([entry.data], filename, { lastModified: Date.now() });
+			allNestedSources.push({
+				id: crypto.randomUUID(),
+				mokuroFile: null,
+				source: { type: 'archive', file },
+				basePath: filename.replace(/\.(zip|cbz|cbr|rar|7z)$/i, ''),
+				estimatedSize: entry.data.byteLength,
+				imageOnly: false
+			});
 		}
 	}
 
 	return {
-		mokuroFile: foundMokuro,
-		imageFiles,
-		basePath,
-		sourceType: 'local',
-		nestedArchives
+		success: successCount > 0,
+		error: successCount === 0 ? lastError : undefined,
+		nestedSources: allNestedSources.length > 0 ? allNestedSources : undefined
 	};
 }
 
@@ -210,25 +549,35 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
 
 /**
  * Process and save a single volume
+ * Returns additional sources to queue (for multi-volume archives and nested archives)
  */
 async function processSingleVolume(
 	source: PairedSource,
 	onProgress?: (status: string, progress: number) => void
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; additionalSources?: PairedSource[] }> {
 	try {
 		onProgress?.('Preparing...', 0);
+
+		// For archive sources, use two-pass extraction for memory efficiency
+		// processArchiveContents handles everything: scan, extract per-volume, process, save
+		if (source.source.type === 'archive') {
+			const result = await processArchiveContents(
+				source.source.file,
+				source.mokuroFile,
+				onProgress
+			);
+
+			return {
+				success: result.success,
+				error: result.error,
+				additionalSources: result.nestedSources
+			};
+		}
 
 		// Convert source to DecompressedVolume
 		let decompressed: DecompressedVolume;
 
-		if (source.source.type === 'archive') {
-			decompressed = await decompressArchive(
-				source.source.file,
-				source.mokuroFile,
-				source.basePath,
-				onProgress
-			);
-		} else if (source.source.type === 'toc-directory') {
+		if (source.source.type === 'toc-directory') {
 			decompressed = tocDirectoryToDecompressed(source);
 		} else {
 			decompressed = directoryToDecompressed(source);
@@ -281,10 +630,14 @@ async function processSingleVolume(
 		showSnackbar(`Added "${processed.metadata.volume}" to catalog`);
 
 		// Queue nested archives for processing
+		// Add at FRONT of queue so nested archives complete before moving to other items
 		if (processed.nestedSources.length > 0) {
 			const queue = get(importQueue);
 			const newItems = processed.nestedSources.map(createLocalQueueItem);
-			importQueue.set([...queue, ...newItems]);
+			newItems.forEach(addToProgressTracker);
+			const processing = queue.filter(item => item.status === 'processing');
+			const queued = queue.filter(item => item.status === 'queued');
+			importQueue.set([...processing, ...newItems, ...queued]);
 		}
 
 		return { success: true };
@@ -310,12 +663,20 @@ async function processQueue(): Promise<void> {
 	isImporting.set(true);
 	incrementPoolUsers(); // Track pool usage for proper cleanup
 
+	// Session-level timing
+	const sessionStart = performance.now();
+	const itemTimes: number[] = [];
+	let itemCount = 0;
+
 	try {
 		while (true) {
 			const queue = get(importQueue);
 			const nextItem = queue.find((item) => item.status === 'queued');
 
 			if (!nextItem) break;
+
+			const itemStart = performance.now();
+			itemCount++;
 
 			// Update status
 			importQueue.update((q) =>
@@ -324,6 +685,7 @@ async function processQueue(): Promise<void> {
 				)
 			);
 			currentImport.set({ ...nextItem, status: 'processing' });
+			updateProgressTracker(nextItem.id, 'Processing', 5);
 
 			// Process the volume
 			const result = await processSingleVolume(nextItem.source, (status, progress) => {
@@ -332,11 +694,26 @@ async function processQueue(): Promise<void> {
 						item.id === nextItem.id ? { ...item, status: status as any, progress } : item
 					)
 				);
+				updateProgressTracker(nextItem.id, status, progress);
 			});
+
+			// Queue additional sources (from multi-volume archives or nested archives)
+			// Add at FRONT of queue so all volumes from same archive complete together
+			if (result.additionalSources && result.additionalSources.length > 0) {
+				const newItems = result.additionalSources.map(createLocalQueueItem);
+				newItems.forEach(addToProgressTracker);
+				importQueue.update((q) => {
+					// Insert after any currently processing items, before queued items
+					const processing = q.filter(item => item.status === 'processing');
+					const queued = q.filter(item => item.status === 'queued');
+					return [...processing, ...newItems, ...queued];
+				});
+			}
 
 			if (result.success) {
 				// Remove from queue on success
 				importQueue.update((q) => q.filter((item) => item.id !== nextItem.id));
+				removeFromProgressTracker(nextItem.id);
 			} else {
 				// Mark as error
 				importQueue.update((q) =>
@@ -346,12 +723,27 @@ async function processQueue(): Promise<void> {
 							: item
 					)
 				);
+				markProgressTrackerError(nextItem.id, result.error || 'Unknown error');
 				showSnackbar(`Failed to import: ${result.error}`);
 			}
+
+			// Log timing for this item
+			const itemTime = performance.now() - itemStart;
+			itemTimes.push(itemTime);
+			const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
+			const remaining = get(importQueue).filter(i => i.status === 'queued').length;
+			console.log(`[Queue] Item ${itemCount}: ${itemTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms, ${remaining} remaining)`);
 
 			currentImport.set(null);
 		}
 	} finally {
+		// Log session summary
+		if (itemTimes.length > 0) {
+			const totalTime = performance.now() - sessionStart;
+			const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
+			console.log(`[Queue] Session complete: ${itemCount} items in ${(totalTime / 1000).toFixed(1)}s (avg: ${avg.toFixed(0)}ms/item)`);
+		}
+
 		processingQueue = false;
 		isImporting.set(false);
 		currentImport.set(null);
@@ -438,17 +830,42 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 
 		if (routing.directProcess) {
 			// Single item - process directly
+			const queueItem = createLocalQueueItem(routing.directProcess);
 			isImporting.set(true);
-			currentImport.set(createLocalQueueItem(routing.directProcess));
+			currentImport.set(queueItem);
+			addToProgressTracker(queueItem);
+			updateProgressTracker(queueItem.id, 'Processing', 5);
 
 			try {
-				const processResult = await processSingleVolume(routing.directProcess);
+				const processResult = await processSingleVolume(routing.directProcess, (status, progress) => {
+					updateProgressTracker(queueItem.id, status, progress);
+				});
+
+				// Queue additional sources (from multi-volume archives or nested archives)
+				// Add at FRONT of queue so all volumes from same archive complete together
+				if (processResult.additionalSources && processResult.additionalSources.length > 0) {
+					const newItems = processResult.additionalSources.map(createLocalQueueItem);
+					newItems.forEach(addToProgressTracker);
+					importQueue.update((q) => {
+						const processing = q.filter(item => item.status === 'processing');
+						const queued = q.filter(item => item.status === 'queued');
+						return [...processing, ...newItems, ...queued];
+					});
+
+					// Start processing queue for additional items
+					processQueue();
+
+					result.imported += processResult.additionalSources.length;
+				}
+
 				if (processResult.success) {
-					result.imported = 1;
+					result.imported += 1;
+					removeFromProgressTracker(queueItem.id);
 				} else {
 					result.failed = 1;
 					result.errors.push(processResult.error || 'Unknown error');
 					result.success = false;
+					markProgressTrackerError(queueItem.id, processResult.error || 'Unknown error');
 				}
 			} finally {
 				isImporting.set(false);
@@ -457,6 +874,7 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
 		} else {
 			// Multiple items - queue all
 			const queueItems = routing.queuedItems.map(createLocalQueueItem);
+			queueItems.forEach(addToProgressTracker);
 			importQueue.update((q) => [...q, ...queueItems]);
 
 			showSnackbar(`Queued ${queueItems.length} volumes for import`);

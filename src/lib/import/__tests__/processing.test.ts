@@ -208,6 +208,62 @@ describe('matchImagesToPages', () => {
 
 		expect(result.matched).toHaveLength(1);
 	});
+
+	it('uses count-based fallback when names completely mismatch but counts match', () => {
+		// Simulates files that were renamed after mokuro processing (e.g., with _result suffix)
+		const pages = [
+			{ img_path: '001.png', blocks: [] },
+			{ img_path: '002.png', blocks: [] },
+			{ img_path: '003.png', blocks: [] }
+		];
+		const files = createImageFiles(['001_result.webp', '002_result.webp', '003_result.webp']);
+
+		const result = matchImagesToPages(pages, files);
+
+		// Should match all via count-based fallback
+		expect(result.matched).toHaveLength(3);
+		expect(result.missing).toHaveLength(0);
+		expect(result.extra).toHaveLength(0);
+		// Check remapping is correct (sorted order)
+		expect(result.remapped.get('001.png')).toBe('001_result.webp');
+		expect(result.remapped.get('002.png')).toBe('002_result.webp');
+		expect(result.remapped.get('003.png')).toBe('003_result.webp');
+	});
+
+	it('does not use count-based fallback when most files match by name', () => {
+		// If more than 50% match by name, don't use fallback for the rest
+		const pages = [
+			{ img_path: 'page001.jpg', blocks: [] },
+			{ img_path: 'page002.jpg', blocks: [] },
+			{ img_path: 'page003.jpg', blocks: [] }, // This one won't match
+			{ img_path: 'page004.jpg', blocks: [] }
+		];
+		const files = createImageFiles(['page001.jpg', 'page002.jpg', 'renamed.jpg', 'page004.jpg']);
+
+		const result = matchImagesToPages(pages, files);
+
+		// 3 should match by name, 1 missing, 1 extra (no fallback since >50% matched)
+		expect(result.matched).toHaveLength(3);
+		expect(result.missing).toEqual(['page003.jpg']);
+		expect(result.extra).toEqual(['renamed.jpg']);
+	});
+
+	it('does not use count-based fallback when counts do not match', () => {
+		const pages = [
+			{ img_path: '001.png', blocks: [] },
+			{ img_path: '002.png', blocks: [] },
+			{ img_path: '003.png', blocks: [] }
+		];
+		// Only 2 files for 3 pages - counts don't match
+		const files = createImageFiles(['001_result.webp', '002_result.webp']);
+
+		const result = matchImagesToPages(pages, files);
+
+		// Should NOT use fallback, report missing
+		expect(result.matched).toHaveLength(0);
+		expect(result.missing).toHaveLength(3);
+		expect(result.extra).toHaveLength(2);
+	});
 });
 
 describe('extractVolumeInfo', () => {

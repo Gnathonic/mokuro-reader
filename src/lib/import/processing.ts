@@ -162,10 +162,11 @@ function normalizePath(path: string): string {
 /**
  * Match image files to mokuro page paths
  *
- * Handles:
- * - Exact path matches
- * - Extension remapping (e.g., .png → .webp)
- * - Case-insensitive matching
+ * Matching strategy (in order of preference):
+ * 1. Exact path matches (normalized for case and slashes)
+ * 2. Stem-based matching (handles extension changes like .png → .webp)
+ * 3. Count-based fallback: if name matching fails but counts match,
+ *    sort both lists and pair them positionally (handles renamed files)
  *
  * @param pages - Pages from the mokuro file
  * @param files - Map of available image files
@@ -224,6 +225,36 @@ export function matchImagesToPages(
 	for (const filePath of files.keys()) {
 		if (!usedFiles.has(filePath)) {
 			extra.push(filePath);
+		}
+	}
+
+	// FALLBACK: Count-based matching
+	// If name-based matching largely failed but we have the same number of
+	// unmatched images as missing pages, assume they correspond positionally.
+	// This handles cases where images were renamed after mokuro processing.
+	if (missing.length > 0 && missing.length === extra.length) {
+		// Only use fallback if most pages failed to match (>50% missing)
+		const matchRatio = matched.length / pages.length;
+		if (matchRatio < 0.5) {
+			// Sort both lists naturally (numeric-aware)
+			const sortedMissing = [...missing].sort((a, b) =>
+				a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+			);
+			const sortedExtra = [...extra].sort((a, b) =>
+				a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+			);
+
+			// Pair them positionally
+			for (let i = 0; i < sortedMissing.length; i++) {
+				const pagePath = sortedMissing[i];
+				const filePath = sortedExtra[i];
+				matched.push(pagePath);
+				remapped.set(pagePath, filePath);
+			}
+
+			// Clear missing and extra since we've matched them all
+			missing.length = 0;
+			extra.length = 0;
 		}
 	}
 
@@ -307,13 +338,28 @@ export function extractVolumeInfo(basePath: string): VolumeInfo {
 /**
  * Generate a placeholder image for missing pages
  * Creates a simple gray image with "File Missing" text
+ * Falls back to a minimal placeholder if canvas isn't available (e.g., in tests)
  */
 function generatePlaceholderImage(filename: string, width = 800, height = 1200): File {
+	const outputFilename = filename.split('/').pop() || 'missing.png';
+
+	// Check if we're in an environment without canvas support (e.g., jsdom tests)
+	if (typeof document === 'undefined') {
+		// Return minimal placeholder for environments without document
+		return new File([new ArrayBuffer(0)], outputFilename, { type: 'image/png' });
+	}
+
 	// Create a canvas to generate the placeholder
 	const canvas = document.createElement('canvas');
 	canvas.width = width;
 	canvas.height = height;
-	const ctx = canvas.getContext('2d')!;
+	const ctx = canvas.getContext('2d');
+
+	// If canvas context isn't available, return a minimal placeholder
+	if (!ctx) {
+		console.warn('Canvas 2D context not available, using minimal placeholder');
+		return new File([new ArrayBuffer(0)], outputFilename, { type: 'image/png' });
+	}
 
 	// Dark gray background
 	ctx.fillStyle = '#2a2a2a';
@@ -361,7 +407,7 @@ function generatePlaceholderImage(filename: string, width = 800, height = 1200):
 	}
 	const blob = new Blob([ab], { type: mimeString });
 
-	return new File([blob], filename.split('/').pop() || 'missing.png', { type: 'image/png' });
+	return new File([blob], outputFilename, { type: 'image/png' });
 }
 
 // ============================================
@@ -516,11 +562,21 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 	}
 
 	// Generate placeholder images for missing files
+	// Build a lookup map for page dimensions to avoid O(n²) lookups
+	const pageDimensionsMap = new Map<string, { width?: number; height?: number }>();
+	if (mokuroData) {
+		for (const page of mokuroData.pages) {
+			pageDimensionsMap.set(page.img_path, {
+				width: page.img_width,
+				height: page.img_height
+			});
+		}
+	}
+
 	for (const missingPath of matchResult.missing) {
-		// Try to get dimensions from mokuro data if available
-		const mokuroPage = mokuroData?.pages.find((p) => p.img_path === missingPath);
-		const width = mokuroPage?.img_width || 800;
-		const height = mokuroPage?.img_height || 1200;
+		const dimensions = pageDimensionsMap.get(missingPath);
+		const width = dimensions?.width || 800;
+		const height = dimensions?.height || 1200;
 		files[missingPath] = generatePlaceholderImage(missingPath, width, height);
 	}
 
