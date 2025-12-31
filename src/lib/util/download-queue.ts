@@ -4,7 +4,6 @@ import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
 import { tokenManager } from './sync/providers/google-drive/token-manager';
-import { showSnackbar } from './snackbar';
 import { db } from '$lib/catalog/db';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { calculateCumulativeCharCounts } from '$lib/catalog/migration';
@@ -447,7 +446,6 @@ function handleDownloadError(item: QueueItem, processId: string, errorMessage: s
     progress: 0,
     status: `Error: ${errorMessage}`
   });
-  showSnackbar(`Failed to download ${item.volumeTitle}: ${errorMessage}`);
   queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
   setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
 }
@@ -562,7 +560,6 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             status: 'Download complete'
           });
 
-          showSnackbar(`Downloaded ${item.volumeTitle} successfully`);
           queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
           setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
 
