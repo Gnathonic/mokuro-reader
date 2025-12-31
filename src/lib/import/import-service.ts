@@ -376,7 +376,8 @@ async function processArchiveContents(
 		});
 	}
 
-	if (pairingResult.pairings.length === 0) {
+	// If no pairings and no nested archives, nothing to import
+	if (pairingResult.pairings.length === 0 && nestedArchivePaths.length === 0) {
 		return { success: false, error: 'No importable volumes found in archive' };
 	}
 
@@ -387,85 +388,88 @@ async function processArchiveContents(
 	let lastError: string | undefined;
 	const totalVolumes = pairingResult.pairings.length;
 	const volumeTimes: number[] = [];
-	console.log(`[Streaming Import] Starting extraction of ${totalVolumes} volumes`);
 
-	// Build volume definitions for extraction
-	const volumeDefs: VolumeExtractDef[] = pairingResult.pairings.map((pairing, i) => ({
-		id: `vol-${i}`,
-		pathPrefix: pairing.basePath
-	}));
+	// Only extract and process volumes if there are pairings
+	if (totalVolumes > 0) {
+		console.log(`[Streaming Import] Starting extraction of ${totalVolumes} volumes`);
 
-	onProgress?.(`Extracting ${totalVolumes} volumes...`, 20);
+		// Build volume definitions for extraction
+		const volumeDefs: VolumeExtractDef[] = pairingResult.pairings.map((pairing, i) => ({
+			id: `vol-${i}`,
+			pathPrefix: pairing.basePath
+		}));
 
-	// Single-pass extraction for all volumes
-	const extractStart = performance.now();
-	const allVolumeFiles = await streamExtractAllVolumes(
-		archiveFile,
-		volumeDefs,
-		(status, progress) => {
-			// Extraction is 20-70% of total progress
-			const overallProgress = 20 + (progress / 100) * 50;
-			onProgress?.(status, overallProgress);
-		}
-	);
-	const extractTime = performance.now() - extractStart;
-	console.log(`[Streaming Import] Extraction complete: ${(extractTime / 1000).toFixed(1)}s`);
+		onProgress?.(`Extracting ${totalVolumes} volumes...`, 20);
 
-	// Process each volume sequentially (to manage memory during processing)
-	console.log(`[Streaming Import] Starting processing of ${totalVolumes} volumes`);
-	for (let i = 0; i < pairingResult.pairings.length; i++) {
-		const volumeStart = performance.now();
-		const pairing = pairingResult.pairings[i];
-		const volumeId = `vol-${i}`;
-		const volumeImageFiles = allVolumeFiles.get(volumeId) || new Map();
+		// Single-pass extraction for all volumes
+		const extractStart = performance.now();
+		const allVolumeFiles = await streamExtractAllVolumes(
+			archiveFile,
+			volumeDefs,
+			(status, progress) => {
+				// Extraction is 20-70% of total progress
+				const overallProgress = 20 + (progress / 100) * 50;
+				onProgress?.(status, overallProgress);
+			}
+		);
+		const extractTime = performance.now() - extractStart;
+		console.log(`[Streaming Import] Extraction complete: ${(extractTime / 1000).toFixed(1)}s`);
 
-		const processingProgress = 70 + (i / totalVolumes) * 25;
-		onProgress?.(`Processing ${i + 1}/${totalVolumes}: ${pairing.basePath}...`, processingProgress);
+		// Process each volume sequentially (to manage memory during processing)
+		console.log(`[Streaming Import] Starting processing of ${totalVolumes} volumes`);
+		for (let i = 0; i < pairingResult.pairings.length; i++) {
+			const volumeStart = performance.now();
+			const pairing = pairingResult.pairings[i];
+			const volumeId = `vol-${i}`;
+			const volumeImageFiles = allVolumeFiles.get(volumeId) || new Map();
 
-		// Create DecompressedVolume for processing
-		const decompressed: DecompressedVolume = {
-			mokuroFile: pairing.mokuroFile,
-			imageFiles: volumeImageFiles,
-			basePath: pairing.basePath,
-			sourceType: 'local',
-			nestedArchives: []
-		};
+			const processingProgress = 70 + (i / totalVolumes) * 25;
+			onProgress?.(`Processing ${i + 1}/${totalVolumes}: ${pairing.basePath}...`, processingProgress);
 
-		try {
-			// Process the volume
-			const processed = await processVolume(decompressed);
+			// Create DecompressedVolume for processing
+			const decompressed: DecompressedVolume = {
+				mokuroFile: pairing.mokuroFile,
+				imageFiles: volumeImageFiles,
+				basePath: pairing.basePath,
+				sourceType: 'local',
+				nestedArchives: []
+			};
 
-			// Check for duplicates
-			if (await volumeExists(processed.metadata.volumeUuid)) {
-				lastError = `Volume "${processed.metadata.volume}" already exists`;
-			} else {
-				// Save to database
-				await saveVolume(processed);
-				successCount++;
+			try {
+				// Process the volume
+				const processed = await processVolume(decompressed);
+
+				// Check for duplicates
+				if (await volumeExists(processed.metadata.volumeUuid)) {
+					lastError = `Volume "${processed.metadata.volume}" already exists`;
+				} else {
+					// Save to database
+					await saveVolume(processed);
+					successCount++;
+				}
+
+				// Collect nested sources
+				if (processed.nestedSources.length > 0) {
+					allNestedSources.push(...processed.nestedSources);
+				}
+			} catch (err) {
+				lastError = err instanceof Error ? err.message : 'Unknown error';
+				console.error(`[Archive Import] Error processing volume ${i + 1}:`, err);
 			}
 
-			// Collect nested sources
-			if (processed.nestedSources.length > 0) {
-				allNestedSources.push(...processed.nestedSources);
-			}
-		} catch (err) {
-			lastError = err instanceof Error ? err.message : 'Unknown error';
-			console.error(`[Archive Import] Error processing volume ${i + 1}:`, err);
+			const volumeTime = performance.now() - volumeStart;
+			volumeTimes.push(volumeTime);
+			const avg = volumeTimes.reduce((a, b) => a + b, 0) / volumeTimes.length;
+			console.log(`[Streaming Import] Volume ${i + 1}/${totalVolumes}: ${volumeTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms)`);
+
+			// Clear this volume's files to free memory before next volume
+			volumeImageFiles.clear();
+			allVolumeFiles.delete(volumeId);
 		}
 
-		const volumeTime = performance.now() - volumeStart;
-		volumeTimes.push(volumeTime);
-		const avg = volumeTimes.reduce((a, b) => a + b, 0) / volumeTimes.length;
-		console.log(`[Streaming Import] Volume ${i + 1}/${totalVolumes}: ${volumeTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms)`);
-
-		// Clear this volume's files to free memory before next volume
-		volumeImageFiles.clear();
-		allVolumeFiles.delete(volumeId);
+		const processTime = volumeTimes.reduce((a, b) => a + b, 0);
+		console.log(`[Streaming Import] Processing complete: ${totalVolumes} volumes in ${(processTime / 1000).toFixed(1)}s (avg: ${(processTime / totalVolumes).toFixed(0)}ms/vol)`);
 	}
-
-	const processTime = volumeTimes.reduce((a, b) => a + b, 0);
-	console.log(`[Streaming Import] Processing complete: ${totalVolumes} volumes in ${(processTime / 1000).toFixed(1)}s (avg: ${(processTime / totalVolumes).toFixed(0)}ms/vol)`);
-	console.log(`[Streaming Import] Total: extraction ${(extractTime / 1000).toFixed(1)}s + processing ${(processTime / 1000).toFixed(1)}s = ${((extractTime + processTime) / 1000).toFixed(1)}s`);
 
 	// Extract nested archives if any
 	if (nestedArchivePaths.length > 0) {
@@ -490,10 +494,12 @@ async function processArchiveContents(
 		}
 	}
 
+	// Success if we imported volumes OR found nested archives to queue
+	const hasNestedSources = allNestedSources.length > 0;
 	return {
-		success: successCount > 0,
-		error: successCount === 0 ? lastError : undefined,
-		nestedSources: allNestedSources.length > 0 ? allNestedSources : undefined
+		success: successCount > 0 || hasNestedSources,
+		error: successCount === 0 && !hasNestedSources ? lastError : undefined,
+		nestedSources: hasNestedSources ? allNestedSources : undefined
 	};
 }
 

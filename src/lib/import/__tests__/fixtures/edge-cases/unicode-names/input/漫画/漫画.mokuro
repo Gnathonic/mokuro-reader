@@ -1,9 +1,9 @@
 {
   "version": "0.2.0",
   "title": "漫画",
-  "title_uuid": "346018cc-d052-4637-9349-74576d5655cb",
+  "title_uuid": "156bee29-ffda-45a2-ba15-674159f72da0",
   "volume": "Volume 1",
-  "volume_uuid": "bed7c63b-3ea6-4cef-addb-783e9bb15525",
+  "volume_uuid": "42d3aac5-6b68-4bc8-9672-285156d2ad86",
   "pages": [
     {
       "version": "0.1.7",

@@ -921,6 +921,28 @@ createFixture(
 // ============================================
 
 /**
+ * Create a ZIP containing multiple nested CBZ files (archive of archives)
+ */
+async function createNestedArchiveZip(
+	volumes: Array<{ title: string; volume: string; pageCount: number }>
+): Promise<Buffer> {
+	const blobWriter = new BlobWriter('application/zip');
+	const zipWriter = new ZipWriter(blobWriter);
+
+	// Add each volume as a nested CBZ
+	for (const vol of volumes) {
+		const cbzBuffer = await createCbzWithMokuro(vol.title, vol.volume, vol.pageCount);
+		const filename = `${vol.volume.replace(/\s+/g, '_')}.cbz`;
+		await zipWriter.add(filename, new Uint8ArrayReader(new Uint8Array(cbzBuffer)));
+	}
+
+	await zipWriter.close();
+	const blob = await blobWriter.getData();
+	const arrayBuffer = await blob.arrayBuffer();
+	return Buffer.from(arrayBuffer);
+}
+
+/**
  * Create async fixtures that require dynamic CBZ generation
  */
 async function createAsyncFixtures(): Promise<void> {
@@ -964,6 +986,31 @@ async function createAsyncFixtures(): Promise<void> {
 				sourceType: 'archive',
 				hasMokuro: false,
 				basePathContains: 'vol2',
+				imageOnly: false
+			}
+		])
+	);
+
+	// 6. nested-archives (ZIP containing multiple CBZ files)
+	// Tests archive-of-archives handling - common when bundling multiple volumes
+	const nestedArchiveZip = await createNestedArchiveZip([
+		{ title: 'Test Series', volume: 'Volume 1', pageCount: 2 },
+		{ title: 'Test Series', volume: 'Volume 2', pageCount: 2 },
+		{ title: 'Test Series', volume: 'Volume 3', pageCount: 2 }
+	]);
+	createFixture(
+		'edge-cases',
+		'nested-archives',
+		{
+			'bundle.zip': nestedArchiveZip
+		},
+		// Initial pairing sees bundle.zip as one archive with no direct content
+		// The nested CBZs are discovered and queued during processing
+		createExpected(1, [
+			{
+				sourceType: 'archive',
+				hasMokuro: false,
+				basePathContains: 'bundle',
 				imageOnly: false
 			}
 		])

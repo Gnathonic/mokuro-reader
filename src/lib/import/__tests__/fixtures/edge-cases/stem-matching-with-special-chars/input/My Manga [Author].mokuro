@@ -1,9 +1,9 @@
 {
   "version": "0.2.0",
   "title": "My Manga",
-  "title_uuid": "9e9237a6-f772-4e3c-afc6-edf4de9ec27d",
+  "title_uuid": "8f72bc28-bce7-4610-9a5c-a495a8f2fe0d",
   "volume": "Volume 1",
-  "volume_uuid": "6101c22a-72a9-45dc-b35a-2919b03a2d73",
+  "volume_uuid": "99308650-1293-4ed3-9209-198d795151f8",
   "pages": [
     {
       "version": "0.1.7",
