@@ -15,17 +15,21 @@
   let { page, src, volumeUuid, forceVisible = false }: Props = $props();
 
   interface TextBoxData {
-    left: string;
-    top: string;
-    width: string;
-    height: string;
-    fontSize: string;
-    writingMode: string;
+    // Pre-computed style string to reduce DOM operations
+    styleString: string;
     lines: string[];
     area: number;
-    useMinDimensions: boolean;
+    fontSize: string; // Keep for hover adjustment
     isOriginalMode: boolean;
   }
+
+  // Pre-compute shared styles once
+  let sharedStyles = $derived.by(() => {
+    const fontWeight = $settings.boldFont ? 'bold' : '400';
+    const display = $settings.displayOCR ? 'block' : 'none';
+    const border = $settings.textBoxBorders ? '1px solid red' : 'none';
+    return { fontWeight, display, border };
+  });
 
   let textBoxes = $derived(
     page.blocks
@@ -36,11 +40,9 @@
         let [_xmin, _ymin, _xmax, _ymax] = box;
 
         // Only expand bounding boxes when using auto font sizing
-        // Manual font sizes should use exact OCR bounding boxes
         let xmin, ymin, xmax, ymax;
 
         if ($settings.fontSize === 'auto') {
-          // Expand bounding box by 10% (5% on each side) to give text more room
           const originalWidth = _xmax - _xmin;
           const originalHeight = _ymax - _ymin;
           const expansionX = originalWidth * 0.05;
@@ -51,7 +53,6 @@
           xmax = clamp(_xmax + expansionX, 0, img_width);
           ymax = clamp(_ymax + expansionY, 0, img_height);
         } else {
-          // Use exact OCR bounding boxes for manual font sizes
           xmin = _xmin;
           ymin = _ymin;
           xmax = _xmax;
@@ -62,13 +63,12 @@
         const height = ymax - ymin;
         const area = width * height;
 
-        // Replace manual ellipsis with proper ellipsis character (…)
-        // Handle both ASCII periods (...) and full-width periods (．．．)
+        // Replace ellipsis characters
         const processedLines = lines.map((line) =>
           line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
         );
 
-        // Determine font size based on setting
+        // Determine font size
         let fontSize: string;
         if ($settings.fontSize === 'auto' || $settings.fontSize === 'original') {
           fontSize = `${font_size}px`;
@@ -77,32 +77,42 @@
         }
 
         const isOriginalMode = $settings.fontSize === 'original';
+        const useMinDimensions = $settings.fontSize !== 'auto' && !isOriginalMode;
+        const writingMode = vertical ? 'vertical-rl' : 'horizontal-tb';
+
+        // Build a single style string to reduce DOM operations
+        const styles: string[] = [
+          `left:${xmin}px`,
+          `top:${ymin}px`,
+          `font-size:${fontSize}`,
+          `font-weight:${sharedStyles.fontWeight}`,
+          `display:${sharedStyles.display}`,
+          `border:${sharedStyles.border}`,
+          `writing-mode:${writingMode}`
+        ];
+
+        if (!isOriginalMode) {
+          if (useMinDimensions) {
+            styles.push(`min-width:${width}px`, `min-height:${height}px`);
+          } else {
+            styles.push(`width:${width}px`, `height:${height}px`);
+          }
+        }
 
         const textBox: TextBoxData = {
-          left: `${xmin}px`,
-          top: `${ymin}px`,
-          width: `${width}px`,
-          height: `${height}px`,
-          fontSize,
-          writingMode: vertical ? 'vertical-rl' : 'horizontal-tb',
+          styleString: styles.join(';'),
           lines: processedLines,
           area,
-          useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
+          fontSize,
           isOriginalMode
         };
 
         return textBox;
       })
-      .sort(({ area: a }, { area: b }) => {
-        return b - a;
-      })
+      .sort(({ area: a }, { area: b }) => b - a)
   );
 
-  let fontWeight = $derived($settings.boldFont ? 'bold' : '400');
-  let display = $derived($settings.displayOCR ? 'block' : 'none');
-  let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
   let contenteditable = $derived($settings.textEditable);
-
   let triggerMethod = $derived($settings.ankiConnectSettings.triggerMethod || 'both');
 
   // Track adjusted font sizes for each textbox
@@ -220,7 +230,11 @@
 
     const onMouseEnter = () => {
       // Skip if already processed, OCR is hidden, or using manual font size
-      if (processedTextBoxes.has(index) || display !== 'block' || $settings.fontSize !== 'auto')
+      if (
+        processedTextBoxes.has(index) ||
+        sharedStyles.display !== 'block' ||
+        $settings.fontSize !== 'auto'
+      )
         return;
 
       // Mark as processed immediately to prevent duplicate calculations
@@ -317,23 +331,15 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { styleString, lines, fontSize, isOriginalMode }, index (`${volumeUuid}-textBox-${index}`)}
   <div
     use:handleTextBoxHover={[index, fontSize]}
     class="textBox"
     class:originalMode={isOriginalMode}
     class:forceVisible
-    style:width={isOriginalMode ? undefined : useMinDimensions ? undefined : width}
-    style:height={isOriginalMode ? undefined : useMinDimensions ? undefined : height}
-    style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
-    style:min-height={isOriginalMode ? undefined : useMinDimensions ? height : undefined}
-    style:left
-    style:top
-    style:font-size={adjustedFontSizes.get(index) || fontSize}
-    style:font-weight={fontWeight}
-    style:display
-    style:border
-    style:writing-mode={writingMode}
+    style={adjustedFontSizes.has(index)
+      ? styleString.replace(/font-size:[^;]+/, `font-size:${adjustedFontSizes.get(index)}`)
+      : styleString}
     role="none"
     oncontextmenu={(e) => onContextMenu(e, lines)}
     ondblclick={(e) => onDoubleTap(e, lines)}
