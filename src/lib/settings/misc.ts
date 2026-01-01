@@ -1,9 +1,16 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
+export type ProgressTrackerSorting =
+  | 'last-read'
+  | 'pages-per-day'
+  | 'fewest-pages'
+  | 'deadline';
+
 export type MiscSettings = {
   galleryLayout: 'grid' | 'list';
   gallerySorting: 'ASC' | 'DESC' | 'SMART';
+  progressTrackerSorting: ProgressTrackerSorting;
   deviceRamGB: 4 | 8 | 16 | 32;
   turboMode: boolean;
   gdriveAutoReAuth: boolean;
@@ -28,6 +35,7 @@ function getDefaultRamSetting(): 4 | 8 | 16 | 32 {
 const defaultSettings: MiscSettings = {
   galleryLayout: 'grid',
   gallerySorting: 'SMART',
+  progressTrackerSorting: 'last-read',
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
   gdriveAutoReAuth: true // Keep users synced during long reading sessions

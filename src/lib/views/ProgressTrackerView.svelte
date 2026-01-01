@@ -1,9 +1,12 @@
 <script lang="ts">
-  import { Card } from 'flowbite-svelte';
-  import { BookSolid } from 'flowbite-svelte-icons';
-  import { nav } from '$lib/util/hash-router';
+  import { Button, Card } from 'flowbite-svelte';
+  import { BookSolid, SortOutline } from 'flowbite-svelte-icons';
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
   import { volumes as catalogVolumes } from '$lib/catalog';
+  import { miscSettings, updateMiscSetting, type ProgressTrackerSorting } from '$lib/settings';
+  import { volumeDeadlines, calculatePagesPerDay, dateUtils } from '$lib/settings/goals';
+  import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
+  import VolumeCard from '$lib/components/VolumeCard.svelte';
 
   // Check if volumes is empty
   let hasVolumes = $derived($volumes && Object.keys($volumes).length > 0);
@@ -35,6 +38,135 @@
       urlsToRevoke.forEach((url) => URL.revokeObjectURL(url));
     };
   });
+
+  // Precompute progress stats for each volume
+  let volumeStats = $derived.by(() => {
+    const stats = new Map<
+      string,
+      {
+        progressPercent: number;
+        progressPercentString: string;
+        remainingPages: number;
+        currentPage: number;
+        totalPages: number;
+        //isCompleted: boolean;
+      }
+    >();
+
+    for (const [volume_uuid, volumeData] of volumeEntries) {
+      const totalPages = $catalogVolumes[volume_uuid]?.page_count ?? 0;
+      let currentPage = $progress[volume_uuid] ?? 0;
+      // Typically a user won't stop reading on the first page, so count this as 0% progress
+      if (currentPage === 1) {
+        currentPage = 0;
+      }
+
+      const progressPercent = totalPages > 0 ? (currentPage / totalPages) * 100 : 0;
+
+      stats.set(volume_uuid, {
+        progressPercent,
+        progressPercentString: progressPercent.toFixed(0) + '%',
+        remainingPages: totalPages - currentPage,
+        currentPage,
+        totalPages
+        //isCompleted: currentPage >= totalPages
+      });
+    }
+
+    return stats;
+  });
+
+  // Track hover state for each volume
+  let hoveredVolume = $state<string | null>(null);
+
+  // Sorting configuration
+  const sortOrder: ProgressTrackerSorting[] = [
+    'last-read',
+    'pages-per-day',
+    'fewest-pages',
+    'deadline'
+  ];
+
+  const sortLabels: Record<ProgressTrackerSorting, string> = {
+    'last-read': 'Last Read',
+    'pages-per-day': 'Pages/Day',
+    'fewest-pages': 'Fewest Pages',
+    deadline: 'Deadline'
+  };
+
+  const sortTitles: Record<ProgressTrackerSorting, string> = {
+    'last-read': 'Sorted by most recently read',
+    'pages-per-day': 'Sorted by highest pages per day needed to reach deadline',
+    'fewest-pages': 'Sorted by fewest pages remaining',
+    deadline: 'Sorted by soonest deadline'
+  };
+
+  function cycleSorting() {
+    const currentIndex = sortOrder.indexOf($miscSettings.progressTrackerSorting);
+    const nextIndex = (currentIndex + 1) % sortOrder.length;
+    updateMiscSetting('progressTrackerSorting', sortOrder[nextIndex]);
+  }
+
+  // Sorted volume entries based on current sorting preference
+  let sortedVolumeEntries = $derived.by(() => {
+    const sorting = $miscSettings.progressTrackerSorting;
+    const deadlines = $volumeDeadlines;
+
+    // Create a snapshot of data for stable sorting
+    const entriesWithSortData = volumeEntries.map(([volumeId, volumeData]) => {
+      const stats = volumeStats.get(volumeId);
+      const remainingPages = stats?.remainingPages ?? 0;
+      const deadline = deadlines[volumeId] || null;
+      const pagesPerDay = calculatePagesPerDay(remainingPages, deadline);
+      const daysUntilDeadline = deadline ? dateUtils.calculateDaysRemaining(deadline) : null;
+      const lastProgressUpdate = new Date(volumeData.lastProgressUpdate || 0).getTime();
+
+      return {
+        volumeId,
+        volumeData,
+        remainingPages,
+        pagesPerDay,
+        daysUntilDeadline,
+        lastProgressUpdate,
+        hasDeadline: deadline !== null
+      };
+    });
+
+    return [...entriesWithSortData].sort((a, b) => {
+      switch (sorting) {
+        case 'last-read':
+          // Most recently read first
+          return b.lastProgressUpdate - a.lastProgressUpdate;
+
+        case 'pages-per-day':
+          // Highest pages per day first (most urgent)
+          // Volumes without deadlines go to the end
+          if (a.pagesPerDay === null && b.pagesPerDay === null) {
+            return b.lastProgressUpdate - a.lastProgressUpdate;
+          }
+          if (a.pagesPerDay === null) return 1;
+          if (b.pagesPerDay === null) return -1;
+          return b.pagesPerDay - a.pagesPerDay;
+
+        case 'fewest-pages':
+          // Fewest remaining pages first (closest to completion)
+          return a.remainingPages - b.remainingPages;
+
+        case 'deadline':
+          // Soonest deadline first
+          // Volumes without deadlines go to the end
+          if (!a.hasDeadline && !b.hasDeadline) {
+            return b.lastProgressUpdate - a.lastProgressUpdate;
+          }
+          if (!a.hasDeadline) return 1;
+          if (!b.hasDeadline) return -1;
+          return (a.daysUntilDeadline ?? 0) - (b.daysUntilDeadline ?? 0);
+
+        default:
+          return 0;
+      }
+    });
+  });
 </script>
 
 <svelte:head>
@@ -42,46 +174,59 @@
 </svelte:head>
 
 <div class="min-h-[90svh] w-full p-4">
-  <h1 class="mb-6 text-3xl font-bold">Progress Tracker</h1>
+  <div class="mb-6 flex items-center justify-between">
+    <h1 class="text-3xl font-bold">Progress Tracker</h1>
+
+    {#if hasVolumes}
+      <Button
+        size="sm"
+        color="alternative"
+        onclick={cycleSorting}
+        title={sortTitles[$miscSettings.progressTrackerSorting]}
+        class="flex h-10 items-center justify-center"
+      >
+        <SortOutline class="h-5 w-5" />
+        <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
+      </Button>
+    {/if}
+  </div>
+
+  <!-- Annual Goal Progress -->
+  <AnnualGoalProgress />
 
   {#if !hasVolumes}
     <Card class="mb-6 py-8 text-center">
       <BookSolid size="lg" class="mx-auto mb-3 text-gray-500" />
-      <h2 class="mb-2 text-lg font-semibold text-gray-300">No Reading History Yet</h2>
-      <p class="text-sm text-gray-400">Start reading to track your reading speed!</p>
+      <h2 class="mb-2 text-lg font-semibold text-gray-300">No Volumes Started Yet</h2>
+      <p class="text-sm text-gray-400">Start reading to track your progress!</p>
     </Card>
   {:else}
-    <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
-      {#each volumeEntries as [volume_uuid, volumeData]}
-        <a
-          href="#/reader/{volumeData.series_uuid}/{volume_uuid}"
-          onclick={(e) => {
-            e.preventDefault();
-            if (volumeData.series_uuid) nav.toReader(volumeData.series_uuid, volume_uuid);
-          }}
-          class="flex flex-col gap-2"
-        >
-          <div class="mb-4 p-1">
-            {#if thumbnailUrls.get(volume_uuid)}
-              <img
-                src={thumbnailUrls.get(volume_uuid)}
-                alt={volumeData.volume_title || 'Volume cover'}
-                class="mb-3 rounded"
-                style="max-width: 125px; max-height: 180px; height: auto;"
-              />
-            {/if}
-            <p>
-              {$catalogVolumes[volume_uuid]?.page_count
-                ? (
-                    (($progress[volume_uuid] ?? 0) / $catalogVolumes[volume_uuid].page_count) *
-                    100
-                  ).toFixed(0)
-                : 0}% ({($catalogVolumes[volume_uuid]?.page_count ?? 0) -
-                ($progress[volume_uuid] ?? 0)}p)
-            </p>
-          </div>
-        </a>
+    <div class="flex flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start">
+      {#each sortedVolumeEntries as { volumeId, volumeData }}
+        {@const stats = volumeStats.get(volumeId)!}
+        <VolumeCard
+          {volumeId}
+          seriesId={volumeData.series_uuid}
+          volumeTitle={volumeData.volume_title}
+          thumbnailUrl={thumbnailUrls.get(volumeId)}
+          progressPercent={stats.progressPercent}
+          progressPercentString={stats.progressPercentString}
+          remainingPages={stats.remainingPages}
+          isHovered={hoveredVolume === volumeId}
+          onHover={(id) => (hoveredVolume = id)}
+        />
       {/each}
     </div>
   {/if}
 </div>
+
+<style>
+  :root {
+    --box-width: 125px;
+    --box-height: 180px;
+    --border-radius: 5px;
+    --spacing: 5px;
+    --transition-duration: 0.3s;
+    --hover-scale: 1.1;
+  }
+</style>
