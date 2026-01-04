@@ -11,17 +11,8 @@
     onClose: () => void;
   }
 
-  let {
-    x,
-    y,
-    lines,
-    ankiEnabled,
-    textBoxElement,
-    onCopy,
-    onCopyRaw,
-    onAddToAnki,
-    onClose
-  }: Props = $props();
+  let { x, y, lines, ankiEnabled, textBoxElement, onCopy, onCopyRaw, onAddToAnki, onClose }: Props =
+    $props();
 
   // Track current selection reactively (updates as user changes selection on mobile)
   let selection = $state(window.getSelection()?.toString().trim() || '');

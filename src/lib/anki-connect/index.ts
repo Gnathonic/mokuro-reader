@@ -298,14 +298,6 @@ export async function createCard(
     ]
   };
 
-  console.log('[AnkiConnect] Creating card with payload:', {
-    deckName: resolvedDeckName,
-    modelName,
-    fields,
-    tags: tagList,
-    pictureField
-  });
-
   // Create deck if it doesn't exist
   await ankiConnect('createDeck', { deck: resolvedDeckName });
 
