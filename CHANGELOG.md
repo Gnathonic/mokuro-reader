@@ -1,14 +1,22 @@
 # Changelog
 
-## [1.1.0] - Unreleased
+## [1.1.0] - 2026-01-04
 
 ### Added
 
-- Anki tags with dynamic template support (e.g., `mokuro::{series}::{volume}`)
-- Custom AnkiConnect URL configuration (default: `http://127.0.0.1:8765`)
-- Card creation mode setting: QuickActions only, floating textbox button, or both
-- Visual textbox picker for QuickActions Anki card creation
-- Validation and error handling for AnkiConnect card creation
+- **Context menu for OCR text boxes** - Right-click/long-press for quick copy and Anki card creation
+- **Partial volume imports** - Import volumes even when some images are missing, with placeholder pages and a confirmation prompt showing what's missing
+- **Import progress tracking** - File imports now show progress in the progress tracker
+- **Anki textbox targeting** - Pick which text box to capture when creating cards from QuickActions
+- **AnkiConnect custom URL** - Configure non-default AnkiConnect endpoints
+- **AnkiConnect card modes** - Choose between updating last card or creating new cards
+- **Anki dynamic tags** - Template tags like `{series}`, `{volume}` for automatic organization
+
+### Fixed
+
+- **CBZ export compatibility** - Exported files now work in more third-party readers
+- **iOS Safari imports** - Fixed UUID generation and file picker issues
+- **Import compatibility** - Better handling of various internal folder layouts
 
 ## [1.0.7] - 2025-12-17
 
