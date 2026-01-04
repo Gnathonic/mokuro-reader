@@ -88,9 +88,11 @@
     const today = new Date();
 
     // Calculate days remaining
-    const daysRemaining = dateUtils.calculateDaysRemaining(deadline);
+    const daysRemaining = dateUtils.calculateDaysRemaining(deadline) - 1;
 
-    if (daysRemaining === 0) {
+    if (daysRemaining < 0) {
+      return 'Past due';
+    } else if (daysRemaining === 0) {
       return 'Due today!';
     } else if (daysRemaining === 1) {
       return 'Due tomorrow';
