@@ -1,7 +1,8 @@
-import { settings } from '$lib/settings';
+import { effectiveVolumeSettings, settings } from '$lib/settings';
 import type { PanZoom } from 'panzoom';
 import panzoom from 'panzoom';
 import { get, writable } from 'svelte/store';
+import { routeParams } from '$lib/util/hash-router';
 
 let pz: PanZoom | undefined;
 let container: HTMLElement | undefined;
@@ -166,6 +167,14 @@ export function keepZoomStart() {
   panAlign('center', 'top');
 }
 
+export function keepZoomTopCorner() {
+  const volumeId = get(routeParams).volume ?? '';
+
+  const isRightToLeft = get(effectiveVolumeSettings)[volumeId]?.rightToLeft ?? false;
+
+  panAlign(isRightToLeft ? 'right' : 'left', 'top');
+}
+
 export function zoomDefault() {
   const zoomDefault = get(settings).zoomDefault;
   switch (zoomDefault) {
@@ -180,6 +189,9 @@ export function zoomDefault() {
       return;
     case 'keepZoomStart':
       keepZoomStart();
+      return;
+    case 'keepZoomTopCorner':
+      keepZoomTopCorner();
       return;
   }
 }

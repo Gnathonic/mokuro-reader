@@ -24,7 +24,8 @@ export type ZoomModes =
   | 'zoomFitToWidth'
   | 'zoomOriginal'
   | 'keepZoom'
-  | 'keepZoomStart';
+  | 'keepZoomStart'
+  | 'keepZoomTopCorner';
 
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
