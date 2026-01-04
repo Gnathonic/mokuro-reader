@@ -107,13 +107,11 @@
     updateMiscSetting('progressTrackerSorting', sortOrder[nextIndex]);
   }
 
-  // Sorted volume entries based on current sorting preference
-  let sortedVolumeEntries = $derived.by(() => {
-    const sorting = $miscSettings.progressTrackerSorting;
+  // Helper function to create entries with sort data
+  function createEntriesWithSortData(entries: [string, VolumeData][]) {
     const deadlines = $volumeDeadlines;
 
-    // Create a snapshot of data for stable sorting
-    const entriesWithSortData = volumeEntries.map(([volumeId, volumeData]) => {
+    return entries.map(([volumeId, volumeData]) => {
       const stats = volumeStats.get(volumeId);
       const remainingPages = stats?.remainingPages ?? 0;
       const deadline = deadlines[volumeId] || null;
@@ -131,6 +129,11 @@
         hasDeadline: deadline !== null
       };
     });
+  }
+
+  // Helper function to sort entries
+  function sortEntries(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
+    const sorting = $miscSettings.progressTrackerSorting;
 
     return [...entriesWithSortData].sort((a, b) => {
       switch (sorting) {
@@ -166,6 +169,35 @@
           return 0;
       }
     });
+  }
+
+  // Split volumes into reading status categories
+  let volumeSections = $derived.by(() => {
+    const currentlyReading: [string, VolumeData][] = [];
+    const futureReads: [string, VolumeData][] = [];
+    const completedVolumes: [string, VolumeData][] = [];
+
+    for (const [volumeId, volumeData] of volumeEntries) {
+      const currentPage = $progress[volumeId] ?? 0;
+      const totalPages = $catalogVolumes[volumeId]?.page_count ?? 0;
+
+      if (currentPage >= totalPages && totalPages > 0) {
+        // Completed: progress equals total pages
+        completedVolumes.push([volumeId, volumeData]);
+      } else if (currentPage > 1) {
+        // Currently Reading: progress > 1 but not at final page
+        currentlyReading.push([volumeId, volumeData]);
+      } else {
+        // Future Reads: no progress or progress = 1
+        futureReads.push([volumeId, volumeData]);
+      }
+    }
+
+    return {
+      currentlyReading: sortEntries(createEntriesWithSortData(currentlyReading)),
+      futureReads: sortEntries(createEntriesWithSortData(futureReads)),
+      completedVolumes: sortEntries(createEntriesWithSortData(completedVolumes))
+    };
   });
 </script>
 
@@ -201,22 +233,83 @@
       <p class="text-sm text-gray-400">Start reading to track your progress!</p>
     </Card>
   {:else}
-    <div class="flex flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start">
-      {#each sortedVolumeEntries as { volumeId, volumeData }}
-        {@const stats = volumeStats.get(volumeId)!}
-        <VolumeCard
-          {volumeId}
-          seriesId={volumeData.series_uuid}
-          volumeTitle={volumeData.volume_title}
-          thumbnailUrl={thumbnailUrls.get(volumeId)}
-          progressPercent={stats.progressPercent}
-          progressPercentString={stats.progressPercentString}
-          remainingPages={stats.remainingPages}
-          isHovered={hoveredVolume === volumeId}
-          onHover={(id) => (hoveredVolume = id)}
-        />
-      {/each}
-    </div>
+    <!-- Currently Reading Section -->
+    {#if volumeSections.currentlyReading.length > 0}
+      <Card class="mb-6 w-full max-w-none p-6">
+        <h2 class="mb-4 text-xl font-semibold">Currently Reading</h2>
+        <div
+          class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
+        >
+          {#each volumeSections.currentlyReading as { volumeId, volumeData }}
+            {@const stats = volumeStats.get(volumeId)!}
+            <VolumeCard
+              {volumeId}
+              seriesId={volumeData.series_uuid}
+              volumeTitle={volumeData.volume_title}
+              thumbnailUrl={thumbnailUrls.get(volumeId)}
+              progressPercent={stats.progressPercent}
+              progressPercentString={stats.progressPercentString}
+              remainingPages={stats.remainingPages}
+              isHovered={hoveredVolume === volumeId}
+              onHover={(id) => (hoveredVolume = id)}
+              showDeadline={true}
+            />
+          {/each}
+        </div>
+      </Card>
+    {/if}
+
+    <!-- Future Reads Section -->
+    {#if volumeSections.futureReads.length > 0}
+      <Card class="mb-6 w-full max-w-none p-6">
+        <h2 class="mb-4 text-xl font-semibold">Future Reads</h2>
+        <div
+          class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
+        >
+          {#each volumeSections.futureReads as { volumeId, volumeData }}
+            {@const stats = volumeStats.get(volumeId)!}
+            <VolumeCard
+              {volumeId}
+              seriesId={volumeData.series_uuid}
+              volumeTitle={volumeData.volume_title}
+              thumbnailUrl={thumbnailUrls.get(volumeId)}
+              progressPercent={stats.progressPercent}
+              progressPercentString={stats.progressPercentString}
+              remainingPages={stats.remainingPages}
+              isHovered={hoveredVolume === volumeId}
+              onHover={(id) => (hoveredVolume = id)}
+              showDeadline={false}
+            />
+          {/each}
+        </div>
+      </Card>
+    {/if}
+
+    <!-- Completed Volumes Section -->
+    {#if volumeSections.completedVolumes.length > 0}
+      <Card class="mb-6 w-full max-w-none p-6">
+        <h2 class="mb-4 text-xl font-semibold">Completed Volumes</h2>
+        <div
+          class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
+        >
+          {#each volumeSections.completedVolumes as { volumeId, volumeData }}
+            {@const stats = volumeStats.get(volumeId)!}
+            <VolumeCard
+              {volumeId}
+              seriesId={volumeData.series_uuid}
+              volumeTitle={volumeData.volume_title}
+              thumbnailUrl={thumbnailUrls.get(volumeId)}
+              progressPercent={stats.progressPercent}
+              progressPercentString={stats.progressPercentString}
+              remainingPages={stats.remainingPages}
+              isHovered={hoveredVolume === volumeId}
+              onHover={(id) => (hoveredVolume = id)}
+              showDeadline={false}
+            />
+          {/each}
+        </div>
+      </Card>
+    {/if}
   {/if}
 </div>
 
