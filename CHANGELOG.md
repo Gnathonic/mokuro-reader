@@ -16,6 +16,7 @@
 ### Added
 
 - **Context menu for OCR text boxes** - Right-click/long-press for quick copy and Anki card creation
+- **Copy text without linebreaks** - Copied text automatically strips linebreaks for cleaner pasting - thanks [@Daxterapid](https://github.com/Daxterapid)
 - **Partial volume imports** - Import volumes even when some images are missing, with placeholder pages and a confirmation prompt showing what's missing
 - **Import progress tracking** - File imports now show progress in the progress tracker
 - **Anki textbox targeting** - Pick which text box to capture when creating cards from QuickActions
