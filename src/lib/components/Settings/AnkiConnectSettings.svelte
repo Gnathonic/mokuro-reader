@@ -1,8 +1,13 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { settings, updateAnkiSetting } from '$lib/settings';
-  import { AccordionItem, Helper, Input, Label, Select, Toggle } from 'flowbite-svelte';
-  import { DYNAMIC_TAGS, DEFAULT_ANKI_TAGS } from '$lib/anki-connect';
+  import { AccordionItem, Button, Helper, Input, Label, Select, Toggle } from 'flowbite-svelte';
+  import {
+    DYNAMIC_TAGS,
+    DEFAULT_ANKI_TAGS,
+    testConnection,
+    type ConnectionTestResult
+  } from '$lib/anki-connect';
 
   let disabled = $derived(!$settings.ankiConnectSettings.enabled);
 
@@ -35,6 +40,20 @@
     $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
+
+  // Connection test state
+  let connectionStatus = $state<ConnectionTestResult | null>(null);
+  let isTesting = $state(false);
+
+  async function handleTestConnection() {
+    isTesting = true;
+    connectionStatus = null;
+    try {
+      connectionStatus = await testConnection(url || undefined);
+    } finally {
+      isTesting = false;
+    }
+  }
 
   function updateDoubleTap(enabled: boolean) {
     // Map toggle to triggerMethod for backwards compatibility
@@ -72,14 +91,48 @@
     </div>
     <div>
       <Label class="text-gray-900 dark:text-white">AnkiConnect URL:</Label>
-      <Input
-        {disabled}
-        type="text"
-        placeholder="http://127.0.0.1:8765"
-        bind:value={url}
-        onchange={() => updateAnkiSetting('url', url)}
-      />
-      <Helper class="mt-1">Use a custom URL to connect to AnkiConnect on another device</Helper>
+      <div class="flex gap-2">
+        <Input
+          {disabled}
+          type="text"
+          placeholder="http://127.0.0.1:8765"
+          bind:value={url}
+          onchange={() => {
+            updateAnkiSetting('url', url);
+            connectionStatus = null;
+          }}
+          class="flex-1"
+        />
+        <Button
+          {disabled}
+          size="sm"
+          color="alternative"
+          onclick={handleTestConnection}
+          class="whitespace-nowrap"
+        >
+          {#if isTesting}
+            Testing...
+          {:else}
+            Test
+          {/if}
+        </Button>
+      </div>
+      {#if connectionStatus}
+        <div
+          class="mt-2 rounded p-2 text-sm {connectionStatus.success
+            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}"
+        >
+          {connectionStatus.message}
+          {#if !connectionStatus.success}
+            <span class="mt-1 block text-xs opacity-75"
+              >Check browser console (F12) for more details.</span
+            >
+          {/if}
+        </div>
+      {:else}
+        <Helper class="mt-1">Use a custom URL to connect to AnkiConnect on another device</Helper>
+      {/if}
     </div>
     <div>
       <Label class="text-gray-900 dark:text-white">Picture field:</Label>

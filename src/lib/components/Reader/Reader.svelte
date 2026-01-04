@@ -1038,6 +1038,7 @@
       y={contextMenuData.y}
       lines={contextMenuData.lines}
       ankiEnabled={$settings.ankiConnectSettings.enabled}
+      textBoxElement={contextMenuData.imgElement}
       onCopy={() => {}}
       onCopyRaw={() => {}}
       onAddToAnki={handleContextMenuAddToAnki}

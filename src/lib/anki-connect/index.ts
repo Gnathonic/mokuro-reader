@@ -50,6 +50,73 @@ export function resolveDynamicTags(tags: string, metadata: VolumeMetadata): stri
   return resolved.replace(/\s+/g, ' ').trim();
 }
 
+export type ConnectionTestResult = {
+  success: boolean;
+  error?: 'network' | 'cors' | 'invalid_response' | 'anki_error';
+  message: string;
+  version?: number;
+};
+
+/**
+ * Tests the AnkiConnect connection and returns detailed error information.
+ * Uses the "version" action which is a simple ping that returns the API version.
+ */
+export async function testConnection(testUrl?: string): Promise<ConnectionTestResult> {
+  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'version', version: 6 })
+    });
+
+    const json = await res.json();
+
+    if (json.error) {
+      return {
+        success: false,
+        error: 'anki_error',
+        message: `Anki error: ${json.error}`
+      };
+    }
+
+    return {
+      success: true,
+      message: `Connected to AnkiConnect v${json.result}`,
+      version: json.result
+    };
+  } catch (e: any) {
+    // Distinguish between different error types
+    const errorMessage = e?.message ?? String(e);
+
+    // CORS errors typically show as "Failed to fetch" or similar network errors
+    // but we can check if it's a TypeError which often indicates CORS
+    if (e instanceof TypeError && errorMessage.includes('Failed to fetch')) {
+      // Could be CORS or network - provide guidance for both
+      return {
+        success: false,
+        error: 'cors',
+        message:
+          'Cannot connect. Either Anki is not running, the URL is wrong, or CORS is not configured. Add this site to webCorsOriginList in AnkiConnect settings.'
+      };
+    }
+
+    if (errorMessage.includes('NetworkError') || errorMessage.includes('net::')) {
+      return {
+        success: false,
+        error: 'network',
+        message: 'Network error: Check that Anki is running and the URL is correct'
+      };
+    }
+
+    return {
+      success: false,
+      error: 'invalid_response',
+      message: `Connection failed: ${errorMessage}`
+    };
+  }
+}
+
 export async function ankiConnect(action: string, params: Record<string, any>) {
   const url = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
 
@@ -66,7 +133,16 @@ export async function ankiConnect(action: string, params: Record<string, any>) {
 
     return json.result;
   } catch (e: any) {
-    showSnackbar(`Error: ${e?.message ?? e}`);
+    // Provide more helpful error messages
+    const errorMessage = e?.message ?? String(e);
+
+    if (e instanceof TypeError && errorMessage.includes('Failed to fetch')) {
+      showSnackbar(
+        'Error: Cannot connect to AnkiConnect. Check that Anki is running and CORS is configured.'
+      );
+    } else {
+      showSnackbar(`Error: ${errorMessage}`);
+    }
   }
 }
 

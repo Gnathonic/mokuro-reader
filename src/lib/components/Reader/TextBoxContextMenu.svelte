@@ -4,13 +4,24 @@
     y: number;
     lines: string[];
     ankiEnabled: boolean;
+    textBoxElement?: HTMLElement | null;
     onCopy: () => void;
     onCopyRaw: () => void;
     onAddToAnki: (selection: string) => void;
     onClose: () => void;
   }
 
-  let { x, y, lines, ankiEnabled, onCopy, onCopyRaw, onAddToAnki, onClose }: Props = $props();
+  let {
+    x,
+    y,
+    lines,
+    ankiEnabled,
+    textBoxElement,
+    onCopy,
+    onCopyRaw,
+    onAddToAnki,
+    onClose
+  }: Props = $props();
 
   // Capture selection at mount time (before it might be cleared)
   const selection = window.getSelection()?.toString().trim() || '';
@@ -20,60 +31,133 @@
   const fullText = lines.join('');
   const fullTextStripped = fullText.replace(/[\n\r\t]/g, '');
 
-  // Adjust position to keep menu in viewport
+  // Adjust position to keep menu in viewport and avoid overlapping textbox
   let menuElement: HTMLDivElement | undefined = $state();
   let adjustedX = $state(x);
   let adjustedY = $state(y);
 
   $effect(() => {
     if (menuElement) {
-      const rect = menuElement.getBoundingClientRect();
+      const menuRect = menuElement.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
+      const padding = 8;
 
-      // Adjust X if menu would overflow right edge
-      if (x + rect.width > viewportWidth) {
-        adjustedX = x - rect.width;
-      } else {
-        adjustedX = x;
-      }
+      // If we have the textbox element, position menu to avoid overlapping it
+      if (textBoxElement) {
+        const boxRect = textBoxElement.getBoundingClientRect();
 
-      // Adjust Y if menu would overflow bottom edge
-      if (y + rect.height > viewportHeight) {
-        adjustedY = y - rect.height;
+        // Try to position below the textbox
+        let targetY = boxRect.bottom + padding;
+        let targetX = boxRect.left;
+
+        // If no room below, position above
+        if (targetY + menuRect.height > viewportHeight) {
+          targetY = boxRect.top - menuRect.height - padding;
+        }
+
+        // If still no room (above), just use bottom of viewport
+        if (targetY < 0) {
+          targetY = viewportHeight - menuRect.height - padding;
+        }
+
+        // Adjust X to stay in viewport
+        if (targetX + menuRect.width > viewportWidth) {
+          targetX = viewportWidth - menuRect.width - padding;
+        }
+        if (targetX < padding) {
+          targetX = padding;
+        }
+
+        adjustedX = targetX;
+        adjustedY = targetY;
       } else {
-        adjustedY = y;
+        // Fallback: position at touch point, adjusted for viewport
+        if (x + menuRect.width > viewportWidth) {
+          adjustedX = x - menuRect.width;
+        } else {
+          adjustedX = x;
+        }
+
+        if (y + menuRect.height > viewportHeight) {
+          adjustedY = y - menuRect.height;
+        } else {
+          adjustedY = y;
+        }
       }
     }
   });
 
-  function copySelection() {
+  // Fallback copy method for mobile browsers
+  function copyToClipboard(text: string): boolean {
+    // Try modern API first
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {
+        // Fallback if async clipboard fails
+        fallbackCopy(text);
+      });
+      return true;
+    }
+    return fallbackCopy(text);
+  }
+
+  function fallbackCopy(text: string): boolean {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      return true;
+    } catch (err) {
+      console.error('Fallback copy failed:', err);
+      return false;
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
+
+  function copySelection(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
     const text = selection.replace(/[\n\r\t]/g, '');
-    navigator.clipboard.writeText(text);
+    copyToClipboard(text);
     onCopy();
     onClose();
   }
 
-  function copySelectionRaw() {
-    navigator.clipboard.writeText(selection);
+  function copySelectionRaw(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(selection);
     onCopyRaw();
     onClose();
   }
 
-  function copyAll() {
-    navigator.clipboard.writeText(fullTextStripped);
+  function copyAll(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(fullTextStripped);
     onCopy();
     onClose();
   }
 
-  function copyAllRaw() {
+  function copyAllRaw(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
     const text = lines.join('\n');
-    navigator.clipboard.writeText(text);
+    copyToClipboard(text);
     onCopyRaw();
     onClose();
   }
 
-  function handleAddToAnki() {
+  function handleAddToAnki(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
     onAddToAnki(selection);
     onClose();
   }
@@ -93,6 +177,8 @@
   style:left="{adjustedX}px"
   style:top="{adjustedY}px"
   onclick={(e) => e.stopPropagation()}
+  ontouchend={(e) => e.stopPropagation()}
+  onpointerdown={(e) => e.stopPropagation()}
   onkeydown={(e) => e.stopPropagation()}
   oncontextmenu={(e) => e.preventDefault()}
   role="menu"
@@ -100,14 +186,14 @@
 >
   {#if hasSelection}
     <!-- Selection-specific options -->
-    <button type="button" class="menu-item" onclick={copySelection}>
+    <button type="button" class="menu-item" onpointerup={copySelection}>
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
       </svg>
       <span>Copy selection</span>
     </button>
-    <button type="button" class="menu-item" onclick={copySelectionRaw}>
+    <button type="button" class="menu-item" onpointerup={copySelectionRaw}>
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -116,28 +202,28 @@
       </svg>
       <span>Copy selection with line breaks</span>
     </button>
-  {:else}
-    <!-- No selection - copy full text box -->
-    <button type="button" class="menu-item" onclick={copyAll}>
-      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-      </svg>
-      <span>Copy all</span>
-    </button>
-    <button type="button" class="menu-item" onclick={copyAllRaw}>
-      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        <line x1="12" y1="13" x2="19" y2="13"></line>
-        <line x1="12" y1="17" x2="19" y2="17"></line>
-      </svg>
-      <span>Copy all with line breaks</span>
-    </button>
+    <div class="divider"></div>
   {/if}
+  <!-- Always show copy all options -->
+  <button type="button" class="menu-item" onpointerup={copyAll}>
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>
+    <span>Copy all</span>
+  </button>
+  <button type="button" class="menu-item" onpointerup={copyAllRaw}>
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      <line x1="12" y1="13" x2="19" y2="13"></line>
+      <line x1="12" y1="17" x2="19" y2="17"></line>
+    </svg>
+    <span>Copy all with line breaks</span>
+  </button>
   {#if ankiEnabled}
     <div class="divider"></div>
-    <button type="button" class="menu-item" onclick={handleAddToAnki}>
+    <button type="button" class="menu-item" onpointerup={handleAddToAnki}>
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
         <path d="M2 17l10 5 10-5"></path>
@@ -161,6 +247,7 @@
       0 4px 6px -4px rgb(0 0 0 / 0.1);
     padding: 0.25rem 0;
     font-size: 0.875rem;
+    touch-action: manipulation;
   }
 
   :global(.dark) .context-menu {
@@ -181,6 +268,8 @@
     cursor: pointer;
     color: inherit;
     font-size: inherit;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .icon {
