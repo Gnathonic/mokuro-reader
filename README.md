@@ -47,13 +47,26 @@ https://github.com/ZXY101/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-
 
 ### 🔧 Power Features
 
-- **Anki Connect Integration** - Export vocabulary with image cropping and configurable quality/size settings
+- **Context Menu for Text Boxes** - Right-click or long-press OCR text boxes for quick copy and Anki card creation
+- **Copy Without Linebreaks** - Copied text automatically strips linebreaks for cleaner pasting
 - **Text Analysis Tools** - Dedicated text pages for both volumes and series for analysis by browser extensions
 - **Advanced Sorting** - Multiple sorting modes for catalog and series pages
 - **Robust Import System** - Handles complex arrangements of ZIPs, CBZs, files, folders, and mokuro files
+- **Partial Volume Support** - Import volumes even when some images are missing, with placeholder pages
 - **Drag-and-Drop Import** - Import files by dropping them anywhere in the app
+- **Import Progress Tracking** - Visual progress indicator for file imports
 - **Flexible File Handling** - Much more robust handling of special characters in file and folder names
 - **Batch Operations** - Efficient handling of large volume collections
+
+### 🔗 Anki Connect Integration
+
+- **Quick Capture** - Double-tap or right-click text boxes to create Anki cards
+- **Textbox Targeting** - Choose which specific text box to capture when creating cards
+- **Custom AnkiConnect URL** - Connect to AnkiConnect on another device or custom port
+- **Card Modes** - Choose between updating the last card or creating new cards
+- **Dynamic Tags** - Use template tags like `{series}` and `{volume}` for automatic card organization
+- **Connection Testing** - Built-in test button to validate your AnkiConnect setup
+- **Image Cropping** - Configurable image cropping with quality and size settings
 
 ### ⚡ Performance & Scale
 
@@ -125,8 +138,7 @@ The reader automatically tracks your reading speed and provides:
 Each volume and series has a dedicated text analysis page:
 
 - View all text extracted from the manga
-- Useful for vocabulary mining
-- Export to Anki with custom cropping and formatting
+- Useful for vocabulary mining with browser extensions like Yomitan
 - Analyze character frequency across series
 
 ## 🛠 Development
