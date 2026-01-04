@@ -23,9 +23,23 @@
     onClose
   }: Props = $props();
 
-  // Capture selection at mount time (before it might be cleared)
-  const selection = window.getSelection()?.toString().trim() || '';
-  const hasSelection = selection.length > 0;
+  // Track current selection reactively (updates as user changes selection on mobile)
+  let selection = $state(window.getSelection()?.toString().trim() || '');
+  let hasSelection = $derived(selection.length > 0);
+
+  // Update selection periodically while menu is open (for mobile selection changes)
+  $effect(() => {
+    const updateSelection = () => {
+      const newSelection = window.getSelection()?.toString().trim() || '';
+      if (newSelection !== selection) {
+        selection = newSelection;
+      }
+    };
+
+    // Check for selection changes on various events
+    document.addEventListener('selectionchange', updateSelection);
+    return () => document.removeEventListener('selectionchange', updateSelection);
+  });
 
   // Full text from all lines
   const fullText = lines.join('');
