@@ -13,6 +13,7 @@
     remainingPages: number;
     isHovered: boolean;
     onHover: (volumeId: string | null) => void;
+    showProgressBar?: boolean;
     showDeadline?: boolean;
   }
 
@@ -25,6 +26,7 @@
     remainingPages,
     isHovered,
     onHover,
+    showProgressBar = true,
     showDeadline = true
   }: Props = $props();
 </script>
@@ -53,7 +55,9 @@
     <div class="pending" style="width: calc(100% - {progressPercentString});"></div>
   </div>
 
-  <VolumeProgressBar {progressPercentString} {remainingPages} {isHovered} />
+  {#if showProgressBar}
+    <VolumeProgressBar {progressPercentString} {remainingPages} {isHovered} />
+  {/if}
 
   {#if showDeadline}
     <VolumeDeadline {volumeId} {remainingPages} />

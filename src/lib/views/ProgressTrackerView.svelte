@@ -252,6 +252,7 @@
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
               onHover={(id) => (hoveredVolume = id)}
+              showProgressBar={true}
               showDeadline={true}
             />
           {/each}
@@ -278,6 +279,7 @@
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
               onHover={(id) => (hoveredVolume = id)}
+              showProgressBar={false}
               showDeadline={false}
             />
           {/each}
@@ -304,6 +306,7 @@
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
               onHover={(id) => (hoveredVolume = id)}
+              showProgressBar={false}
               showDeadline={false}
             />
           {/each}
