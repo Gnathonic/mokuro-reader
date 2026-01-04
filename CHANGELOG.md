@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.1] - Unreleased
+
+### Added
+
+- **AnkiConnect test button** - Validate your connection with clear error messages for network/CORS issues
+- **Custom text box menu toggle** - Disable to use browser's native right-click menu instead
+
+### Fixed
+
+- **Context menu mobile support** - Buttons now respond to taps, clipboard works on mobile, menu positions to avoid overlapping text
+
 ## [1.1.0] - 2026-01-04
 
 ### Added
