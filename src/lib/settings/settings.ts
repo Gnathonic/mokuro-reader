@@ -97,6 +97,7 @@ export type Settings = {
   invertColorsSchedule: TimeSchedule;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
+  textBoxContextMenu: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
   catalogSettings: CatalogSettings;
@@ -148,6 +149,7 @@ const defaultSettings: Settings = {
   },
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
+  textBoxContextMenu: true,
   volumeDefaults: {
     singlePageView: 'auto',
     rightToLeft: true,

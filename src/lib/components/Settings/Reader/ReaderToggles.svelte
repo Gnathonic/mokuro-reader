@@ -30,6 +30,11 @@
       key: 'swapWheelBehavior',
       text: 'Swap mouse wheel scroll/zoom',
       value: $settings.swapWheelBehavior
+    },
+    {
+      key: 'textBoxContextMenu',
+      text: 'Text box context menu',
+      value: $settings.textBoxContextMenu
     }
   ] as { key: SettingsKey; text: string; value: any; shortcut?: string }[]);
 

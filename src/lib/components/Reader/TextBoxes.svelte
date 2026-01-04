@@ -320,6 +320,9 @@
   }
 
   function handleContextMenu(event: MouseEvent, lines: string[]) {
+    // Only show custom context menu if enabled in settings
+    if (!$settings.textBoxContextMenu) return;
+
     event.preventDefault();
     onContextMenu?.({
       x: event.clientX,
