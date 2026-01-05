@@ -11,9 +11,10 @@
     updateVolumeCover,
     resetVolumeCover,
     getVolumeData,
-    getVolumeFiles,
-    calculateVolumeCharacterCount
+    getVolumeFiles
   } from '$lib/util/volume-editor';
+  import { db } from '$lib/catalog/db';
+  import { getCharCount } from '$lib/util/count-chars';
   import { showSnackbar } from '$lib/util';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
@@ -107,8 +108,14 @@
       pageCount = data.metadata.page_count || 0;
       missingPagePaths = data.metadata.missing_page_paths || [];
 
-      // Calculate character count from volume_ocr (matches VolumeItem display)
-      characterCount = await calculateVolumeCharacterCount(volumeUuid);
+      // Calculate character count from volume_ocr (matches VolumeItem pattern exactly)
+      const volumeOcr = await db.volume_ocr.get(volumeUuid);
+      if (volumeOcr?.pages) {
+        const { charCount } = getCharCount(volumeOcr.pages);
+        if (charCount > 0) {
+          characterCount = charCount;
+        }
+      }
 
       progress = data.stats.progress || 0;
       timeReadInMinutes = data.stats.timeReadInMinutes || 0;
