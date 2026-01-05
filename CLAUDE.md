@@ -210,6 +210,28 @@ The reader has complex text selection logic to prevent interference with panzoom
 - Text selection is only allowed within text boxes, not on background
 - See `src/routes/[manga]/[volume]/+page.svelte` for implementation
 
+### Modal Button Z-Index
+
+**Always add `relative z-10` to action button containers in modals.**
+
+Night mode applies a CSS `filter` to `<dialog>` elements (see `app.html`). The `filter` property creates a new stacking context, which resets all z-index relationships inside the dialog. Without explicit z-index, scrollable containers (`overflow: auto/scroll`) can capture click events instead of sibling button containers.
+
+```svelte
+<!-- ✅ Correct - buttons will be clickable even with night mode filter -->
+<div class="relative z-10 flex justify-end gap-2">
+  <Button>Cancel</Button>
+  <Button>Save</Button>
+</div>
+
+<!-- ❌ Wrong - buttons may not receive clicks when night mode is active -->
+<div class="flex justify-end gap-2">
+  <Button>Cancel</Button>
+  <Button>Save</Button>
+</div>
+```
+
+**Why this happens**: Properties like `filter`, `transform`, `opacity < 1`, and `will-change` create new stacking contexts. Test modals with night mode ON to catch these issues.
+
 ## Environment Variables
 
 Create a `.env` file for Google Drive integration:
