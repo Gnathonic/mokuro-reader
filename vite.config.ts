@@ -15,6 +15,7 @@ export default defineConfig({
     exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
   },
   build: {
+    sourcemap: true,
     rollupOptions: {
       onwarn(warning, warn) {
         // Suppress sourcemap warnings from node_modules (e.g., Flowbite Svelte)

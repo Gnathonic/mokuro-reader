@@ -72,13 +72,14 @@
   let seriesOptions = $state<{ uuid: string; title: string }[]>([]);
 
   onMount(() => {
-    volumeEditorModalStore.subscribe(async (value) => {
+    const unsubscribe = volumeEditorModalStore.subscribe(async (value) => {
       if (value?.open && value.volumeUuid) {
         open = true;
         volumeUuid = value.volumeUuid;
         await loadVolumeData();
       }
     });
+    return unsubscribe;
   });
 
   async function loadVolumeData() {
@@ -281,6 +282,7 @@
 
   function handleClose() {
     open = false;
+    loading = true; // Reset for next open
     if (thumbnailUrl) {
       URL.revokeObjectURL(thumbnailUrl);
       thumbnailUrl = null;
@@ -400,7 +402,7 @@
               <Label class="mb-1 text-gray-500">Characters Read</Label>
               <div class="flex items-center gap-2 py-2">
                 <span class="text-sm text-gray-600 dark:text-gray-400">
-                  {chars.toLocaleString()} / {characterCount.toLocaleString()}
+                  {(chars ?? 0).toLocaleString()} / {(characterCount ?? 0).toLocaleString()}
                 </span>
               </div>
             </div>
