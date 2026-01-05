@@ -294,7 +294,7 @@
       </div>
 
       <!-- Actions -->
-      <div class="flex justify-end gap-2">
+      <div class="relative z-10 flex justify-end gap-2">
         <Button color="alternative" onclick={handleClose}>Cancel</Button>
         {#if selectedPageIndex !== null}
           <Button color="light" onclick={handleCropPage}>Crop Page</Button>
