@@ -7,6 +7,7 @@ import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
 import { get } from 'svelte/store';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import type { VolumeMetadata } from '$lib/types';
+import { getCharCount } from '$lib/util/count-chars';
 
 type Volumes = Record<string, VolumeData>;
 
@@ -197,4 +198,17 @@ export async function getVolumeData(
   const stats = allStats[volumeUuid] || new VolumeData();
 
   return { metadata, stats };
+}
+
+/**
+ * Calculate character count from volume OCR pages.
+ * Used as fallback when page_char_counts and character_count are missing.
+ */
+export async function calculateVolumeCharacterCount(volumeUuid: string): Promise<number> {
+  const volumeOcr = await db.volume_ocr.get(volumeUuid);
+  if (!volumeOcr?.pages || volumeOcr.pages.length === 0) {
+    return 0;
+  }
+  const { charCount } = getCharCount(volumeOcr.pages);
+  return charCount;
 }

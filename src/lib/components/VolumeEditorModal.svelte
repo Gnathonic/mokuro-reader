@@ -11,7 +11,8 @@
     updateVolumeCover,
     resetVolumeCover,
     getVolumeData,
-    getVolumeFiles
+    getVolumeFiles,
+    calculateVolumeCharacterCount
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
   import type { VolumeMetadata } from '$lib/types';
@@ -103,9 +104,19 @@
       seriesUuid = data.metadata.series_uuid;
       seriesTitle = data.metadata.series_title;
       volumeTitle = data.metadata.volume_title;
-      characterCount = data.metadata.character_count || 0;
       pageCount = data.metadata.page_count || 0;
       missingPagePaths = data.metadata.missing_page_paths || [];
+
+      // Get character count: prefer page_char_counts (last element is total),
+      // fall back to character_count, finally calculate from OCR if needed
+      const pageCharCounts = data.metadata.page_char_counts;
+      if (pageCharCounts && pageCharCounts.length > 0) {
+        characterCount = pageCharCounts[pageCharCounts.length - 1];
+      } else if (data.metadata.character_count) {
+        characterCount = data.metadata.character_count;
+      } else {
+        characterCount = await calculateVolumeCharacterCount(volumeUuid);
+      }
 
       progress = data.stats.progress || 0;
       timeReadInMinutes = data.stats.timeReadInMinutes || 0;
