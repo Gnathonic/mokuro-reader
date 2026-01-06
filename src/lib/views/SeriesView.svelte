@@ -118,6 +118,15 @@
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   }
 
+  // Compact character formatter 1200 => 1.2k
+  function formatCharCount(chars: number): string {
+    if (chars === null || chars === undefined) return '';
+    if (chars >= 10000) {
+      return `${(chars / 1000).toFixed(1)}K`;
+    }
+    return chars.toString();
+  }
+
   // View mode state (persisted to localStorage)
   type ViewMode = 'list' | 'grid';
   let viewMode = $state<ViewMode>(
@@ -704,8 +713,15 @@
           >Volumes: {mangaStats.completed} / {manga.length}</Badge
         >
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
-          >Characters: {mangaStats.chars}</Badge
-        >
+          >Characters Read: {formatCharCount(mangaStats.chars)}
+        </Badge>
+        {#if totalSeriesChars && totalSeriesChars > 0}
+          <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
+            >Characters Remaining: {formatCharCount(
+              Math.max(0, totalSeriesChars - mangaStats.chars)
+            )}
+          </Badge>
+        {/if}
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Time Read: {formatTime(mangaStats.timeReadInMinutes)}</Badge
         >
