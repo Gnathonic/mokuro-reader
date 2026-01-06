@@ -10,6 +10,7 @@
 
   let isDragging = $state(false);
   let dragCounter = 0; // Track enter/leave for nested elements
+  let isImporting = false; // Prevent concurrent imports
 
   function handleDragEnter(event: DragEvent) {
     event.preventDefault();
@@ -45,6 +46,14 @@
     if (!event.dataTransfer?.items) {
       return;
     }
+
+    // Prevent concurrent imports - ignore drops while one is in progress
+    if (isImporting) {
+      showSnackbar('Import already in progress', 2000);
+      return;
+    }
+
+    isImporting = true;
 
     // Show preparing modal immediately
     showImportPreparing('scanning');
@@ -94,6 +103,7 @@
 
     if (files.length === 0) {
       closeImportPreparing();
+      isImporting = false;
       showSnackbar('No supported files found', 3000);
       return;
     }
@@ -108,11 +118,12 @@
           updateImportPreparing({ phase: 'preparing', volumesFound });
         }
       });
-      closeImportPreparing();
     } catch (error) {
-      closeImportPreparing();
       console.error('Error processing dropped files:', error);
       showSnackbar('Failed to import files', 3000);
+    } finally {
+      closeImportPreparing();
+      isImporting = false;
     }
   }
 </script>

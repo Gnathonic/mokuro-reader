@@ -2,12 +2,8 @@
   import { Modal, Spinner } from 'flowbite-svelte';
   import { importPreparingModalStore } from '$lib/util/modals';
 
-  // Use $state instead of $derived so Modal can bind to it
-  // $derived is read-only, but Flowbite's Modal needs to write to open
-  let open = $state(false);
-  $effect(() => {
-    open = $importPreparingModalStore?.open ?? false;
-  });
+  // Conditionally render Modal to avoid Flowbite's internal state issues
+  let open = $derived($importPreparingModalStore?.open ?? false);
 
   let phase = $derived($importPreparingModalStore?.phase ?? 'scanning');
   let filesScanned = $derived($importPreparingModalStore?.filesScanned);
@@ -46,24 +42,26 @@
   });
 </script>
 
-<Modal bind:open size="sm" dismissable={false}>
-  <div class="flex flex-col items-center gap-4 py-4">
-    <!-- Spinner -->
-    <Spinner size="12" color="blue" />
+{#if open}
+  <Modal open={true} size="sm" dismissable={false}>
+    <div class="flex flex-col items-center gap-4 py-4">
+      <!-- Spinner -->
+      <Spinner size="12" color="blue" />
 
-    <!-- Title -->
-    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
+      <!-- Title -->
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
 
-    <!-- Status message -->
-    <p class="text-center text-sm text-gray-600 dark:text-gray-400">
-      {message()}
-    </p>
-
-    <!-- Progress details -->
-    {#if phase === 'analyzing' && volumesFound !== undefined && volumesFound > 0}
-      <p class="text-center text-xs text-gray-500 dark:text-gray-500">
-        {volumesFound} volume{volumesFound !== 1 ? 's' : ''} detected so far
+      <!-- Status message -->
+      <p class="text-center text-sm text-gray-600 dark:text-gray-400">
+        {message()}
       </p>
-    {/if}
-  </div>
-</Modal>
+
+      <!-- Progress details -->
+      {#if phase === 'analyzing' && volumesFound !== undefined && volumesFound > 0}
+        <p class="text-center text-xs text-gray-500 dark:text-gray-500">
+          {volumesFound} volume{volumesFound !== 1 ? 's' : ''} detected so far
+        </p>
+      {/if}
+    </div>
+  </Modal>
+{/if}
