@@ -193,9 +193,32 @@
       }
     }
 
+    // Filter future reads to show only one volume per series
+    // TODO: Replace simple title sort with sortVolumes function when available on "natural sorting" branch
+    const filteredFutureReads: [string, VolumeData][] = [];
+    const seenSeries = new Set<string>();
+
+    // Sort all future reads by volume title to get consistent ordering within series
+    const sortedFutureReads = [...futureReads].sort(([, a], [, b]) => {
+      const titleA = a.volume_title || '';
+      const titleB = b.volume_title || '';
+      return titleA.localeCompare(titleB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    for (const [volumeId, volumeData] of sortedFutureReads) {
+      const seriesUuid = volumeData.series_uuid;
+      if (seriesUuid && !seenSeries.has(seriesUuid)) {
+        seenSeries.add(seriesUuid);
+        filteredFutureReads.push([volumeId, volumeData]);
+      } else if (!seriesUuid) {
+        // Include volumes without series_uuid (shouldn't happen in normal usage)
+        filteredFutureReads.push([volumeId, volumeData]);
+      }
+    }
+
     return {
       currentlyReading: sortEntries(createEntriesWithSortData(currentlyReading)),
-      futureReads: sortEntries(createEntriesWithSortData(futureReads)),
+      futureReads: sortEntries(createEntriesWithSortData(filteredFutureReads)),
       completedVolumes: sortEntries(createEntriesWithSortData(completedVolumes))
     };
   });
