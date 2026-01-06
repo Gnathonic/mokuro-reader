@@ -712,16 +712,13 @@
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Volumes: {mangaStats.completed} / {manga.length}</Badge
         >
-        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
-          >Characters Read: {formatCharCount(mangaStats.chars)}
-        </Badge>
-        {#if totalSeriesChars && totalSeriesChars > 0}
-          <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
-            >Characters Remaining: {formatCharCount(
+        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700">
+          Characters: {formatCharCount(
+            mangaStats.chars
+          )}{#if totalSeriesChars > 0}/{formatCharCount(
               Math.max(0, totalSeriesChars - mangaStats.chars)
-            )}
-          </Badge>
-        {/if}
+            )}{/if}
+        </Badge>
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Time Read: {formatTime(mangaStats.timeReadInMinutes)}</Badge
         >
