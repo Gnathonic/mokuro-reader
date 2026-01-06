@@ -14,10 +14,8 @@
 
   let { series_uuid, volumes, providerName = 'Cloud' }: Props = $props();
 
-  // Volumes are already filtered by parent, just need to sort once
-  let seriesVolumes = $derived(
-    [...volumes].sort((a, b) => a.volume_title.localeCompare(b.volume_title))
-  );
+  // Volumes are pre-sorted by catalog store (natural sort)
+  let seriesVolumes = $derived(volumes);
 
   // Split into local vs cloud placeholders
   let localVolumes = $derived(seriesVolumes.filter((v) => !v.isPlaceholder));
