@@ -6,7 +6,6 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
-import { sortVolumes } from '$lib/catalog/sort-volumes';
 
 // Single source of truth from the database
 export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
@@ -72,7 +71,7 @@ export const currentSeries = derived([routeParams, catalog], ([$routeParams, $ca
     series = $catalog.find((s) => s.series_uuid === $routeParams.manga);
   }
 
-  return (series?.volumes || []).sort(sortVolumes);
+  return series?.volumes || [];
 });
 
 export const currentVolume = derived([routeParams, volumes], ([$routeParams, $volumes]) => {

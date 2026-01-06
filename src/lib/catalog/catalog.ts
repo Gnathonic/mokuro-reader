@@ -1,4 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
+import { sortVolumes } from './sort-volumes';
 
 export interface Series {
   title: string;
@@ -30,8 +31,11 @@ export function deriveSeriesFromVolumes(volumeEntries: Array<VolumeMetadata>) {
   // Convert map to array and sort everything
   const titles = Array.from(titleMap.values());
 
-  // Sort titles
+  // Sort series by title, and volumes within each series
   titles.sort(sortTitles);
+  for (const series of titles) {
+    series.volumes.sort(sortVolumes);
+  }
 
   return titles;
 }
