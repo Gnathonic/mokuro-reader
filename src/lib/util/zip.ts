@@ -208,7 +208,10 @@ async function addVolumeToArchiveWithProgress(
       pages: volumeOcr.pages,
       chars: volume.character_count
     };
-    await zipWriter.add(`${volume.volume_title}.mokuro`, new TextReader(JSON.stringify(mokuroData)));
+    await zipWriter.add(
+      `${volume.volume_title}.mokuro`,
+      new TextReader(JSON.stringify(mokuroData))
+    );
   }
 }
 
