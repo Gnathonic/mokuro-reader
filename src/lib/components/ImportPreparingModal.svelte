@@ -2,7 +2,13 @@
   import { Modal, Spinner } from 'flowbite-svelte';
   import { importPreparingModalStore } from '$lib/util/modals';
 
-  let open = $derived($importPreparingModalStore?.open ?? false);
+  // Use $state instead of $derived so Modal can bind to it
+  // $derived is read-only, but Flowbite's Modal needs to write to open
+  let open = $state(false);
+  $effect(() => {
+    open = $importPreparingModalStore?.open ?? false;
+  });
+
   let phase = $derived($importPreparingModalStore?.phase ?? 'scanning');
   let filesScanned = $derived($importPreparingModalStore?.filesScanned);
   let totalFiles = $derived($importPreparingModalStore?.totalFiles);

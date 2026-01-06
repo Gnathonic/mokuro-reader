@@ -528,7 +528,7 @@ async function decompressCbz(
  * Progress: 0-100% of upload phase
  */
 async function uploadToGoogleDrive(
-  cbzData: Uint8Array,
+  cbzBlob: Blob,
   filename: string,
   seriesFolderId: string,
   accessToken: string,
@@ -590,10 +590,8 @@ async function uploadToGoogleDrive(
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-    // Convert Uint8Array to Blob to allow browser to stream the data
-    // instead of holding the entire buffer in memory until request completes
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
-    xhr.send(blob);
+    // Send Blob directly - browser streams the data
+    xhr.send(cbzBlob);
   });
 }
 
@@ -602,7 +600,7 @@ async function uploadToGoogleDrive(
  * Progress: 0-100% of upload phase
  */
 async function uploadToWebDAV(
-  cbzData: Uint8Array,
+  cbzBlob: Blob,
   filename: string,
   seriesTitle: string,
   serverUrl: string,
@@ -645,10 +643,8 @@ async function uploadToWebDAV(
     xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
     xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
 
-    // Convert Uint8Array to Blob to allow browser to stream the data
-    // instead of holding the entire buffer in memory until request completes
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
-    xhr.send(blob);
+    // Send Blob directly - browser streams the data
+    xhr.send(cbzBlob);
   });
 }
 
@@ -691,7 +687,7 @@ async function createWebDAVFolderRecursive(
  * Progress: 0-100% of upload phase
  */
 async function uploadToMEGA(
-  cbzData: Uint8Array,
+  cbzBlob: Blob,
   filename: string,
   seriesTitle: string,
   email: string,
@@ -732,15 +728,13 @@ async function uploadToMEGA(
   }
 
   // Upload file to series folder using chunked streaming to avoid OOM
-  console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
+  console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzBlob.size} bytes`);
 
   try {
-    // Convert to Blob to enable chunked streaming (releases memory as chunks are processed)
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
     const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
     // Create upload stream without passing data - we'll write chunks manually
-    const uploadStream = seriesFolder.upload({ name: filename, size: blob.size });
+    const uploadStream = seriesFolder.upload({ name: filename, size: cbzBlob.size });
 
     // Wait for upload to complete while streaming chunks
     await new Promise<void>((resolve, reject) => {
@@ -750,7 +744,7 @@ async function uploadToMEGA(
         // megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
         // Use bytesUploaded for actual upload progress to server
         const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-        const total = stats?.bytesTotal || stats?.total || blob.size;
+        const total = stats?.bytesTotal || stats?.total || cbzBlob.size;
         onProgress(uploaded, total);
       });
 
@@ -766,12 +760,12 @@ async function uploadToMEGA(
 
       // Stream chunks to MEGA
       const writeNextChunk = async () => {
-        if (offset >= blob.size) {
+        if (offset >= cbzBlob.size) {
           uploadStream.end();
           return;
         }
 
-        const chunk = blob.slice(offset, Math.min(offset + CHUNK_SIZE, blob.size));
+        const chunk = cbzBlob.slice(offset, Math.min(offset + CHUNK_SIZE, cbzBlob.size));
         const arrayBuffer = await chunk.arrayBuffer();
         uploadStream.write(new Uint8Array(arrayBuffer));
         offset += CHUNK_SIZE;
@@ -1040,7 +1034,8 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing ${volumeTitle}...`);
       let compressionProgress = 0;
 
-      const cbzData = await compressVolume(
+      // compressVolume returns a Blob (uses BlobWriter to avoid memory allocation issues)
+      const cbzBlob = await compressVolume(
         volumeTitle,
         metadata,
         filesDataUint8,
@@ -1055,7 +1050,7 @@ ctx.addEventListener('message', async (event) => {
         }
       );
 
-      console.log(`Worker: Compressed ${volumeTitle} (${cbzData.length} bytes)`);
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 
       // Phase 2: Upload (0-100%)
       let fileId: string;
@@ -1066,7 +1061,7 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing Google Drive access token or series folder ID');
         }
         fileId = await uploadToGoogleDrive(
-          cbzData,
+          cbzBlob,
           filename,
           credentials.seriesFolderId,
           credentials.accessToken,
@@ -1085,7 +1080,7 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing WebDAV URL');
         }
         fileId = await uploadToWebDAV(
-          cbzData,
+          cbzBlob,
           filename,
           seriesTitle,
           credentials.webdavUrl,
@@ -1106,7 +1101,7 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing MEGA credentials');
         }
         fileId = await uploadToMEGA(
-          cbzData,
+          cbzBlob,
           filename,
           seriesTitle,
           credentials.megaEmail,
@@ -1149,7 +1144,8 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing ${volumeTitle}...`);
       let compressionProgress = 0;
 
-      const cbzData = await compressVolume(
+      // compressVolume returns a Blob (uses BlobWriter to avoid memory allocation issues)
+      const cbzBlob = await compressVolume(
         volumeTitle,
         metadata,
         filesDataUint8,
@@ -1164,8 +1160,12 @@ ctx.addEventListener('message', async (event) => {
         }
       );
 
-      console.log(`Worker: Compressed ${volumeTitle} (${cbzData.length} bytes)`);
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
       console.log(`Worker: Returning compressed data for download`);
+
+      // Convert Blob to ArrayBuffer for transfer back to main thread
+      const cbzArrayBuffer = await cbzBlob.arrayBuffer();
+      const cbzData = new Uint8Array(cbzArrayBuffer);
 
       // Send completion message with Transferable Object (zero-copy)
       const completeMessage: UploadCompleteMessage = {

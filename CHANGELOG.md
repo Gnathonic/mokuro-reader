@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.1] - 2025-01-05
+
+### Added
+
+- **Placeholder series pages** - Click cloud-only series to view their volumes and download options instead of triggering immediate download
+- **Series export progress tracking** - Exporting a series as a single archive now shows progress in the progress tracker
+
+### Fixed
+
+- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up or exporting volumes >1GB ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
+- **Import modal stuck on multiple drops** - Fixed import preparation modal not closing properly when dropping multiple archives ([ZXY101#135](https://github.com/ZXY101/mokuro-reader/issues/135))
+
 ## [1.2.0] - 2025-01-05
 
 ### Added

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { catalog } from '$lib/catalog';
+  import { catalog, currentSeries } from '$lib/catalog';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
@@ -169,12 +169,10 @@
     sortMode = sortMode === 'unread-first' ? 'alphabetical' : 'unread-first';
   }
 
-  // Reactive sorted volumes - avoids circular dependency by making sorting fully reactive
+  // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
   let allVolumes = $derived.by(() => {
-    const seriesVolumes = $catalog?.find(
-      (item) => item.series_uuid === $routeParams.manga
-    )?.volumes;
-    if (!seriesVolumes) return undefined;
+    const seriesVolumes = $currentSeries;
+    if (!seriesVolumes || seriesVolumes.length === 0) return undefined;
 
     // Create a copy to sort
     const volumesToSort = [...seriesVolumes];
@@ -666,7 +664,7 @@
 </script>
 
 <svelte:head>
-  <title>{manga?.[0]?.series_title || 'Manga'}</title>
+  <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
 {#if !$catalog || $catalog.length === 0}
   <div class="flex items-center justify-center p-16">
@@ -869,6 +867,61 @@
             {/each}
           </div>
         {/if}
+      </div>
+    {/if}
+  </div>
+{:else if placeholders && placeholders.length > 0}
+  <!-- Placeholder-only series page -->
+  <div class="flex flex-col gap-5 p-2">
+    <!-- Header Row: Title and cloud info -->
+    <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
+        {placeholders[0]?.series_title || 'Cloud Series'}
+      </h3>
+      <div class="flex flex-row gap-2 px-2 text-base">
+        <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
+          {placeholders.length} volume{placeholders.length !== 1 ? 's' : ''} in {providerDisplayName}
+        </Badge>
+      </div>
+    </div>
+
+    <!-- Actions Row -->
+    <div class="flex flex-row items-stretch justify-end gap-2">
+      {#if hasAnyProvider}
+        <Button color="primary" onclick={downloadAllPlaceholders} class="!min-w-0 self-stretch">
+          <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
+          <span class="break-words">Download All</span>
+        </Button>
+      {:else}
+        <Button color="light" disabled class="!min-w-0 self-stretch">
+          <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
+          <span class="break-words">Sign in to download</span>
+        </Button>
+      {/if}
+
+      <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">
+        {#if viewMode === 'list'}
+          <GridOutline class="me-2 h-5 w-5 shrink-0" />
+          <span class="break-words">Grid</span>
+        {:else}
+          <ListOutline class="me-2 h-5 w-5 shrink-0" />
+          <span class="break-words">List</span>
+        {/if}
+      </Button>
+    </div>
+
+    <!-- Volume List/Grid -->
+    {#if viewMode === 'list'}
+      <Listgroup active class="h-full w-full flex-1">
+        {#each placeholders as placeholder (placeholder.volume_uuid)}
+          <PlaceholderVolumeItem volume={placeholder} variant="list" />
+        {/each}
+      </Listgroup>
+    {:else}
+      <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
+        {#each placeholders as placeholder (placeholder.volume_uuid)}
+          <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+        {/each}
       </div>
     {/if}
   </div>

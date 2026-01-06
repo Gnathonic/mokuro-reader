@@ -3,9 +3,7 @@
   import { ListgroupItem, Spinner } from 'flowbite-svelte';
   import { progress } from '$lib/settings';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { showSnackbar } from '$lib/util';
-  import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
 
   interface Props {
@@ -61,35 +59,20 @@
     return () => URL.revokeObjectURL(url);
   });
 
+  // Use title for placeholder-only (handles transition when first volume downloads)
+  // Use UUID for local series (handles edge case of same-name series)
+  let navId = $derived(isPlaceholderOnly ? volume?.series_title || '' : series_uuid);
+
   async function handleClick(e: MouseEvent) {
-    if (isPlaceholderOnly) {
-      e.preventDefault();
-
-      // Prevent re-clicking during download
-      if (isDownloading) {
-        return;
-      }
-
-      // Check if any cloud provider is authenticated
-      const hasProvider = unifiedCloudManager.getActiveProvider() !== null;
-      if (!hasProvider) {
-        showSnackbar('Please sign in to a cloud storage provider first');
-        return;
-      }
-
-      // Queue all series volumes for download
-      queueSeriesVolumes(sortedVolumes);
-    } else {
-      e.preventDefault();
-      nav.toSeries(series_uuid);
-    }
+    e.preventDefault();
+    nav.toSeries(navId);
   }
 </script>
 
 {#if volume}
   <div class:opacity-70={isPlaceholderOnly}>
     <ListgroupItem>
-      <a href="#/series/{series_uuid}" class="h-full w-full" onclick={handleClick}>
+      <a href="#/series/{encodeURIComponent(navId)}" class="h-full w-full" onclick={handleClick}>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
             <p class:text-green-400={isComplete} class="font-semibold">{volume.series_title}</p>

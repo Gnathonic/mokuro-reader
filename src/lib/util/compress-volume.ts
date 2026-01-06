@@ -1,4 +1,4 @@
-import { Uint8ArrayReader, Uint8ArrayWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
+import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 
 /**
  * Mokuro metadata format for CBZ files
@@ -17,22 +17,27 @@ export interface MokuroMetadata {
  * Shared compression function that works in both main thread and Web Workers
  * Creates a CBZ file (ZIP with manga pages + optional mokuro metadata)
  *
+ * Uses BlobWriter instead of Uint8ArrayWriter to avoid "Array buffer allocation failed"
+ * errors with large volumes (>1GB). BlobWriter allows the browser to use disk-backed
+ * storage for the output, avoiding the need for a contiguous memory allocation.
+ *
  * @param volumeTitle The title of the volume (used for folder name)
  * @param metadata Mokuro metadata object (null for image-only volumes)
  * @param filesData Array of files with filenames and Uint8Array data
  * @param onProgress Optional progress callback (completed items, total items)
- * @returns Promise resolving to compressed CBZ as Uint8Array
+ * @returns Promise resolving to compressed CBZ as Blob
  */
 export async function compressVolume(
   volumeTitle: string,
   metadata: MokuroMetadata | null,
   filesData: { filename: string; data: Uint8Array }[],
   onProgress?: (completed: number, total: number) => void
-): Promise<Uint8Array> {
+): Promise<Blob> {
   // Create zip writer with compatibility options:
   // - bufferedWrite: true - writes sizes in header (not data descriptor after data)
   // - extendedTimestamp: false - reduces per-entry overhead, improves compatibility
-  const zipWriter = new ZipWriter(new Uint8ArrayWriter(), {
+  // - BlobWriter: avoids single contiguous allocation, browser can use disk-backed storage
+  const zipWriter = new ZipWriter(new BlobWriter('application/x-cbz'), {
     bufferedWrite: true,
     extendedTimestamp: false
   });
@@ -71,8 +76,8 @@ export async function compressVolume(
     }
   }
 
-  // Close and get the compressed data
-  const uint8Array = await zipWriter.close();
+  // Close and get the compressed data as Blob
+  const blob = await zipWriter.close();
 
-  return uint8Array;
+  return blob;
 }

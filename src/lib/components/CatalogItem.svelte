@@ -1,9 +1,7 @@
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
   import { progress, catalogSettings } from '$lib/settings';
-  import { showSnackbar } from '$lib/util';
-  import { downloadQueue, queueSeriesVolumes } from '$lib/util/download-queue';
-  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
@@ -46,9 +44,6 @@
     // stackCount of 0 means show all volumes
     return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
   });
-
-  // Keep allSeriesVolumes for handleClick function
-  let allSeriesVolumes = $derived(seriesVolumes);
 
   // Check if this series is downloading or queued
   let isDownloading = $derived(
@@ -328,34 +323,18 @@
     };
   });
 
+  // Use title for placeholder-only (handles transition when first volume downloads)
+  // Use UUID for local series (handles edge case of same-name series)
+  let navId = $derived(isPlaceholderOnly ? volume?.series_title || '' : series_uuid);
+
   async function handleClick(e: MouseEvent) {
-    if (isPlaceholderOnly) {
-      e.preventDefault();
-
-      // Prevent re-clicking during download
-      if (isDownloading) {
-        return;
-      }
-
-      // Check if any cloud provider is authenticated
-      const hasProvider = unifiedCloudManager.getActiveProvider() !== null;
-      if (!hasProvider) {
-        showSnackbar('Please sign in to a cloud storage provider first');
-        return;
-      }
-
-      // Queue all series volumes for download
-      queueSeriesVolumes(allSeriesVolumes);
-    } else {
-      // Use hash-based navigation
-      e.preventDefault();
-      nav.toSeries(series_uuid);
-    }
+    e.preventDefault();
+    nav.toSeries(navId);
   }
 </script>
 
 {#if volume}
-  <a href="#/series/{series_uuid}" onclick={handleClick}>
+  <a href="#/series/{encodeURIComponent(navId)}" onclick={handleClick}>
     <div
       class:text-green-400={isComplete}
       class:opacity-70={isPlaceholderOnly}
