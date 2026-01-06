@@ -9,8 +9,7 @@
 
 ### Fixed
 
-- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up volumes >1GB to MEGA, Google Drive, or WebDAV ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
-- **Large series export** - Fixed failure when exporting series with combined size >1GB as a single archive
+- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up or exporting volumes >1GB ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
 
 ## [1.2.0] - 2025-01-05
 
