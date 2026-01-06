@@ -3,6 +3,7 @@ import { db } from '$lib/catalog/db';
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { compressVolume, type MokuroMetadata } from './compress-volume';
 import { backupQueue } from './backup-queue';
+import { progressTrackerStore } from './progress-tracker';
 
 export async function zipManga(
   manga: VolumeMetadata[],
@@ -162,13 +163,67 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
 }
 
 /**
+ * Adds a volume's files to a zip archive with progress callback
+ * @param zipWriter The ZipWriter instance
+ * @param volume The volume metadata
+ * @param onFileAdded Callback called after each file is added
+ */
+async function addVolumeToArchiveWithProgress(
+  zipWriter: ZipWriter<Blob>,
+  volume: VolumeMetadata,
+  onFileAdded: () => void
+): Promise<void> {
+  const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
+  const volumeFiles = await db.volume_files.get(volume.volume_uuid);
+  if (!volumeOcr) {
+    console.error(`Volume OCR data not found for ${volume.volume_uuid}`);
+    return;
+  }
+
+  const isImageOnly = volume.mokuro_version === '';
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+  const folderName = volume.volume_title;
+
+  // Add folder entry
+  await zipWriter.add(`${folderName}/`, new BlobReader(new Blob([])), { directory: true });
+
+  // Add image files sequentially to track progress
+  if (volumeFiles?.files) {
+    for (const [filename, file] of Object.entries(volumeFiles.files)) {
+      if (placeholderPaths.has(filename)) continue;
+      const basename = filename.split('/').pop() || filename;
+      await zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
+      onFileAdded();
+    }
+  }
+
+  // Add mokuro file if not image-only
+  if (!isImageOnly) {
+    const mokuroData = {
+      version: volume.mokuro_version,
+      title: volume.series_title,
+      title_uuid: volume.series_uuid,
+      volume: volume.volume_title,
+      volume_uuid: volume.volume_uuid,
+      pages: volumeOcr.pages,
+      chars: volume.character_count
+    };
+    await zipWriter.add(`${volume.volume_title}.mokuro`, new TextReader(JSON.stringify(mokuroData)));
+  }
+}
+
+/**
  * Creates an archive blob containing the specified volumes
  * Uses BlobWriter to avoid memory allocation issues with large volumes
  * For single volumes, uses shared compression function; for multiple volumes, uses multi-volume archive
  * @param volumes Array of volumes to include in the archive
+ * @param seriesTitle Optional series title for progress tracking (multi-volume only)
  * @returns Promise resolving to the archive blob
  */
-export async function createArchiveBlob(volumes: VolumeMetadata[]): Promise<Blob> {
+export async function createArchiveBlob(
+  volumes: VolumeMetadata[],
+  seriesTitle?: string
+): Promise<Blob> {
   // For single volume, use shared compression function (returns Blob directly)
   if (volumes.length === 1) {
     const { metadata, filesData } = await prepareVolumeData(volumes[0]);
@@ -182,14 +237,55 @@ export async function createArchiveBlob(volumes: VolumeMetadata[]): Promise<Blob
     extendedTimestamp: false
   });
 
-  // Add each volume to the archive
-  const volumePromises = volumes.map((volume) => addVolumeToArchive(zipWriter, volume));
+  // Calculate total file count for progress tracking
+  const totalFiles = volumes.reduce((sum, v) => sum + (v.page_count || 0), 0);
+  let completedFiles = 0;
+  const processId = seriesTitle ? `export-series-${Date.now()}` : undefined;
 
-  // Wait for all volumes to be added
-  await Promise.all((await Promise.all(volumePromises)).flat());
+  // Add progress tracker for multi-volume export
+  if (processId && seriesTitle) {
+    progressTrackerStore.addProcess({
+      id: processId,
+      description: `Exporting ${seriesTitle}`,
+      progress: 0,
+      status: 'Compressing...'
+    });
+  }
 
-  // Close the archive and get the Blob directly
-  return await zipWriter.close();
+  try {
+    // Add each volume sequentially to track progress
+    for (const volume of volumes) {
+      await addVolumeToArchiveWithProgress(zipWriter, volume, () => {
+        completedFiles++;
+        if (processId) {
+          const progress = Math.round((completedFiles / totalFiles) * 100);
+          progressTrackerStore.updateProcess(processId, { progress });
+        }
+      });
+    }
+
+    // Close the archive and get the Blob directly
+    const blob = await zipWriter.close();
+
+    if (processId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 100,
+        status: 'Download ready'
+      });
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+    }
+
+    return blob;
+  } catch (error) {
+    if (processId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 0,
+        status: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+      });
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -204,7 +300,9 @@ async function createAndDownloadArchive(
   asCbz: boolean,
   filename: string
 ) {
-  const zipFileBlob = await createArchiveBlob(volumes);
+  // Use series title for progress tracking
+  const seriesTitle = volumes[0]?.series_title;
+  const zipFileBlob = await createArchiveBlob(volumes, seriesTitle);
 
   // Create a download link
   const link = document.createElement('a');
