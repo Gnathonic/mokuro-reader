@@ -5,11 +5,12 @@
 ### Added
 
 - **Placeholder series pages** - Click cloud-only series to view their volumes and download options instead of triggering immediate download
+- **Series export progress tracking** - Exporting a series as a single archive now shows progress in the progress tracker
 
 ### Fixed
 
-- **Placeholder series navigation** - Series page now properly displays when navigating to placeholder-only series
-- **Download transition** - Downloading volumes in a placeholder series no longer breaks the page
+- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up volumes >1GB to MEGA, Google Drive, or WebDAV ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
+- **Large series export** - Fixed failure when exporting series with combined size >1GB as a single archive
 
 ## [1.2.0] - 2025-01-05
 
