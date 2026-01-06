@@ -118,13 +118,27 @@
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   }
 
-  // Compact character formatter 1200 => 1.2k
+  // Compact character formatter: 1200 => 1.2K, 1,200,000 => 1.2M
   function formatCharCount(chars: number): string {
     if (chars === null || chars === undefined) return '';
-    if (chars >= 10000) {
-      return `${(chars / 1000).toFixed(1)}K`;
+
+    let output: string;
+
+    if (chars < 10_000) {
+      output = `${chars}`;
+    } else if (chars < 1_000_000) {
+      output = `${(chars / 1_000).toFixed(1)}K`;
+    } else if (chars < 1_000_000_000) {
+      output = `${(chars / 1_000_000).toFixed(2)}M`;
+    } else {
+      output = `${(chars / 1_000_000_000).toFixed(2)}B`;
     }
-    return chars.toString();
+
+    // remove unnecessary .00 or .0
+    if (output.includes('.00')) output = output.replace('.00', '');
+    else if (output.includes('.0')) output = output.replace('.0', '');
+
+    return output;
   }
 
   // View mode state (persisted to localStorage)
