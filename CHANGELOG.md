@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0] - 2026-01-06
+
+### Added
+
+- **Dynamic AnkiConnect field mapping** - Configure which template populates each Anki field with a visual UI
+- **Template variables for fields** - Use `{selection}`, `{sentence}`, `{image}`, `{series}`, `{volume}` in any field
+- **Mixed field templates** - Combine text and images in the same field (e.g., `{sentence} {image}`)
+- **Android mode detection** - Auto-detects AnkiConnect Android limitations with manual override option
+- **Connection-gated AnkiConnect settings** - Settings only appear after connecting, with live model/deck/field data from Anki
+
+### Changed
+
+- **AnkiConnect settings redesign** - Complete overhaul with connection status, enable toggle, and organized sections
+- **Card mode selection** - Now uses radio buttons instead of dropdown for clearer selection
+
 ## [1.2.2] - 2026-01-06
 
 ### Added
