@@ -1,8 +1,14 @@
 <script lang="ts">
   import { currentView } from '$lib/util/hash-router';
-  import { cropperStore, getCroppedImg, type Pixels, sendToAnki } from '$lib/anki-connect';
+  import {
+    cropperStore,
+    getCroppedImg,
+    getModelConfig,
+    type Pixels,
+    sendToAnki
+  } from '$lib/anki-connect';
   import { settings } from '$lib/settings';
-  import { Button, Helper, Input, Label, Modal, Spinner } from 'flowbite-svelte';
+  import { Button, Helper, Input, Label, Modal, Spinner, Textarea } from 'flowbite-svelte';
   import { onMount, onDestroy } from 'svelte';
   import CropperJS from 'cropperjs';
   import 'cropperjs/dist/cropper.css';
@@ -19,8 +25,17 @@
   // Track whether crop image is enabled (preset to text box vs full image)
   let cropEnabled = $derived($settings.ankiConnectSettings.cropImage);
   let cardMode = $derived($settings.ankiConnectSettings.cardMode);
-  let grabSentence = $derived($settings.ankiConnectSettings.grabSentence);
-  let sentenceField = $derived($settings.ankiConnectSettings.sentenceField);
+
+  // Derive sentence field configuration from model config
+  let modelConfig = $derived(getModelConfig($settings.ankiConnectSettings.selectedModel));
+  let hasSentenceField = $derived(
+    modelConfig?.fieldMappings.some((m) => m.template.includes('{sentence}')) ?? false
+  );
+  // Find a field that uses {sentence} to show as label (or default to "Sentence")
+  let sentenceFieldLabel = $derived(() => {
+    const mapping = modelConfig?.fieldMappings.find((m) => m.template.includes('{sentence}'));
+    return mapping?.fieldName ?? 'Sentence';
+  });
 
   // Close modal on navigation (hash route change)
   let previousViewType = $state($currentView.type);
@@ -208,10 +223,11 @@
         >
       </div>
 
-      {#if grabSentence && sentenceField !== 'Front'}
+      {#if hasSentenceField}
         <div>
-          <Label class="text-gray-900 dark:text-white">{sentenceField}:</Label>
-          <Input
+          <Label class="text-gray-900 dark:text-white">{sentenceFieldLabel()}:</Label>
+          <Textarea
+            rows={2}
             bind:value={editableSentence}
             placeholder="Full sentence context..."
             class="mt-1"
