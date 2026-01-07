@@ -134,10 +134,19 @@ export function panAlign(alignX: PanX, alignY: PanY) {
 /**
  * Pan to the start of the page based on reading direction and zoom level.
  * For RTL manga, pans to top-right; for LTR, pans to top-left.
+ * When bounds is disabled, always centers horizontally at top.
  * At lower zoom levels where the page fits, this centers the page.
  * At higher zoom levels, this positions at the reading start corner.
  */
 export function panToPageStart() {
+  const { mobile, bounds } = get(settings);
+
+  // When bounds is disabled, always center horizontally at top
+  if (!mobile && !bounds) {
+    panAlign('center', 'top');
+    return;
+  }
+
   const volumeId = get(routeParams).volume ?? '';
   const isRightToLeft = get(effectiveVolumeSettings)[volumeId]?.rightToLeft ?? false;
   panAlign(isRightToLeft ? 'right' : 'left', 'top');
