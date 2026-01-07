@@ -8,7 +8,7 @@
     sendToAnki
   } from '$lib/anki-connect';
   import { settings } from '$lib/settings';
-  import { Button, Helper, Input, Label, Modal, Spinner, Textarea } from 'flowbite-svelte';
+  import { Button, Helper, Input, Label, Modal, Spinner } from 'flowbite-svelte';
   import { onMount, onDestroy } from 'svelte';
   import CropperJS from 'cropperjs';
   import 'cropperjs/dist/cropper.css';
@@ -226,8 +226,7 @@
       {#if hasSentenceField}
         <div>
           <Label class="text-gray-900 dark:text-white">{sentenceFieldLabel()}:</Label>
-          <Textarea
-            rows={2}
+          <Input
             bind:value={editableSentence}
             placeholder="Full sentence context..."
             class="mt-1"
