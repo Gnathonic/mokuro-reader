@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.2] - 2026-01-06
+
+### Added
+
+- **Free-form Anki image cropping** - Replace fixed aspect ratio with free-form cropping using cropperjs
+- **Text box picker for Anki quick actions** - 2-step capture flow: select text box first, then adjust crop region
+- **Preset crop to text box** - New Anki setting to automatically preset crop region to selected text box bounds
+- **Automatic cover image detection** - Imports now detect and use cover images for thumbnails. Thanks [@ChristopherFritz](https://github.com/ChristopherFritz)!
+- **Series page character counts** - Shows total and remaining characters with compact formatting (1.2M, 500K). Thanks [@SilfraTheDragon](https://github.com/SilfraTheDragon)!
+- **Larger cover image cropper** - Expanded cover picker modal for easier precise cropping
+
+### Fixed
+
+- **Consistent natural volume sorting** - Fixed edge cases where sorting could be inconsistent by consolidating to single source of truth. Thanks [@ChristopherFritz](https://github.com/ChristopherFritz)!
+
 ## [1.2.1] - 2025-01-05
 
 ### Added
