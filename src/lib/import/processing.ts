@@ -603,9 +603,9 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   // First try to find a file with "cover" in the name (case-insensitive)
   let coverImagePath: string | undefined;
   const imagePaths = Array.from(imageFiles.keys());
-  
+
   coverImagePath = imagePaths.find((path) => path.toLowerCase().includes('cover'));
-  
+
   // If no cover file found, use the first page (already sorted)
   if (!coverImagePath && pages.length > 0) {
     coverImagePath = pages[0]?.img_path;
