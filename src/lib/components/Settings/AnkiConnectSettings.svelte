@@ -543,11 +543,15 @@
         </Toggle>
         <Helper class="mt-1">Right-click (long press on mobile) any text box for more options</Helper>
       </div>
+
+      <!-- Cropper Settings -->
+      <hr />
+      <h4 class="text-gray-900 dark:text-white">Cropper Settings</h4>
       <div>
         <Toggle {disabled} bind:checked={cropImage} onchange={() => updateAnkiSetting('cropImage', cropImage)}>
-          Preset to text box
+          Preset crop to text box
         </Toggle>
-        <Helper class="mt-1">When enabled, the crop region starts at the selected text box. When disabled, it starts with the full image.</Helper>
+        <Helper class="mt-1">Ideal for quick single-panel captures</Helper>
       </div>
 
       <!-- Image Quality Settings -->
