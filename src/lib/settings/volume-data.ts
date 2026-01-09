@@ -497,6 +497,14 @@ export function updateProgress(
   });
 }
 
+export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
+  updateProgress(volumeUuid, pageCount, totalChars, true);
+}
+
+export function markVolumeAsUnread(volumeUuid: string) {
+  updateProgress(volumeUuid, 0, 0, false);
+}
+
 export function startCount(volume: string) {
   // Guard against null/undefined/empty volume IDs
   if (!volume) {

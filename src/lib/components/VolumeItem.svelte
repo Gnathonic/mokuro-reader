@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { deleteVolume, progress, volumes, settings } from '$lib/settings';
+  import {
+    deleteVolume,
+    progress,
+    volumes,
+    settings,
+    markVolumeAsComplete,
+    markVolumeAsUnread
+  } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
@@ -8,6 +15,8 @@
   import { ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
+    CloseCircleOutline,
+    CheckCircleOutline,
     TrashBinSolid,
     FileLinesOutline,
     DotsVerticalOutline,
@@ -201,7 +210,20 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
-
+  function onToggleStatusClicked(e: Event) {
+    e.stopPropagation();
+    if (isComplete) {
+      markVolumeAsUnread(volume_uuid);
+      showSnackbar(`Marked ${volName} as unread`);
+    } else {
+      if (volume.page_count) {
+        markVolumeAsComplete(volume_uuid, volume.page_count, totalChars);
+        showSnackbar(`Marked ${volName} as read`);
+      } else {
+        showSnackbar('Error: Missing page count data');
+      }
+    }
+  }
   async function onDeleteClicked(e: Event) {
     e.stopPropagation();
 
@@ -374,9 +396,19 @@
             <button onclick={onDeleteClicked} class="flex items-center justify-center">
               <TrashBinSolid class="poin z-10 text-red-400 hover:text-red-500" />
             </button>
-            {#if isComplete}
-              <CheckCircleSolid />
-            {/if}
+            <button
+              onclick={onToggleStatusClicked}
+              class="flex items-center justify-center transition-colors"
+              title={isComplete ? 'Mark as unread' : 'Mark as read'}
+            >
+              {#if isComplete}
+                <CheckCircleSolid
+                  class="z-10 text-green-400 hover:text-green-600 dark:hover:text-green-300"
+                />
+              {:else}
+                <CheckCircleOutline class="z-10 text-gray-400 hover:text-green-500" />
+              {/if}
+            </button>
           </div>
         </div>
       </ListgroupItem>
@@ -432,6 +464,23 @@
               <span class="flex-1 text-left text-gray-700 dark:text-gray-200">Backup to cloud</span>
             </DropdownItem>
           {/if}
+        {/if}
+        {#if !isComplete}
+          <DropdownItem
+            onclick={onToggleStatusClicked}
+            class="flex w-full items-center text-green-600 hover:!text-green-700 dark:text-green-500 dark:hover:!text-green-400"
+          >
+            <CheckCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Mark as read</span>
+          </DropdownItem>
+        {:else}
+          <DropdownItem
+            onclick={onToggleStatusClicked}
+            class="flex w-full items-center text-gray-500 hover:!text-gray-900 dark:text-gray-400 dark:hover:!text-white"
+          >
+            <CloseCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Mark as unread</span>
+          </DropdownItem>
         {/if}
         <DropdownItem
           onclick={onDeleteClicked}
