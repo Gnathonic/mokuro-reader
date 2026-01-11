@@ -139,10 +139,16 @@ export function panAlign(alignX: PanX, alignY: PanY) {
  * At higher zoom levels, this positions at the reading start corner.
  */
 export function panToPageStart() {
-  const { mobile, bounds } = get(settings);
+  if (!pz || !container) {
+    return;
+  }
 
-  // When bounds is disabled, always center horizontally at top
-  if (!mobile && !bounds) {
+  const { scale } = pz.getTransform();
+  const scaledWidth = container.offsetWidth * scale;
+  const oversized = scaledWidth > window.innerWidth;
+
+  // When the image fits within the viewport, always center horizontally at top
+  if (!oversized) {
     panAlign('center', 'top');
     return;
   }

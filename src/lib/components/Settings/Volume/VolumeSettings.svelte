@@ -7,7 +7,7 @@
     type VolumeSettingsKey,
     type PageViewMode
   } from '$lib/settings';
-  import { zoomDefault } from '$lib/panzoom';
+  import { zoomDefaultWithLayoutWait } from '$lib/panzoom';
   import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
   import { routeParams } from '$lib/util/hash-router';
 
@@ -31,7 +31,6 @@
       updateVolumeSetting(volumeId, key, !value);
       const pageClamped = Math.max($volumes[volumeId].progress - 1, 1);
       updateProgress(volumeId, pageClamped);
-      zoomDefault();
     } else {
       updateVolumeSetting(volumeId, key, !value);
     }
@@ -40,7 +39,9 @@
   function onPageViewModeChange(event: Event) {
     const target = event.target as HTMLSelectElement;
     updateVolumeSetting(volumeId, 'singlePageView', target.value as PageViewMode);
-    zoomDefault();
+    // Note: The Reader component's $effect should handle zoom reactively,
+    // but we trigger it manually here as a fallback to ensure it happens
+    zoomDefaultWithLayoutWait();
   }
 </script>
 

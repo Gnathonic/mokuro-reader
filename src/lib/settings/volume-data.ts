@@ -1,6 +1,5 @@
 import { browser } from '$app/environment';
 import { derived, writable, readable } from 'svelte/store';
-import { zoomDefault } from '$lib/panzoom';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
@@ -608,7 +607,6 @@ export function updateVolumeSetting(volume: string, key: VolumeSettingsKey, valu
       })
     };
   });
-  zoomDefault();
 }
 
 export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
