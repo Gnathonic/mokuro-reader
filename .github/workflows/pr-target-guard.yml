@@ -1,0 +1,20 @@
+name: PR Target Guard
+
+on:
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  check-target:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.fork
+    steps:
+      - name: Close and redirect to develop
+        run: |
+          gh pr close ${{ github.event.number }} --repo ${{ github.repository }} --comment "Thanks for helping make this project better!
+
+          We use a \`develop\` branch for external PRs to allow for safer review and integration. Please update your PR to target \`develop\` instead of \`main\`, then reopen it.
+
+          Looking forward to reviewing your changes!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
