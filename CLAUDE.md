@@ -20,30 +20,6 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 - `npm run lint` - Lint code (Prettier + ESLint)
 - `npm run format` - Format code with Prettier
 
-### Preview Server Port Management
-
-**CRITICAL**: The preview server MUST always run on port 4173 for Google OAuth to work correctly.
-
-Before starting a new preview server:
-
-1. Kill all existing preview processes to free up port 4173
-2. Use these commands to find and kill processes:
-
-```bash
-# Find process on port 4173
-netstat -ano | findstr :4173 | awk '{print $5}' | head -1
-
-# Kill the process (replace PID with actual process ID)
-taskkill //F //PID <PID>
-
-# Kill processes on multiple ports if needed (4173-4178)
-netstat -ano | findstr :4174 | awk '{print $5}' | head -1 | xargs -I {} taskkill //F //PID {}
-```
-
-3. Then start the preview server: `npm run preview`
-
-**Why this matters**: Vite's preview server auto-increments the port if 4173 is occupied. Google OAuth is configured for localhost:4173 specifically, so any other port will break authentication.
-
 ## Architecture
 
 ### Core Data Flow
@@ -71,25 +47,33 @@ netstat -ano | findstr :4174 | awk '{print $5}' | head -1 | xargs -I {} taskkill
 ```
 src/
 ├── lib/
+│   ├── anki-connect/    # Anki integration for vocabulary mining
+│   ├── assets/          # Static assets (icons, etc.)
 │   ├── catalog/         # Volume library management (Dexie DB, thumbnails)
+│   ├── components/      # Svelte components
+│   ├── consts/          # Application constants
+│   ├── import/          # File import pipeline and processing
+│   ├── panzoom/         # Custom pan/zoom implementation
 │   ├── reader/          # Core reader logic
 │   ├── settings/        # Settings stores and profiles
-│   ├── anki-connect/    # Anki integration for vocabulary mining
-│   ├── panzoom/         # Custom pan/zoom implementation
-│   ├── upload/          # File import and processing
-│   ├── workers/         # Web Workers for background tasks
-│   ├── util/            # Utilities including Google Drive sync
-│   │   └── google-drive/ # Modular Google Drive API integration
-│   ├── components/      # Svelte components
-│   └── types/           # TypeScript type definitions
+│   ├── styles/          # Shared CSS styles
+│   ├── types/           # TypeScript type definitions
+│   ├── upload/          # Legacy upload utilities
+│   ├── util/            # Utilities
+│   │   └── sync/        # Multi-provider cloud sync
+│   │       └── providers/
+│   │           ├── google-drive/
+│   │           ├── mega/
+│   │           └── webdav/
+│   ├── views/           # Top-level view components
+│   └── workers/         # Web Workers for background tasks
 ├── routes/
-│   ├── +page.svelte              # Home/catalog page
-│   ├── [manga]/+page.svelte      # Manga series volume list
-│   ├── [manga]/[volume]/+page.svelte  # Reader page
-│   ├── upload/+page.svelte       # Upload page
-│   └── cloud/+page.svelte        # Google Drive sync page
-└── app.d.ts             # App-level type definitions
+│   ├── +page.svelte           # Root page (hash router entry)
+│   └── [...catchall]/         # SPA catchall for hash routing
+└── app.d.ts                   # App-level type definitions
 ```
+
+**Routing:** The app uses a hash-based router (`$lib/util/hash-router.ts`) with views loaded dynamically from `$lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
 
 ### State Management
 
@@ -100,70 +84,99 @@ src/
   - `currentSettings` (settings/settings.ts): Reader settings per volume
   - `profiles` (settings/settings.ts): User profiles with different settings
   - `miscSettings` (settings/misc.ts): Global app settings
-  - Token stores in `google-drive/token-manager.ts`: OAuth tokens and auth state
 
-### Google Drive Integration
+### Cloud Sync System
 
-Located in `src/lib/util/google-drive/`, the integration is modular:
+Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-- **token-manager.ts**: OAuth token lifecycle, automatic refresh attempts, expiry monitoring
-- **api-client.ts**: Google Drive API wrapper with error handling
-- **sync-service.ts**: Sync read progress and merge local/cloud data
-- **constants.ts**: Configuration and storage keys
-- **types.ts**: TypeScript types
+| Provider | Auth Method | Status |
+|----------|-------------|--------|
+| Google Drive | OAuth2 implicit flow | Full support |
+| MEGA | Email/password | Full support |
+| WebDAV | URL + credentials | Full support |
 
-The implementation uses Google's OAuth2 implicit flow (access tokens only, no refresh tokens since there's no backend). Tokens expire after ~1 hour but the system attempts automatic renewal and shows user-friendly warnings.
+**Architecture:**
 
-**IMPORTANT - Query String Escaping**: When constructing Google Drive API queries with file or folder names, **always** use the `escapeNameForDriveQuery()` function from `api-client.ts`. This escapes special characters (backslashes and single quotes) that would otherwise cause API errors. Never manually escape names or construct queries without this function.
+- **provider-interface.ts**: Common `SyncProvider` interface all providers implement
+- **provider-manager.ts**: Manages provider instances and state
+- **unified-sync-service.ts**: Provider-agnostic sync logic
+- **providers/**: Provider-specific implementations
 
-```typescript
-import { escapeNameForDriveQuery } from '$lib/util/google-drive/api-client';
+**Google Drive specifics** (`providers/google-drive/`):
 
-// ✅ Correct
-const escapedName = escapeNameForDriveQuery(folderName);
-const query = `name='${escapedName}' and ...`;
+- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
+- `escapeNameForDriveQuery()` must be used for file/folder names in API queries
+- Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 
-// ❌ Wrong - will fail with names containing apostrophes
-const query = `name='${folderName}' and ...`;
-```
+### Svelte 5 Reactive Performance
 
-**Important**: The `prompt` parameter in OAuth requests determines the user experience:
-
-- `prompt: 'consent'` - Forces full consent screen every time (use only for initial sign-in)
-- `prompt: ''` (empty) - Minimal UI, reuses existing permissions (use for re-authentication after token expiry)
-- `silent: true` - Attempts completely silent refresh with no UI
-
-**Google Drive API Query Pattern**:
-
-- Our broad queries like `(name contains '.cbz' or mimeType='folder') and trashed=false` are intentionally designed this way
-- Google automatically scopes results to only what the app has permission to access - we don't need manual folder restrictions
-- This pattern (broad query + client-side filtering) is the CORRECT approach - it minimizes API calls while working within OAuth permission constraints
-- If you think folder scoping might be needed, ask first - broad queries are almost always the right solution
-
-**Svelte 5 Reactive Performance**:
-
-- `$derived` and `$derived.by()` functions run for EVERY instance of a component
-- If a component appears N times (e.g., BackupButton for each volume), operations inside derived run N times
-- Expensive operations or console logging in derived can cause severe performance issues with repeated components
-- Debug logging is fine when actively debugging an issue, but MUST be removed once that issue is addressed or when switching focus to other work
+- `$derived` and `$derived.by()` run for EVERY component instance
+- If a component appears N times, derived operations run N times
+- Expensive operations or logging in derived causes severe performance issues
+- Remove debug logging once the issue being debugged is resolved
 
 ### Worker Pool Pattern
 
-The application uses Web Workers for parallel downloads from Google Drive:
+The application uses Web Workers for parallel cloud downloads:
 
 - **worker-pool.ts**: Manages multiple worker instances with memory limits
 - **download-worker.ts**: Handles individual file downloads and ZIP extraction
 - Memory management prevents overwhelming the browser during large batch downloads
 - Configurable concurrency and throttling for low-memory devices
 
-### Database Migrations
+### Database Schema (V3)
 
-Dexie handles schema migrations. Current version is 2:
+The application uses a V3 database (`mokuro_v3`) with Dexie. Data is split across three tables for performance:
 
-- Version 1: Old `catalog` table (deprecated)
-- Version 2: Split into `volumes` (metadata) and `volumes_data` (pages/files)
+| Table | Primary Key | Indexed Fields | Purpose |
+|-------|-------------|----------------|---------|
+| `volumes` | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails |
+| `volume_ocr` | `volume_uuid` | — | OCR page data (text blocks) |
+| `volume_files` | `volume_uuid` | — | Image files (File objects) |
 
-When adding new fields or tables, increment the version number and provide an upgrade function.
+**Key Types:**
+
+```typescript
+interface VolumeMetadata {
+  volume_uuid: string;
+  series_uuid: string;
+  series_title: string;
+  volume_title: string;
+  mokuro_version: string;  // '' for image-only volumes
+  page_count: number;
+  character_count: number;
+  page_char_counts: number[];  // Cumulative per page
+  thumbnail?: File;
+  thumbnail_width?: number;
+  thumbnail_height?: number;
+}
+
+interface VolumeOCR {
+  volume_uuid: string;
+  pages: Page[];
+}
+
+interface VolumeFiles {
+  volume_uuid: string;
+  files: Record<string, File>;
+}
+```
+
+**Usage:**
+
+```typescript
+import { db } from '$lib/catalog/db';
+
+// Query volumes
+const volumes = await db.volumes.toArray();
+
+// Get full volume data
+const metadata = await db.volumes.get(volume_uuid);
+const ocr = await db.volume_ocr.get(volume_uuid);
+const files = await db.volume_files.get(volume_uuid);
+```
+
+Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
 ## Important Patterns
 
@@ -234,14 +247,14 @@ Night mode applies a CSS `filter` to `<dialog>` elements (see `app.html`). The `
 
 ## Environment Variables
 
-Create a `.env` file for Google Drive integration:
+Create a `.env.local` file for Google Drive integration:
 
 ```
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 ```
 
-These are required for Google Drive features to work.
+These are only required for Google Drive sync. MEGA and WebDAV don't require env vars.
 
 ## Testing
 
@@ -259,14 +272,13 @@ These are required for Google Drive features to work.
 3. Update the settings UI component (e.g., ReaderToggles.svelte, ReaderSelects.svelte)
 4. Use the setting via the `currentSettings` derived store
 
-### Adding Google Drive Features
+### Adding Cloud Sync Features
 
-The Google Drive module is already refactored. To extend:
+The sync system (`src/lib/util/sync/`) uses a provider abstraction. To extend:
 
-1. Add new API methods to `api-client.ts`
-2. Add new sync logic to `sync-service.ts`
-3. Update types in `types.ts`
-4. Expose functionality via `index.ts`
+1. For provider-specific features: modify the provider in `providers/<name>/`
+2. For cross-provider features: update `unified-sync-service.ts`
+3. New providers must implement the `SyncProvider` interface from `provider-interface.ts`
 
 ### Working with IndexedDB
 
@@ -277,12 +289,14 @@ import { db } from '$lib/catalog/db';
 
 // Query volumes
 const volumes = await db.volumes.toArray();
+const volume = await db.volumes.get(volume_uuid);
 
-// Add a volume
-await db.volumes.add(volumeMetadata);
+// Get OCR and files separately (V3 split tables)
+const ocr = await db.volume_ocr.get(volume_uuid);
+const files = await db.volume_files.get(volume_uuid);
 
-// Update a volume
-await db.volumes.update(volume_uuid, { thumbnail: newThumbnail });
+// Update volume metadata
+await db.volumes.update(volume_uuid, { series_title: newTitle });
 ```
 
 ## Extension Compatibility & DOM Keying
@@ -349,6 +363,30 @@ Test with Migaku enabled to catch DOM mutation issues.
 
 ## Git Workflow
 
+### Worktree-Based Development (REQUIRED)
+
+**CRITICAL**: This repository uses git worktrees for ALL development work. The main working directory must remain on the `main` branch at all times.
+
+**Rules:**
+- The main directory (`/home/nathan/Projects/mokuro-reader`) must ALWAYS stay on `main` branch
+- NEVER create feature branches or make commits directly in the main directory
+- All changes must be made through git worktrees in `/home/nathan/Projects/mokuro-reader-worktrees/`
+
+**Starting new work:**
+```bash
+# Create a new worktree for a feature/fix
+git worktree add ../mokuro-reader-worktrees/<branch-name> -b <branch-name>
+
+# Or check out an existing remote branch
+git worktree add ../mokuro-reader-worktrees/<branch-name> <branch-name>
+```
+
+**If asked to make changes without worktree context**: Automatically create an appropriate worktree (e.g., `fix/<issue>` or `feat/<feature>`) and work there. Do not prompt—just create it and proceed.
+
+**Future note**: The protected branch will eventually move from `main` to `develop`.
+
+### General Git Practices
+
 **Don't auto-push during active development**: If `npm run dev` or `npm run preview` is running, the user is actively iterating on changes. Only commit locally and wait for explicit instruction to push. This keeps the commit history clean and allows for squashing/amending before pushing.
 
 **Always use rebase when merging PRs to upstream**: When merging a PR from this fork to `ZXY101/mokuro-reader`, always use `--rebase`:
@@ -365,7 +403,7 @@ git fetch upstream && git reset --hard upstream/main && git push origin main
 
 ## Known Issues and Considerations
 
-- Google Drive auth expires every hour (access token limitation without backend), but re-auth should be minimal (just account selection, not full consent)
-- Large volume imports may cause memory pressure on low-end devices (use throttle mode)
-- Service worker caching can interfere with Google Drive downloads (cleared automatically)
+- Cloud provider auth tokens may expire (Google Drive ~1 hour, others vary)
+- Large volume imports may cause memory pressure on low-end devices
 - Text selection in reader requires special handling to not conflict with panzoom
+- Migaku extension aggressively mutates DOM and can interfere with UI controls
