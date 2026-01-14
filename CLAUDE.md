@@ -89,11 +89,11 @@ src/
 
 Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-| Provider | Auth Method | Status |
-|----------|-------------|--------|
+| Provider     | Auth Method          | Status       |
+| ------------ | -------------------- | ------------ |
 | Google Drive | OAuth2 implicit flow | Full support |
-| MEGA | Email/password | Full support |
-| WebDAV | URL + credentials | Full support |
+| MEGA         | Email/password       | Full support |
+| WebDAV       | URL + credentials    | Full support |
 
 **Architecture:**
 
@@ -128,11 +128,11 @@ The application uses Web Workers for parallel cloud downloads:
 
 The application uses a V3 database (`mokuro_v3`) with Dexie. Data is split across three tables for performance:
 
-| Table | Primary Key | Indexed Fields | Purpose |
-|-------|-------------|----------------|---------|
-| `volumes` | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails |
-| `volume_ocr` | `volume_uuid` | — | OCR page data (text blocks) |
-| `volume_files` | `volume_uuid` | — | Image files (File objects) |
+| Table          | Primary Key   | Indexed Fields                | Purpose                     |
+| -------------- | ------------- | ----------------------------- | --------------------------- |
+| `volumes`      | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails        |
+| `volume_ocr`   | `volume_uuid` | —                             | OCR page data (text blocks) |
+| `volume_files` | `volume_uuid` | —                             | Image files (File objects)  |
 
 **Key Types:**
 
@@ -142,10 +142,10 @@ interface VolumeMetadata {
   series_uuid: string;
   series_title: string;
   volume_title: string;
-  mokuro_version: string;  // '' for image-only volumes
+  mokuro_version: string; // '' for image-only volumes
   page_count: number;
   character_count: number;
-  page_char_counts: number[];  // Cumulative per page
+  page_char_counts: number[]; // Cumulative per page
   thumbnail?: File;
   thumbnail_width?: number;
   thumbnail_height?: number;
@@ -368,11 +368,13 @@ Test with Migaku enabled to catch DOM mutation issues.
 **CRITICAL**: This repository uses git worktrees for ALL development work. The main working directory must remain on the `main` branch at all times.
 
 **Rules:**
+
 - The main directory (`/home/nathan/Projects/mokuro-reader`) must ALWAYS stay on `main` branch
 - NEVER create feature branches or make commits directly in the main directory
 - All changes must be made through git worktrees in `/home/nathan/Projects/mokuro-reader-worktrees/`
 
 **Starting new work:**
+
 ```bash
 # Create a new worktree for a feature/fix
 git worktree add ../mokuro-reader-worktrees/<branch-name> -b <branch-name>
