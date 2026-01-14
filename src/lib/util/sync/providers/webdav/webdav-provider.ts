@@ -35,6 +35,7 @@ export class WebDAVProvider implements SyncProvider {
   private client: WebDAVClient | null = null;
   private initPromise: Promise<void>;
   private _isReadOnly: boolean = false;
+  private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
 
   constructor() {
     if (browser) {
@@ -222,6 +223,7 @@ export class WebDAVProvider implements SyncProvider {
 
   async logout(): Promise<void> {
     this.client = null;
+    this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
 
     if (browser) {
       // Keep URL and username for convenience (Issue #206 Lesson #10)
@@ -252,6 +254,7 @@ export class WebDAVProvider implements SyncProvider {
    * Clear all stored credentials (for full logout)
    */
   clearAllCredentials(): void {
+    this._supportsDepthInfinity = null; // Reset for next connection
     if (browser) {
       localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
       localStorage.removeItem(STORAGE_KEYS.USERNAME);
@@ -485,11 +488,52 @@ export class WebDAVProvider implements SyncProvider {
       // Ensure mokuro folder exists first
       await this.ensureMokuroFolder();
 
-      const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
       const client = this.client;
 
-      // Manual recursive folder traversal (Issue #206 Lesson #2)
-      // Avoid Depth: infinity which some servers reject
+      // Try Depth: infinity first if we haven't determined it's unsupported
+      // Only use depth infinity on mokuro-reader folder (not root) for performance + safety
+      if (this._supportsDepthInfinity !== false) {
+        try {
+          const files = await this.listWithDepthInfinity(client);
+          // Success - server supports depth infinity
+          if (this._supportsDepthInfinity === null) {
+            console.log('[WebDAV] Server supports Depth: infinity - using fast listing');
+            this._supportsDepthInfinity = true;
+          }
+          console.log(`✅ Listed ${files.length} files from WebDAV (depth infinity)`);
+          return files;
+        } catch (error) {
+          // Depth infinity not supported - fall back to recursive
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          // 403 Forbidden, 400 Bad Request, or specific "depth infinity" errors indicate no support
+          const isDepthInfinityError =
+            errorMessage.includes('403') ||
+            errorMessage.includes('400') ||
+            errorMessage.includes('infinity') ||
+            errorMessage.includes('Depth') ||
+            errorMessage.includes('propfind');
+
+          if (isDepthInfinityError && this._supportsDepthInfinity === null) {
+            console.log(
+              '[WebDAV] Server does not support Depth: infinity - falling back to recursive listing'
+            );
+            this._supportsDepthInfinity = false;
+          } else if (this._supportsDepthInfinity === null) {
+            // Unknown error on first try - still fall back but don't cache the result
+            console.warn(
+              '[WebDAV] Depth: infinity failed with unexpected error, trying recursive:',
+              errorMessage
+            );
+          } else {
+            // Re-throw if we thought it was supported but it failed
+            throw error;
+          }
+        }
+      }
+
+      // Fall back to manual recursive folder traversal
+      const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
+
       const processFolder = async (folderPath: string): Promise<void> => {
         const contents = (await client.getDirectoryContents(folderPath)) as Array<{
           type: string;
@@ -528,7 +572,7 @@ export class WebDAVProvider implements SyncProvider {
 
       await processFolder(MOKURO_FOLDER);
 
-      console.log(`✅ Listed ${allFiles.length} files from WebDAV`);
+      console.log(`✅ Listed ${allFiles.length} files from WebDAV (recursive)`);
       return allFiles;
     } catch (error) {
       throw new ProviderError(
@@ -539,6 +583,52 @@ export class WebDAVProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * List all files using Depth: infinity PROPFIND (single request)
+   * Only used on mokuro-reader folder, not root, for performance and safety
+   */
+  private async listWithDepthInfinity(
+    client: WebDAVClient
+  ): Promise<import('../../provider-interface').CloudFileMetadata[]> {
+    // Use deep option which sets Depth: infinity
+    const contents = (await client.getDirectoryContents(MOKURO_FOLDER, {
+      deep: true
+    })) as Array<{
+      type: string;
+      filename: string;
+      basename: string;
+      lastmod: string;
+      size: number;
+    }>;
+
+    const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
+
+    for (const item of contents) {
+      if (item.type === 'file') {
+        const name = item.basename.toLowerCase();
+        // Include CBZ files and JSON config files
+        if (
+          name.endsWith('.cbz') ||
+          item.basename === 'volume-data.json' ||
+          item.basename === 'profiles.json'
+        ) {
+          // Build relative path from mokuro folder
+          const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+
+          allFiles.push({
+            provider: 'webdav',
+            fileId: item.filename, // Full WebDAV path as fileId
+            path: relativePath,
+            modifiedTime: item.lastmod || new Date().toISOString(),
+            size: item.size || 0
+          });
+        }
+      }
+    }
+
+    return allFiles;
   }
 
   async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
