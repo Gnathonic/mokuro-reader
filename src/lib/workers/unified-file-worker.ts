@@ -1023,12 +1023,12 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing WebDAV URL');
         }
         fileId = await uploadToWebDAV(
-          cbzBlob,
-          filename,
-          seriesTitle,
           credentials.webdavUrl,
           credentials.webdavUsername ?? '',
           credentials.webdavPassword ?? '',
+          seriesTitle,
+          filename,
+          cbzBlob,
           (loaded, total) => {
             const uploadProgress = (loaded / total) * 100; // 0-100% upload
             const progressMessage: UploadProgressMessage = {

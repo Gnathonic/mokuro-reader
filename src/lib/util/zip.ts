@@ -103,11 +103,14 @@ export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): 
       } catch (error) {
         // File read failed - likely corrupted IndexedDB entry or stale File reference
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Failed to read file "${filename}" from volume "${volume.volume_title}":`, errorMessage);
+        console.error(
+          `Failed to read file "${filename}" from volume "${volume.volume_title}":`,
+          errorMessage
+        );
         throw new Error(
           `Cannot read file "${filename}" in volume "${volume.volume_title}". ` +
-          `The volume data may be corrupted. Try re-importing this volume. ` +
-          `Original error: ${errorMessage}`
+            `The volume data may be corrupted. Try re-importing this volume. ` +
+            `Original error: ${errorMessage}`
         );
       }
     }
