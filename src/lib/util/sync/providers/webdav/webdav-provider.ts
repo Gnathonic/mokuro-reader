@@ -8,6 +8,7 @@ import type {
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { WebDAVClient } from 'webdav';
+import { uploadFileWithClient } from './webdav-upload';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -659,25 +660,8 @@ export class WebDAVProvider implements SyncProvider {
         // Ignore errors - file may not exist
       }
 
-      // Use direct fetch with Blob body for large file support
-      // blob.arrayBuffer() fails for files >1GB due to contiguous memory allocation limits
-      // fetch() can stream Blobs without loading the entire file into memory
-      const uploadUrl = this.client.getFileUploadLink(fullPath);
-
-      // Get auth headers from the client (includes Authorization header)
-      const clientHeaders = this.client.getHeaders();
-      const response = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: blob,
-        headers: {
-          ...Object.fromEntries(clientHeaders.entries()),
-          'Content-Type': 'application/octet-stream'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-      }
+      // Use shared upload utility (handles large files via Blob streaming)
+      await uploadFileWithClient(this.client, fullPath, blob);
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
       return fullPath;
