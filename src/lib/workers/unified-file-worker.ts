@@ -12,6 +12,29 @@ import {
 import { File as MegaFile, Storage } from 'megajs';
 import { compressVolume, type MokuroMetadata } from '$lib/util/compress-volume';
 import { matchFileToVolume } from '$lib/import/archive-extraction';
+import Dexie from 'dexie';
+
+// ===========================
+// INDEXEDDB ACCESS
+// ===========================
+
+let workerDb: Dexie | null = null;
+
+/**
+ * Get or create a Dexie database connection for the worker
+ * IndexedDB is designed for concurrent access across workers/tabs
+ */
+function getDatabase(): Dexie {
+  if (!workerDb) {
+    workerDb = new Dexie('mokuro_v3');
+    workerDb.version(1).stores({
+      volumes: 'volume_uuid, series_uuid, series_title',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid'
+    });
+  }
+  return workerDb;
+}
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -107,12 +130,24 @@ interface CompressAndReturnMessage {
   downloadFilename?: string;
 }
 
+/** New message type: reads files from IndexedDB directly to avoid memory issues */
+interface CompressFromDbMessage {
+  mode: 'compress-from-db';
+  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export
+  volumeUuid: string;
+  volumeTitle: string;
+  seriesTitle: string;
+  credentials?: ProviderCredentials;
+  downloadFilename?: string;
+}
+
 type WorkerMessage =
   | DownloadAndDecompressMessage
   | DecompressOnlyMessage
   | StreamExtractMessage
   | CompressAndUploadMessage
-  | CompressAndReturnMessage;
+  | CompressAndReturnMessage
+  | CompressFromDbMessage;
 
 // Progress messages
 interface DownloadProgressMessage {
@@ -619,11 +654,16 @@ async function uploadToWebDAV(
   const fileUrl = `${serverUrl}${filePath}`;
   const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
+  const blobSizeMB = (cbzBlob.size / (1024 * 1024)).toFixed(1);
+  console.log(`Worker: Uploading ${filename} (${blobSizeMB}MB) to ${fileUrl}`);
+
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', fileUrl);
     xhr.setRequestHeader('Authorization', authHeader);
     xhr.setRequestHeader('Content-Type', 'application/x-cbz');
+    // Set a long timeout for large files (30 minutes)
+    xhr.timeout = 30 * 60 * 1000;
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -633,15 +673,23 @@ async function uploadToWebDAV(
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        console.log(`Worker: WebDAV upload complete`);
+        console.log(`Worker: WebDAV upload complete for ${filename}`);
         resolve(filePath); // Return path as "file ID"
       } else {
+        console.error(`Worker: WebDAV upload failed for ${filename}: ${xhr.status} ${xhr.statusText}`);
         reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
       }
     };
 
-    xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
-    xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
+    xhr.onerror = () => {
+      console.error(`Worker: Network error uploading ${filename} (${blobSizeMB}MB). readyState=${xhr.readyState}, status=${xhr.status}`);
+      reject(new Error(`Network error during WebDAV upload for ${filename} (${blobSizeMB}MB)`));
+    };
+
+    xhr.ontimeout = () => {
+      console.error(`Worker: Timeout uploading ${filename} (${blobSizeMB}MB) after 30 minutes`);
+      reject(new Error(`WebDAV upload timed out for ${filename}`));
+    };
 
     // Send Blob directly - browser streams the data
     xhr.send(cbzBlob);
@@ -802,6 +850,13 @@ async function uploadToMEGA(
 
 ctx.addEventListener('message', async (event) => {
   const message = event.data as WorkerMessage;
+
+  // Guard against null/undefined messages (can happen during worker cleanup)
+  if (!message || !message.mode) {
+    console.warn('Worker: Received invalid message (null or missing mode)');
+    return;
+  }
+
   console.log('Worker: Received message', message.mode);
 
   try {
@@ -1175,6 +1230,213 @@ ctx.addEventListener('message', async (event) => {
       };
       ctx.postMessage(completeMessage, [cbzData.buffer]); // Transfer ownership
       console.log(`Worker: Export complete for ${volumeTitle}`);
+    } else if (message.mode === 'compress-from-db') {
+      // ========== COMPRESS FROM DB MODE (reads files from IndexedDB directly) ==========
+      // This avoids memory issues with large volumes by:
+      // 1. Not transferring file data through postMessage
+      // 2. Reading files one at a time from IndexedDB
+      // 3. Releasing references immediately after use
+      const { provider, volumeUuid, volumeTitle, seriesTitle, credentials, downloadFilename } =
+        message;
+
+      console.log(`Worker: Reading volume ${volumeTitle} from IndexedDB...`);
+
+      const db = getDatabase();
+
+      // Read metadata from IndexedDB
+      const volume = await db.table('volumes').get(volumeUuid);
+      const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
+      const volumeFiles = await db.table('volume_files').get(volumeUuid);
+
+      if (!volume || !volumeFiles) {
+        throw new Error(`Volume ${volumeUuid} not found in database`);
+      }
+
+      // Build mokuro metadata
+      const isImageOnly = volume.mokuro_version === '';
+      const metadata: MokuroMetadata | null = isImageOnly
+        ? null
+        : {
+            version: volume.mokuro_version,
+            title: volume.series_title,
+            title_uuid: volume.series_uuid,
+            volume: volume.volume_title,
+            volume_uuid: volume.volume_uuid,
+            pages: volumeOcr?.pages || [],
+            chars: volume.character_count
+          };
+
+      // Stream files directly to zip - read one file, add to zip, release memory
+      const filenames = Object.keys(volumeFiles.files);
+      const placeholderPaths = new Set(volume.missing_page_paths || []);
+      const validFilenames = filenames.filter((f) => !placeholderPaths.has(f));
+      const totalFiles = validFilenames.length + (metadata ? 1 : 0) + 1; // +1 for folder entry
+      let completed = 0;
+
+      console.log(`Worker: Streaming ${validFilenames.length} files to zip...`);
+
+      // Create zip writer - streams to BlobWriter to avoid memory issues
+      const { BlobWriter, TextReader, Uint8ArrayReader, ZipWriter } = await import('@zip.js/zip.js');
+      const zipWriter = new ZipWriter(new BlobWriter('application/x-cbz'), {
+        bufferedWrite: true,
+        extendedTimestamp: false
+      });
+
+      // Add folder entry
+      const folderName = volumeTitle;
+      await zipWriter.add(`${folderName}/`, new Uint8ArrayReader(new Uint8Array(0)), {
+        directory: true
+      });
+      completed++;
+
+      // Check for duplicate basenames (TOC-style CBZs need folder structure preserved)
+      const basenames = validFilenames.map((f) => f.split('/').pop() || f);
+      const hasDuplicates = new Set(basenames).size !== basenames.length;
+      const createdDirs = new Set<string>();
+
+      // Stream each file: read from DB → add to zip → release memory
+      for (const filename of filenames) {
+        if (placeholderPaths.has(filename)) continue;
+
+        const file = volumeFiles.files[filename];
+        const arrayBuffer = await file.arrayBuffer();
+        const data = new Uint8Array(arrayBuffer);
+
+        // Release file reference immediately
+        delete volumeFiles.files[filename];
+
+        // Determine entry path (preserve structure for TOC-style, flatten otherwise)
+        let entryPath: string;
+        if (hasDuplicates) {
+          // Preserve folder structure for TOC-style CBZs
+          const parts = filename.split('/');
+          if (parts.length > 1) {
+            for (let i = 0; i < parts.length - 1; i++) {
+              const dirPath = `${folderName}/${parts.slice(0, i + 1).join('/')}/`;
+              if (!createdDirs.has(dirPath)) {
+                await zipWriter.add(dirPath, new Uint8ArrayReader(new Uint8Array(0)), {
+                  directory: true
+                });
+                createdDirs.add(dirPath);
+              }
+            }
+          }
+          entryPath = `${folderName}/${filename}`;
+        } else {
+          const basename = filename.split('/').pop() || filename;
+          entryPath = `${folderName}/${basename}`;
+        }
+
+        // Add to zip and let data be GC'd
+        await zipWriter.add(entryPath, new Uint8ArrayReader(data));
+
+        completed++;
+        const progressMessage: UploadProgressMessage = {
+          type: 'progress',
+          phase: 'compressing',
+          progress: (completed / totalFiles) * 100
+        };
+        ctx.postMessage(progressMessage);
+      }
+
+      // Add mokuro metadata file
+      if (metadata) {
+        await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
+        completed++;
+      }
+
+      // Close zip and get blob
+      const cbzBlob = await zipWriter.close();
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
+
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
+
+      // Handle based on provider
+      if (provider === null) {
+        // Local export - return blob
+        console.log(`Worker: Returning compressed data for download`);
+        const cbzArrayBuffer = await cbzBlob.arrayBuffer();
+        const cbzData = new Uint8Array(cbzArrayBuffer);
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          data: cbzData,
+          filename: downloadFilename || `${volumeTitle}.cbz`
+        };
+        ctx.postMessage(completeMessage, [cbzData.buffer]);
+        console.log(`Worker: Export complete for ${volumeTitle}`);
+      } else {
+        // Upload to cloud provider
+        let fileId: string;
+        const filename = `${volumeTitle}.cbz`;
+
+        if (provider === 'google-drive') {
+          if (!credentials?.accessToken || !credentials?.seriesFolderId) {
+            throw new Error('Missing Google Drive access token or series folder ID');
+          }
+          fileId = await uploadToGoogleDrive(
+            cbzBlob,
+            filename,
+            credentials.seriesFolderId,
+            credentials.accessToken,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'webdav') {
+          if (!credentials?.webdavUrl) {
+            throw new Error('Missing WebDAV URL');
+          }
+          fileId = await uploadToWebDAV(
+            cbzBlob,
+            filename,
+            seriesTitle,
+            credentials.webdavUrl,
+            credentials.webdavUsername ?? '',
+            credentials.webdavPassword ?? '',
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'mega') {
+          if (!credentials?.megaEmail || !credentials?.megaPassword) {
+            throw new Error('Missing MEGA credentials');
+          }
+          fileId = await uploadToMEGA(
+            cbzBlob,
+            filename,
+            seriesTitle,
+            credentials.megaEmail,
+            credentials.megaPassword,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else {
+          throw new Error(`Unsupported provider: ${provider}`);
+        }
+
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          fileId
+        };
+        ctx.postMessage(completeMessage);
+        console.log(`Worker: Backup complete for ${volumeTitle}`);
+      }
     } else {
       throw new Error(`Unknown mode: ${(message as any).mode}`);
     }
