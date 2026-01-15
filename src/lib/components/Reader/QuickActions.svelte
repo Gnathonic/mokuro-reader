@@ -21,9 +21,10 @@
     volumeUuid: string;
     page1?: Page; // First page data for Anki card creation
     page2?: Page; // Second page data (when in dual mode)
+    visible?: boolean;
   }
 
-  let { left, right, src1, src2, volumeUuid, page1, page2 }: Props = $props();
+  let { left, right, src1, src2, volumeUuid, page1, page2, visible = true }: Props = $props();
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
   let volumeMetadata = $derived<VolumeMetadata>({
@@ -61,7 +62,7 @@
   }
 </script>
 
-{#if $settings.quickActions}
+{#if $settings.quickActions && visible}
   <div class="fixed end-3 bottom-3 z-50 flex flex-col items-center">
     <!-- Action buttons (shown when open) -->
     {#if open}

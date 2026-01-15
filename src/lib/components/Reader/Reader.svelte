@@ -51,9 +51,10 @@
   // TODO: Refactor this whole mess
   interface Props {
     volumeSettings: VolumeSettings;
+    overlaysVisible?: boolean;
   }
 
-  let { volumeSettings: _volumeSettingsProp }: Props = $props();
+  let { volumeSettings: _volumeSettingsProp, overlaysVisible = $bindable(true) }: Props = $props();
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
@@ -67,6 +68,15 @@
 
   function mouseDown() {
     start = new Date();
+  }
+
+  function handleOverlayToggle(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+
+    // Only toggle if clicking on blank space (not text boxes)
+    if (target.closest('.textBox')) return;
+
+    overlaysVisible = !overlaysVisible;
   }
 
   export function toggleHasCover(volumeId: string) {
@@ -911,8 +921,9 @@
     volumeUuid={volume.volume_uuid}
     page1={pages[index]}
     page2={!useSinglePage ? pages[index + 1] : undefined}
+    visible={overlaysVisible}
   />
-  <SettingsButton />
+  <SettingsButton visible={overlaysVisible} />
   <Cropper />
   <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
@@ -952,12 +963,14 @@
       </div>
     </div>
   </Popover>
-  <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
-    {#key page}
-      <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
-      <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
-    {/key}
-  </button>
+  {#if overlaysVisible}
+    <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+      {#key page}
+        <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
+        <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
+      {/key}
+    </button>
+  {/if}
   {#if notificationMessage}
     {#key notificationKey}
       <div
@@ -1000,6 +1013,7 @@
         class="grid"
         style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
+        onclick={handleOverlayToggle}
         role="none"
         id="manga-panel"
       >
