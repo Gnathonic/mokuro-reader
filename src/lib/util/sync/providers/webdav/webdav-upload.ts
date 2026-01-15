@@ -29,9 +29,10 @@ export async function uploadFileWithClient(
     xhr.open('PUT', uploadUrl);
 
     // Apply client headers (includes Authorization)
-    clientHeaders.forEach((value, key) => {
+    // Note: getHeaders() returns a plain object, not a native Headers instance
+    for (const [key, value] of Object.entries(clientHeaders)) {
       xhr.setRequestHeader(key, value);
-    });
+    }
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
 
     // Long timeout for large files (30 minutes)
