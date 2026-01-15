@@ -659,10 +659,22 @@ export class WebDAVProvider implements SyncProvider {
         // Ignore errors - file may not exist
       }
 
-      // Convert Blob to ArrayBuffer and upload
-      // Don't pass { overwrite: true } - it doesn't work reliably across servers
-      const arrayBuffer = await blob.arrayBuffer();
-      await this.client.putFileContents(fullPath, arrayBuffer);
+      // Use direct fetch with Blob body for large file support
+      // blob.arrayBuffer() fails for files >1GB due to contiguous memory allocation limits
+      // fetch() can stream Blobs without loading the entire file into memory
+      const uploadUrl = this.client.getFileUploadLink(fullPath);
+      const response = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: blob,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': blob.size.toString()
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+      }
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
       return fullPath;

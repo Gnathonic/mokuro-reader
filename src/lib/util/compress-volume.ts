@@ -56,11 +56,42 @@ export async function compressVolume(
     onProgress(completedItems, totalItems);
   }
 
+  // Check if we need to preserve folder structure (TOC-style CBZs with chapters)
+  // by detecting duplicate basenames
+  const basenames = filesData.map(({ filename }) => filename.split('/').pop() || filename);
+  const hasDuplicates = new Set(basenames).size !== basenames.length;
+
+  // Track created subdirectories to add folder entries
+  const createdDirs = new Set<string>();
+
   // Add image files inside the folder
   for (const { filename, data } of filesData) {
-    // Extract just the basename to avoid nested folders from original CBZ structure
-    const basename = filename.split('/').pop() || filename;
-    await zipWriter.add(`${folderName}/${basename}`, new Uint8ArrayReader(data));
+    let entryPath: string;
+
+    if (hasDuplicates) {
+      // Preserve folder structure for TOC-style CBZs (e.g., chapter1/001.jpg, chapter2/001.jpg)
+      // First, ensure any subdirectories exist as folder entries
+      const parts = filename.split('/');
+      if (parts.length > 1) {
+        // Build up directory path and create folder entries
+        for (let i = 0; i < parts.length - 1; i++) {
+          const dirPath = `${folderName}/${parts.slice(0, i + 1).join('/')}/`;
+          if (!createdDirs.has(dirPath)) {
+            await zipWriter.add(dirPath, new Uint8ArrayReader(new Uint8Array(0)), {
+              directory: true
+            });
+            createdDirs.add(dirPath);
+          }
+        }
+      }
+      entryPath = `${folderName}/${filename}`;
+    } else {
+      // Flatten structure for simple CBZs (no duplicate filenames)
+      const basename = filename.split('/').pop() || filename;
+      entryPath = `${folderName}/${basename}`;
+    }
+
+    await zipWriter.add(entryPath, new Uint8ArrayReader(data));
     completedItems++;
     if (onProgress) {
       onProgress(completedItems, totalItems);

@@ -12,7 +12,7 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
-import { prepareVolumeData } from './zip';
+// Note: prepareVolumeData is no longer used - worker reads from IndexedDB directly
 
 // Type for provider instances (real or export)
 type ProviderInstance = SyncProvider | typeof exportProvider;
@@ -481,30 +481,22 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       memoryRequirement,
       provider: `${item.provider}:upload`, // Provider:operation identifier for concurrency tracking
       providerConcurrencyLimit: effectiveConcurrencyLimit, // Provider's upload limit (dynamic for exports)
-      // Defer data loading until worker is ready
+      // Worker reads from IndexedDB directly - avoids memory issues with large volumes
+      // by not transferring file data through postMessage
       prepareData: async () => {
-        // This will only be called when a worker is actually available
         progressTrackerStore.updateProcess(processId, {
           progress: 5,
-          status: 'Reading volume data...'
+          status: 'Preparing...'
         });
-
-        // Use shared prepareVolumeData function (single source of truth for export data)
-        const { metadata, filesData: uint8FilesData } = await prepareVolumeData(item.volumeUuid);
-
-        // Convert Uint8Array to ArrayBuffer for worker transfer (Transferable objects)
-        const filesData = uint8FilesData.map(({ filename, data }) => ({
-          filename,
-          data: data.buffer as ArrayBuffer
-        }));
 
         // Handle export-for-download (pseudo-provider)
         if (isExport) {
           return {
-            mode: 'compress-and-return',
+            mode: 'compress-from-db',
+            provider: null, // null = local export
+            volumeUuid: item.volumeUuid,
             volumeTitle: item.volumeTitle,
-            metadata,
-            filesData,
+            seriesTitle: item.seriesTitle,
             downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`
           };
         }
@@ -522,12 +514,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
 
         return {
-          mode: 'compress-and-upload',
+          mode: 'compress-from-db',
           provider: provider!.type,
+          volumeUuid: item.volumeUuid,
           volumeTitle: item.volumeTitle,
           seriesTitle: item.seriesTitle,
-          metadata,
-          filesData,
           credentials
         };
       },

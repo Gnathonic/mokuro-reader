@@ -83,15 +83,33 @@ export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): 
   const placeholderPaths = new Set(volume.missing_page_paths || []);
 
   // Convert File objects to Uint8Arrays, excluding placeholder pages
+  // IMPORTANT: Iterate over keys and delete refs as we go to prevent GC from
+  // clearing blob references for files we haven't processed yet. Using Object.entries()
+  // would hold all File refs in memory simultaneously, causing NotReadableError on large volumes.
   const filesData: { filename: string; data: Uint8Array }[] = [];
   if (volumeFiles?.files) {
-    for (const [filename, file] of Object.entries(volumeFiles.files)) {
+    const filenames = Object.keys(volumeFiles.files);
+    for (const filename of filenames) {
       // Skip placeholder pages - they shouldn't be exported
       if (placeholderPaths.has(filename)) {
         continue;
       }
-      const arrayBuffer = await file.arrayBuffer();
-      filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
+      const file = volumeFiles.files[filename];
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
+        // Release the File reference immediately to reduce memory pressure
+        delete volumeFiles.files[filename];
+      } catch (error) {
+        // File read failed - likely corrupted IndexedDB entry or stale File reference
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to read file "${filename}" from volume "${volume.volume_title}":`, errorMessage);
+        throw new Error(
+          `Cannot read file "${filename}" in volume "${volume.volume_title}". ` +
+          `The volume data may be corrupted. Try re-importing this volume. ` +
+          `Original error: ${errorMessage}`
+        );
+      }
     }
   }
 
@@ -188,11 +206,15 @@ async function addVolumeToArchiveWithProgress(
   await zipWriter.add(`${folderName}/`, new BlobReader(new Blob([])), { directory: true });
 
   // Add image files sequentially to track progress
+  // Iterate over keys and delete refs to prevent GC from clearing blob references
   if (volumeFiles?.files) {
-    for (const [filename, file] of Object.entries(volumeFiles.files)) {
+    const filenames = Object.keys(volumeFiles.files);
+    for (const filename of filenames) {
       if (placeholderPaths.has(filename)) continue;
+      const file = volumeFiles.files[filename];
       const basename = filename.split('/').pop() || filename;
       await zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
+      delete volumeFiles.files[filename];
       onFileAdded();
     }
   }
