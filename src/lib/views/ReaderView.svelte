@@ -27,6 +27,9 @@
   // Track last volumeId to reset cache on navigation
   let lastVolumeId = '';
 
+  // Overlay visibility state (shared with Reader via bind)
+  let overlaysVisible = $state(true);
+
   // Update cached settings only when the specific volume's settings actually change
   $effect(() => {
     // Reset cache when navigating to a different volume
@@ -68,8 +71,8 @@
 
 {#if cachedVolumeSettings}
   {#key volumeId}
-    <Timer {volumeId} visible={$settings.showTimer} />
-    <Reader volumeSettings={cachedVolumeSettings} />
+    <Timer {volumeId} visible={$settings.showTimer && overlaysVisible} />
+    <Reader volumeSettings={cachedVolumeSettings} bind:overlaysVisible />
   {/key}
 {:else}
   <div class="flex h-screen w-screen items-center justify-center">
