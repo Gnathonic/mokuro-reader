@@ -10,31 +10,13 @@ import {
   BlobReader
 } from '@zip.js/zip.js';
 import { File as MegaFile, Storage } from 'megajs';
-import { compressVolume, type MokuroMetadata } from '$lib/util/compress-volume';
+import {
+  compressVolume,
+  compressVolumeFromDb,
+  type MokuroMetadata
+} from '$lib/util/compress-volume';
+import { uploadToWebDAV } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { matchFileToVolume } from '$lib/import/archive-extraction';
-import Dexie from 'dexie';
-
-// ===========================
-// INDEXEDDB ACCESS
-// ===========================
-
-let workerDb: Dexie | null = null;
-
-/**
- * Get or create a Dexie database connection for the worker
- * IndexedDB is designed for concurrent access across workers/tabs
- */
-function getDatabase(): Dexie {
-  if (!workerDb) {
-    workerDb = new Dexie('mokuro_v3');
-    workerDb.version(1).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid'
-    });
-  }
-  return workerDb;
-}
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -130,15 +112,15 @@ interface CompressAndReturnMessage {
   downloadFilename?: string;
 }
 
-/** New message type: reads files from IndexedDB directly to avoid memory issues */
+/** Compress from IndexedDB and optionally upload to cloud provider */
 interface CompressFromDbMessage {
   mode: 'compress-from-db';
-  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export
+  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export (return data)
   volumeUuid: string;
   volumeTitle: string;
   seriesTitle: string;
   credentials?: ProviderCredentials;
-  downloadFilename?: string;
+  downloadFilename?: string; // For local export
 }
 
 type WorkerMessage =
@@ -628,106 +610,6 @@ async function uploadToGoogleDrive(
     // Send Blob directly - browser streams the data
     xhr.send(cbzBlob);
   });
-}
-
-/**
- * Upload to WebDAV server
- * Progress: 0-100% of upload phase
- */
-async function uploadToWebDAV(
-  cbzBlob: Blob,
-  filename: string,
-  seriesTitle: string,
-  serverUrl: string,
-  username: string,
-  password: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<string> {
-  console.log(`Worker: Uploading ${filename} to WebDAV...`);
-
-  // Ensure folder exists
-  const seriesFolderPath = `mokuro-reader/${seriesTitle}`;
-  await createWebDAVFolderRecursive(seriesFolderPath, serverUrl, username, password);
-
-  // Upload file
-  const filePath = `/${seriesFolderPath}/${filename}`;
-  const fileUrl = `${serverUrl}${filePath}`;
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-
-  const blobSizeMB = (cbzBlob.size / (1024 * 1024)).toFixed(1);
-  console.log(`Worker: Uploading ${filename} (${blobSizeMB}MB) to ${fileUrl}`);
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', fileUrl);
-    xhr.setRequestHeader('Authorization', authHeader);
-    xhr.setRequestHeader('Content-Type', 'application/x-cbz');
-    // Set a long timeout for large files (30 minutes)
-    xhr.timeout = 30 * 60 * 1000;
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        console.log(`Worker: WebDAV upload complete for ${filename}`);
-        resolve(filePath); // Return path as "file ID"
-      } else {
-        console.error(`Worker: WebDAV upload failed for ${filename}: ${xhr.status} ${xhr.statusText}`);
-        reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => {
-      console.error(`Worker: Network error uploading ${filename} (${blobSizeMB}MB). readyState=${xhr.readyState}, status=${xhr.status}`);
-      reject(new Error(`Network error during WebDAV upload for ${filename} (${blobSizeMB}MB)`));
-    };
-
-    xhr.ontimeout = () => {
-      console.error(`Worker: Timeout uploading ${filename} (${blobSizeMB}MB) after 30 minutes`);
-      reject(new Error(`WebDAV upload timed out for ${filename}`));
-    };
-
-    // Send Blob directly - browser streams the data
-    xhr.send(cbzBlob);
-  });
-}
-
-/**
- * Helper: Create WebDAV folder recursively
- */
-async function createWebDAVFolderRecursive(
-  path: string,
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<void> {
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-  const parts = path.split('/').filter((p) => p);
-
-  let currentPath = '';
-  for (const part of parts) {
-    currentPath += `/${part}`;
-    const folderUrl = `${serverUrl}${currentPath}`;
-
-    // Try to create folder (MKCOL)
-    try {
-      const response = await fetch(folderUrl, {
-        method: 'MKCOL',
-        headers: { Authorization: authHeader }
-      });
-
-      // 201 = created, 405 = already exists, both are OK
-      if (!response.ok && response.status !== 405) {
-        console.warn(`Failed to create folder ${currentPath}: ${response.status}`);
-      }
-    } catch (error) {
-      console.warn(`Error creating folder ${currentPath}:`, error);
-    }
-  }
 }
 
 /**
@@ -1231,123 +1113,25 @@ ctx.addEventListener('message', async (event) => {
       ctx.postMessage(completeMessage, [cbzData.buffer]); // Transfer ownership
       console.log(`Worker: Export complete for ${volumeTitle}`);
     } else if (message.mode === 'compress-from-db') {
-      // ========== COMPRESS FROM DB MODE (reads files from IndexedDB directly) ==========
-      // This avoids memory issues with large volumes by:
-      // 1. Not transferring file data through postMessage
-      // 2. Reading files one at a time from IndexedDB
-      // 3. Releasing references immediately after use
+      // ========== COMPRESS FROM DB MODE ==========
+      // Uses shared compressVolumeFromDb utility which:
+      // 1. Reads files one at a time from IndexedDB
+      // 2. Streams directly to zip
+      // 3. Releases references immediately to prevent memory issues
       const { provider, volumeUuid, volumeTitle, seriesTitle, credentials, downloadFilename } =
         message;
 
-      console.log(`Worker: Reading volume ${volumeTitle} from IndexedDB...`);
+      console.log(`Worker: Compressing volume ${volumeTitle} from IndexedDB...`);
 
-      const db = getDatabase();
-
-      // Read metadata from IndexedDB
-      const volume = await db.table('volumes').get(volumeUuid);
-      const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
-      const volumeFiles = await db.table('volume_files').get(volumeUuid);
-
-      if (!volume || !volumeFiles) {
-        throw new Error(`Volume ${volumeUuid} not found in database`);
-      }
-
-      // Build mokuro metadata
-      const isImageOnly = volume.mokuro_version === '';
-      const metadata: MokuroMetadata | null = isImageOnly
-        ? null
-        : {
-            version: volume.mokuro_version,
-            title: volume.series_title,
-            title_uuid: volume.series_uuid,
-            volume: volume.volume_title,
-            volume_uuid: volume.volume_uuid,
-            pages: volumeOcr?.pages || [],
-            chars: volume.character_count
-          };
-
-      // Stream files directly to zip - read one file, add to zip, release memory
-      const filenames = Object.keys(volumeFiles.files);
-      const placeholderPaths = new Set(volume.missing_page_paths || []);
-      const validFilenames = filenames.filter((f) => !placeholderPaths.has(f));
-      const totalFiles = validFilenames.length + (metadata ? 1 : 0) + 1; // +1 for folder entry
-      let completed = 0;
-
-      console.log(`Worker: Streaming ${validFilenames.length} files to zip...`);
-
-      // Create zip writer - streams to BlobWriter to avoid memory issues
-      const { BlobWriter, TextReader, Uint8ArrayReader, ZipWriter } = await import('@zip.js/zip.js');
-      const zipWriter = new ZipWriter(new BlobWriter('application/x-cbz'), {
-        bufferedWrite: true,
-        extendedTimestamp: false
-      });
-
-      // Add folder entry
-      const folderName = volumeTitle;
-      await zipWriter.add(`${folderName}/`, new Uint8ArrayReader(new Uint8Array(0)), {
-        directory: true
-      });
-      completed++;
-
-      // Check for duplicate basenames (TOC-style CBZs need folder structure preserved)
-      const basenames = validFilenames.map((f) => f.split('/').pop() || f);
-      const hasDuplicates = new Set(basenames).size !== basenames.length;
-      const createdDirs = new Set<string>();
-
-      // Stream each file: read from DB → add to zip → release memory
-      for (const filename of filenames) {
-        if (placeholderPaths.has(filename)) continue;
-
-        const file = volumeFiles.files[filename];
-        const arrayBuffer = await file.arrayBuffer();
-        const data = new Uint8Array(arrayBuffer);
-
-        // Release file reference immediately
-        delete volumeFiles.files[filename];
-
-        // Determine entry path (preserve structure for TOC-style, flatten otherwise)
-        let entryPath: string;
-        if (hasDuplicates) {
-          // Preserve folder structure for TOC-style CBZs
-          const parts = filename.split('/');
-          if (parts.length > 1) {
-            for (let i = 0; i < parts.length - 1; i++) {
-              const dirPath = `${folderName}/${parts.slice(0, i + 1).join('/')}/`;
-              if (!createdDirs.has(dirPath)) {
-                await zipWriter.add(dirPath, new Uint8ArrayReader(new Uint8Array(0)), {
-                  directory: true
-                });
-                createdDirs.add(dirPath);
-              }
-            }
-          }
-          entryPath = `${folderName}/${filename}`;
-        } else {
-          const basename = filename.split('/').pop() || filename;
-          entryPath = `${folderName}/${basename}`;
-        }
-
-        // Add to zip and let data be GC'd
-        await zipWriter.add(entryPath, new Uint8ArrayReader(data));
-
-        completed++;
+      // Compress using shared utility (handles streaming from IndexedDB)
+      const cbzBlob = await compressVolumeFromDb(volumeUuid, (completed, total) => {
         const progressMessage: UploadProgressMessage = {
           type: 'progress',
           phase: 'compressing',
-          progress: (completed / totalFiles) * 100
+          progress: (completed / total) * 100
         };
         ctx.postMessage(progressMessage);
-      }
-
-      // Add mokuro metadata file
-      if (metadata) {
-        await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
-        completed++;
-      }
-
-      // Close zip and get blob
-      const cbzBlob = await zipWriter.close();
-      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
+      });
 
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 
@@ -1388,16 +1172,17 @@ ctx.addEventListener('message', async (event) => {
             }
           );
         } else if (provider === 'webdav') {
+          // Use shared WebDAV upload utility
           if (!credentials?.webdavUrl) {
             throw new Error('Missing WebDAV URL');
           }
           fileId = await uploadToWebDAV(
-            cbzBlob,
-            filename,
-            seriesTitle,
             credentials.webdavUrl,
             credentials.webdavUsername ?? '',
             credentials.webdavPassword ?? '',
+            seriesTitle,
+            filename,
+            cbzBlob,
             (loaded, total) => {
               const progressMessage: UploadProgressMessage = {
                 type: 'progress',
