@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.3] - 2026-01-15
+
+### Added
+
+- **Toggle reader UI by clicking blank space** - Click on empty areas of the page to show/hide reader controls
+- **Mark volume as read** - Manually mark volumes as read from the volume menu. Thanks [@Zipeks](https://github.com/Zipeks)!
+- **WebDAV performance improvements** - Faster file listing during sync
+- **Case-insensitive series merge** - Series with different casing (e.g., "Test Series" vs "test series") now detected as merge candidates
+
+### Fixed
+
+- **WebDAV paths with special characters** - Fixed corrupt downloads for files with `#` in their path (e.g., `#Zombie Sagashitemasu`)
+- **Large volume WebDAV backup** - Fixed authentication and memory issues when backing up volumes >1GB to WebDAV
+
 ## [1.2.2] - 2026-01-06
 
 ### Added
