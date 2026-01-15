@@ -663,12 +663,15 @@ export class WebDAVProvider implements SyncProvider {
       // blob.arrayBuffer() fails for files >1GB due to contiguous memory allocation limits
       // fetch() can stream Blobs without loading the entire file into memory
       const uploadUrl = this.client.getFileUploadLink(fullPath);
+
+      // Get auth headers from the client (includes Authorization header)
+      const clientHeaders = this.client.getHeaders();
       const response = await fetch(uploadUrl, {
         method: 'PUT',
         body: blob,
         headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': blob.size.toString()
+          ...Object.fromEntries(clientHeaders.entries()),
+          'Content-Type': 'application/octet-stream'
         }
       });
 
