@@ -35,6 +35,7 @@ export interface MergeSeriesPreview {
 
 /**
  * Detect series that have conflicting UUIDs
+ * Uses case-insensitive matching to find series with the same name but different casing
  * @returns Array of series conflicts, each containing multiple UUIDs for the same series title
  */
 export async function detectSeriesConflicts(): Promise<SeriesConflict[]> {
@@ -46,22 +47,26 @@ export async function detectSeriesConflicts(): Promise<SeriesConflict[]> {
       return [];
     }
 
-    // Group volumes by series_title
-    const seriesGroups = new Map<string, VolumeMetadata[]>();
+    // Group volumes by series_title (case-insensitive)
+    // Map: normalized title -> { displayTitle, volumes }
+    const seriesGroups = new Map<string, { displayTitle: string; volumes: VolumeMetadata[] }>();
 
     for (const volume of allVolumes) {
       if (!volume.series_title) continue; // Skip volumes without series title
 
-      if (!seriesGroups.has(volume.series_title)) {
-        seriesGroups.set(volume.series_title, []);
+      const normalizedTitle = volume.series_title.toLowerCase();
+
+      if (!seriesGroups.has(normalizedTitle)) {
+        // Use the first encountered title as the display title
+        seriesGroups.set(normalizedTitle, { displayTitle: volume.series_title, volumes: [] });
       }
-      seriesGroups.get(volume.series_title)!.push(volume);
+      seriesGroups.get(normalizedTitle)!.volumes.push(volume);
     }
 
     // Find series with multiple UUIDs
     const conflicts: SeriesConflict[] = [];
 
-    for (const [seriesTitle, volumes] of seriesGroups) {
+    for (const [, { displayTitle, volumes }] of seriesGroups) {
       // Extract unique series_uuid values for this series title
       const uniqueUuids = new Set(volumes.map((v) => v.series_uuid));
 
@@ -90,7 +95,7 @@ export async function detectSeriesConflicts(): Promise<SeriesConflict[]> {
         conflictingUuids.sort((a, b) => a.earliestVolumeUuid.localeCompare(b.earliestVolumeUuid));
 
         conflicts.push({
-          seriesTitle,
+          seriesTitle: displayTitle,
           conflictingUuids
         });
       }

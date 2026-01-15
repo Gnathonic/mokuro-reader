@@ -97,6 +97,39 @@ describe('Series Merge Functionality', () => {
       const conflicts = await detectSeriesConflicts();
       expect(conflicts).toEqual([]);
     });
+
+    it('should detect series with different casing as conflicts (case-insensitive)', async () => {
+      const { db } = await import('$lib/catalog/db');
+      const mockVolumes = [
+        {
+          series_title: 'Test Series',
+          series_uuid: 'uuid-1',
+          volume_uuid: 'vol-1',
+          volume_title: 'Volume 1'
+        },
+        {
+          series_title: 'test series', // Same title, different case
+          series_uuid: 'uuid-2',
+          volume_uuid: 'vol-2',
+          volume_title: 'Volume 2'
+        },
+        {
+          series_title: 'TEST SERIES', // Same title, all caps
+          series_uuid: 'uuid-3',
+          volume_uuid: 'vol-3',
+          volume_title: 'Volume 3'
+        }
+      ];
+
+      vi.mocked(db.volumes.toArray).mockResolvedValue(mockVolumes);
+
+      const conflicts = await detectSeriesConflicts();
+
+      expect(conflicts).toHaveLength(1);
+      // Uses the first encountered title as display title
+      expect(conflicts[0].seriesTitle).toBe('Test Series');
+      expect(conflicts[0].conflictingUuids).toHaveLength(3);
+    });
   });
 
   describe('generateMergeSeriesPreview', () => {
