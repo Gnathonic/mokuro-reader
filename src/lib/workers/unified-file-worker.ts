@@ -241,7 +241,13 @@ async function downloadFromWebDAV(
   password: string,
   onProgress: (loaded: number, total: number) => void
 ): Promise<ArrayBuffer> {
-  const fullUrl = `${url}${fileId}`;
+  // Encode each path segment to handle special chars like # → %23
+  // Without this, # is treated as URL fragment and stripped
+  const encodedPath = fileId
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const fullUrl = `${url}${encodedPath}`;
   const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
   const response = await fetch(fullUrl, {
