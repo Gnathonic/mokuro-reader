@@ -7,3 +7,4 @@ export { default as SeriesTextView } from './SeriesTextView.svelte';
 export { default as CloudView } from './CloudView.svelte';
 export { default as UploadView } from './UploadView.svelte';
 export { default as ReadingSpeedView } from './ReadingSpeedView.svelte';
+export { default as ManageGoalsView } from './ManageGoalsView.svelte';

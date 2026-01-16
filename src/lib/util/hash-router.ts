@@ -18,7 +18,8 @@ export type View =
   | { type: 'upload' }
   | { type: 'reading-speed' }
   | { type: 'merge-series' }
-  | { type: 'progress-tracker' };
+  | { type: 'progress-tracker' }
+  | { type: 'manage-goals' };
 
 /**
  * Current view state
@@ -42,6 +43,7 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
     if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
+    if (segments[0] === 'manage-goals') return { type: 'manage-goals' };
 
     if (segments[0] === 'series' && segments.length >= 2) {
       const seriesId = decodeURIComponent(segments[1]);
@@ -90,6 +92,8 @@ export function viewToHash(view: View): string {
       return '#/merge-series';
     case 'progress-tracker':
       return '#/progress-tracker';
+    case 'manage-goals':
+      return '#/manage-goals';
   }
 }
 
@@ -152,7 +156,10 @@ export const nav = {
   toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
 
   /** Navigate to progress tracker page */
-  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options)
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options),
+
+  /** Navigate to manage goals page */
+  toManageGoals: (options?: NavigateOptions) => navigate({ type: 'manage-goals' }, options)
 };
 
 /**
@@ -192,6 +199,7 @@ export function navigateBack(): void {
     case 'upload':
     case 'merge-series':
     case 'progress-tracker':
+    case 'manage-goals':
       nav.toCatalog();
       break;
     case 'catalog':

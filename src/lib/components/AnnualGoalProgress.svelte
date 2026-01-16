@@ -1,19 +1,50 @@
 <script lang="ts">
-  import { Card, Progressbar, Button, Input, Label } from 'flowbite-svelte';
+  import { Card, Button, Input, Label } from 'flowbite-svelte';
   import { ChartPieSolid, CheckCircleSolid, ExclamationCircleSolid } from 'flowbite-svelte-icons';
   import {
-    annualGoalProgress,
-    currentAnnualGoal,
-    setAnnualGoal,
-    type AnnualGoalProgress
+    activeGoalProgress,
+    activeGoalSelection,
+    customGoals,
+    goalSnapshots,
+    setActiveGoalSelection,
+    setGoalTarget,
+    updateCustomGoal,
+    createCustomGoal,
+    getRecentPeriods,
+    getCurrentPeriodKey,
+    buildGoalSnapshotKey,
+    type GoalProgress,
+    type GoalType
   } from '$lib/settings/goals';
 
   // Local state for editing the goal
   let isEditing = $state(false);
   let editValue = $state(52);
+  let isCreatingCustom = $state(false);
+  let customName = $state('');
+  let customStart = $state('');
+  let customEnd = $state('');
+  let customTarget = $state(10);
 
   // Get current progress
-  let progress: AnnualGoalProgress = $derived($annualGoalProgress);
+  let progress: GoalProgress = $derived($activeGoalProgress);
+
+  let selection = $derived($activeGoalSelection);
+  let target = $derived(progress.targetVolumes);
+  let availablePeriods = $derived.by(() => {
+    if (selection.goalType === 'custom') return [];
+
+    const periods = getRecentPeriods(selection.goalType, 8);
+    const currentKey = getCurrentPeriodKey(selection.goalType);
+    const snapshotKeys = new Set(Object.keys($goalSnapshots));
+
+    return periods.filter((period) => {
+      if (period.periodKey === currentKey) return true;
+      if (period.periodKey === selection.periodKey) return true;
+      const key = buildGoalSnapshotKey(selection.goalType, period.periodKey);
+      return snapshotKeys.has(key);
+    });
+  });
 
   // Status colors and icons
   const statusConfig = {
@@ -50,13 +81,20 @@
   let config = $derived(statusConfig[progress.status]);
 
   function startEditing() {
-    editValue = $currentAnnualGoal;
+    editValue = target || 0;
     isEditing = true;
   }
 
   function saveGoal() {
     if (editValue > 0) {
-      setAnnualGoal(editValue);
+      if (selection.goalType === 'custom') {
+        const currentCustom = $customGoals.find((goal) => goal.id === selection.customId);
+        if (currentCustom) {
+          updateCustomGoal({ ...currentCustom, targetVolumes: editValue });
+        }
+      } else {
+        setGoalTarget(selection.goalType, selection.periodKey, editValue);
+      }
     }
     isEditing = false;
   }
@@ -72,6 +110,50 @@
       cancelEditing();
     }
   }
+
+  function handleGoalTypeChange(goalType: GoalType) {
+    if (goalType === 'custom') {
+      const firstCustom = $customGoals[0];
+      if (firstCustom) {
+        setActiveGoalSelection({ goalType: 'custom', customId: firstCustom.id });
+      } else {
+        setActiveGoalSelection({ goalType: 'custom', customId: 'none' });
+      }
+      return;
+    }
+
+    const periodKey = getCurrentPeriodKey(goalType);
+    setActiveGoalSelection({ goalType, periodKey });
+  }
+
+  function handlePeriodChange(periodKey: string) {
+    if (selection.goalType === 'custom') return;
+    setActiveGoalSelection({ goalType: selection.goalType, periodKey });
+  }
+
+  function handleCustomSelection(customId: string) {
+    setActiveGoalSelection({ goalType: 'custom', customId });
+  }
+
+  function toggleCustomForm() {
+    isCreatingCustom = !isCreatingCustom;
+  }
+
+  function saveCustomGoal() {
+    if (!customName || !customStart || !customEnd || customTarget <= 0) return;
+    createCustomGoal({
+      name: customName,
+      startDate: customStart,
+      endDate: customEnd,
+      targetVolumes: customTarget,
+      enabled: true
+    });
+    customName = '';
+    customStart = '';
+    customEnd = '';
+    customTarget = 10;
+    isCreatingCustom = false;
+  }
 </script>
 
 <Card class="mb-6 w-full max-w-none p-5">
@@ -79,7 +161,49 @@
     <div class="flex items-center gap-3">
       <ChartPieSolid class="h-8 w-8 text-primary-500" />
       <div>
-        <h2 class="text-xl font-semibold text-gray-200">Annual Reading Goal</h2>
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-xl font-semibold text-gray-200">Reading Goal</h2>
+          <select
+            class="h-9 w-36 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+            value={selection.goalType}
+            onchange={(e) =>
+              handleGoalTypeChange((e.target as HTMLSelectElement).value as GoalType)}
+          >
+            <option value="year">Year</option>
+            <option value="season">Season</option>
+            <option value="month">Month</option>
+            <option value="today">Today</option>
+            <option value="custom">Custom</option>
+          </select>
+          {#if selection.goalType !== 'custom'}
+            <select
+              class="h-9 w-44 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+              value={selection.periodKey}
+              onchange={(e) => handlePeriodChange((e.target as HTMLSelectElement).value)}
+            >
+              {#each availablePeriods as period}
+                <option value={period.periodKey}>{period.label}</option>
+              {/each}
+            </select>
+          {:else}
+            <select
+              class="h-9 w-48 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+              value={selection.customId}
+              onchange={(e) => handleCustomSelection((e.target as HTMLSelectElement).value)}
+            >
+              {#if $customGoals.length === 0}
+                <option value="none">No custom goals</option>
+              {:else}
+                {#each $customGoals as goal}
+                  <option value={goal.id}>{goal.name}</option>
+                {/each}
+              {/if}
+            </select>
+            <Button size="xs" color="alternative" onclick={toggleCustomForm}>
+              {isCreatingCustom ? 'Cancel' : 'New'}
+            </Button>
+          {/if}
+        </div>
         {#if isEditing}
           <div class="mt-2 flex items-center gap-2">
             <Label class="text-sm text-gray-400">Target volumes:</Label>
@@ -97,7 +221,7 @@
           </div>
         {:else}
           <p class="text-sm text-gray-400">
-            Read {progress.targetVolumes} volumes in {new Date().getFullYear()}
+            Read {progress.targetVolumes} volumes in {progress.periodLabel}
             <button
               class="ml-2 text-primary-400 hover:text-primary-300 hover:underline"
               onclick={startEditing}
@@ -105,6 +229,9 @@
               Edit
             </button>
           </p>
+          {#if selection.goalType === 'custom' && $customGoals.length === 0}
+            <p class="mt-1 text-xs text-gray-500">Create a custom goal to get started.</p>
+          {/if}
         {/if}
       </div>
     </div>
@@ -171,6 +298,34 @@
       <span class="text-sm text-gray-400"> — {config.description}</span>
     </div>
   </div>
+
+  {#if isCreatingCustom}
+    <div class="mt-4 rounded-lg bg-gray-900 p-3">
+      <div class="mb-2 text-sm font-medium text-gray-300">New Custom Goal</div>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <div>
+          <Label class="text-xs text-gray-400">Name</Label>
+          <Input bind:value={customName} size="sm" placeholder="My goal" />
+        </div>
+        <div>
+          <Label class="text-xs text-gray-400">Target</Label>
+          <Input type="number" min="1" bind:value={customTarget} size="sm" />
+        </div>
+        <div>
+          <Label class="text-xs text-gray-400">Start</Label>
+          <Input type="date" bind:value={customStart} size="sm" />
+        </div>
+        <div>
+          <Label class="text-xs text-gray-400">End</Label>
+          <Input type="date" bind:value={customEnd} size="sm" />
+        </div>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <Button size="xs" color="primary" onclick={saveCustomGoal}>Save</Button>
+        <Button size="xs" color="alternative" onclick={toggleCustomForm}>Cancel</Button>
+      </div>
+    </div>
+  {/if}
 </Card>
 
 <style>
