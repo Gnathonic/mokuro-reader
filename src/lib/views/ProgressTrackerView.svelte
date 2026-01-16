@@ -4,7 +4,18 @@
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
   import { volumes as catalogVolumes } from '$lib/catalog';
   import { miscSettings, updateMiscSetting, type ProgressTrackerSorting } from '$lib/settings';
-  import { volumeDeadlines, calculatePagesPerDay, dateUtils } from '$lib/settings/goals';
+  import { onMount } from 'svelte';
+  import {
+    volumeDeadlines,
+    calculatePagesPerDay,
+    dateUtils,
+    finalizeClosedGoalSnapshots,
+    activeGoalPeriod,
+    activeGoalSnapshot,
+    completedAtMap,
+    isDateWithinRange
+  } from '$lib/settings/goals';
+  import { nav } from '$lib/util/hash-router';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
 
@@ -107,6 +118,10 @@
     updateMiscSetting('progressTrackerSorting', sortOrder[nextIndex]);
   }
 
+  onMount(() => {
+    finalizeClosedGoalSnapshots();
+  });
+
   // Helper function to create entries with sort data
   function createEntriesWithSortData(entries: [string, VolumeData][]) {
     const deadlines = $volumeDeadlines;
@@ -177,14 +192,37 @@
     const futureReads: [string, VolumeData][] = [];
     const completedVolumes: [string, VolumeData][] = [];
 
+    const activePeriod = $activeGoalPeriod;
+    const snapshot = $activeGoalSnapshot;
+    const completedMap = $completedAtMap;
+
     for (const [volumeId, volumeData] of volumeEntries) {
       const currentPage = $progress[volumeId] ?? 0;
       const totalPages = $catalogVolumes[volumeId]?.page_count ?? 0;
 
-      if (currentPage >= totalPages && totalPages > 0) {
-        // Completed: progress equals total pages
-        completedVolumes.push([volumeId, volumeData]);
-      } else if (currentPage > 1) {
+      const isCompletedByProgress = currentPage >= totalPages && totalPages > 0;
+
+      const isCompletedInActiveGoal = () => {
+        if (!activePeriod) return isCompletedByProgress;
+
+        if (snapshot) {
+          return Object.prototype.hasOwnProperty.call(snapshot.completed, volumeId);
+        }
+
+        const completedAt = completedMap[volumeId];
+        if (!completedAt) return false;
+        return isDateWithinRange(completedAt, activePeriod.start, activePeriod.end);
+      };
+
+      if (isCompletedByProgress) {
+        if (isCompletedInActiveGoal()) {
+          // Completed: progress equals total pages
+          completedVolumes.push([volumeId, volumeData]);
+        }
+        continue;
+      }
+
+      if (currentPage > 1) {
         // Currently Reading: progress > 1 but not at final page
         currentlyReading.push([volumeId, volumeData]);
       } else {
@@ -222,6 +260,14 @@
       completedVolumes: sortEntries(createEntriesWithSortData(completedVolumes))
     };
   });
+
+  let isGoalClosed = $derived.by(() => {
+    const period = $activeGoalPeriod;
+    if (!period) return false;
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return period.end.getTime() <= startOfToday.getTime();
+  });
 </script>
 
 <svelte:head>
@@ -229,20 +275,25 @@
 </svelte:head>
 
 <div class="min-h-[90svh] w-full p-4">
-  <div class="mb-6 flex items-center justify-between">
+  <div class="mb-6 flex flex-wrap items-center justify-between gap-2">
     <h1 class="text-3xl font-bold">Progress Tracker</h1>
 
     {#if hasVolumes}
-      <Button
-        size="sm"
-        color="alternative"
-        onclick={cycleSorting}
-        title={sortTitles[$miscSettings.progressTrackerSorting]}
-        class="flex h-10 items-center justify-center"
-      >
-        <SortOutline class="h-5 w-5" />
-        <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
-      </Button>
+      <div class="flex flex-wrap items-center gap-2">
+        <Button size="sm" color="alternative" onclick={() => nav.toManageGoals()}>
+          Manage Goals
+        </Button>
+        <Button
+          size="sm"
+          color="alternative"
+          onclick={cycleSorting}
+          title={sortTitles[$miscSettings.progressTrackerSorting]}
+          class="flex h-10 items-center justify-center"
+        >
+          <SortOutline class="h-5 w-5" />
+          <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
+        </Button>
+      </div>
     {/if}
   </div>
 
@@ -257,7 +308,7 @@
     </Card>
   {:else}
     <!-- Currently Reading Section -->
-    {#if volumeSections.currentlyReading.length > 0}
+    {#if !isGoalClosed && volumeSections.currentlyReading.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
         <h2 class="mb-4 text-xl font-semibold">Currently Reading</h2>
         <div
@@ -284,7 +335,7 @@
     {/if}
 
     <!-- Future Reads Section -->
-    {#if volumeSections.futureReads.length > 0}
+    {#if !isGoalClosed && volumeSections.futureReads.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
         <h2 class="mb-4 text-xl font-semibold">Future Reads</h2>
         <div
