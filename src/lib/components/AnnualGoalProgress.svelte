@@ -305,6 +305,7 @@
       <div class="grid gap-2 sm:grid-cols-2">
         <div>
           <Label class="text-xs text-gray-400">Name</Label>
+          <!-- TODO: Need to find out why pressing Shift blurs the input and focuses the body -->
           <Input bind:value={customName} size="sm" placeholder="My goal" />
         </div>
         <div>

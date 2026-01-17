@@ -25,11 +25,13 @@
   }
 
   .progress-bar {
+    margin: auto;
     background-color: #666;
     position: relative;
     border-style: solid;
     border-width: thin;
     margin-top: 3px;
+    width: var(--box-width);
     font-size: 12px;
     cursor: default;
   }
