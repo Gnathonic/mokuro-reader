@@ -80,6 +80,7 @@
     width: var(--box-width);
     height: var(--box-height);
     overflow: hidden;
+    margin: auto;
     border-radius: var(--border-radius) var(--border-radius) 0 0;
   }
 
