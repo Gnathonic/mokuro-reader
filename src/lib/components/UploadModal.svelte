@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Accordion, AccordionItem, Button, Dropzone, Modal, Spinner } from 'flowbite-svelte';
   import { UploadSolid } from 'flowbite-svelte-icons';
-  import { processFiles, scanFiles } from '$lib/upload';
+  import { importFiles, isImporting } from '$lib/import';
+  import { scanFiles } from '$lib/upload';
   import { onMount } from 'svelte';
   import { formatBytes } from '$lib/util/upload';
   import { toClipboard } from '$lib/util';
@@ -34,12 +35,9 @@
   }
 
   async function onImport() {
-    if (files) {
-      promise = processFiles([...files]).then(() => {
-        open = false;
-      });
-    } else if (draggedFiles) {
-      promise = processFiles(draggedFiles).then(() => {
+    const filesToImport = files ? [...files] : draggedFiles;
+    if (filesToImport && filesToImport.length > 0) {
+      promise = importFiles(filesToImport).then(() => {
         open = false;
       });
     }
@@ -230,7 +228,9 @@
             onclick={() => {
               const input = document.createElement('input');
               input.type = 'file';
-              input.accept = '.mokuro,.zip,.cbz';
+              // Include both extensions and MIME types for iOS compatibility
+              input.accept =
+                '.mokuro,.zip,.cbz,application/zip,application/x-zip-compressed,application/octet-stream';
               input.multiple = true;
               input.onchange = (e) => {
                 const target = e.target as HTMLInputElement;

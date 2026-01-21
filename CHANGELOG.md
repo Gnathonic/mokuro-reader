@@ -1,5 +1,112 @@
 # Changelog
 
+## [1.2.3] - 2026-01-15
+
+### Added
+
+- **Toggle reader UI by clicking blank space** - Click on empty areas of the page to show/hide reader controls
+- **Mark volume as read** - Manually mark volumes as read from the volume menu. Thanks [@Zipeks](https://github.com/Zipeks)!
+- **WebDAV performance improvements** - Faster file listing during sync
+- **Case-insensitive series merge** - Series with different casing (e.g., "Test Series" vs "test series") now detected as merge candidates
+
+### Fixed
+
+- **WebDAV paths with special characters** - Fixed corrupt downloads for files with `#` in their path (e.g., `#Zombie Sagashitemasu`)
+- **Large volume WebDAV backup** - Fixed authentication and memory issues when backing up volumes >1GB to WebDAV
+
+## [1.2.2] - 2026-01-06
+
+### Added
+
+- **Free-form Anki image cropping** - Replace fixed aspect ratio with free-form cropping using cropperjs
+- **Text box picker for Anki quick actions** - 2-step capture flow: select text box first, then adjust crop region
+- **Preset crop to text box** - New Anki setting to automatically preset crop region to selected text box bounds
+- **Automatic cover image detection** - Imports now detect and use cover images for thumbnails. Thanks [@ChristopherFritz](https://github.com/ChristopherFritz)!
+- **Series page character counts** - Shows total and remaining characters with compact formatting (1.2M, 500K). Thanks [@SilfraTheDragon](https://github.com/SilfraTheDragon)!
+- **Larger cover image cropper** - Expanded cover picker modal for easier precise cropping
+
+### Fixed
+
+- **Consistent natural volume sorting** - Fixed edge cases where sorting could be inconsistent by consolidating to single source of truth. Thanks [@ChristopherFritz](https://github.com/ChristopherFritz)!
+
+## [1.2.1] - 2025-01-05
+
+### Added
+
+- **Placeholder series pages** - Click cloud-only series to view their volumes and download options instead of triggering immediate download
+- **Series export progress tracking** - Exporting a series as a single archive now shows progress in the progress tracker
+
+### Fixed
+
+- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up or exporting volumes >1GB ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
+- **Import modal stuck on multiple drops** - Fixed import preparation modal not closing properly when dropping multiple archives
+
+## [1.2.0] - 2025-01-05
+
+### Added
+
+- **Volume editor modal** - Edit volume metadata, series assignment, reading progress, and cover image from the catalog
+- **Cover cropping** - Crop any page from the volume to use as cover, with free-form selection
+- **Inline series rename** - Rename series directly from the series page header
+- **Missing pages display** - Volume editor shows which pages were missing during import
+- **Import preparation modal** - Shows progress spinner with status while scanning and analyzing dropped files before they appear in the import queue
+- **Series merge** - Merge multiple series together with conflict detection and preview. Thanks [@ChristopherFritz](https://github.com/ChristopherFritz)!
+
+### Fixed
+
+- **Flat archive imports** - Archives with images at root level now properly pair with external mokuro files ([#131](https://github.com/Gnathonic/mokuro-reader/issues/131), [#125](https://github.com/Gnathonic/mokuro-reader/issues/125))
+
+## [1.1.2] - 2025-01-04
+
+### Added
+
+- **Pan to page start on page turn** - New panning behavior that positions at the top corner based on reading direction (top-right for RTL, top-left for LTR). Thanks [@Zipeks](https://github.com/Zipeks)!
+
+### Changed
+
+- **Simplified zoom options** - Removed redundant "Keep zoom, pan to top center" and "Keep zoom, pan to top corner" options. "Original size" and "Keep zoom" now use pan-to-page-start behavior.
+
+## [1.1.1] - 2025-01-04
+
+### Added
+
+- **AnkiConnect test button** - Validate your connection with clear error messages for network/CORS issues
+- **Custom text box menu toggle** - Disable to use browser's native right-click menu instead
+
+### Fixed
+
+- **Context menu mobile support** - Buttons now respond to taps, clipboard works on mobile, menu positions to avoid overlapping text
+
+## [1.1.0] - 2026-01-04
+
+### Added
+
+- **Context menu for OCR text boxes** - Right-click/long-press for quick copy and Anki card creation
+- **Copy text without linebreaks** - Copied text automatically strips linebreaks for cleaner pasting - thanks [@Daxterapid](https://github.com/Daxterapid)
+- **Partial volume imports** - Import volumes even when some images are missing, with placeholder pages and a confirmation prompt showing what's missing
+- **Import progress tracking** - File imports now show progress in the progress tracker
+- **Anki textbox targeting** - Pick which text box to capture when creating cards from QuickActions
+- **AnkiConnect custom URL** - Configure non-default AnkiConnect endpoints
+- **AnkiConnect card modes** - Choose between updating last card or creating new cards
+- **Anki dynamic tags** - Template tags like `{series}`, `{volume}` for automatic organization
+
+### Fixed
+
+- **CBZ export compatibility** - Exported files now work in more third-party readers
+- **iOS Safari imports** - Fixed UUID generation and file picker issues
+- **Import compatibility** - Better handling of various internal folder layouts
+
+## [1.0.7] - 2025-12-17
+
+### Added
+
+- JPEG XL (.jxl) image support
+
+### Fixed
+
+- Fix infinite loop causing browser freeze on some mokuro pages
+- Fix timer continuing to run after leaving a volume
+
 ## [1.0.6] - 2025-12-12
 
 ### Fixed

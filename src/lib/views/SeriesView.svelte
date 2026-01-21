@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { catalog } from '$lib/catalog';
+  import { catalog, currentSeries } from '$lib/catalog';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
@@ -20,15 +20,18 @@
     SortOutline,
     GridOutline,
     ListOutline,
-    DotsVerticalOutline
+    DotsVerticalOutline,
+    EditOutline,
+    CloseOutline,
+    CheckOutline
   } from 'flowbite-svelte-icons';
+  import { executeRenameSeries } from '$lib/util/series-rename';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
-  import { getCharCount } from '$lib/util/count-chars';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -57,42 +60,46 @@
       );
   });
 
-  // Track Japanese character counts per volume (calculated from pages)
-  let volumeJapaneseChars = $state<Map<string, number>>(new Map());
-
-  // Calculate Japanese character counts from pages data when manga list changes
-  $effect(() => {
-    if (!manga || manga.length === 0) return;
-
-    const fetchCharCounts = async () => {
-      const charCounts = new Map<string, number>();
-
-      for (const vol of manga) {
-        const volumeOcr = await db.volume_ocr.get(vol.volume_uuid);
-        if (volumeOcr?.pages) {
-          const { charCount } = getCharCount(volumeOcr.pages);
-          charCounts.set(vol.volume_uuid, charCount);
-        }
-      }
-
-      volumeJapaneseChars = charCounts;
-    };
-
-    fetchCharCounts();
-  });
-
-  // Calculate total Japanese characters in series
+  // Calculate total Japanese characters in series (from metadata - no async needed)
   let totalSeriesChars = $derived.by(() => {
     if (!manga || manga.length === 0) return 0;
     return manga.reduce((total, vol) => {
-      return total + (volumeJapaneseChars.get(vol.volume_uuid) || 0);
+      // Use character_count from metadata, or last element of page_char_counts
+      const volTotal =
+        vol.character_count ||
+        (vol.page_char_counts?.length > 0
+          ? vol.page_char_counts[vol.page_char_counts.length - 1]
+          : 0);
+      return total + volTotal;
+    }, 0);
+  });
+
+  // Calculate chars read in series (from metadata + progress)
+  let charsReadInSeries = $derived.by(() => {
+    if (!manga || manga.length === 0) return 0;
+    return manga.reduce((total, vol) => {
+      const volumeData = $volumes?.[vol.volume_uuid];
+      const currentPage = volumeData?.progress || 0;
+      if (currentPage <= 0 || !vol.page_char_counts?.length) return total;
+
+      // If volume is completed, use full character count
+      // (completion can trigger on second-to-last page, so progress may be short)
+      if (volumeData?.completed) {
+        return total + (vol.page_char_counts[vol.page_char_counts.length - 1] || 0);
+      }
+
+      // page_char_counts is cumulative: [50, 120, 200] means page 3 has 200 total chars through it
+      // currentPage is 1-indexed, so page 1 = index 0, page N = index N-1
+      const charIndex = Math.min(currentPage, vol.page_char_counts.length) - 1;
+      const charsRead = vol.page_char_counts[charIndex] || 0;
+      return total + charsRead;
     }, 0);
   });
 
   let estimatedMinutesLeft = $derived.by(() => {
-    if (!mangaStats || !totalSeriesChars) return null;
+    if (!totalSeriesChars) return null;
 
-    const charsRemaining = totalSeriesChars - mangaStats.chars;
+    const charsRemaining = totalSeriesChars - charsReadInSeries;
     if (charsRemaining <= 0) return null;
 
     // Get personalized reading speed
@@ -113,6 +120,13 @@
     const mins = minutes % 60;
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   }
+
+  // Compact character formatter with 3 significant digits
+  const charFormatter = new Intl.NumberFormat('en', {
+    notation: 'compact',
+    maximumSignificantDigits: 3
+  });
+  const formatCharCount = (chars: number) => charFormatter.format(chars || 0);
 
   // View mode state (persisted to localStorage)
   type ViewMode = 'list' | 'grid';
@@ -142,12 +156,10 @@
     sortMode = sortMode === 'unread-first' ? 'alphabetical' : 'unread-first';
   }
 
-  // Reactive sorted volumes - avoids circular dependency by making sorting fully reactive
+  // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
   let allVolumes = $derived.by(() => {
-    const seriesVolumes = $catalog?.find(
-      (item) => item.series_uuid === $routeParams.manga
-    )?.volumes;
-    if (!seriesVolumes) return undefined;
+    const seriesVolumes = $currentSeries;
+    if (!seriesVolumes || seriesVolumes.length === 0) return undefined;
 
     // Create a copy to sort
     const volumesToSort = [...seriesVolumes];
@@ -182,6 +194,12 @@
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
 
   let loading = $state(false);
+
+  // Inline rename state
+  let isRenaming = $state(false);
+  let renameValue = $state('');
+  let renameError = $state('');
+  let renameSaving = $state(false);
 
   // Subscribe to unified cloud cache updates
   let cloudFiles = $state<Map<string, any[]>>(new Map());
@@ -546,6 +564,63 @@
     if (seriesId) nav.toSeriesText(seriesId);
   }
 
+  function startRename() {
+    if (!manga || manga.length === 0) return;
+    renameValue = manga[0].series_title;
+    renameError = '';
+    isRenaming = true;
+  }
+
+  function cancelRename() {
+    isRenaming = false;
+    renameValue = '';
+    renameError = '';
+  }
+
+  async function saveRename() {
+    if (!manga || manga.length === 0) return;
+
+    const oldTitle = manga[0].series_title;
+    const newTitle = renameValue.trim();
+
+    if (!newTitle) {
+      renameError = 'Name cannot be empty';
+      return;
+    }
+
+    if (newTitle === oldTitle) {
+      cancelRename();
+      return;
+    }
+
+    try {
+      renameSaving = true;
+      renameError = '';
+
+      // Execute the rename for this series UUID
+      await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
+
+      showSnackbar(`Renamed to "${newTitle}"`);
+      isRenaming = false;
+      renameValue = '';
+    } catch (err) {
+      renameError = err instanceof Error ? err.message : 'Failed to rename';
+      console.error('Error renaming series:', err);
+    } finally {
+      renameSaving = false;
+    }
+  }
+
+  function handleRenameKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveRename();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelRename();
+    }
+  }
+
   onMount(() => {
     // Check if cache is already loaded on mount (for navigation scenarios)
     const currentCloudFiles = unifiedCloudManager.getAllCloudVolumes();
@@ -576,7 +651,7 @@
 </script>
 
 <svelte:head>
-  <title>{manga?.[0]?.series_title || 'Manga'}</title>
+  <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
 {#if !$catalog || $catalog.length === 0}
   <div class="flex items-center justify-center p-16">
@@ -586,14 +661,62 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title on left, Stats on right -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{manga[0].series_title}</h3>
+      {#if isRenaming}
+        <div class="flex min-w-0 flex-1 items-center gap-2 px-2">
+          <input
+            type="text"
+            bind:value={renameValue}
+            onkeydown={handleRenameKeydown}
+            disabled={renameSaving}
+            class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xl font-bold text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
+            autofocus
+          />
+          <button
+            onclick={saveRename}
+            disabled={renameSaving}
+            class="rounded-lg p-2 text-green-600 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900/30"
+            title="Save"
+          >
+            {#if renameSaving}
+              <Spinner size="5" />
+            {:else}
+              <CheckOutline class="h-5 w-5" />
+            {/if}
+          </button>
+          <button
+            onclick={cancelRename}
+            disabled={renameSaving}
+            class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+            title="Cancel"
+          >
+            <CloseOutline class="h-5 w-5" />
+          </button>
+        </div>
+        {#if renameError}
+          <span class="px-2 text-sm text-red-500">{renameError}</span>
+        {/if}
+      {:else}
+        <div class="flex min-w-0 items-center gap-1">
+          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{manga[0].series_title}</h3>
+          <button
+            onclick={startRename}
+            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            title="Rename series"
+          >
+            <EditOutline class="h-4 w-4" />
+          </button>
+        </div>
+      {/if}
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Volumes: {mangaStats.completed} / {manga.length}</Badge
         >
-        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
-          >Characters: {mangaStats.chars}</Badge
-        >
+        <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700">
+          Characters: {formatCharCount(charsReadInSeries)}
+          {#if totalSeriesChars > 0}
+            / {formatCharCount(totalSeriesChars)}
+          {/if}
+        </Badge>
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Time Read: {formatTime(mangaStats.timeReadInMinutes)}</Badge
         >
@@ -731,6 +854,61 @@
             {/each}
           </div>
         {/if}
+      </div>
+    {/if}
+  </div>
+{:else if placeholders && placeholders.length > 0}
+  <!-- Placeholder-only series page -->
+  <div class="flex flex-col gap-5 p-2">
+    <!-- Header Row: Title and cloud info -->
+    <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
+        {placeholders[0]?.series_title || 'Cloud Series'}
+      </h3>
+      <div class="flex flex-row gap-2 px-2 text-base">
+        <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
+          {placeholders.length} volume{placeholders.length !== 1 ? 's' : ''} in {providerDisplayName}
+        </Badge>
+      </div>
+    </div>
+
+    <!-- Actions Row -->
+    <div class="flex flex-row items-stretch justify-end gap-2">
+      {#if hasAnyProvider}
+        <Button color="primary" onclick={downloadAllPlaceholders} class="!min-w-0 self-stretch">
+          <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
+          <span class="break-words">Download All</span>
+        </Button>
+      {:else}
+        <Button color="light" disabled class="!min-w-0 self-stretch">
+          <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
+          <span class="break-words">Sign in to download</span>
+        </Button>
+      {/if}
+
+      <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">
+        {#if viewMode === 'list'}
+          <GridOutline class="me-2 h-5 w-5 shrink-0" />
+          <span class="break-words">Grid</span>
+        {:else}
+          <ListOutline class="me-2 h-5 w-5 shrink-0" />
+          <span class="break-words">List</span>
+        {/if}
+      </Button>
+    </div>
+
+    <!-- Volume List/Grid -->
+    {#if viewMode === 'list'}
+      <Listgroup active class="h-full w-full flex-1">
+        {#each placeholders as placeholder (placeholder.volume_uuid)}
+          <PlaceholderVolumeItem volume={placeholder} variant="list" />
+        {/each}
+      </Listgroup>
+    {:else}
+      <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
+        {#each placeholders as placeholder (placeholder.volume_uuid)}
+          <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+        {/each}
       </div>
     {/if}
   </div>

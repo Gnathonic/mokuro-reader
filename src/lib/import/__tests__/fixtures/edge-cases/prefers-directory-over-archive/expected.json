@@ -1,0 +1,18 @@
+{
+  "count": 2,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "manga",
+      "imageOnly": false,
+      "fileCount": 2
+    },
+    {
+      "sourceType": "archive",
+      "hasMokuro": false,
+      "basePathContains": "manga",
+      "imageOnly": false
+    }
+  ]
+}

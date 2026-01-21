@@ -1,16 +1,28 @@
 <script lang="ts">
   import { clamp, promptConfirmation } from '$lib/util';
   import type { Page } from '$lib/types';
-  import { settings } from '$lib/settings';
-  import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
+  import { settings, volumes } from '$lib/settings';
+  import { showCropper, expandTextBoxBounds, type VolumeMetadata } from '$lib/anki-connect';
+
+  interface ContextMenuData {
+    x: number;
+    y: number;
+    lines: string[];
+    imgElement: HTMLElement | null;
+    textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+  }
 
   interface Props {
     page: Page;
     src?: File;
     volumeUuid: string;
+    /** Force text visibility (for placeholder/missing pages) */
+    forceVisible?: boolean;
+    /** Callback when context menu should be shown */
+    onContextMenu?: (data: ContextMenuData) => void;
   }
 
-  let { page, src, volumeUuid }: Props = $props();
+  let { page, src, volumeUuid, forceVisible = false, onContextMenu }: Props = $props();
 
   interface TextBoxData {
     // Pre-computed style string to reduce DOM operations
@@ -19,6 +31,7 @@
     area: number;
     fontSize: string; // Keep for hover adjustment
     isOriginalMode: boolean;
+    blockIndex: number; // Original index in page.blocks
   }
 
   // Pre-compute shared styles once
@@ -31,7 +44,7 @@
 
   let textBoxes = $derived(
     page.blocks
-      .map((block) => {
+      .map((block, blockIndex) => {
         const { img_height, img_width } = page;
         const { box, font_size, lines, vertical } = block;
 
@@ -102,7 +115,8 @@
           lines: processedLines,
           area,
           fontSize,
-          isOriginalMode
+          isOriginalMode,
+          blockIndex
         };
 
         return textBox;
@@ -112,6 +126,17 @@
 
   let contenteditable = $derived($settings.textEditable);
   let triggerMethod = $derived($settings.ankiConnectSettings.triggerMethod || 'both');
+
+  // Double-tap trigger: enabled if triggerMethod is 'doubleTap' or 'both' (legacy)
+  let doubleTapEnabled = $derived(
+    $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
+      $settings.ankiConnectSettings.triggerMethod === 'both'
+  );
+  let ankiTags = $derived($settings.ankiConnectSettings.tags);
+  let volumeMetadata = $derived<VolumeMetadata>({
+    seriesTitle: $volumes[volumeUuid]?.series_title,
+    volumeTitle: $volumes[volumeUuid]?.volume_title
+  });
 
   // Track adjusted font sizes for each textbox
   let adjustedFontSizes = $state<Map<number, string>>(new Map());
@@ -132,8 +157,15 @@
     const minFontSize = 8; // Minimum font size in px
     const maxFontSize = 200; // Maximum font size to try when scaling up
 
-    // Convert to px for consistent handling
-    const originalInPx = unit === 'pt' ? originalSize * 1.333 : originalSize;
+    // Convert to px for consistent handling, rounding to integer
+    // Integer font sizes ensure the binary search always makes progress
+    let originalInPx = Math.round(unit === 'pt' ? originalSize * 1.333 : originalSize);
+
+    // Guard against invalid font sizes that would cause infinite loops
+    // (0, negative, NaN, or Infinity would break the binary search)
+    if (!Number.isFinite(originalInPx) || originalInPx < minFontSize) {
+      originalInPx = minFontSize;
+    }
 
     // Check if content overflows at a given font size
     const isOverflowingAt = (size: number) => {
@@ -285,54 +317,89 @@
     return null;
   }
 
-  async function onUpdateCard(event: Event, lines: string[]) {
+  function getSelectedText(): string {
+    // Get actual selected text from the DOM
+    const selection = window.getSelection();
+    return selection?.toString().trim() || '';
+  }
+
+  async function onUpdateCard(event: Event, lines: string[], blockIndex: number) {
     if ($settings.ankiConnectSettings.enabled) {
-      const sentence = lines.join(' ');
-      if ($settings.ankiConnectSettings.cropImage) {
-        // Get image URL from rendered page, fallback to creating from src
-        const url =
-          getImageUrlFromElement(event.target as HTMLElement) ||
-          (src ? URL.createObjectURL(src) : null);
-        if (url) {
-          showCropper(url, sentence);
-        }
-      } else if (src) {
-        promptConfirmation('Add image to last created anki card?', async () => {
-          const imageData = await imageToWebp(src, $settings);
-          updateLastCard(imageData, sentence);
-        });
+      const selectedText = getSelectedText();
+      const fullSentence = lines.join(' ');
+
+      // Get the original block's bounding box for initial crop
+      const block = page.blocks[blockIndex];
+      const textBox = block ? expandTextBoxBounds(block, page) : undefined;
+
+      // Always show the modal for review/editing
+      const url =
+        getImageUrlFromElement(event.target as HTMLElement) ||
+        (src ? URL.createObjectURL(src) : null);
+      if (url) {
+        showCropper(
+          url,
+          selectedText || fullSentence,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox
+        );
       }
     }
   }
 
-  function onContextMenu(event: Event, lines: string[]) {
-    if (triggerMethod === 'both' || triggerMethod === 'rightClick') {
+  function handleContextMenu(event: MouseEvent, lines: string[], blockIndex: number) {
+    // Only show custom context menu if enabled in settings
+    if (!$settings.textBoxContextMenu) return;
+
+    event.preventDefault();
+
+    // Get text box bounds with padding
+    const block = page.blocks[blockIndex];
+    const textBox = block ? expandTextBoxBounds(block, page) : undefined;
+
+    onContextMenu?.({
+      x: event.clientX,
+      y: event.clientY,
+      lines,
+      imgElement: event.target as HTMLElement,
+      textBox
+    });
+  }
+
+  function onDoubleTap(event: Event, lines: string[], blockIndex: number) {
+    // Always stop propagation to prevent zoom from triggering
+    event.stopPropagation();
+    if (doubleTapEnabled) {
       event.preventDefault();
-      onUpdateCard(event, lines);
+      onUpdateCard(event, lines, blockIndex);
     }
   }
 
-  function onDoubleTap(event: Event, lines: string[]) {
-    // Always stop propagation to prevent zoom from triggering
-    event.stopPropagation();
-    if (triggerMethod === 'both' || triggerMethod === 'doubleTap') {
-      event.preventDefault();
-      onUpdateCard(event, lines);
-    }
+  function onCopy(event: ClipboardEvent) {
+    // Strip line breaks from copied text (Ctrl+C default behavior)
+    const selection = window.getSelection()?.toString() || '';
+    const stripped = selection.replace(/[\n\r\t]/g, '');
+    event.clipboardData?.setData('text/plain', stripped);
+    event.preventDefault();
   }
 </script>
 
-{#each textBoxes as { styleString, lines, fontSize, isOriginalMode }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { styleString, lines, fontSize, isOriginalMode, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
   <div
     use:handleTextBoxHover={[index, fontSize]}
     class="textBox"
     class:originalMode={isOriginalMode}
+    class:forceVisible
     style={adjustedFontSizes.has(index)
       ? styleString.replace(/font-size:[^;]+/, `font-size:${adjustedFontSizes.get(index)}`)
       : styleString}
     role="none"
-    oncontextmenu={(e) => onContextMenu(e, lines)}
-    ondblclick={(e) => onDoubleTap(e, lines)}
+    oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex)}
+    ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
+    oncopy={onCopy}
     {contenteditable}
   >
     <p>
@@ -386,6 +453,15 @@
 
   .textBox:focus p,
   .textBox:hover p {
+    visibility: visible;
+  }
+
+  /* Force visibility for placeholder/missing pages */
+  .textBox.forceVisible {
+    background: rgb(255, 255, 255);
+  }
+
+  .textBox.forceVisible p {
     visibility: visible;
   }
 

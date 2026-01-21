@@ -30,8 +30,14 @@
       key: 'swapWheelBehavior',
       text: 'Swap mouse wheel scroll/zoom',
       value: $settings.swapWheelBehavior
+    },
+    {
+      key: 'textBoxContextMenu',
+      text: 'Custom text box menu',
+      value: $settings.textBoxContextMenu,
+      description: 'Quick copy and Anki card creation on right-click/long-press'
     }
-  ] as { key: SettingsKey; text: string; value: any; shortcut?: string }[]);
+  ] as { key: SettingsKey; text: string; value: any; shortcut?: string; description?: string }[]);
 
   // Mode selection: 'manual' or 'scheduled'
   let nightModeMode = $derived($settings.nightModeSchedule.enabled ? 'scheduled' : 'manual');
@@ -62,13 +68,18 @@
   }
 </script>
 
-{#each toggles as { key, text, value, shortcut }}
-  <Toggle size="small" checked={value} onchange={() => updateSetting(key, !value)}>
-    {text}
-    {#if shortcut}
-      <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">({shortcut})</span>
+{#each toggles as { key, text, value, shortcut, description }}
+  <div>
+    <Toggle size="small" checked={value} onchange={() => updateSetting(key, !value)}>
+      {text}
+      {#if shortcut}
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">({shortcut})</span>
+      {/if}
+    </Toggle>
+    {#if description}
+      <p class="mt-0.5 ml-11 text-xs text-gray-500 dark:text-gray-400">{description}</p>
     {/if}
-  </Toggle>
+  </div>
 {/each}
 
 <!-- Night Mode with Schedule -->

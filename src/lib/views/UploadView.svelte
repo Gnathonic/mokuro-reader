@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { getItems, processFiles } from '$lib/upload';
+  import Loader from '$lib/components/Loader.svelte';
+  import { getItems } from '$lib/upload';
+  import { importFiles, IMAGE_EXTENSIONS } from '$lib/import';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
@@ -58,22 +60,11 @@
       const html = await res.text();
 
       const items = getItems(html);
-      const imageTypes = [
-        '.jpg',
-        '.jpeg',
-        '.png',
-        '.webp',
-        '.avif',
-        '.tif',
-        '.tiff',
-        '.gif',
-        '.bmp'
-      ];
 
-      // Filter to just images
+      // Filter to just images using shared IMAGE_EXTENSIONS
       const imageItems = items.filter((item) => {
-        const ext = ('.' + item.pathname.split('.').at(-1)).toLowerCase();
-        return imageTypes.includes(ext);
+        const ext = (item.pathname.split('.').at(-1) || '').toLowerCase();
+        return IMAGE_EXTENSIONS.has(ext);
       });
 
       const totalImages = imageItems.length;
@@ -117,8 +108,8 @@
         progress: 95
       });
 
-      // Process files
-      await processFiles(files);
+      // Process files using unified import
+      await importFiles(files);
 
       progressTrackerStore.updateProcess(processId, {
         status: 'Complete',

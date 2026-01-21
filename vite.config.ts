@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [sveltekit(), tailwindcss()],
+  worker: {
+    format: 'es'
+  },
   server: {
     host: true,
     fs: {
@@ -15,6 +18,7 @@ export default defineConfig({
     exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
   },
   build: {
+    sourcemap: true,
     rollupOptions: {
       onwarn(warning, warn) {
         // Suppress sourcemap warnings from node_modules (e.g., Flowbite Svelte)

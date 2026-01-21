@@ -275,6 +275,25 @@ export function updateVolumeMetadata(
 }
 
 /**
+ * Updates only the series_title for a specific volume in the store
+ * Unlike updateVolumeMetadata, this preserves all other fields
+ */
+export function updateVolumeSeriesTitle(volumeUuid: string, newSeriesTitle: string) {
+  _volumesInternal.update((prev) => {
+    const currentVolume = prev[volumeUuid];
+    if (!currentVolume) return prev;
+
+    return {
+      ...prev,
+      [volumeUuid]: new VolumeData({
+        ...currentVolume,
+        series_title: newSeriesTitle
+      })
+    };
+  });
+}
+
+/**
  * Enriches ALL orphaned volumes (those lacking metadata) from the catalog
  * This is more aggressive than lazy enrichment and runs proactively
  */
@@ -476,6 +495,14 @@ export function updateProgress(
       })
     };
   });
+}
+
+export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
+  updateProgress(volumeUuid, pageCount, totalChars, true);
+}
+
+export function markVolumeAsUnread(volumeUuid: string) {
+  updateProgress(volumeUuid, 0, 0, false);
 }
 
 export function startCount(volume: string) {

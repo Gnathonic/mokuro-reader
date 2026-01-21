@@ -148,3 +148,102 @@ export function showWebDAVError(
 export function closeWebDAVError() {
   webdavErrorModalStore.set(undefined);
 }
+
+// Missing files warning modal - shows when importing a volume with missing images
+export type MissingFilesInfo = {
+  volumeName: string;
+  missingFiles: string[];
+  totalPages: number;
+};
+
+type MissingFilesModal = {
+  open: boolean;
+  info: MissingFilesInfo;
+  onImportAnyway?: () => void;
+  onCancel?: () => void;
+};
+
+export const missingFilesModalStore = writable<MissingFilesModal | undefined>(undefined);
+
+/**
+ * Show missing files warning modal with import anyway option
+ */
+export function promptMissingFiles(
+  info: MissingFilesInfo,
+  onImportAnyway?: () => void,
+  onCancel?: () => void
+) {
+  missingFilesModalStore.set({
+    open: true,
+    info,
+    onImportAnyway,
+    onCancel
+  });
+}
+
+// Volume editor modal - for editing volume metadata, stats, and cover
+type VolumeEditorModal = {
+  open: boolean;
+  volumeUuid: string;
+  onSave?: () => void;
+  onCancel?: () => void;
+};
+
+export const volumeEditorModalStore = writable<VolumeEditorModal | undefined>(undefined);
+
+export function promptVolumeEditor(volumeUuid: string, onSave?: () => void, onCancel?: () => void) {
+  volumeEditorModalStore.set({
+    open: true,
+    volumeUuid,
+    onSave,
+    onCancel
+  });
+}
+
+export function closeVolumeEditor() {
+  volumeEditorModalStore.set(undefined);
+}
+
+// Import preparing modal - shows progress while scanning/analyzing dropped files
+export type ImportPreparingPhase = 'scanning' | 'analyzing' | 'preparing';
+
+type ImportPreparingModal = {
+  open: boolean;
+  phase: ImportPreparingPhase;
+  filesScanned?: number;
+  totalFiles?: number;
+  volumesFound?: number;
+};
+
+export const importPreparingModalStore = writable<ImportPreparingModal | undefined>(undefined);
+
+/**
+ * Show import preparing modal with current phase
+ */
+export function showImportPreparing(
+  phase: ImportPreparingPhase,
+  details?: Partial<ImportPreparingModal>
+) {
+  importPreparingModalStore.set({
+    open: true,
+    phase,
+    ...details
+  });
+}
+
+/**
+ * Update import preparing modal with new details
+ */
+export function updateImportPreparing(details: Partial<ImportPreparingModal>) {
+  importPreparingModalStore.update((current) => {
+    if (!current) return current;
+    return { ...current, ...details };
+  });
+}
+
+/**
+ * Close import preparing modal
+ */
+export function closeImportPreparing() {
+  importPreparingModalStore.set(undefined);
+}

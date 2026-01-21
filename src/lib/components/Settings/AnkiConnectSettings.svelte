@@ -1,11 +1,18 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { settings, updateAnkiSetting } from '$lib/settings';
-  import { AccordionItem, Helper, Input, Label, Select, Toggle } from 'flowbite-svelte';
+  import { AccordionItem, Button, Helper, Input, Label, Select, Toggle } from 'flowbite-svelte';
+  import {
+    DYNAMIC_TAGS,
+    DEFAULT_ANKI_TAGS,
+    testConnection,
+    type ConnectionTestResult
+  } from '$lib/anki-connect';
 
   let disabled = $derived(!$settings.ankiConnectSettings.enabled);
 
   let enabled = $state($settings.ankiConnectSettings.enabled);
+  let url = $state($settings.ankiConnectSettings.url);
   let cropImage = $state($settings.ankiConnectSettings.cropImage);
   let grabSentence = $state($settings.ankiConnectSettings.grabSentence);
   let overwriteImage = $state($settings.ankiConnectSettings.overwriteImage);
@@ -17,14 +24,52 @@
   let widthField = $state($settings.ankiConnectSettings.widthField);
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
 
-  let triggerMethod = $state($settings.ankiConnectSettings.triggerMethod);
+  let ankiTags = $state($settings.ankiConnectSettings.tags);
+  let cardMode = $state($settings.ankiConnectSettings.cardMode);
+  let deckName = $state($settings.ankiConnectSettings.deckName);
+  let modelName = $state($settings.ankiConnectSettings.modelName);
 
-  const triggerOptions = [
-    { value: 'rightClick', name: 'Right click (long press on mobile)' },
-    { value: 'doubleTap', name: 'Double tap' },
-    { value: 'both', name: 'Both' },
-    { value: 'neither', name: 'Neither' }
+  let isCreateMode = $derived(cardMode === 'create');
+
+  const cardModeOptions = [
+    { value: 'update', name: 'Update last card (within 5 min)' },
+    { value: 'create', name: 'Create new card' }
   ];
+
+  let doubleTapEnabled = $state(
+    $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
+      $settings.ankiConnectSettings.triggerMethod === 'both'
+  );
+
+  // Connection test state
+  let connectionStatus = $state<ConnectionTestResult | null>(null);
+  let isTesting = $state(false);
+
+  async function handleTestConnection() {
+    isTesting = true;
+    connectionStatus = null;
+    try {
+      connectionStatus = await testConnection(url || undefined);
+    } finally {
+      isTesting = false;
+    }
+  }
+
+  function updateDoubleTap(enabled: boolean) {
+    // Map toggle to triggerMethod for backwards compatibility
+    updateAnkiSetting('triggerMethod', enabled ? 'doubleTap' : 'neither');
+  }
+
+  function insertTag(tag: string) {
+    ankiTags = ankiTags ? `${ankiTags} ${tag}`.trim() : tag;
+    updateAnkiSetting('tags', ankiTags);
+  }
+
+  function insertDeckTag(tag: string) {
+    // For deck names, append without spaces (use :: for hierarchy)
+    deckName = deckName ? `${deckName}${tag}` : tag;
+    updateAnkiSetting('deckName', deckName);
+  }
 </script>
 
 <AccordionItem>
@@ -45,6 +90,51 @@
       >
     </div>
     <div>
+      <Label class="text-gray-900 dark:text-white">AnkiConnect URL:</Label>
+      <div class="flex gap-2">
+        <Input
+          {disabled}
+          type="text"
+          placeholder="http://127.0.0.1:8765"
+          bind:value={url}
+          onchange={() => {
+            updateAnkiSetting('url', url);
+            connectionStatus = null;
+          }}
+          class="flex-1"
+        />
+        <Button
+          {disabled}
+          size="sm"
+          color="alternative"
+          onclick={handleTestConnection}
+          class="whitespace-nowrap"
+        >
+          {#if isTesting}
+            Testing...
+          {:else}
+            Test
+          {/if}
+        </Button>
+      </div>
+      {#if connectionStatus}
+        <div
+          class="mt-2 rounded p-2 text-sm {connectionStatus.success
+            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}"
+        >
+          {connectionStatus.message}
+          {#if !connectionStatus.success}
+            <span class="mt-1 block text-xs opacity-75"
+              >Check browser console (F12) for more details.</span
+            >
+          {/if}
+        </div>
+      {:else}
+        <Helper class="mt-1">Use a custom URL to connect to AnkiConnect on another device</Helper>
+      {/if}
+    </div>
+    <div>
       <Label class="text-gray-900 dark:text-white">Picture field:</Label>
       <Input
         {disabled}
@@ -61,13 +151,15 @@
         bind:value={sentenceField}
         onchange={() => updateAnkiSetting('sentenceField', sentenceField)}
       />
+      <Helper class="mt-1">Field for the full sentence context</Helper>
     </div>
     <div>
       <Toggle
         {disabled}
         bind:checked={cropImage}
-        onchange={() => updateAnkiSetting('cropImage', cropImage)}>Crop image</Toggle
+        onchange={() => updateAnkiSetting('cropImage', cropImage)}>Preset crop to text box</Toggle
       >
+      <Helper class="mt-1">Ideal for quick single-panel captures</Helper>
     </div>
     <div>
       <Toggle
@@ -84,14 +176,91 @@
       >
     </div>
     <div>
+      <Toggle
+        {disabled}
+        bind:checked={doubleTapEnabled}
+        onchange={() => updateDoubleTap(doubleTapEnabled)}>Double-tap to capture</Toggle
+      >
+      <Helper class="mt-1">Right-click any text box for more options</Helper>
+    </div>
+    <div>
       <Label class="text-gray-900 dark:text-white">
-        Trigger method:
+        Card mode:
         <Select
-          onchange={() => updateAnkiSetting('triggerMethod', triggerMethod)}
-          items={triggerOptions}
-          bind:value={triggerMethod}
+          {disabled}
+          onchange={() => updateAnkiSetting('cardMode', cardMode)}
+          items={cardModeOptions}
+          bind:value={cardMode}
         />
       </Label>
+      <Helper class="mt-1">
+        {#if isCreateMode}
+          Creates a new card in the specified deck
+        {:else}
+          Updates the most recently created card (must be within 5 minutes)
+        {/if}
+      </Helper>
+    </div>
+    {#if isCreateMode}
+      <div>
+        <Label class="text-gray-900 dark:text-white">Deck name:</Label>
+        <Input
+          {disabled}
+          type="text"
+          placeholder="Default"
+          bind:value={deckName}
+          onchange={() => updateAnkiSetting('deckName', deckName)}
+        />
+        <div class="mt-2 flex flex-wrap gap-2">
+          {#each DYNAMIC_TAGS as { tag, description }}
+            <button
+              type="button"
+              {disabled}
+              onclick={() => insertDeckTag(tag)}
+              class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              title={description}
+            >
+              {tag}
+            </button>
+          {/each}
+        </div>
+        <Helper class="mt-1">Supports dynamic tags. Use :: for subdecks.</Helper>
+      </div>
+      <div>
+        <Label class="text-gray-900 dark:text-white">Note type (model):</Label>
+        <Input
+          {disabled}
+          type="text"
+          placeholder="Basic"
+          bind:value={modelName}
+          onchange={() => updateAnkiSetting('modelName', modelName)}
+        />
+        <Helper class="mt-1">The note type to use for new cards (e.g., Basic, Cloze)</Helper>
+      </div>
+    {/if}
+    <div>
+      <Label class="text-gray-900 dark:text-white">Tags:</Label>
+      <Input
+        {disabled}
+        type="text"
+        placeholder={DEFAULT_ANKI_TAGS}
+        bind:value={ankiTags}
+        onchange={() => updateAnkiSetting('tags', ankiTags)}
+      />
+      <div class="mt-2 flex flex-wrap gap-2">
+        {#each DYNAMIC_TAGS as { tag, description }}
+          <button
+            type="button"
+            {disabled}
+            onclick={() => insertTag(tag)}
+            class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            title={description}
+          >
+            {tag}
+          </button>
+        {/each}
+      </div>
+      <Helper class="mt-1">Click to insert. Spaces in names become underscores.</Helper>
     </div>
     <hr />
     <h4 class="text-gray-900 dark:text-white">Quality Settings</h4>

@@ -2,9 +2,21 @@
 // Combines functionality from universal-download-worker and upload-worker
 // Handles all cloud providers: Google Drive, WebDAV, MEGA
 
-import { Uint8ArrayReader, Uint8ArrayWriter, ZipReader, getMimeType } from '@zip.js/zip.js';
+import {
+  Uint8ArrayReader,
+  Uint8ArrayWriter,
+  ZipReader,
+  getMimeType,
+  BlobReader
+} from '@zip.js/zip.js';
 import { File as MegaFile, Storage } from 'megajs';
-import { compressVolume, type MokuroMetadata } from '$lib/util/compress-volume';
+import {
+  compressVolume,
+  compressVolumeFromDb,
+  type MokuroMetadata
+} from '$lib/util/compress-volume';
+import { uploadToWebDAV } from '$lib/util/sync/providers/webdav/webdav-upload';
+import { matchFileToVolume } from '$lib/import/archive-extraction';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -52,8 +64,33 @@ interface DecompressOnlyMessage {
   mode: 'decompress-only';
   fileId: string;
   fileName: string;
-  blob: ArrayBuffer;
+  blob: Blob; // File/Blob for streaming - avoids loading entire file into ArrayBuffer
   metadata?: VolumeMetadata;
+  /** Optional filter - only extract files matching these extensions or paths */
+  filter?: {
+    /** Extract only files with these extensions (e.g., ['mokuro']) */
+    extensions?: string[];
+    /** Extract only files matching these path prefixes */
+    pathPrefixes?: string[];
+  };
+  /** If true, return file list without extracting content (for planning extraction) */
+  listOnly?: boolean;
+  /** If true, list ALL files but only extract content for files matching filter */
+  listAllExtractFiltered?: boolean;
+}
+
+/** Message for streaming extraction - extracts one volume at a time */
+interface StreamExtractMessage {
+  mode: 'stream-extract';
+  fileId: string;
+  fileName: string;
+  blob: Blob;
+  /** Volume definitions - which path prefixes belong to which volume */
+  volumes: Array<{
+    id: string;
+    pathPrefix: string;
+    mokuroPath?: string; // If known, extract this mokuro file for this volume
+  }>;
 }
 
 // Upload messages
@@ -75,11 +112,24 @@ interface CompressAndReturnMessage {
   downloadFilename?: string;
 }
 
+/** Compress from IndexedDB and optionally upload to cloud provider */
+interface CompressFromDbMessage {
+  mode: 'compress-from-db';
+  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export (return data)
+  volumeUuid: string;
+  volumeTitle: string;
+  seriesTitle: string;
+  credentials?: ProviderCredentials;
+  downloadFilename?: string; // For local export
+}
+
 type WorkerMessage =
   | DownloadAndDecompressMessage
   | DecompressOnlyMessage
+  | StreamExtractMessage
   | CompressAndUploadMessage
-  | CompressAndReturnMessage;
+  | CompressAndReturnMessage
+  | CompressFromDbMessage;
 
 // Progress messages
 interface DownloadProgressMessage {
@@ -191,7 +241,13 @@ async function downloadFromWebDAV(
   password: string,
   onProgress: (loaded: number, total: number) => void
 ): Promise<ArrayBuffer> {
-  const fullUrl = `${url}${fileId}`;
+  // Encode each path segment to handle special chars like # → %23
+  // Without this, # is treated as URL fragment and stripped
+  const encodedPath = fileId
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const fullUrl = `${url}${encodedPath}`;
   const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
   const response = await fetch(fullUrl, {
@@ -236,16 +292,12 @@ async function downloadFromWebDAV(
   // Always send final progress update at 100%
   onProgress(receivedLength, contentLength || receivedLength);
 
-  // Combine chunks into a single ArrayBuffer
-  const combinedLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-  const combined = new Uint8Array(combinedLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return combined.buffer;
+  // Use Blob to combine chunks - avoids allocating a second copy of the entire file
+  const blob = new Blob(chunks as BlobPart[]);
+  const buffer = await blob.arrayBuffer();
+  // Clear chunks array to free memory
+  chunks.length = 0;
+  return buffer;
 }
 
 /**
@@ -282,17 +334,13 @@ async function downloadFromMega(
           onProgress(loaded, totalSize);
         });
 
-        stream.on('end', () => {
-          // Combine all chunks into a single ArrayBuffer
-          const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-          const combined = new Uint8Array(totalLength);
-          let offset = 0;
-          for (const chunk of chunks) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
-          }
-
-          resolve(combined.buffer);
+        stream.on('end', async () => {
+          // Use Blob to combine chunks - avoids allocating a second copy of the entire file
+          const blob = new Blob(chunks as BlobPart[]);
+          const buffer = await blob.arrayBuffer();
+          // Clear chunks array to free memory before resolving
+          chunks.length = 0;
+          resolve(buffer);
         });
 
         stream.on('error', (error: Error) => {
@@ -309,42 +357,188 @@ async function downloadFromMega(
   });
 }
 
-/**
- * Decompress a CBZ file from ArrayBuffer into entries
- * Keeps everything in memory without creating intermediate Blob objects
- */
-async function decompressCbz(arrayBuffer: ArrayBuffer): Promise<DecompressedEntry[]> {
-  console.log(`Worker: Decompressing CBZ...`);
+/** Filter options for selective extraction */
+interface ExtractFilter {
+  extensions?: string[];
+  pathPrefixes?: string[];
+}
 
-  // Create a zip reader directly from ArrayBuffer
-  const zipReader = new ZipReader(new Uint8ArrayReader(new Uint8Array(arrayBuffer)));
+/**
+ * System files and directories that should never be extracted.
+ * These are commonly found in archives created on various operating systems.
+ */
+const EXCLUDED_SYSTEM_PATTERNS = new Set([
+  // macOS
+  '__MACOSX',
+  '.DS_Store',
+  '.Trashes',
+  '.Spotlight-V100',
+  '.fseventsd',
+  '.TemporaryItems',
+  '.Trash',
+  // Windows
+  'System Volume Information',
+  '$RECYCLE.BIN',
+  'Thumbs.db',
+  'desktop.ini',
+  'Desktop.ini',
+  'RECYCLER',
+  'RECYCLED',
+  // Linux
+  '.Trash-1000',
+  '.thumbnails',
+  '.directory',
+  // Cloud storage
+  '.dropbox',
+  '.dropbox.cache',
+  // Version control
+  '.git',
+  '.svn'
+]);
+
+const EXCLUDED_EXTENSIONS = new Set(['bak', 'tmp', 'temp']);
+
+/**
+ * Check if a path contains any system files/directories that should be excluded.
+ */
+function isSystemFile(path: string): boolean {
+  const normalizedPath = path.replace(/\\/g, '/');
+  const segments = normalizedPath.split('/');
+
+  for (const segment of segments) {
+    if (!segment) continue;
+    if (segment.startsWith('._')) return true;
+    if (segment.endsWith('~')) return true;
+    if (EXCLUDED_SYSTEM_PATTERNS.has(segment)) return true;
+  }
+
+  const filename = segments[segments.length - 1] || '';
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot >= 0) {
+    const ext = filename.slice(lastDot + 1).toLowerCase();
+    if (EXCLUDED_EXTENSIONS.has(ext)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if a filename matches the filter criteria
+ */
+function matchesFilter(filename: string, filter?: ExtractFilter): boolean {
+  if (!filter) return true;
+
+  // Check extension filter
+  if (filter.extensions && filter.extensions.length > 0) {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    if (filter.extensions.includes(ext)) return true;
+  }
+
+  // Check path prefix filter
+  if (filter.pathPrefixes && filter.pathPrefixes.length > 0) {
+    for (const prefix of filter.pathPrefixes) {
+      if (filename.startsWith(prefix + '/') || filename === prefix) return true;
+    }
+  }
+
+  // If both filters are specified, match either; if only one, that one must match
+  if (filter.extensions?.length && filter.pathPrefixes?.length) {
+    return false; // Neither matched
+  }
+  if (filter.extensions?.length) return false; // Extension filter didn't match
+  if (filter.pathPrefixes?.length) return false; // Path filter didn't match
+
+  return true; // No filters = match all
+}
+
+/**
+ * Decompress a CBZ file from Blob or ArrayBuffer into entries
+ * Uses BlobReader for streaming - handles large files (>2GB) without loading into ArrayBuffer
+ * Optional filter allows extracting only specific files (e.g., mokuro files first, then images per volume)
+ * If listOnly is true, returns file list without extracting content (for planning extraction)
+ */
+// Concurrency limit for parallel extraction - higher = faster but more memory
+const EXTRACT_CONCURRENCY = 16;
+
+async function decompressCbz(
+  data: Blob | ArrayBuffer,
+  filter?: ExtractFilter,
+  listOnly?: boolean,
+  listAllExtractFiltered?: boolean
+): Promise<DecompressedEntry[]> {
+  // Convert ArrayBuffer to Blob if needed (for downloaded data)
+  const blob = data instanceof Blob ? data : new Blob([data]);
+
+  // Use BlobReader for streaming - doesn't require loading entire file into memory at once
+  const zipReader = new ZipReader(new BlobReader(blob));
 
   // Get all entries from the zip file
   const entries = await zipReader.getEntries();
 
-  // Process each entry
-  const decompressedEntries: DecompressedEntry[] = [];
+  // Categorize entries
+  const toExtract: { entry: (typeof entries)[0]; filename: string }[] = [];
+  const toList: string[] = [];
 
   for (const entry of entries) {
-    // Skip directories
     if (entry.directory) continue;
+    // Skip system files (macOS, Windows, Linux metadata)
+    if (isSystemFile(entry.filename)) continue;
 
-    try {
-      // Decompress directly to Uint8Array without creating intermediate Blob
-      const uint8Array = await entry.getData!(new Uint8ArrayWriter());
+    const matchesFilterCriteria = matchesFilter(entry.filename, filter);
 
-      decompressedEntries.push({
-        filename: entry.filename,
-        data: uint8Array.buffer as ArrayBuffer
-      });
-    } catch (entryError) {
-      console.error(`Worker: Error extracting entry ${entry.filename}:`, entryError);
+    if (!listAllExtractFiltered && !matchesFilterCriteria) {
+      continue;
+    }
+
+    if (listOnly) {
+      toList.push(entry.filename);
+    } else if (listAllExtractFiltered) {
+      if (matchesFilterCriteria) {
+        toExtract.push({ entry, filename: entry.filename });
+      } else {
+        toList.push(entry.filename);
+      }
+    } else {
+      toExtract.push({ entry, filename: entry.filename });
+    }
+  }
+
+  // Build results
+  const decompressedEntries: DecompressedEntry[] = [];
+
+  // Add list-only entries (no extraction needed)
+  for (const filename of toList) {
+    decompressedEntries.push({ filename, data: new ArrayBuffer(0) });
+  }
+
+  // Extract entries in parallel batches
+  if (toExtract.length > 0) {
+    // Process in batches for controlled concurrency
+    for (let i = 0; i < toExtract.length; i += EXTRACT_CONCURRENCY) {
+      const batch = toExtract.slice(i, i + EXTRACT_CONCURRENCY);
+
+      const results = await Promise.all(
+        batch.map(async ({ entry, filename }) => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const uint8Array = await (entry as any).getData(new Uint8ArrayWriter());
+            return { filename, data: uint8Array.buffer as ArrayBuffer };
+          } catch (err) {
+            console.error(`Worker: Error extracting ${filename}:`, err);
+            return null;
+          }
+        })
+      );
+
+      for (const result of results) {
+        if (result) {
+          decompressedEntries.push(result);
+        }
+      }
     }
   }
 
   await zipReader.close();
-
-  console.log(`Worker: Decompressed ${decompressedEntries.length} files`);
   return decompressedEntries;
 }
 
@@ -357,7 +551,7 @@ async function decompressCbz(arrayBuffer: ArrayBuffer): Promise<DecompressedEntr
  * Progress: 0-100% of upload phase
  */
 async function uploadToGoogleDrive(
-  cbzData: Uint8Array,
+  cbzBlob: Blob,
   filename: string,
   seriesFolderId: string,
   accessToken: string,
@@ -419,100 +613,9 @@ async function uploadToGoogleDrive(
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
-    // Convert Uint8Array to Blob to allow browser to stream the data
-    // instead of holding the entire buffer in memory until request completes
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
-    xhr.send(blob);
+    // Send Blob directly - browser streams the data
+    xhr.send(cbzBlob);
   });
-}
-
-/**
- * Upload to WebDAV server
- * Progress: 0-100% of upload phase
- */
-async function uploadToWebDAV(
-  cbzData: Uint8Array,
-  filename: string,
-  seriesTitle: string,
-  serverUrl: string,
-  username: string,
-  password: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<string> {
-  console.log(`Worker: Uploading ${filename} to WebDAV...`);
-
-  // Ensure folder exists
-  const seriesFolderPath = `mokuro-reader/${seriesTitle}`;
-  await createWebDAVFolderRecursive(seriesFolderPath, serverUrl, username, password);
-
-  // Upload file
-  const filePath = `/${seriesFolderPath}/${filename}`;
-  const fileUrl = `${serverUrl}${filePath}`;
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', fileUrl);
-    xhr.setRequestHeader('Authorization', authHeader);
-    xhr.setRequestHeader('Content-Type', 'application/x-cbz');
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        console.log(`Worker: WebDAV upload complete`);
-        resolve(filePath); // Return path as "file ID"
-      } else {
-        reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
-    xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
-
-    // Convert Uint8Array to Blob to allow browser to stream the data
-    // instead of holding the entire buffer in memory until request completes
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
-    xhr.send(blob);
-  });
-}
-
-/**
- * Helper: Create WebDAV folder recursively
- */
-async function createWebDAVFolderRecursive(
-  path: string,
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<void> {
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-  const parts = path.split('/').filter((p) => p);
-
-  let currentPath = '';
-  for (const part of parts) {
-    currentPath += `/${part}`;
-    const folderUrl = `${serverUrl}${currentPath}`;
-
-    // Try to create folder (MKCOL)
-    try {
-      const response = await fetch(folderUrl, {
-        method: 'MKCOL',
-        headers: { Authorization: authHeader }
-      });
-
-      // 201 = created, 405 = already exists, both are OK
-      if (!response.ok && response.status !== 405) {
-        console.warn(`Failed to create folder ${currentPath}: ${response.status}`);
-      }
-    } catch (error) {
-      console.warn(`Error creating folder ${currentPath}:`, error);
-    }
-  }
 }
 
 /**
@@ -520,7 +623,7 @@ async function createWebDAVFolderRecursive(
  * Progress: 0-100% of upload phase
  */
 async function uploadToMEGA(
-  cbzData: Uint8Array,
+  cbzBlob: Blob,
   filename: string,
   seriesTitle: string,
   email: string,
@@ -561,15 +664,13 @@ async function uploadToMEGA(
   }
 
   // Upload file to series folder using chunked streaming to avoid OOM
-  console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzData.length} bytes`);
+  console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzBlob.size} bytes`);
 
   try {
-    // Convert to Blob to enable chunked streaming (releases memory as chunks are processed)
-    const blob = new Blob([cbzData.buffer as ArrayBuffer], { type: 'application/x-cbz' });
     const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
     // Create upload stream without passing data - we'll write chunks manually
-    const uploadStream = seriesFolder.upload({ name: filename, size: blob.size });
+    const uploadStream = seriesFolder.upload({ name: filename, size: cbzBlob.size });
 
     // Wait for upload to complete while streaming chunks
     await new Promise<void>((resolve, reject) => {
@@ -579,7 +680,7 @@ async function uploadToMEGA(
         // megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
         // Use bytesUploaded for actual upload progress to server
         const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-        const total = stats?.bytesTotal || stats?.total || blob.size;
+        const total = stats?.bytesTotal || stats?.total || cbzBlob.size;
         onProgress(uploaded, total);
       });
 
@@ -595,12 +696,12 @@ async function uploadToMEGA(
 
       // Stream chunks to MEGA
       const writeNextChunk = async () => {
-        if (offset >= blob.size) {
+        if (offset >= cbzBlob.size) {
           uploadStream.end();
           return;
         }
 
-        const chunk = blob.slice(offset, Math.min(offset + CHUNK_SIZE, blob.size));
+        const chunk = cbzBlob.slice(offset, Math.min(offset + CHUNK_SIZE, cbzBlob.size));
         const arrayBuffer = await chunk.arrayBuffer();
         uploadStream.write(new Uint8Array(arrayBuffer));
         offset += CHUNK_SIZE;
@@ -637,6 +738,13 @@ async function uploadToMEGA(
 
 ctx.addEventListener('message', async (event) => {
   const message = event.data as WorkerMessage;
+
+  // Guard against null/undefined messages (can happen during worker cleanup)
+  if (!message || !message.mode) {
+    console.warn('Worker: Received invalid message (null or missing mode)');
+    return;
+  }
+
   console.log('Worker: Received message', message.mode);
 
   try {
@@ -723,11 +831,13 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Sent complete message for ${fileName}`);
     } else if (message.mode === 'decompress-only') {
       // ========== DECOMPRESS ONLY MODE ==========
-      const { fileId, fileName, blob, metadata } = message;
-      console.log(`Worker: Received pre-downloaded data for ${fileName}`);
+      const { fileId, fileName, blob, metadata, filter, listOnly, listAllExtractFiltered } =
+        message;
 
-      // Decompress the ArrayBuffer
-      const entries = await decompressCbz(blob);
+      // Decompress with optional filter (for selective extraction)
+      // If listOnly, returns file list without extracting content
+      // If listAllExtractFiltered, lists all files but only extracts content for filtered ones
+      const entries = await decompressCbz(blob, filter, listOnly, listAllExtractFiltered);
 
       // Send completion message
       const completeMessage: DownloadCompleteMessage = {
@@ -744,6 +854,113 @@ ctx.addEventListener('message', async (event) => {
       ctx.postMessage(completeMessage, transferables);
 
       console.log(`Worker: Sent complete message for ${fileName}`);
+    } else if (message.mode === 'stream-extract') {
+      // ========== STREAM EXTRACT MODE ==========
+      // Extracts in parallel batches, sending each immediately to prevent memory exhaustion
+      const { fileId, fileName, blob, volumes } = message;
+
+      const zipReader = new ZipReader(new BlobReader(blob));
+      const entries = await zipReader.getEntries();
+
+      // Build a set of path prefixes for quick matching
+      const volumePrefixes = new Map<string, string>(); // prefix -> volumeId
+      for (const vol of volumes) {
+        volumePrefixes.set(vol.pathPrefix, vol.id);
+      }
+
+      // Categorize entries
+      const toExtract: { entry: (typeof entries)[0]; volumeId: string }[] = [];
+      const IMAGE_EXTS = new Set([
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'tif',
+        'tiff',
+        'jxl'
+      ]);
+
+      for (const entry of entries) {
+        if (entry.directory) continue;
+        // Skip system files (macOS, Windows, Linux metadata)
+        if (isSystemFile(entry.filename)) continue;
+
+        // Match file to volume using shared logic
+        const matchedVolumeId = matchFileToVolume(entry.filename, volumePrefixes);
+        if (!matchedVolumeId) continue;
+
+        const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
+        if (!IMAGE_EXTS.has(ext)) continue;
+
+        toExtract.push({ entry, volumeId: matchedVolumeId });
+      }
+
+      // Extract in parallel batches
+      let extracted = 0;
+      const totalFiles = toExtract.length;
+      const skipped = entries.filter((e) => !e.directory).length - toExtract.length;
+
+      for (let i = 0; i < toExtract.length; i += EXTRACT_CONCURRENCY) {
+        const batch = toExtract.slice(i, i + EXTRACT_CONCURRENCY);
+
+        const results = await Promise.all(
+          batch.map(async ({ entry, volumeId }) => {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const uint8Array = await (entry as any).getData(new Uint8ArrayWriter());
+              return { filename: entry.filename, data: uint8Array.buffer as ArrayBuffer, volumeId };
+            } catch (err) {
+              console.error(`Worker: Error extracting ${entry.filename}:`, err);
+              return null;
+            }
+          })
+        );
+
+        // Send each result immediately with transferable
+        for (const result of results) {
+          if (result) {
+            ctx.postMessage(
+              {
+                type: 'stream-entry',
+                fileId,
+                volumeId: result.volumeId,
+                entry: {
+                  filename: result.filename,
+                  data: result.data
+                }
+              },
+              [result.data]
+            );
+            extracted++;
+          }
+        }
+
+        // Progress update after each batch
+        ctx.postMessage({
+          type: 'progress',
+          fileId,
+          loaded: extracted,
+          total: totalFiles
+        });
+      }
+
+      await zipReader.close();
+
+      // Send completion message
+      ctx.postMessage({
+        type: 'stream-complete',
+        fileId,
+        fileName,
+        extracted,
+        skipped
+      });
+
+      console.log(
+        `Worker: Stream extraction complete - ${extracted} files extracted, ${skipped} skipped`
+      );
     } else if (message.mode === 'compress-and-upload') {
       // ========== COMPRESS AND UPLOAD MODE ==========
       const { provider, volumeTitle, seriesTitle, metadata, filesData, credentials } = message;
@@ -760,7 +977,8 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing ${volumeTitle}...`);
       let compressionProgress = 0;
 
-      const cbzData = await compressVolume(
+      // compressVolume returns a Blob (uses BlobWriter to avoid memory allocation issues)
+      const cbzBlob = await compressVolume(
         volumeTitle,
         metadata,
         filesDataUint8,
@@ -775,7 +993,7 @@ ctx.addEventListener('message', async (event) => {
         }
       );
 
-      console.log(`Worker: Compressed ${volumeTitle} (${cbzData.length} bytes)`);
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 
       // Phase 2: Upload (0-100%)
       let fileId: string;
@@ -786,7 +1004,7 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing Google Drive access token or series folder ID');
         }
         fileId = await uploadToGoogleDrive(
-          cbzData,
+          cbzBlob,
           filename,
           credentials.seriesFolderId,
           credentials.accessToken,
@@ -805,12 +1023,12 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing WebDAV URL');
         }
         fileId = await uploadToWebDAV(
-          cbzData,
-          filename,
-          seriesTitle,
           credentials.webdavUrl,
           credentials.webdavUsername ?? '',
           credentials.webdavPassword ?? '',
+          seriesTitle,
+          filename,
+          cbzBlob,
           (loaded, total) => {
             const uploadProgress = (loaded / total) * 100; // 0-100% upload
             const progressMessage: UploadProgressMessage = {
@@ -826,7 +1044,7 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing MEGA credentials');
         }
         fileId = await uploadToMEGA(
-          cbzData,
+          cbzBlob,
           filename,
           seriesTitle,
           credentials.megaEmail,
@@ -869,7 +1087,8 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing ${volumeTitle}...`);
       let compressionProgress = 0;
 
-      const cbzData = await compressVolume(
+      // compressVolume returns a Blob (uses BlobWriter to avoid memory allocation issues)
+      const cbzBlob = await compressVolume(
         volumeTitle,
         metadata,
         filesDataUint8,
@@ -884,8 +1103,12 @@ ctx.addEventListener('message', async (event) => {
         }
       );
 
-      console.log(`Worker: Compressed ${volumeTitle} (${cbzData.length} bytes)`);
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
       console.log(`Worker: Returning compressed data for download`);
+
+      // Convert Blob to ArrayBuffer for transfer back to main thread
+      const cbzArrayBuffer = await cbzBlob.arrayBuffer();
+      const cbzData = new Uint8Array(cbzArrayBuffer);
 
       // Send completion message with Transferable Object (zero-copy)
       const completeMessage: UploadCompleteMessage = {
@@ -895,6 +1118,116 @@ ctx.addEventListener('message', async (event) => {
       };
       ctx.postMessage(completeMessage, [cbzData.buffer]); // Transfer ownership
       console.log(`Worker: Export complete for ${volumeTitle}`);
+    } else if (message.mode === 'compress-from-db') {
+      // ========== COMPRESS FROM DB MODE ==========
+      // Uses shared compressVolumeFromDb utility which:
+      // 1. Reads files one at a time from IndexedDB
+      // 2. Streams directly to zip
+      // 3. Releases references immediately to prevent memory issues
+      const { provider, volumeUuid, volumeTitle, seriesTitle, credentials, downloadFilename } =
+        message;
+
+      console.log(`Worker: Compressing volume ${volumeTitle} from IndexedDB...`);
+
+      // Compress using shared utility (handles streaming from IndexedDB)
+      const cbzBlob = await compressVolumeFromDb(volumeUuid, (completed, total) => {
+        const progressMessage: UploadProgressMessage = {
+          type: 'progress',
+          phase: 'compressing',
+          progress: (completed / total) * 100
+        };
+        ctx.postMessage(progressMessage);
+      });
+
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
+
+      // Handle based on provider
+      if (provider === null) {
+        // Local export - return blob
+        console.log(`Worker: Returning compressed data for download`);
+        const cbzArrayBuffer = await cbzBlob.arrayBuffer();
+        const cbzData = new Uint8Array(cbzArrayBuffer);
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          data: cbzData,
+          filename: downloadFilename || `${volumeTitle}.cbz`
+        };
+        ctx.postMessage(completeMessage, [cbzData.buffer]);
+        console.log(`Worker: Export complete for ${volumeTitle}`);
+      } else {
+        // Upload to cloud provider
+        let fileId: string;
+        const filename = `${volumeTitle}.cbz`;
+
+        if (provider === 'google-drive') {
+          if (!credentials?.accessToken || !credentials?.seriesFolderId) {
+            throw new Error('Missing Google Drive access token or series folder ID');
+          }
+          fileId = await uploadToGoogleDrive(
+            cbzBlob,
+            filename,
+            credentials.seriesFolderId,
+            credentials.accessToken,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'webdav') {
+          // Use shared WebDAV upload utility
+          if (!credentials?.webdavUrl) {
+            throw new Error('Missing WebDAV URL');
+          }
+          fileId = await uploadToWebDAV(
+            credentials.webdavUrl,
+            credentials.webdavUsername ?? '',
+            credentials.webdavPassword ?? '',
+            seriesTitle,
+            filename,
+            cbzBlob,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'mega') {
+          if (!credentials?.megaEmail || !credentials?.megaPassword) {
+            throw new Error('Missing MEGA credentials');
+          }
+          fileId = await uploadToMEGA(
+            cbzBlob,
+            filename,
+            seriesTitle,
+            credentials.megaEmail,
+            credentials.megaPassword,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else {
+          throw new Error(`Unsupported provider: ${provider}`);
+        }
+
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          fileId
+        };
+        ctx.postMessage(completeMessage);
+        console.log(`Worker: Backup complete for ${volumeTitle}`);
+      }
     } else {
       throw new Error(`Unknown mode: ${(message as any).mode}`);
     }

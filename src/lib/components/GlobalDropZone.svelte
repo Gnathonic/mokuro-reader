@@ -1,9 +1,16 @@
 <script lang="ts">
-  import { processFiles, scanFiles } from '$lib/upload';
+  import { scanFiles } from '$lib/upload';
+  import { importFiles } from '$lib/import';
   import { showSnackbar } from '$lib/util/snackbar';
+  import {
+    showImportPreparing,
+    updateImportPreparing,
+    closeImportPreparing
+  } from '$lib/util/modals';
 
   let isDragging = $state(false);
   let dragCounter = 0; // Track enter/leave for nested elements
+  let isImporting = false; // Prevent concurrent imports
 
   function handleDragEnter(event: DragEvent) {
     event.preventDefault();
@@ -40,6 +47,17 @@
       return;
     }
 
+    // Prevent concurrent imports - ignore drops while one is in progress
+    if (isImporting) {
+      showSnackbar('Import already in progress', 2000);
+      return;
+    }
+
+    isImporting = true;
+
+    // Show preparing modal immediately
+    showImportPreparing('scanning');
+
     // Collect all entries synchronously - DataTransfer is only valid during the event
     // Once we await, subsequent items may become inaccessible
     const directoryEntries: FileSystemEntry[] = [];
@@ -61,10 +79,17 @@
       }
     }
 
+    // Update with direct files count
+    if (directFiles.length > 0) {
+      updateImportPreparing({ filesScanned: directFiles.length });
+    }
+
     // Now process directories asynchronously (safe since we already have the entries)
     const filePromises: Promise<File | undefined>[] = [];
     for (const entry of directoryEntries) {
       await scanFiles(entry, filePromises);
+      // Update count as we scan
+      updateImportPreparing({ filesScanned: directFiles.length + filePromises.length });
     }
 
     // Combine direct files with scanned files
@@ -77,17 +102,28 @@
     }
 
     if (files.length === 0) {
+      closeImportPreparing();
+      isImporting = false;
       showSnackbar('No supported files found', 3000);
       return;
     }
 
-    showSnackbar(`Importing ${files.length} file(s)...`, 3000);
+    // Move to analyzing phase
+    updateImportPreparing({ phase: 'analyzing', totalFiles: files.length });
 
     try {
-      await processFiles(files);
+      // Import files with preparation callback
+      await importFiles(files, {
+        onPreparing: (volumesFound) => {
+          updateImportPreparing({ phase: 'preparing', volumesFound });
+        }
+      });
     } catch (error) {
       console.error('Error processing dropped files:', error);
       showSnackbar('Failed to import files', 3000);
+    } finally {
+      closeImportPreparing();
+      isImporting = false;
     }
   }
 </script>

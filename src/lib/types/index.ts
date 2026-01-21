@@ -29,6 +29,11 @@ export interface VolumeMetadata {
   thumbnail_width?: number;
   thumbnail_height?: number;
 
+  // Number of missing pages that were replaced with placeholders during import
+  missing_pages?: number;
+  // Paths of pages that were replaced with placeholders (for forced OCR visibility)
+  missing_page_paths?: string[];
+
   // Placeholder fields for cloud-only volumes (not yet downloaded locally)
   isPlaceholder?: boolean;
 

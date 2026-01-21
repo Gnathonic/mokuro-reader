@@ -1,0 +1,19 @@
+{
+  "count": 2,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "vol01",
+      "imageOnly": false,
+      "fileCount": 2
+    },
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "vol02",
+      "imageOnly": false,
+      "fileCount": 2
+    }
+  ]
+}

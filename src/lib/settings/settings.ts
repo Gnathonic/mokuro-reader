@@ -19,12 +19,7 @@ export type FontSize =
   | '48'
   | '60';
 
-export type ZoomModes =
-  | 'zoomFitToScreen'
-  | 'zoomFitToWidth'
-  | 'zoomOriginal'
-  | 'keepZoom'
-  | 'keepZoomStart';
+export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 'keepZoom';
 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
 export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
@@ -33,6 +28,7 @@ export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 's
 
 export type AnkiConnectSettings = {
   enabled: boolean;
+  url: string;
   pictureField: string;
   sentenceField: string;
   heightField: number;
@@ -41,7 +37,11 @@ export type AnkiConnectSettings = {
   cropImage: boolean;
   overwriteImage: boolean;
   grabSentence: boolean;
-  triggerMethod: 'rightClick' | 'doubleTap' | 'both';
+  triggerMethod: 'rightClick' | 'doubleTap' | 'both' | 'neither';
+  tags: string;
+  cardMode: 'update' | 'create';
+  deckName: string;
+  modelName: string;
 };
 
 export type TimeSchedule = {
@@ -98,6 +98,7 @@ export type Settings = {
   continuousScroll: boolean;
   continuousZoomDefault: ContinuousZoomMode;
   scrollSnap: boolean;
+  textBoxContextMenu: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
   catalogSettings: CatalogSettings;
@@ -152,6 +153,7 @@ const defaultSettings: Settings = {
   continuousScroll: false,
   continuousZoomDefault: 'zoomFitToWidth',
   scrollSnap: true,
+  textBoxContextMenu: true,
   volumeDefaults: {
     singlePageView: 'auto',
     rightToLeft: true,
@@ -159,15 +161,20 @@ const defaultSettings: Settings = {
   },
   ankiConnectSettings: {
     enabled: false,
+    url: 'http://127.0.0.1:8765',
     cropImage: false,
-    grabSentence: false,
+    grabSentence: true,
     overwriteImage: true,
     pictureField: 'Picture',
     sentenceField: 'Sentence',
     heightField: 0,
     widthField: 0,
     qualityField: 1,
-    triggerMethod: 'both'
+    triggerMethod: 'both',
+    tags: '{series}',
+    cardMode: 'update',
+    deckName: 'Default',
+    modelName: 'Basic'
   },
   catalogSettings: {
     stackingPreset: 'default',

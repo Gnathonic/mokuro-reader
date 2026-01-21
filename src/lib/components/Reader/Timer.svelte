@@ -9,12 +9,14 @@
   import { derived } from 'svelte/store';
 
   interface Props {
-    count: number | undefined;
     volumeId: string;
     visible?: boolean;
   }
 
-  let { count = $bindable(), volumeId, visible = true }: Props = $props();
+  let { volumeId, visible = true }: Props = $props();
+
+  // Internal state for the timer interval ID
+  let count: number | undefined = $state(undefined);
 
   // Local volumeStats to avoid circular dependency with currentVolume
   const volumeStats = derived(
@@ -102,12 +104,8 @@
       }
     });
 
-    // If user is already active when Timer mounts (e.g., from volume navigation),
-    // start the timer immediately to avoid the race condition where recordActivity()
-    // was called before callbacks were initialized
-    if (get(activityTracker.active)) {
-      startTimer();
-    }
+    // Start timer immediately on volume load
+    activityTracker.recordActivity();
 
     return () => {
       stopTimer();

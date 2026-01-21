@@ -29,6 +29,8 @@
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
+  import TextBoxContextMenu from './TextBoxContextMenu.svelte';
+  import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
@@ -36,6 +38,7 @@
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
   import Cropper from './Cropper.svelte';
+  import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
@@ -50,9 +53,10 @@
   // TODO: Refactor this whole mess
   interface Props {
     volumeSettings: VolumeSettings;
+    overlaysVisible?: boolean;
   }
 
-  let { volumeSettings: _volumeSettingsProp }: Props = $props();
+  let { volumeSettings: _volumeSettingsProp, overlaysVisible = $bindable(true) }: Props = $props();
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
@@ -66,6 +70,15 @@
 
   function mouseDown() {
     start = new Date();
+  }
+
+  function handleOverlayToggle(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+
+    // Only toggle if clicking on blank space (not text boxes)
+    if (target.closest('.textBox')) return;
+
+    overlaysVisible = !overlaysVisible;
   }
 
   export function toggleHasCover(volumeId: string) {
@@ -466,6 +479,9 @@
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
+  // Set of missing page paths for checking if current page is a placeholder
+  let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
+
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
 
@@ -746,6 +762,67 @@
   let notificationKey = $state<string>('');
   let notificationTimeout: number | undefined = undefined;
 
+  // Context menu state (rendered outside panzoom for correct positioning)
+  interface ContextMenuData {
+    x: number;
+    y: number;
+    lines: string[];
+    imgElement: HTMLElement | null;
+    textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+  }
+  let showContextMenu = $state(false);
+  let contextMenuData = $state<ContextMenuData | null>(null);
+
+  function handleTextBoxContextMenu(data: ContextMenuData) {
+    contextMenuData = data;
+    showContextMenu = true;
+  }
+
+  function handleContextMenuAddToAnki(selection: string) {
+    if (!contextMenuData || !volume) return;
+
+    const volumeMetadata: VolumeMetadata = {
+      seriesTitle: volume.series_title,
+      volumeTitle: volume.volume_title
+    };
+
+    // Get the image URL from the element or current page
+    const imgElement = contextMenuData.imgElement;
+    let url: string | null = null;
+
+    if (imgElement) {
+      // Traverse up to find the MangaPage div with background-image
+      let current: HTMLElement | null = imgElement;
+      while (current) {
+        const bgImage = getComputedStyle(current).backgroundImage;
+        if (bgImage && bgImage !== 'none') {
+          const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+          if (match) {
+            url = match[1];
+            break;
+          }
+        }
+        current = current.parentElement;
+      }
+    }
+
+    if (url) {
+      const fullSentence = contextMenuData.lines.join(' ');
+      // Use selection for card front if provided, otherwise use full sentence
+      const cardFront = selection || fullSentence;
+      const ankiTags = $settings.ankiConnectSettings.tags || '';
+      showCropper(
+        url,
+        cardFront,
+        fullSentence,
+        ankiTags,
+        volumeMetadata,
+        undefined,
+        contextMenuData.textBox
+      );
+    }
+  }
+
   function showNotification(message: string, key: string) {
     notificationMessage = message;
     notificationKey = key;
@@ -811,15 +888,13 @@
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
-    // Rotate through: fitToScreen -> fitToWidth -> original -> keepZoom -> keepZoomStart -> fitToScreen
+    // Rotate through: fitToScreen -> fitToWidth -> original -> keepZoom -> fitToScreen
     if (currentMode === 'zoomFitToScreen') {
       nextMode = 'zoomFitToWidth';
     } else if (currentMode === 'zoomFitToWidth') {
       nextMode = 'zoomOriginal';
     } else if (currentMode === 'zoomOriginal') {
       nextMode = 'keepZoom';
-    } else if (currentMode === 'keepZoom') {
-      nextMode = 'keepZoomStart';
     } else {
       nextMode = 'zoomFitToScreen';
     }
@@ -831,8 +906,7 @@
       zoomFitToScreen: 'Fit to Screen',
       zoomFitToWidth: 'Fit to Width',
       zoomOriginal: 'Original Size',
-      keepZoom: 'Keep Zoom',
-      keepZoomStart: 'Keep Zoom, Pan to Top'
+      keepZoom: 'Keep Zoom'
     };
     showNotification(labels[nextMode], `zoommode-${nextMode}`);
   }
@@ -911,9 +985,14 @@
     {right}
     src1={imageCache.getFile(index)}
     src2={!useSinglePage ? imageCache.getFile(index + 1) : undefined}
+    volumeUuid={volume.volume_uuid}
+    page1={pages[index]}
+    page2={!useSinglePage ? pages[index + 1] : undefined}
+    visible={overlaysVisible}
   />
-  <SettingsButton />
+  <SettingsButton visible={overlaysVisible} />
   <Cropper />
+  <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
       <div class="z-10 flex flex-row items-center gap-5">
@@ -951,12 +1030,14 @@
       </div>
     </div>
   </Popover>
-  <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
-    {#key page}
-      <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
-      <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
-    {/key}
-  </button>
+  {#if overlaysVisible}
+    <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+      {#key page}
+        <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
+        <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
+      {/key}
+    </button>
+  {/if}
   {#if notificationMessage}
     {#key notificationKey}
       <div
@@ -1012,6 +1093,7 @@
           class="grid"
           style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
           ondblclick={onDoubleTap}
+          onclick={handleOverlayToggle}
           role="none"
           id="manga-panel"
         >
@@ -1029,6 +1111,8 @@
                     src={imageCache.getFile(index + 1)!}
                     cachedBitmap={cachedBitmap2}
                     volumeUuid={volume.volume_uuid}
+                    forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
+                    onContextMenu={handleTextBoxContextMenu}
                   />
                 {/if}
                 <MangaPage
@@ -1036,6 +1120,8 @@
                   src={imageCache.getFile(index)!}
                   cachedBitmap={cachedBitmap1}
                   volumeUuid={volume.volume_uuid}
+                  forceVisible={missingPagePaths.has(pages[index]?.img_path)}
+                  onContextMenu={handleTextBoxContextMenu}
                 />
               {:else}
                 <div class="flex h-screen w-screen items-center justify-center">
@@ -1062,6 +1148,20 @@
         class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
+    {/if}
+
+    {#if showContextMenu && contextMenuData}
+      <TextBoxContextMenu
+        x={contextMenuData.x}
+        y={contextMenuData.y}
+        lines={contextMenuData.lines}
+        ankiEnabled={$settings.ankiConnectSettings.enabled}
+        textBoxElement={contextMenuData.imgElement}
+        onCopy={() => {}}
+        onCopyRaw={() => {}}
+        onAddToAnki={handleContextMenuAddToAnki}
+        onClose={() => (showContextMenu = false)}
+      />
     {/if}
   {/if}
 {:else}

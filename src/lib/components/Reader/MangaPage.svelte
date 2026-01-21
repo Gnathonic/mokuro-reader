@@ -2,15 +2,27 @@
   import type { Page } from '$lib/types';
   import TextBoxes from './TextBoxes.svelte';
 
+  interface ContextMenuData {
+    x: number;
+    y: number;
+    lines: string[];
+    imgElement: HTMLElement | null;
+    textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+  }
+
   interface Props {
     page: Page;
     src: File;
     cachedBitmap?: ImageBitmap | null;
     volumeUuid: string;
     showTextBoxes?: boolean;
+    /** Force text visibility (for placeholder/missing pages) */
+    forceVisible?: boolean;
+    /** Callback when context menu should be shown */
+    onContextMenu?: (data: ContextMenuData) => void;
   }
 
-  let { page, src, cachedBitmap, volumeUuid, showTextBoxes = true }: Props = $props();
+  let { page, src, cachedBitmap, volumeUuid, showTextBoxes = true, forceVisible = false, onContextMenu }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
 
@@ -46,6 +58,6 @@
     style="object-fit: contain;"
   ></canvas>
   {#if showTextBoxes}
-    <TextBoxes {page} {src} {volumeUuid} />
+    <TextBoxes {page} {src} {volumeUuid} {forceVisible} {onContextMenu} />
   {/if}
 </div>

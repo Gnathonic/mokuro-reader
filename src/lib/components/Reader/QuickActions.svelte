@@ -1,6 +1,6 @@
 <script lang="ts">
   import { toggleFullScreen, zoomFitToScreen } from '$lib/panzoom';
-  import { settings } from '$lib/settings';
+  import { settings, volumes } from '$lib/settings';
   import {
     ArrowLeftOutline,
     ArrowRightOutline,
@@ -9,17 +9,28 @@
     ZoomOutOutline,
     PlusOutline
   } from 'flowbite-svelte-icons';
-  import { imageToWebp, showCropper, updateLastCard } from '$lib/anki-connect';
-  import { promptConfirmation } from '$lib/util';
+  import type { VolumeMetadata } from '$lib/anki-connect';
+  import { showTextBoxPicker } from './text-box-picker';
+  import type { Page } from '$lib/types';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
     right: (_e: any, ingoreTimeOut?: boolean) => void;
     src1: File | undefined;
     src2: File | undefined;
+    volumeUuid: string;
+    page1?: Page; // First page data for Anki card creation
+    page2?: Page; // Second page data (when in dual mode)
+    visible?: boolean;
   }
 
-  let { left, right, src1, src2 }: Props = $props();
+  let { left, right, src1, src2, volumeUuid, page1, page2, visible = true }: Props = $props();
+
+  let ankiTags = $derived($settings.ankiConnectSettings.tags);
+  let volumeMetadata = $derived<VolumeMetadata>({
+    seriesTitle: $volumes[volumeUuid]?.series_title,
+    volumeTitle: $volumes[volumeUuid]?.volume_title
+  });
 
   let open = $state(false);
 
@@ -38,16 +49,10 @@
     open = false;
   }
 
-  async function onUpdateCard(src: File | undefined) {
-    if ($settings.ankiConnectSettings.enabled && src) {
-      if ($settings.ankiConnectSettings.cropImage) {
-        showCropper(URL.createObjectURL(src));
-      } else {
-        promptConfirmation('Add image to last created anki card?', async () => {
-          const imageData = await imageToWebp(src, $settings);
-          updateLastCard(imageData);
-        });
-      }
+  async function onUpdateCard(src: File | undefined, page?: Page) {
+    if ($settings.ankiConnectSettings.enabled && src && page) {
+      // Show text box picker first, then cropper
+      showTextBoxPicker(URL.createObjectURL(src), page, ankiTags, volumeMetadata);
     }
     open = false;
   }
@@ -57,14 +62,14 @@
   }
 </script>
 
-{#if $settings.quickActions}
+{#if $settings.quickActions && visible}
   <div class="fixed end-3 bottom-3 z-50 flex flex-col items-center">
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
         {#if $settings.ankiConnectSettings.enabled}
           <button
-            onclick={() => onUpdateCard(src1)}
+            onclick={() => onUpdateCard(src1, page1)}
             class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             aria-label="Add image to Anki"
           >
@@ -79,7 +84,7 @@
         {/if}
         {#if $settings.ankiConnectSettings.enabled && src2}
           <button
-            onclick={() => onUpdateCard(src2)}
+            onclick={() => onUpdateCard(src2, page2)}
             class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             aria-label="Add image 2 to Anki"
           >
