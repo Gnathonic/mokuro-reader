@@ -1370,8 +1370,10 @@
     cancelInertiaAnimation();
     cancelSnapAnimation();
 
-    const friction = 0.95; // Deceleration factor per frame (lower = faster stop)
-    const minVelocity = 250; // Stop when velocity drops below this (px/s)
+    // Linear deceleration feels more physical - fast flings travel much further
+    // deceleration in px/s² - higher = stops faster
+    const deceleration = 2500;
+    const minVelocity = 30; // Stop when barely moving (px/s)
     let lastTime = performance.now();
 
     // In snap mode, constrain to current spread bounds
@@ -1399,21 +1401,33 @@
         }
 
         // Vertical bounds (only in snap mode)
+        // When hitting boundary, stop inertia and animate to boundary
         if (constrainToBounds) {
           const effectiveBottomY = bounds.fitsInViewport ? bounds.centerY : bounds.bottomY;
           if (transform.y > bounds.topY) {
-            transform.y = bounds.topY;
-            vy = 0;
+            // Hit top boundary - stop inertia and animate
+            inertiaAnimationId = null;
+            animateToY(bounds.topY);
+            return;
           } else if (transform.y < effectiveBottomY) {
-            transform.y = effectiveBottomY;
-            vy = 0;
+            // Hit bottom boundary - stop inertia and animate
+            inertiaAnimationId = null;
+            animateToY(effectiveBottomY);
+            return;
           }
         }
       }
 
-      // Apply friction
-      vx *= friction;
-      vy *= friction;
+      // Apply linear deceleration (frame-rate independent)
+      // This feels more physical - fast flings travel proportionally further
+      const currentSpeed = Math.sqrt(vx * vx + vy * vy);
+      if (currentSpeed > 0) {
+        const reduction = deceleration * dt;
+        const newSpeed = Math.max(0, currentSpeed - reduction);
+        const factor = newSpeed / currentSpeed;
+        vx *= factor;
+        vy *= factor;
+      }
 
       draw();
 

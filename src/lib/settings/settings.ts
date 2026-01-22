@@ -24,7 +24,7 @@ export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
 export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
 
-export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
+export type PageTransition = 'none' | 'crossfade' | 'pageTurn' | 'swipe';
 
 export type AnkiConnectSettings = {
   enabled: boolean;

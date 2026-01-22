@@ -531,7 +531,6 @@
 
     const durations = {
       crossfade: 200,
-      vertical: 400,
       pageTurn: 200,
       swipe: 350,
       none: 0
@@ -549,16 +548,6 @@
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
-        }
-
-        if (transition === 'vertical') {
-          // Slide vertically with a small gap between pages
-          const gap = 3; // Small gap between pages (in vh units)
-          const startOffset = direction === 'forward' ? 100 + gap : -(100 + gap);
-          const currentPos = startOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
         }
 
         if (transition === 'pageTurn') {
@@ -604,7 +593,6 @@
 
     const durations = {
       crossfade: 200,
-      vertical: 400,
       pageTurn: 200,
       swipe: 350,
       none: 0
@@ -622,16 +610,6 @@
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
-        }
-
-        if (transition === 'vertical') {
-          // Slide vertically - now used for ENTERING page
-          const gap = 3; // Small gap between pages (in vh units)
-          const endOffset = direction === 'forward' ? -(100 + gap) : 100 + gap;
-          const currentPos = endOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
         }
 
         if (transition === 'pageTurn') {
@@ -1028,44 +1006,49 @@
   <SettingsButton visible={overlaysVisible} />
   <Cropper />
   <TextBoxPicker />
-  <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
-    <div class="flex flex-col gap-3">
-      <div class="z-10 flex flex-row items-center gap-5">
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
-          <BackwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={(e) => left(e, true)}>
-          <CaretLeftSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <Input
-          type="number"
-          size="sm"
-          bind:value={manualPage}
-          onclick={onInputClick}
-          onchange={onManualPageChange}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              onManualPageChange();
-              if (e.currentTarget && 'blur' in e.currentTarget) {
-                (e.currentTarget as HTMLElement).blur();
-              }
-            }
-          }}
-          onblur={onManualPageChange}
-        />
-        <button onclick={(e) => right(e, true)}>
-          <CaretRightSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
-          <ForwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-      </div>
-      <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
-        <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
-      </div>
-    </div>
-  </Popover>
   {#if overlaysVisible}
+    <Popover
+      placement="bottom"
+      trigger="click"
+      triggeredBy="#page-num"
+      class="z-20 w-full max-w-xs"
+    >
+      <div class="flex flex-col gap-3">
+        <div class="z-10 flex flex-row items-center gap-5">
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
+            <BackwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={(e) => left(e, true)}>
+            <CaretLeftSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <Input
+            type="number"
+            size="sm"
+            bind:value={manualPage}
+            onclick={onInputClick}
+            onchange={onManualPageChange}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                onManualPageChange();
+                if (e.currentTarget && 'blur' in e.currentTarget) {
+                  (e.currentTarget as HTMLElement).blur();
+                }
+              }
+            }}
+            onblur={onManualPageChange}
+          />
+          <button onclick={(e) => right(e, true)}>
+            <CaretRightSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
+            <ForwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+        </div>
+        <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
+          <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
+        </div>
+      </div>
+    </Popover>
     <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
       {#key page}
         <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
