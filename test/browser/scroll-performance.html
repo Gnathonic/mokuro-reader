@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scroll Performance Test</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        padding: 20px;
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      .results {
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px 0;
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+      .pass {
+        color: green;
+      }
+      .fail {
+        color: red;
+      }
+      .warn {
+        color: orange;
+      }
+      button {
+        padding: 10px 20px;
+        font-size: 16px;
+        cursor: pointer;
+        margin: 5px;
+      }
+      #status {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 4px;
+      }
+      .status-running {
+        background: #e3f2fd;
+      }
+      .status-done {
+        background: #e8f5e9;
+      }
+      .status-error {
+        background: #ffebee;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>ContinuousReader Scroll Performance Test</h1>
+
+    <p>This test measures real scroll performance in the browser.</p>
+    <p><strong>Instructions:</strong></p>
+    <ol>
+      <li>Open a manga in the reader with continuous scroll enabled</li>
+      <li>Open browser DevTools console (F12)</li>
+      <li>Copy the test script below and paste it in the console</li>
+      <li>The test will simulate scrolling and report timing</li>
+    </ol>
+
+    <h2>Test Script (copy to console)</h2>
+    <div class="results" id="script">
+      // Scroll Performance Test - paste this in browser console on the reader page (function
+      runScrollPerformanceTest() { console.clear(); console.log('🔬 Starting Scroll Performance
+      Test...\n'); // Check if we're on the right page const panzoomEl =
+      document.querySelector('.continuous-content'); if (!panzoomEl) { console.error('❌ Not on
+      ContinuousReader page. Open a manga with continuous scroll mode.'); return; } // Get panzoom
+      instance from the element const pz = panzoomEl.__panzoom; if (!pz) { console.error('❌ Panzoom
+      not initialized. Try refreshing the page.'); return; } const results = { frameTimes: [],
+      droppedFrames: 0, severeDrops: 0, maxTime: 0, avgTime: 0, warnings: [] }; // Measure scroll
+      performance over 120 frames (2 seconds at 60fps) const frameCount = 120; let frameIndex = 0;
+      let lastTime = performance.now(); const startY = pz.getTransform().y; const scrollPerFrame =
+      30; // pixels function runFrame() { const frameStart = performance.now(); const frameDelta =
+      frameStart - lastTime; // Simulate scroll const { x } = pz.getTransform(); const newY = startY
+      - (frameIndex * scrollPerFrame); pz.moveTo(x, newY); const frameTime = performance.now() -
+      frameStart; results.frameTimes.push(frameTime); // Check for dropped frames if (frameTime >
+      16.67) { results.droppedFrames++; if (frameTime > 33.33) { results.severeDrops++;
+      results.warnings.push(`Frame ${frameIndex}: ${frameTime.toFixed(2)}ms`); } } results.maxTime =
+      Math.max(results.maxTime, frameTime); lastTime = frameStart; frameIndex++; if (frameIndex <
+      frameCount) { requestAnimationFrame(runFrame); } else { // Calculate final results
+      results.avgTime = results.frameTimes.reduce((a, b) => a + b) / results.frameTimes.length; //
+      Report results console.log('\n📊 SCROLL PERFORMANCE RESULTS\n'); console.log(`Total frames:
+      ${frameCount}`); console.log(`Frame time avg: ${results.avgTime.toFixed(3)}ms`);
+      console.log(`Frame time max: ${results.maxTime.toFixed(3)}ms`); console.log(`Dropped frames
+      (>16.67ms): ${results.droppedFrames}
+      (${(results.droppedFrames/frameCount*100).toFixed(1)}%)`); console.log(`Severe drops
+      (>33.33ms): ${results.severeDrops}`); if (results.warnings.length > 0) { console.log('\n⚠️
+      Slow frames:'); results.warnings.slice(0, 10).forEach(w => console.log(` ${w}`)); } //
+      Pass/fail verdict console.log('\n'); if (results.maxTime <= 16.67 && results.droppedFrames ===
+      0) { console.log('✅ PASS: No dropped frames, smooth scrolling'); } else if
+      (results.droppedFrames <= 6) { // Allow 5% at 60fps console.log('⚠️ MARGINAL: Some dropped
+      frames, may be noticeable'); } else { console.log('❌ FAIL: Significant stuttering detected');
+      } // Reset position pz.moveTo(x, startY); console.log('\nTest complete. Scroll position
+      restored.'); // Store results globally for programmatic access window.__scrollPerfResults =
+      results; } } requestAnimationFrame(runFrame); })();
+    </div>
+
+    <h2>Detailed Profiling Script</h2>
+    <p>This script provides more detailed timing breakdown:</p>
+    <div class="results">
+      // Detailed Pan Handler Profiling - paste in console (function profilePanHandler() {
+      console.clear(); console.log('🔬 Profiling Pan Handler Operations...\n'); const panzoomEl =
+      document.querySelector('.continuous-content'); if (!panzoomEl?.__panzoom) { console.error('❌
+      Panzoom not found'); return; } const pz = panzoomEl.__panzoom; // Profile individual
+      operations const profiles = { getTransform: [], moveTo: [], domQuery: [], full: [] }; const {
+      x, y } = pz.getTransform(); for (let i = 0; i < 100; i++) { // Profile getTransform let t0 =
+      performance.now(); pz.getTransform(); profiles.getTransform.push(performance.now() - t0); //
+      Profile moveTo t0 = performance.now(); pz.moveTo(x, y - i);
+      profiles.moveTo.push(performance.now() - t0); // Profile DOM query t0 = performance.now();
+      document.querySelectorAll('.spread-wrapper'); profiles.domQuery.push(performance.now() - t0);
+      // Full frame t0 = performance.now(); pz.getTransform(); pz.moveTo(x, y - i);
+      document.querySelectorAll('.spread-wrapper'); profiles.full.push(performance.now() - t0); } //
+      Calculate averages const avg = (arr) => arr.reduce((a, b) => a + b) / arr.length; const max =
+      (arr) => Math.max(...arr); console.log('📊 OPERATION TIMING (100 samples)\n');
+      console.log(`getTransform: avg=${avg(profiles.getTransform).toFixed(3)}ms,
+      max=${max(profiles.getTransform).toFixed(3)}ms`); console.log(`moveTo:
+      avg=${avg(profiles.moveTo).toFixed(3)}ms, max=${max(profiles.moveTo).toFixed(3)}ms`);
+      console.log(`DOM query: avg=${avg(profiles.domQuery).toFixed(3)}ms,
+      max=${max(profiles.domQuery).toFixed(3)}ms`); console.log(`Full frame:
+      avg=${avg(profiles.full).toFixed(3)}ms, max=${max(profiles.full).toFixed(3)}ms`); // Restore
+      position pz.moveTo(x, y); console.log('\n✅ Profiling complete'); window.__panProfiles =
+      profiles; })();
+    </div>
+
+    <h2>Expected Results</h2>
+    <ul>
+      <li><strong>Pass:</strong> Max frame time &lt; 16.67ms, 0 dropped frames</li>
+      <li><strong>Marginal:</strong> &lt; 5% dropped frames</li>
+      <li><strong>Fail:</strong> &gt; 5% dropped frames or max frame time &gt; 50ms</li>
+    </ul>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li>Make sure DevTools Performance tab is closed during the test (it adds overhead)</li>
+      <li>Close other browser tabs to reduce memory pressure</li>
+      <li>Try with and without browser extensions to identify conflicts</li>
+    </ul>
+  </body>
+</html>

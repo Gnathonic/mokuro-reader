@@ -23,4 +23,4 @@ test/fixtures/*
 !test/fixtures/.gitkeep
 !test/fixtures/README.md
 !test/fixtures/fixture-loader.ts
-!test/fixtures/extracted/
+test-results/
