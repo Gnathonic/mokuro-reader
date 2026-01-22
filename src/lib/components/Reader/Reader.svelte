@@ -1080,7 +1080,13 @@
     />
   {:else}
     <!-- Page-based mode -->
-    <div class="flex" style:background-color={$settings.backgroundColor}>
+    <div
+      class="flex"
+      style:background-color={$settings.backgroundColor}
+      style:touch-action="none"
+      style:-webkit-overflow-scrolling="auto"
+      style:overscroll-behavior="none"
+    >
       <Panzoom>
         <button
           aria-label="Previous page (left edge)"
