@@ -993,7 +993,7 @@
   }
 
   // Check if click is on a text box
-  function isTextBoxClick(e: MouseEvent): boolean {
+  function isTextBoxClick(e: MouseEvent | TouchEvent): boolean {
     const target = e.target as HTMLElement;
     return target.closest('.textBox') !== null;
   }
@@ -1184,6 +1184,11 @@
   }
 
   function handleTouchStart(e: TouchEvent): void {
+    // Prevent native scroll/zoom on iOS Safari (unless touching a text box)
+    if (!isTextBoxClick(e)) {
+      e.preventDefault();
+    }
+
     cancelSnapAnimation(); // Stop any ongoing snap
     cancelZoomAnimation(); // Stop any ongoing zoom animation
     cancelInertiaAnimation(); // Stop any ongoing inertia
@@ -2117,6 +2122,10 @@
     height: 100vh;
     overflow: hidden;
     background-color: #1a1a1a; /* fallback, overridden by inline style */
+    /* Prevent native touch gestures (scroll, zoom, pull-to-refresh) on iOS Safari */
+    touch-action: none;
+    -webkit-overflow-scrolling: auto;
+    overscroll-behavior: none;
   }
 
   .content-layer {
