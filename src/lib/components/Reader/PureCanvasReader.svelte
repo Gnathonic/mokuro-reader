@@ -998,21 +998,32 @@
     return target.closest('.textBox') !== null;
   }
 
-  // Double-click zoom (desktop)
+  // Click handler with manual double-click detection
+  // (Native dblclick has issues with rapid quadruple-clicks in some browsers)
+  let singleClickTimeout: ReturnType<typeof setTimeout> | null = null;
+  let lastTouchTime = 0; // Track touch events to ignore synthesized click events
+
+  // Handle touch-synthesized dblclick (mobile browsers synthesize this from double-tap)
   function handleDoubleClick(e: MouseEvent): void {
-    if (isTextBoxClick(e)) return; // Don't zoom when double-clicking text
+    // Only handle if this is a touch-synthesized event (within touch time window)
+    // Mouse double-clicks are handled by manual detection in handleClick
+    if (performance.now() - lastTouchTime > 300) return;
+
+    if (isTextBoxClick(e)) return;
     e.preventDefault();
     handleDoubleTapZoom(e.clientX, e.clientY);
   }
 
-  // Click to toggle UI overlay visibility
   function handleClick(e: MouseEvent): void {
+    // Ignore click events synthesized from touch (mobile browsers fire both)
+    if (performance.now() - lastTouchTime < 300) return;
+
     const target = e.target as HTMLElement;
 
-    // Only toggle if clicking on blank space (not text boxes)
+    // Only process clicks on blank space (not text boxes)
     if (target.closest('.textBox')) return;
 
-    // Don't toggle if dismissing an active textbox (has selection or focus)
+    // Don't process if dismissing an active textbox (has selection or focus)
     const selection = window.getSelection();
     const hasTextSelection = selection && selection.toString().trim().length > 0;
     const activeElement = document.activeElement;
@@ -1027,7 +1038,30 @@
       return;
     }
 
-    onOverlayToggle?.();
+    // Check for double-click (using same logic as touch double-tap)
+    if (isDoubleTap(e.clientX, e.clientY)) {
+      e.preventDefault();
+      // Cancel pending single-click action
+      if (singleClickTimeout) {
+        clearTimeout(singleClickTimeout);
+        singleClickTimeout = null;
+      }
+      handleDoubleTapZoom(e.clientX, e.clientY);
+      lastTapTime = 0; // Reset so triple-click doesn't trigger again
+      return;
+    }
+
+    // Record this click for potential double-click
+    recordTap(e.clientX, e.clientY);
+
+    // Delay single-click action to allow double-click detection
+    if (singleClickTimeout) {
+      clearTimeout(singleClickTimeout);
+    }
+    singleClickTimeout = setTimeout(() => {
+      singleClickTimeout = null;
+      onOverlayToggle?.();
+    }, DOUBLE_TAP_THRESHOLD);
   }
 
   // Wheel scroll/zoom
@@ -1049,17 +1083,108 @@
     }
   }
 
+  /**
+   * Bias zoom target toward corners by amplifying offset from viewport center.
+   * Makes it easier to zoom into corners where text often appears.
+   */
+  function biasZoomTarget(clientX: number, clientY: number): { x: number; y: number } {
+    const bias = 2.0; // 100% amplification toward edges
+    const centerX = viewportWidth / 2;
+    const centerY = viewportHeight / 2;
+    return {
+      x: centerX + (clientX - centerX) * bias,
+      y: centerY + (clientY - centerY) * bias
+    };
+  }
+
+  /**
+   * Calculate the minimum zoom level that keeps the spread filling at least one viewport dimension.
+   */
+  function getMinZoom(): number {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return 0.5;
+
+    // At zoom=1, spread is at spread.scale. We want the spread to fill at least one dimension.
+    // spread.scaledWidth = spread.width * spread.scale (at zoom=1)
+    // At userZoomMultiplier=z, effective width = spread.scaledWidth * z
+    // For width to fill viewport: spread.scaledWidth * z >= viewportWidth → z >= viewportWidth / spread.scaledWidth
+    const minZoomX = viewportWidth / spread.scaledWidth;
+    const minZoomY = viewportHeight / spread.scaledHeight;
+
+    // Return the larger of the two (ensure at least one dimension is filled)
+    return Math.min(minZoomX, minZoomY);
+  }
+
+  /**
+   * Clamp transform to keep content visible after zoom.
+   * Horizontal bounds are always enforced.
+   * Vertical bounds are only enforced when scrollSnap is enabled.
+   */
+  function clampTransformToBounds(): void {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return;
+
+    const scaledWidth = spread.scaledWidth * userZoomMultiplier;
+
+    // Horizontal bounds (always enforced)
+    if (scaledWidth <= viewportWidth) {
+      // Content fits - center it
+      transform.x = 0;
+    } else {
+      // Content wider than viewport - allow panning but not past edges
+      const maxShift = (scaledWidth - viewportWidth) / 2;
+      transform.x = Math.max(-maxShift, Math.min(maxShift, transform.x));
+    }
+
+    // Vertical bounds (only when scrollSnap is enabled)
+    if ($settings.scrollSnap) {
+      const scaledHeight = spread.scaledHeight * userZoomMultiplier;
+      const contentTop = -spread.yOffset * userZoomMultiplier;
+      const contentBottom = contentTop - scaledHeight + viewportHeight;
+
+      if (scaledHeight <= viewportHeight) {
+        // Content fits - center it vertically relative to spread position
+        transform.y = contentTop + (viewportHeight - scaledHeight) / 2;
+      } else {
+        // Content taller than viewport - clamp to edges
+        transform.y = Math.max(contentBottom, Math.min(contentTop, transform.y));
+      }
+    }
+  }
+
   // Zoom at point (modifies userZoomMultiplier, not per-spread scales)
   function zoomAt(clientX: number, clientY: number, scaleDelta: number): void {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return;
+
     markZoomActive(); // Signal that zoom is happening
 
-    const newZoom = Math.max(0.1, Math.min(10, userZoomMultiplier * scaleDelta));
-    const ratio = newZoom / userZoomMultiplier;
+    const minZoom = getMinZoom();
+    const maxZoom = 5;
+    const oldZoom = userZoomMultiplier;
+    const newZoom = Math.max(minZoom, Math.min(maxZoom, oldZoom * scaleDelta));
 
-    // Keep point under cursor stationary
-    transform.x = clientX - (clientX - transform.x) * ratio;
-    transform.y = clientY - (clientY - transform.y) * ratio;
+    // Bias target toward corners (only when zooming in)
+    const isZoomingIn = newZoom > oldZoom;
+    const target = isZoomingIn ? biasZoomTarget(clientX, clientY) : { x: clientX, y: clientY };
+
+    // Calculate how the horizontal centering offset changes with zoom
+    // In draw(): screenX = spreadCenterX + contentX * scale + transform.x
+    // spreadCenterX = (viewportWidth - spread.scaledWidth * zoom) / 2
+    const oldCenterX = (viewportWidth - spread.scaledWidth * oldZoom) / 2;
+    const newCenterX = (viewportWidth - spread.scaledWidth * newZoom) / 2;
+
+    // Content point under target (in spread's local coordinates)
+    const contentX = (target.x - oldCenterX - transform.x) / oldZoom;
+    const contentY = (target.y - transform.y) / oldZoom;
+
+    // New transform to keep same content point at same screen position
+    transform.x = target.x - newCenterX - contentX * newZoom;
+    transform.y = target.y - contentY * newZoom;
     userZoomMultiplier = newZoom;
+
+    // Clamp to valid bounds
+    clampTransformToBounds();
 
     draw();
   }
@@ -1075,7 +1200,10 @@
   let lastTapPos = { x: 0, y: 0 };
   const DOUBLE_TAP_THRESHOLD = 300; // ms
   const DOUBLE_TAP_DISTANCE = 30; // px tolerance
-  const DOUBLE_TAP_ZOOM_LEVEL = 2.5; // Target zoom level for double-tap
+  // Double-tap zoom levels (relative to base zoom which respects continuousZoomMode)
+  const DOUBLE_TAP_ZOOM_LEVELS = [1, 2, 3.5]; // base, medium, high
+  // Track the target zoom for rapid double-taps (so we don't check mid-animation values)
+  let doubleTapZoomTarget: number | null = null;
 
   // Zoom animation
   let zoomAnimationId: number | null = null;
@@ -1084,6 +1212,7 @@
     if (zoomAnimationId !== null) {
       cancelAnimationFrame(zoomAnimationId);
       zoomAnimationId = null;
+      doubleTapZoomTarget = null; // Clear so next double-tap uses actual zoom level
     }
   }
 
@@ -1097,26 +1226,60 @@
     clientY: number,
     duration = 250
   ): void {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return;
+
     cancelZoomAnimation();
     cancelSnapAnimation();
     markZoomActive();
+
+    // Clamp target zoom to valid bounds
+    const minZoom = getMinZoom();
+    const maxZoom = 5;
+    const clampedTargetZoom = Math.max(minZoom, Math.min(maxZoom, targetZoom));
 
     const startZoom = userZoomMultiplier;
     const startX = transform.x;
     const startY = transform.y;
     const startTime = performance.now();
 
-    // Calculate target position to keep point under cursor stationary
-    const ratio = targetZoom / startZoom;
-    const targetX = clientX - (clientX - startX) * ratio;
-    const targetY = clientY - (clientY - startY) * ratio;
+    // Bias target toward corners (only when zooming in)
+    const isZoomingIn = clampedTargetZoom > startZoom;
+    const zoomPoint = isZoomingIn ? biasZoomTarget(clientX, clientY) : { x: clientX, y: clientY };
+
+    // Calculate centering offsets
+    const startCenterX = (viewportWidth - spread.scaledWidth * startZoom) / 2;
+    const targetCenterX = (viewportWidth - spread.scaledWidth * clampedTargetZoom) / 2;
+
+    // Content point under target (in spread's local coordinates)
+    const contentX = (zoomPoint.x - startCenterX - startX) / startZoom;
+    const contentY = (zoomPoint.y - startY) / startZoom;
+
+    // Calculate target transform to keep content point at same screen position
+    let targetX = zoomPoint.x - targetCenterX - contentX * clampedTargetZoom;
+    let targetY = zoomPoint.y - contentY * clampedTargetZoom;
+
+    // Pre-calculate clamped target by temporarily applying target state
+    const savedZoom = userZoomMultiplier;
+    const savedX = transform.x;
+    const savedY = transform.y;
+    userZoomMultiplier = clampedTargetZoom;
+    transform.x = targetX;
+    transform.y = targetY;
+    clampTransformToBounds();
+    targetX = transform.x;
+    targetY = transform.y;
+    // Restore original state for animation start
+    userZoomMultiplier = savedZoom;
+    transform.x = savedX;
+    transform.y = savedY;
 
     function animate(currentTime: number) {
       const elapsed = currentTime - startTime;
       const progress = Math.min(elapsed / duration, 1);
       const eased = 1 - Math.pow(1 - progress, 3); // Ease-out cubic
 
-      userZoomMultiplier = startZoom + (targetZoom - startZoom) * eased;
+      userZoomMultiplier = startZoom + (clampedTargetZoom - startZoom) * eased;
       transform.x = startX + (targetX - startX) * eased;
       transform.y = startY + (targetY - startY) * eased;
 
@@ -1126,6 +1289,7 @@
         zoomAnimationId = requestAnimationFrame(animate);
       } else {
         zoomAnimationId = null;
+        doubleTapZoomTarget = null; // Clear so next double-tap uses actual zoom level
         // After zoom animation completes, snap if enabled
         if ($settings.scrollSnap) {
           snapToNearestBoundary();
@@ -1138,12 +1302,32 @@
 
   /**
    * Handle double-tap/double-click zoom.
-   * Toggles between 1x and DOUBLE_TAP_ZOOM_LEVEL, zooming at the tap location.
+   * Cycles through 3 zoom levels: base (respects continuousZoomMode) → 2x → 3.5x → base
    */
   function handleDoubleTapZoom(clientX: number, clientY: number): void {
-    // Toggle zoom: if zoomed in, zoom out; if zoomed out, zoom in
-    const isZoomedIn = userZoomMultiplier > 1.5;
-    const targetZoom = isZoomedIn ? 1 : DOUBLE_TAP_ZOOM_LEVEL;
+    // Base zoom is 1 (the per-spread scales already account for continuousZoomMode)
+    const [baseZoom, mediumZoom, highZoom] = DOUBLE_TAP_ZOOM_LEVELS;
+    const tolerance = 0.1;
+
+    // Use the target zoom if animating, otherwise the current zoom
+    // This ensures rapid double-taps cycle through levels correctly
+    const effectiveZoom = doubleTapZoomTarget ?? userZoomMultiplier;
+
+    let targetZoom: number;
+    if (effectiveZoom < baseZoom + tolerance) {
+      // At or below base → go to medium
+      targetZoom = mediumZoom;
+    } else if (effectiveZoom < mediumZoom + tolerance) {
+      // At medium → go to high
+      targetZoom = highZoom;
+    } else {
+      // At high or above → go back to base
+      targetZoom = baseZoom;
+    }
+
+    // Track the target for rapid subsequent double-taps
+    doubleTapZoomTarget = targetZoom;
+
     animateZoomTo(targetZoom, clientX, clientY);
   }
 
@@ -1253,14 +1437,36 @@
       velocitySamples = [];
       markZoomActive(); // Signal that zoom is happening
 
+      const spread = spreadLayout[localSpreadIndex];
+      if (!spread) return;
+
       const newDistance = getTouchDistance(newTouches[0], newTouches[1]);
       const newCenter = getTouchCenter(newTouches[0], newTouches[1]);
-      const newZoom = (newDistance / initialPinchDistance) * initialZoom;
 
-      // Zoom towards pinch center
-      const ratio = newZoom / userZoomMultiplier;
-      transform.x = newCenter.x - (newCenter.x - transform.x) * ratio;
-      transform.y = newCenter.y - (newCenter.y - transform.y) * ratio;
+      // Calculate new zoom with bounds
+      const minZoom = getMinZoom();
+      const maxZoom = 5;
+      const rawZoom = (newDistance / initialPinchDistance) * initialZoom;
+      const oldZoom = userZoomMultiplier;
+      const newZoom = Math.max(minZoom, Math.min(maxZoom, rawZoom));
+
+      // Bias target toward corners (only when zooming in)
+      const isZoomingIn = newZoom > oldZoom;
+      const target = isZoomingIn
+        ? biasZoomTarget(newCenter.x, newCenter.y)
+        : { x: newCenter.x, y: newCenter.y };
+
+      // Calculate how the horizontal centering offset changes with zoom
+      const oldCenterX = (viewportWidth - spread.scaledWidth * oldZoom) / 2;
+      const newCenterX = (viewportWidth - spread.scaledWidth * newZoom) / 2;
+
+      // Content point under target (in spread's local coordinates)
+      const contentX = (target.x - oldCenterX - transform.x) / oldZoom;
+      const contentY = (target.y - transform.y) / oldZoom;
+
+      // New transform to keep same content point at same screen position
+      transform.x = target.x - newCenterX - contentX * newZoom;
+      transform.y = target.y - contentY * newZoom;
       userZoomMultiplier = newZoom;
 
       // Also pan based on center movement
@@ -1270,6 +1476,9 @@
       transform.y += centerDy;
       initialPinchCenter = newCenter;
 
+      // Clamp to valid bounds
+      clampTransformToBounds();
+
       draw();
     }
 
@@ -1277,6 +1486,9 @@
   }
 
   function handleTouchEnd(e: TouchEvent): void {
+    // Record touch time to ignore synthesized click events on mobile
+    lastTouchTime = performance.now();
+
     const wasDragging = isDragging;
     const previousTouchCount = activeTouches.length;
     activeTouches = Array.from(e.touches);
@@ -1294,18 +1506,33 @@
         const isTap = tapDistance < 10; // Less than 10px movement = tap
 
         if (isTap) {
+          // Don't process taps on text boxes
+          const target = e.target as HTMLElement;
+          if (target.closest('.textBox')) return;
+
           // Check for double-tap
           if (isDoubleTap(lastTouch.clientX, lastTouch.clientY)) {
-            // Don't trigger on text boxes
-            const target = e.target as HTMLElement;
-            if (!target.closest('.textBox')) {
-              handleDoubleTapZoom(lastTouch.clientX, lastTouch.clientY);
-              lastTapTime = 0; // Reset so triple-tap doesn't trigger again
-              return;
+            // Cancel pending single-tap action
+            if (singleClickTimeout) {
+              clearTimeout(singleClickTimeout);
+              singleClickTimeout = null;
             }
+            handleDoubleTapZoom(lastTouch.clientX, lastTouch.clientY);
+            lastTapTime = 0; // Reset so triple-tap doesn't trigger again
+            return;
           }
+
           // Record this tap for potential double-tap
           recordTap(lastTouch.clientX, lastTouch.clientY);
+
+          // Delay single-tap action to allow double-tap detection
+          if (singleClickTimeout) {
+            clearTimeout(singleClickTimeout);
+          }
+          singleClickTimeout = setTimeout(() => {
+            singleClickTimeout = null;
+            onOverlayToggle?.();
+          }, DOUBLE_TAP_THRESHOLD);
         }
       }
 
