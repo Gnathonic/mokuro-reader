@@ -78,6 +78,21 @@
     // Only toggle if clicking on blank space (not text boxes)
     if (target.closest('.textBox')) return;
 
+    // Don't toggle if dismissing an active textbox (has selection or focus)
+    const selection = window.getSelection();
+    const hasTextSelection = selection && selection.toString().trim().length > 0;
+    const activeElement = document.activeElement;
+    const hasActiveTextBox = activeElement?.closest('.textBox') !== null;
+
+    if (hasTextSelection || hasActiveTextBox) {
+      // Clear selection/focus but don't toggle UI
+      selection?.removeAllRanges();
+      if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+      }
+      return;
+    }
+
     overlaysVisible = !overlaysVisible;
   }
 
@@ -256,6 +271,24 @@
       event.preventDefault();
     }
 
+    // In continuous scroll mode, let PureCanvasReader handle all navigation keys
+    if ($settings.continuousScroll) {
+      const continuousModeKeys = [
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'PageUp',
+        'PageDown',
+        'Space',
+        'Home',
+        'End'
+      ];
+      if (continuousModeKeys.includes(action)) {
+        return;
+      }
+    }
+
     switch (action) {
       case 'ArrowLeft':
         left(event, true);
@@ -335,6 +368,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
     // Capture start position for single-finger gesture
@@ -346,6 +380,7 @@
 
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
@@ -1058,6 +1093,7 @@
       currentPage={page}
       onPageChange={handleContinuousPageChange}
       onVolumeNav={handleContinuousVolumeNav}
+      onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
     />
   {:else}
     <!-- Page-based mode -->

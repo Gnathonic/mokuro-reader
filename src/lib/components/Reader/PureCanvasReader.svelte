@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Page, VolumeMetadata } from '$lib/types';
   import type { VolumeSettings } from '$lib/settings';
-  import { settings, invertColorsActive } from '$lib/settings';
-  import {
-    groupPagesIntoSpreads,
-    findSpreadForPage,
-    type PageSpread
-  } from '$lib/reader/spread-grouping';
+  import { settings, invertColorsActive, updateVolumeSetting } from '$lib/settings';
+  import { volumes } from '$lib/settings/volume-data';
+  import Pica from 'pica';
+  import { findSpreadForPage, type PageSpread } from '$lib/reader/spread-grouping';
+  import { shouldShowSinglePage, calculateMedianPageWidth } from '$lib/reader/page-mode-detection';
+  import { updateCacheStrategy } from '$lib/reader/canvas-cache';
   import { getCharCount } from '$lib/util/count-chars';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { ImageCache } from '$lib/reader/image-cache';
@@ -21,10 +21,19 @@
     currentPage: number;
     onPageChange: (newPage: number, charCount: number, isComplete: boolean) => void;
     onVolumeNav: (direction: 'prev' | 'next') => void;
+    onOverlayToggle?: () => void;
   }
 
-  let { pages, files, volume, volumeSettings, currentPage, onPageChange, onVolumeNav }: Props =
-    $props();
+  let {
+    pages,
+    files,
+    volume,
+    volumeSettings,
+    currentPage,
+    onPageChange,
+    onVolumeNav,
+    onOverlayToggle
+  }: Props = $props();
 
   // ============================================
   // CORE STATE
@@ -40,8 +49,18 @@
   // Canvas refs
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let ctx: CanvasRenderingContext2D | null = null;
-  let backBuffer: HTMLCanvasElement | undefined;
-  let backCtx: CanvasRenderingContext2D | null = null;
+
+  // Zoom settling detection
+  let isZooming = $state(false);
+  let zoomSettleTimeout: ReturnType<typeof setTimeout> | null = null;
+  const ZOOM_SETTLE_DELAY = 150; // ms after last zoom action
+
+  // Track the zoom level pageCanvases were rendered at
+  let pageCanvasesZoom = $state(1);
+  let pageCanvasesSpreadScale = new Map<number, number>(); // pageIndex -> spread scale used
+
+  // Counter to force cache effect to re-run (incremented when cache is invalidated)
+  let cacheInvalidationCounter = $state(0);
 
   // Text overlay ref (for direct DOM manipulation)
   let textOverlayEl: HTMLDivElement | undefined = $state();
@@ -52,6 +71,80 @@
 
   // Pre-rendered page canvases (OffscreenCanvas where supported)
   let pageCanvases = new Map<number, OffscreenCanvas | HTMLCanvasElement>();
+
+  // Pica instances for high-quality Lanczos scaling (lazy-loaded)
+  // Try fast mode first (WASM/WebWorkers), fall back to JS-only, then to worker-canvas
+  type ResizeMode = 'pica-fast' | 'pica-js' | 'worker-canvas';
+  let resizeMode: ResizeMode = 'pica-fast';
+  let picaFast: ReturnType<typeof Pica> | null = null;
+  let picaJsOnly: ReturnType<typeof Pica> | null = null;
+
+  function getPicaFast(): ReturnType<typeof Pica> {
+    if (!picaFast) picaFast = new Pica(); // Default: uses WASM, WebWorkers if available
+    return picaFast;
+  }
+  function getPicaJsOnly(): ReturnType<typeof Pica> {
+    if (!picaJsOnly) picaJsOnly = new Pica({ features: ['js'] });
+    return picaJsOnly;
+  }
+
+  const PICA_OPTIONS = {
+    filter: 'lanczos3' as const,
+    unsharpAmount: 80,
+    unsharpRadius: 0.6,
+    unsharpThreshold: 2
+  };
+
+  // Worker-based canvas resize fallback
+  let resizeWorker: Worker | null = null;
+  let resizeWorkerId = 0;
+  let resizeWorkerPending = new Map<
+    number,
+    {
+      resolve: (bitmap: ImageBitmap) => void;
+      reject: (err: Error) => void;
+    }
+  >();
+
+  function getResizeWorker(): Worker {
+    if (!resizeWorker) {
+      resizeWorker = new Worker(new URL('$lib/workers/canvas-resize-worker.ts', import.meta.url), {
+        type: 'module'
+      });
+      resizeWorker.onmessage = (e) => {
+        const { type, id, bitmap, error } = e.data;
+        const pending = resizeWorkerPending.get(id);
+        if (!pending) return;
+        resizeWorkerPending.delete(id);
+        if (type === 'result') {
+          pending.resolve(bitmap);
+        } else {
+          pending.reject(new Error(error));
+        }
+      };
+    }
+    return resizeWorker;
+  }
+
+  async function resizeWithWorker(
+    bitmap: ImageBitmap,
+    targetWidth: number,
+    targetHeight: number
+  ): Promise<ImageBitmap> {
+    const worker = getResizeWorker();
+    const id = ++resizeWorkerId;
+
+    return new Promise((resolve, reject) => {
+      resizeWorkerPending.set(id, { resolve, reject });
+      worker.postMessage(
+        { type: 'resize', id, bitmap, targetWidth, targetHeight },
+        { transfer: [bitmap] } // Transfer bitmap to worker
+      );
+    });
+  }
+
+  // Track in-flight renders to avoid duplicates
+  let picaRenderingPages = new Set<number>();
 
   // Image cache for loading bitmaps
   let imageCache = new ImageCache({ prev: 10, next: 10 });
@@ -67,6 +160,9 @@
   let snapAnimationId: number | null = null;
   let inertiaAnimationId: number | null = null;
 
+  // Flag to prevent spreads-change effect from interfering with explicit navigation
+  let isExplicitNavigation = false;
+
   // ============================================
   // SPREAD LAYOUT
   // ============================================
@@ -76,41 +172,122 @@
 
   // Reactive settings for spread calculation
   let pageViewMode = $derived(volumeSettings.singlePageView ?? 'auto');
-  let hasCover = $derived(volumeSettings.hasCover ?? true);
   let rtl = $derived(volumeSettings.rightToLeft ?? true);
+  let hasCover = $derived(volumeSettings.hasCover ?? false);
 
   // Continuous zoom mode setting
   let continuousZoomMode = $derived($settings.continuousZoomDefault);
 
-  // Calculate pairing offset based on current page
-  // Current page should always be first of its spread
-  let pairingOffset = $derived.by(() => {
-    // Access all dependencies BEFORE any early returns to ensure Svelte tracks them
-    const anchorPage = currentPage - 1;
-    const mode = pageViewMode;
-    const cover = hasCover;
-    const portrait = isPortrait;
+  // Missing page paths for forceVisible (placeholder pages)
+  let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
 
-    if (anchorPage <= 0) return 0;
-    if (mode === 'single') return 0;
-    if (portrait && mode === 'auto') return 0;
+  // Anchor page for spread grouping - only changes on explicit external navigation
+  // (e.g., page selector), NOT during normal scrolling
+  let anchorPage = $state(currentPage);
 
-    // With hasCover: odd pages (1,3,5) are naturally first
-    // Without hasCover: even pages (0,2,4) are naturally first
-    const naturallyFirst = cover ? anchorPage % 2 === 1 : anchorPage % 2 === 0;
-    return naturallyFirst ? 0 : 1;
-  });
-
-  // Group pages into spreads based on settings
-  // Explicitly access dependencies in the derived to ensure tracking
+  // Group pages into spreads, anchored to the anchor page
+  // The anchor page is always the START of a spread, allowing users to shift pairings
+  // by navigating to different pages via the page selector
   let spreads = $derived.by(() => {
-    const p = pages;
     const mode = pageViewMode;
-    const cover = hasCover;
-    const direction = rtl;
-    const portrait = isPortrait;
-    const offset = pairingOffset;
-    return groupPagesIntoSpreads(p, mode, cover, direction, portrait, offset);
+    const _portrait = isPortrait; // Reference for reactivity
+    const _width = viewportWidth;
+    const _height = viewportHeight;
+
+    // Anchor point: the page the user explicitly navigated to (0-indexed)
+    const anchorIndex = anchorPage - 1;
+
+    // Calculate median page width once for the whole volume
+    const medianWidth = calculateMedianPageWidth(pages);
+    console.log(
+      `[Spreads] Calculating spreads: anchor=${anchorPage}, mode=${mode}, pages=${pages.length}, hasCover=${hasCover}, medianWidth=${medianWidth}`
+    );
+
+    // Helper to check if a page should be single
+    function isSinglePage(pageIndex: number): boolean {
+      const page = pages[pageIndex];
+      const next = pages[pageIndex + 1];
+      const prev = pageIndex > 0 ? pages[pageIndex - 1] : undefined;
+      return shouldShowSinglePage(
+        mode,
+        page,
+        next,
+        prev,
+        pageIndex === 0,
+        hasCover,
+        pageIndex,
+        medianWidth
+      );
+    }
+
+    // Build spreads forward from anchor
+    const forwardSpreads: PageSpread[] = [];
+    let i = anchorIndex;
+    while (i < pages.length) {
+      const page = pages[i];
+      const nextPage = pages[i + 1];
+      const showSingle = isSinglePage(i);
+
+      if (showSingle || !nextPage) {
+        forwardSpreads.push({
+          type: 'single',
+          pages: [page],
+          pageIndices: [i]
+        });
+        i += 1;
+      } else {
+        const spreadPages = rtl ? [nextPage, page] : [page, nextPage];
+        const spreadIndices = rtl ? [i + 1, i] : [i, i + 1];
+        forwardSpreads.push({
+          type: 'dual',
+          pages: spreadPages,
+          pageIndices: spreadIndices
+        });
+        i += 2;
+      }
+    }
+
+    // Build spreads backward from anchor (working backwards)
+    const backwardSpreads: PageSpread[] = [];
+    i = anchorIndex - 1;
+    while (i >= 0) {
+      const page = pages[i];
+      const prevPage = pages[i - 1];
+      const showSingle = isSinglePage(i);
+
+      if (showSingle || !prevPage) {
+        backwardSpreads.unshift({
+          type: 'single',
+          pages: [page],
+          pageIndices: [i]
+        });
+        i -= 1;
+      } else {
+        // Check if the previous page would also be single
+        const prevSingle = isSinglePage(i - 1);
+        if (prevSingle) {
+          // Previous is single, so current is single too
+          backwardSpreads.unshift({
+            type: 'single',
+            pages: [page],
+            pageIndices: [i]
+          });
+          i -= 1;
+        } else {
+          // Pair with previous page
+          const spreadPages = rtl ? [page, prevPage] : [prevPage, page];
+          const spreadIndices = rtl ? [i, i - 1] : [i - 1, i];
+          backwardSpreads.unshift({
+            type: 'dual',
+            pages: spreadPages,
+            pageIndices: spreadIndices
+          });
+          i -= 2;
+        }
+      }
+    }
+
+    return [...backwardSpreads, ...forwardSpreads];
   });
 
   // Layout info for each spread: yOffset, width, height, pageLayouts
@@ -190,32 +367,39 @@
         const width = page1.img_width + page2.img_width;
         const scale = calculateSpreadScale(width, height);
 
-        // RTL: right page first, then left page
+        // Determine earlier and later pages by index (independent of RTL swap in spread creation)
+        const earlierIdx = Math.min(idx1, idx2);
+        const laterIdx = Math.max(idx1, idx2);
+        const earlierPage = idx1 < idx2 ? page1 : page2;
+        const laterPage = idx1 < idx2 ? page2 : page1;
+
+        // RTL: earlier page on right, later page on left
+        // LTR: earlier page on left, later page on right
         if (rtl) {
           pageLayouts.push({
-            pageIndex: idx2,
+            pageIndex: laterIdx,
             xOffset: 0,
-            width: page2.img_width,
-            height: page2.img_height
+            width: laterPage.img_width,
+            height: laterPage.img_height
           });
           pageLayouts.push({
-            pageIndex: idx1,
-            xOffset: page2.img_width,
-            width: page1.img_width,
-            height: page1.img_height
+            pageIndex: earlierIdx,
+            xOffset: laterPage.img_width,
+            width: earlierPage.img_width,
+            height: earlierPage.img_height
           });
         } else {
           pageLayouts.push({
-            pageIndex: idx1,
+            pageIndex: earlierIdx,
             xOffset: 0,
-            width: page1.img_width,
-            height: page1.img_height
+            width: earlierPage.img_width,
+            height: earlierPage.img_height
           });
           pageLayouts.push({
-            pageIndex: idx2,
-            xOffset: page1.img_width,
-            width: page2.img_width,
-            height: page2.img_height
+            pageIndex: laterIdx,
+            xOffset: earlierPage.img_width,
+            width: laterPage.img_width,
+            height: laterPage.img_height
           });
         }
 
@@ -252,23 +436,48 @@
   $effect(() => {
     if (currentPage !== lastExternalPage) {
       lastExternalPage = currentPage;
+      // Cancel any running animations that might interfere
+      cancelInertiaAnimation();
+      cancelSnapAnimation();
+
+      // Set flag to prevent spreads-change effect from interfering
+      isExplicitNavigation = true;
+
+      // Update anchor page - this will cause spreads to recalculate
+      // with the new page as the start of a spread
+      anchorPage = currentPage;
+
       const pageIndex = currentPage - 1;
       const targetSpreadIndex = findSpreadForPage(spreads, pageIndex);
       if (targetSpreadIndex >= 0 && targetSpreadIndex !== localSpreadIndex) {
         localSpreadIndex = targetSpreadIndex;
         tick().then(() => {
+          isExplicitNavigation = false;
           applyZoomMode();
         });
+      } else {
+        isExplicitNavigation = false;
       }
     }
   });
 
-  // Sync when spreads change (e.g., hasCover toggle)
+  // Sync when spreads change (e.g., viewport resize, zoom mode change)
+  // Skip when explicitly navigating - jumpToSpread handles its own positioning
   let lastSpreadsKey = $state('');
   $effect(() => {
     const spreadsKey = spreads.map((s) => s.pageIndices.join('-')).join('|');
     if (spreadsKey !== lastSpreadsKey) {
+      const wasExplicitNav = isExplicitNavigation;
       lastSpreadsKey = spreadsKey;
+
+      // If we're explicitly navigating, don't interfere - jumpToSpread handles everything
+      if (wasExplicitNav) {
+        return;
+      }
+
+      // Cancel any running animations that might call checkSpreadTransition with stale values
+      cancelInertiaAnimation();
+      cancelSnapAnimation();
       const pageIndex = currentPage - 1;
       const targetSpreadIndex = findSpreadForPage(spreads, pageIndex);
       if (targetSpreadIndex >= 0) {
@@ -312,38 +521,131 @@
     cacheInitialized = true;
   });
 
-  const PRERENDER_BUFFER = 2;
-  const PRELOAD_BUFFER = 4;
+  const MAX_CACHED_PAGES = 6;
+  const PRELOAD_BUFFER = 1; // prev + current + next = 3 spreads = 6 pages for dual
 
-  // Pre-render pages to OffscreenCanvas
-  function preRenderPage(pageIndex: number, bitmap: ImageBitmap, page: Page): void {
-    if (pageCanvases.has(pageIndex)) return;
-
-    // Use OffscreenCanvas if available, otherwise HTMLCanvasElement
-    let canvas: OffscreenCanvas | HTMLCanvasElement;
-    let pCtx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
-
-    if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(page.img_width, page.img_height);
-      pCtx = canvas.getContext('2d');
-    } else {
-      canvas = document.createElement('canvas');
-      canvas.width = page.img_width;
-      canvas.height = page.img_height;
-      pCtx = canvas.getContext('2d');
+  // Get the effective scale for a page (spread scale * user zoom)
+  function getPageEffectiveScale(pageIndex: number): number {
+    // Find which spread this page belongs to
+    for (const sl of spreadLayout) {
+      for (const pl of sl.pageLayouts) {
+        if (pl.pageIndex === pageIndex) {
+          return sl.scale * userZoomMultiplier;
+        }
+      }
     }
+    return userZoomMultiplier;
+  }
 
-    if (pCtx) {
-      pCtx.drawImage(bitmap, 0, 0);
-      pageCanvases.set(pageIndex, canvas);
+  // Pre-render page to canvas at current zoom level
+  async function preRenderPage(pageIndex: number, bitmap: ImageBitmap, page: Page): Promise<void> {
+    const effectiveScale = getPageEffectiveScale(pageIndex);
+    const existingScale = pageCanvasesSpreadScale.get(pageIndex);
+
+    // Skip if already rendered at this scale or currently rendering
+    if (pageCanvases.has(pageIndex) && existingScale === effectiveScale) return;
+    if (picaRenderingPages.has(pageIndex)) return;
+
+    // Mark as rendering
+    picaRenderingPages.add(pageIndex);
+
+    try {
+      // Calculate scaled dimensions
+      const scaledWidth = Math.ceil(page.img_width * effectiveScale * dpr);
+      const scaledHeight = Math.ceil(page.img_height * effectiveScale * dpr);
+
+      let destCanvas: HTMLCanvasElement;
+
+      if (resizeMode === 'worker-canvas') {
+        // Worker-based canvas fallback - clone bitmap since worker will consume it
+        const bitmapClone = await createImageBitmap(bitmap);
+        const resultBitmap = await resizeWithWorker(bitmapClone, scaledWidth, scaledHeight);
+
+        // Convert ImageBitmap to canvas for consistent storage
+        destCanvas = document.createElement('canvas');
+        destCanvas.width = scaledWidth;
+        destCanvas.height = scaledHeight;
+        const ctx = destCanvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(resultBitmap, 0, 0);
+        }
+        resultBitmap.close();
+      } else {
+        // Pica-based resize (fast or js-only)
+        // Pica requires HTMLCanvasElement, so create source canvas from bitmap
+        const srcCanvas = document.createElement('canvas');
+        srcCanvas.width = bitmap.width;
+        srcCanvas.height = bitmap.height;
+        const srcCtx = srcCanvas.getContext('2d');
+        if (!srcCtx) return;
+        srcCtx.drawImage(bitmap, 0, 0);
+
+        // Create destination canvas
+        destCanvas = document.createElement('canvas');
+        destCanvas.width = scaledWidth;
+        destCanvas.height = scaledHeight;
+
+        // Try pica modes with fallback chain
+        let success = false;
+        if (resizeMode === 'pica-fast') {
+          try {
+            await getPicaFast().resize(srcCanvas, destCanvas, PICA_OPTIONS);
+            success = true;
+          } catch (err) {
+            console.info('[resize] pica-fast failed, trying pica-js:', err);
+            resizeMode = 'pica-js';
+          }
+        }
+
+        if (!success && resizeMode === 'pica-js') {
+          try {
+            await getPicaJsOnly().resize(srcCanvas, destCanvas, PICA_OPTIONS);
+            success = true;
+          } catch (err) {
+            console.info('[resize] pica-js failed, falling back to worker-canvas:', err);
+            resizeMode = 'worker-canvas';
+          }
+        }
+
+        if (!success && resizeMode === 'worker-canvas') {
+          // Retry with worker
+          const bitmapClone = await createImageBitmap(bitmap);
+          const resultBitmap = await resizeWithWorker(bitmapClone, scaledWidth, scaledHeight);
+          const ctx = destCanvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(resultBitmap, 0, 0);
+          }
+          resultBitmap.close();
+        }
+      }
+
+      // Store the result
+      pageCanvases.set(pageIndex, destCanvas);
+      pageCanvasesSpreadScale.set(pageIndex, effectiveScale);
+      pageCanvasesZoom = userZoomMultiplier;
+      perfStats.prerenderCount++;
+
       // Update bitmapsReady to trigger re-render
       bitmapsReady = new Set([...bitmapsReady, pageIndex]);
+      scheduleDraw();
+    } catch (err) {
+      console.error('[resize] Failed to pre-render page:', err);
+    } finally {
+      picaRenderingPages.delete(pageIndex);
     }
+  }
+
+  // Build spread page indices array for cache strategy
+  function getSpreadPageIndicesArray(): number[][] {
+    return spreads.map((s) => s.pageIndices);
   }
 
   // Load and pre-render pages in the window around current spread
   $effect(() => {
     if (!cacheInitialized) return;
+
+    // Depend on invalidation counter to re-run when cache is cleared
+    const _ = cacheInvalidationCounter;
 
     const currentSpread = spreads[localSpreadIndex];
     if (!currentSpread) return;
@@ -351,30 +653,39 @@
     const centerPageIdx = currentSpread.pageIndices[0];
     imageCache.updateCache(files, pages, centerPageIdx);
 
-    // Preload spreads in a wider window
-    const startIdx = Math.max(0, localSpreadIndex - PRELOAD_BUFFER);
-    const endIdx = Math.min(spreads.length - 1, localSpreadIndex + PRELOAD_BUFFER);
+    // Use the cache strategy to determine what to evict and load
+    const cachedPages = [...pageCanvases.keys()];
+    const spreadPageIndices = getSpreadPageIndicesArray();
+    const { toEvict, toLoad } = updateCacheStrategy(
+      cachedPages,
+      spreadPageIndices,
+      localSpreadIndex,
+      centerPageIdx,
+      { maxCachedPages: MAX_CACHED_PAGES, preloadBuffer: PRELOAD_BUFFER }
+    );
 
-    for (let i = startIdx; i <= endIdx; i++) {
-      const spread = spreads[i];
-      if (spread) {
-        for (const pageIdx of spread.pageIndices) {
-          if (!pageCanvases.has(pageIdx)) {
-            // Try sync first
-            const bitmap = imageCache.getBitmapSync(pageIdx);
-            if (bitmap) {
-              preRenderPage(pageIdx, bitmap, pages[pageIdx]);
-            } else {
-              // Request async
-              imageCache.getBitmap(pageIdx).then((resolvedBitmap) => {
-                if (resolvedBitmap && !pageCanvases.has(pageIdx)) {
-                  preRenderPage(pageIdx, resolvedBitmap, pages[pageIdx]);
-                  scheduleDraw();
-                }
-              });
-            }
+    // Evict pages that are too far
+    for (const pageIdx of toEvict) {
+      pageCanvases.delete(pageIdx);
+      pageCanvasesSpreadScale.delete(pageIdx);
+    }
+
+    // Load needed pages
+    for (const pageIdx of toLoad) {
+      const bitmap = imageCache.getBitmapSync(pageIdx);
+      if (bitmap) {
+        preRenderPage(pageIdx, bitmap, pages[pageIdx]);
+      } else {
+        imageCache.getBitmap(pageIdx).then((resolvedBitmap) => {
+          if (
+            resolvedBitmap &&
+            !pageCanvases.has(pageIdx) &&
+            pageCanvases.size < MAX_CACHED_PAGES
+          ) {
+            preRenderPage(pageIdx, resolvedBitmap, pages[pageIdx]);
+            scheduleDraw();
           }
-        }
+        });
       }
     }
   });
@@ -389,11 +700,10 @@
   function setupCanvas() {
     if (!canvasEl) return;
 
-    // Get 2D context with high-quality image rendering
+    // Get 2D context
     ctx = canvasEl.getContext('2d');
     if (ctx) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingEnabled = false;
     }
 
     // Set canvas size accounting for device pixel ratio (for sharp rendering on HiDPI)
@@ -402,16 +712,6 @@
     // CSS size stays at viewport size
     canvasEl.style.width = `${viewportWidth}px`;
     canvasEl.style.height = `${viewportHeight}px`;
-
-    // Create back buffer at HiDPI resolution
-    backBuffer = document.createElement('canvas');
-    backBuffer.width = viewportWidth * dpr;
-    backBuffer.height = viewportHeight * dpr;
-    backCtx = backBuffer.getContext('2d');
-    if (backCtx) {
-      backCtx.imageSmoothingEnabled = true;
-      backCtx.imageSmoothingQuality = 'high';
-    }
   }
 
   onMount(() => {
@@ -419,21 +719,37 @@
 
     // Handle window resize
     const handleResize = () => {
-      viewportWidth = window.innerWidth;
-      viewportHeight = window.innerHeight;
-      dpr = window.devicePixelRatio || 1;
+      const newWidth = window.innerWidth;
+      const newHeight = window.innerHeight;
+      const newDpr = window.devicePixelRatio || 1;
+
+      console.log(
+        `[Resize] ${viewportWidth}x${viewportHeight} → ${newWidth}x${newHeight}, dpr=${newDpr}`
+      );
+
+      viewportWidth = newWidth;
+      viewportHeight = newHeight;
+      dpr = newDpr;
 
       if (canvasEl) {
         canvasEl.width = viewportWidth * dpr;
         canvasEl.height = viewportHeight * dpr;
         canvasEl.style.width = `${viewportWidth}px`;
         canvasEl.style.height = `${viewportHeight}px`;
+
+        // Re-acquire context after resize (can be lost on some devices)
+        ctx = canvasEl.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingEnabled = false;
+        } else {
+          console.error('[Resize] Failed to get canvas context after resize');
+        }
       }
-      if (backBuffer) {
-        backBuffer.width = viewportWidth * dpr;
-        backBuffer.height = viewportHeight * dpr;
-      }
-      applyZoomMode();
+
+      // Wait for derived values (spreadLayout) to recalculate before applying zoom
+      tick().then(() => {
+        applyZoomMode();
+      });
     };
 
     window.addEventListener('resize', handleResize);
@@ -456,9 +772,19 @@
     if (inertiaAnimationId !== null) {
       cancelAnimationFrame(inertiaAnimationId);
     }
+    if (zoomSettleTimeout) {
+      clearTimeout(zoomSettleTimeout);
+    }
     // Clean up pre-rendered canvases
     pageCanvases.clear();
+    pageCanvasesSpreadScale.clear();
     imageCache.cleanup();
+    // Clean up resize worker
+    if (resizeWorker) {
+      resizeWorker.terminate();
+      resizeWorker = null;
+    }
+    resizeWorkerPending.clear();
   });
 
   // ============================================
@@ -466,6 +792,26 @@
   // ============================================
 
   let drawScheduled = false;
+
+  // Performance instrumentation
+  const PERF_ENABLED = true;
+  const perfStats = {
+    drawCount: 0,
+    lastDrawTime: 0,
+    avgDrawTime: 0,
+    maxDrawTime: 0,
+    prerenderCount: 0
+  };
+
+  // Log stats every 60 frames
+  function logPerfStats(): void {
+    if (!PERF_ENABLED) return;
+    if (perfStats.drawCount % 60 === 0 && perfStats.drawCount > 0) {
+      console.log(
+        `[PERF STATS] draws: ${perfStats.drawCount}, avgDraw: ${perfStats.avgDrawTime.toFixed(2)}ms, maxDraw: ${perfStats.maxDrawTime.toFixed(2)}ms, prerenders: ${perfStats.prerenderCount}`
+      );
+    }
+  }
 
   function scheduleDraw() {
     if (drawScheduled) return;
@@ -476,57 +822,95 @@
     });
   }
 
-  function draw(): void {
-    if (!ctx || !backCtx || !backBuffer) return;
+  // Mark zoom as active and schedule settling
+  function markZoomActive(): void {
+    isZooming = true;
+    if (zoomSettleTimeout) {
+      clearTimeout(zoomSettleTimeout);
+    }
+    zoomSettleTimeout = setTimeout(() => {
+      isZooming = false;
+      zoomSettleTimeout = null;
+      // DON'T clear pageCanvases - keep old ones visible until new ones replace them
+      // Just clear the scale tracking so preRenderPage knows to re-render
+      pageCanvasesSpreadScale.clear();
+      // Trigger cache effect to re-run and load pages at new zoom
+      cacheInvalidationCounter++;
+      scheduleDraw();
+    }, ZOOM_SETTLE_DELAY);
+  }
 
-    // Ensure high-quality image scaling (canvas state can be reset)
-    backCtx.imageSmoothingEnabled = true;
-    backCtx.imageSmoothingQuality = 'high';
+  function draw(): void {
+    const t0 = performance.now();
+    if (!ctx) return;
 
     // All drawing is done at HiDPI resolution (CSS pixels * dpr)
     const canvasW = viewportWidth * dpr;
     const canvasH = viewportHeight * dpr;
 
-    // 1. Clear back buffer
-    backCtx.fillStyle = $settings.backgroundColor || '#1a1a1a';
-    backCtx.fillRect(0, 0, canvasW, canvasH);
+    // Clear canvas to transparent (background color comes from CSS, unaffected by invert filter)
+    ctx.clearRect(0, 0, canvasW, canvasH);
+    const t1 = performance.now();
 
-    // 2. Calculate which spreads are visible
+    // Get visible spreads
     const visibleSpreads = getVisibleSpreads();
 
-    // 3. Draw each visible spread (each with its own scale)
-    for (const sl of visibleSpreads) {
-      // Effective scale = per-spread scale * user zoom multiplier
-      const effectiveScale = sl.scale * userZoomMultiplier;
+    // During zoom gestures, always use slow path
+    const forceSlowPath = isZooming;
+    ctx.imageSmoothingEnabled = false;
 
-      // Calculate spread center X position (in CSS pixels)
-      const spreadScreenX = (viewportWidth - sl.width * effectiveScale) / 2;
+    for (const sl of visibleSpreads) {
+      const effectiveScale = sl.scale * userZoomMultiplier;
+      const spreadCenterX = (viewportWidth - sl.width * effectiveScale) / 2;
 
       for (const pl of sl.pageLayouts) {
         const source = pageCanvases.get(pl.pageIndex);
         if (!source) continue;
 
-        // Calculate positions in CSS pixels
-        // yOffset is already in scaled space, apply user zoom on top
-        const screenX = spreadScreenX + pl.xOffset * effectiveScale;
+        // Screen position in CSS pixels (transform.x shifts from center)
+        const screenX = spreadCenterX + pl.xOffset * effectiveScale + transform.x;
         const screenY = sl.yOffset * userZoomMultiplier + transform.y;
         const screenW = pl.width * effectiveScale;
         const screenH = pl.height * effectiveScale;
 
-        // Culling: skip if completely off-screen (in CSS pixels)
+        // Culling: skip if completely off-screen
         if (screenX + screenW < 0 || screenX > viewportWidth) continue;
         if (screenY + screenH < 0 || screenY > viewportHeight) continue;
 
-        // Draw at HiDPI resolution (multiply by dpr)
-        backCtx.drawImage(source, screenX * dpr, screenY * dpr, screenW * dpr, screenH * dpr);
+        // Check if this page's canvas is at the correct scale for direct blit
+        const cachedScale = pageCanvasesSpreadScale.get(pl.pageIndex);
+        const canDirectBlit = !forceSlowPath && cachedScale === effectiveScale;
+
+        if (canDirectBlit) {
+          // FAST PATH: Direct blit, no scaling
+          ctx.drawImage(source, screenX * dpr, screenY * dpr);
+        } else {
+          // SLOW PATH: Scale from existing pageCanvas (keeps old image visible during transitions)
+          ctx.drawImage(source, screenX * dpr, screenY * dpr, screenW * dpr, screenH * dpr);
+        }
       }
     }
+    const t2 = performance.now();
 
-    // 4. Blit to visible canvas (atomic, no flash)
-    ctx.drawImage(backBuffer, 0, 0);
-
-    // 5. Update text overlay position (synchronous DOM update)
+    // Update text overlay position (synchronous DOM update)
     updateTextOverlayPosition();
+    const t3 = performance.now();
+
+    // Update stats
+    perfStats.drawCount++;
+    const totalTime = t3 - t0;
+    perfStats.lastDrawTime = totalTime;
+    perfStats.avgDrawTime =
+      (perfStats.avgDrawTime * (perfStats.drawCount - 1) + totalTime) / perfStats.drawCount;
+    if (totalTime > perfStats.maxDrawTime) perfStats.maxDrawTime = totalTime;
+
+    if (PERF_ENABLED && totalTime > 8) {
+      console.log(
+        `[PERF] draw: total=${totalTime.toFixed(2)}ms (clear=${(t1 - t0).toFixed(2)}, render=${(t2 - t1).toFixed(2)}, textOverlay=${(t3 - t2).toFixed(2)})`
+      );
+    }
+
+    logPerfStats();
   }
 
   function getVisibleSpreads(): SpreadLayout[] {
@@ -548,16 +932,16 @@
 
   function updateTextOverlayPosition(): void {
     if (!textOverlayEl) return;
-    // Position the text overlay container - only apply Y translation
+    // Position the text overlay container - apply both X and Y translation
     // Each spread overlay handles its own scale via inline styles
-    textOverlayEl.style.transform = `translateY(${transform.y}px)`;
+    textOverlayEl.style.transform = `translate(${transform.x}px, ${transform.y}px)`;
   }
 
   // Trigger draw when bitmaps become ready
   $effect(() => {
     // Reference bitmapsReady to create dependency
     const _ = bitmapsReady.size;
-    if (ctx && backCtx) {
+    if (ctx) {
       scheduleDraw();
     }
   });
@@ -576,6 +960,7 @@
     if (isTextBoxClick(e)) return; // Allow text selection
 
     cancelSnapAnimation(); // Stop any ongoing snap
+    cancelZoomAnimation(); // Stop any ongoing zoom animation
     isDragging = true;
     dragStart = { x: e.clientX, y: e.clientY };
     transformStart = { x: transform.x, y: transform.y };
@@ -586,6 +971,13 @@
 
     transform.x = transformStart.x + (e.clientX - dragStart.x);
     transform.y = transformStart.y + (e.clientY - dragStart.y);
+
+    // Clamp horizontal bounds
+    const spread = spreadLayout[localSpreadIndex];
+    if (spread) {
+      const bounds = getSpreadBounds(spread);
+      transform.x = Math.min(bounds.leftX, Math.max(bounds.rightX, transform.x));
+    }
 
     draw(); // Synchronous!
     checkSpreadTransition();
@@ -606,10 +998,43 @@
     return target.closest('.textBox') !== null;
   }
 
+  // Double-click zoom (desktop)
+  function handleDoubleClick(e: MouseEvent): void {
+    if (isTextBoxClick(e)) return; // Don't zoom when double-clicking text
+    e.preventDefault();
+    handleDoubleTapZoom(e.clientX, e.clientY);
+  }
+
+  // Click to toggle UI overlay visibility
+  function handleClick(e: MouseEvent): void {
+    const target = e.target as HTMLElement;
+
+    // Only toggle if clicking on blank space (not text boxes)
+    if (target.closest('.textBox')) return;
+
+    // Don't toggle if dismissing an active textbox (has selection or focus)
+    const selection = window.getSelection();
+    const hasTextSelection = selection && selection.toString().trim().length > 0;
+    const activeElement = document.activeElement;
+    const hasActiveTextBox = activeElement?.closest('.textBox') !== null;
+
+    if (hasTextSelection || hasActiveTextBox) {
+      // Clear selection/focus but don't toggle UI
+      selection?.removeAllRanges();
+      if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+      }
+      return;
+    }
+
+    onOverlayToggle?.();
+  }
+
   // Wheel scroll/zoom
   function handleWheel(e: WheelEvent): void {
     e.preventDefault();
     cancelSnapAnimation(); // Stop any ongoing snap
+    cancelZoomAnimation(); // Stop any ongoing zoom animation
 
     const shouldZoom = $settings.swapWheelBehavior ? !e.ctrlKey : e.ctrlKey;
 
@@ -626,6 +1051,8 @@
 
   // Zoom at point (modifies userZoomMultiplier, not per-spread scales)
   function zoomAt(clientX: number, clientY: number, scaleDelta: number): void {
+    markZoomActive(); // Signal that zoom is happening
+
     const newZoom = Math.max(0.1, Math.min(10, userZoomMultiplier * scaleDelta));
     const ratio = newZoom / userZoomMultiplier;
 
@@ -642,6 +1069,103 @@
   let initialPinchDistance = 0;
   let initialZoom = 1;
   let initialPinchCenter = { x: 0, y: 0 };
+
+  // Double-tap/double-click detection
+  let lastTapTime = 0;
+  let lastTapPos = { x: 0, y: 0 };
+  const DOUBLE_TAP_THRESHOLD = 300; // ms
+  const DOUBLE_TAP_DISTANCE = 30; // px tolerance
+  const DOUBLE_TAP_ZOOM_LEVEL = 2.5; // Target zoom level for double-tap
+
+  // Zoom animation
+  let zoomAnimationId: number | null = null;
+
+  function cancelZoomAnimation(): void {
+    if (zoomAnimationId !== null) {
+      cancelAnimationFrame(zoomAnimationId);
+      zoomAnimationId = null;
+    }
+  }
+
+  /**
+   * Animate zoom to a target level, keeping the specified point stationary.
+   * Uses ease-out cubic for smooth deceleration.
+   */
+  function animateZoomTo(
+    targetZoom: number,
+    clientX: number,
+    clientY: number,
+    duration = 250
+  ): void {
+    cancelZoomAnimation();
+    cancelSnapAnimation();
+    markZoomActive();
+
+    const startZoom = userZoomMultiplier;
+    const startX = transform.x;
+    const startY = transform.y;
+    const startTime = performance.now();
+
+    // Calculate target position to keep point under cursor stationary
+    const ratio = targetZoom / startZoom;
+    const targetX = clientX - (clientX - startX) * ratio;
+    const targetY = clientY - (clientY - startY) * ratio;
+
+    function animate(currentTime: number) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3); // Ease-out cubic
+
+      userZoomMultiplier = startZoom + (targetZoom - startZoom) * eased;
+      transform.x = startX + (targetX - startX) * eased;
+      transform.y = startY + (targetY - startY) * eased;
+
+      draw();
+
+      if (progress < 1) {
+        zoomAnimationId = requestAnimationFrame(animate);
+      } else {
+        zoomAnimationId = null;
+        // After zoom animation completes, snap if enabled
+        if ($settings.scrollSnap) {
+          snapToNearestBoundary();
+        }
+      }
+    }
+
+    zoomAnimationId = requestAnimationFrame(animate);
+  }
+
+  /**
+   * Handle double-tap/double-click zoom.
+   * Toggles between 1x and DOUBLE_TAP_ZOOM_LEVEL, zooming at the tap location.
+   */
+  function handleDoubleTapZoom(clientX: number, clientY: number): void {
+    // Toggle zoom: if zoomed in, zoom out; if zoomed out, zoom in
+    const isZoomedIn = userZoomMultiplier > 1.5;
+    const targetZoom = isZoomedIn ? 1 : DOUBLE_TAP_ZOOM_LEVEL;
+    animateZoomTo(targetZoom, clientX, clientY);
+  }
+
+  /**
+   * Check if a tap qualifies as a double-tap based on timing and position.
+   */
+  function isDoubleTap(clientX: number, clientY: number): boolean {
+    const now = performance.now();
+    const timeDiff = now - lastTapTime;
+    const distance = Math.sqrt(
+      Math.pow(clientX - lastTapPos.x, 2) + Math.pow(clientY - lastTapPos.y, 2)
+    );
+    return timeDiff < DOUBLE_TAP_THRESHOLD && distance < DOUBLE_TAP_DISTANCE;
+  }
+
+  /**
+   * Record a tap for double-tap detection.
+   */
+  function recordTap(clientX: number, clientY: number): void {
+    lastTapTime = performance.now();
+    lastTapPos = { x: clientX, y: clientY };
+  }
 
   // Velocity tracking for inertial scrolling
   interface VelocitySample {
@@ -661,6 +1185,7 @@
 
   function handleTouchStart(e: TouchEvent): void {
     cancelSnapAnimation(); // Stop any ongoing snap
+    cancelZoomAnimation(); // Stop any ongoing zoom animation
     cancelInertiaAnimation(); // Stop any ongoing inertia
     activeTouches = Array.from(e.touches);
     velocitySamples = []; // Reset velocity tracking
@@ -697,6 +1222,13 @@
       transform.x = transformStart.x + (touch.clientX - dragStart.x);
       transform.y = transformStart.y + (touch.clientY - dragStart.y);
 
+      // Clamp horizontal bounds
+      const spread = spreadLayout[localSpreadIndex];
+      if (spread) {
+        const bounds = getSpreadBounds(spread);
+        transform.x = Math.min(bounds.leftX, Math.max(bounds.rightX, transform.x));
+      }
+
       // Track velocity samples
       const now = performance.now();
       velocitySamples.push({
@@ -714,6 +1246,7 @@
     } else if (newTouches.length === 2) {
       // Pinch zoom - no inertia for pinch
       velocitySamples = [];
+      markZoomActive(); // Signal that zoom is happening
 
       const newDistance = getTouchDistance(newTouches[0], newTouches[1]);
       const newCenter = getTouchCenter(newTouches[0], newTouches[1]);
@@ -740,21 +1273,69 @@
 
   function handleTouchEnd(e: TouchEvent): void {
     const wasDragging = isDragging;
+    const previousTouchCount = activeTouches.length;
     activeTouches = Array.from(e.touches);
 
     if (activeTouches.length === 0) {
       isDragging = false;
 
+      // Check for tap (single finger, minimal movement)
+      if (previousTouchCount === 1) {
+        const lastTouch = e.changedTouches[0];
+        const tapDistance = Math.sqrt(
+          Math.pow(lastTouch.clientX - dragStart.x, 2) +
+            Math.pow(lastTouch.clientY - dragStart.y, 2)
+        );
+        const isTap = tapDistance < 10; // Less than 10px movement = tap
+
+        if (isTap) {
+          // Check for double-tap
+          if (isDoubleTap(lastTouch.clientX, lastTouch.clientY)) {
+            // Don't trigger on text boxes
+            const target = e.target as HTMLElement;
+            if (!target.closest('.textBox')) {
+              handleDoubleTapZoom(lastTouch.clientX, lastTouch.clientY);
+              lastTapTime = 0; // Reset so triple-tap doesn't trigger again
+              return;
+            }
+          }
+          // Record this tap for potential double-tap
+          recordTap(lastTouch.clientX, lastTouch.clientY);
+        }
+      }
+
       // Calculate velocity for inertial scrolling
       if (wasDragging && velocitySamples.length >= 2) {
         const velocity = calculateVelocity();
-
-        // Only apply inertia if velocity is significant
         const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
-        if (speed > 100) {
-          // px/s threshold
+
+        // In snap mode, check for page-change fling with dynamic threshold
+        // Threshold is lower when near the page boundary, higher when far from it
+        // Only trigger on clearly vertical swipes (vy must be at least 2x vx)
+        const isVerticalSwipe = Math.abs(velocity.vy) > Math.abs(velocity.vx) * 2;
+        if ($settings.scrollSnap && isVerticalSwipe) {
+          // Determine direction based on vertical velocity
+          // Negative vy = swiping up = scrolling down = next spread (start at top)
+          // Positive vy = swiping down = scrolling up = previous spread (start at bottom)
+          const direction = velocity.vy < 0 ? 'down' : 'up';
+          const threshold = getDynamicFlingThreshold(direction);
+
+          if (speed > threshold) {
+            if (direction === 'down') {
+              jumpToSpread(localSpreadIndex + 1, 'top');
+            } else {
+              jumpToSpread(localSpreadIndex - 1, 'bottom');
+            }
+            return;
+          }
+        }
+
+        // Allow inertial scrolling if there's meaningful velocity
+        // (inertia handler will snap when it stops if snap mode is enabled)
+        const minInertiaSpeed = 100; // px/s
+        if (speed > minInertiaSpeed) {
           startInertialScroll(velocity.vx, velocity.vy);
-          return; // Don't snap immediately, inertia will handle it
+          return;
         }
       }
 
@@ -793,6 +1374,11 @@
     const minVelocity = 250; // Stop when velocity drops below this (px/s)
     let lastTime = performance.now();
 
+    // In snap mode, constrain to current spread bounds
+    const constrainToBounds = $settings.scrollSnap;
+    const spread = spreadLayout[localSpreadIndex];
+    const bounds = spread ? getSpreadBounds(spread) : null;
+
     function animate(currentTime: number) {
       const dt = (currentTime - lastTime) / 1000; // Delta time in seconds
       lastTime = currentTime;
@@ -801,12 +1387,40 @@
       transform.x += vx * dt;
       transform.y += vy * dt;
 
+      // Clamp to spread bounds
+      if (bounds) {
+        // Horizontal bounds (always enforce)
+        if (transform.x > bounds.leftX) {
+          transform.x = bounds.leftX;
+          vx = 0;
+        } else if (transform.x < bounds.rightX) {
+          transform.x = bounds.rightX;
+          vx = 0;
+        }
+
+        // Vertical bounds (only in snap mode)
+        if (constrainToBounds) {
+          const effectiveBottomY = bounds.fitsInViewport ? bounds.centerY : bounds.bottomY;
+          if (transform.y > bounds.topY) {
+            transform.y = bounds.topY;
+            vy = 0;
+          } else if (transform.y < effectiveBottomY) {
+            transform.y = effectiveBottomY;
+            vy = 0;
+          }
+        }
+      }
+
       // Apply friction
       vx *= friction;
       vy *= friction;
 
       draw();
-      checkSpreadTransition();
+
+      // Only check spread transition if not constraining to bounds
+      if (!constrainToBounds) {
+        checkSpreadTransition();
+      }
 
       // Check if we should stop
       const speed = Math.sqrt(vx * vx + vy * vy);
@@ -853,6 +1467,14 @@
         e.preventDefault();
         panVertical('down');
         break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        panHorizontal('left');
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        panHorizontal('right');
+        break;
       case 'PageDown':
       case ' ':
         e.preventDefault();
@@ -891,92 +1513,133 @@
 
     cancelSnapAnimation(); // Cancel any ongoing animation
 
-    // Use per-spread scale with userZoomMultiplier
-    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
-    const topY = -spread.yOffset * userZoomMultiplier;
-    const bottomY = topY + viewportHeight - scaledHeight;
+    // Check if at boundary - if so, change pages
+    if (isAtSpreadBoundary(direction)) {
+      if (direction === 'up') {
+        jumpToSpread(localSpreadIndex - 1, 'bottom');
+      } else {
+        jumpToSpread(localSpreadIndex + 1, 'top');
+      }
+      return;
+    }
 
-    // How much we want to pan (60% of viewport)
+    // Pan within current spread
+    const bounds = getSpreadBounds(spread);
     const panAmount = viewportHeight * 0.6;
-
-    // Small threshold for "at boundary" detection
-    const threshold = 2;
-
     let targetY: number;
 
     if (direction === 'up') {
-      // Check if already at top boundary
-      if (transform.y >= topY - threshold) {
-        // At top - go to bottom of previous page (to continue reading upward)
-        jumpToSpread(localSpreadIndex - 1, 'bottom');
-        return;
-      }
-
-      // Calculate how much we can pan up (toward topY, which is >= current y)
-      const remainingToTop = topY - transform.y;
+      const remainingToTop = bounds.topY - transform.y;
       const actualPan = Math.min(panAmount, remainingToTop);
-
       targetY = transform.y + actualPan;
     } else {
-      // Check if already at bottom boundary (or content fits in viewport)
-      const effectiveBottomY =
-        scaledHeight <= viewportHeight
-          ? topY + (viewportHeight - scaledHeight) / 2 // Centered position
-          : bottomY;
-
-      if (transform.y <= effectiveBottomY + threshold) {
-        // At bottom - go to top of next page (to continue reading downward)
-        jumpToSpread(localSpreadIndex + 1, 'top');
-        return;
-      }
-
-      // Calculate how much we can pan down (toward bottomY, which is <= current y)
+      const effectiveBottomY = bounds.fitsInViewport ? bounds.centerY : bounds.bottomY;
       const remainingToBottom = transform.y - effectiveBottomY;
       const actualPan = Math.min(panAmount, remainingToBottom);
-
       targetY = transform.y - actualPan;
     }
 
-    // Animate to target position
-    animatePanTo(targetY);
+    animateToY(targetY);
   }
 
   /**
-   * Animate pan to a target Y position
+   * Pan horizontally by 30% of viewport, respecting spread boundaries.
+   * Animates the pan smoothly.
    */
-  function animatePanTo(targetY: number): void {
+  function panHorizontal(direction: 'left' | 'right'): void {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return;
+
     cancelSnapAnimation();
 
-    // Capture start position and time on first frame to avoid race conditions
-    let startY: number | null = null;
-    let startTime: number | null = null;
-    let distance: number;
-    let duration: number;
+    const bounds = getSpreadBounds(spread);
+
+    // If content fits horizontally, no panning needed
+    if (bounds.fitsHorizontally) return;
+
+    const panAmount = viewportWidth * 0.3;
+    let targetX: number;
+
+    if (direction === 'left') {
+      // Pan left = shift content right = increase transform.x
+      const remainingToLeft = bounds.leftX - transform.x;
+      const actualPan = Math.min(panAmount, remainingToLeft);
+      targetX = transform.x + actualPan;
+    } else {
+      // Pan right = shift content left = decrease transform.x
+      const remainingToRight = transform.x - bounds.rightX;
+      const actualPan = Math.min(panAmount, remainingToRight);
+      targetX = transform.x - actualPan;
+    }
+
+    animateToX(targetX);
+  }
+
+  /**
+   * Animate to a target X position with ease-out cubic easing.
+   */
+  function animateToX(targetX: number): void {
+    cancelSnapAnimation();
+
+    const startX = transform.x;
+    const distance = targetX - startX;
+
+    if (Math.abs(distance) < 1) {
+      transform.x = targetX;
+      draw();
+      return;
+    }
+
+    const duration = Math.min(200, Math.max(100, Math.abs(distance) * 0.3));
+    const startTime = performance.now();
 
     function animate(currentTime: number) {
-      // Capture on first frame after any pending effects have run
-      if (startY === null) {
-        startY = transform.y;
-        startTime = currentTime;
-        distance = targetY - startY;
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
 
-        // Skip animation if distance is tiny
-        if (Math.abs(distance) < 1) {
-          transform.y = targetY;
-          draw();
-          snapAnimationId = null;
-          return;
-        }
+      transform.x = startX + distance * eased;
+      draw();
 
-        // Scale duration based on distance: 100ms min, 200ms max
-        duration = Math.min(200, Math.max(100, Math.abs(distance) * 0.4));
+      if (progress < 1) {
+        snapAnimationId = requestAnimationFrame(animate);
+      } else {
+        snapAnimationId = null;
       }
+    }
 
-      const elapsed = currentTime - startTime!;
+    snapAnimationId = requestAnimationFrame(animate);
+  }
+
+  /**
+   * Animate to a target Y position with ease-out cubic easing.
+   * Duration scales with distance for natural feel.
+   */
+  function animateToY(targetY: number): void {
+    cancelSnapAnimation();
+
+    const startY = transform.y;
+    const distance = targetY - startY;
+
+    // Skip animation if distance is tiny
+    if (Math.abs(distance) < 1) {
+      transform.y = targetY;
+      draw();
+      return;
+    }
+
+    // Scale duration based on distance: 100ms min, 200ms max
+    const duration = Math.min(200, Math.max(100, Math.abs(distance) * 0.3));
+    const startTime = performance.now();
+
+    function animate(currentTime: number) {
+      const elapsed = currentTime - startTime;
       const progress = Math.min(elapsed / duration, 1);
 
-      // Linear easing for consistent key pan movement
-      transform.y = startY + distance * progress;
+      // Ease-out cubic for smooth deceleration
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      transform.y = startY + distance * eased;
       draw();
 
       if (progress < 1) {
@@ -1003,15 +1666,20 @@
     // yOffset is in scaled space (before userZoomMultiplier)
     const viewCenterY = (-transform.y + viewportHeight / 2) / userZoomMultiplier;
 
-    for (let i = 0; i < spreadLayout.length; i++) {
+    if (spreadLayout.length === 0) return 0;
+    if (viewCenterY < 0) return 0;
+
+    // Find the spread that contains the view center.
+    // Iterate from the end to handle gaps between spreads correctly -
+    // gaps are attributed to the spread above them.
+    for (let i = spreadLayout.length - 1; i >= 0; i--) {
       const s = spreadLayout[i];
-      // yOffset and scaledHeight are in per-spread scaled space
-      if (viewCenterY >= s.yOffset && viewCenterY < s.yOffset + s.scaledHeight) {
+      if (viewCenterY >= s.yOffset) {
         return i;
       }
     }
 
-    return viewCenterY < 0 ? 0 : spreadLayout.length - 1;
+    return 0;
   }
 
   function checkSpreadTransition(): void {
@@ -1048,37 +1716,30 @@
     }
 
     cancelSnapAnimation();
+
+    // Navigate within existing spread structure (don't change anchor)
+    const targetSpread = spreads[index];
+    if (!targetSpread) return;
+
     localSpreadIndex = index;
     const spread = spreadLayout[index];
     if (!spread) return;
 
-    // Use per-spread scale with userZoomMultiplier
-    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
-    let targetY: number;
-
-    if (position === 'bottom') {
-      // Position so bottom of spread aligns with bottom of viewport
-      // (or center if spread fits in viewport)
-      if (scaledHeight <= viewportHeight) {
-        targetY = -spread.yOffset * userZoomMultiplier + (viewportHeight - scaledHeight) / 2;
-      } else {
-        targetY = -spread.yOffset * userZoomMultiplier + viewportHeight - scaledHeight;
-      }
-    } else {
-      // Position spread at top of viewport
-      targetY = -spread.yOffset * userZoomMultiplier;
-    }
+    const targetY = getSpreadTargetY(spread, position) ?? -spread.yOffset * userZoomMultiplier;
 
     // Notify parent
-    const newPage = spreads[index].pageIndices[0] + 1;
+    const newPage = targetSpread.pageIndices[0] + 1;
+    lastExternalPage = newPage;
     const { charCount } = getCharCount(pages, newPage);
     const isComplete = index === spreads.length - 1;
-    lastExternalPage = newPage;
     onPageChange(newPage, charCount, isComplete);
     activityTracker.recordActivity();
 
+    // Reset horizontal position when changing spreads
+    transform.x = 0;
+
     if (animate) {
-      animatePanTo(targetY);
+      animateToY(targetY);
     } else {
       transform.y = targetY;
       draw();
@@ -1091,17 +1752,35 @@
 
   function applyZoomMode(): void {
     const spread = spreadLayout[localSpreadIndex];
-    if (!spread) return;
+    if (!spread) {
+      console.warn(
+        `[applyZoomMode] No spread at index ${localSpreadIndex}, spreadLayout.length=${spreadLayout.length}`
+      );
+      // Still schedule a draw to show something
+      scheduleDraw();
+      return;
+    }
+
+    console.log(
+      `[applyZoomMode] Applying zoom for spread ${localSpreadIndex}, yOffset=${spread.yOffset}`
+    );
 
     // Reset user zoom multiplier - per-spread scales handle the zoom mode
     userZoomMultiplier = 1;
+
+    // DON'T clear pageCanvases - keep old ones visible until new ones replace them
+    // The draw function will scale old canvases (slow path) until new ones are ready
+    // Just clear the scale tracking so preRenderPage knows to re-render
+    pageCanvasesSpreadScale.clear();
 
     // Center horizontally and position at top of spread
     // yOffset is already in per-spread scaled space
     transform.x = 0; // Centering handled in draw()
     transform.y = -spread.yOffset * userZoomMultiplier;
 
-    draw();
+    // Trigger cache effect to re-run and load pages at new zoom
+    cacheInvalidationCounter++;
+    scheduleDraw();
   }
 
   // ============================================
@@ -1128,71 +1807,185 @@
     }
   }
 
+  /**
+   * Get the valid Y position bounds for a spread.
+   * Returns topY, bottomY (for content larger than viewport), and centerY (for content that fits).
+   */
+  function getSpreadBounds(spread: SpreadLayout): {
+    topY: number;
+    bottomY: number;
+    centerY: number;
+    fitsInViewport: boolean;
+    leftX: number;
+    rightX: number;
+    centerX: number;
+    fitsHorizontally: boolean;
+  } {
+    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
+    const topY = -spread.yOffset * userZoomMultiplier;
+    const bottomY = topY + viewportHeight - scaledHeight;
+    const centerY = topY + (viewportHeight - scaledHeight) / 2;
+
+    const scaledWidth = spread.scaledWidth * userZoomMultiplier;
+    // When transform.x = 0, spread is centered. leftX/rightX are the bounds for transform.x
+    // Positive transform.x shifts content right (shows left edge)
+    // Negative transform.x shifts content left (shows right edge)
+    const leftX = 0; // Can't shift right past center
+    const rightX = 0; // Can't shift left past center
+    const maxShift = (scaledWidth - viewportWidth) / 2;
+    const fitsHorizontally = scaledWidth <= viewportWidth;
+
+    return {
+      topY,
+      bottomY,
+      centerY,
+      fitsInViewport: scaledHeight <= viewportHeight,
+      leftX: fitsHorizontally ? 0 : maxShift,
+      rightX: fitsHorizontally ? 0 : -maxShift,
+      centerX: 0,
+      fitsHorizontally
+    };
+  }
+
+  /**
+   * Calculate dynamic fling threshold based on proximity to spread boundary.
+   * The closer the boundary is to the viewport center, the easier it is to trigger paging.
+   * @param velocityDirection - 'up' (vy > 0, going to previous) or 'down' (vy < 0, going to next)
+   * @returns threshold in px/s - lower means easier to trigger page change
+   */
+  function getDynamicFlingThreshold(velocityDirection: 'up' | 'down'): number {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) {
+      // Fallback to base threshold
+      return ($settings.swipeThreshold / 100) * viewportHeight * 5;
+    }
+
+    const viewportCenterY = viewportHeight / 2;
+
+    // Determine which boundary we're approaching
+    // When scrolling down (velocityDirection === 'down'), we approach the bottom boundary
+    // When scrolling up (velocityDirection === 'up'), we approach the top boundary
+    // Screen position = transform.y + (content position * userZoomMultiplier)
+    const spreadTopOnScreen = transform.y + spread.yOffset * userZoomMultiplier;
+    const spreadHeightOnScreen = spread.scaledHeight * userZoomMultiplier;
+
+    let boundaryScreenY: number;
+    if (velocityDirection === 'down') {
+      // Bottom boundary: top of spread + height of spread
+      boundaryScreenY = spreadTopOnScreen + spreadHeightOnScreen;
+    } else {
+      // Top boundary
+      boundaryScreenY = spreadTopOnScreen;
+    }
+
+    // Distance from boundary to viewport center (in pixels)
+    const distanceFromCenter = Math.abs(boundaryScreenY - viewportCenterY);
+
+    // Half viewport = screen edge
+    const halfViewport = viewportHeight / 2;
+
+    // If boundary is off-screen, don't allow paging via fling
+    if (distanceFromCenter > halfViewport) {
+      return Infinity;
+    }
+
+    // Base threshold from user settings
+    const baseThreshold = ($settings.swipeThreshold / 100) * viewportHeight;
+
+    // Scale from 0x at center to 1x at screen edge
+    // When boundary is at viewport center, even tiny inertia should trigger paging
+    const scaleFactor = distanceFromCenter / halfViewport;
+
+    return baseThreshold * scaleFactor;
+  }
+
+  /**
+   * Determine which boundary we need to snap to based on current position.
+   * @returns 'top' if past top, 'bottom' if past bottom, null if within valid bounds
+   */
+  function getSnapDirection(spread: SpreadLayout): 'top' | 'bottom' | null {
+    const bounds = getSpreadBounds(spread);
+
+    // Content fits - check if we're not centered
+    if (bounds.fitsInViewport) {
+      const tolerance = 1;
+      if (Math.abs(transform.y - bounds.centerY) > tolerance) {
+        // Need to center - use 'top' since both resolve to centerY anyway
+        return 'top';
+      }
+      return null;
+    }
+
+    // Content larger than viewport - check boundaries
+    if (transform.y > bounds.topY) {
+      return 'top';
+    } else if (transform.y < bounds.bottomY) {
+      return 'bottom';
+    }
+    return null;
+  }
+
+  /**
+   * Calculate the target Y position for a spread based on desired alignment.
+   * Centers content if it fits in viewport, otherwise aligns to edge.
+   * @param spread - The spread layout to position
+   * @param position - 'top' or 'bottom' edge alignment (centers if content fits)
+   * @returns The target Y position
+   */
+  function getSpreadTargetY(spread: SpreadLayout, position: 'top' | 'bottom'): number {
+    const bounds = getSpreadBounds(spread);
+
+    // Content fits in viewport - always center
+    if (bounds.fitsInViewport) {
+      return bounds.centerY;
+    }
+
+    // Content larger than viewport - align to requested edge
+    return position === 'bottom' ? bounds.bottomY : bounds.topY;
+  }
+
+  /**
+   * Check if we're at a boundary of the current spread and should change pages.
+   * @param direction - 'up' (toward previous spread) or 'down' (toward next spread)
+   * @param threshold - pixel threshold for boundary detection
+   * @returns true if at the boundary in the given direction
+   */
+  function isAtSpreadBoundary(direction: 'up' | 'down', threshold: number = 2): boolean {
+    const spread = spreadLayout[localSpreadIndex];
+    if (!spread) return false;
+
+    const bounds = getSpreadBounds(spread);
+
+    if (direction === 'up') {
+      // At top boundary?
+      return transform.y >= bounds.topY - threshold;
+    } else {
+      // At bottom boundary? (use centerY if content fits)
+      const effectiveBottomY = bounds.fitsInViewport ? bounds.centerY : bounds.bottomY;
+      return transform.y <= effectiveBottomY + threshold;
+    }
+  }
+
   function snapToNearestBoundary(): void {
     const spread = spreadLayout[localSpreadIndex];
     if (!spread) return;
 
-    // Use per-spread scale with userZoomMultiplier
-    const scaledHeight = spread.scaledHeight * userZoomMultiplier;
-    let targetY: number;
+    const bounds = getSpreadBounds(spread);
 
-    // Calculate target position
-    if (scaledHeight <= viewportHeight) {
-      // Content fits - center it
-      targetY = -spread.yOffset * userZoomMultiplier + (viewportHeight - scaledHeight) / 2;
-    } else {
-      // Snap to nearest boundary (top or bottom)
-      const topY = -spread.yOffset * userZoomMultiplier;
-      const bottomY = topY + viewportHeight - scaledHeight;
-
-      if (transform.y > topY) {
-        targetY = topY;
-      } else if (transform.y < bottomY) {
-        targetY = bottomY;
-      } else {
-        // Already within bounds, no snap needed
-        return;
-      }
+    // Snap horizontal to center if content fits
+    if (bounds.fitsHorizontally && transform.x !== 0) {
+      transform.x = 0;
     }
 
-    // Animate to target
-    animateSnapTo(targetY);
-  }
-
-  function animateSnapTo(targetY: number): void {
-    cancelSnapAnimation();
-
-    const startY = transform.y;
-    const distance = targetY - startY;
-
-    // Skip animation if distance is tiny
-    if (Math.abs(distance) < 1) {
-      transform.y = targetY;
+    const direction = getSnapDirection(spread);
+    if (direction === null) {
+      // Already in valid Y position, but still draw to apply any X changes
       draw();
       return;
     }
 
-    const duration = 100; // ms - quick snap
-    const startTime = performance.now();
-
-    function animate(currentTime: number) {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-
-      // Ease-out cubic for smooth deceleration
-      const eased = 1 - Math.pow(1 - progress, 3);
-
-      transform.y = startY + distance * eased;
-      draw();
-
-      if (progress < 1) {
-        snapAnimationId = requestAnimationFrame(animate);
-      } else {
-        snapAnimationId = null;
-      }
-    }
-
-    snapAnimationId = requestAnimationFrame(animate);
+    const targetY = getSpreadTargetY(spread, direction);
+    animateToY(targetY);
   }
 
   // ============================================
@@ -1247,47 +2040,57 @@
 <div
   class="pure-canvas-reader"
   role="presentation"
-  style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+  style:background-color={$settings.backgroundColor}
   onmousedown={handleMouseDown}
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
   onmouseleave={handleMouseUp}
+  onclick={handleClick}
+  ondblclick={handleDoubleClick}
   onwheel={handleWheel}
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
 >
-  <!-- Back layer: Canvas for images -->
-  <canvas bind:this={canvasEl} class="main-canvas"></canvas>
+  <!-- Content layer: Canvas + text overlay (inverted together, background stays normal) -->
+  <div class="content-layer" style:filter={`invert(${$invertColorsActive ? 1 : 0})`}>
+    <!-- Back layer: Canvas for images -->
+    <canvas bind:this={canvasEl} class="main-canvas"></canvas>
 
-  <!-- Front layer: Text overlay (positioned via JS) -->
-  <div bind:this={textOverlayEl} class="text-overlay" style:transform-origin="0 0">
-    {#each visibleTextBoxData as spreadData (spreadData.spreadIndex)}
-      {@const sl = spreadLayout[spreadData.spreadIndex]}
-      {#if sl}
-        {@const effectiveScale = sl.scale * userZoomMultiplier}
-        <div
-          class="spread-overlay"
-          style:top={`${sl.yOffset * userZoomMultiplier}px`}
-          style:left={`${(viewportWidth - sl.width * effectiveScale) / 2}px`}
-          style:width={`${sl.width}px`}
-          style:height={`${sl.height}px`}
-          style:transform={`scale(${effectiveScale})`}
-          style:transform-origin="0 0"
-        >
-          {#each spreadData.pageLayouts as pl (pl.pageIndex)}
-            <div
-              class="page-overlay"
-              style:left={`${pl.xOffset}px`}
-              style:width={`${pl.page.img_width}px`}
-              style:height={`${pl.page.img_height}px`}
-            >
-              <TextBoxes page={pl.page} src={pl.file} volumeUuid={volume.volume_uuid} />
-            </div>
-          {/each}
-        </div>
-      {/if}
-    {/each}
+    <!-- Front layer: Text overlay (positioned via JS) -->
+    <div bind:this={textOverlayEl} class="text-overlay" style:transform-origin="0 0">
+      {#each visibleTextBoxData as spreadData (spreadData.spreadIndex)}
+        {@const sl = spreadLayout[spreadData.spreadIndex]}
+        {#if sl}
+          {@const effectiveScale = sl.scale * userZoomMultiplier}
+          <div
+            class="spread-overlay"
+            style:top={`${sl.yOffset * userZoomMultiplier}px`}
+            style:left={`${(viewportWidth - sl.width * effectiveScale) / 2}px`}
+            style:width={`${sl.width}px`}
+            style:height={`${sl.height}px`}
+            style:transform={`scale(${effectiveScale})`}
+            style:transform-origin="0 0"
+          >
+            {#each spreadData.pageLayouts as pl (pl.pageIndex)}
+              <div
+                class="page-overlay"
+                style:left={`${pl.xOffset}px`}
+                style:width={`${pl.page.img_width}px`}
+                style:height={`${pl.page.img_height}px`}
+              >
+                <TextBoxes
+                  page={pl.page}
+                  src={pl.file}
+                  volumeUuid={volume.volume_uuid}
+                  forceVisible={missingPagePaths.has(pl.page.img_path)}
+                />
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/each}
+    </div>
   </div>
 </div>
 
@@ -1299,7 +2102,15 @@
     width: 100vw;
     height: 100vh;
     overflow: hidden;
-    background: var(--background-color, #1a1a1a);
+    background-color: #1a1a1a; /* fallback, overridden by inline style */
+  }
+
+  .content-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
   }
 
   .main-canvas {
