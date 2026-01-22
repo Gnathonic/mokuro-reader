@@ -15,6 +15,20 @@
 - **AnkiConnect settings redesign** - Complete overhaul with connection status, enable toggle, and organized sections
 - **Card mode selection** - Now uses radio buttons instead of dropdown for clearer selection
 
+## [1.2.3] - 2026-01-15
+
+### Added
+
+- **Toggle reader UI by clicking blank space** - Click on empty areas of the page to show/hide reader controls
+- **Mark volume as read** - Manually mark volumes as read from the volume menu. Thanks [@Zipeks](https://github.com/Zipeks)!
+- **WebDAV performance improvements** - Faster file listing during sync
+- **Case-insensitive series merge** - Series with different casing (e.g., "Test Series" vs "test series") now detected as merge candidates
+
+### Fixed
+
+- **WebDAV paths with special characters** - Fixed corrupt downloads for files with `#` in their path (e.g., `#Zombie Sagashitemasu`)
+- **Large volume WebDAV backup** - Fixed authentication and memory issues when backing up volumes >1GB to WebDAV
+
 ## [1.2.2] - 2026-01-06
 
 ### Added
@@ -39,7 +53,7 @@
 
 ### Fixed
 
-- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up or exporting volumes >1GB ([ZXY101#129](https://github.com/ZXY101/mokuro-reader/issues/129))
+- **Large volume cloud backup** - Fixed "Array buffer allocation failed" error when backing up or exporting volumes >1GB ([#129](https://github.com/Gnathonic/mokuro-reader/issues/129))
 - **Import modal stuck on multiple drops** - Fixed import preparation modal not closing properly when dropping multiple archives
 
 ## [1.2.0] - 2025-01-05

@@ -4,7 +4,7 @@
 
 A powerful web-based manga reader with advanced analytics, cloud sync, and intelligent features for [mokuro](https://github.com/kha-white/mokuro) processed manga.
 
-https://github.com/ZXY101/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-25b17dea3060
+https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87d7-25b17dea3060
 
 ## ✨ Features
 
@@ -153,7 +153,7 @@ Each volume and series has a dedicated text analysis page:
 Clone the repo:
 
 ```bash
-git clone https://github.com/ZXY101/mokuro-reader
+git clone https://github.com/Gnathonic/mokuro-reader
 cd mokuro-reader
 ```
 

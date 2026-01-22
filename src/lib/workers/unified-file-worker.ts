@@ -10,7 +10,12 @@ import {
   BlobReader
 } from '@zip.js/zip.js';
 import { File as MegaFile, Storage } from 'megajs';
-import { compressVolume, type MokuroMetadata } from '$lib/util/compress-volume';
+import {
+  compressVolume,
+  compressVolumeFromDb,
+  type MokuroMetadata
+} from '$lib/util/compress-volume';
+import { uploadToWebDAV } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { matchFileToVolume } from '$lib/import/archive-extraction';
 
 // Define the worker context
@@ -107,12 +112,24 @@ interface CompressAndReturnMessage {
   downloadFilename?: string;
 }
 
+/** Compress from IndexedDB and optionally upload to cloud provider */
+interface CompressFromDbMessage {
+  mode: 'compress-from-db';
+  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export (return data)
+  volumeUuid: string;
+  volumeTitle: string;
+  seriesTitle: string;
+  credentials?: ProviderCredentials;
+  downloadFilename?: string; // For local export
+}
+
 type WorkerMessage =
   | DownloadAndDecompressMessage
   | DecompressOnlyMessage
   | StreamExtractMessage
   | CompressAndUploadMessage
-  | CompressAndReturnMessage;
+  | CompressAndReturnMessage
+  | CompressFromDbMessage;
 
 // Progress messages
 interface DownloadProgressMessage {
@@ -224,7 +241,13 @@ async function downloadFromWebDAV(
   password: string,
   onProgress: (loaded: number, total: number) => void
 ): Promise<ArrayBuffer> {
-  const fullUrl = `${url}${fileId}`;
+  // Encode each path segment to handle special chars like # → %23
+  // Without this, # is treated as URL fragment and stripped
+  const encodedPath = fileId
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const fullUrl = `${url}${encodedPath}`;
   const authHeader = 'Basic ' + btoa(`${username}:${password}`);
 
   const response = await fetch(fullUrl, {
@@ -596,93 +619,6 @@ async function uploadToGoogleDrive(
 }
 
 /**
- * Upload to WebDAV server
- * Progress: 0-100% of upload phase
- */
-async function uploadToWebDAV(
-  cbzBlob: Blob,
-  filename: string,
-  seriesTitle: string,
-  serverUrl: string,
-  username: string,
-  password: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<string> {
-  console.log(`Worker: Uploading ${filename} to WebDAV...`);
-
-  // Ensure folder exists
-  const seriesFolderPath = `mokuro-reader/${seriesTitle}`;
-  await createWebDAVFolderRecursive(seriesFolderPath, serverUrl, username, password);
-
-  // Upload file
-  const filePath = `/${seriesFolderPath}/${filename}`;
-  const fileUrl = `${serverUrl}${filePath}`;
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', fileUrl);
-    xhr.setRequestHeader('Authorization', authHeader);
-    xhr.setRequestHeader('Content-Type', 'application/x-cbz');
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        console.log(`Worker: WebDAV upload complete`);
-        resolve(filePath); // Return path as "file ID"
-      } else {
-        reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Network error during WebDAV upload'));
-    xhr.ontimeout = () => reject(new Error('WebDAV upload timed out'));
-
-    // Send Blob directly - browser streams the data
-    xhr.send(cbzBlob);
-  });
-}
-
-/**
- * Helper: Create WebDAV folder recursively
- */
-async function createWebDAVFolderRecursive(
-  path: string,
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<void> {
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-  const parts = path.split('/').filter((p) => p);
-
-  let currentPath = '';
-  for (const part of parts) {
-    currentPath += `/${part}`;
-    const folderUrl = `${serverUrl}${currentPath}`;
-
-    // Try to create folder (MKCOL)
-    try {
-      const response = await fetch(folderUrl, {
-        method: 'MKCOL',
-        headers: { Authorization: authHeader }
-      });
-
-      // 201 = created, 405 = already exists, both are OK
-      if (!response.ok && response.status !== 405) {
-        console.warn(`Failed to create folder ${currentPath}: ${response.status}`);
-      }
-    } catch (error) {
-      console.warn(`Error creating folder ${currentPath}:`, error);
-    }
-  }
-}
-
-/**
  * Upload to MEGA
  * Progress: 0-100% of upload phase
  */
@@ -802,6 +738,13 @@ async function uploadToMEGA(
 
 ctx.addEventListener('message', async (event) => {
   const message = event.data as WorkerMessage;
+
+  // Guard against null/undefined messages (can happen during worker cleanup)
+  if (!message || !message.mode) {
+    console.warn('Worker: Received invalid message (null or missing mode)');
+    return;
+  }
+
   console.log('Worker: Received message', message.mode);
 
   try {
@@ -1080,12 +1023,12 @@ ctx.addEventListener('message', async (event) => {
           throw new Error('Missing WebDAV URL');
         }
         fileId = await uploadToWebDAV(
-          cbzBlob,
-          filename,
-          seriesTitle,
           credentials.webdavUrl,
           credentials.webdavUsername ?? '',
           credentials.webdavPassword ?? '',
+          seriesTitle,
+          filename,
+          cbzBlob,
           (loaded, total) => {
             const uploadProgress = (loaded / total) * 100; // 0-100% upload
             const progressMessage: UploadProgressMessage = {
@@ -1175,6 +1118,116 @@ ctx.addEventListener('message', async (event) => {
       };
       ctx.postMessage(completeMessage, [cbzData.buffer]); // Transfer ownership
       console.log(`Worker: Export complete for ${volumeTitle}`);
+    } else if (message.mode === 'compress-from-db') {
+      // ========== COMPRESS FROM DB MODE ==========
+      // Uses shared compressVolumeFromDb utility which:
+      // 1. Reads files one at a time from IndexedDB
+      // 2. Streams directly to zip
+      // 3. Releases references immediately to prevent memory issues
+      const { provider, volumeUuid, volumeTitle, seriesTitle, credentials, downloadFilename } =
+        message;
+
+      console.log(`Worker: Compressing volume ${volumeTitle} from IndexedDB...`);
+
+      // Compress using shared utility (handles streaming from IndexedDB)
+      const cbzBlob = await compressVolumeFromDb(volumeUuid, (completed, total) => {
+        const progressMessage: UploadProgressMessage = {
+          type: 'progress',
+          phase: 'compressing',
+          progress: (completed / total) * 100
+        };
+        ctx.postMessage(progressMessage);
+      });
+
+      console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
+
+      // Handle based on provider
+      if (provider === null) {
+        // Local export - return blob
+        console.log(`Worker: Returning compressed data for download`);
+        const cbzArrayBuffer = await cbzBlob.arrayBuffer();
+        const cbzData = new Uint8Array(cbzArrayBuffer);
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          data: cbzData,
+          filename: downloadFilename || `${volumeTitle}.cbz`
+        };
+        ctx.postMessage(completeMessage, [cbzData.buffer]);
+        console.log(`Worker: Export complete for ${volumeTitle}`);
+      } else {
+        // Upload to cloud provider
+        let fileId: string;
+        const filename = `${volumeTitle}.cbz`;
+
+        if (provider === 'google-drive') {
+          if (!credentials?.accessToken || !credentials?.seriesFolderId) {
+            throw new Error('Missing Google Drive access token or series folder ID');
+          }
+          fileId = await uploadToGoogleDrive(
+            cbzBlob,
+            filename,
+            credentials.seriesFolderId,
+            credentials.accessToken,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'webdav') {
+          // Use shared WebDAV upload utility
+          if (!credentials?.webdavUrl) {
+            throw new Error('Missing WebDAV URL');
+          }
+          fileId = await uploadToWebDAV(
+            credentials.webdavUrl,
+            credentials.webdavUsername ?? '',
+            credentials.webdavPassword ?? '',
+            seriesTitle,
+            filename,
+            cbzBlob,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else if (provider === 'mega') {
+          if (!credentials?.megaEmail || !credentials?.megaPassword) {
+            throw new Error('Missing MEGA credentials');
+          }
+          fileId = await uploadToMEGA(
+            cbzBlob,
+            filename,
+            seriesTitle,
+            credentials.megaEmail,
+            credentials.megaPassword,
+            (loaded, total) => {
+              const progressMessage: UploadProgressMessage = {
+                type: 'progress',
+                phase: 'uploading',
+                progress: (loaded / total) * 100
+              };
+              ctx.postMessage(progressMessage);
+            }
+          );
+        } else {
+          throw new Error(`Unsupported provider: ${provider}`);
+        }
+
+        const completeMessage: UploadCompleteMessage = {
+          type: 'complete',
+          fileId
+        };
+        ctx.postMessage(completeMessage);
+        console.log(`Worker: Backup complete for ${volumeTitle}`);
+      }
     } else {
       throw new Error(`Unknown mode: ${(message as any).mode}`);
     }
