@@ -1,8 +1,9 @@
 import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
-import { BlobReader, Uint8ArrayWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
+import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { compressVolume, type MokuroMetadata } from './compress-volume';
 import { backupQueue } from './backup-queue';
+import { progressTrackerStore } from './progress-tracker';
 
 export async function zipManga(
   manga: VolumeMetadata[],
@@ -33,13 +34,28 @@ export async function zipManga(
 
 /**
  * Prepares volume data for compression (loads from DB, converts to Uint8Array)
- * @param volume The volume metadata
- * @returns Promise resolving to metadata and files data
+ * This is the SINGLE source of truth for preparing export data.
+ * Used by both direct export (zip.ts) and cloud backup (backup-queue.ts).
+ *
+ * @param volumeOrUuid Either a VolumeMetadata object or a volume UUID string
+ * @returns Promise resolving to metadata (null for image-only) and files data
  */
-async function prepareVolumeData(volume: VolumeMetadata): Promise<{
-  metadata: MokuroMetadata;
+export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): Promise<{
+  metadata: MokuroMetadata | null;
   filesData: { filename: string; data: Uint8Array }[];
 }> {
+  // Resolve volume metadata - either use passed object or fetch from DB
+  const volume =
+    typeof volumeOrUuid === 'string'
+      ? await db.volumes.where('volume_uuid').equals(volumeOrUuid).first()
+      : volumeOrUuid;
+
+  if (!volume) {
+    throw new Error(
+      `Volume not found: ${typeof volumeOrUuid === 'string' ? volumeOrUuid : volumeOrUuid.volume_uuid}`
+    );
+  }
+
   // Get OCR and files data from separate tables
   const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
   const volumeFiles = await db.volume_files.get(volume.volume_uuid);
@@ -47,23 +63,56 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
     throw new Error(`Volume OCR data not found for ${volume.volume_uuid}`);
   }
 
-  // Create mokuro metadata in the standard format
-  const metadata: MokuroMetadata = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
+  // Check if this is an image-only volume (no mokuro data)
+  const isImageOnly = volume.mokuro_version === '';
 
-  // Convert File objects to Uint8Arrays
+  // Create mokuro metadata only for volumes that had mokuro data
+  const metadata: MokuroMetadata | null = isImageOnly
+    ? null
+    : {
+        version: volume.mokuro_version,
+        title: volume.series_title,
+        title_uuid: volume.series_uuid,
+        volume: volume.volume_title,
+        volume_uuid: volume.volume_uuid,
+        pages: volumeOcr.pages,
+        chars: volume.character_count
+      };
+
+  // Get set of placeholder page paths to exclude from export
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+
+  // Convert File objects to Uint8Arrays, excluding placeholder pages
+  // IMPORTANT: Iterate over keys and delete refs as we go to prevent GC from
+  // clearing blob references for files we haven't processed yet. Using Object.entries()
+  // would hold all File refs in memory simultaneously, causing NotReadableError on large volumes.
   const filesData: { filename: string; data: Uint8Array }[] = [];
   if (volumeFiles?.files) {
-    for (const [filename, file] of Object.entries(volumeFiles.files)) {
-      const arrayBuffer = await file.arrayBuffer();
-      filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
+    const filenames = Object.keys(volumeFiles.files);
+    for (const filename of filenames) {
+      // Skip placeholder pages - they shouldn't be exported
+      if (placeholderPaths.has(filename)) {
+        continue;
+      }
+      const file = volumeFiles.files[filename];
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        filesData.push({ filename, data: new Uint8Array(arrayBuffer) });
+        // Release the File reference immediately to reduce memory pressure
+        delete volumeFiles.files[filename];
+      } catch (error) {
+        // File read failed - likely corrupted IndexedDB entry or stale File reference
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(
+          `Failed to read file "${filename}" from volume "${volume.volume_title}":`,
+          errorMessage
+        );
+        throw new Error(
+          `Cannot read file "${filename}" in volume "${volume.volume_title}". ` +
+            `The volume data may be corrupted. Try re-importing this volume. ` +
+            `Original error: ${errorMessage}`
+        );
+      }
     }
   }
 
@@ -76,13 +125,43 @@ async function prepareVolumeData(volume: VolumeMetadata): Promise<{
  * @param volume The volume metadata
  * @returns Promise resolving to an array of promises for adding files
  */
-async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: VolumeMetadata) {
+async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMetadata) {
   // Get OCR and files data from separate tables
   const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
   const volumeFiles = await db.volume_files.get(volume.volume_uuid);
   if (!volumeOcr) {
     console.error(`Volume OCR data not found for ${volume.volume_uuid}`);
     return [];
+  }
+
+  // Check if this is an image-only volume
+  const isImageOnly = volume.mokuro_version === '';
+
+  // Get set of placeholder page paths to exclude from export
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+
+  // Create folder name for images (same as mokuro file name without extension)
+  const folderName = `${volume.volume_title}`;
+
+  // Add explicit folder entry first (required by some CBZ readers)
+  const folderPromise = zipWriter.add(`${folderName}/`, new BlobReader(new Blob([])), {
+    directory: true
+  });
+
+  // Add image files inside the folder, excluding placeholders
+  const imagePromises = volumeFiles?.files
+    ? Object.entries(volumeFiles.files)
+        .filter(([filename]) => !placeholderPaths.has(filename))
+        .map(([filename, file]) => {
+          // Extract just the basename to avoid nested folders from original CBZ structure
+          const basename = filename.split('/').pop() || filename;
+          return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
+        })
+    : [];
+
+  // Only add mokuro file for volumes that had mokuro data
+  if (isImageOnly) {
+    return [folderPromise, ...imagePromises];
   }
 
   // Create mokuro data in the old format for compatibility
@@ -96,54 +175,145 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Uint8Array>, volume: Volu
     chars: volume.character_count
   };
 
-  // Create folder name for images (same as mokuro file name without extension)
-  const folderName = `${volume.volume_title}`;
-
-  // Add image files inside the folder
-  const imagePromises = volumeFiles?.files
-    ? Object.entries(volumeFiles.files).map(([filename, file]) => {
-        // Extract just the basename to avoid nested folders from original CBZ structure
-        const basename = filename.split('/').pop() || filename;
-        return zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
-      })
-    : [];
-
   // Add mokuro data file in the root directory (for both ZIP and CBZ)
   return [
+    folderPromise,
     ...imagePromises,
     zipWriter.add(`${volume.volume_title}.mokuro`, new TextReader(JSON.stringify(mokuroData)))
   ];
 }
 
 /**
+ * Adds a volume's files to a zip archive with progress callback
+ * @param zipWriter The ZipWriter instance
+ * @param volume The volume metadata
+ * @param onFileAdded Callback called after each file is added
+ */
+async function addVolumeToArchiveWithProgress(
+  zipWriter: ZipWriter<Blob>,
+  volume: VolumeMetadata,
+  onFileAdded: () => void
+): Promise<void> {
+  const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
+  const volumeFiles = await db.volume_files.get(volume.volume_uuid);
+  if (!volumeOcr) {
+    console.error(`Volume OCR data not found for ${volume.volume_uuid}`);
+    return;
+  }
+
+  const isImageOnly = volume.mokuro_version === '';
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+  const folderName = volume.volume_title;
+
+  // Add folder entry
+  await zipWriter.add(`${folderName}/`, new BlobReader(new Blob([])), { directory: true });
+
+  // Add image files sequentially to track progress
+  // Iterate over keys and delete refs to prevent GC from clearing blob references
+  if (volumeFiles?.files) {
+    const filenames = Object.keys(volumeFiles.files);
+    for (const filename of filenames) {
+      if (placeholderPaths.has(filename)) continue;
+      const file = volumeFiles.files[filename];
+      const basename = filename.split('/').pop() || filename;
+      await zipWriter.add(`${folderName}/${basename}`, new BlobReader(file));
+      delete volumeFiles.files[filename];
+      onFileAdded();
+    }
+  }
+
+  // Add mokuro file if not image-only
+  if (!isImageOnly) {
+    const mokuroData = {
+      version: volume.mokuro_version,
+      title: volume.series_title,
+      title_uuid: volume.series_uuid,
+      volume: volume.volume_title,
+      volume_uuid: volume.volume_uuid,
+      pages: volumeOcr.pages,
+      chars: volume.character_count
+    };
+    await zipWriter.add(
+      `${volume.volume_title}.mokuro`,
+      new TextReader(JSON.stringify(mokuroData))
+    );
+  }
+}
+
+/**
  * Creates an archive blob containing the specified volumes
- * Uses Uint8Array throughout to avoid intermediate Blob disk writes under memory pressure
+ * Uses BlobWriter to avoid memory allocation issues with large volumes
  * For single volumes, uses shared compression function; for multiple volumes, uses multi-volume archive
  * @param volumes Array of volumes to include in the archive
+ * @param seriesTitle Optional series title for progress tracking (multi-volume only)
  * @returns Promise resolving to the archive blob
  */
-export async function createArchiveBlob(volumes: VolumeMetadata[]): Promise<Blob> {
-  // For single volume, use shared compression function
+export async function createArchiveBlob(
+  volumes: VolumeMetadata[],
+  seriesTitle?: string
+): Promise<Blob> {
+  // For single volume, use shared compression function (returns Blob directly)
   if (volumes.length === 1) {
     const { metadata, filesData } = await prepareVolumeData(volumes[0]);
-    const uint8Array = await compressVolume(volumes[0].volume_title, metadata, filesData);
-    return new Blob([uint8Array as BlobPart], { type: 'application/zip' });
+    return await compressVolume(volumes[0].volume_title, metadata, filesData);
   }
 
   // For multiple volumes, create a single ZIP containing all volumes
-  const zipWriter = new ZipWriter(new Uint8ArrayWriter());
+  // Use BlobWriter to avoid memory allocation issues with large archives
+  const zipWriter = new ZipWriter(new BlobWriter('application/zip'), {
+    bufferedWrite: true,
+    extendedTimestamp: false
+  });
 
-  // Add each volume to the archive
-  const volumePromises = volumes.map((volume) => addVolumeToArchive(zipWriter, volume));
+  // Calculate total file count for progress tracking
+  const totalFiles = volumes.reduce((sum, v) => sum + (v.page_count || 0), 0);
+  let completedFiles = 0;
+  const processId = seriesTitle ? `export-series-${Date.now()}` : undefined;
 
-  // Wait for all volumes to be added
-  await Promise.all((await Promise.all(volumePromises)).flat());
+  // Add progress tracker for multi-volume export
+  if (processId && seriesTitle) {
+    progressTrackerStore.addProcess({
+      id: processId,
+      description: `Exporting ${seriesTitle}`,
+      progress: 0,
+      status: 'Compressing...'
+    });
+  }
 
-  // Close the archive and get the Uint8Array
-  const uint8Array = await zipWriter.close();
+  try {
+    // Add each volume sequentially to track progress
+    for (const volume of volumes) {
+      await addVolumeToArchiveWithProgress(zipWriter, volume, () => {
+        completedFiles++;
+        if (processId) {
+          const progress = Math.round((completedFiles / totalFiles) * 100);
+          progressTrackerStore.updateProcess(processId, { progress });
+        }
+      });
+    }
 
-  // Convert to Blob only at the very end for download/upload
-  return new Blob([uint8Array], { type: 'application/zip' });
+    // Close the archive and get the Blob directly
+    const blob = await zipWriter.close();
+
+    if (processId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 100,
+        status: 'Download ready'
+      });
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+    }
+
+    return blob;
+  } catch (error) {
+    if (processId) {
+      progressTrackerStore.updateProcess(processId, {
+        progress: 0,
+        status: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+      });
+      setTimeout(() => progressTrackerStore.removeProcess(processId), 5000);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -158,7 +328,9 @@ async function createAndDownloadArchive(
   asCbz: boolean,
   filename: string
 ) {
-  const zipFileBlob = await createArchiveBlob(volumes);
+  // Use series title for progress tracking
+  const seriesTitle = volumes[0]?.series_title;
+  const zipFileBlob = await createArchiveBlob(volumes, seriesTitle);
 
   // Create a download link
   const link = document.createElement('a');

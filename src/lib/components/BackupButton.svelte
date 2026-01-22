@@ -34,13 +34,29 @@
   });
 
   // Subscribe to provider manager status for reactive authentication state
-  let providerStatus = $state({ hasAnyAuthenticated: false, providers: {}, needsAttention: false });
+  let providerStatus = $state<{
+    hasAnyAuthenticated: boolean;
+    currentProviderType: string | null;
+    providers: Record<string, { isAuthenticated?: boolean; isReadOnly?: boolean } | null>;
+    needsAttention: boolean;
+  }>({
+    hasAnyAuthenticated: false,
+    currentProviderType: null,
+    providers: {},
+    needsAttention: false
+  });
   $effect(() => {
     return providerManager.status.subscribe((value) => {
       providerStatus = value;
     });
   });
   let hasAuthenticatedProvider = $derived(providerStatus.hasAnyAuthenticated);
+
+  // Check if current provider is WebDAV and in read-only mode
+  let isReadOnlyMode = $derived(
+    providerStatus.currentProviderType === 'webdav' &&
+      providerStatus.providers['webdav']?.isReadOnly === true
+  );
 
   // Subscribe to backup queue
   let queueItems = $state<any[]>([]);
@@ -134,8 +150,8 @@
   });
 </script>
 
-{#if !hasAuthenticatedProvider}
-  <!-- Don't render anything when not authenticated -->
+{#if !hasAuthenticatedProvider || isReadOnlyMode}
+  <!-- Don't render anything when not authenticated or in read-only mode -->
 {:else if isFetching && totalFiles === 0}
   <Button color="light" size="xs" class={className} disabled={true} title="Loading cloud status...">
     <Spinner size="4" class="me-2" />

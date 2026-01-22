@@ -91,3 +91,18 @@ export function normalizeFilename(filename: string): string {
     return filename;
   }
 }
+
+/**
+ * Extract basename from a path (handles both / and \ separators)
+ */
+export function getBasename(path: string): string {
+  return path.split(/[/\\]/).pop() || path;
+}
+
+/**
+ * Remove extension from a filename
+ */
+export function removeExtension(filename: string): string {
+  const lastDot = filename.lastIndexOf('.');
+  return lastDot > 0 ? filename.slice(0, lastDot) : filename;
+}

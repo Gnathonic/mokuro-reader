@@ -9,7 +9,6 @@
   import { routeParams } from '$lib/util/hash-router';
 
   let volumeId = $derived($routeParams.volume || '');
-  let count: undefined | number = $state(undefined);
 
   // Cache volume settings to prevent flash when unrelated volumes are added.
   // The effectiveVolumeSettings store emits a new object whenever ANY volume changes,
@@ -27,6 +26,9 @@
 
   // Track last volumeId to reset cache on navigation
   let lastVolumeId = '';
+
+  // Overlay visibility state (shared with Reader via bind)
+  let overlaysVisible = $state(true);
 
   // Update cached settings only when the specific volume's settings actually change
   $effect(() => {
@@ -56,15 +58,6 @@
     }
   });
 
-  // Record activity when volumeId changes to trigger timer via activity tracker
-  $effect(() => {
-    if (!volumeId) return;
-
-    // Record activity when volume changes - this will trigger the timer
-    // via the activity tracker in the Timer component
-    activityTracker.recordActivity();
-  });
-
   onMount(() => {
     // Set up activity tracker timeout
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
@@ -77,11 +70,9 @@
 </script>
 
 {#if cachedVolumeSettings}
-  {#if $settings.showTimer}
-    <Timer bind:count {volumeId} />
-  {/if}
   {#key volumeId}
-    <Reader volumeSettings={cachedVolumeSettings} />
+    <Timer {volumeId} visible={$settings.showTimer && overlaysVisible} />
+    <Reader volumeSettings={cachedVolumeSettings} bind:overlaysVisible />
   {/key}
 {:else}
   <div class="flex h-screen w-screen items-center justify-center">

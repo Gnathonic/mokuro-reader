@@ -1,0 +1,17 @@
+{
+  "count": 2,
+  "pairings": [
+    {
+      "sourceType": "archive",
+      "hasMokuro": true,
+      "basePathContains": "vol1",
+      "imageOnly": false
+    },
+    {
+      "sourceType": "archive",
+      "hasMokuro": true,
+      "basePathContains": "vol2",
+      "imageOnly": false
+    }
+  ]
+}

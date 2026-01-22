@@ -535,19 +535,19 @@ describe('calculateReadingSpeed', () => {
   });
 
   it('should determine low confidence', () => {
-    // >= 5 minutes but < 240 minutes for low
+    // >= 30 minutes but < 240 minutes for low
     const result = calculateReadingSpeed(
       {
         'vol-1': {
           completed: true,
-          timeReadInMinutes: 10, // 10 minutes
-          chars: 1000, // 100 CPM
+          timeReadInMinutes: 35, // 35 minutes
+          chars: 3500, // 100 CPM
           lastProgressUpdate: '2024-01-01T00:00:00Z'
         }
       },
       10
     );
-    // 10 minutes >= 5 (low) but < 240 (medium)
+    // 35 minutes >= 30 (low) but < 240 (medium)
     expect(result.confidence).toBe('low');
   });
 

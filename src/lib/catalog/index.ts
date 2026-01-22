@@ -7,16 +7,6 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 
-function sortVolumes(a: VolumeMetadata, b: VolumeMetadata) {
-  if (a.volume_title < b.volume_title) {
-    return -1;
-  }
-  if (a.volume_title > b.volume_title) {
-    return 1;
-  }
-  return 0;
-}
-
 // Single source of truth from the database
 export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   const subscription = liveQuery(async () => {
@@ -70,11 +60,19 @@ export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlacehol
   return deriveSeriesFromVolumes(Object.values($volumesWithPlaceholders));
 });
 
-export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) =>
-  ($catalog?.find((volume) => volume.series_uuid === $routeParams.manga)?.volumes || []).sort(
-    sortVolumes
-  )
-);
+export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
+  if (!$catalog || !$routeParams.manga) return [];
+
+  // Primary: match by title (folder name) - handles placeholder→local transition
+  let series = $catalog.find((s) => s.title === $routeParams.manga);
+
+  // Fallback: match by UUID (for legacy URLs)
+  if (!series) {
+    series = $catalog.find((s) => s.series_uuid === $routeParams.manga);
+  }
+
+  return series?.volumes || [];
+});
 
 export const currentVolume = derived([routeParams, volumes], ([$routeParams, $volumes]) => {
   if ($routeParams && $volumes && $routeParams.volume) {

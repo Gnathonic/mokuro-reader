@@ -16,7 +16,8 @@ export type View =
   | { type: 'series-text'; seriesId: string }
   | { type: 'cloud' }
   | { type: 'upload' }
-  | { type: 'reading-speed' };
+  | { type: 'reading-speed' }
+  | { type: 'merge-series' };
 
 /**
  * Current view state
@@ -25,32 +26,41 @@ export const currentView = writable<View>({ type: 'catalog' });
 
 /**
  * Parse a hash URL into a View object
+ * Falls back to catalog if URL cannot be parsed (e.g., malformed percent-encoding)
  */
 export function parseHash(hash: string): View {
-  const path = hash.replace(/^#\/?/, '');
-  const segments = path.split('/').filter(Boolean);
+  try {
+    const path = hash.replace(/^#\/?/, '');
+    const segments = path.split('/').filter(Boolean);
 
-  if (segments.length === 0 || segments[0] === 'catalog') {
+    if (segments.length === 0 || segments[0] === 'catalog') {
+      return { type: 'catalog' };
+    }
+    if (segments[0] === 'cloud') return { type: 'cloud' };
+    if (segments[0] === 'upload') return { type: 'upload' };
+    if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
+    if (segments[0] === 'merge-series') return { type: 'merge-series' };
+
+    if (segments[0] === 'series' && segments.length >= 2) {
+      const seriesId = decodeURIComponent(segments[1]);
+      if (segments[2] === 'text') return { type: 'series-text', seriesId };
+      return { type: 'series', seriesId };
+    }
+
+    if (segments[0] === 'reader' && segments.length >= 3) {
+      const seriesId = decodeURIComponent(segments[1]);
+      const volumeId = decodeURIComponent(segments[2]);
+      if (segments[3] === 'text') return { type: 'volume-text', seriesId, volumeId };
+      return { type: 'reader', seriesId, volumeId };
+    }
+
+    return { type: 'catalog' };
+  } catch {
+    // decodeURIComponent can throw URIError on malformed percent-encoding
+    // Fall back to catalog page if URL cannot be parsed
+    console.warn('Failed to parse URL hash, redirecting to catalog:', hash);
     return { type: 'catalog' };
   }
-  if (segments[0] === 'cloud') return { type: 'cloud' };
-  if (segments[0] === 'upload') return { type: 'upload' };
-  if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
-
-  if (segments[0] === 'series' && segments.length >= 2) {
-    const seriesId = decodeURIComponent(segments[1]);
-    if (segments[2] === 'text') return { type: 'series-text', seriesId };
-    return { type: 'series', seriesId };
-  }
-
-  if (segments[0] === 'reader' && segments.length >= 3) {
-    const seriesId = decodeURIComponent(segments[1]);
-    const volumeId = decodeURIComponent(segments[2]);
-    if (segments[3] === 'text') return { type: 'volume-text', seriesId, volumeId };
-    return { type: 'reader', seriesId, volumeId };
-  }
-
-  return { type: 'catalog' };
 }
 
 /**
@@ -74,6 +84,8 @@ export function viewToHash(view: View): string {
       return '#/upload';
     case 'reading-speed':
       return '#/reading-speed';
+    case 'merge-series':
+      return '#/merge-series';
   }
 }
 
@@ -86,13 +98,16 @@ interface NavigateOptions {
 
 /**
  * Navigate to a view - updates hash and view state
+ * Always navigates to root path (/) to ensure hash routing works correctly
  */
 export function navigate(view: View, options?: NavigateOptions): void {
   const hash = viewToHash(view);
+  // Always use root path to avoid issues when navigating from legacy paths like /upload
+  const url = '/' + hash;
   if (options?.replaceState) {
-    window.history.replaceState(null, '', hash);
+    window.history.replaceState(null, '', url);
   } else {
-    window.history.pushState(null, '', hash);
+    window.history.pushState(null, '', url);
   }
   currentView.set(view);
 }
@@ -127,7 +142,10 @@ export const nav = {
   toUpload: (options?: NavigateOptions) => navigate({ type: 'upload' }, options),
 
   /** Navigate to reading speed page */
-  toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options)
+  toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options),
+
+  /** Navigate to merge series page */
+  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options)
 };
 
 /**
@@ -142,6 +160,7 @@ export const nav = {
  * - cloud -> catalog
  * - reading-speed -> catalog
  * - upload -> catalog
+ * - merge-series -> catalog
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -163,6 +182,7 @@ export function navigateBack(): void {
     case 'cloud':
     case 'reading-speed':
     case 'upload':
+    case 'merge-series':
       nav.toCatalog();
       break;
     case 'catalog':
@@ -201,9 +221,15 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  */
 export function initRouter(): () => void {
   // Handle legacy pathname-based routes from before hash router migration
-  // Redirect all legacy routes to catalog, except /upload which is online-only
   const pathname = window.location.pathname;
-  if (pathname && pathname !== '/' && !pathname.startsWith('/upload')) {
+
+  // Handle /upload path: redirect to hash-based #/upload while preserving query params
+  // This supports cross-site imports like /upload?manga=X&volume=Y
+  if (pathname.startsWith('/upload')) {
+    const newUrl = '/' + window.location.search + '#/upload';
+    window.history.replaceState(null, '', newUrl);
+  } else if (pathname && pathname !== '/') {
+    // Redirect all other legacy routes to catalog
     window.history.replaceState(null, '', '/#/catalog');
   }
 

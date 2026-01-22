@@ -6,7 +6,7 @@
  * @see https://developer.chrome.com/docs/capabilities/web-apis/file-handling
  */
 
-import { processFiles } from '$lib/upload';
+import { importFiles } from '$lib/import';
 import { showSnackbar } from '$lib/util/snackbar';
 
 // Extend the Window interface for the File Handling API
@@ -99,7 +99,7 @@ export function initFileHandler(): void {
       }
 
       if (files.length > 0) {
-        await processFiles(files);
+        await importFiles(files);
         showSnackbar('Import complete!', 3000);
       }
     } catch (error) {

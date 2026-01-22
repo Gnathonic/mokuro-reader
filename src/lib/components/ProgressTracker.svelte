@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { Button, Progressbar } from 'flowbite-svelte';
-  import { CaretDownSolid, CaretUpSolid, CloseCircleSolid } from 'flowbite-svelte-icons';
+  import { Progressbar } from 'flowbite-svelte';
+  import { CaretDownSolid, CaretUpSolid } from 'flowbite-svelte-icons';
   import { formatBytes } from '$lib/util';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
 
@@ -8,10 +8,6 @@
 
   function toggleExpanded() {
     expanded = !expanded;
-  }
-
-  function removeProcess(id: string) {
-    progressTrackerStore.removeProcess(id);
   }
 </script>
 
@@ -46,17 +42,7 @@
       <div class="max-h-96 overflow-y-auto p-3">
         {#each $progressTrackerStore.processes as process (process.id)}
           <div class="mb-4 last:mb-0">
-            <div class="mb-1 flex items-center justify-between">
-              <div class="text-sm font-medium">{process.description}</div>
-              <Button
-                size="xs"
-                color="alternative"
-                class="p-1"
-                onclick={() => removeProcess(process.id)}
-              >
-                <CloseCircleSolid class="h-3 w-3" />
-              </Button>
-            </div>
+            <div class="mb-1 text-sm font-medium">{process.description}</div>
 
             {#if process.status}
               <div class="mb-1 text-xs text-gray-600 dark:text-gray-400">{process.status}</div>

@@ -4,15 +4,15 @@ import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import { tokenManager } from './sync/providers/google-drive/token-manager';
 import { showSnackbar } from './snackbar';
-import { db } from '$lib/catalog/db';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
-import { isRealProvider, isPseudoProvider, exportProvider } from './sync/provider-interface';
+import { isPseudoProvider, exportProvider } from './sync/provider-interface';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+// Note: prepareVolumeData is no longer used - worker reads from IndexedDB directly
 
 // Type for provider instances (real or export)
 type ProviderInstance = SyncProvider | typeof exportProvider;
@@ -403,45 +403,6 @@ async function getProviderCredentials(provider: BackupProviderType): Promise<any
 }
 
 /**
- * Read volume data from IndexedDB and prepare for worker
- */
-async function prepareVolumeDataForWorker(volumeUuid: string): Promise<{
-  metadata: any;
-  filesData: { filename: string; data: ArrayBuffer }[];
-}> {
-  // Get volume metadata, OCR data, and files from separate tables
-  const volume = await db.volumes.where('volume_uuid').equals(volumeUuid).first();
-  const volumeOcr = await db.volume_ocr.get(volumeUuid);
-  const volumeFiles = await db.volume_files.get(volumeUuid);
-
-  if (!volume || !volumeOcr) {
-    throw new Error('Volume not found in database');
-  }
-
-  // Prepare mokuro metadata
-  const metadata = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
-
-  // Convert File objects to ArrayBuffers for transfer
-  const filesData: { filename: string; data: ArrayBuffer }[] = [];
-  if (volumeFiles?.files) {
-    for (const [filename, file] of Object.entries(volumeFiles.files)) {
-      const arrayBuffer = await file.arrayBuffer();
-      filesData.push({ filename, data: arrayBuffer });
-    }
-  }
-
-  return { metadata, filesData };
-}
-
-/**
  * Handle backup errors consistently
  */
 function handleBackupError(item: BackupQueueItem, processId: string, errorMessage: string): void {
@@ -520,23 +481,22 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       memoryRequirement,
       provider: `${item.provider}:upload`, // Provider:operation identifier for concurrency tracking
       providerConcurrencyLimit: effectiveConcurrencyLimit, // Provider's upload limit (dynamic for exports)
-      // Defer data loading until worker is ready
+      // Worker reads from IndexedDB directly - avoids memory issues with large volumes
+      // by not transferring file data through postMessage
       prepareData: async () => {
-        // This will only be called when a worker is actually available
         progressTrackerStore.updateProcess(processId, {
           progress: 5,
-          status: 'Reading volume data...'
+          status: 'Preparing...'
         });
-
-        const { metadata, filesData } = await prepareVolumeDataForWorker(item.volumeUuid);
 
         // Handle export-for-download (pseudo-provider)
         if (isExport) {
           return {
-            mode: 'compress-and-return',
+            mode: 'compress-from-db',
+            provider: null, // null = local export
+            volumeUuid: item.volumeUuid,
             volumeTitle: item.volumeTitle,
-            metadata,
-            filesData,
+            seriesTitle: item.seriesTitle,
             downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`
           };
         }
@@ -554,12 +514,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
 
         return {
-          mode: 'compress-and-upload',
+          mode: 'compress-from-db',
           provider: provider!.type,
+          volumeUuid: item.volumeUuid,
           volumeTitle: item.volumeTitle,
           seriesTitle: item.seriesTitle,
-          metadata,
-          filesData,
           credentials
         };
       },

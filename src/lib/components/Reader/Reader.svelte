@@ -10,7 +10,9 @@
     toggleFullScreen,
     zoomDefault,
     zoomDefaultWithLayoutWait,
-    zoomFitToScreen
+    zoomFitToScreen,
+    zoomNotification,
+    handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
@@ -26,6 +28,8 @@
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
+  import TextBoxContextMenu from './TextBoxContextMenu.svelte';
+  import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
@@ -33,6 +37,7 @@
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
   import Cropper from './Cropper.svelte';
+  import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
@@ -46,9 +51,10 @@
   // TODO: Refactor this whole mess
   interface Props {
     volumeSettings: VolumeSettings;
+    overlaysVisible?: boolean;
   }
 
-  let { volumeSettings: _volumeSettingsProp }: Props = $props();
+  let { volumeSettings: _volumeSettingsProp, overlaysVisible = $bindable(true) }: Props = $props();
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
@@ -62,6 +68,15 @@
 
   function mouseDown() {
     start = new Date();
+  }
+
+  function handleOverlayToggle(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+
+    // Only toggle if clicking on blank space (not text boxes)
+    if (target.closest('.textBox')) return;
+
+    overlaysVisible = !overlaysVisible;
   }
 
   export function toggleHasCover(volumeId: string) {
@@ -194,7 +209,33 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
+    // Ignore shortcuts when user is in a text input, editable field, text box, or UI overlay
+    const target = event.target as HTMLElement;
+    if (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      target.closest('#settings') || // Settings drawer
+      target.closest('[data-popover]') || // Page number popover and other popovers
+      target.closest('.textBox') // OCR text boxes (even when not editable)
+    ) {
+      return;
+    }
+
     const action = event.code || event.key;
+
+    // For letter keys and nav keys, ignore if any modifier key is pressed
+    // (e.g., Ctrl+C for copy, Shift+Arrow for text selection)
+    const isLetterKey = action.startsWith('Key');
+    const isNavKey = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(
+      action
+    );
+    if (
+      (isLetterKey || isNavKey) &&
+      (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
+    ) {
+      return;
+    }
 
     // Keys that should prevent default browser scrolling behavior
     const scrollKeys = [
@@ -285,47 +326,55 @@
   let startX = 0;
   let startY = 0;
   let touchStart: Date;
+  let lastMultiTouchTime = 0; // Timestamp of last multi-touch event
 
   function handleTouchStart(event: TouchEvent) {
-    if ($settings.mobile) {
-      const { clientX, clientY } = event.touches[0];
-      touchStart = new Date();
+    if (!$settings.mobile) return;
+    if (event.touches.length > 1) return; // Ignore multi-touch starts
 
-      startX = clientX;
-      startY = clientY;
-    }
+    // Capture start position for single-finger gesture
+    const { clientX, clientY } = event.touches[0];
+    touchStart = new Date();
+    startX = clientX;
+    startY = clientY;
   }
 
   function handlePointerUp(event: TouchEvent) {
-    if ($settings.mobile) {
-      debounce(() => {
-        if (event.touches.length === 0) {
-          const { clientX, clientY } = event.changedTouches[0];
+    if (!$settings.mobile) return;
 
-          const distanceX = clientX - startX;
-          const distanceY = clientY - startY;
+    // If fingers remain, this was a multi-touch gesture - mark it and wait
+    if (event.touches.length !== 0) {
+      lastMultiTouchTime = Date.now();
+      return;
+    }
 
-          const isSwipe = distanceY < 200 && distanceY > 200 * -1;
+    // Ignore swipes within 200ms of a multi-touch gesture (pinch-zoom)
+    if (Date.now() - lastMultiTouchTime < 200) return;
 
-          const end = new Date();
-          const touchDuration = end.getTime() - touchStart?.getTime();
+    const { clientX, clientY } = event.changedTouches[0];
 
-          if (isSwipe && touchDuration < 500) {
-            const swipeThreshold = Math.abs(($settings.swipeThreshold / 100) * window.innerWidth);
+    const distanceX = clientX - startX;
+    const distanceY = clientY - startY;
 
-            if (distanceX > swipeThreshold) {
-              left(event, true);
-            } else if (distanceX < swipeThreshold * -1) {
-              right(event, true);
-            }
-          }
-        }
-      });
+    // Vertical threshold scales with viewport for consistent feel across devices
+    const verticalThreshold = Math.min(200, window.innerHeight * 0.3);
+    const isSwipe = Math.abs(distanceY) < verticalThreshold;
+
+    const touchDuration = Date.now() - touchStart?.getTime();
+
+    if (isSwipe && touchDuration < 500) {
+      const swipeThreshold = ($settings.swipeThreshold / 100) * window.innerWidth;
+
+      if (distanceX > swipeThreshold) {
+        left(event, true);
+      } else if (distanceX < -swipeThreshold) {
+        right(event, true);
+      }
     }
   }
 
   function onDoubleTap(event: MouseEvent) {
-    if ($panzoomStore && $settings.mobile) {
+    if ($panzoomStore) {
       const { clientX, clientY } = event;
       const { scale } = $panzoomStore.getTransform();
 
@@ -335,6 +384,16 @@
         zoomFitToScreen();
       }
     }
+  }
+
+  // Wheel handler wrapper that excludes settings drawer and popovers
+  function handleWheelEvent(e: WheelEvent) {
+    const target = e.target as HTMLElement;
+    // Don't capture wheel events from settings drawer or popovers
+    if (target.closest('#settings') || target.closest('[data-popover]')) {
+      return;
+    }
+    panzoomHandleWheel(e);
   }
 
   onMount(() => {
@@ -351,11 +410,17 @@
     // Prevent scrollbars from appearing when in reader mode
     document.documentElement.style.overflow = 'hidden';
 
+    // Add wheel listener with capture to intercept ctrl+wheel before browser handles it
+    // passive: false is required to allow preventDefault()
+    window.addEventListener('wheel', handleWheelEvent, { capture: true, passive: false });
+
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
+      // Remove wheel listener
+      window.removeEventListener('wheel', handleWheelEvent, { capture: true });
     };
   });
 
@@ -408,6 +473,9 @@
   let pages = $derived(volumeData?.pages || []);
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
+
+  // Set of missing page paths for checking if current page is a placeholder
+  let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
 
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
@@ -689,6 +757,67 @@
   let notificationKey = $state<string>('');
   let notificationTimeout: number | undefined = undefined;
 
+  // Context menu state (rendered outside panzoom for correct positioning)
+  interface ContextMenuData {
+    x: number;
+    y: number;
+    lines: string[];
+    imgElement: HTMLElement | null;
+    textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+  }
+  let showContextMenu = $state(false);
+  let contextMenuData = $state<ContextMenuData | null>(null);
+
+  function handleTextBoxContextMenu(data: ContextMenuData) {
+    contextMenuData = data;
+    showContextMenu = true;
+  }
+
+  function handleContextMenuAddToAnki(selection: string) {
+    if (!contextMenuData || !volume) return;
+
+    const volumeMetadata: VolumeMetadata = {
+      seriesTitle: volume.series_title,
+      volumeTitle: volume.volume_title
+    };
+
+    // Get the image URL from the element or current page
+    const imgElement = contextMenuData.imgElement;
+    let url: string | null = null;
+
+    if (imgElement) {
+      // Traverse up to find the MangaPage div with background-image
+      let current: HTMLElement | null = imgElement;
+      while (current) {
+        const bgImage = getComputedStyle(current).backgroundImage;
+        if (bgImage && bgImage !== 'none') {
+          const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+          if (match) {
+            url = match[1];
+            break;
+          }
+        }
+        current = current.parentElement;
+      }
+    }
+
+    if (url) {
+      const fullSentence = contextMenuData.lines.join(' ');
+      // Use selection for card front if provided, otherwise use full sentence
+      const cardFront = selection || fullSentence;
+      const ankiTags = $settings.ankiConnectSettings.tags || '';
+      showCropper(
+        url,
+        cardFront,
+        fullSentence,
+        ankiTags,
+        volumeMetadata,
+        undefined,
+        contextMenuData.textBox
+      );
+    }
+  }
+
   function showNotification(message: string, key: string) {
     notificationMessage = message;
     notificationKey = key;
@@ -704,6 +833,14 @@
       notificationKey = '';
     }, 2000);
   }
+
+  // Subscribe to zoom notifications from panzoom
+  $effect(() => {
+    const zoom = $zoomNotification;
+    if (zoom) {
+      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
+    }
+  });
 
   function rotatePageMode() {
     if (!volume) return;
@@ -731,15 +868,13 @@
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
-    // Rotate through: fitToScreen -> fitToWidth -> original -> keepZoom -> keepZoomStart -> fitToScreen
+    // Rotate through: fitToScreen -> fitToWidth -> original -> keepZoom -> fitToScreen
     if (currentMode === 'zoomFitToScreen') {
       nextMode = 'zoomFitToWidth';
     } else if (currentMode === 'zoomFitToWidth') {
       nextMode = 'zoomOriginal';
     } else if (currentMode === 'zoomOriginal') {
       nextMode = 'keepZoom';
-    } else if (currentMode === 'keepZoom') {
-      nextMode = 'keepZoomStart';
     } else {
       nextMode = 'zoomFitToScreen';
     }
@@ -751,8 +886,7 @@
       zoomFitToScreen: 'Fit to Screen',
       zoomFitToWidth: 'Fit to Width',
       zoomOriginal: 'Original Size',
-      keepZoom: 'Keep Zoom',
-      keepZoomStart: 'Keep Zoom, Pan to Top'
+      keepZoom: 'Keep Zoom'
     };
     showNotification(labels[nextMode], `zoommode-${nextMode}`);
   }
@@ -784,9 +918,14 @@
     {right}
     src1={imageCache.getFile(index)}
     src2={!useSinglePage ? imageCache.getFile(index + 1) : undefined}
+    volumeUuid={volume.volume_uuid}
+    page1={pages[index]}
+    page2={!useSinglePage ? pages[index + 1] : undefined}
+    visible={overlaysVisible}
   />
-  <SettingsButton />
+  <SettingsButton visible={overlaysVisible} />
   <Cropper />
+  <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
       <div class="z-10 flex flex-row items-center gap-5">
@@ -824,12 +963,14 @@
       </div>
     </div>
   </Popover>
-  <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
-    {#key page}
-      <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
-      <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
-    {/key}
-  </button>
+  {#if overlaysVisible}
+    <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+      {#key page}
+        <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
+        <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
+      {/key}
+    </button>
+  {/if}
   {#if notificationMessage}
     {#key notificationKey}
       <div
@@ -872,6 +1013,7 @@
         class="grid"
         style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
+        onclick={handleOverlayToggle}
         role="none"
         id="manga-panel"
       >
@@ -889,6 +1031,8 @@
                   src={imageCache.getFile(index + 1)!}
                   cachedUrl={cachedImageUrl2}
                   volumeUuid={volume.volume_uuid}
+                  forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
+                  onContextMenu={handleTextBoxContextMenu}
                 />
               {/if}
               <MangaPage
@@ -896,6 +1040,8 @@
                 src={imageCache.getFile(index)!}
                 cachedUrl={cachedImageUrl1}
                 volumeUuid={volume.volume_uuid}
+                forceVisible={missingPagePaths.has(pages[index]?.img_path)}
+                onContextMenu={handleTextBoxContextMenu}
               />
             {:else}
               <div class="flex h-screen w-screen items-center justify-center">
@@ -907,6 +1053,21 @@
       </div>
     </Panzoom>
   </div>
+
+  {#if showContextMenu && contextMenuData}
+    <TextBoxContextMenu
+      x={contextMenuData.x}
+      y={contextMenuData.y}
+      lines={contextMenuData.lines}
+      ankiEnabled={$settings.ankiConnectSettings.enabled}
+      textBoxElement={contextMenuData.imgElement}
+      onCopy={() => {}}
+      onCopyRaw={() => {}}
+      onAddToAnki={handleContextMenuAddToAnki}
+      onClose={() => (showContextMenu = false)}
+    />
+  {/if}
+
   {#if !$settings.mobile}
     <button
       aria-label="Previous page (left edge)"

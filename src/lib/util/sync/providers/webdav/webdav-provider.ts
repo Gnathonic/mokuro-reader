@@ -8,6 +8,7 @@ import type {
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { WebDAVClient } from 'webdav';
+import { uploadFileWithClient } from './webdav-upload';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -34,6 +35,8 @@ export class WebDAVProvider implements SyncProvider {
 
   private client: WebDAVClient | null = null;
   private initPromise: Promise<void>;
+  private _isReadOnly: boolean = false;
+  private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
 
   constructor() {
     if (browser) {
@@ -55,6 +58,29 @@ export class WebDAVProvider implements SyncProvider {
     return this.client !== null;
   }
 
+  /**
+   * Check if the WebDAV connection is read-only (no write permissions)
+   */
+  get isReadOnly(): boolean {
+    return this._isReadOnly;
+  }
+
+  /**
+   * Mark the provider as read-only (called when a write operation fails with permission error)
+   * Also triggers a status update to refresh the UI
+   */
+  markAsReadOnly(): void {
+    if (!this._isReadOnly) {
+      console.log('📖 WebDAV marked as read-only due to write operation failure');
+      this._isReadOnly = true;
+
+      // Trigger status update to refresh UI (import dynamically to avoid circular deps)
+      import('../../provider-manager').then(({ providerManager }) => {
+        providerManager.updateStatus();
+      });
+    }
+  }
+
   getStatus(): ProviderStatus {
     // Only serverUrl is required - username/password are optional for some servers
     const hasCredentials = !!(browser && localStorage.getItem(STORAGE_KEYS.SERVER_URL));
@@ -65,10 +91,13 @@ export class WebDAVProvider implements SyncProvider {
       hasStoredCredentials: hasCredentials,
       needsAttention: false,
       statusMessage: isConnected
-        ? 'Connected to WebDAV'
+        ? this._isReadOnly
+          ? 'Connected to WebDAV (read-only)'
+          : 'Connected to WebDAV'
         : hasCredentials
           ? 'Configured (not connected)'
-          : 'Not configured'
+          : 'Not configured',
+      isReadOnly: this._isReadOnly
     };
   }
 
@@ -107,6 +136,16 @@ export class WebDAVProvider implements SyncProvider {
       // Ensure mokuro folder exists
       await this.ensureMokuroFolder();
 
+      // Check write permissions via OPTIONS request
+      this._isReadOnly = !(await this.checkWritePermissions(
+        normalizedUrl,
+        username || '',
+        password || ''
+      ));
+      if (this._isReadOnly) {
+        console.log('📖 WebDAV server is read-only (no PUT/DELETE/MKCOL permissions)');
+      }
+
       // Store credentials in localStorage (username/password are optional)
       if (browser) {
         localStorage.setItem(STORAGE_KEYS.SERVER_URL, normalizedUrl);
@@ -130,24 +169,62 @@ export class WebDAVProvider implements SyncProvider {
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Provide user-friendly error messages
-      let userMessage = `WebDAV login failed: ${errorMessage}`;
-      if (errorMessage.includes('401')) {
-        userMessage = 'Invalid username or password';
-      } else if (errorMessage.includes('404') || errorMessage.includes('ENOTFOUND')) {
-        userMessage = 'Server not found. Check the server URL';
-      } else if (errorMessage.includes('CORS')) {
-        userMessage = 'CORS error. Your WebDAV server may need CORS configuration';
-      } else if (errorMessage.includes('abort') || errorMessage.includes('timeout')) {
-        userMessage = 'Connection timed out. Server may be unresponsive';
+      // Classify error type for detailed modal guidance
+      // CORS, SSL, and DNS errors all appear as opaque network errors from fetch()
+      // Browser shows "Failed to fetch" or "NetworkError" - specific cause only visible in DevTools console
+      const isOpaqueNetworkError =
+        (errorMessage.includes('Failed to fetch') ||
+          errorMessage.includes('NetworkError') ||
+          errorMessage.includes('Network request failed') ||
+          errorMessage.includes('Load failed')) &&
+        !errorMessage.includes('401') &&
+        !errorMessage.includes('403') &&
+        !errorMessage.includes('404') &&
+        !errorMessage.includes('timeout') &&
+        !errorMessage.includes('abort');
+
+      const isAuthError =
+        errorMessage.includes('401') ||
+        errorMessage.includes('403') ||
+        errorMessage.includes('Unauthorized') ||
+        errorMessage.includes('Forbidden');
+
+      const isConnectionError =
+        errorMessage.includes('404') ||
+        errorMessage.includes('ENOTFOUND') ||
+        errorMessage.includes('abort') ||
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('ECONNREFUSED');
+
+      // Determine error type and user message
+      let userMessage = errorMessage;
+      let webdavErrorType: import('../../provider-interface').WebDAVErrorType = 'unknown';
+
+      if (isOpaqueNetworkError) {
+        userMessage = 'Network error - check browser console (F12) for details';
+        webdavErrorType = 'network';
+      } else if (isAuthError) {
+        userMessage = 'Authentication failed - check your credentials';
+        webdavErrorType = 'auth';
+      } else if (isConnectionError) {
+        userMessage = 'Could not connect to server';
+        webdavErrorType = 'connection';
       }
 
-      throw new ProviderError(userMessage, 'webdav', 'LOGIN_FAILED', true);
+      throw new ProviderError(
+        userMessage,
+        'webdav',
+        'LOGIN_FAILED',
+        isAuthError,
+        isConnectionError || isOpaqueNetworkError,
+        webdavErrorType
+      );
     }
   }
 
   async logout(): Promise<void> {
     this.client = null;
+    this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
 
     if (browser) {
       // Keep URL and username for convenience (Issue #206 Lesson #10)
@@ -178,6 +255,7 @@ export class WebDAVProvider implements SyncProvider {
    * Clear all stored credentials (for full logout)
    */
   clearAllCredentials(): void {
+    this._supportsDepthInfinity = null; // Reset for next connection
     if (browser) {
       localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
       localStorage.removeItem(STORAGE_KEYS.USERNAME);
@@ -251,6 +329,155 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /**
+   * Check if the server allows write operations
+   * Returns true if write is allowed (or if we can't determine)
+   *
+   * Uses tiered approach:
+   * 1. Try PROPFIND with DAV:current-user-privilege-set (most accurate for ACL-enabled servers)
+   * 2. Fall back to OPTIONS request to check Allow header
+   * 3. If both are inconclusive → assume write access
+   * 4. Actual write operations will mark as read-only if they fail with permission errors
+   */
+  private async checkWritePermissions(
+    baseUrl: string,
+    username: string,
+    password: string
+  ): Promise<boolean> {
+    const url = `${baseUrl}${MOKURO_FOLDER}/`;
+    const headers: HeadersInit = {
+      'Content-Type': 'application/xml'
+    };
+
+    if (username || password) {
+      headers['Authorization'] = 'Basic ' + btoa(`${username}:${password}`);
+    }
+
+    // Try PROPFIND with current-user-privilege-set first (RFC 3744 - WebDAV ACL)
+    try {
+      console.log('[WebDAV] Checking user privileges via PROPFIND for:', url);
+
+      const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:current-user-privilege-set/>
+  </D:prop>
+</D:propfind>`;
+
+      const response = await fetch(url, {
+        method: 'PROPFIND',
+        headers: {
+          ...headers,
+          Depth: '0'
+        },
+        body: propfindBody
+      });
+
+      console.log('[WebDAV] PROPFIND response status:', response.status);
+
+      if (response.ok || response.status === 207) {
+        const text = await response.text();
+        console.log('[WebDAV] PROPFIND response:', text.substring(0, 500));
+
+        // Check if the property returned 404 (server doesn't support ACL extension)
+        // This is different from having no privileges - it means we can't determine from PROPFIND
+        if (text.includes('current-user-privilege-set') && text.includes('404')) {
+          console.log(
+            '[WebDAV] Server does not support ACL (current-user-privilege-set returned 404), falling back to OPTIONS'
+          );
+          // Fall through to OPTIONS check
+        } else {
+          // Server supports ACL - check for actual privileges
+          // Look for privilege elements like <D:write/>, <D:read/>, <D:all/>, etc.
+          const hasWritePrivilege =
+            text.includes('<D:write') ||
+            text.includes('<write') ||
+            text.includes(':write/>') ||
+            text.includes('<D:all') ||
+            text.includes('<all') ||
+            text.includes(':all/>');
+
+          const hasReadPrivilege =
+            text.includes('<D:read') || text.includes('<read') || text.includes(':read/>');
+
+          // Only consider read-only if we found privileges and read is present but write is not
+          if (hasReadPrivilege && !hasWritePrivilege) {
+            console.log(
+              '[WebDAV] PROPFIND indicates read-only access (has read but no write privileges)'
+            );
+            return false;
+          }
+
+          if (hasWritePrivilege) {
+            console.log('[WebDAV] PROPFIND confirms write access');
+            return true;
+          }
+
+          // If we got a response but couldn't parse privileges clearly, fall through to OPTIONS
+          console.log('[WebDAV] PROPFIND response unclear, falling back to OPTIONS');
+        }
+      }
+    } catch (error) {
+      console.log('[WebDAV] PROPFIND failed, falling back to OPTIONS:', error);
+    }
+
+    // Fall back to OPTIONS request
+    try {
+      console.log('[WebDAV] Checking write permissions via OPTIONS for:', url);
+
+      const response = await fetch(url, {
+        method: 'OPTIONS',
+        headers: { Authorization: headers['Authorization'] || '' }
+      });
+
+      console.log('[WebDAV] OPTIONS response status:', response.status);
+
+      if (!response.ok) {
+        // If OPTIONS fails, assume full access (fail open for usability)
+        console.warn('[WebDAV] OPTIONS request failed, assuming full write access');
+        return true;
+      }
+
+      const allowHeader = response.headers.get('Allow');
+      console.log('[WebDAV] Allow header:', allowHeader);
+
+      // If Allow header is missing or empty, assume full access
+      // Not all servers return an Allow header on OPTIONS
+      if (!allowHeader || allowHeader.trim() === '') {
+        console.log('[WebDAV] No Allow header present, assuming full write access');
+        return true;
+      }
+
+      const allowedMethods = allowHeader
+        .split(',')
+        .map((m) => m.trim().toUpperCase())
+        .filter((m) => m.length > 0);
+
+      // If the header exists but has no valid methods, assume full access
+      if (allowedMethods.length === 0) {
+        console.log('[WebDAV] Allow header empty, assuming full write access');
+        return true;
+      }
+
+      // Need PUT for uploads, DELETE for deletions, MKCOL for creating folders
+      const hasPut = allowedMethods.includes('PUT');
+      const hasDelete = allowedMethods.includes('DELETE');
+      const hasMkcol = allowedMethods.includes('MKCOL');
+
+      const hasWrite = hasPut && hasDelete && hasMkcol;
+
+      console.log(
+        `[WebDAV] Permissions: PUT=${hasPut}, DELETE=${hasDelete}, MKCOL=${hasMkcol}, hasWrite=${hasWrite}`
+      );
+
+      return hasWrite;
+    } catch (error) {
+      // If we can't check, assume full access (fail open for usability)
+      console.warn('[WebDAV] Failed to check write permissions:', error);
+      return true;
+    }
+  }
+
   // GENERIC FILE OPERATIONS
 
   async listCloudVolumes(): Promise<import('../../provider-interface').CloudFileMetadata[]> {
@@ -262,11 +489,52 @@ export class WebDAVProvider implements SyncProvider {
       // Ensure mokuro folder exists first
       await this.ensureMokuroFolder();
 
-      const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
       const client = this.client;
 
-      // Manual recursive folder traversal (Issue #206 Lesson #2)
-      // Avoid Depth: infinity which some servers reject
+      // Try Depth: infinity first if we haven't determined it's unsupported
+      // Only use depth infinity on mokuro-reader folder (not root) for performance + safety
+      if (this._supportsDepthInfinity !== false) {
+        try {
+          const files = await this.listWithDepthInfinity(client);
+          // Success - server supports depth infinity
+          if (this._supportsDepthInfinity === null) {
+            console.log('[WebDAV] Server supports Depth: infinity - using fast listing');
+            this._supportsDepthInfinity = true;
+          }
+          console.log(`✅ Listed ${files.length} files from WebDAV (depth infinity)`);
+          return files;
+        } catch (error) {
+          // Depth infinity not supported - fall back to recursive
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          // 403 Forbidden, 400 Bad Request, or specific "depth infinity" errors indicate no support
+          const isDepthInfinityError =
+            errorMessage.includes('403') ||
+            errorMessage.includes('400') ||
+            errorMessage.includes('infinity') ||
+            errorMessage.includes('Depth') ||
+            errorMessage.includes('propfind');
+
+          if (isDepthInfinityError && this._supportsDepthInfinity === null) {
+            console.log(
+              '[WebDAV] Server does not support Depth: infinity - falling back to recursive listing'
+            );
+            this._supportsDepthInfinity = false;
+          } else if (this._supportsDepthInfinity === null) {
+            // Unknown error on first try - still fall back but don't cache the result
+            console.warn(
+              '[WebDAV] Depth: infinity failed with unexpected error, trying recursive:',
+              errorMessage
+            );
+          } else {
+            // Re-throw if we thought it was supported but it failed
+            throw error;
+          }
+        }
+      }
+
+      // Fall back to manual recursive folder traversal
+      const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
+
       const processFolder = async (folderPath: string): Promise<void> => {
         const contents = (await client.getDirectoryContents(folderPath)) as Array<{
           type: string;
@@ -305,7 +573,7 @@ export class WebDAVProvider implements SyncProvider {
 
       await processFolder(MOKURO_FOLDER);
 
-      console.log(`✅ Listed ${allFiles.length} files from WebDAV`);
+      console.log(`✅ Listed ${allFiles.length} files from WebDAV (recursive)`);
       return allFiles;
     } catch (error) {
       throw new ProviderError(
@@ -316,6 +584,52 @@ export class WebDAVProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * List all files using Depth: infinity PROPFIND (single request)
+   * Only used on mokuro-reader folder, not root, for performance and safety
+   */
+  private async listWithDepthInfinity(
+    client: WebDAVClient
+  ): Promise<import('../../provider-interface').CloudFileMetadata[]> {
+    // Use deep option which sets Depth: infinity
+    const contents = (await client.getDirectoryContents(MOKURO_FOLDER, {
+      deep: true
+    })) as Array<{
+      type: string;
+      filename: string;
+      basename: string;
+      lastmod: string;
+      size: number;
+    }>;
+
+    const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
+
+    for (const item of contents) {
+      if (item.type === 'file') {
+        const name = item.basename.toLowerCase();
+        // Include CBZ files and JSON config files
+        if (
+          name.endsWith('.cbz') ||
+          item.basename === 'volume-data.json' ||
+          item.basename === 'profiles.json'
+        ) {
+          // Build relative path from mokuro folder
+          const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+
+          allFiles.push({
+            provider: 'webdav',
+            fileId: item.filename, // Full WebDAV path as fileId
+            path: relativePath,
+            modifiedTime: item.lastmod || new Date().toISOString(),
+            size: item.size || 0
+          });
+        }
+      }
+    }
+
+    return allFiles;
   }
 
   async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
@@ -346,20 +660,43 @@ export class WebDAVProvider implements SyncProvider {
         // Ignore errors - file may not exist
       }
 
-      // Convert Blob to ArrayBuffer and upload
-      // Don't pass { overwrite: true } - it doesn't work reliably across servers
-      const arrayBuffer = await blob.arrayBuffer();
-      await this.client.putFileContents(fullPath, arrayBuffer);
+      // Use shared upload utility (handles large files via Blob streaming)
+      await uploadFileWithClient(this.client, fullPath, blob);
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
       return fullPath;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Check for permission errors - mark as read-only
+      // 401 = Unauthorized (read-only token), 403 = Forbidden, 405 = Method Not Allowed
+      if (
+        errorMessage.includes('401') ||
+        errorMessage.includes('403') ||
+        errorMessage.includes('405') ||
+        errorMessage.includes('Unauthorized') ||
+        errorMessage.includes('Forbidden') ||
+        errorMessage.includes('Method Not Allowed') ||
+        errorMessage.includes('Permission denied')
+      ) {
+        this.markAsReadOnly();
+        throw new ProviderError(
+          'Write permission denied - server is read-only',
+          'webdav',
+          'PERMISSION_DENIED',
+          false,
+          false,
+          'permission'
+        );
+      }
+
       throw new ProviderError(
-        `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to upload file: ${errorMessage}`,
         'webdav',
         'UPLOAD_FAILED',
         false,
-        true
+        true,
+        'unknown'
       );
     }
   }
@@ -438,12 +775,37 @@ export class WebDAVProvider implements SyncProvider {
       await this.client.deleteFile(file.fileId);
       console.log(`✅ Deleted ${file.path} from WebDAV`);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Check for permission errors - mark as read-only
+      // 401 = Unauthorized (read-only token), 403 = Forbidden, 405 = Method Not Allowed
+      if (
+        errorMessage.includes('401') ||
+        errorMessage.includes('403') ||
+        errorMessage.includes('405') ||
+        errorMessage.includes('Unauthorized') ||
+        errorMessage.includes('Forbidden') ||
+        errorMessage.includes('Method Not Allowed') ||
+        errorMessage.includes('Permission denied')
+      ) {
+        this.markAsReadOnly();
+        throw new ProviderError(
+          'Delete permission denied - server is read-only',
+          'webdav',
+          'PERMISSION_DENIED',
+          false,
+          false,
+          'permission'
+        );
+      }
+
       throw new ProviderError(
-        `Failed to delete file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to delete file: ${errorMessage}`,
         'webdav',
         'DELETE_FAILED',
         false,
-        true
+        true,
+        'unknown'
       );
     }
   }

@@ -1,18 +1,31 @@
 <script lang="ts">
-  import { deleteVolume, progress, volumes } from '$lib/settings';
+  import {
+    deleteVolume,
+    progress,
+    volumes,
+    settings,
+    markVolumeAsComplete,
+    markVolumeAsUnread
+  } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
+  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
+    CloseCircleOutline,
+    CheckCircleOutline,
     TrashBinSolid,
     FileLinesOutline,
     DotsVerticalOutline,
     CloudArrowUpOutline,
-    ImageOutline
+    ImageOutline,
+    ExclamationCircleOutline,
+    EditOutline
   } from 'flowbite-svelte-icons';
+  import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
@@ -41,10 +54,14 @@
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');
 
+  // Check if this volume has missing pages (imported with placeholders)
+  let missingPages = $derived(volume.missing_pages);
+
   // Cloud backup state (for grid view menu)
   let cloudFiles = $state<Map<string, CloudVolumeWithProvider[]>>(new Map());
   let hasAuthenticatedProvider = $state(false);
   let isFetchingCloud = $state(false);
+  let isReadOnlyMode = $state(false);
 
   // Subscribe to cloud state for grid view
   $effect(() => {
@@ -57,6 +74,9 @@
       }),
       providerManager.status.subscribe((value) => {
         hasAuthenticatedProvider = value.hasAnyAuthenticated;
+        // Check if current provider is WebDAV and in read-only mode
+        isReadOnlyMode =
+          value.currentProviderType === 'webdav' && value.providers['webdav']?.isReadOnly === true;
       })
     ];
     return () => unsubscribers.forEach((unsub) => unsub());
@@ -83,7 +103,11 @@
   let isBackedUp = $derived(cloudFile !== undefined);
 
   // Time statistics
-  let timeReadMinutes = $derived(volumeData?.timeReadInMinutes || 0);
+  let timeReadMinutes = $derived.by(() => {
+    if (!volumeData) return 0;
+    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
+    return getEffectiveReadingTime(volumeData, idleTimeoutMs);
+  });
   let charsRead = $derived(volumeData?.chars || 0);
   let totalChars = $state<number | undefined>(undefined);
 
@@ -186,7 +210,20 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
-
+  function onToggleStatusClicked(e: Event) {
+    e.stopPropagation();
+    if (isComplete) {
+      markVolumeAsUnread(volume_uuid);
+      showSnackbar(`Marked ${volName} as unread`);
+    } else {
+      if (volume.page_count) {
+        markVolumeAsComplete(volume_uuid, volume.page_count, totalChars);
+        showSnackbar(`Marked ${volName} as read`);
+      } else {
+        showSnackbar('Error: Missing page count data');
+      }
+    }
+  }
   async function onDeleteClicked(e: Event) {
     e.stopPropagation();
 
@@ -245,7 +282,8 @@
         storageKey: 'deleteStatsPreference',
         defaultValue: false
       },
-      hasCloudBackup
+      // Don't show cloud delete option in read-only mode
+      hasCloudBackup && !isReadOnlyMode
         ? {
             label: `Also delete from ${providerDisplayName}?`,
             storageKey: 'deleteCloudPreference',
@@ -259,6 +297,11 @@
     e.stopPropagation();
     const seriesId = $routeParams.manga;
     if (seriesId) nav.toVolumeText(seriesId, volume_uuid);
+  }
+
+  function onEditClicked(e: Event) {
+    e.stopPropagation();
+    promptVolumeEditor(volume_uuid);
   }
 
   async function onBackupClicked(e: Event) {
@@ -320,6 +363,12 @@
                   Image Only
                 </Badge>
               {/if}
+              {#if missingPages}
+                <Badge color="yellow" class="text-xs">
+                  <ExclamationCircleOutline class="me-1 inline h-3 w-3" />
+                  Missing {missingPages} page{missingPages > 1 ? 's' : ''}
+                </Badge>
+              {/if}
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>
@@ -337,12 +386,29 @@
             >
               <FileLinesOutline class="z-10 text-blue-400 hover:text-blue-500" />
             </button>
+            <button
+              onclick={onEditClicked}
+              class="flex items-center justify-center"
+              title="Edit volume"
+            >
+              <EditOutline class="z-10 text-gray-400 hover:text-gray-300" />
+            </button>
             <button onclick={onDeleteClicked} class="flex items-center justify-center">
               <TrashBinSolid class="poin z-10 text-red-400 hover:text-red-500" />
             </button>
-            {#if isComplete}
-              <CheckCircleSolid />
-            {/if}
+            <button
+              onclick={onToggleStatusClicked}
+              class="flex items-center justify-center transition-colors"
+              title={isComplete ? 'Mark as unread' : 'Mark as read'}
+            >
+              {#if isComplete}
+                <CheckCircleSolid
+                  class="z-10 text-green-400 hover:text-green-600 dark:hover:text-green-300"
+                />
+              {:else}
+                <CheckCircleOutline class="z-10 text-gray-400 hover:text-green-500" />
+              {/if}
+            </button>
           </div>
         </div>
       </ListgroupItem>
@@ -366,13 +432,20 @@
       </button>
       <Dropdown triggeredBy="#volume-menu-{volume_uuid}" placement="bottom-end">
         <DropdownItem
+          onclick={onEditClicked}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <EditOutline class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Edit</span>
+        </DropdownItem>
+        <DropdownItem
           onclick={onViewTextClicked}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"
         >
           <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
           <span class="flex-1 text-left">View text</span>
         </DropdownItem>
-        {#if hasAuthenticatedProvider}
+        {#if hasAuthenticatedProvider && !isReadOnlyMode}
           {#if isCloudLoading}
             <DropdownItem class="flex w-full items-center opacity-50" disabled>
               <span class="me-2 h-5 w-5 flex-shrink-0 animate-spin">⏳</span>
@@ -391,6 +464,23 @@
               <span class="flex-1 text-left text-gray-700 dark:text-gray-200">Backup to cloud</span>
             </DropdownItem>
           {/if}
+        {/if}
+        {#if !isComplete}
+          <DropdownItem
+            onclick={onToggleStatusClicked}
+            class="flex w-full items-center text-green-600 hover:!text-green-700 dark:text-green-500 dark:hover:!text-green-400"
+          >
+            <CheckCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Mark as read</span>
+          </DropdownItem>
+        {:else}
+          <DropdownItem
+            onclick={onToggleStatusClicked}
+            class="flex w-full items-center text-gray-500 hover:!text-gray-900 dark:text-gray-400 dark:hover:!text-white"
+          >
+            <CloseCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Mark as unread</span>
+          </DropdownItem>
         {/if}
         <DropdownItem
           onclick={onDeleteClicked}
@@ -433,6 +523,12 @@
             <Badge color="blue" class="w-fit text-xs">
               <ImageOutline class="me-1 inline h-3 w-3" />
               Image Only
+            </Badge>
+          {/if}
+          {#if missingPages}
+            <Badge color="yellow" class="w-fit text-xs">
+              <ExclamationCircleOutline class="me-1 inline h-3 w-3" />
+              Missing {missingPages} page{missingPages > 1 ? 's' : ''}
             </Badge>
           {/if}
         </div>

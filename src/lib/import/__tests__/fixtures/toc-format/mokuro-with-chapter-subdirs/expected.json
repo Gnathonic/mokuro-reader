@@ -1,0 +1,12 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "toc-directory",
+      "hasMokuro": true,
+      "basePathContains": "series",
+      "imageOnly": false,
+      "chapterNames": ["chapter01", "chapter02"]
+    }
+  ]
+}

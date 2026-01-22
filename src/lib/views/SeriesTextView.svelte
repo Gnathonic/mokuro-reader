@@ -13,8 +13,11 @@
 
   let seriesId = $derived($routeParams.manga || '');
 
-  // Get series volumes from catalog
-  let seriesData = $derived($catalog?.find((item) => item.series_uuid === seriesId));
+  // Get series volumes from catalog - match by title first (for placeholder URLs), then UUID
+  let seriesData = $derived(
+    $catalog?.find((item) => item.title === seriesId) ||
+      $catalog?.find((item) => item.series_uuid === seriesId)
+  );
   let volumes = $derived(
     seriesData?.volumes
       .filter((v) => !v.isPlaceholder)

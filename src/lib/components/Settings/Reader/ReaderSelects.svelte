@@ -11,8 +11,7 @@
     { value: 'zoomFitToScreen', name: 'Fit to screen' },
     { value: 'zoomFitToWidth', name: 'Fit to width' },
     { value: 'zoomOriginal', name: 'Original size' },
-    { value: 'keepZoom', name: 'Keep zoom' },
-    { value: 'keepZoomStart', name: 'Keep zoom, pan to top' }
+    { value: 'keepZoom', name: 'Keep zoom' }
   ];
 
   let pageTransitions = [

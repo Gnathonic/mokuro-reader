@@ -58,7 +58,7 @@
     <!-- Actions -->
     <div class="flex justify-center gap-3 pt-2">
       <Button color="blue" onclick={handleConfirm}>Import</Button>
-      <Button color="alternative" onclick={handleCancel}>Cancel</Button>
+      <Button color="alternative" onclick={handleCancel}>Skip</Button>
     </div>
   </div>
 </Modal>

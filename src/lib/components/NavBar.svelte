@@ -202,7 +202,7 @@
           </button>
         {/key}
       {/if}
-      {#if hasActiveProvider}
+      {#if hasActiveProvider && !providerState.isReadOnly}
         <button
           onclick={handleSync}
           class="flex h-6 w-6 items-center justify-center"

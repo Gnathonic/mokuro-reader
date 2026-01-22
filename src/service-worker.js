@@ -54,7 +54,11 @@ self.addEventListener('fetch', (event) => {
 
     // `build`/`files` can always be served from the cache
     if (ASSETS.includes(url.pathname)) {
-      return cache.match(url.pathname);
+      const cachedResponse = await cache.match(url.pathname);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      // If not in cache, fall through to network
     }
 
     // for everything else, try the network first, but
@@ -83,7 +87,12 @@ self.addEventListener('fetch', (event) => {
 
       return response;
     } catch {
-      return cache.match(event.request);
+      const cachedResponse = await cache.match(event.request);
+      // Return cached response or a basic offline response
+      return (
+        cachedResponse ||
+        new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+      );
     }
   }
 

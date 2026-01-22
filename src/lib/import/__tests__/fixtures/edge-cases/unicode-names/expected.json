@@ -1,0 +1,12 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "漫画",
+      "imageOnly": false,
+      "fileCount": 2
+    }
+  ]
+}

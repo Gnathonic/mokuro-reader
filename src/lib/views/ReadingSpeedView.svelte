@@ -258,7 +258,8 @@
       return calculateReadingSpeedStats(
         $volumeSpeedData,
         $personalizedSpeed.charsPerMinute,
-        $volumes
+        $volumes,
+        $personalizedSpeed.confidence !== 'none'
       );
     }
   );
@@ -296,6 +297,19 @@
   // Count all completed volumes (including those without speed tracking)
   const totalCompletedVolumes = derived(volumes, ($volumes) => {
     return Object.values($volumes).filter((vol) => vol.completed).length;
+  });
+
+  // Unified check for any reading activity (page turns or completed volumes)
+  const hasReadingData = $derived.by(() => {
+    // Has valid page turn data (3-tuple format with at least 2 turns)
+    const hasPageTurns = Object.values($volumes).some(
+      (vol) =>
+        vol.recentPageTurns &&
+        vol.recentPageTurns.length >= 2 &&
+        vol.recentPageTurns.some((t) => t.length === 3)
+    );
+
+    return hasPageTurns;
   });
 
   // Detect ALL orphaned volumes (lacking metadata) in the entire volumes store
@@ -1059,13 +1073,23 @@
 <div class="min-h-[90svh] w-full p-4">
   <h1 class="mb-6 text-3xl font-bold">Reading Speed History</h1>
 
-  {#if $volumeSpeedData.length === 0}
-    <!-- Empty State Message -->
+  {#if !hasReadingData && $volumeSpeedData.length === 0}
+    <!-- Empty State Message - No reading activity at all -->
     <Card class="mb-6 py-8 text-center">
       <BookSolid size="lg" class="mx-auto mb-3 text-gray-500" />
       <h2 class="mb-2 text-lg font-semibold text-gray-300">No Reading History Yet</h2>
+      <p class="text-sm text-gray-400">Start reading to track your reading speed!</p>
+    </Card>
+  {:else if hasReadingData && $personalizedReadingSpeed.confidence === 'none' && $volumeSpeedData.length === 0}
+    <!-- Collecting Data Message - Has page turns but not enough time yet -->
+    {@const minutesNeeded = 30 - $stats.totalTimeMinutes}
+    <Card class="mb-6 py-8 text-center">
+      <ClockSolid size="lg" class="mx-auto mb-3 text-gray-500" />
+      <h2 class="mb-2 text-lg font-semibold text-gray-300">Collecting Reading Data...</h2>
       <p class="text-sm text-gray-400">
-        Complete your first volume or read for 30 minutes to start tracking your reading speed!
+        Keep reading! {minutesNeeded > 0
+          ? `${minutesNeeded} more minute${minutesNeeded === 1 ? '' : 's'}`
+          : 'A bit more time'} needed to calculate your reading speed.
       </p>
     </Card>
   {/if}
@@ -1079,7 +1103,9 @@
           <div>
             <p class="mb-1 text-sm text-gray-400">Recent Speed</p>
             <p class="text-2xl font-bold">
-              {$volumeSpeedData.length === 0 ? 0 : Math.round($stats.currentSpeed)}
+              {$personalizedReadingSpeed.confidence !== 'none'
+                ? Math.round($stats.currentSpeed)
+                : 0}
             </p>
             <p class="text-xs text-gray-500">chars/min</p>
           </div>
@@ -1185,7 +1211,7 @@
       {#if $volumeSpeedData.length === 0}
         <p class="mb-4 text-sm text-gray-400 italic">
           Example data shown below. Your actual progress will appear after completing your first
-          volume or 30 minutes of tracked reading.
+          volume.
         </p>
       {/if}
       <div class="w-full" style="height: 600px;">

@@ -7,19 +7,12 @@
  */
 
 import type { Page } from '$lib/types';
-import { normalizeFilename } from '$lib/util/misc';
+import { getBasename, normalizeFilename, removeExtension } from '$lib/util/misc';
 
 export interface CachedImage {
   image: HTMLImageElement; // Image element holds decoded bitmap and blob URL (in img.src)
   decoded: boolean;
   loading: Promise<void> | null;
-}
-
-/**
- * Extract just the filename from a path (handles both / and \ separators)
- */
-function getBasename(path: string): string {
-  return path.split(/[/\\]/).pop() || path;
 }
 
 /**
@@ -36,7 +29,9 @@ function naturalSort(a: string, b: string): number {
  * Strategy order:
  * 1. Exact path match - all page.img_path values match file keys exactly
  * 2. Basename match - match just the filename portion without directories
- * 3. Page order fallback - sort files naturally and align by index
+ * 3. Path without extension - full path match ignoring extension (e.g., dir/page.png -> dir/page.webp)
+ * 4. Basename without extension - handles format conversions (e.g., png->webp, jpg->avif)
+ * 5. Page order fallback - sort files naturally and align by index
  */
 function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
   const fileKeys = Object.keys(files);
@@ -106,7 +101,79 @@ function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
     return result;
   }
 
-  // Strategy 3: Fall back to page order (sort files naturally)
+  // Strategy 3: Try exact path without extension (handles format conversions with same path)
+  const pathNoExtToFile = new Map<string, File>();
+  const pathNoExtConflicts = new Set<string>();
+
+  for (const key of fileKeys) {
+    const pathNoExt = normalizeFilename(removeExtension(key));
+    if (pathNoExtToFile.has(pathNoExt)) {
+      pathNoExtConflicts.add(pathNoExt);
+    } else {
+      pathNoExtToFile.set(pathNoExt, files[key]);
+    }
+  }
+
+  let allPathNoExtMatches = true;
+  for (let i = 0; i < pages.length; i++) {
+    const imgPath = pages[i].img_path;
+    const pathNoExt = normalizeFilename(removeExtension(imgPath));
+
+    if (pathNoExtConflicts.has(pathNoExt)) {
+      allPathNoExtMatches = false;
+      break;
+    }
+
+    const file = pathNoExtToFile.get(pathNoExt);
+    if (file) {
+      result[i] = file;
+    } else {
+      allPathNoExtMatches = false;
+      break;
+    }
+  }
+
+  if (allPathNoExtMatches) {
+    return result;
+  }
+
+  // Strategy 4: Try basename without extension (handles format conversions like png->webp)
+  const basenameNoExtToFile = new Map<string, File>();
+  const basenameNoExtConflicts = new Set<string>();
+
+  for (const key of fileKeys) {
+    const basenameNoExt = normalizeFilename(removeExtension(getBasename(key)));
+    if (basenameNoExtToFile.has(basenameNoExt)) {
+      basenameNoExtConflicts.add(basenameNoExt);
+    } else {
+      basenameNoExtToFile.set(basenameNoExt, files[key]);
+    }
+  }
+
+  let allBasenameNoExtMatches = true;
+  for (let i = 0; i < pages.length; i++) {
+    const imgPath = pages[i].img_path;
+    const basenameNoExt = normalizeFilename(removeExtension(getBasename(imgPath)));
+
+    if (basenameNoExtConflicts.has(basenameNoExt)) {
+      allBasenameNoExtMatches = false;
+      break;
+    }
+
+    const file = basenameNoExtToFile.get(basenameNoExt);
+    if (file) {
+      result[i] = file;
+    } else {
+      allBasenameNoExtMatches = false;
+      break;
+    }
+  }
+
+  if (allBasenameNoExtMatches) {
+    return result;
+  }
+
+  // Strategy 5: Fall back to page order (sort files naturally)
   const sortedKeys = fileKeys.sort(naturalSort);
   for (let i = 0; i < pages.length && i < sortedKeys.length; i++) {
     result[i] = files[sortedKeys[i]];

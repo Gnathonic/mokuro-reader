@@ -1,0 +1,13 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": false,
+      "basePathContains": "series2/manga",
+      "imageOnly": true,
+      "fileCount": 2
+    }
+  ],
+  "warnings": ["Orphaned mokuro file: series1/manga.mokuro (no matching images or archive)"]
+}

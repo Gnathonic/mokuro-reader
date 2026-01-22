@@ -1,0 +1,20 @@
+{
+  "count": 2,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "vol2",
+      "imageOnly": false,
+      "fileCount": 2
+    },
+    {
+      "sourceType": "directory",
+      "hasMokuro": false,
+      "basePathContains": "vol1",
+      "imageOnly": true,
+      "fileCount": 2
+    }
+  ],
+  "warnings": ["Orphaned mokuro file: series/volume1-ocr.mokuro (no matching images or archive)"]
+}

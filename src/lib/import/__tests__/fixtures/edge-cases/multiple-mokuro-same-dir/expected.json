@@ -1,0 +1,13 @@
+{
+  "count": 1,
+  "pairings": [
+    {
+      "sourceType": "directory",
+      "hasMokuro": true,
+      "basePathContains": "manga",
+      "imageOnly": false,
+      "fileCount": 2
+    }
+  ],
+  "warnings": ["Orphaned mokuro file: manga/vol2.mokuro (no matching images or archive)"]
+}

@@ -223,6 +223,9 @@
       </div>
     {/if}
 
-    <Button onclick={onClear} outline color="red">Clear catalog</Button>
+    <div class="flex flex-col gap-2">
+      <Button onclick={() => nav.toMergeSeries()} outline color="blue">Merge series</Button>
+      <Button onclick={onClear} outline color="red">Clear catalog</Button>
+    </div>
   </div>
 </AccordionItem>

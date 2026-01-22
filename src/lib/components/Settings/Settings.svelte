@@ -37,6 +37,24 @@
     open = false;
   }
 
+  // Handle backdrop mousedown - dismiss on mousedown outside content, not mouseup
+  function handleBackdropMousedown(ev: MouseEvent & { currentTarget: HTMLDialogElement }) {
+    const dlg = ev.currentTarget;
+    if (ev.target === dlg) {
+      // Click is on the backdrop (dialog element itself, not content)
+      const rect = dlg.getBoundingClientRect();
+      const clickedInContent =
+        ev.clientX >= rect.left &&
+        ev.clientX <= rect.right &&
+        ev.clientY >= rect.top &&
+        ev.clientY <= rect.bottom;
+
+      if (!clickedInContent) {
+        open = false;
+      }
+    }
+  }
+
   // Close drawer on navigation (hash route change)
   let previousViewType = $state($currentView.type);
   $effect(() => {
@@ -56,6 +74,8 @@
   {transitionParams}
   bind:open
   id="settings"
+  outsideclose={false}
+  onmousedown={handleBackdropMousedown}
 >
   <h5
     id="drawer-label"

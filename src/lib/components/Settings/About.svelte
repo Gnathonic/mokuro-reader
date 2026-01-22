@@ -20,7 +20,7 @@
         </a>
         <a
           class="text-gray-900 hover:text-primary-600 dark:text-white"
-          href="https://github.com/ZXY101/mokuro-reader"
+          href="https://github.com/Gnathonic/mokuro-reader"
           target="_blank"
         >
           <GithubSolid />

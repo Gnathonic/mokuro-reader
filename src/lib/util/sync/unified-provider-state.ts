@@ -24,6 +24,8 @@ export interface UnifiedProviderState {
   needsAttention: boolean;
   /** Status message from provider */
   statusMessage: string;
+  /** Whether the provider is in read-only mode (e.g., WebDAV without write permissions) */
+  isReadOnly: boolean;
 }
 
 /**
@@ -57,7 +59,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
           isCacheLoaded: hasLoadedOnce,
           isFullyConnected: false,
           needsAttention: false,
-          statusMessage: 'No provider connected'
+          statusMessage: 'No provider connected',
+          isReadOnly: false
         };
       }
 
@@ -73,7 +76,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
           isCacheLoaded: hasLoadedOnce,
           isFullyConnected: false,
           needsAttention: false,
-          statusMessage: 'Initializing...'
+          statusMessage: 'Initializing...',
+          isReadOnly: false
         };
       }
 
@@ -86,7 +90,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
         isCacheLoaded: hasLoadedOnce,
         isFullyConnected,
         needsAttention: status.needsAttention,
-        statusMessage: status.statusMessage
+        statusMessage: status.statusMessage,
+        isReadOnly: status.isReadOnly ?? false
       };
     }
   );
