@@ -152,8 +152,8 @@ describe('Real Scroll Performance Test', () => {
       }
 
       // Import the real component (with real panzoom, real ImageCache)
-      const { default: ContinuousReader } = await import(
-        '../../src/lib/components/Reader/ContinuousReader.svelte'
+      const { default: PureCanvasReader } = await import(
+        '../../src/lib/components/Reader/PureCanvasReader.svelte'
       );
 
       const pages = mokuroData.pages;
@@ -166,7 +166,7 @@ describe('Real Scroll Performance Test', () => {
       // Measure initial render time
       const renderStart = performance.now();
 
-      const { container } = render(ContinuousReader, {
+      const { container } = render(PureCanvasReader, {
         props: {
           pages,
           files,
@@ -261,11 +261,11 @@ describe('Real Scroll Performance Test', () => {
         files[imgPath] = new File(['mock'], imgPath, { type: 'image/jpeg' });
       }
 
-      const { default: ContinuousReader } = await import(
-        '../../src/lib/components/Reader/ContinuousReader.svelte'
+      const { default: PureCanvasReader } = await import(
+        '../../src/lib/components/Reader/PureCanvasReader.svelte'
       );
 
-      render(ContinuousReader, {
+      render(PureCanvasReader, {
         props: {
           pages: mokuroData.pages,
           files,

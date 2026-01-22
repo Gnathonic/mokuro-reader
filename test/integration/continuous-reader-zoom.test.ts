@@ -1,7 +1,7 @@
 /**
- * Integration tests for ContinuousReader zoom placement using real fixtures.
+ * Integration tests for PureCanvasReader zoom placement using real fixtures.
  *
- * These tests verify that the ContinuousReader component calls panzoom
+ * These tests verify that the PureCanvasReader component calls panzoom
  * with correct scale and position values based on real manga dimensions.
  */
 
@@ -122,7 +122,7 @@ vi.mock('$lib/reader/image-cache', () => ({
 }));
 
 // Import component once after mocks are set up
-import ContinuousReader from '../../src/lib/components/Reader/ContinuousReader.svelte';
+import PureCanvasReader from '../../src/lib/components/Reader/PureCanvasReader.svelte';
 
 // Helper to create test files from fixture
 function createFilesFromPages(pages: Page[]): Record<string, File> {
@@ -203,16 +203,16 @@ function calculateExpectedZoom(
   const scaledHeight = spreadHeight * scale;
 
   // Standard Reader centers using: x = (innerWidth - offsetWidth * scale) / 2
-  // For ContinuousReader, since content uses align-items: center,
+  // For PureCanvasReader, since content uses align-items: center,
   // the content container should be positioned so the spread appears centered
   const x = (viewportWidth - scaledWidth) / 2;
 
   return { scale, x, scaledWidth, scaledHeight };
 }
 
-describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
+describeWithFixtures('PureCanvasReader zoom placement with fixtures', () => {
   beforeAll(() => {
-    console.log(`\n🔬 Testing ContinuousReader zoom with ${extractedFixtures.length} fixture(s)`);
+    console.log(`\n🔬 Testing PureCanvasReader zoom with ${extractedFixtures.length} fixture(s)`);
   });
 
   beforeEach(() => {
@@ -262,7 +262,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -317,7 +317,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const dualSpread = spreads[dualSpreadIndex];
         const firstPageOfDual = dualSpread.pageIndices[0] + 1; // 1-indexed
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -461,7 +461,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -503,7 +503,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const mokuroData = loadExtractedMokuro(fixture);
         const pages = mokuroData.pages.slice(0, 5);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -548,7 +548,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         // Find page that's on spread 1
         const spread1FirstPage = spreads[1].pageIndices[0] + 1;
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -582,7 +582,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
       const mokuroData = loadExtractedMokuro(fixture);
       const pages = mokuroData.pages.slice(0, 5);
 
-      render(ContinuousReader, {
+      render(PureCanvasReader, {
         props: {
           pages,
           files: createFilesFromPages(pages),
@@ -621,7 +621,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -670,7 +670,7 @@ describeWithFixtures('ContinuousReader zoom placement with fixtures', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -794,7 +794,7 @@ describeWithFixtures('Container width analysis', () => {
         // x = (viewportWidth - containerWidth * scale) / 2
         // When containerWidth === spreadWidth, this works
 
-        // But ContinuousReader has align-items: center on a potentially wider container
+        // But PureCanvasReader has align-items: center on a potentially wider container
         // If container fills viewport (containerWidth = viewportWidth):
         // Spread is centered in container: spreadOffset = (containerWidth - spreadWidth) / 2
         // After scale: spreadVisualOffset = spreadOffset * scale
@@ -857,7 +857,7 @@ describeWithFixtures('Visual layout verification', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        const { container } = render(ContinuousReader, {
+        const { container } = render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -913,7 +913,7 @@ describeWithFixtures('Visual layout verification', () => {
         const mokuroData = loadExtractedMokuro(fixture);
         const pages = mokuroData.pages.slice(0, 5);
 
-        const { container } = render(ContinuousReader, {
+        const { container } = render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -948,7 +948,7 @@ describeWithFixtures('Visual layout verification', () => {
         const pages = mokuroData.pages.slice(0, 5);
         const spreads = groupPagesIntoSpreads(pages, 'auto', true, true);
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages,
             files: createFilesFromPages(pages),
@@ -1042,7 +1042,7 @@ describe('Zoom placement fixture availability', () => {
     if (extractedFixtures.length === 0) {
       console.log(`
 ╭─────────────────────────────────────────────────────────╮
-│  No fixtures for ContinuousReader zoom tests            │
+│  No fixtures for PureCanvasReader zoom tests            │
 │  Add mokuro-processed manga to test/fixtures/extracted  │
 ╰─────────────────────────────────────────────────────────╯
       `);

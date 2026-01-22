@@ -1,5 +1,5 @@
 /**
- * Integration test for scroll stuttering in ContinuousReader.
+ * Integration test for scroll stuttering in PureCanvasReader.
  *
  * This test mounts the actual component and measures frame timing
  * by capturing and invoking the panzoom pan callback.
@@ -63,9 +63,17 @@ vi.mock('$lib/settings', () => ({
       cb({
         backgroundColor: '#1a1a1a',
         zoomDefault: 'zoomFitToScreen',
+        continuousZoomDefault: 'zoomFitToWidth',
         scrollSnap: false, // Disable snap for continuous scroll test
-        swapWheelBehavior: false
+        swapWheelBehavior: false,
+        invertColors: false
       });
+      return () => {};
+    })
+  },
+  invertColorsActive: {
+    subscribe: vi.fn((cb) => {
+      cb(false);
       return () => {};
     })
   }
@@ -173,14 +181,15 @@ describe('Scroll Stutter Integration Test', () => {
     cleanup();
   });
 
-  it('should capture pan callback when component mounts', async () => {
-    const { default: ContinuousReader } = await import(
-      '../../src/lib/components/Reader/ContinuousReader.svelte'
+  // Skip: PureCanvasReader doesn't use panzoom - it manages transforms directly
+  it.skip('should capture pan callback when component mounts', async () => {
+    const { default: PureCanvasReader } = await import(
+      '../../src/lib/components/Reader/PureCanvasReader.svelte'
     );
 
     const pages = Array.from({ length: 20 }, (_, i) => createPage(1920, 2560, `page${i}.jpg`));
 
-    render(ContinuousReader, {
+    render(PureCanvasReader, {
       props: {
         pages,
         files: createFiles(20),
@@ -200,14 +209,15 @@ describe('Scroll Stutter Integration Test', () => {
     expect(panzoomCallbacks['pan'].length).toBeGreaterThan(0);
   });
 
-  it('FAILS if pan callback causes frame drops (> 16ms per call)', async () => {
-    const { default: ContinuousReader } = await import(
-      '../../src/lib/components/Reader/ContinuousReader.svelte'
+  // Skip: PureCanvasReader doesn't use panzoom - it manages transforms directly
+  it.skip('FAILS if pan callback causes frame drops (> 16ms per call)', async () => {
+    const { default: PureCanvasReader } = await import(
+      '../../src/lib/components/Reader/PureCanvasReader.svelte'
     );
 
     const pages = Array.from({ length: 20 }, (_, i) => createPage(1920, 2560, `page${i}.jpg`));
 
-    render(ContinuousReader, {
+    render(PureCanvasReader, {
       props: {
         pages,
         files: createFiles(20),
@@ -301,8 +311,8 @@ describe('Scroll Stutter with Real Fixtures', () => {
       const mokuroData = loadExtractedMokuro(fixture);
       const pages = mokuroData.pages;
 
-      const { default: ContinuousReader } = await import(
-        '../../src/lib/components/Reader/ContinuousReader.svelte'
+      const { default: PureCanvasReader } = await import(
+        '../../src/lib/components/Reader/PureCanvasReader.svelte'
       );
 
       // Create files from fixture
@@ -320,7 +330,7 @@ describe('Scroll Stutter with Real Fixtures', () => {
         charCount: mokuroData.chars || 0
       };
 
-      render(ContinuousReader, {
+      render(PureCanvasReader, {
         props: {
           pages,
           files,
@@ -380,8 +390,8 @@ ${fixture.name} scroll performance (${pages.length} pages):
       async (fixture) => {
         const mokuroData = loadExtractedMokuro(fixture);
 
-        const { default: ContinuousReader } = await import(
-          '../../src/lib/components/Reader/ContinuousReader.svelte'
+        const { default: PureCanvasReader } = await import(
+          '../../src/lib/components/Reader/PureCanvasReader.svelte'
         );
 
         const files: Record<string, File> = {};
@@ -389,7 +399,7 @@ ${fixture.name} scroll performance (${pages.length} pages):
           files[imgPath] = new File([''], imgPath, { type: 'image/jpeg' });
         }
 
-        render(ContinuousReader, {
+        render(PureCanvasReader, {
           props: {
             pages: mokuroData.pages,
             files,
@@ -479,13 +489,13 @@ describe('Frame Pacing Analysis', () => {
   });
 
   it('should detect jank patterns in frame timing', async () => {
-    const { default: ContinuousReader } = await import(
-      '../../src/lib/components/Reader/ContinuousReader.svelte'
+    const { default: PureCanvasReader } = await import(
+      '../../src/lib/components/Reader/PureCanvasReader.svelte'
     );
 
     const pages = Array.from({ length: 20 }, (_, i) => createPage(1920, 2560, `page${i}.jpg`));
 
-    render(ContinuousReader, {
+    render(PureCanvasReader, {
       props: {
         pages,
         files: createFiles(20),
@@ -552,13 +562,13 @@ Frame Pacing Analysis (120 frames):
   });
 
   it('should identify specific operations causing jank', async () => {
-    const { default: ContinuousReader } = await import(
-      '../../src/lib/components/Reader/ContinuousReader.svelte'
+    const { default: PureCanvasReader } = await import(
+      '../../src/lib/components/Reader/PureCanvasReader.svelte'
     );
 
     const pages = Array.from({ length: 20 }, (_, i) => createPage(1920, 2560, `page${i}.jpg`));
 
-    render(ContinuousReader, {
+    render(PureCanvasReader, {
       props: {
         pages,
         files: createFiles(20),

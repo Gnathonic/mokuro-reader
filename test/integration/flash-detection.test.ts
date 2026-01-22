@@ -64,9 +64,17 @@ vi.mock('$lib/settings', () => ({
       cb({
         backgroundColor: '#1a1a1a',
         zoomDefault: 'zoomFitToScreen',
+        continuousZoomDefault: 'zoomFitToWidth',
         scrollSnap: true,
-        swapWheelBehavior: false
+        swapWheelBehavior: false,
+        invertColors: false
       });
+      return () => {};
+    })
+  },
+  invertColorsActive: {
+    subscribe: vi.fn((cb) => {
+      cb(false);
       return () => {};
     })
   }
@@ -196,8 +204,8 @@ describe('Flash Detection', () => {
         };
 
         // Import component after mocks
-        const { default: ContinuousReader } = await import(
-          '$lib/components/Reader/ContinuousReader.svelte'
+        const { default: PureCanvasReader } = await import(
+          '$lib/components/Reader/PureCanvasReader.svelte'
         );
 
         const onPageChange = vi.fn();
@@ -206,7 +214,7 @@ describe('Flash Detection', () => {
         bitmapCalls.length = 0;
 
         // Render starting at page 3 (not first page, to test preloading)
-        const { component } = render(ContinuousReader, {
+        const { component } = render(PureCanvasReader, {
           props: {
             pages: mokuroData.pages,
             files: filesMap,
@@ -296,14 +304,14 @@ describe('Flash Detection', () => {
       rightToLeft: true
     };
 
-    const { default: ContinuousReader } = await import(
-      '$lib/components/Reader/ContinuousReader.svelte'
+    const { default: PureCanvasReader } = await import(
+      '$lib/components/Reader/PureCanvasReader.svelte'
     );
 
     bitmapCalls.length = 0;
 
     // Start at page 1
-    render(ContinuousReader, {
+    render(PureCanvasReader, {
       props: {
         pages,
         files: filesMap,
