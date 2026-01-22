@@ -299,6 +299,9 @@ export function scrollImage(direction: 'up' | 'down') {
 }
 
 export function toggleFullScreen() {
+  // Dispatch custom event for components to react (iOS Safari doesn't fire fullscreenchange)
+  document.dispatchEvent(new CustomEvent('fullscreentoggle'));
+
   if (!document.fullscreenElement) {
     document.documentElement.requestFullscreen();
     sessionFullscreenState.set(true);
