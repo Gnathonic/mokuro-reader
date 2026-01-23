@@ -180,8 +180,8 @@
     <span class="mt-0.5 min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400"
       >{fieldName}</span
     >
-    <!-- Always show preview in title - wraps if needed -->
-    <span class="flex-1 text-sm break-words whitespace-pre-wrap text-gray-900 dark:text-white">
+    <!-- Preview - truncated to keep rows compact -->
+    <span class="flex-1 truncate text-sm text-gray-900 dark:text-white">
       {#if configureMode}
         <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">{template || '(not set)'}</code>
       {:else}
@@ -276,7 +276,7 @@
                 <span class="text-xs font-medium">{t}</span>
                 {#if value}
                   <span
-                    class="text-xs break-all whitespace-pre-wrap opacity-75"
+                    class="max-h-24 overflow-y-auto text-xs break-all whitespace-pre-wrap opacity-75"
                     class:text-blue-100={active}
                   >
                     {value}

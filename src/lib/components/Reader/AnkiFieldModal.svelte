@@ -416,6 +416,30 @@
     let savedCropData: CropperJS.Data | null = null;
     let isResizing = false;
 
+    // Clamp crop data to image bounds
+    const clampToImage = (data: CropperJS.Data): CropperJS.Data => {
+      const imgWidth = img.naturalWidth;
+      const imgHeight = img.naturalHeight;
+
+      let { x, y, width, height } = data;
+
+      // Clamp position to keep crop within image
+      x = Math.max(0, Math.min(x, imgWidth - width));
+      y = Math.max(0, Math.min(y, imgHeight - height));
+
+      // If crop is larger than image, constrain it
+      if (width > imgWidth) {
+        width = imgWidth;
+        x = 0;
+      }
+      if (height > imgHeight) {
+        height = imgHeight;
+        y = 0;
+      }
+
+      return { ...data, x, y, width, height };
+    };
+
     const setup = () => {
       if (cropper) {
         cropper.destroy();
@@ -424,7 +448,7 @@
       const textBox = $cropperStore?.textBox;
 
       cropper = new CropperJS(img, {
-        viewMode: 0, // No restrictions - we handle bounds ourselves
+        viewMode: 0, // No restrictions - we clamp bounds ourselves
         dragMode: 'move',
         autoCropArea: 1,
         restore: false,
@@ -461,8 +485,8 @@
               // Let cropper resize
               requestAnimationFrame(() => {
                 if (cropper && savedCropData) {
-                  // Restore crop data after resize
-                  cropper.setData(savedCropData);
+                  // Restore crop data after resize, clamped to bounds
+                  cropper.setData(clampToImage(savedCropData));
                 }
                 isResizing = false;
               });
@@ -473,6 +497,19 @@
         crop() {
           if (!isResizing) {
             updatePixels();
+            // Clamp to bounds after user interaction
+            if (cropper) {
+              const data = cropper.getData(true);
+              const clamped = clampToImage(data);
+              if (
+                data.x !== clamped.x ||
+                data.y !== clamped.y ||
+                data.width !== clamped.width ||
+                data.height !== clamped.height
+              ) {
+                cropper.setData(clamped);
+              }
+            }
           }
         }
       });
