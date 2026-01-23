@@ -1,3 +1,11 @@
+/**
+ * AnkiConnect integration for creating and updating Anki cards.
+ *
+ * The CORS permission request pattern is based on code from Mangatan-WebUI
+ * by KolbyML, licensed under Mozilla Public License 2.0.
+ * https://github.com/KolbyML/Mangatan-WebUI
+ */
+
 import type {
   Settings,
   AnkiConnectSettings,
@@ -415,14 +423,33 @@ export function getModelConfig(
 
 export type ConnectionTestResult = {
   success: boolean;
-  error?: 'network' | 'cors' | 'invalid_response' | 'anki_error';
+  error?: 'network' | 'cors' | 'invalid_response' | 'anki_error' | 'permission_denied';
   message: string;
   version?: number;
 };
 
 /**
+ * Requests permission from AnkiConnect.
+ * This triggers a popup in Anki asking the user to grant permission to this website.
+ * Returns true if permission was granted, false otherwise.
+ */
+async function requestAnkiPermission(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'requestPermission', version: 6 })
+    });
+    const json = await res.json();
+    return json.result?.permission === 'granted';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Tests the AnkiConnect connection and returns detailed error information.
  * Uses the "version" action which is a simple ping that returns the API version.
+ * If CORS blocks the request, attempts to request permission from Anki.
  */
 export async function testConnection(testUrl?: string): Promise<ConnectionTestResult> {
   const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
@@ -453,14 +480,21 @@ export async function testConnection(testUrl?: string): Promise<ConnectionTestRe
     const errorMessage = e?.message ?? String(e);
 
     // CORS errors typically show as "Failed to fetch" or similar network errors
-    // but we can check if it's a TypeError which often indicates CORS
     if (e instanceof TypeError && errorMessage.includes('Failed to fetch')) {
-      // Could be CORS or network - provide guidance for both
+      // Try requesting permission from Anki - this triggers a popup in Anki
+      const granted = await requestAnkiPermission(url);
+
+      if (granted) {
+        // Permission granted, retry the connection
+        return testConnection(testUrl);
+      }
+
+      // Permission not granted or request failed
       return {
         success: false,
         error: 'cors',
         message:
-          'Cannot connect. Either Anki is not running, the URL is wrong, or CORS is not configured. Add this site to webCorsOriginList in AnkiConnect settings.'
+          'Connection blocked. If Anki showed a permission popup, click "Yes" and try again. Otherwise, add this site to webCorsOriginList in AnkiConnect settings.'
       };
     }
 
@@ -483,7 +517,7 @@ export async function testConnection(testUrl?: string): Promise<ConnectionTestRe
 export async function ankiConnect(
   action: string,
   params: Record<string, any>,
-  options?: { silent?: boolean }
+  options?: { silent?: boolean; retried?: boolean }
 ) {
   const url = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
 
@@ -509,8 +543,17 @@ export async function ankiConnect(
     const errorMessage = e?.message ?? String(e);
 
     if (e instanceof TypeError && errorMessage.includes('Failed to fetch')) {
+      // Try requesting permission if we haven't already retried
+      if (!options?.retried) {
+        const granted = await requestAnkiPermission(url);
+        if (granted) {
+          // Retry the request
+          return ankiConnect(action, params, { ...options, retried: true });
+        }
+      }
+
       showSnackbar(
-        'Error: Cannot connect to AnkiConnect. Check that Anki is running and CORS is configured.'
+        'Error: Cannot connect to AnkiConnect. If Anki showed a permission popup, click "Yes" and try again.'
       );
     } else {
       showSnackbar(`Error: ${errorMessage}`);
