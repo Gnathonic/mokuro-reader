@@ -21,19 +21,28 @@
   let CurrentComponent: Component | null = $state(null);
   let loading = $state(true);
 
+  // Track which view type we're loading to prevent stale imports from overwriting
+  let loadingViewType: View['type'] | null = null;
+
   // Load component when view changes
   $effect(() => {
     const viewType = $currentView.type;
+    loadingViewType = viewType;
     loading = true;
 
     viewComponents[viewType]()
       .then((module) => {
-        CurrentComponent = module.default;
-        loading = false;
+        // Only apply if this is still the view we want (prevents race condition)
+        if (loadingViewType === viewType) {
+          CurrentComponent = module.default;
+          loading = false;
+        }
       })
       .catch((error) => {
-        console.error(`Failed to load view component for ${viewType}:`, error);
-        loading = false;
+        if (loadingViewType === viewType) {
+          console.error(`Failed to load view component for ${viewType}:`, error);
+          loading = false;
+        }
       });
   });
 

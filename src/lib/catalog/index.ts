@@ -8,7 +8,8 @@ import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 
 // Single source of truth from the database
-export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
+// Initial value is null to indicate "loading" state (vs {} which means "loaded but empty")
+export const volumes = readable<Record<string, VolumeMetadata> | null>(null, (set) => {
   const subscription = liveQuery(async () => {
     const volumesArray = await db.volumes.toArray();
 
@@ -28,9 +29,15 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
 });
 
 // Merge local volumes with cloud placeholders
+// Returns null while volumes are still loading
 export const volumesWithPlaceholders = derived(
   [volumes, unifiedCloudManager.cloudFiles],
   ([$volumes, $cloudFiles]) => {
+    // Propagate loading state
+    if ($volumes === null) {
+      return null;
+    }
+
     // Skip placeholder generation if no cloud files
     if ($cloudFiles.size === 0) {
       return $volumes;
@@ -48,20 +55,24 @@ export const volumesWithPlaceholders = derived(
 
     return combined;
   },
-  {} as Record<string, VolumeMetadata>
+  null as Record<string, VolumeMetadata> | null
 );
 
 // Each derived store needs to be passed as an array if using multiple inputs
+// Returns null while loading, [] when loaded but empty
 export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlaceholders]) => {
-  // Return null while loading (before first data emission)
-  if ($volumesWithPlaceholders === undefined) {
+  // Propagate loading state (null means still loading)
+  if ($volumesWithPlaceholders === null) {
     return null;
   }
   return deriveSeriesFromVolumes(Object.values($volumesWithPlaceholders));
 });
 
+// Returns null while catalog is loading, [] if series not found after load
 export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
-  if (!$catalog || !$routeParams.manga) return [];
+  // Propagate loading state
+  if ($catalog === null) return null;
+  if (!$routeParams.manga) return [];
 
   // Primary: match by title (folder name) - handles placeholder→local transition
   let series = $catalog.find((s) => s.title === $routeParams.manga);
@@ -74,8 +85,12 @@ export const currentSeries = derived([routeParams, catalog], ([$routeParams, $ca
   return series?.volumes || [];
 });
 
+// Returns null while volumes are loading, undefined if volume not found after load
 export const currentVolume = derived([routeParams, volumes], ([$routeParams, $volumes]) => {
-  if ($routeParams && $volumes && $routeParams.volume) {
+  // Propagate loading state
+  if ($volumes === null) return null;
+
+  if ($routeParams && $routeParams.volume) {
     return $volumes[$routeParams.volume]; // Direct lookup instead of find()
   }
   return undefined;

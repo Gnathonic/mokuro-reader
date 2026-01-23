@@ -157,9 +157,12 @@
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
+  // Returns null while loading, undefined if series not found, array if found
   let allVolumes = $derived.by(() => {
     const seriesVolumes = $currentSeries;
-    if (!seriesVolumes || seriesVolumes.length === 0) return undefined;
+    // Propagate loading state (null = loading, [] = not found)
+    if (seriesVolumes === null) return null;
+    if (seriesVolumes.length === 0) return undefined;
 
     // Create a copy to sort
     const volumesToSort = [...seriesVolumes];
@@ -653,7 +656,8 @@
 <svelte:head>
   <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
-{#if !$catalog || $catalog.length === 0}
+{#if $catalog === null || allVolumes === null}
+  <!-- Still loading from IndexedDB -->
   <div class="flex items-center justify-center p-16">
     <Spinner size="12" />
   </div>
@@ -913,5 +917,8 @@
     {/if}
   </div>
 {:else}
-  <div class="flex justify-center p-16">Manga not found</div>
+  <div class="flex flex-col items-center justify-center gap-4 p-16">
+    <p class="text-lg text-gray-400">Series not found</p>
+    <Button color="primary" onclick={() => nav.toCatalog()}>Go to Catalog</Button>
+  </div>
 {/if}

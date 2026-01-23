@@ -157,7 +157,7 @@
       // AND trying to go further in that direction
       if (newPage < 1 && page === 1) {
         // Already on first page, trying to go back - navigate to previous volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -167,7 +167,7 @@
         return;
       } else if (newPage > pages.length && page === pages.length) {
         // Already on last page, trying to go forward - navigate to next volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -1075,8 +1075,20 @@
       style:width={`${$settings.edgeButtonWidth}px`}
     ></button>
   {/if}
-{:else}
+{:else if volume === null}
+  <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else}
+  <!-- Volume not found or no data -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">Volume not found</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {/if}
