@@ -5,7 +5,7 @@
   import { nav } from '$lib/util/hash-router';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import ThumbnailCanvas from './ThumbnailCanvas.svelte';
+  import CompositeCanvas from './CompositeCanvas.svelte';
 
   interface Props {
     series_uuid: string;
@@ -43,6 +43,11 @@
     // stackCount of 0 means show all volumes
     return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
   });
+
+  // Key for CompositeCanvas - forces fresh component on settings change
+  let compositeKey = $derived(
+    `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}`
+  );
 
   // Check if this series is downloading or queued
   let isDownloading = $derived(
@@ -401,22 +406,15 @@
             class="relative overflow-hidden"
             style="width: {containerDimensions.innerWidth}px; height: {containerDimensions.innerHeight}px;"
           >
-            {#each stackedVolumes as vol, i (vol.volume_uuid)}
-              {@const canvasDims = getCanvasDimensions(vol.volume_uuid)}
-              {#if canvasDims && vol.thumbnail}
-                <ThumbnailCanvas
-                  volumeUuid={vol.volume_uuid}
-                  file={vol.thumbnail}
-                  width={canvasDims.width}
-                  height={canvasDims.height}
-                  class="absolute border border-gray-900 bg-black"
-                  style="right: {(stackedVolumes.length - 1 - i) *
-                    stepSizes.horizontal}px; top: {stepSizes.topOffset +
-                    i * stepSizes.vertical}px; z-index: {stackedVolumes.length -
-                    i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
-                />
-              {/if}
-            {/each}
+            {#key compositeKey}
+              <CompositeCanvas
+                volumes={stackedVolumes}
+                canvasWidth={containerDimensions.innerWidth}
+                canvasHeight={containerDimensions.innerHeight}
+                {getCanvasDimensions}
+                {stepSizes}
+              />
+            {/key}
           </div>
         </div>
       {/if}
