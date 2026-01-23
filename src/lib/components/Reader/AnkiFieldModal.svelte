@@ -460,7 +460,7 @@
 
       cropper = new CropperJS(img, {
         viewMode: 0, // No restrictions - we clamp bounds ourselves
-        dragMode: 'move',
+        dragMode: 'none', // Disable dragging image around
         autoCropArea: 1,
         restore: false,
         guides: true,
