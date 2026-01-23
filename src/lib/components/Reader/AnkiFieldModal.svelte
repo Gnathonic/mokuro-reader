@@ -282,20 +282,21 @@
   });
 
   // Fetch note type fields when modal opens or model changes
-  async function fetchNoteFields() {
-    if (!selectedModel) return;
+  async function fetchNoteFields(modelNameOverride?: string) {
+    const model = modelNameOverride || selectedModel;
+    if (!model) return;
 
     // Try to get fields from connection data first
     const connectionData = $settings.ankiConnectSettings.connectionData;
-    if (connectionData?.modelFields?.[selectedModel]) {
-      noteFields = connectionData.modelFields[selectedModel];
+    if (connectionData?.modelFields?.[model]) {
+      noteFields = connectionData.modelFields[model];
       return;
     }
 
     // Fall back to fetching from AnkiConnect
     loadingFields = true;
     try {
-      const result = await ankiConnect('modelFieldNames', { modelName: selectedModel });
+      const result = await ankiConnect('modelFieldNames', { modelName: model });
       if (result && Array.isArray(result)) {
         noteFields = result;
       }
@@ -307,21 +308,27 @@
   }
 
   // Initialize field values based on mode and store data
-  function initializeFieldValues() {
+  function initializeFieldValues(
+    modelNameOverride?: string,
+    modeOverride?: 'create' | 'update' | 'configure'
+  ) {
     const store = $cropperStore;
     if (!store) return;
+
+    const currentMode = modeOverride || mode;
+    const currentModel = modelNameOverride || selectedModel;
 
     // Determine which config mode to use
     // - configure mode: use the cardMode setting to decide which config to load/save
     // - create/update mode: use the modal's mode
     const configMode: 'create' | 'update' =
-      mode === 'configure'
+      currentMode === 'configure'
         ? $settings.ankiConnectSettings.cardMode
-        : mode === 'update'
+        : currentMode === 'update'
           ? 'update'
           : 'create';
 
-    const config = getModelConfig(selectedModel, configMode);
+    const config = getModelConfig(currentModel, configMode);
 
     // Load quickCapture setting from model config
     quickCapture = config?.quickCapture ?? false;
@@ -386,9 +393,13 @@
           // Sync cropEnabled with settings
           cropEnabled = $settings.ankiConnectSettings.cropImage;
 
+          // Get model name directly from store value (not derived) to avoid timing issues
+          const storeModelName = value.modelName || $settings.ankiConnectSettings.selectedModel;
+          const storeMode = value.mode || 'create';
+
           // Fetch fields and initialize values (including tags)
-          fetchNoteFields().then(() => {
-            initializeFieldValues();
+          fetchNoteFields(storeModelName).then(() => {
+            initializeFieldValues(storeModelName, storeMode);
           });
 
           // On mobile, blur the auto-focused input to prevent keyboard issues

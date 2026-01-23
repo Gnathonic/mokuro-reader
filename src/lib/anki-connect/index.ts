@@ -561,17 +561,18 @@ export async function ankiConnect(
   }
 }
 
-export async function getCardInfo(id: string) {
+export async function getCardInfo(id: number) {
   const [noteInfo] = await ankiConnect('notesInfo', { notes: [id] });
   return noteInfo;
 }
 
-export async function getLastCardId() {
+export async function getLastCardId(): Promise<number | undefined> {
   const notesToday = await ankiConnect('findNotes', { query: 'added:1' });
-  if (!notesToday || !Array.isArray(notesToday)) {
+  if (!notesToday || !Array.isArray(notesToday) || notesToday.length === 0) {
     return undefined;
   }
-  const id = notesToday.sort().at(-1);
+  // Sort numerically (not lexicographically) and get the highest ID (most recent)
+  const id = notesToday.sort((a: number, b: number) => a - b).at(-1);
   return id;
 }
 
