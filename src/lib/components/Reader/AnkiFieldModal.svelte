@@ -52,11 +52,23 @@
   // Track whether crop image is enabled
   let cropEnabled = $state($settings.ankiConnectSettings.cropImage);
 
-  // Accordion state - which collapsible is expanded (null = none, 'image' = cropper, field name = that field)
-  let expandedId = $state<string | null>('image');
+  // Major section accordion state (image, fields)
+  let expandedSection = $state<'image' | 'fields' | null>('image');
 
-  function handleExpand(id: string | null) {
-    expandedId = id;
+  // Minor accordion state within fields section
+  let expandedFieldId = $state<string | null>(null);
+
+  function handleSectionExpand(section: 'image' | 'fields' | null) {
+    expandedSection = section;
+  }
+
+  function handleFieldExpand(id: string | null) {
+    expandedFieldId = id;
+  }
+
+  // Toggle major section (only one open at a time)
+  function toggleSection(section: 'image' | 'fields') {
+    expandedSection = expandedSection === section ? null : section;
   }
 
   // Base template variables (not including {existing} which is field-specific)
@@ -579,7 +591,8 @@
     tagsTemplate = '';
     editableTags = '';
     savedDeckName = 'Default';
-    expandedId = 'image'; // Reset to image expanded
+    expandedSection = 'image'; // Reset to image section expanded
+    expandedFieldId = null;
     closeAnkiModal();
   }
 
@@ -789,30 +802,30 @@
     </div>
   {:else}
     <div class="flex flex-col gap-4">
-      <!-- All collapsibles -->
-      <div class="fields-section space-y-1">
-        <!-- Image Cropper (create/update modes only) -->
+      <!-- Major sections (tiered accordions) -->
+      <div class="space-y-2">
+        <!-- MAJOR SECTION: Image Cropper (create/update modes only) -->
         {#if showCropperSection && $cropperStore?.image}
-          <div class="rounded border border-gray-200 dark:border-gray-700">
+          <div class="rounded-lg border border-gray-300 dark:border-gray-600">
             <button
               type="button"
-              class="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
-              onclick={() => handleExpand(expandedId === 'image' ? null : 'image')}
+              class="flex w-full items-center gap-2 rounded-t-lg bg-gray-100 px-3 py-2 text-left font-medium hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600"
+              onclick={() => toggleSection('image')}
             >
               <span
-                class="text-gray-400 transition-transform duration-200"
-                class:rotate-90={expandedId === 'image'}
+                class="text-gray-500 transition-transform duration-200"
+                class:rotate-90={expandedSection === 'image'}
               >
-                <ChevronRightOutline class="h-3 w-3" />
+                <ChevronRightOutline class="h-4 w-4" />
               </span>
-              <span class="min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400">Image</span>
-              <span class="flex-1 text-sm text-gray-900 dark:text-white">
+              <span class="text-sm text-gray-900 dark:text-white">Image</span>
+              <span class="ml-auto text-xs text-gray-500 dark:text-gray-400">
                 {cropEnabled ? 'Cropped to text box' : 'Full page'}
               </span>
             </button>
-            {#if expandedId === 'image'}
+            {#if expandedSection === 'image'}
               <div
-                class="border-t border-gray-200 px-2 py-2 dark:border-gray-700"
+                class="border-t border-gray-300 px-3 py-3 dark:border-gray-600"
                 transition:slide={{ duration: 150 }}
               >
                 <div class="cropper-container">
@@ -833,146 +846,174 @@
           </div>
         {/if}
 
-        <!-- Deck Selection (create/configure mode only) -->
-        {#if mode === 'create' || mode === 'configure'}
-          <div class="rounded border border-gray-200 dark:border-gray-700">
-            <button
-              type="button"
-              class="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
-              onclick={() => handleExpand(expandedId === 'deck' ? null : 'deck')}
+        <!-- MAJOR SECTION: Card Fields -->
+        <div class="rounded-lg border border-gray-300 dark:border-gray-600">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-t-lg bg-gray-100 px-3 py-2 text-left font-medium hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600"
+            onclick={() => toggleSection('fields')}
+          >
+            <span
+              class="text-gray-500 transition-transform duration-200"
+              class:rotate-90={expandedSection === 'fields'}
             >
-              <span
-                class="text-gray-400 transition-transform duration-200"
-                class:rotate-90={expandedId === 'deck'}
-              >
-                <ChevronRightOutline class="h-3 w-3" />
-              </span>
-              <span class="min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400">Deck</span>
-              <span class="flex-1 text-sm text-gray-900 dark:text-white">
-                {resolvedDeckDisplay}
-              </span>
-            </button>
-            {#if expandedId === 'deck'}
-              <div
-                class="space-y-2 border-t border-gray-200 px-2 py-2 dark:border-gray-700"
-                transition:slide={{ duration: 150 }}
-              >
-                {#if useCustomDeck}
-                  <div class="flex gap-2">
-                    <Input
-                      size="sm"
-                      type="text"
-                      placeholder="Custom deck name"
-                      bind:value={customDeckName}
-                      class="flex-1"
-                    />
-                    <Button
-                      size="xs"
-                      color="alternative"
-                      onclick={() => {
-                        useCustomDeck = false;
-                        deckName = availableDecks[0] || 'Default';
-                      }}
+              <ChevronRightOutline class="h-4 w-4" />
+            </span>
+            <span class="text-sm text-gray-900 dark:text-white">Fields</span>
+            <span class="ml-auto text-xs text-gray-500 dark:text-gray-400">
+              {noteFields.length} field{noteFields.length !== 1 ? 's' : ''}
+            </span>
+          </button>
+          {#if expandedSection === 'fields'}
+            <div
+              class="space-y-1 border-t border-gray-300 p-2 dark:border-gray-600"
+              transition:slide={{ duration: 150 }}
+            >
+              <!-- Minor accordion: Deck Selection (create/configure mode only) -->
+              {#if mode === 'create' || mode === 'configure'}
+                <div class="rounded border border-gray-200 dark:border-gray-700">
+                  <button
+                    type="button"
+                    class="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+                    onclick={() => handleFieldExpand(expandedFieldId === 'deck' ? null : 'deck')}
+                  >
+                    <span
+                      class="text-gray-400 transition-transform duration-200"
+                      class:rotate-90={expandedFieldId === 'deck'}
                     >
-                      Use existing
-                    </Button>
-                  </div>
-                  <div class="flex flex-wrap gap-1">
-                    {#each DYNAMIC_TAGS as { tag, description }}
-                      <button
-                        type="button"
-                        onclick={() => {
-                          customDeckName = customDeckName ? `${customDeckName}${tag}` : tag;
-                        }}
-                        class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                        title={description}
-                      >
-                        {tag}
-                      </button>
-                    {/each}
-                  </div>
-                  <Helper class="text-xs text-amber-600 dark:text-amber-400">
-                    Custom decks don't work with AnkiConnect on Android
-                  </Helper>
+                      <ChevronRightOutline class="h-3 w-3" />
+                    </span>
+                    <span class="min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400"
+                      >Deck</span
+                    >
+                    <span class="flex-1 text-sm text-gray-900 dark:text-white">
+                      {resolvedDeckDisplay}
+                    </span>
+                  </button>
+                  {#if expandedFieldId === 'deck'}
+                    <div
+                      class="space-y-2 border-t border-gray-200 px-2 py-2 dark:border-gray-700"
+                      transition:slide={{ duration: 150 }}
+                    >
+                      {#if useCustomDeck}
+                        <div class="flex gap-2">
+                          <Input
+                            size="sm"
+                            type="text"
+                            placeholder="Custom deck name"
+                            bind:value={customDeckName}
+                            class="flex-1"
+                          />
+                          <Button
+                            size="xs"
+                            color="alternative"
+                            onclick={() => {
+                              useCustomDeck = false;
+                              deckName = availableDecks[0] || 'Default';
+                            }}
+                          >
+                            Use existing
+                          </Button>
+                        </div>
+                        <div class="flex flex-wrap gap-1">
+                          {#each DYNAMIC_TAGS as { tag, description }}
+                            <button
+                              type="button"
+                              onclick={() => {
+                                customDeckName = customDeckName ? `${customDeckName}${tag}` : tag;
+                              }}
+                              class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                              title={description}
+                            >
+                              {tag}
+                            </button>
+                          {/each}
+                        </div>
+                        <Helper class="text-xs text-amber-600 dark:text-amber-400">
+                          Custom decks don't work with AnkiConnect on Android
+                        </Helper>
+                      {:else}
+                        <div class="flex gap-2">
+                          <Select
+                            size="sm"
+                            items={[
+                              { value: '__custom__', name: '(Custom deck name)' },
+                              ...availableDecks.map((d) => ({ value: d, name: d }))
+                            ]}
+                            bind:value={deckName}
+                            onchange={(e) => {
+                              if (e.currentTarget.value === '__custom__') {
+                                useCustomDeck = true;
+                                customDeckName = '';
+                              }
+                            }}
+                            class="flex-1"
+                          />
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <!-- Minor accordions: Field inputs -->
+              {#each noteFields as field}
+                {#if mode === 'configure'}
+                  <AnkiTemplateField
+                    fieldName={field}
+                    fieldId={field}
+                    expandedId={expandedFieldId}
+                    onExpand={handleFieldExpand}
+                    bind:template={fieldValues[field]}
+                    resolvedValue=""
+                    {templateButtons}
+                    configureMode={true}
+                  />
                 {:else}
-                  <div class="flex gap-2">
-                    <Select
-                      size="sm"
-                      items={[
-                        { value: '__custom__', name: '(Custom deck name)' },
-                        ...availableDecks.map((d) => ({ value: d, name: d }))
-                      ]}
-                      bind:value={deckName}
-                      onchange={(e) => {
-                        if (e.currentTarget.value === '__custom__') {
-                          useCustomDeck = true;
-                          customDeckName = '';
-                        }
-                      }}
-                      class="flex-1"
-                    />
-                  </div>
+                  <AnkiTemplateField
+                    fieldName={field}
+                    fieldId={field}
+                    expandedId={expandedFieldId}
+                    onExpand={handleFieldExpand}
+                    bind:template={editableTemplates[field]}
+                    resolvedValue={fieldValues[field]}
+                    {templateButtons}
+                    availableVariables={getFieldVariables(field)}
+                    isModified={isTemplateModified(field)}
+                    willUpdate={fieldWillUpdate(field)}
+                    onTemplateChange={(t) => {
+                      editableTemplates[field] = t;
+                      fieldValues[field] = resolveTemplatePreview(t, field);
+                    }}
+                  />
                 {/if}
-              </div>
-            {/if}
-          </div>
-        {/if}
+              {/each}
 
-        <!-- Field inputs -->
-        {#each noteFields as field}
-          {#if mode === 'configure'}
-            <AnkiTemplateField
-              fieldName={field}
-              fieldId={field}
-              {expandedId}
-              onExpand={handleExpand}
-              bind:template={fieldValues[field]}
-              resolvedValue=""
-              {templateButtons}
-              configureMode={true}
-            />
-          {:else}
-            <AnkiTemplateField
-              fieldName={field}
-              fieldId={field}
-              {expandedId}
-              onExpand={handleExpand}
-              bind:template={editableTemplates[field]}
-              resolvedValue={fieldValues[field]}
-              {templateButtons}
-              availableVariables={getFieldVariables(field)}
-              isModified={isTemplateModified(field)}
-              willUpdate={fieldWillUpdate(field)}
-              onTemplateChange={(t) => {
-                editableTemplates[field] = t;
-                fieldValues[field] = resolveTemplatePreview(t, field);
-              }}
-            />
+              <!-- Minor accordion: Tags field -->
+              <AnkiTemplateField
+                fieldName="Tags"
+                fieldId="tags"
+                expandedId={expandedFieldId}
+                onExpand={handleFieldExpand}
+                bind:template={editableTags}
+                resolvedValue={mode === 'configure' ? '' : resolveTagsPreview(editableTags)}
+                templateButtons={[
+                  ...(mode === 'update' ||
+                  (mode === 'configure' && $settings.ankiConnectSettings.cardMode === 'update')
+                    ? [{ template: '{existing}', description: "Card's existing tags" }]
+                    : []),
+                  ...DYNAMIC_TAGS.map((t) => ({ template: t.tag, description: t.description }))
+                ]}
+                availableVariables={mode === 'configure' ? [] : tagsVariables}
+                configureMode={mode === 'configure'}
+                isModified={isTagsModified()}
+                willUpdate={tagsWillUpdate()}
+                hint="Spaces separate tags"
+                spaceBeforeInsert={true}
+              />
+            </div>
           {/if}
-        {/each}
-
-        <!-- Tags field -->
-        <AnkiTemplateField
-          fieldName="Tags"
-          fieldId="tags"
-          {expandedId}
-          onExpand={handleExpand}
-          bind:template={editableTags}
-          resolvedValue={mode === 'configure' ? '' : resolveTagsPreview(editableTags)}
-          templateButtons={[
-            ...(mode === 'update' ||
-            (mode === 'configure' && $settings.ankiConnectSettings.cardMode === 'update')
-              ? [{ template: '{existing}', description: "Card's existing tags" }]
-              : []),
-            ...DYNAMIC_TAGS.map((t) => ({ template: t.tag, description: t.description }))
-          ]}
-          availableVariables={mode === 'configure' ? [] : tagsVariables}
-          configureMode={mode === 'configure'}
-          isModified={isTagsModified()}
-          willUpdate={tagsWillUpdate()}
-          hint="Spaces separate tags"
-          spaceBeforeInsert={true}
-        />
+        </div>
       </div>
 
       <!-- Quick Capture toggle OR Save template changes (mutually exclusive) -->
