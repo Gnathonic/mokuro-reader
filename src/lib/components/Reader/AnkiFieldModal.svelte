@@ -713,20 +713,17 @@
           <div class="rounded border border-gray-200 dark:border-gray-700">
             <button
               type="button"
-              class="flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+              class="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
               onclick={() => handleExpand(expandedId === 'image' ? null : 'image')}
             >
               <span
-                class="mt-0.5 text-gray-400 transition-transform duration-200"
+                class="text-gray-400 transition-transform duration-200"
                 class:rotate-90={expandedId === 'image'}
               >
                 <ChevronRightOutline class="h-3 w-3" />
               </span>
-              <span
-                class="mt-0.5 min-w-16 shrink-0 text-sm font-medium text-gray-900 dark:text-white"
-                >Image</span
-              >
-              <span class="flex-1 text-xs text-gray-500 dark:text-gray-400">
+              <span class="min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400">Image</span>
+              <span class="flex-1 text-sm text-gray-900 dark:text-white">
                 {cropEnabled ? 'Cropped to text box' : 'Full page'}
               </span>
             </button>
@@ -758,20 +755,17 @@
           <div class="rounded border border-gray-200 dark:border-gray-700">
             <button
               type="button"
-              class="flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+              class="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
               onclick={() => handleExpand(expandedId === 'deck' ? null : 'deck')}
             >
               <span
-                class="mt-0.5 text-gray-400 transition-transform duration-200"
+                class="text-gray-400 transition-transform duration-200"
                 class:rotate-90={expandedId === 'deck'}
               >
                 <ChevronRightOutline class="h-3 w-3" />
               </span>
-              <span
-                class="mt-0.5 min-w-16 shrink-0 text-sm font-medium text-gray-900 dark:text-white"
-                >Deck</span
-              >
-              <span class="flex-1 text-xs text-gray-500 dark:text-gray-400">
+              <span class="min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400">Deck</span>
+              <span class="flex-1 text-sm text-gray-900 dark:text-white">
                 {resolvedDeckDisplay}
               </span>
             </button>

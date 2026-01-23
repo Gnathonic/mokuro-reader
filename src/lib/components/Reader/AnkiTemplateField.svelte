@@ -177,11 +177,11 @@
     <span class="mt-0.5 text-gray-400 transition-transform duration-200" class:rotate-90={expanded}>
       <ChevronRightOutline class="h-3 w-3" />
     </span>
-    <span class="mt-0.5 min-w-16 shrink-0 text-sm font-medium text-gray-900 dark:text-white"
+    <span class="mt-0.5 min-w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400"
       >{fieldName}</span
     >
     <!-- Always show preview in title - wraps if needed -->
-    <span class="flex-1 text-xs break-words whitespace-pre-wrap text-gray-500 dark:text-gray-400">
+    <span class="flex-1 text-sm break-words whitespace-pre-wrap text-gray-900 dark:text-white">
       {#if configureMode}
         <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">{template || '(not set)'}</code>
       {:else}
