@@ -34,6 +34,8 @@ export type ModelConfig = {
   modelName: string;
   deckName: string; // Supports {series}, {volume} templates
   fieldMappings: FieldMapping[];
+  tags?: string; // Tag template with variables: "{series}", "{volume}", "{existing}" (update mode only)
+  quickCapture?: boolean; // Send directly without showing modal (per-model setting)
 };
 
 // Cached data from AnkiConnect (stored in settings, refreshed on connect)
@@ -57,8 +59,13 @@ export type AnkiConnectSettings = {
   // Current selection
   selectedModel: string; // Currently active model
 
-  // Model configurations (keyed by model name)
-  modelConfigs: Record<string, ModelConfig>;
+  // Model configurations per mode (keyed by model name)
+  // Separate configs for create vs update since templates differ (e.g., {existing} only in update)
+  createModelConfigs: Record<string, ModelConfig>;
+  updateModelConfigs: Record<string, ModelConfig>;
+
+  // Legacy field - migrated to create/updateModelConfigs on load
+  modelConfigs?: Record<string, ModelConfig>;
 
   // Image settings
   heightField: number;
@@ -71,6 +78,9 @@ export type AnkiConnectSettings = {
 
   // Card mode
   cardMode: 'update' | 'create';
+
+  // Quick capture - send directly without showing modal
+  quickCapture: boolean;
 
   // Tags (desktop only, not supported on Android)
   tags: string;
@@ -256,13 +266,15 @@ const defaultSettings: Settings = {
     connectionData: null,
     androidModeOverride: 'auto',
     selectedModel: '',
-    modelConfigs: {},
+    createModelConfigs: {},
+    updateModelConfigs: {},
     heightField: 0,
     widthField: 0,
     qualityField: 1,
     cropImage: false,
     triggerMethod: 'both',
     cardMode: 'create',
+    quickCapture: false,
     tags: ''
   },
   catalogSettings: {
@@ -339,6 +351,12 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // Migrate AnkiConnect settings - handle conversion from old format
     // Cast to any for legacy property access during migration
     const oldAnki: any = profile.ankiConnectSettings || {};
+
+    // Migrate legacy modelConfigs to create/update split if needed
+    const legacyConfigs = oldAnki.modelConfigs || migrateOldAnkiModelConfig(oldAnki);
+    const createConfigs = oldAnki.createModelConfigs || legacyConfigs || {};
+    const updateConfigs = oldAnki.updateModelConfigs || {};
+
     migratedProfile.ankiConnectSettings = {
       ...defaultSettings.ankiConnectSettings,
       // Preserve connection settings
@@ -346,9 +364,10 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       enabled: oldAnki.enabled ?? defaultSettings.ankiConnectSettings.enabled,
       connectionData: oldAnki.connectionData || null, // Requires reconnect after migration
       androidModeOverride: oldAnki.androidModeOverride || 'auto',
-      // Migrate model settings
+      // Migrate model settings - preserve both create and update configs
       selectedModel: oldAnki.selectedModel || oldAnki.modelName || '',
-      modelConfigs: oldAnki.modelConfigs || migrateOldAnkiModelConfig(oldAnki),
+      createModelConfigs: createConfigs,
+      updateModelConfigs: updateConfigs,
       // Preserve other settings
       heightField: oldAnki.heightField ?? defaultSettings.ankiConnectSettings.heightField,
       widthField: oldAnki.widthField ?? defaultSettings.ankiConnectSettings.widthField,
@@ -356,6 +375,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       cropImage: oldAnki.cropImage ?? defaultSettings.ankiConnectSettings.cropImage,
       triggerMethod: oldAnki.triggerMethod || defaultSettings.ankiConnectSettings.triggerMethod,
       cardMode: oldAnki.cardMode || defaultSettings.ankiConnectSettings.cardMode,
+      quickCapture: oldAnki.quickCapture ?? defaultSettings.ankiConnectSettings.quickCapture,
       tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags
     };
 

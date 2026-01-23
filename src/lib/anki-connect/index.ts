@@ -1,5 +1,6 @@
 import type {
   Settings,
+  AnkiConnectSettings,
   AnkiConnectionData,
   ModelConfig,
   FieldMapping
@@ -12,11 +13,14 @@ export * from './cropper';
 
 // Template variables that can be used in field mappings
 export const FIELD_TEMPLATES = [
+  { template: '{existing}', description: "Card's existing value (update mode)" },
   { template: '{selection}', description: 'Selected/highlighted text' },
   { template: '{sentence}', description: 'Full sentence/textbox content' },
   { template: '{image}', description: 'Screenshot image' },
   { template: '{series}', description: 'Series title' },
-  { template: '{volume}', description: 'Volume title' }
+  { template: '{volume}', description: 'Volume title' },
+  { template: '{page_num}', description: 'Current page number' },
+  { template: '{page_filename}', description: 'Page image filename' }
 ] as const;
 
 // Keep old DYNAMIC_TAGS for backwards compatibility with tags field
@@ -29,6 +33,43 @@ export type VolumeMetadata = {
   seriesTitle?: string;
   volumeTitle?: string;
 };
+
+/**
+ * Sanitizes a string for use in a filename.
+ * Replaces spaces with underscores and removes unsafe characters.
+ */
+function sanitizeForFilename(str: string): string {
+  return str
+    .replace(/\s+/g, '_') // spaces to underscores
+    .replace(/[<>:"/\\|?*]/g, '') // remove unsafe chars
+    .replace(/_{2,}/g, '_') // collapse multiple underscores
+    .substring(0, 50); // limit length
+}
+
+/**
+ * Generates a descriptive image filename from metadata.
+ * Format: mokuro_{series}_{volume}_{page}.jpg
+ */
+export function generateImageFilename(metadata?: VolumeMetadata, pageFilename?: string): string {
+  const parts = ['mokuro'];
+
+  if (metadata?.seriesTitle) {
+    parts.push(sanitizeForFilename(metadata.seriesTitle));
+  }
+  if (metadata?.volumeTitle) {
+    parts.push(sanitizeForFilename(metadata.volumeTitle));
+  }
+  if (pageFilename) {
+    parts.push(sanitizeForFilename(pageFilename));
+  }
+
+  // If no metadata, use timestamp as fallback
+  if (parts.length === 1) {
+    parts.push(String(Date.now()));
+  }
+
+  return parts.join('_') + '.jpg';
+}
 
 /**
  * Resolves dynamic tag templates in a tags string
@@ -62,6 +103,16 @@ export function resolveDynamicTags(tags: string, metadata: VolumeMetadata): stri
 }
 
 /**
+ * Options for resolving templates with additional context
+ */
+export type ResolveTemplateOptions = {
+  pageNumber?: number;
+  pageFilename?: string;
+  previousValues?: Record<string, string>;
+  fieldName?: string;
+};
+
+/**
  * Resolves all template variables in a field template string.
  * Returns the resolved string, or null if the template is empty or only contains {image}.
  */
@@ -69,7 +120,8 @@ export function resolveTemplate(
   template: string,
   metadata: VolumeMetadata,
   selectedText?: string,
-  sentence?: string
+  sentence?: string,
+  options?: ResolveTemplateOptions
 ): string | null {
   if (!template || template === '{image}') {
     return null; // {image} is handled specially, not as text
@@ -105,8 +157,36 @@ export function resolveTemplate(
     resolved = resolved.replace(/\{volume\}/g, '');
   }
 
-  // Clean up whitespace
-  resolved = resolved.replace(/\s+/g, ' ').trim();
+  // Replace {page_num} with page number (1-indexed for display)
+  if (options?.pageNumber !== undefined) {
+    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber + 1));
+  } else {
+    resolved = resolved.replace(/\{page_num\}/g, '');
+  }
+
+  // Replace {page_filename} with page filename
+  if (options?.pageFilename) {
+    resolved = resolved.replace(/\{page_filename\}/g, options.pageFilename);
+  } else {
+    resolved = resolved.replace(/\{page_filename\}/g, '');
+  }
+
+  // Replace {existing} with existing value of the current field (for update mode)
+  if (options?.previousValues && options?.fieldName) {
+    const existingValue = options.previousValues[options.fieldName] || '';
+    resolved = resolved.replace(/\{existing\}/g, existingValue);
+  } else {
+    resolved = resolved.replace(/\{existing\}/g, '');
+  }
+
+  // Clean up whitespace (but preserve HTML structure)
+  // Only collapse multiple spaces, don't trim inside HTML tags
+  resolved = resolved
+    .replace(/[ \t]+/g, ' ') // Collapse multiple spaces/tabs to single space (not newlines)
+    .trim();
+
+  // Convert newlines to <br> for Anki
+  resolved = resolved.replace(/\n/g, '<br>');
 
   return resolved || null;
 }
@@ -180,7 +260,11 @@ export async function fetchConnectionData(testUrl?: string): Promise<AnkiConnect
 /**
  * Raw AnkiConnect call without showing errors (for internal use).
  */
-async function ankiConnectRaw(url: string, action: string, params: Record<string, any>): Promise<any> {
+async function ankiConnectRaw(
+  url: string,
+  action: string,
+  params: Record<string, any>
+): Promise<any> {
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -207,24 +291,60 @@ export function isAndroidMode(): boolean {
 }
 
 /**
+ * Get the model configurations store for the given mode.
+ */
+function getModelConfigsForMode(
+  ankiSettings: AnkiConnectSettings,
+  mode: 'create' | 'update'
+): Record<string, ModelConfig> {
+  if (mode === 'create') {
+    // For create mode, also check legacy modelConfigs (migration path)
+    if (ankiSettings.modelConfigs && Object.keys(ankiSettings.modelConfigs).length > 0) {
+      return { ...ankiSettings.modelConfigs, ...ankiSettings.createModelConfigs };
+    }
+    return ankiSettings.createModelConfigs || {};
+  } else {
+    // Update mode uses only updateModelConfigs - no legacy fallback
+    return ankiSettings.updateModelConfigs || {};
+  }
+}
+
+/**
+ * Check if a model has been explicitly configured for the given mode.
+ */
+export function hasModelConfig(modelName: string, mode: 'create' | 'update'): boolean {
+  const ankiSettings = get(settings).ankiConnectSettings;
+  const configs = getModelConfigsForMode(ankiSettings, mode);
+  return !!configs[modelName];
+}
+
+/**
  * Get the current model configuration, or generate a default one.
  * Always uses actual fields from connectionData to ensure all fields are included.
+ *
+ * @param modelName - The Anki note type name
+ * @param mode - 'create' or 'update' - determines which config store to use
  */
-export function getModelConfig(modelName: string): ModelConfig | null {
+export function getModelConfig(
+  modelName: string,
+  mode: 'create' | 'update' = 'create'
+): ModelConfig | null {
   const ankiSettings = get(settings).ankiConnectSettings;
 
   // Always use actual fields from connectionData to ensure we include all fields
   const actualFields = ankiSettings.connectionData?.modelFields[modelName];
+  const modeConfigs = getModelConfigsForMode(ankiSettings, mode);
+
   if (!actualFields || actualFields.length === 0) {
     // Fall back to saved config if no connection data
-    if (ankiSettings.modelConfigs[modelName]) {
-      return ankiSettings.modelConfigs[modelName];
+    if (modeConfigs[modelName]) {
+      return modeConfigs[modelName];
     }
     return null;
   }
 
   // Get saved config and default config for template suggestions
-  const savedConfig = ankiSettings.modelConfigs[modelName];
+  const savedConfig = modeConfigs[modelName];
   const defaultConfig = DEFAULT_MODEL_CONFIGS[modelName];
 
   // Build field mappings from actual Anki fields
@@ -237,30 +357,59 @@ export function getModelConfig(modelName: string): ModelConfig | null {
       continue;
     }
 
-    // Check if default config has a template for this field
-    const defaultMapping = defaultConfig?.fieldMappings.find((m) => m.fieldName === field);
-    if (defaultMapping) {
-      fieldMappings.push(defaultMapping);
-      continue;
+    // In create mode only, check if default config has a template for this field
+    // (DEFAULT_MODEL_CONFIGS are for create mode, not update mode)
+    if (mode === 'create') {
+      const defaultMapping = defaultConfig?.fieldMappings.find((m) => m.fieldName === field);
+      if (defaultMapping) {
+        fieldMappings.push(defaultMapping);
+        continue;
+      }
     }
 
-    // Generate smart default based on field name
+    // Generate smart default based on field name (mode-specific defaults)
     const lowerField = field.toLowerCase();
-    if (lowerField.includes('front') || lowerField.includes('expression') || lowerField.includes('word')) {
-      fieldMappings.push({ fieldName: field, template: '{selection}' });
-    } else if (lowerField.includes('picture') || lowerField.includes('image') || lowerField.includes('screenshot')) {
-      fieldMappings.push({ fieldName: field, template: '{image}' });
-    } else if (lowerField.includes('sentence') || lowerField.includes('context')) {
-      fieldMappings.push({ fieldName: field, template: '{sentence}' });
+    if (mode === 'update') {
+      // In update mode, default to {existing} for most fields
+      if (
+        lowerField.includes('picture') ||
+        lowerField.includes('image') ||
+        lowerField.includes('screenshot')
+      ) {
+        fieldMappings.push({ fieldName: field, template: '{existing}{image}' });
+      } else if (lowerField.includes('sentence') || lowerField.includes('context')) {
+        fieldMappings.push({ fieldName: field, template: '{sentence}' });
+      } else {
+        fieldMappings.push({ fieldName: field, template: '{existing}' });
+      }
     } else {
-      fieldMappings.push({ fieldName: field, template: '' });
+      // Create mode defaults
+      if (
+        lowerField.includes('front') ||
+        lowerField.includes('expression') ||
+        lowerField.includes('word')
+      ) {
+        fieldMappings.push({ fieldName: field, template: '{selection}' });
+      } else if (
+        lowerField.includes('picture') ||
+        lowerField.includes('image') ||
+        lowerField.includes('screenshot')
+      ) {
+        fieldMappings.push({ fieldName: field, template: '{image}' });
+      } else if (lowerField.includes('sentence') || lowerField.includes('context')) {
+        fieldMappings.push({ fieldName: field, template: '{sentence}' });
+      } else {
+        fieldMappings.push({ fieldName: field, template: '' });
+      }
     }
   }
 
   return {
     modelName,
     deckName: savedConfig?.deckName || defaultConfig?.deckName || 'Default',
-    fieldMappings
+    fieldMappings,
+    tags: savedConfig?.tags,
+    quickCapture: savedConfig?.quickCapture
   };
 }
 
@@ -414,7 +563,7 @@ export async function imageToWebp(source: File, settings: Settings) {
       settings.ankiConnectSettings.heightField
     );
     const blob = await canvas.convertToBlob({
-      type: 'image/webp',
+      type: 'image/jpeg',
       quality: settings.ankiConnectSettings.qualityField
     });
     image.close();
@@ -455,12 +604,21 @@ export async function imageResize(
   });
 }
 
+export type CreateCardOptions = {
+  fieldMappings?: FieldMapping[];
+  previousValues?: Record<string, string>;
+  pageNumber?: number;
+  pageFilename?: string;
+  deckName?: string;
+};
+
 export async function createCard(
   imageData: string | null | undefined,
   selectedText?: string,
   sentence?: string,
   tags?: string,
-  metadata?: VolumeMetadata
+  metadata?: VolumeMetadata,
+  options?: CreateCardOptions
 ) {
   const ankiSettings = get(settings).ankiConnectSettings;
   const { enabled, selectedModel } = ankiSettings;
@@ -469,8 +627,8 @@ export async function createCard(
     return;
   }
 
-  // Get model configuration
-  const config = getModelConfig(selectedModel);
+  // Get model configuration for create mode
+  const config = getModelConfig(selectedModel, 'create');
   if (!config) {
     showSnackbar(`Error: No configuration found for model "${selectedModel}"`);
     return;
@@ -479,9 +637,9 @@ export async function createCard(
   showSnackbar('Creating new card...', 10000);
 
   // Resolve dynamic templates in deck name (e.g., "Mining::{series}" -> "Mining::One_Piece")
-  const resolvedDeckName = metadata
-    ? resolveDynamicTags(config.deckName, metadata)
-    : config.deckName;
+  // Use provided deckName from options (modal) or fall back to config
+  const baseDeckName = options?.deckName || config.deckName;
+  const resolvedDeckName = metadata ? resolveDynamicTags(baseDeckName, metadata) : baseDeckName;
 
   // Resolve dynamic tags with volume metadata
   const resolvedTags = tags && metadata ? resolveDynamicTags(tags, metadata) : tags;
@@ -492,39 +650,54 @@ export async function createCard(
     return;
   }
 
-  // Build fields object from field mappings
-  const fields: Record<string, string> = {};
+  // Use provided field mappings (from modal) or fall back to saved config
+  const fieldMappings = options?.fieldMappings || config.fieldMappings;
+
+  // Find fields that use {image} - these will receive the picture via AnkiConnect's picture parameter
   const imageFields: string[] = [];
-
-  for (const mapping of config.fieldMappings) {
-    if (!mapping.template) continue;
-
-    const hasImage = mapping.template.includes('{image}');
-
-    // Always resolve text templates (strip {image} placeholder first)
-    // This allows mixed templates like "{sentence} {image}" to work
-    const textTemplate = mapping.template.replace(/\{image\}/g, '').trim();
-    if (textTemplate) {
-      const resolved = resolveTemplate(textTemplate, metadata || {}, selectedText, sentence);
-      if (resolved) {
-        fields[mapping.fieldName] = resolved;
-      }
-    }
-
-    // Additionally mark field for image attachment if template contained {image}
-    // AnkiConnect will append the image to whatever text is already in the field
-    if (hasImage) {
+  for (const mapping of fieldMappings) {
+    if (mapping.template?.includes('{image}')) {
       imageFields.push(mapping.fieldName);
     }
   }
 
-  // Ensure we have at least one non-empty field
-  if (Object.keys(fields).length === 0 && imageFields.length === 0) {
+  // Generate image filename
+  const imageFilename = generateImageFilename(metadata, options?.pageFilename);
+
+  // Extract base64 data from data URL
+  const base64Data = imageData.split(';base64,')[1];
+  if (!base64Data) {
+    showSnackbar('Error: Invalid image data format');
+    return;
+  }
+
+  // Build fields object from field mappings
+  // For fields with {image}, we resolve without the image (AnkiConnect will insert it)
+  const fields: Record<string, string> = {};
+
+  for (const mapping of fieldMappings) {
+    if (!mapping.template) continue;
+
+    // Remove {image} from template - AnkiConnect's picture parameter handles image insertion
+    const templateWithoutImage = mapping.template.replace(/\{image\}/g, '');
+
+    const resolved = resolveTemplate(templateWithoutImage, metadata || {}, selectedText, sentence, {
+      pageNumber: options?.pageNumber,
+      previousValues: options?.previousValues,
+      fieldName: mapping.fieldName
+    });
+    if (resolved) {
+      fields[mapping.fieldName] = resolved;
+    }
+  }
+
+  // Ensure we have at least one non-empty field (excluding image-only fields)
+  const nonImageFields = Object.keys(fields).filter((f) => !imageFields.includes(f) || fields[f]);
+  if (nonImageFields.length === 0 && imageFields.length === 0) {
     showSnackbar('Error: No fields would be populated. Check your field mappings.');
     return;
   }
 
-  const timestamp = Date.now();
   const notePayload: Record<string, any> = {
     deckName: resolvedDeckName,
     modelName: selectedModel,
@@ -534,18 +707,18 @@ export async function createCard(
     }
   };
 
-  // Add picture if we have image fields configured
+  // Add picture using AnkiConnect's built-in picture parameter (works on desktop and Android)
   if (imageFields.length > 0) {
     notePayload.picture = [
       {
-        filename: `mokuro_${timestamp}.webp`,
-        data: imageData.split(';base64,')[1],
+        filename: imageFilename,
+        data: base64Data,
         fields: imageFields
       }
     ];
   }
 
-  // Only add tags if non-empty (not supported by AnkiConnect Android)
+  // Only add tags if non-empty
   if (tagList.length > 0) {
     notePayload.tags = tagList;
   }
@@ -595,7 +768,7 @@ export async function createCard(
   }
 
   // Check all configured fields exist
-  const usedFields = [...Object.keys(fields), ...imageFields];
+  const usedFields = Object.keys(fields);
   const missingFields = usedFields.filter((f) => !modelFields.includes(f));
 
   if (missingFields.length > 0) {
@@ -615,11 +788,23 @@ export async function createCard(
   }
 }
 
+export type UpdateCardOptions = {
+  fieldMappings?: FieldMapping[];
+  previousValues?: Record<string, string>;
+  previousTags?: string[];
+  pageNumber?: number;
+  pageFilename?: string;
+  selectedText?: string;
+};
+
 export async function updateLastCard(
   imageData: string | null | undefined,
   sentence?: string,
   tags?: string,
-  metadata?: VolumeMetadata
+  metadata?: VolumeMetadata,
+  cardId?: number,
+  modelName?: string,
+  options?: UpdateCardOptions
 ) {
   const ankiSettings = get(settings).ankiConnectSettings;
   const { enabled, selectedModel } = ankiSettings;
@@ -628,69 +813,102 @@ export async function updateLastCard(
     return;
   }
 
-  // Get model configuration
-  const config = getModelConfig(selectedModel);
+  // Use provided model name or fall back to settings
+  const targetModel = modelName || selectedModel;
+
+  // Get model configuration for update mode
+  const config = getModelConfig(targetModel, 'update');
   if (!config) {
-    showSnackbar(`Error: No configuration found for model "${selectedModel}"`);
+    showSnackbar(`Error: No configuration found for model "${targetModel}"`);
     return;
   }
 
-  showSnackbar('Updating last card...', 10000);
+  showSnackbar('Updating card...', 10000);
 
-  const id = await getLastCardId();
-
+  // Use provided card ID or fetch the last one
+  let id = cardId;
   if (!id) {
-    showSnackbar('Error: Could not find recent card (connection failed or no cards today)');
-    return;
-  }
+    id = await getLastCardId();
 
-  if (getCardAgeInMin(id) >= 5) {
-    showSnackbar('Error: Card created over 5 minutes ago');
-    return;
-  }
-
-  // In update mode, we only update image and sentence fields, NOT selection
-  // This preserves the user's word/expression that was captured from another source
-  const fields: Record<string, any> = {};
-  const imageFields: string[] = [];
-
-  for (const mapping of config.fieldMappings) {
-    if (!mapping.template) continue;
-
-    const hasImage = mapping.template.includes('{image}');
-    const hasSentence = mapping.template.includes('{sentence}');
-
-    // Strip {image} and check for text content to resolve
-    // (Also strip {selection} since we don't update that in update mode)
-    const textTemplate = mapping.template
-      .replace(/\{image\}/g, '')
-      .replace(/\{selection\}/g, '')
-      .trim();
-
-    // Resolve text content if there's any (sentence, series, volume, etc.)
-    if (textTemplate && hasSentence && sentence) {
-      const resolved = resolveTemplate(textTemplate, metadata || {}, undefined, sentence);
-      if (resolved) {
-        fields[mapping.fieldName] = resolved;
-      }
-    } else if (hasImage && !hasSentence) {
-      // If only image (no sentence text), clear field for image replacement
-      fields[mapping.fieldName] = '';
+    if (!id) {
+      showSnackbar('Error: Could not find recent card (connection failed or no cards today)');
+      return;
     }
 
-    // Mark field for image attachment if template contained {image}
-    // AnkiConnect will append the image to whatever text is already in the field
-    if (hasImage) {
-      imageFields.push(mapping.fieldName);
+    // Only check timeout when we're fetching the card (not when ID is provided)
+    if (getCardAgeInMin(id) >= 5) {
+      showSnackbar('Error: Card created over 5 minutes ago');
+      return;
     }
   }
 
-  // Resolve dynamic tags with volume metadata
-  const resolvedTags = tags && metadata ? resolveDynamicTags(tags, metadata) : tags;
+  // Use provided field mappings (from modal) or fall back to saved config
+  const fieldMappings = options?.fieldMappings || config.fieldMappings;
+
+  // Resolve dynamic tags with volume metadata and {existing}
+  let resolvedTags = tags || '';
+  // Replace {existing} with previous tags
+  if (options?.previousTags) {
+    resolvedTags = resolvedTags.replace(/\{existing\}/g, options.previousTags.join(' '));
+  } else {
+    resolvedTags = resolvedTags.replace(/\{existing\}/g, '');
+  }
+  // Resolve {series} and {volume}
+  resolvedTags = metadata ? resolveDynamicTags(resolvedTags, metadata) : resolvedTags;
 
   if (!imageData) {
     showSnackbar('Error: No image data');
     return;
+  }
+
+  // Find fields that use {image} - these will receive the picture via AnkiConnect's picture parameter
+  const imageFields: string[] = [];
+  for (const mapping of fieldMappings) {
+    if (mapping.template?.includes('{image}')) {
+      imageFields.push(mapping.fieldName);
+    }
+  }
+
+  // Generate image filename (use card ID for uniqueness in updates)
+  const imageFilename = generateImageFilename(metadata, options?.pageFilename);
+
+  // Extract base64 data from data URL
+  const base64Data = imageData.split(';base64,')[1];
+  if (!base64Data) {
+    showSnackbar('Error: Invalid image data format');
+    return;
+  }
+
+  // Build fields object from field mappings
+  // For fields with {image}, we resolve without the image (AnkiConnect will insert it)
+  const fields: Record<string, any> = {};
+
+  for (const mapping of fieldMappings) {
+    if (!mapping.template) continue;
+
+    // Remove {image} from template - AnkiConnect's picture parameter handles image insertion
+    const templateWithoutImage = mapping.template.replace(/\{image\}/g, '');
+
+    // Resolve text content
+    const resolved = resolveTemplate(
+      templateWithoutImage,
+      metadata || {},
+      options?.selectedText,
+      sentence,
+      {
+        pageNumber: options?.pageNumber,
+        previousValues: options?.previousValues,
+        fieldName: mapping.fieldName
+      }
+    );
+
+    // For image fields: if template resolves to empty (e.g., just "{image}"),
+    // we must explicitly clear the field first so the new image replaces rather than appends
+    if (imageFields.includes(mapping.fieldName)) {
+      fields[mapping.fieldName] = resolved || '';
+    } else if (resolved) {
+      fields[mapping.fieldName] = resolved;
+    }
   }
 
   try {
@@ -699,11 +917,11 @@ export async function updateLastCard(
       fields
     };
 
-    // Add picture if we have image fields configured
+    // Add picture using AnkiConnect's built-in picture parameter (works on desktop and Android)
     if (imageFields.length > 0) {
       noteUpdate.picture = {
-        filename: `mokuro_${id}.webp`,
-        data: imageData.split(';base64,')[1],
+        filename: imageFilename,
+        data: base64Data,
         fields: imageFields
       };
     }
@@ -715,22 +933,12 @@ export async function updateLastCard(
       return;
     }
 
-    // Add tags if provided (not supported by AnkiConnect Android)
-    let tagsAdded = true;
+    // Add tags if provided
     if (resolvedTags && resolvedTags.length > 0) {
-      const tagResult = await ankiConnect(
-        'addTags',
-        { notes: [id], tags: resolvedTags },
-        { silent: true }
-      );
-      tagsAdded = tagResult !== undefined;
+      await ankiConnect('addTags', { notes: [id], tags: resolvedTags }, { silent: true });
     }
 
-    if (tagsAdded) {
-      showSnackbar('Card updated!');
-    } else {
-      showSnackbar('Card updated! (tags not supported on Android)');
-    }
+    showSnackbar('Card updated!');
   } catch (e) {
     showSnackbar(String(e));
   }
@@ -759,5 +967,137 @@ export async function sendToAnki(
     return createCard(imageData, selectedText, sentence, tags, metadata);
   } else {
     return updateLastCard(imageData, sentence, tags, metadata);
+  }
+}
+
+/**
+ * Extracts field values from an Anki note info object.
+ * Returns a map of field name -> raw field value (preserving HTML).
+ * This is important for the {existing} template to work with images and formatting.
+ */
+export function extractFieldValues(noteInfo: any): Record<string, string> {
+  if (!noteInfo?.fields) return {};
+
+  const values: Record<string, string> = {};
+  for (const [fieldName, fieldData] of Object.entries(noteInfo.fields)) {
+    // fieldData is { value: string, order: number }
+    const data = fieldData as { value: string; order: number };
+    // Preserve raw HTML so {existing} can include images and formatting
+    values[fieldName] = data.value || '';
+  }
+  return values;
+}
+
+/**
+ * Crops an image URL to the specified bounds and converts to base64 jpg.
+ * If no textBox is provided, uses the full image.
+ */
+export async function cropImageToBounds(
+  imageUrl: string,
+  textBox?: [number, number, number, number]
+): Promise<string | null> {
+  const currentSettings = get(settings);
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      let x = 0,
+        y = 0,
+        width = img.width,
+        height = img.height;
+
+      if (textBox && currentSettings.ankiConnectSettings.cropImage) {
+        const [xmin, ymin, xmax, ymax] = textBox;
+        x = xmin;
+        y = ymin;
+        width = xmax - xmin;
+        height = ymax - ymin;
+      }
+
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+
+      ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
+
+      // Apply size limits
+      await imageResize(
+        canvas,
+        ctx,
+        currentSettings.ankiConnectSettings.widthField,
+        currentSettings.ankiConnectSettings.heightField
+      );
+
+      const blob = await canvas.convertToBlob({
+        type: 'image/jpeg',
+        quality: currentSettings.ankiConnectSettings.qualityField
+      });
+
+      resolve(await blobToBase64(blob));
+    };
+    img.onerror = () => resolve(null);
+    img.src = imageUrl;
+  });
+}
+
+/**
+ * Quick capture function - sends card directly without showing modal.
+ * Auto-crops image to textBox bounds if cropImage setting is enabled.
+ */
+export async function sendQuickCapture(
+  mode: 'create' | 'update',
+  imageUrl: string,
+  selectedText?: string,
+  sentence?: string,
+  metadata?: VolumeMetadata,
+  textBox?: [number, number, number, number],
+  previousValues?: Record<string, string>,
+  previousCardId?: number,
+  previousTags?: string[],
+  modelName?: string,
+  pageFilename?: string
+): Promise<void> {
+  const ankiSettings = get(settings).ankiConnectSettings;
+  const { enabled, selectedModel } = ankiSettings;
+
+  if (!enabled) return;
+
+  // Crop image
+  const imageData = await cropImageToBounds(imageUrl, textBox);
+  if (!imageData) {
+    showSnackbar('Error: Failed to process image');
+    return;
+  }
+
+  if (mode === 'create') {
+    // Get the model config for create mode
+    const config = getModelConfig(selectedModel, 'create');
+
+    // Use tags template from config, resolve dynamic tags
+    const tagsTemplate = config?.tags || '';
+    const resolvedTags = resolveDynamicTags(tagsTemplate, metadata || {});
+
+    await createCard(imageData, selectedText, sentence, resolvedTags, metadata, {
+      deckName: config?.deckName,
+      pageFilename
+    });
+  } else {
+    // Update mode - use the card's model and pass all context
+    const targetModel = modelName || selectedModel;
+    const config = getModelConfig(targetModel, 'update');
+
+    // Use tags template from config (will be resolved with {existing} in updateLastCard)
+    const tagsTemplate = config?.tags || '{existing}';
+
+    await updateLastCard(imageData, sentence, tagsTemplate, metadata, previousCardId, targetModel, {
+      previousValues,
+      pageFilename,
+      previousTags,
+      selectedText
+    });
   }
 }

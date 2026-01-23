@@ -1,7 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { settings, updateAnkiSetting, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
-  import type { FieldMapping, ModelConfig, AnkiConnectionData } from '$lib/settings/settings';
+  import { settings, updateAnkiSetting } from '$lib/settings';
   import {
     AccordionItem,
     Button,
@@ -12,12 +11,7 @@
     Select,
     Toggle
   } from 'flowbite-svelte';
-  import {
-    DYNAMIC_TAGS,
-    FIELD_TEMPLATES,
-    fetchConnectionData,
-    isAndroidMode
-  } from '$lib/anki-connect';
+  import { fetchConnectionData, openConfigureModal } from '$lib/anki-connect';
   import { onMount } from 'svelte';
 
   // Connection state
@@ -28,16 +22,10 @@
   // Basic settings
   let enabled = $state($settings.ankiConnectSettings.enabled);
   let url = $state($settings.ankiConnectSettings.url);
-  let androidModeOverride = $state($settings.ankiConnectSettings.androidModeOverride);
-
-  // Derive if we're in Android mode
-  let inAndroidMode = $derived(isAndroidMode());
 
   // Card settings
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
   let selectedModel = $state($settings.ankiConnectSettings.selectedModel);
-  let cropImage = $state($settings.ankiConnectSettings.cropImage);
-  let ankiTags = $state($settings.ankiConnectSettings.tags);
 
   // Image quality settings
   let heightField = $state($settings.ankiConnectSettings.heightField);
@@ -50,93 +38,23 @@
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
 
-  // Model configuration - derive reactively from settings store
-  // (getModelConfig uses get() which isn't reactive, so we need to depend on $settings directly)
-  let currentModelConfig = $derived.by(() => {
-    // Access $settings to make this reactive to settings changes
+  // Get configured models for update mode (only shown in update mode)
+  let configuredModels = $derived.by(() => {
     const ankiSettings = $settings.ankiConnectSettings;
-
-    // Always use actual fields from connectionData to ensure we show all fields
-    const actualFields = connectionData?.modelFields[selectedModel];
-    if (!actualFields || actualFields.length === 0) {
-      // Fall back to saved config if no connection data
-      if (ankiSettings.modelConfigs[selectedModel]) {
-        return ankiSettings.modelConfigs[selectedModel];
-      }
-      return null;
-    }
-
-    // Get saved config and default config for template suggestions
-    const savedConfig = ankiSettings.modelConfigs[selectedModel];
-    const defaultConfig = DEFAULT_MODEL_CONFIGS[selectedModel];
-
-    // Build field mappings from actual Anki fields
-    const fieldMappings: FieldMapping[] = [];
-    for (const field of actualFields) {
-      // Check if we have a saved template for this field
-      const savedMapping = savedConfig?.fieldMappings.find((m) => m.fieldName === field);
-      if (savedMapping) {
-        fieldMappings.push(savedMapping);
-        continue;
-      }
-
-      // Check if default config has a template for this field
-      const defaultMapping = defaultConfig?.fieldMappings.find((m) => m.fieldName === field);
-      if (defaultMapping) {
-        fieldMappings.push(defaultMapping);
-        continue;
-      }
-
-      // Generate smart default based on field name
-      const lowerField = field.toLowerCase();
-      if (lowerField.includes('front') || lowerField.includes('expression') || lowerField.includes('word')) {
-        fieldMappings.push({ fieldName: field, template: '{selection}' });
-      } else if (lowerField.includes('picture') || lowerField.includes('image') || lowerField.includes('screenshot')) {
-        fieldMappings.push({ fieldName: field, template: '{image}' });
-      } else if (lowerField.includes('sentence') || lowerField.includes('context')) {
-        fieldMappings.push({ fieldName: field, template: '{sentence}' });
-      } else {
-        fieldMappings.push({ fieldName: field, template: '' });
-      }
-    }
-
-    return {
-      modelName: selectedModel,
-      deckName: savedConfig?.deckName || defaultConfig?.deckName || 'Default',
-      fieldMappings
-    } as ModelConfig;
+    return Object.keys(ankiSettings.updateModelConfigs || {});
   });
 
-  // Deck name from current model config
-  let deckName = $derived(currentModelConfig?.deckName ?? 'Default');
+  // Check if current model has a config for create mode (only shown in create mode)
+  let hasCurrentModelConfig = $derived.by(() => {
+    const ankiSettings = $settings.ankiConnectSettings;
+    return !!(ankiSettings.createModelConfigs && ankiSettings.createModelConfigs[selectedModel]);
+  });
 
-  // Available models and decks from connection data
+  // Available models from connection data
   let availableModels = $derived(connectionData?.models ?? []);
-  let availableDecks = $derived(connectionData?.decks ?? []);
-  let modelFields = $derived(connectionData?.modelFields ?? {});
 
   // Model options for Select component
   let modelOptions = $derived(availableModels.map((m) => ({ value: m, name: m })));
-  let deckOptions = $derived([
-    { value: '__custom__', name: '(Custom deck name)' },
-    ...availableDecks.map((d) => ({ value: d, name: d }))
-  ]);
-
-  // Track if using custom deck
-  let useCustomDeck = $state(false);
-  let customDeckName = $state('');
-
-  // Initialize custom deck state when component loads
-  $effect(() => {
-    const config = currentModelConfig;
-    if (config) {
-      const isExistingDeck = availableDecks.includes(config.deckName);
-      useCustomDeck = !isExistingDeck && config.deckName !== 'Default';
-      if (useCustomDeck) {
-        customDeckName = config.deckName;
-      }
-    }
-  });
 
   // Controls disabled state
   let disabled = $derived(!enabled || !isConnected);
@@ -164,76 +82,14 @@
     updateAnkiSetting('connectionData', null);
   }
 
-  // Update model config with new deck name
-  function updateDeckName(newDeckName: string) {
-    if (!currentModelConfig) return;
-
-    const updatedConfig: ModelConfig = {
-      ...currentModelConfig,
-      deckName: newDeckName
-    };
-
-    // Save to modelConfigs
-    const modelConfigs = { ...$settings.ankiConnectSettings.modelConfigs };
-    modelConfigs[selectedModel] = updatedConfig;
-    updateAnkiSetting('modelConfigs', modelConfigs);
-  }
-
-  // Update field mapping for a specific field
-  function updateFieldMapping(fieldName: string, template: string) {
-    if (!currentModelConfig) return;
-
-    const updatedMappings = currentModelConfig.fieldMappings.map((m) =>
-      m.fieldName === fieldName ? { ...m, template } : m
-    );
-
-    const updatedConfig: ModelConfig = {
-      ...currentModelConfig,
-      fieldMappings: updatedMappings
-    };
-
-    // Save to modelConfigs
-    const modelConfigs = { ...$settings.ankiConnectSettings.modelConfigs };
-    modelConfigs[selectedModel] = updatedConfig;
-    updateAnkiSetting('modelConfigs', modelConfigs);
-  }
-
-  // Insert template variable into a field
-  function insertTemplate(fieldName: string, template: string) {
-    const mapping = currentModelConfig?.fieldMappings.find((m) => m.fieldName === fieldName);
-    const currentValue = mapping?.template ?? '';
-    // Append template with a space if there's existing content
-    const newValue = currentValue ? `${currentValue} ${template}`.trim() : template;
-    updateFieldMapping(fieldName, newValue);
-  }
-
   // Update double-tap trigger method
   function updateDoubleTap(enabled: boolean) {
     updateAnkiSetting('triggerMethod', enabled ? 'doubleTap' : 'neither');
   }
 
-  // Insert tag into tags field
-  function insertTag(tag: string) {
-    ankiTags = ankiTags ? `${ankiTags} ${tag}`.trim() : tag;
-    updateAnkiSetting('tags', ankiTags);
-  }
-
   // Handle model change
   function handleModelChange() {
     updateAnkiSetting('selectedModel', selectedModel);
-    // The $effect will automatically update useCustomDeck and customDeckName
-    // when currentModelConfig changes due to selectedModel change
-  }
-
-  // Handle deck dropdown change
-  function handleDeckDropdownChange(value: string) {
-    if (value === '__custom__') {
-      useCustomDeck = true;
-      customDeckName = deckName;
-    } else {
-      useCustomDeck = false;
-      updateDeckName(value);
-    }
   }
 
   // Try auto-connect on mount if we have a URL but no connection data
@@ -272,7 +128,13 @@
           class="flex-1"
         />
         {#if isConnected}
-          <Button size="sm" color="red" outline onclick={handleDisconnect} class="whitespace-nowrap">
+          <Button
+            size="sm"
+            color="red"
+            outline
+            onclick={handleDisconnect}
+            class="whitespace-nowrap"
+          >
             Disconnect
           </Button>
         {:else}
@@ -294,12 +156,11 @@
 
       <!-- Connection Status -->
       {#if isConnected}
-        <div class="mt-2 rounded bg-green-100 p-2 text-sm text-green-800 dark:bg-green-900 dark:text-green-200">
+        <div
+          class="mt-2 rounded bg-green-100 p-2 text-sm text-green-800 dark:bg-green-900 dark:text-green-200"
+        >
           Connected to AnkiConnect v{connectionData?.version}
-          ({availableModels.length} models, {availableDecks.length} decks)
-          {#if inAndroidMode}
-            <span class="ml-1 font-medium">(Android mode)</span>
-          {/if}
+          ({availableModels.length} models)
         </div>
       {:else if !isConnecting}
         <Helper class="mt-1">Connect to AnkiConnect to configure card settings</Helper>
@@ -312,42 +173,6 @@
         <Toggle bind:checked={enabled} onchange={() => updateAnkiSetting('enabled', enabled)}>
           AnkiConnect Integration Enabled
         </Toggle>
-      </div>
-
-      <!-- Android Mode Override -->
-      <div>
-        <Label class="mb-2 text-gray-900 dark:text-white">Platform Mode:</Label>
-        <div class="flex flex-wrap gap-4">
-          <Radio
-            name="androidMode"
-            value="auto"
-            bind:group={androidModeOverride}
-            onchange={() => updateAnkiSetting('androidModeOverride', androidModeOverride)}
-          >
-            Auto-detect {connectionData?.isAndroid ? '(Android)' : '(Desktop)'}
-          </Radio>
-          <Radio
-            name="androidMode"
-            value="desktop"
-            bind:group={androidModeOverride}
-            onchange={() => updateAnkiSetting('androidModeOverride', androidModeOverride)}
-          >
-            Desktop
-          </Radio>
-          <Radio
-            name="androidMode"
-            value="android"
-            bind:group={androidModeOverride}
-            onchange={() => updateAnkiSetting('androidModeOverride', androidModeOverride)}
-          >
-            Android
-          </Radio>
-        </div>
-        {#if inAndroidMode}
-          <Helper class="mt-1 text-amber-600 dark:text-amber-400">
-            Android mode: Tags and dynamic deck creation are disabled
-          </Helper>
-        {/if}
       </div>
 
       <!-- Card Mode -->
@@ -382,151 +207,70 @@
         </Helper>
       </div>
 
-      <!-- Model Selection -->
-      <div>
-        <Label class="text-gray-900 dark:text-white">Note Type:</Label>
-        <Select
-          {disabled}
-          items={modelOptions}
-          bind:value={selectedModel}
-          onchange={handleModelChange}
-        />
-      </div>
-
-      <!-- Deck Selection -->
+      <!-- Create Mode: Note Type Selection + Configure -->
       {#if cardMode === 'create'}
         <div>
-          <Label class="text-gray-900 dark:text-white">Deck:</Label>
-          {#if useCustomDeck}
-            <div class="flex gap-2">
-              <Input
-                {disabled}
-                type="text"
-                placeholder="Custom deck name"
-                bind:value={customDeckName}
-                onchange={() => updateDeckName(customDeckName)}
-                class="flex-1"
-              />
-              <Button
-                {disabled}
-                size="sm"
-                color="alternative"
-                onclick={() => {
-                  useCustomDeck = false;
-                  updateDeckName(availableDecks[0] || 'Default');
-                }}
-              >
-                Use existing
-              </Button>
-            </div>
-            {#if !inAndroidMode}
-              <div class="mt-2 flex flex-wrap gap-2">
-                {#each DYNAMIC_TAGS as { tag, description }}
-                  <button
-                    type="button"
-                    {disabled}
-                    onclick={() => {
-                      customDeckName = customDeckName ? `${customDeckName}${tag}` : tag;
-                      updateDeckName(customDeckName);
-                    }}
-                    class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                    title={description}
-                  >
-                    {tag}
-                  </button>
-                {/each}
-              </div>
-              <Helper class="mt-1">Use :: for subdecks. Dynamic tags supported.</Helper>
-            {:else}
-              <Helper class="mt-1 text-amber-600 dark:text-amber-400">
-                Deck must exist in Anki (Android can't create decks)
-              </Helper>
-            {/if}
+          <Label class="text-gray-900 dark:text-white">Note Type:</Label>
+          <div class="flex gap-2">
+            <Select
+              {disabled}
+              items={modelOptions}
+              bind:value={selectedModel}
+              onchange={handleModelChange}
+              class="flex-1"
+            />
+            <Button
+              {disabled}
+              size="sm"
+              color="alternative"
+              onclick={() => openConfigureModal(selectedModel)}
+            >
+              Configure
+            </Button>
+          </div>
+          {#if hasCurrentModelConfig}
+            <Helper class="mt-1 text-green-600 dark:text-green-400">Configured</Helper>
           {:else}
-            <div class="flex gap-2">
-              <Select
-                {disabled}
-                items={deckOptions}
-                value={deckName}
-                onchange={(e) => handleDeckDropdownChange(e.currentTarget.value)}
-                class="flex-1"
-              />
-              {#if !inAndroidMode}
-                <Button
-                  {disabled}
-                  size="sm"
-                  color="alternative"
-                  onclick={() => {
-                    useCustomDeck = true;
-                    customDeckName = '';
-                  }}
-                >
-                  Custom
-                </Button>
-              {/if}
-            </div>
+            <Helper class="mt-1">Using default field mappings</Helper>
           {/if}
         </div>
       {/if}
 
-      <!-- Field Mappings -->
-      {#if selectedModel && currentModelConfig}
+      <!-- Update Mode: Configured Models List -->
+      {#if cardMode === 'update'}
         <hr />
-        <h4 class="text-gray-900 dark:text-white">Field Mappings ({selectedModel})</h4>
-        <Helper>Configure how each Anki field is populated</Helper>
+        <div>
+          <h4 class="mb-2 text-gray-900 dark:text-white">Update Mode Configurations</h4>
+          <Helper class="mb-2"
+            >Configure how each note type is updated. The note type is detected from the card being
+            updated.</Helper
+          >
 
-        {#each currentModelConfig.fieldMappings as mapping}
-          <div>
-            <Label class="text-gray-900 dark:text-white">{mapping.fieldName}:</Label>
-            <Input
-              {disabled}
-              type="text"
-              value={mapping.template}
-              placeholder="Template or leave empty"
-              onchange={(e) => updateFieldMapping(mapping.fieldName, e.currentTarget.value)}
-            />
-            <div class="mt-2 flex flex-wrap gap-2">
-              {#each FIELD_TEMPLATES as { template, description }}
-                <button
-                  type="button"
-                  {disabled}
-                  onclick={() => insertTemplate(mapping.fieldName, template)}
-                  class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                  title={description}
+          {#if configuredModels.length > 0}
+            <div class="space-y-1">
+              {#each configuredModels as modelName}
+                <div
+                  class="flex items-center justify-between rounded border border-gray-200 px-2 py-1.5 dark:border-gray-700"
                 >
-                  {template}
-                </button>
+                  <span class="text-sm text-gray-700 dark:text-gray-300">{modelName}</span>
+                  <Button
+                    {disabled}
+                    size="xs"
+                    color="light"
+                    onclick={() => openConfigureModal(modelName)}
+                  >
+                    Edit
+                  </Button>
+                </div>
               {/each}
             </div>
-          </div>
-        {/each}
-      {/if}
-
-      <!-- Tags (only for desktop mode) -->
-      {#if !inAndroidMode}
-        <div>
-          <Label class="text-gray-900 dark:text-white">Tags (optional):</Label>
-          <Input
-            {disabled}
-            type="text"
-            placeholder="mining vocab"
-            bind:value={ankiTags}
-            oninput={() => updateAnkiSetting('tags', ankiTags)}
-          />
-          <div class="mt-2 flex flex-wrap gap-2">
-            {#each DYNAMIC_TAGS as { tag, description }}
-              <button
-                type="button"
-                {disabled}
-                onclick={() => insertTag(tag)}
-                class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                title={description}
-              >
-                {tag}
-              </button>
-            {/each}
-          </div>
-          <Helper class="mt-1">Click to insert. Spaces in names become underscores.</Helper>
+          {:else}
+            <div
+              class="rounded border border-dashed border-gray-300 p-3 text-center text-sm text-gray-500 dark:border-gray-600 dark:text-gray-400"
+            >
+              No note types configured yet. Configurations will be created when you update cards.
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -541,17 +285,9 @@
         >
           Double-tap to capture
         </Toggle>
-        <Helper class="mt-1">Right-click (long press on mobile) any text box for more options</Helper>
-      </div>
-
-      <!-- Cropper Settings -->
-      <hr />
-      <h4 class="text-gray-900 dark:text-white">Cropper Settings</h4>
-      <div>
-        <Toggle {disabled} bind:checked={cropImage} onchange={() => updateAnkiSetting('cropImage', cropImage)}>
-          Preset crop to text box
-        </Toggle>
-        <Helper class="mt-1">Ideal for quick single-panel captures</Helper>
+        <Helper class="mt-1"
+          >Right-click (long press on mobile) any text box for more options</Helper
+        >
       </div>
 
       <!-- Image Quality Settings -->
@@ -598,7 +334,9 @@
       </div>
     {:else}
       <!-- Not Connected State -->
-      <div class="rounded border border-gray-200 bg-gray-50 p-4 text-center text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+      <div
+        class="rounded border border-gray-200 bg-gray-50 p-4 text-center text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
+      >
         Connect to AnkiConnect to configure card settings
       </div>
     {/if}

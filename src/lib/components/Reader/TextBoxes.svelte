@@ -2,7 +2,18 @@
   import { clamp, promptConfirmation } from '$lib/util';
   import type { Page } from '$lib/types';
   import { settings, volumes } from '$lib/settings';
-  import { showCropper, expandTextBoxBounds, type VolumeMetadata } from '$lib/anki-connect';
+  import {
+    showCropper,
+    openCreateModal,
+    openUpdateModal,
+    expandTextBoxBounds,
+    sendQuickCapture,
+    getLastCardInfo,
+    getCardAgeInMin,
+    extractFieldValues,
+    getModelConfig,
+    type VolumeMetadata
+  } from '$lib/anki-connect';
 
   interface ContextMenuData {
     x: number;
@@ -121,6 +132,7 @@
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
+  let cardMode = $derived($settings.ankiConnectSettings.cardMode);
   let volumeMetadata = $derived<VolumeMetadata>({
     seriesTitle: $volumes[volumeUuid]?.series_title,
     volumeTitle: $volumes[volumeUuid]?.volume_title
@@ -308,27 +320,117 @@
   }
 
   async function onUpdateCard(event: Event, lines: string[], blockIndex: number) {
-    if ($settings.ankiConnectSettings.enabled) {
-      const selectedText = getSelectedText();
-      const fullSentence = lines.join(' ');
+    if (!$settings.ankiConnectSettings.enabled) return;
 
-      // Get the original block's bounding box for initial crop
-      const block = page.blocks[blockIndex];
-      const textBox = block ? expandTextBoxBounds(block, page) : undefined;
+    const selectedText = getSelectedText();
+    const fullSentence = lines.join(' ');
 
-      // Always show the modal for review/editing
-      const url =
-        getImageUrlFromElement(event.target as HTMLElement) ||
-        (src ? URL.createObjectURL(src) : null);
-      if (url) {
-        showCropper(
+    // Get the original block's bounding box for initial crop
+    const block = page.blocks[blockIndex];
+    const textBox = block ? expandTextBoxBounds(block, page) : undefined;
+
+    // Get image URL
+    const url =
+      getImageUrlFromElement(event.target as HTMLElement) ||
+      (src ? URL.createObjectURL(src) : null);
+
+    if (!url) return;
+
+    // Get current page number for {page} template
+    const pageNumber = $volumes[volumeUuid]?.progress || 1;
+
+    if (cardMode === 'update') {
+      // Update mode: fetch previous card values
+      const lastCard = await getLastCardInfo();
+
+      if (!lastCard || !lastCard.noteId) {
+        // No card found at all
+        const { showSnackbar } = await import('$lib/util');
+        showSnackbar('No recent card found to update');
+        return;
+      }
+
+      const cardAge = getCardAgeInMin(lastCard.noteId);
+      if (cardAge >= 5) {
+        // Card too old
+        const { showSnackbar } = await import('$lib/util');
+        showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
+        return;
+      }
+
+      const previousValues = extractFieldValues(lastCard);
+
+      // Get the model config to check for quickCapture setting
+      const modelConfig = getModelConfig(lastCard.modelName, 'update');
+      const hasConfig = !!modelConfig;
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        // Quick capture: send directly without modal
+        await sendQuickCapture(
+          'update',
+          url,
+          selectedText || fullSentence,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          previousValues,
+          lastCard.noteId,
+          lastCard.tags,
+          lastCard.modelName,
+          page.img_path
+        );
+      } else {
+        // Show modal in update mode - use the card's model name
+        // (also shown if quickCapture but no config exists)
+        openUpdateModal(
+          url,
+          previousValues,
+          lastCard.noteId,
+          lastCard.modelName,
+          lastCard.tags, // existing tags from the card
+          selectedText || fullSentence,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          page.img_path
+        );
+      }
+    } else {
+      // Create mode
+      const { selectedModel } = $settings.ankiConnectSettings;
+      const modelConfig = getModelConfig(selectedModel, 'create');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'create',
+          url,
+          selectedText || fullSentence,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          undefined, // previousValues
+          undefined, // previousCardId
+          undefined, // previousTags
+          undefined, // modelName
+          page.img_path
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openCreateModal(
           url,
           selectedText || fullSentence,
           fullSentence,
           ankiTags,
           volumeMetadata,
           undefined,
-          textBox
+          textBox,
+          pageNumber,
+          page.img_path
         );
       }
     }
