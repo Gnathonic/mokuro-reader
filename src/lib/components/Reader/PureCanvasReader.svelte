@@ -670,18 +670,28 @@
       pageCanvasesSpreadScale.delete(pageIdx);
     }
 
-    // Load needed pages
-    for (const pageIdx of toLoad) {
+    // Find pages that need re-rendering (exist but at wrong scale)
+    const pagesToRerender: number[] = [];
+    for (const pageIdx of cachedPages) {
+      if (toEvict.includes(pageIdx)) continue; // Will be evicted
+      const existingScale = pageCanvasesSpreadScale.get(pageIdx);
+      const effectiveScale = getPageEffectiveScale(pageIdx);
+      if (existingScale !== effectiveScale) {
+        pagesToRerender.push(pageIdx);
+      }
+    }
+
+    // Combine pages to load and pages to re-render
+    const pagesToProcess = [...toLoad, ...pagesToRerender];
+
+    // Load/re-render needed pages
+    for (const pageIdx of pagesToProcess) {
       const bitmap = imageCache.getBitmapSync(pageIdx);
       if (bitmap) {
         preRenderPage(pageIdx, bitmap, pages[pageIdx]);
       } else {
         imageCache.getBitmap(pageIdx).then((resolvedBitmap) => {
-          if (
-            resolvedBitmap &&
-            !pageCanvases.has(pageIdx) &&
-            pageCanvases.size < MAX_CACHED_PAGES
-          ) {
+          if (resolvedBitmap) {
             preRenderPage(pageIdx, resolvedBitmap, pages[pageIdx]);
             scheduleDraw();
           }
@@ -717,15 +727,15 @@
   onMount(() => {
     setupCanvas();
 
+    // Debounced resize handling - don't re-render until resize settles
+    let resizeSettleTimeout: ReturnType<typeof setTimeout> | null = null;
+    const RESIZE_SETTLE_DELAY = 150; // ms after last resize event
+
     // Handle window resize
     const handleResize = () => {
       const newWidth = window.innerWidth;
       const newHeight = window.innerHeight;
       const newDpr = window.devicePixelRatio || 1;
-
-      console.log(
-        `[Resize] ${viewportWidth}x${viewportHeight} → ${newWidth}x${newHeight}, dpr=${newDpr}`
-      );
 
       viewportWidth = newWidth;
       viewportHeight = newHeight;
@@ -746,10 +756,20 @@
         }
       }
 
-      // Wait for derived values (spreadLayout) to recalculate before applying zoom
-      tick().then(() => {
-        applyZoomMode();
-      });
+      // Immediately redraw with slow path (scales existing cached canvases)
+      scheduleDraw();
+
+      // Debounce the expensive re-render operation
+      if (resizeSettleTimeout) {
+        clearTimeout(resizeSettleTimeout);
+      }
+      resizeSettleTimeout = setTimeout(() => {
+        resizeSettleTimeout = null;
+        // Wait for derived values (spreadLayout) to recalculate before applying zoom
+        tick().then(() => {
+          applyZoomMode();
+        });
+      }, RESIZE_SETTLE_DELAY);
     };
 
     window.addEventListener('resize', handleResize);
@@ -761,6 +781,9 @@
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (resizeSettleTimeout) {
+        clearTimeout(resizeSettleTimeout);
+      }
     };
   });
 
@@ -1065,6 +1088,10 @@
   }
 
   // Wheel scroll/zoom
+  // Cooldown after page jumps to prevent rapid multi-page scrolling
+  let lastWheelJumpTime = 0;
+  const WHEEL_JUMP_COOLDOWN = 300; // ms cooldown after a page jump
+
   function handleWheel(e: WheelEvent): void {
     e.preventDefault();
     cancelSnapAnimation(); // Stop any ongoing snap
@@ -1076,10 +1103,47 @@
       const scaleDelta = 1 - e.deltaY * 0.001;
       zoomAt(e.clientX, e.clientY, scaleDelta);
     } else {
+      const now = performance.now();
+
+      // With scrollSnap: check boundaries and handle page transitions
+      if ($settings.scrollSnap) {
+        const scrollingDown = e.deltaY > 0;
+        const scrollingUp = e.deltaY < 0;
+        const atBottom = isAtSpreadBoundary('down');
+        const atTop = isAtSpreadBoundary('up');
+
+        // At boundary scrolling outward -> jump to next/prev spread
+        // But only if cooldown has elapsed to prevent rapid multi-page jumps
+        const cooldownElapsed = now - lastWheelJumpTime > WHEEL_JUMP_COOLDOWN;
+
+        if (cooldownElapsed) {
+          if (scrollingDown && atBottom) {
+            lastWheelJumpTime = now;
+            jumpToSpread(localSpreadIndex + 1, 'top', true);
+            return;
+          } else if (scrollingUp && atTop) {
+            lastWheelJumpTime = now;
+            jumpToSpread(localSpreadIndex - 1, 'bottom', true);
+            return;
+          }
+        }
+      }
+
+      // Apply scroll delta
       transform.y -= e.deltaY;
       draw();
       checkSpreadTransition();
-      scheduleSnapAfterWheel();
+
+      // With scrollSnap: immediate bounds clamping (like panzoom's keepInBounds)
+      // Without scrollSnap: allow free scrolling through continuous layout
+      if ($settings.scrollSnap) {
+        if (wheelSnapTimeout) {
+          clearTimeout(wheelSnapTimeout);
+          wheelSnapTimeout = null;
+        }
+        clampTransformToBounds();
+        draw();
+      }
     }
   }
 
