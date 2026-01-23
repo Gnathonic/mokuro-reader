@@ -14,7 +14,7 @@
   const presetOptions = [
     { value: 'compact', name: 'Compact' },
     { value: 'default', name: 'Default' },
-    { value: 'spine', name: 'Spine Showcase (Alpha)' },
+    { value: 'spine', name: 'Spine Showcase' },
     { value: 'custom', name: 'Custom' }
   ];
 

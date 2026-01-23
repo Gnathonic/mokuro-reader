@@ -258,18 +258,6 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.catalogSettings || {})
     };
 
-    // Reset unstable "spine showcase" settings to defaults on page load
-    // stackCount=0 causes performance issues and can make the app unusable
-    if (
-      migratedProfile.catalogSettings.stackCount === 0 ||
-      migratedProfile.catalogSettings.stackingPreset === 'spine'
-    ) {
-      console.log(
-        `⚠️ Profile migration: Resetting unstable spine showcase settings to defaults for [${name}]`
-      );
-      migratedProfile.catalogSettings = { ...defaultSettings.catalogSettings };
-    }
-
     // Add timestamp if missing
     if (!migratedProfile.lastUpdated) {
       const newTimestamp = new Date().toISOString();
