@@ -1,6 +1,7 @@
 /**
  * LRU cache for thumbnail ImageBitmaps
  * Provides GPU-ready bitmaps for canvas rendering with 50MB memory limit
+ * Throttled loading to prevent overwhelming the browser
  */
 
 export interface CacheEntry {
@@ -10,11 +11,23 @@ export interface CacheEntry {
   size: number; // decoded bytes (w * h * 4)
 }
 
+interface QueuedLoad {
+  volumeUuid: string;
+  file: File;
+  resolve: (entry: CacheEntry) => void;
+  reject: (error: Error) => void;
+}
+
 class ThumbnailCache {
   private cache = new Map<string, CacheEntry>(); // volume_uuid -> entry
   private pending = new Map<string, Promise<CacheEntry>>(); // coalesce concurrent requests
   private totalBytes = 0;
   private readonly maxBytes = 50 * 1024 * 1024; // 50MB
+
+  // Throttling
+  private queue: QueuedLoad[] = [];
+  private activeLoads = 0;
+  private readonly maxConcurrent = 6; // Limit concurrent createImageBitmap calls
 
   /**
    * Get or load a thumbnail bitmap
@@ -34,14 +47,38 @@ class ThumbnailCache {
       return pendingLoad;
     }
 
-    // Start new load
-    const loadPromise = this.load(volumeUuid, file);
+    // Create promise and queue the load
+    const loadPromise = new Promise<CacheEntry>((resolve, reject) => {
+      this.queue.push({ volumeUuid, file, resolve, reject });
+    });
+
     this.pending.set(volumeUuid, loadPromise);
+    this.processQueue();
 
     try {
       return await loadPromise;
     } finally {
       this.pending.delete(volumeUuid);
+    }
+  }
+
+  /**
+   * Process queued loads with concurrency limit
+   * Uses FILO (stack) ordering - most recent requests processed first
+   * This prioritizes currently visible items over items that scrolled past
+   */
+  private processQueue(): void {
+    while (this.queue.length > 0 && this.activeLoads < this.maxConcurrent) {
+      const item = this.queue.pop()!; // FILO: pop from end (most recent)
+      this.activeLoads++;
+
+      this.load(item.volumeUuid, item.file)
+        .then(item.resolve)
+        .catch(item.reject)
+        .finally(() => {
+          this.activeLoads--;
+          this.processQueue();
+        });
     }
   }
 
@@ -61,6 +98,22 @@ class ThumbnailCache {
       this.touch(volumeUuid);
     }
     return entry;
+  }
+
+  /**
+   * Invalidate a specific cache entry (e.g., when cover is edited)
+   */
+  invalidate(volumeUuid: string): void {
+    const entry = this.cache.get(volumeUuid);
+    if (entry) {
+      entry.bitmap.close();
+      this.totalBytes -= entry.size;
+      this.cache.delete(volumeUuid);
+    }
+    // Also remove from pending if in progress
+    this.pending.delete(volumeUuid);
+    // Remove from queue if waiting
+    this.queue = this.queue.filter((item) => item.volumeUuid !== volumeUuid);
   }
 
   /**

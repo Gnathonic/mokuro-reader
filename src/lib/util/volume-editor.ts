@@ -6,6 +6,7 @@ import { db } from '$lib/catalog/db';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
 import { get } from 'svelte/store';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
+import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
 import type { VolumeMetadata } from '$lib/types';
 import { getCharCount } from '$lib/util/count-chars';
 
@@ -120,6 +121,9 @@ export async function updateVolumeCover(volumeUuid: string, imageFile: File): Pr
   // Generate thumbnail from the image
   const thumbnailResult = await generateThumbnail(imageFile);
 
+  // Invalidate cached bitmap before updating DB
+  thumbnailCache.invalidate(volumeUuid);
+
   // Update in IndexedDB
   await db.volumes.update(volumeUuid, {
     thumbnail: thumbnailResult.file,
@@ -152,6 +156,9 @@ export async function resetVolumeCover(volumeUuid: string): Promise<void> {
 
   // Generate thumbnail
   const thumbnailResult = await generateThumbnail(firstFile);
+
+  // Invalidate cached bitmap before updating DB
+  thumbnailCache.invalidate(volumeUuid);
 
   // Update in IndexedDB
   await db.volumes.update(volumeUuid, {
