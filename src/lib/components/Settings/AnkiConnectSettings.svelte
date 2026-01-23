@@ -20,7 +20,6 @@
   let isConnecting = $state(false);
 
   // Basic settings
-  let enabled = $state($settings.ankiConnectSettings.enabled);
   let url = $state($settings.ankiConnectSettings.url);
 
   // Card settings
@@ -56,8 +55,8 @@
   // Model options for Select component
   let modelOptions = $derived(availableModels.map((m) => ({ value: m, name: m })));
 
-  // Controls disabled state
-  let disabled = $derived(!enabled || !isConnected);
+  // Controls disabled state - disabled when not connected
+  let disabled = $derived(!isConnected);
 
   // Connect to AnkiConnect
   async function handleConnect() {
@@ -66,6 +65,7 @@
       const data = await fetchConnectionData(url || undefined);
       if (data) {
         updateAnkiSetting('connectionData', data);
+        updateAnkiSetting('enabled', true); // Enable when connected
         // Auto-select first model if none selected
         if (!selectedModel && data.models.length > 0) {
           selectedModel = data.models[0];
@@ -80,6 +80,7 @@
   // Disconnect from AnkiConnect
   function handleDisconnect() {
     updateAnkiSetting('connectionData', null);
+    updateAnkiSetting('enabled', false); // Disable when disconnected
   }
 
   // Update double-tap trigger method
@@ -92,9 +93,9 @@
     updateAnkiSetting('selectedModel', selectedModel);
   }
 
-  // Try auto-connect on mount if we have a URL but no connection data
+  // Try auto-connect on mount if we have a URL and were previously connected
   onMount(() => {
-    if (url && !connectionData && enabled) {
+    if (url && !connectionData && $settings.ankiConnectSettings.enabled) {
       handleConnect();
     }
   });
@@ -167,14 +168,8 @@
       {/if}
     </div>
 
-    <!-- Enable Toggle (only when connected) -->
+    <!-- Card Mode (only when connected) -->
     {#if isConnected}
-      <div>
-        <Toggle bind:checked={enabled} onchange={() => updateAnkiSetting('enabled', enabled)}>
-          AnkiConnect Integration Enabled
-        </Toggle>
-      </div>
-
       <!-- Card Mode -->
       <div>
         <Label class="mb-2 text-gray-900 dark:text-white">Card Mode:</Label>
