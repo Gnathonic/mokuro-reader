@@ -11,7 +11,6 @@
     zoomDefault,
     zoomDefaultWithLayoutWait,
     zoomFitToScreen,
-    zoomNotification,
     handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
@@ -833,14 +832,6 @@
       notificationKey = '';
     }, 2000);
   }
-
-  // Subscribe to zoom notifications from panzoom
-  $effect(() => {
-    const zoom = $zoomNotification;
-    if (zoom) {
-      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
-    }
-  });
 
   function rotatePageMode() {
     if (!volume) return;
