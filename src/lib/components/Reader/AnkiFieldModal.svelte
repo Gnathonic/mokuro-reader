@@ -174,6 +174,15 @@
     return useCustomDeck ? customDeckName : deckName;
   }
 
+  // Get resolved deck name for display (resolves {series}, {volume} templates)
+  let resolvedDeckDisplay = $derived.by(() => {
+    const effective = getEffectiveDeckName();
+    if (!effective) return '(custom)';
+    const store = $cropperStore;
+    if (!store?.metadata) return effective;
+    return resolveDynamicTags(effective, store.metadata);
+  });
+
   // Check if deck has been modified from the saved value
   function isDeckModified(): boolean {
     return getEffectiveDeckName() !== savedDeckName;
@@ -757,7 +766,7 @@
               </span>
               <span class="text-sm font-medium text-gray-900 dark:text-white">Deck</span>
               <span class="flex-1 text-xs text-gray-500 dark:text-gray-400">
-                {useCustomDeck ? customDeckName || '(custom)' : deckName}
+                {resolvedDeckDisplay}
               </span>
             </button>
             {#if expandedId === 'deck'}
