@@ -856,13 +856,16 @@ export async function updateLastCard(
     return;
   }
 
-  // Use provided model name or fall back to settings
-  const targetModel = modelName || selectedModel;
+  // Model name is required for update mode - must know the card's actual note type
+  if (!modelName) {
+    showSnackbar('Error: Model name required for update mode');
+    return;
+  }
 
   // Get model configuration for update mode
-  const config = getModelConfig(targetModel, 'update');
+  const config = getModelConfig(modelName, 'update');
   if (!config) {
-    showSnackbar(`Error: No configuration found for model "${targetModel}"`);
+    showSnackbar(`Error: No configuration found for model "${modelName}"`);
     return;
   }
 
@@ -1129,14 +1132,17 @@ export async function sendQuickCapture(
       pageFilename
     });
   } else {
-    // Update mode - use the card's model and pass all context
-    const targetModel = modelName || selectedModel;
-    const config = getModelConfig(targetModel, 'update');
+    // Update mode - must have card's model name
+    if (!modelName) {
+      showSnackbar('Error: Could not detect card note type for update');
+      return;
+    }
+    const config = getModelConfig(modelName, 'update');
 
     // Use tags template from config (will be resolved with {existing} in updateLastCard)
     const tagsTemplate = config?.tags || '{existing}';
 
-    await updateLastCard(imageData, sentence, tagsTemplate, metadata, previousCardId, targetModel, {
+    await updateLastCard(imageData, sentence, tagsTemplate, metadata, previousCardId, modelName, {
       previousValues,
       pageFilename,
       previousTags,

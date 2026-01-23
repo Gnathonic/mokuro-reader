@@ -340,13 +340,40 @@
     const pageNumber = $volumes[volumeUuid]?.progress || 1;
 
     if (cardMode === 'update') {
-      // Update mode: fetch previous card values
-      const lastCard = await getLastCardInfo();
+      // Update mode: fetch previous card values with retry
+      const maxRetries = 3;
+      let lastCard = null;
+      let lastError = '';
 
-      if (!lastCard || !lastCard.noteId) {
-        // No card found at all
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        lastCard = await getLastCardInfo();
+
+        if (!lastCard || !lastCard.noteId) {
+          lastError = 'No recent card found to update';
+          // Wait before retry (except on last attempt)
+          if (attempt < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          continue;
+        }
+
+        if (!lastCard.modelName) {
+          lastError = 'Could not detect card note type';
+          // Wait before retry
+          if (attempt < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          continue;
+        }
+
+        // Success - break out of retry loop
+        lastError = '';
+        break;
+      }
+
+      if (lastError || !lastCard?.noteId || !lastCard?.modelName) {
         const { showSnackbar } = await import('$lib/util');
-        showSnackbar('No recent card found to update');
+        showSnackbar(`Error: ${lastError || 'Failed to fetch card info'}`);
         return;
       }
 
