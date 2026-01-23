@@ -412,6 +412,10 @@
   });
 
   function initCropperElement(img: HTMLImageElement) {
+    let resizeObserver: ResizeObserver | null = null;
+    let savedCropData: CropperJS.Data | null = null;
+    let isResizing = false;
+
     const setup = () => {
       if (cropper) {
         cropper.destroy();
@@ -420,7 +424,7 @@
       const textBox = $cropperStore?.textBox;
 
       cropper = new CropperJS(img, {
-        viewMode: 1,
+        viewMode: 0, // No restrictions - we handle bounds ourselves
         dragMode: 'move',
         autoCropArea: 1,
         restore: false,
@@ -443,9 +447,33 @@
             });
           }
           updatePixels();
+
+          // Set up resize observer after cropper is ready
+          const container = img.closest('.cropper-container');
+          if (container) {
+            resizeObserver = new ResizeObserver(() => {
+              if (!cropper || isResizing) return;
+              isResizing = true;
+
+              // Save current crop data in image coordinates
+              savedCropData = cropper.getData(true);
+
+              // Let cropper resize
+              requestAnimationFrame(() => {
+                if (cropper && savedCropData) {
+                  // Restore crop data after resize
+                  cropper.setData(savedCropData);
+                }
+                isResizing = false;
+              });
+            });
+            resizeObserver.observe(container);
+          }
         },
         crop() {
-          updatePixels();
+          if (!isResizing) {
+            updatePixels();
+          }
         }
       });
     };
@@ -455,6 +483,13 @@
     } else {
       img.onload = setup;
     }
+
+    // Return cleanup function for Svelte action
+    return {
+      destroy() {
+        resizeObserver?.disconnect();
+      }
+    };
   }
 
   function updatePixels() {

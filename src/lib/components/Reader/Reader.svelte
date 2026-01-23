@@ -395,11 +395,15 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer and popovers
+  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
     const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer or popovers
-    if (target.closest('#settings') || target.closest('[data-popover]')) {
+    // Don't capture wheel events from settings drawer, popovers, or modals
+    if (
+      target.closest('#settings') ||
+      target.closest('[data-popover]') ||
+      target.closest('dialog')
+    ) {
       return;
     }
     panzoomHandleWheel(e);
