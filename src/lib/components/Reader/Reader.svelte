@@ -28,14 +28,24 @@
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
-  import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
+  import {
+    openCreateModal,
+    openUpdateModal,
+    sendQuickCapture,
+    getLastCardInfo,
+    getCardAgeInMin,
+    extractFieldValues,
+    getModelConfig,
+    type VolumeMetadata
+  } from '$lib/anki-connect';
+  import { showSnackbar } from '$lib/util';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
     CaretRightSolid,
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
-  import Cropper from './Cropper.svelte';
+  import AnkiFieldModal from './AnkiFieldModal.svelte';
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
@@ -385,11 +395,15 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer and popovers
+  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
     const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer or popovers
-    if (target.closest('#settings') || target.closest('[data-popover]')) {
+    // Don't capture wheel events from settings drawer, popovers, or modals
+    if (
+      target.closest('#settings') ||
+      target.closest('[data-popover]') ||
+      target.closest('dialog')
+    ) {
       return;
     }
     panzoomHandleWheel(e);
@@ -763,16 +777,44 @@
     lines: string[];
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+    imageUrl?: string; // Captured at right-click time for reliability
+    pageIndex?: number; // Which page the context menu was opened on
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
 
+  // Extract image URL from an element by traversing up to find background-image
+  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
+    if (!element) return null;
+    let current: HTMLElement | null = element;
+    while (current) {
+      const bgImage = getComputedStyle(current).backgroundImage;
+      if (bgImage && bgImage !== 'none') {
+        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+        if (match) return match[1];
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function handleTextBoxContextMenu(data: ContextMenuData) {
-    contextMenuData = data;
+    // Capture the image URL immediately while the DOM is in a known good state
+    // This prevents issues when Yomitan or other extensions modify the DOM
+    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    const pageIndex = $volumes[volume!.volume_uuid]?.progress
+      ? ($volumes[volume!.volume_uuid].progress || 1) - 1
+      : index;
+
+    contextMenuData = {
+      ...data,
+      imageUrl,
+      pageIndex
+    };
     showContextMenu = true;
   }
 
-  function handleContextMenuAddToAnki(selection: string) {
+  async function handleContextMenuAddToAnki(selection: string) {
     if (!contextMenuData || !volume) return;
 
     const volumeMetadata: VolumeMetadata = {
@@ -780,40 +822,113 @@
       volumeTitle: volume.volume_title
     };
 
-    // Get the image URL from the element or current page
-    const imgElement = contextMenuData.imgElement;
-    let url: string | null = null;
+    // Use pre-captured image URL (captured at right-click time for reliability)
+    const url = contextMenuData.imageUrl;
 
-    if (imgElement) {
-      // Traverse up to find the MangaPage div with background-image
-      let current: HTMLElement | null = imgElement;
-      while (current) {
-        const bgImage = getComputedStyle(current).backgroundImage;
-        if (bgImage && bgImage !== 'none') {
-          const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-          if (match) {
-            url = match[1];
-            break;
-          }
-        }
-        current = current.parentElement;
-      }
+    if (!url) {
+      showSnackbar('Error: Could not get page image');
+      return;
     }
 
-    if (url) {
-      const fullSentence = contextMenuData.lines.join(' ');
-      // Use selection for card front if provided, otherwise use full sentence
-      const cardFront = selection || fullSentence;
-      const ankiTags = $settings.ankiConnectSettings.tags || '';
-      showCropper(
-        url,
-        cardFront,
-        fullSentence,
-        ankiTags,
-        volumeMetadata,
-        undefined,
-        contextMenuData.textBox
-      );
+    const fullSentence = contextMenuData.lines.join(' ');
+    const cardFront = selection || fullSentence;
+    const ankiTags = $settings.ankiConnectSettings.tags || '';
+    const textBox = contextMenuData.textBox;
+    // Use captured page index for reliability (in case page changed between right-click and menu click)
+    const pageIndex =
+      contextMenuData.pageIndex ?? ($volumes[volume.volume_uuid]?.progress || 1) - 1;
+    const pageNumber = pageIndex + 1;
+    const currentPage = pages[pageIndex];
+    const pageFilename = currentPage?.img_path;
+    const cardMode = $settings.ankiConnectSettings.cardMode;
+
+    if (cardMode === 'update') {
+      // Update mode: fetch previous card values
+      const lastCard = await getLastCardInfo();
+
+      if (!lastCard || !lastCard.noteId) {
+        showSnackbar('No recent card found to update');
+        return;
+      }
+
+      const cardAge = getCardAgeInMin(lastCard.noteId);
+      if (cardAge >= 5) {
+        showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
+        return;
+      }
+
+      const previousValues = extractFieldValues(lastCard);
+
+      // Get the model config to check for quickCapture setting
+      const modelConfig = getModelConfig(lastCard.modelName, 'update');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'update',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          previousValues,
+          lastCard.noteId,
+          lastCard.tags,
+          lastCard.modelName,
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openUpdateModal(
+          url,
+          previousValues,
+          lastCard.noteId,
+          lastCard.modelName,
+          lastCard.tags, // existing tags from the card
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
+    } else {
+      // Create mode
+      const { selectedModel } = $settings.ankiConnectSettings;
+      const modelConfig = getModelConfig(selectedModel, 'create');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'create',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          undefined, // previousValues (not used for create)
+          undefined, // previousCardId (not used for create)
+          undefined, // previousTags (not used for create)
+          undefined, // modelName (not needed for create)
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openCreateModal(
+          url,
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
     }
   }
 
@@ -915,7 +1030,7 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
-  <Cropper />
+  <AnkiFieldModal />
   <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
