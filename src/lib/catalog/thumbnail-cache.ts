@@ -1,7 +1,13 @@
 /**
  * LRU cache for thumbnail ImageBitmaps
- * Provides GPU-ready bitmaps for canvas rendering with 50MB memory limit
+ * Provides GPU-ready bitmaps for canvas rendering
  * Uses Web Workers for off-main-thread decoding
+ *
+ * Memory management:
+ * - Soft limit of 100MB tracked by cache
+ * - Evicted entries are NOT closed - components may hold references
+ * - GC cleans up bitmaps when all references are gone
+ * - This prevents "detached" errors when cache evicts actively-displayed bitmaps
  *
  * Priority system:
  * - Base priority: stack position (0 = front/visible, higher = behind)
@@ -40,7 +46,7 @@ class ThumbnailCache {
   private cache = new Map<string, CacheEntry>(); // volume_uuid -> entry
   private pending = new Map<string, Promise<CacheEntry>>(); // coalesce concurrent requests
   private totalBytes = 0;
-  private readonly maxBytes = 50 * 1024 * 1024; // 50MB
+  private readonly maxBytes = 100 * 1024 * 1024; // 100MB
 
   // Throttling
   private queue: QueuedLoad[] = [];
@@ -247,11 +253,11 @@ class ThumbnailCache {
 
   /**
    * Invalidate a specific cache entry (e.g., when cover is edited)
+   * Does not close bitmap - components may still hold references.
    */
   invalidate(volumeUuid: string): void {
     const entry = this.cache.get(volumeUuid);
     if (entry) {
-      entry.bitmap.close();
       this.totalBytes -= entry.size;
       this.cache.delete(volumeUuid);
     }
@@ -263,11 +269,9 @@ class ThumbnailCache {
 
   /**
    * Clear entire cache
+   * Does not close bitmaps - components may still hold references.
    */
   clear(): void {
-    for (const entry of this.cache.values()) {
-      entry.bitmap.close();
-    }
     this.cache.clear();
     this.totalBytes = 0;
   }
@@ -321,14 +325,17 @@ class ThumbnailCache {
   }
 
   /**
-   * Evict least recently used entry (first in Map)
+   * Evict least recently used entry from cache.
+   * Does NOT call bitmap.close() - components may still hold references.
+   * GC will clean up the bitmap when all references are gone.
    */
   private evictLRU(): void {
     const firstKey = this.cache.keys().next().value;
     if (firstKey) {
       const entry = this.cache.get(firstKey);
       if (entry) {
-        entry.bitmap.close(); // Release GPU memory
+        // Don't close bitmap - components may still reference it
+        // GC will clean up when all refs are gone
         this.totalBytes -= entry.size;
         this.cache.delete(firstKey);
       }

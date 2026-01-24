@@ -20,11 +20,11 @@
   // Hardware limits for canvas segments
   const MAX_SEGMENT_SIZE = 1024;
 
-  // Track loaded thumbnails and visibility
-  let loadedThumbnails = $state<Map<string, CacheEntry>>(new Map());
-  let loadingUuids = $state<Set<string>>(new Set()); // Track in-flight loads
+  // Track in-flight loads to prevent duplicates
+  let loadingUuids = $state<Set<string>>(new Set());
   let isVisible = $state(false);
-
+  // Counter to trigger redraws when loads complete
+  let drawTrigger = $state(0);
 
   // Calculate segments based on canvas dimensions (split by width or height as needed)
   let segments = $derived.by(() => {
@@ -81,48 +81,11 @@
     };
   }
 
-  // Load thumbnails when visible - reacts to volume list changes
-  $effect(() => {
+  // Draw function - fetches from cache on-demand, triggers loads for missing
+  function draw() {
     if (!isVisible) return;
 
-    const volumeList = volumes;
-
-    for (let i = 0; i < volumeList.length; i++) {
-      const vol = volumeList[i];
-      if (!vol.thumbnail) continue;
-
-      // Skip if already loaded or loading
-      if (loadedThumbnails.has(vol.volume_uuid) || loadingUuids.has(vol.volume_uuid)) continue;
-
-      // Check sync cache first
-      const cached = thumbnailCache.getSync(vol.volume_uuid);
-      if (cached) {
-        loadedThumbnails.set(vol.volume_uuid, cached);
-        loadedThumbnails = new Map(loadedThumbnails);
-        continue;
-      }
-
-      // Mark as loading
-      loadingUuids.add(vol.volume_uuid);
-      loadingUuids = new Set(loadingUuids);
-
-      thumbnailCache
-        .get(vol.volume_uuid, vol.thumbnail, i, null)
-        .then((entry) => {
-          loadedThumbnails.set(vol.volume_uuid, entry);
-          loadedThumbnails = new Map(loadedThumbnails);
-        })
-        .catch(() => {})
-        .finally(() => {
-          loadingUuids.delete(vol.volume_uuid);
-          loadingUuids = new Set(loadingUuids);
-        });
-    }
-  });
-
-  // Draw function - separated so we can call it manually
-  function draw() {
-    // Pre-calculate all volume positions
+    // Pre-calculate all volume positions, fetching from cache
     const volumePositions: {
       entry: CacheEntry;
       dims: { width: number; height: number };
@@ -132,17 +95,36 @@
 
     for (let i = 0; i < volumes.length; i++) {
       const vol = volumes[i];
-      const entry = loadedThumbnails.get(vol.volume_uuid);
-      if (!entry) continue;
+      if (!vol.thumbnail) continue;
 
       const dims = getCanvasDimensions(vol.volume_uuid);
       if (!dims) continue;
 
-      const rightOffset = (volumes.length - 1 - i) * stepSizes.horizontal;
-      const x = canvasWidth - rightOffset - dims.width;
-      const y = stepSizes.topOffset + i * stepSizes.vertical;
+      // Try to get from cache synchronously
+      const entry = thumbnailCache.getSync(vol.volume_uuid);
 
-      volumePositions.push({ entry, dims, x, y });
+      if (entry) {
+        const rightOffset = (volumes.length - 1 - i) * stepSizes.horizontal;
+        const x = canvasWidth - rightOffset - dims.width;
+        const y = stepSizes.topOffset + i * stepSizes.vertical;
+        volumePositions.push({ entry, dims, x, y });
+      } else if (!loadingUuids.has(vol.volume_uuid)) {
+        // Not in cache and not loading - trigger async load
+        loadingUuids.add(vol.volume_uuid);
+        loadingUuids = new Set(loadingUuids);
+
+        thumbnailCache
+          .get(vol.volume_uuid, vol.thumbnail, i, null)
+          .then(() => {
+            // Trigger redraw when load completes
+            drawTrigger++;
+          })
+          .catch(() => {})
+          .finally(() => {
+            loadingUuids.delete(vol.volume_uuid);
+            loadingUuids = new Set(loadingUuids);
+          });
+      }
     }
 
     // Draw each segment
@@ -203,12 +185,13 @@
   // Draw effect - reacts to data changes
   $effect(() => {
     // Dependencies - access to track
-    void loadedThumbnails;
+    void drawTrigger;
     void segments;
     void canvasWidth;
     void canvasHeight;
     void stepSizes;
     void volumes;
+    void isVisible;
 
     // Use rAF to ensure DOM is ready
     requestAnimationFrame(draw);
