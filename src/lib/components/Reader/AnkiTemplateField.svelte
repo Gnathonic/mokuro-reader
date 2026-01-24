@@ -161,6 +161,9 @@
 
   // Get display-friendly resolved value
   let displayResolvedValue = $derived(simplifyHtml(resolvedValue));
+
+  // Check if template uses {existing} (copies from previous card)
+  let willCopy = $derived(template?.includes('{existing}') ?? false);
 </script>
 
 <div
@@ -188,11 +191,23 @@
         {displayResolvedValue || '(empty)'}
       {/if}
     </span>
-    {#if willUpdate}
+    {#if willCopy && willUpdate}
+      <span
+        class="mt-0.5 shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-xs text-violet-700 dark:bg-violet-900 dark:text-violet-300"
+      >
+        Append Value
+      </span>
+    {:else if willCopy}
+      <span
+        class="mt-0.5 shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-400"
+      >
+        Unchanged
+      </span>
+    {:else if willUpdate}
       <span
         class="mt-0.5 shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700 dark:bg-blue-900 dark:text-blue-300"
       >
-        Update
+        Replace Value
       </span>
     {/if}
     {#if isModified}
