@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.4.0] - Unreleased (Draft)
+
+### Added
+
+- **Catalog thumbnail performance overhaul** - Complete rewrite of thumbnail rendering for smoother scrolling
+  - Single composite canvas per series instead of multiple overlapping canvases
+  - Canvas segmentation (1024px max) prevents GPU memory issues on mobile devices
+  - Worker pool for off-main-thread image decoding (scales with CPU cores)
+  - Priority queue loads front covers first, skips off-screen items
+  - LRU cache with 100MB soft limit for GPU-ready ImageBitmaps
+- **AnkiConnect field action badges** - Visual indicators showing Append/Unchanged/Replace behavior for each field
+
+### Changed
+
+- **AnkiConnect field modal layout** - Tiered accordion design for clearer field organization
+
+### Fixed
+
+- **Routing race conditions** - Fixed premature redirect to catalog when library loads slowly
+- **Loading vs not-found states** - Proper distinction between "loading" and "does not exist" for series/volumes
+- **Series/Volume not found pages** - Clear messaging with back-to-catalog navigation
+- **Zoom notification removed** - No longer interferes with Yomitan dictionary popups
+- **Image dragging in cropper** - Disabled unwanted drag behavior during crop selection
+- **AnkiConnect field modal fixes** - Truncated long previews, proper crop bounds, scroll wheel support, improved styling
+
 ## [1.3.0] - 2026-01-06
 
 ### Added
