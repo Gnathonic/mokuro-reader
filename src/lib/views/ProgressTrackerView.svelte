@@ -231,7 +231,15 @@
       }
     }
 
-    // Filter future reads to show only one volume per series
+    // Collect series that are currently being read
+    const currentlyReadingSeries = new Set<string>();
+    for (const [, volumeData] of currentlyReading) {
+      if (volumeData.series_uuid) {
+        currentlyReadingSeries.add(volumeData.series_uuid);
+      }
+    }
+
+    // Filter future reads to show only one volume per series, excluding series that are currently being read
     // TODO: Replace simple title sort with sortVolumes function when available on "natural sorting" branch
     const filteredFutureReads: [string, VolumeData][] = [];
     const seenSeries = new Set<string>();
@@ -245,7 +253,7 @@
 
     for (const [volumeId, volumeData] of sortedFutureReads) {
       const seriesUuid = volumeData.series_uuid;
-      if (seriesUuid && !seenSeries.has(seriesUuid)) {
+      if (seriesUuid && !currentlyReadingSeries.has(seriesUuid) && !seenSeries.has(seriesUuid)) {
         seenSeries.add(seriesUuid);
         filteredFutureReads.push([volumeId, volumeData]);
       } else if (!seriesUuid) {
