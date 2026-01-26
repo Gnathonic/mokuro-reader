@@ -34,7 +34,8 @@ function settingsEqual(
 export type VolumeSettings = {
   rightToLeft?: boolean;
   singlePageView?: PageViewMode;
-  hasCover?: boolean;
+  hasCover?: boolean; // DEPRECATED - kept for migration, use spreadBreakpoints
+  spreadBreakpoints?: number[]; // Pages that display as single and reset pairing (0-indexed)
 };
 
 export type VolumeSettingsKey = keyof VolumeSettings;
@@ -126,6 +127,11 @@ export class VolumeData implements VolumeDataJSON {
     if (typeof data.settings?.hasCover === 'boolean') {
       this.settings.hasCover = data.settings.hasCover;
     }
+
+    // Spread breakpoints - array of page indices that display as single
+    if (Array.isArray(data.settings?.spreadBreakpoints)) {
+      this.settings.spreadBreakpoints = data.settings.spreadBreakpoints;
+    }
   }
 
   static fromJSON(json: any): VolumeData {
@@ -153,8 +159,8 @@ export class VolumeData implements VolumeDataJSON {
       result.lastProgressUpdate = this.lastProgressUpdate;
     }
 
-    // Include volume properties (rightToLeft, hasCover) but exclude device preferences (singlePageView)
-    // rightToLeft and hasCover are facts about the volume itself that should sync
+    // Include volume properties (rightToLeft, hasCover, spreadBreakpoints) but exclude device preferences (singlePageView)
+    // rightToLeft, hasCover, and spreadBreakpoints are facts about the volume itself that should sync
     // singlePageView is a device-specific viewing preference that should stay local
     const syncableSettings: Partial<VolumeSettings> = {};
     if (typeof this.settings.rightToLeft === 'boolean') {
@@ -162,6 +168,9 @@ export class VolumeData implements VolumeDataJSON {
     }
     if (typeof this.settings.hasCover === 'boolean') {
       syncableSettings.hasCover = this.settings.hasCover;
+    }
+    if (Array.isArray(this.settings.spreadBreakpoints)) {
+      syncableSettings.spreadBreakpoints = this.settings.spreadBreakpoints;
     }
 
     if (Object.keys(syncableSettings).length > 0) {
@@ -527,14 +536,53 @@ export function startCount(volume: string) {
 }
 
 // Save internal store (including tombstones) to localStorage
+// Debounced to avoid blocking the main thread on every page turn
+let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+let pendingVolumes: Volumes | null = null;
+
+function saveToLocalStorage(volumes: Volumes) {
+  const serializedVolumes = volumes
+    ? Object.fromEntries(Object.entries(volumes).map(([key, value]) => [key, value.toJSON()]))
+    : {};
+  window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+}
+
 _volumesInternal.subscribe((volumes) => {
   if (browser) {
-    const serializedVolumes = volumes
-      ? Object.fromEntries(Object.entries(volumes).map(([key, value]) => [key, value.toJSON()]))
-      : {};
-    window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+    pendingVolumes = volumes;
+
+    // Clear any pending save
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+
+    // Debounce: save after 500ms of no updates
+    // This batches rapid page turns into a single write
+    saveTimeout = setTimeout(() => {
+      if (pendingVolumes) {
+        saveToLocalStorage(pendingVolumes);
+        pendingVolumes = null;
+      }
+      saveTimeout = null;
+    }, 500);
   }
 });
+
+// Also save immediately on page unload to prevent data loss
+if (browser) {
+  window.addEventListener('beforeunload', () => {
+    if (pendingVolumes) {
+      saveToLocalStorage(pendingVolumes);
+    }
+  });
+
+  // Save on visibility change (e.g., switching tabs on mobile)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && pendingVolumes) {
+      saveToLocalStorage(pendingVolumes);
+    }
+  });
+}
 
 export const progress = derived(volumes, ($volumes) => {
   const progress: Progress = {};

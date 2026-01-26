@@ -96,7 +96,10 @@
           </button>
         {/if}
         <button
-          onclick={toggleFullScreen}
+          onclick={() => {
+            toggleFullScreen();
+            open = false;
+          }}
           class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
           aria-label="Toggle fullscreen"
         >

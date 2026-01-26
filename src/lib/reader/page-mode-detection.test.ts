@@ -201,17 +201,22 @@ describe('shouldShowSinglePage', () => {
       expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(false);
     });
 
-    it('should return true when pages have different widths', () => {
-      const current = createPage(1000, 1500);
-      const next = createPage(1400, 1500); // Different width (40% larger)
-      expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(true);
+    it('should return true when current page is width outlier', () => {
+      const current = createPage(1400, 1500); // 40% wider than median
+      const next = createPage(1000, 1500);
+      const medianWidth = 1000; // Normal page width
+      expect(
+        shouldShowSinglePage('auto', current, next, undefined, false, false, undefined, medianWidth)
+      ).toBe(true);
     });
 
-    it('should return true when previous page has different width', () => {
-      const previous = createPage(1500, 2000); // Different width
+    it('should return true when next page is width outlier', () => {
       const current = createPage(1000, 1500);
-      const next = createPage(1000, 1500);
-      expect(shouldShowSinglePage('auto', current, next, previous)).toBe(true);
+      const next = createPage(1400, 1500); // 40% wider than median
+      const medianWidth = 1000; // Normal page width
+      expect(
+        shouldShowSinglePage('auto', current, next, undefined, false, false, undefined, medianWidth)
+      ).toBe(true);
     });
 
     it('should return false when all pages have similar widths', () => {

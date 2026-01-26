@@ -12,6 +12,8 @@
     "format": "prettier --plugin-search-dir . --write .",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:browser": "playwright test",
+    "test:browser:headed": "playwright test --headed",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "changeset:publish": "changeset tag",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@changesets/changelog-github": "^0.5.2",
     "@changesets/cli": "^2.29.8",
+    "@playwright/test": "^1.57.0",
     "@sveltejs/adapter-auto": "^4.0.0",
     "@sveltejs/kit": "^2.5.27",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
