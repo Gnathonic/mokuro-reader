@@ -20,7 +20,7 @@
   import { Badge, Button, Helper, Input, Modal, Select, Spinner, Toggle } from 'flowbite-svelte';
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
-  import AnkiTemplateField from './AnkiTemplateField.svelte';
+  import AnkiTemplateField from '$lib/components/Reader/AnkiTemplateField.svelte';
   import { onMount, onDestroy } from 'svelte';
   import CropperJS from 'cropperjs';
   import 'cropperjs/dist/cropper.css';

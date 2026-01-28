@@ -45,7 +45,6 @@
     CaretRightSolid,
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
-  import AnkiFieldModal from './AnkiFieldModal.svelte';
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
@@ -1030,7 +1029,6 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
-  <AnkiFieldModal />
   <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
