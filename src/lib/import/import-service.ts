@@ -413,11 +413,35 @@ async function processArchiveContents(
     });
   }
 
-  // Filter out image-only pairings from archives - we only auto-import volumes with mokuro
+  // Separate image-only pairings from mokuro pairings (same as directory flow)
   const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
+  const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
 
-  // If no mokuro pairings and no nested archives, nothing to import
-  if (mokuroPairings.length === 0 && nestedArchivePaths.length === 0) {
+  // For image-only pairings at root level, use archive filename as basePath for series extraction
+  // But preserve the original path for file extraction
+  const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
+  const originalBasePaths = new Map<string, string>();
+  for (const pairing of imageOnlyPairings) {
+    if (pairing.basePath === '.' || pairing.basePath === '') {
+      originalBasePaths.set(pairing.id, pairing.basePath);
+      pairing.basePath = archiveStem;
+    }
+  }
+
+  // If there are image-only pairings, prompt user for confirmation
+  let confirmedImageOnlyPairings: PairedSource[] = [];
+  if (imageOnlyPairings.length > 0) {
+    const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
+    if (confirmed) {
+      confirmedImageOnlyPairings = imageOnlyPairings;
+    }
+  }
+
+  // Combine confirmed pairings
+  const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
+
+  // If no pairings and no nested archives, nothing to import
+  if (allPairings.length === 0 && nestedArchivePaths.length === 0) {
     return { success: false, error: 'No importable volumes found in archive' };
   }
 
@@ -426,23 +450,23 @@ async function processArchiveContents(
   const allNestedSources: PairedSource[] = [];
   let successCount = 0;
   let lastError: string | undefined;
-  const totalVolumes = mokuroPairings.length;
-  const volumeTimes: number[] = [];
+  const totalVolumes = allPairings.length;
 
   // Only extract and process volumes if there are pairings
   if (totalVolumes > 0) {
-    console.log(`[Streaming Import] Starting extraction of ${totalVolumes} volumes`);
-
     // Build volume definitions for extraction
-    const volumeDefs: VolumeExtractDef[] = mokuroPairings.map((pairing, i) => ({
-      id: `vol-${i}`,
-      pathPrefix: pairing.basePath
-    }));
+    // Use original basePath for extraction (images are at that path), not the renamed one
+    const volumeDefs: VolumeExtractDef[] = allPairings.map((pairing, i) => {
+      const pathPrefix = originalBasePaths.get(pairing.id) ?? pairing.basePath;
+      return {
+        id: `vol-${i}`,
+        pathPrefix
+      };
+    });
 
     onProgress?.(`Extracting ${totalVolumes} volumes...`, 20);
 
     // Single-pass extraction for all volumes
-    const extractStart = performance.now();
     const allVolumeFiles = await streamExtractAllVolumes(
       archiveFile,
       volumeDefs,
@@ -452,14 +476,9 @@ async function processArchiveContents(
         onProgress?.(status, overallProgress);
       }
     );
-    const extractTime = performance.now() - extractStart;
-    console.log(`[Streaming Import] Extraction complete: ${(extractTime / 1000).toFixed(1)}s`);
-
     // Process each volume sequentially (to manage memory during processing)
-    console.log(`[Streaming Import] Starting processing of ${totalVolumes} volumes`);
-    for (let i = 0; i < mokuroPairings.length; i++) {
-      const volumeStart = performance.now();
-      const pairing = mokuroPairings[i];
+    for (let i = 0; i < allPairings.length; i++) {
+      const pairing = allPairings[i];
       const volumeId = `vol-${i}`;
       const volumeImageFiles = allVolumeFiles.get(volumeId) || new Map();
 
@@ -520,22 +539,10 @@ async function processArchiveContents(
         console.error(`[Archive Import] Error processing volume ${i + 1}:`, err);
       }
 
-      const volumeTime = performance.now() - volumeStart;
-      volumeTimes.push(volumeTime);
-      const avg = volumeTimes.reduce((a, b) => a + b, 0) / volumeTimes.length;
-      console.log(
-        `[Streaming Import] Volume ${i + 1}/${totalVolumes}: ${volumeTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms)`
-      );
-
       // Clear this volume's files to free memory before next volume
       volumeImageFiles.clear();
       allVolumeFiles.delete(volumeId);
     }
-
-    const processTime = volumeTimes.reduce((a, b) => a + b, 0);
-    console.log(
-      `[Streaming Import] Processing complete: ${totalVolumes} volumes in ${(processTime / 1000).toFixed(1)}s (avg: ${(processTime / totalVolumes).toFixed(0)}ms/vol)`
-    );
   }
 
   // Extract nested archives if any
@@ -730,20 +737,12 @@ async function processQueue(): Promise<void> {
   isImporting.set(true);
   incrementPoolUsers(); // Track pool usage for proper cleanup
 
-  // Session-level timing
-  const sessionStart = performance.now();
-  const itemTimes: number[] = [];
-  let itemCount = 0;
-
   try {
     while (true) {
       const queue = get(importQueue);
       const nextItem = queue.find((item) => item.status === 'queued');
 
       if (!nextItem) break;
-
-      const itemStart = performance.now();
-      itemCount++;
 
       // Update status
       importQueue.update((q) =>
@@ -793,27 +792,9 @@ async function processQueue(): Promise<void> {
         markProgressTrackerError(nextItem.id, result.error || 'Unknown error');
       }
 
-      // Log timing for this item
-      const itemTime = performance.now() - itemStart;
-      itemTimes.push(itemTime);
-      const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
-      const remaining = get(importQueue).filter((i) => i.status === 'queued').length;
-      console.log(
-        `[Queue] Item ${itemCount}: ${itemTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms, ${remaining} remaining)`
-      );
-
       currentImport.set(null);
     }
   } finally {
-    // Log session summary
-    if (itemTimes.length > 0) {
-      const totalTime = performance.now() - sessionStart;
-      const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
-      console.log(
-        `[Queue] Session complete: ${itemCount} items in ${(totalTime / 1000).toFixed(1)}s (avg: ${avg.toFixed(0)}ms/item)`
-      );
-    }
-
     processingQueue = false;
     isImporting.set(false);
     currentImport.set(null);

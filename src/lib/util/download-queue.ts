@@ -23,6 +23,7 @@ import {
 import { normalizeFilename } from './misc';
 import { getImageMimeType, processVolume, saveVolume, isSystemFile } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
+import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -151,8 +152,8 @@ export function queueSeriesVolumes(volumes: VolumeMetadata[]): void {
 /**
  * Parse a filename to extract series and volume information
  * Examples:
- *   "Dragon Ball 01.cbz" => { series: "Dragon Ball", volume: "01" }
- *   "The Girl From the Other Side Vol 05.cbz" => { series: "The Girl From the Other Side", volume: "05" }
+ *   "Sample Series 01.cbz" => { series: "Sample Series", volume: "01" }
+ *   "Another Test Manga Vol 05.cbz" => { series: "Another Test Manga", volume: "05" }
  */
 function parseFilename(filename: string): { series: string; volume: string } {
   // Remove extension
@@ -184,17 +185,24 @@ export function queueVolumesFromCloudFiles(
   cloudFiles: import('./sync/provider-interface').CloudFileMetadata[]
 ): void {
   const placeholders: VolumeMetadata[] = cloudFiles.map((file) => {
-    const { series, volume } = parseFilename(file.path);
+    // Look up file in cache to get proper path with parent folder
+    // The cache has the full path (e.g., "SeriesName/Volume01.cbz")
+    const cachedFile = unifiedCloudManager.getCloudVolume(file.fileId);
+    const filePath = cachedFile?.path || file.path;
 
-    // Generate UUIDs for the placeholder
-    const seriesUuid = crypto.randomUUID();
-    const volumeUuid = crypto.randomUUID();
+    // Use sophisticated extraction for consistent series names
+    const { seriesTitle, volumeTitle } = extractTitlesFromPath(filePath);
+
+    // Generate deterministic UUIDs from series + volume names
+    // This ensures the same volume gets the same UUID across devices
+    const seriesUuid = generateDeterministicUUID(seriesTitle);
+    const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
     return {
       mokuro_version: '0.0.0', // Placeholder - will be updated after download
-      series_title: series,
+      series_title: seriesTitle,
       series_uuid: seriesUuid,
-      volume_title: `${series} ${volume}`,
+      volume_title: volumeTitle,
       volume_uuid: volumeUuid,
       page_count: 0, // Placeholder - will be updated after download
       character_count: 0, // Placeholder - will be updated after download
@@ -203,7 +211,8 @@ export function queueVolumesFromCloudFiles(
       cloudProvider: file.provider,
       cloudFileId: file.fileId,
       cloudModifiedTime: file.modifiedTime,
-      cloudSize: file.size
+      cloudSize: file.size,
+      cloudPath: filePath // Store path for processing (from cache if available)
     };
   });
 
@@ -329,8 +338,13 @@ async function processVolumeData(
   entries: DecompressedEntry[],
   placeholder: VolumeMetadata
 ): Promise<void> {
+  // Use the original cloud path for basePath to get proper series extraction
+  // Falls back to volume_title if cloudPath not available (older placeholders)
+  const basePath =
+    (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath || placeholder.volume_title;
+
   // Convert entries to DecompressedVolume format
-  const decompressedVolume = entriesToDecompressedVolume(entries, placeholder.volume_title);
+  const decompressedVolume = entriesToDecompressedVolume(entries, basePath);
 
   // Use unified import system to process the volume
   // This handles missing pages, image-only volumes, placeholder generation, etc.

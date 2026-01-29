@@ -216,8 +216,15 @@
         return; // User cancelled or no files selected
       }
 
-      // Fetch full metadata from Drive API
-      const cloudFiles = await driveProvider.getCloudFileMetadata(pickedFiles);
+      // Look up files in cache - it has proper paths with parent folders
+      const cloudFiles = pickedFiles
+        .map((picked) => unifiedCloudManager.getCloudVolume(picked.id))
+        .filter((f): f is NonNullable<typeof f> => f != null);
+
+      if (cloudFiles.length === 0) {
+        showSnackbar('Selected files not found in cloud cache. Try refreshing.');
+        return;
+      }
 
       // Queue volumes for download via the unified queue system
       queueVolumesFromCloudFiles(cloudFiles);
