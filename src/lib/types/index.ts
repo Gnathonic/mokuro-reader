@@ -42,6 +42,7 @@ export interface VolumeMetadata {
   cloudFileId?: string;
   cloudModifiedTime?: string;
   cloudSize?: number;
+  cloudPath?: string; // Full path for series extraction during download
 
   // Legacy Drive-specific fields (kept for backward compatibility)
   // When present without cloudProvider, assumed to be google-drive

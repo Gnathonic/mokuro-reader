@@ -578,6 +578,7 @@ export async function getLastCardId(): Promise<number | undefined> {
 
 export async function getLastCardInfo() {
   const id = await getLastCardId();
+  if (id === undefined) return undefined;
   return await getCardInfo(id);
 }
 

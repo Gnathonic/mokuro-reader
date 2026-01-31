@@ -7,6 +7,9 @@ export const swUpdateAvailable = writable(false);
 /** Reference to the waiting service worker for triggering update */
 let waitingWorker: ServiceWorker | null = null;
 
+/** Flag to track if we explicitly requested the update */
+let updateRequested = false;
+
 /**
  * Initialize service worker update detection.
  * Call this once on app startup.
@@ -39,10 +42,12 @@ export function initSwUpdateDetection() {
   });
 
   // Listen for controller change (when new SW takes over)
-  // This handles the case where skipWaiting was called
+  // Only reload if we explicitly requested the update via applySwUpdate()
+  // This prevents unexpected reloads on mobile when SW updates in background
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    // New service worker has taken control, reload to get fresh assets
-    window.location.reload();
+    if (updateRequested) {
+      window.location.reload();
+    }
   });
 }
 
@@ -52,6 +57,7 @@ export function initSwUpdateDetection() {
  */
 export function applySwUpdate() {
   if (waitingWorker) {
+    updateRequested = true;
     waitingWorker.postMessage({ type: 'SKIP_WAITING' });
   }
 }
