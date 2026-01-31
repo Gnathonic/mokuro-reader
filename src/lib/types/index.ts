@@ -48,6 +48,10 @@ export interface VolumeMetadata {
   driveFileId?: string;
   driveModifiedTime?: string;
   driveSize?: number;
+
+  // Library fields (for read-only WebDAV library sources)
+  libraryId?: string;
+  libraryName?: string;
 }
 
 // v3 table: volume_ocr

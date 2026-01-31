@@ -17,12 +17,22 @@ export type View =
   | { type: 'cloud' }
   | { type: 'upload' }
   | { type: 'reading-speed' }
-  | { type: 'merge-series' };
+  | { type: 'merge-series' }
+  | { type: 'libraries' }
+  | { type: 'add-library'; params?: Record<string, string> };
 
 /**
  * Current view state
+ * Initialized with the parsed hash to prevent flash to catalog on load
  */
-export const currentView = writable<View>({ type: 'catalog' });
+function getInitialView(): View {
+  if (typeof window !== 'undefined') {
+    return parseHash(window.location.hash);
+  }
+  return { type: 'catalog' };
+}
+
+export const currentView = writable<View>(getInitialView());
 
 /**
  * Parse a hash URL into a View object
@@ -30,7 +40,9 @@ export const currentView = writable<View>({ type: 'catalog' });
  */
 export function parseHash(hash: string): View {
   try {
-    const path = hash.replace(/^#\/?/, '');
+    // Split hash from query params first (e.g., "#/add-library?url=..." -> "#/add-library" and "url=...")
+    const [hashPath, queryString] = hash.split('?');
+    const path = hashPath.replace(/^#\/?/, '');
     const segments = path.split('/').filter(Boolean);
 
     if (segments.length === 0 || segments[0] === 'catalog') {
@@ -40,6 +52,18 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'upload') return { type: 'upload' };
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
+    if (segments[0] === 'libraries') return { type: 'libraries' };
+    if (segments[0] === 'add-library') {
+      // Parse URL parameters from query string
+      const params: Record<string, string> = {};
+      if (queryString) {
+        const searchParams = new URLSearchParams(queryString);
+        searchParams.forEach((value, key) => {
+          params[key] = value;
+        });
+      }
+      return { type: 'add-library', params: Object.keys(params).length > 0 ? params : undefined };
+    }
 
     if (segments[0] === 'series' && segments.length >= 2) {
       const seriesId = decodeURIComponent(segments[1]);
@@ -86,6 +110,16 @@ export function viewToHash(view: View): string {
       return '#/reading-speed';
     case 'merge-series':
       return '#/merge-series';
+    case 'libraries':
+      return '#/libraries';
+    case 'add-library': {
+      const base = '#/add-library';
+      if (view.params && Object.keys(view.params).length > 0) {
+        const searchParams = new URLSearchParams(view.params);
+        return `${base}?${searchParams.toString()}`;
+      }
+      return base;
+    }
   }
 }
 
@@ -145,7 +179,14 @@ export const nav = {
   toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options),
 
   /** Navigate to merge series page */
-  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options)
+  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
+
+  /** Navigate to libraries page */
+  toLibraries: (options?: NavigateOptions) => navigate({ type: 'libraries' }, options),
+
+  /** Navigate to add library page */
+  toAddLibrary: (params?: Record<string, string>, options?: NavigateOptions) =>
+    navigate({ type: 'add-library', params }, options)
 };
 
 /**
@@ -183,7 +224,11 @@ export function navigateBack(): void {
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
+    case 'libraries':
       nav.toCatalog();
+      break;
+    case 'add-library':
+      nav.toLibraries();
       break;
     case 'catalog':
       // Already at root, do nothing

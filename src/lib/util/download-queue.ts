@@ -32,6 +32,8 @@ export interface QueueItem {
   volumeTitle: string;
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'downloading';
+  // Library ID for library downloads (uses library credentials instead of sync provider)
+  libraryId?: string;
 }
 
 interface SeriesQueueStatus {
@@ -106,7 +108,9 @@ export function queueVolume(volume: VolumeMetadata): void {
     seriesTitle: volume.series_title,
     volumeTitle: volume.volume_title,
     volumeMetadata: volume,
-    status: 'queued'
+    status: 'queued',
+    // Include library ID if this is a library volume
+    libraryId: volume.libraryId
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -236,9 +240,29 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
 /**
  * Get provider credentials for worker downloads
  * For MEGA, creates a temporary share link instead of passing credentials
+ * For library downloads, uses library-specific credentials
  * Implements rate limiting to prevent API congestion
  */
-async function getProviderCredentials(provider: ProviderType, fileId: string): Promise<any> {
+async function getProviderCredentials(
+  provider: ProviderType,
+  fileId: string,
+  libraryId?: string
+): Promise<any> {
+  // Library downloads use library-specific credentials
+  if (libraryId) {
+    const { getLibraryById } = await import('$lib/settings/libraries');
+    const library = getLibraryById(libraryId);
+    if (!library) {
+      throw new Error(`Library not found: ${libraryId}`);
+    }
+    return {
+      webdavUrl: library.serverUrl.replace(/\/$/, ''),
+      webdavUsername: library.username,
+      webdavPassword: library.password
+    };
+  }
+
+  // Sync provider credentials
   if (provider === 'google-drive') {
     let token = '';
     tokenManager.token.subscribe((value) => {
@@ -441,12 +465,17 @@ async function cleanupMegaShareLink(fileId: string): Promise<void> {
  * - Google Drive: Workers download with OAuth token and decompress
  * - WebDAV: Workers download with Basic Auth and decompress
  * - MEGA: Workers download from share link via MEGA API and decompress
+ * - Library: Workers download from library WebDAV with library credentials
  */
 async function processDownload(item: QueueItem, processId: string): Promise<void> {
-  // Get the active provider (single-provider architecture - only one provider active at a time)
-  const provider = unifiedCloudManager.getActiveProvider();
+  // For library downloads, we don't need a sync provider - use library credentials directly
+  const isLibraryDownload = !!item.libraryId;
 
-  if (!provider) {
+  // Get the active provider (single-provider architecture - only one provider active at a time)
+  // Library downloads don't require an active sync provider
+  const provider = isLibraryDownload ? null : unifiedCloudManager.getActiveProvider();
+
+  if (!isLibraryDownload && !provider) {
     handleDownloadError(item, processId, `No cloud provider authenticated`);
     return;
   }
@@ -454,9 +483,14 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
   const pool = await getFileProcessingPool();
   const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
-  // Check if provider supports worker downloads
-  if (provider.supportsWorkerDownload) {
-    // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
+  // Determine provider type and concurrency limits
+  const providerType = isLibraryDownload ? 'webdav' : provider!.type;
+  const downloadConcurrencyLimit = isLibraryDownload ? 8 : provider!.downloadConcurrencyLimit;
+  const supportsWorkerDownload = isLibraryDownload ? true : provider!.supportsWorkerDownload;
+
+  // Check if provider supports worker downloads (libraries always support it)
+  if (supportsWorkerDownload) {
+    // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA, Library)
     // Estimate memory requirement (download + decompress + processing overhead)
     // More accurate multiplier: compressed file + decompressed data + working memory
     const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
@@ -475,17 +509,17 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
     const task: WorkerTask = {
       id: item.cloudFileId,
       memoryRequirement,
-      provider: `${provider.type}:download`, // Provider:operation identifier for concurrency tracking
-      providerConcurrencyLimit: provider.downloadConcurrencyLimit, // Provider's download limit
+      provider: `${providerType}:download`, // Provider:operation identifier for concurrency tracking
+      providerConcurrencyLimit: downloadConcurrencyLimit, // Provider's download limit
       metadata: workerMetadata,
       // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
       prepareData: async () => {
-        // Get provider credentials (for MEGA, this creates a temporary share link)
-        const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
+        // Get provider credentials (for library, uses library config; for MEGA, creates share link)
+        const credentials = await getProviderCredentials(providerType, item.cloudFileId, item.libraryId);
 
         return {
           mode: 'download-and-decompress',
-          provider: provider.type,
+          provider: providerType,
           fileId: item.cloudFileId,
           fileName: item.volumeTitle + '.cbz',
           credentials,
@@ -583,8 +617,10 @@ async function processQueue(): Promise<void> {
   }
 
   // Get active provider (single-provider architecture)
+  // Library downloads don't require an active sync provider
+  const isLibraryDownload = !!item.libraryId;
   const provider = unifiedCloudManager.getActiveProvider();
-  if (!provider) {
+  if (!isLibraryDownload && !provider) {
     console.error(`[Download Queue] No cloud provider authenticated, skipping ${item.volumeTitle}`);
     return;
   }

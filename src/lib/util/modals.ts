@@ -247,3 +247,56 @@ export function updateImportPreparing(details: Partial<ImportPreparingModal>) {
 export function closeImportPreparing() {
   importPreparingModalStore.set(undefined);
 }
+
+// Add/Edit Library modal - for adding or editing WebDAV libraries
+export type AddLibraryModalParams = {
+  url?: string;
+  name?: string;
+  username?: string;
+  path?: string;
+};
+
+type AddLibraryModal = {
+  open: boolean;
+  editingId?: string; // If set, we're editing an existing library
+  params?: AddLibraryModalParams; // Pre-fill params (for deep links)
+  onSave?: () => void;
+  onCancel?: () => void;
+};
+
+export const addLibraryModalStore = writable<AddLibraryModal | undefined>(undefined);
+
+/**
+ * Open add library modal (for new library)
+ */
+export function promptAddLibrary(
+  params?: AddLibraryModalParams,
+  onSave?: () => void,
+  onCancel?: () => void
+) {
+  addLibraryModalStore.set({
+    open: true,
+    params,
+    onSave,
+    onCancel
+  });
+}
+
+/**
+ * Open edit library modal (for existing library)
+ */
+export function promptEditLibrary(libraryId: string, onSave?: () => void, onCancel?: () => void) {
+  addLibraryModalStore.set({
+    open: true,
+    editingId: libraryId,
+    onSave,
+    onCancel
+  });
+}
+
+/**
+ * Close add/edit library modal
+ */
+export function closeAddLibraryModal() {
+  addLibraryModalStore.set(undefined);
+}

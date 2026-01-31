@@ -10,6 +10,7 @@
   import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
   import UploadModal from './UploadModal.svelte';
+  import LibrarySelector from './LibrarySelector.svelte';
   import Icon from '$lib/assets/icon.webp';
   import { showSnackbar } from '$lib/util';
   import { tokenManager } from '$lib/util/sync/providers/google-drive';
@@ -155,6 +156,7 @@
       <button onclick={openUploadModal} class="flex h-6 w-6 items-center justify-center">
         <UploadSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
+      <LibrarySelector />
       <button
         onclick={navigateToCloud}
         class="flex h-6 w-6 items-center justify-center"
