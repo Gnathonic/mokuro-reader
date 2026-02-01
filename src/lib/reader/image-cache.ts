@@ -10,9 +10,8 @@ import type { Page } from '$lib/types';
 import { getBasename, normalizeFilename, removeExtension } from '$lib/util/misc';
 
 export interface CachedImage {
-  image: HTMLImageElement; // Image element holds decoded bitmap and blob URL (in img.src)
-  decoded: boolean;
-  loading: Promise<void> | null;
+  bitmap: ImageBitmap; // Pre-decoded bitmap ready to draw
+  loading: Promise<ImageBitmap | null> | null;
 }
 
 /**
@@ -187,7 +186,24 @@ export class ImageCache {
   private files: File[] = []; // Indexed array aligned with pages
   private pages: Page[] = [];
   private currentIndex = 0;
-  private windowSize = { prev: 2, next: 3 };
+  private windowSize: { prev: number; next: number };
+  private onBitmapReady: ((index: number) => void) | null = null;
+
+  /**
+   * Create an ImageCache with configurable window size
+   * @param windowSize - How many pages to cache before/after current. Default: prev 2, next 3
+   */
+  constructor(windowSize: { prev: number; next: number } = { prev: 2, next: 3 }) {
+    this.windowSize = windowSize;
+  }
+
+  /**
+   * Set a callback to be notified when a bitmap finishes loading
+   * This allows immediate redraw instead of polling
+   */
+  setOnBitmapReady(callback: ((index: number) => void) | null): void {
+    this.onBitmapReady = callback;
+  }
 
   /**
    * Initialize or update the cache with new files and current page
@@ -233,130 +249,104 @@ export class ImageCache {
   }
 
   /**
-   * Get the File for a page index (for MangaPage fallback rendering)
+   * Get the File for a page index (for fallback rendering)
    */
   getFile(index: number): File | undefined {
     return this.files[index];
   }
 
   /**
-   * Get a cached image URL synchronously if it's ready, null otherwise
+   * Get a cached ImageBitmap synchronously if it's ready, null otherwise
    */
-  getImageSync(index: number): string | null {
+  getBitmapSync(index: number): ImageBitmap | null {
     const cached = this.cache.get(index);
-    if (cached && cached.decoded) {
-      return cached.image.src;
+    if (cached && cached.bitmap && !cached.loading) {
+      return cached.bitmap;
     }
     return null;
   }
 
   /**
-   * Get a cached image URL, waiting for it to be ready if necessary
+   * Get a cached ImageBitmap, waiting for it to be ready if necessary
    */
-  async getImage(index: number): Promise<string | null> {
+  async getBitmap(index: number): Promise<ImageBitmap | null> {
     const cached = this.cache.get(index);
     if (cached) {
-      // Wait for image to be decoded if it's still loading
+      // Wait for bitmap to be decoded if it's still loading
       if (cached.loading) {
-        await cached.loading;
+        return await cached.loading;
       }
-      return cached.image.src;
+      return cached.bitmap;
     }
 
     // Image not in cache, load it now
-    await this.preloadImage(index);
-    const newCached = this.cache.get(index);
-    return newCached?.image.src || null;
+    return await this.preloadImage(index);
   }
 
   /**
-   * Preload and decode an image by its page index
+   * Preload and decode an image by its page index using createImageBitmap
+   * This decodes asynchronously in the background, off the main thread
    */
-  private async preloadImage(index: number): Promise<void> {
-    // Already cached
+  private async preloadImage(index: number): Promise<ImageBitmap | null> {
+    // Already cached or loading
     if (this.cache.has(index)) {
       const cached = this.cache.get(index)!;
       if (cached.loading) {
-        await cached.loading;
+        return await cached.loading;
       }
-      return;
+      return cached.bitmap;
     }
 
     const file = this.files[index];
     if (!file) {
-      return;
+      return null;
     }
 
-    // Create blob URL
-    const url = URL.createObjectURL(file);
+    // Create loading promise using createImageBitmap (async, off main thread)
+    const loading = createImageBitmap(file).catch((err) => {
+      console.error(`Failed to decode image at index ${index}:`, err);
+      return null;
+    });
 
-    // Create Image element
-    const img = new Image();
-
-    // Create loading promise
-    const loading = this.decodeImage(img, url);
-
-    // Add to cache with Image element (img.src will hold the blob URL)
+    // Add to cache immediately with loading promise
     this.cache.set(index, {
-      image: img,
-      decoded: false,
+      bitmap: null as unknown as ImageBitmap, // Will be set when loaded
       loading
     });
 
     // Wait for decode
-    await loading;
+    const bitmap = await loading;
 
-    // Mark as decoded
+    // Update cache with decoded bitmap
     const cached = this.cache.get(index);
-    if (cached) {
-      cached.decoded = true;
+    if (cached && bitmap) {
+      cached.bitmap = bitmap;
       cached.loading = null;
-    }
-  }
-
-  /**
-   * Decode an image using the browser's image decoder
-   * Keeps the Image element alive in memory to prevent browser from evicting decoded data
-   */
-  private async decodeImage(img: HTMLImageElement, url: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      img.onload = () => {
-        // Use decode() API for better performance
-        if ('decode' in img) {
-          img
-            .decode()
-            .then(() => resolve())
-            .catch(() => resolve()); // Fallback if decode fails
-        } else {
-          resolve();
-        }
-      };
-
-      img.onerror = () => {
-        reject(new Error(`Failed to load image: ${url}`));
-      };
-
-      img.src = url;
-    });
-  }
-
-  /**
-   * Remove an image from cache and revoke its blob URL
-   */
-  private removeFromCache(index: number): void {
-    const cached = this.cache.get(index);
-    if (cached) {
-      URL.revokeObjectURL(cached.image.src);
+    } else if (cached && !bitmap) {
+      // Failed to decode, remove from cache
       this.cache.delete(index);
     }
+
+    return bitmap;
   }
 
   /**
-   * Clean up all cached images
+   * Remove an image from cache
+   * Note: We don't call bitmap.close() because components may still hold references.
+   * The browser's GC will clean up when all references are released.
+   */
+  private removeFromCache(index: number): void {
+    this.cache.delete(index);
+  }
+
+  /**
+   * Clean up all cached images (call on component destroy)
    */
   cleanup(): void {
-    for (const [index] of this.cache) {
-      this.removeFromCache(index);
+    for (const [, cached] of this.cache) {
+      if (cached.bitmap) {
+        cached.bitmap.close(); // Release ImageBitmap memory
+      }
     }
     this.cache.clear();
   }
@@ -370,8 +360,8 @@ export class ImageCache {
       currentIndex: this.currentIndex,
       fileCount: this.files.length,
       cached: Array.from(this.cache.keys()),
-      decoded: Array.from(this.cache.entries())
-        .filter(([_, v]) => v.decoded)
+      ready: Array.from(this.cache.entries())
+        .filter(([_, v]) => v.bitmap && !v.loading)
         .map(([k]) => k)
     };
   }
