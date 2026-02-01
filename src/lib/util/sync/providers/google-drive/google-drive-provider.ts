@@ -392,29 +392,36 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      // Ensure reader folder exists to get its ID
-      const readerFolderId = await this.ensureReaderFolder();
+      // Get the folder ID from cache - files store their parent folder ID
+      const seriesFiles = driveFilesCache.getDriveFilesBySeries(seriesTitle);
 
-      // Find the series folder using escapeNameForDriveQuery
-      const { escapeNameForDriveQuery } = await import(
-        '$lib/util/sync/providers/google-drive/api-client'
-      );
-      const escapedName = escapeNameForDriveQuery(seriesTitle);
-      const query = `'${readerFolderId}' in parents and name='${escapedName}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`;
-
-      const folders = await driveApiClient.listFiles(query, 'files(id)');
-
-      if (folders.length === 0) {
-        console.log(`Series folder '${seriesTitle}' not found in Google Drive`);
-        return;
+      if (seriesFiles.length === 0) {
+        console.log(`No files found for series '${seriesTitle}' in cache`);
+        return; // Nothing to delete
       }
 
-      // Delete the folder
-      const folderId = folders[0].id;
+      // Get folder ID from the first file's parentId
+      const folderId = seriesFiles[0].parentId;
+
+      if (!folderId) {
+        // No parent ID stored - fall back to individual file deletion
+        throw new ProviderError(
+          `Series folder ID not found in cache for '${seriesTitle}'`,
+          'google-drive',
+          'FOLDER_NOT_FOUND',
+          false,
+          false
+        );
+      }
+
+      // Delete the folder (this recursively deletes all contents)
       await driveApiClient.deleteFile(folderId);
 
       console.log(`✅ Deleted series folder '${seriesTitle}' from Google Drive`);
     } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
       throw new ProviderError(
         `Failed to delete series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
