@@ -266,55 +266,14 @@ async function ensureSeriesFolder(
 
 /**
  * Google Drive: Ensure series folder exists and return folder ID
+ * Uses the provider's ensureSeriesFolder() which handles dedup for both root and series folders
  */
-async function ensureGoogleDriveFolder(seriesTitle: string, accessToken: string): Promise<string> {
-  const escapedSeriesTitle = seriesTitle.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-
-  // Ensure mokuro-reader root folder exists
-  const rootQuery = `name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const rootSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(rootQuery)}&fields=files(id,name)`;
-  const rootResponse = await fetch(rootSearchUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  const rootData = await rootResponse.json();
-
-  let rootFolderId: string;
-  if (rootData.files?.length > 0) {
-    rootFolderId = rootData.files[0].id;
-  } else {
-    const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'mokuro-reader',
-        mimeType: 'application/vnd.google-apps.folder'
-      })
-    });
-    rootFolderId = (await createResponse.json()).id;
-  }
-
-  // Ensure series folder exists
-  const seriesQuery = `name='${escapedSeriesTitle}' and '${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const seriesSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(seriesQuery)}&fields=files(id,name)`;
-  const seriesResponse = await fetch(seriesSearchUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  const seriesData = await seriesResponse.json();
-
-  if (seriesData.files?.length > 0) {
-    return seriesData.files[0].id;
-  }
-
-  const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: seriesTitle,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: [rootFolderId]
-    })
-  });
-  return (await createResponse.json()).id;
+async function ensureGoogleDriveFolder(seriesTitle: string, _accessToken: string): Promise<string> {
+  const { googleDriveProvider } = await import(
+    '$lib/util/sync/providers/google-drive/google-drive-provider'
+  );
+  // Provider handles root folder + series folder creation with dedup
+  return googleDriveProvider.ensureSeriesFolder(seriesTitle);
 }
 
 /**

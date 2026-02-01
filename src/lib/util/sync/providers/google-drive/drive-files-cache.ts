@@ -216,6 +216,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         this.isFetchingStore.set(false);
         this.fetchPromise = null;
 
+        // Run folder deduplication after cache load (incremental - one pair at a time)
+        this.runDeduplication();
+
         // Check if sync was requested after login (do this in finally to ensure fetch is complete)
         const shouldSync =
           typeof window !== 'undefined' &&
@@ -597,6 +600,36 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
       return newCache;
     });
+  }
+
+  /**
+   * Run folder deduplication asynchronously
+   * Called after cache fetch completes
+   */
+  private runDeduplication(): void {
+    // Import dynamically to avoid circular dependencies
+    Promise.all([
+      import('../../folder-deduplicator'),
+      import('./google-drive-provider')
+    ])
+      .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
+        if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        const ops = googleDriveProvider.getFolderOperations();
+        const result = await folderDeduplicator.deduplicateAll('google-drive', ops);
+
+        if (result.groupsMerged > 0) {
+          // Refetch cache to reflect the merged state
+          // This will trigger another dedup pass for any new duplicates created
+          console.log('[DriveCache] Dedup merged folders, refetching cache...');
+          await this.fetchAllFiles();
+        }
+      })
+      .catch((err) => {
+        console.error('[DriveCache] Deduplication failed:', err);
+      });
   }
 }
 

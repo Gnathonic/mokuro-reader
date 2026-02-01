@@ -14,6 +14,7 @@ import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/const
 import { getOrCreateFolder, findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
+import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -42,6 +43,7 @@ class GoogleDriveProvider implements SyncProvider {
 
   private readerFolderId: string | null = null;
   private initializePromise: Promise<void> | null = null;
+  private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
 
   isAuthenticated(): boolean {
     return tokenManager.isAuthenticated();
@@ -676,10 +678,113 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
-   * Ensure the mokuro-reader folder exists in Google Drive
-   * Uses cache to avoid race conditions from simultaneous calls
+   * Find or create a folder with the given name in the given parent
+   * Returns the first matching folder if multiple exist (dedup handled separately by FolderDeduplicator)
+   *
+   * @param parentId The parent folder ID, or 'root' for Drive root
+   * @param folderName The folder name to find/create
+   * @returns The folder ID
    */
-  private async ensureReaderFolder(): Promise<string> {
+  async findOrCreateFolder(parentId: string, folderName: string): Promise<string> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+
+    await this.ensureInitialized();
+
+    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+
+    // Query for folders with this name in the parent
+    const folders = await driveApiClient.listFiles(
+      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+      'files(id,name,createdTime)'
+    );
+
+    if (folders.length === 0) {
+      // No folder exists - create one
+      console.log(`📁 Creating folder: ${folderName}`);
+      return await driveApiClient.createFolder(folderName, parentId === 'root' ? undefined : parentId);
+    }
+
+    // Return first folder found (oldest if multiple - they'll be deduped later)
+    if (folders.length > 1) {
+      folders.sort((a, b) => {
+        const dateA = new Date(a.createdTime || 0).getTime();
+        const dateB = new Date(b.createdTime || 0).getTime();
+        return dateA - dateB;
+      });
+      console.log(`⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`);
+    }
+
+    return folders[0].id;
+  }
+
+  /**
+   * Get folder operations interface for the FolderDeduplicator
+   * Returns an object that implements FolderOperations
+   */
+  getFolderOperations(): FolderOperations {
+    const self = this;
+
+    return {
+      rootFolderName: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+
+      async listFolders(): Promise<FolderInfo[]> {
+        await self.ensureInitialized();
+        const items = await driveApiClient.listFiles(
+          `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
+          'files(id,name,parents,createdTime)'
+        );
+        return items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          parentId: item.parents?.[0] || null,
+          createdTime: item.createdTime
+        }));
+      },
+
+      async listFolderContents(folderId: string): Promise<FolderItem[]> {
+        await self.ensureInitialized();
+        const items = await driveApiClient.listFiles(
+          `'${folderId}' in parents and trashed=false`,
+          'files(id,name,mimeType)'
+        );
+        return items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          isFolder: item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER
+        }));
+      },
+
+      async moveItem(itemId: string, newParentId: string, oldParentId: string): Promise<void> {
+        await self.ensureInitialized();
+        await driveApiClient.moveFile(itemId, newParentId, oldParentId);
+      },
+
+      async deleteFolder(folderId: string): Promise<void> {
+        await self.ensureInitialized();
+        await driveApiClient.deleteFile(folderId);
+      },
+
+      async deleteFile(fileId: string): Promise<void> {
+        await self.ensureInitialized();
+        await driveApiClient.deleteFile(fileId);
+      },
+
+      onRootFolderConfirmed(folderId: string): void {
+        self.readerFolderId = folderId;
+        driveFilesCache.setReaderFolderId(folderId);
+      }
+    };
+  }
+
+  /**
+   * Ensure the mokuro-reader folder exists in Google Drive
+   * Uses mutex to prevent race conditions from simultaneous calls
+   * Public so backup-queue can use it instead of duplicating folder creation logic
+   */
+  async ensureReaderFolder(): Promise<string> {
     // Check local cache first (fast path for repeated calls within this provider)
     if (this.readerFolderId) {
       return this.readerFolderId;
@@ -694,16 +799,46 @@ class GoogleDriveProvider implements SyncProvider {
       return cachedFolderId;
     }
 
-    // Folder doesn't exist - create it
-    // Note: This only happens once per account (or if folder is deleted)
-    console.log('Creating mokuro-reader folder...');
-    const newFolderId = await driveApiClient.createFolder(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+    // If folder creation is already in progress, wait for it
+    if (this.readerFolderPromise) {
+      return this.readerFolderPromise;
+    }
 
-    // Store in both caches
-    this.readerFolderId = newFolderId;
-    driveFilesCache.setReaderFolderId(newFolderId);
+    // Folder doesn't exist or need to check for duplicates
+    this.readerFolderPromise = (async () => {
+      // Double-check cache after acquiring "lock" (another call might have finished)
+      const recheckFolderId = await driveFilesCache.getReaderFolderId();
+      if (recheckFolderId) {
+        this.readerFolderId = recheckFolderId;
+        return recheckFolderId;
+      }
 
-    return newFolderId;
+      // Find or create the folder (dedup handled separately by FolderDeduplicator)
+      const folderId = await this.findOrCreateFolder('root', GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+
+      // Store in both caches
+      this.readerFolderId = folderId;
+      driveFilesCache.setReaderFolderId(folderId);
+
+      return folderId;
+    })();
+
+    try {
+      return await this.readerFolderPromise;
+    } finally {
+      // Clear promise after completion so future calls can retry if needed
+      this.readerFolderPromise = null;
+    }
+  }
+
+  /**
+   * Ensure a series folder exists uniquely within the mokuro-reader folder
+   * Handles deduplication if multiple folders with the same name exist
+   * Public so backup-queue can use it instead of duplicating logic
+   */
+  async ensureSeriesFolder(seriesTitle: string): Promise<string> {
+    const rootFolderId = await this.ensureReaderFolder();
+    return this.findOrCreateFolder(rootFolderId, seriesTitle);
   }
 }
 
