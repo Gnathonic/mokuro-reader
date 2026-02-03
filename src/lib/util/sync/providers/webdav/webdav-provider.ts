@@ -765,51 +765,47 @@ export class WebDAVProvider implements SyncProvider {
     }
 
     try {
-      // Use fetch with streaming for non-blocking download with progress
-      // Encode each path segment to handle special chars like # → %23
+      // Use XMLHttpRequest for non-blocking download with progress
+      // XHR behaves more like the webdav library and handles CORS differently than fetch
       const encodedPath = file.fileId
         .split('/')
         .map((segment) => encodeURIComponent(segment))
         .join('/');
       const fullUrl = `${serverUrl}${encodedPath}`;
 
-      const headers: HeadersInit = {};
-      if (username || password) {
-        headers['Authorization'] = 'Basic ' + btoa(`${username || ''}:${password || ''}`);
-      }
+      return new Promise<Blob>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', fullUrl);
+        xhr.responseType = 'blob';
 
-      const response = await fetch(fullUrl, { headers });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-      const reader = response.body?.getReader();
-
-      if (!reader) {
-        throw new Error('Response body is not readable');
-      }
-
-      const chunks: Uint8Array[] = [];
-      let receivedLength = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        chunks.push(value);
-        receivedLength += value.length;
-
-        if (onProgress) {
-          onProgress(receivedLength, contentLength || receivedLength);
+        // Set auth header if credentials are provided
+        if (username || password) {
+          xhr.setRequestHeader(
+            'Authorization',
+            'Basic ' + btoa(`${username || ''}:${password || ''}`)
+          );
         }
-      }
 
-      // Combine chunks into a single Blob
-      const blob = new Blob(chunks as BlobPart[], { type: 'application/zip' });
-      console.log(`✅ Downloaded ${file.path} from WebDAV`);
-      return blob;
+        xhr.onprogress = (event) => {
+          if (onProgress && event.lengthComputable) {
+            onProgress(event.loaded, event.total);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            console.log(`✅ Downloaded ${file.path} from WebDAV`);
+            resolve(xhr.response as Blob);
+          } else {
+            reject(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error during download'));
+        xhr.ontimeout = () => reject(new Error('Download timed out'));
+
+        xhr.send();
+      });
     } catch (error) {
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
