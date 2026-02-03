@@ -608,10 +608,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   private runDeduplication(): void {
     // Import dynamically to avoid circular dependencies
-    Promise.all([
-      import('../../folder-deduplicator'),
-      import('./google-drive-provider')
-    ])
+    Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
       .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
         if (!googleDriveProvider.isAuthenticated()) {
           return;

@@ -117,6 +117,14 @@ class GoogleDriveProvider implements SyncProvider {
     };
   }
 
+  /**
+   * Check if worker downloads are possible in the current context.
+   * Google Drive API is always HTTPS, so no mixed content issues.
+   */
+  canUseWorkerDownload(): boolean {
+    return true; // Google Drive API is always HTTPS
+  }
+
   async login(): Promise<void> {
     try {
       if (!browser) {
@@ -704,7 +712,10 @@ class GoogleDriveProvider implements SyncProvider {
     if (folders.length === 0) {
       // No folder exists - create one
       console.log(`📁 Creating folder: ${folderName}`);
-      return await driveApiClient.createFolder(folderName, parentId === 'root' ? undefined : parentId);
+      return await driveApiClient.createFolder(
+        folderName,
+        parentId === 'root' ? undefined : parentId
+      );
     }
 
     // Return first folder found (oldest if multiple - they'll be deduped later)
@@ -714,7 +725,9 @@ class GoogleDriveProvider implements SyncProvider {
         const dateB = new Date(b.createdTime || 0).getTime();
         return dateA - dateB;
       });
-      console.log(`⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`);
+      console.log(
+        `⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`
+      );
     }
 
     return folders[0].id;
@@ -814,7 +827,10 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       // Find or create the folder (dedup handled separately by FolderDeduplicator)
-      const folderId = await this.findOrCreateFolder('root', GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+      const folderId = await this.findOrCreateFolder(
+        'root',
+        GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER
+      );
 
       // Store in both caches
       this.readerFolderId = folderId;

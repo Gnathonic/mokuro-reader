@@ -37,6 +37,7 @@ export class WebDAVProvider implements SyncProvider {
   private initPromise: Promise<void>;
   private _isReadOnly: boolean = false;
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
+  private _serverUrl: string | null = null; // Cached server URL for canUseWorkerDownload check
 
   constructor() {
     if (browser) {
@@ -101,6 +102,26 @@ export class WebDAVProvider implements SyncProvider {
     };
   }
 
+  /**
+   * Check if worker downloads are possible in the current context.
+   * Returns false for mixed content scenarios (HTTPS page trying to access HTTP WebDAV server),
+   * where blob URL workers cannot make HTTP requests due to browser security restrictions.
+   */
+  canUseWorkerDownload(): boolean {
+    // Check for mixed content: secure page trying to access insecure resource
+    const isPageSecure = typeof window !== 'undefined' && window.location.protocol === 'https:';
+    const serverUrl =
+      this._serverUrl || (browser ? localStorage.getItem(STORAGE_KEYS.SERVER_URL) : null);
+    const isServerInsecure = serverUrl?.startsWith('http://') ?? false;
+
+    // Mixed content = can't use workers (blob URL workers inherit HTTPS context)
+    if (isPageSecure && isServerInsecure) {
+      return false;
+    }
+
+    return true;
+  }
+
   async login(credentials?: ProviderCredentials): Promise<void> {
     // Only serverUrl is required - some servers support password-only auth (e.g., copyparty)
     if (!credentials || !credentials.serverUrl) {
@@ -111,6 +132,9 @@ export class WebDAVProvider implements SyncProvider {
 
     // Normalize server URL (remove trailing slash)
     const normalizedUrl = serverUrl.replace(/\/$/, '');
+
+    // Cache server URL for canUseWorkerDownload check
+    this._serverUrl = normalizedUrl;
 
     try {
       // Dynamically import webdav to reduce initial bundle size

@@ -177,6 +177,14 @@ export class MegaProvider implements SyncProvider {
     };
   }
 
+  /**
+   * Check if worker downloads are possible in the current context.
+   * MEGA API is always HTTPS, so no mixed content issues.
+   */
+  canUseWorkerDownload(): boolean {
+    return true; // MEGA API is always HTTPS
+  }
+
   async login(credentials?: ProviderCredentials): Promise<void> {
     if (!credentials || !credentials.email || !credentials.password) {
       throw new ProviderError('Email and password are required', 'mega', 'INVALID_CREDENTIALS');

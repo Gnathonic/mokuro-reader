@@ -451,66 +451,182 @@ async function cleanupMegaShareLink(fileId: string): Promise<void> {
 }
 
 /**
- * Process download using workers for all providers
+ * Check if worker downloads are possible for the given provider.
+ * Uses dynamic method if available, otherwise falls back to static flag.
+ */
+function canUseWorkerDownload(provider: import('./sync/provider-interface').SyncProvider): boolean {
+  // Use dynamic method if available (handles runtime conditions like mixed content)
+  if (typeof provider.canUseWorkerDownload === 'function') {
+    return provider.canUseWorkerDownload();
+  }
+  // Fall back to static flag
+  return provider.supportsWorkerDownload;
+}
+
+/**
+ * Process download using workers for download + decompress
  * - Google Drive: Workers download with OAuth token and decompress
  * - WebDAV: Workers download with Basic Auth and decompress
  * - MEGA: Workers download from share link via MEGA API and decompress
  */
-async function processDownload(item: QueueItem, processId: string): Promise<void> {
-  // Get the active provider (single-provider architecture - only one provider active at a time)
-  const provider = unifiedCloudManager.getActiveProvider();
-
-  if (!provider) {
-    handleDownloadError(item, processId, `No cloud provider authenticated`);
-    return;
-  }
-
+async function processWorkerDownload(
+  item: QueueItem,
+  processId: string,
+  provider: import('./sync/provider-interface').SyncProvider
+): Promise<void> {
   const pool = await getFileProcessingPool();
   const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
-  // Check if provider supports worker downloads
-  if (provider.supportsWorkerDownload) {
-    // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
-    // Estimate memory requirement (download + decompress + processing overhead)
-    // More accurate multiplier: compressed file + decompressed data + working memory
-    const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
+  // Estimate memory requirement (download + decompress + processing overhead)
+  // More accurate multiplier: compressed file + decompressed data + working memory
+  const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
 
-    // Create worker metadata
-    const workerMetadata: WorkerVolumeMetadata = {
-      volumeUuid: item.volumeUuid,
-      driveFileId: item.cloudFileId,
-      seriesTitle: item.seriesTitle,
-      volumeTitle: item.volumeTitle,
-      driveModifiedTime: getCloudModifiedTime(item.volumeMetadata) ?? undefined,
-      driveSize: getCloudSize(item.volumeMetadata) ?? undefined
+  // Create worker metadata
+  const workerMetadata: WorkerVolumeMetadata = {
+    volumeUuid: item.volumeUuid,
+    driveFileId: item.cloudFileId,
+    seriesTitle: item.seriesTitle,
+    volumeTitle: item.volumeTitle,
+    driveModifiedTime: getCloudModifiedTime(item.volumeMetadata) ?? undefined,
+    driveSize: getCloudSize(item.volumeMetadata) ?? undefined
+  };
+
+  // Create worker task for download+decompress
+  const task: WorkerTask = {
+    id: item.cloudFileId,
+    memoryRequirement,
+    provider: `${provider.type}:download`, // Provider:operation identifier for concurrency tracking
+    providerConcurrencyLimit: provider.downloadConcurrencyLimit, // Provider's download limit
+    metadata: workerMetadata,
+    // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
+    prepareData: async () => {
+      // Get provider credentials (for MEGA, this creates a temporary share link)
+      const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
+
+      return {
+        mode: 'download-and-decompress',
+        provider: provider.type,
+        fileId: item.cloudFileId,
+        fileName: item.volumeTitle + '.cbz',
+        credentials,
+        metadata: workerMetadata
+      };
+    },
+    onProgress: (data) => {
+      const percent = Math.round((data.loaded / data.total) * 100);
+      progressTrackerStore.updateProcess(processId, {
+        progress: percent * 0.9, // 0-90% for download
+        status: `Downloading... ${percent}%`
+      });
+    },
+    onComplete: async (data, releaseMemory) => {
+      try {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 95,
+          status: 'Processing files...'
+        });
+
+        await processVolumeData(data.entries, item.volumeMetadata);
+
+        progressTrackerStore.updateProcess(processId, {
+          progress: 100,
+          status: 'Download complete'
+        });
+
+        queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+
+        // Process next item in queue
+        processQueue();
+      } catch (error) {
+        console.error(`Failed to process ${item.volumeTitle}:`, error);
+        handleDownloadError(
+          item,
+          processId,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      } finally {
+        // Cleanup MEGA share link if this was a MEGA download
+        await cleanupMegaShareLink(item.cloudFileId);
+        releaseMemory();
+        checkAndTerminatePool();
+      }
+    },
+    onError: async (data) => {
+      console.error(`Error downloading ${item.volumeTitle}:`, data.error);
+      // Cleanup MEGA share link if this was a MEGA download
+      await cleanupMegaShareLink(item.cloudFileId);
+      handleDownloadError(item, processId, data.error);
+      checkAndTerminatePool();
+
+      // Process next item in queue even after error
+      processQueue();
+    }
+  };
+
+  pool.addTask(task);
+}
+
+/**
+ * Process download using main thread for download + worker for decompress
+ * Used for mixed content scenarios (HTTPS page + HTTP WebDAV server)
+ * where blob URL workers cannot make HTTP requests due to browser security.
+ */
+async function processMainThreadDownload(
+  item: QueueItem,
+  processId: string,
+  provider: import('./sync/provider-interface').SyncProvider
+): Promise<void> {
+  try {
+    // Phase 1: Download on main thread (0-70%)
+    progressTrackerStore.updateProcess(processId, {
+      progress: 0,
+      status: 'Downloading...'
+    });
+
+    const cloudFile: import('./sync/provider-interface').CloudFileMetadata = {
+      provider: provider.type,
+      fileId: item.cloudFileId,
+      path: item.volumeMetadata.cloudPath || `${item.seriesTitle}/${item.volumeTitle}.cbz`,
+      modifiedTime: getCloudModifiedTime(item.volumeMetadata) || new Date().toISOString(),
+      size: getCloudSize(item.volumeMetadata) || 0
     };
 
-    // Create worker task for download+decompress
+    const blob = await provider.downloadFile(cloudFile, (loaded, total) => {
+      const percent = Math.round((loaded / total) * 100);
+      progressTrackerStore.updateProcess(processId, {
+        progress: percent * 0.7, // 0-70% for download
+        status: `Downloading... ${percent}%`
+      });
+    });
+
+    // Phase 2: Send to worker for decompression (70-90%)
+    progressTrackerStore.updateProcess(processId, {
+      progress: 70,
+      status: 'Decompressing...'
+    });
+
+    const pool = await getFileProcessingPool();
+    const fileSize = blob.size;
+    const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
+
     const task: WorkerTask = {
       id: item.cloudFileId,
       memoryRequirement,
-      provider: `${provider.type}:download`, // Provider:operation identifier for concurrency tracking
-      providerConcurrencyLimit: provider.downloadConcurrencyLimit, // Provider's download limit
-      metadata: workerMetadata,
-      // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
-      prepareData: async () => {
-        // Get provider credentials (for MEGA, this creates a temporary share link)
-        const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
-
-        return {
-          mode: 'download-and-decompress',
-          provider: provider.type,
-          fileId: item.cloudFileId,
-          fileName: item.volumeTitle + '.cbz',
-          credentials,
-          metadata: workerMetadata
-        };
+      provider: `${provider.type}:decompress`, // Different provider key for decompress-only
+      providerConcurrencyLimit: provider.downloadConcurrencyLimit,
+      data: {
+        mode: 'decompress-only',
+        fileId: item.cloudFileId,
+        fileName: item.volumeTitle + '.cbz',
+        blob: blob
       },
       onProgress: (data) => {
+        // Decompression progress (70-90%)
         const percent = Math.round((data.loaded / data.total) * 100);
         progressTrackerStore.updateProcess(processId, {
-          progress: percent * 0.9, // 0-90% for download
-          status: `Downloading... ${percent}%`
+          progress: 70 + percent * 0.2,
+          status: `Decompressing... ${percent}%`
         });
       },
       onComplete: async (data, releaseMemory) => {
@@ -530,7 +646,6 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
           queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
           setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
 
-          // Process next item in queue
           processQueue();
         } catch (error) {
           console.error(`Failed to process ${item.volumeTitle}:`, error);
@@ -540,25 +655,48 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             error instanceof Error ? error.message : 'Unknown error'
           );
         } finally {
-          // Cleanup MEGA share link if this was a MEGA download
-          await cleanupMegaShareLink(item.cloudFileId);
           releaseMemory();
           checkAndTerminatePool();
         }
       },
-      onError: async (data) => {
-        console.error(`Error downloading ${item.volumeTitle}:`, data.error);
-        // Cleanup MEGA share link if this was a MEGA download
-        await cleanupMegaShareLink(item.cloudFileId);
+      onError: (data) => {
+        console.error(`Error decompressing ${item.volumeTitle}:`, data.error);
         handleDownloadError(item, processId, data.error);
         checkAndTerminatePool();
-
-        // Process next item in queue even after error
         processQueue();
       }
     };
 
     pool.addTask(task);
+  } catch (error) {
+    console.error(`Failed to download ${item.volumeTitle}:`, error);
+    handleDownloadError(item, processId, error instanceof Error ? error.message : 'Unknown error');
+    checkAndTerminatePool();
+    processQueue();
+  }
+}
+
+/**
+ * Process download - routes to appropriate download strategy based on provider capabilities
+ * - Worker path: Workers handle both download + decompress (default for most providers)
+ * - Main thread path: Main thread downloads, worker decompresses (for mixed content scenarios)
+ */
+async function processDownload(item: QueueItem, processId: string): Promise<void> {
+  // Get the active provider (single-provider architecture - only one provider active at a time)
+  const provider = unifiedCloudManager.getActiveProvider();
+
+  if (!provider) {
+    handleDownloadError(item, processId, 'No cloud provider authenticated');
+    return;
+  }
+
+  // Check if worker downloads are possible in current context
+  if (canUseWorkerDownload(provider)) {
+    // Worker handles download + decompress (Drive, WebDAV HTTPS, MEGA)
+    await processWorkerDownload(item, processId, provider);
+  } else {
+    // Main thread downloads, worker decompresses (WebDAV HTTP on HTTPS page)
+    await processMainThreadDownload(item, processId, provider);
   }
 }
 

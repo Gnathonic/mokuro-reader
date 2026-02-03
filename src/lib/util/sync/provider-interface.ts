@@ -210,6 +210,17 @@ export interface SyncProvider {
    */
   readonly downloadConcurrencyLimit: number;
 
+  /**
+   * Check if worker downloads are possible in the current context.
+   * This is a dynamic check that considers runtime conditions like mixed content.
+   *
+   * Returns false for mixed content scenarios (HTTPS page + HTTP provider URL),
+   * where blob URL workers cannot make HTTP requests due to browser security.
+   *
+   * If not implemented, falls back to static `supportsWorkerDownload` flag.
+   */
+  canUseWorkerDownload?(): boolean;
+
   /** Check if user is currently authenticated */
   isAuthenticated(): boolean;
 
