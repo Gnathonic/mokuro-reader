@@ -751,31 +751,63 @@ export class WebDAVProvider implements SyncProvider {
     file: import('../../provider-interface').CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    if (!this.isAuthenticated() || !this.client) {
+    if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
 
-    try {
-      // For WebDAV, fileId is the full path
-      const content = await this.client.getFileContents(file.fileId, {
-        format: 'binary'
-      });
+    const serverUrl =
+      this._serverUrl || (browser ? localStorage.getItem(STORAGE_KEYS.SERVER_URL) : null);
+    const username = browser ? localStorage.getItem(STORAGE_KEYS.USERNAME) : null;
+    const password = browser ? localStorage.getItem(STORAGE_KEYS.PASSWORD) : null;
 
-      // Handle all possible response types (ArrayBuffer, typed arrays, etc.)
-      let arrayBuffer: ArrayBuffer;
-      if (content instanceof ArrayBuffer) {
-        arrayBuffer = content;
-      } else if (ArrayBuffer.isView(content)) {
-        // Handle typed arrays (Uint8Array, etc.)
-        // Create a new ArrayBuffer copy to avoid SharedArrayBuffer issues
-        const view = content as Uint8Array;
-        arrayBuffer = new Uint8Array(view).buffer as ArrayBuffer;
-      } else {
-        arrayBuffer = content as ArrayBuffer;
+    if (!serverUrl) {
+      throw new ProviderError('WebDAV server URL not configured', 'webdav', 'NOT_CONFIGURED');
+    }
+
+    try {
+      // Use fetch with streaming for non-blocking download with progress
+      // Encode each path segment to handle special chars like # → %23
+      const encodedPath = file.fileId
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+      const fullUrl = `${serverUrl}${encodedPath}`;
+
+      const headers: HeadersInit = {};
+      if (username || password) {
+        headers['Authorization'] = 'Basic ' + btoa(`${username || ''}:${password || ''}`);
       }
 
-      // Convert to Blob
-      const blob = new Blob([arrayBuffer], { type: 'application/zip' });
+      const response = await fetch(fullUrl, { headers });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
+      const reader = response.body?.getReader();
+
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      const chunks: Uint8Array[] = [];
+      let receivedLength = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        chunks.push(value);
+        receivedLength += value.length;
+
+        if (onProgress) {
+          onProgress(receivedLength, contentLength || receivedLength);
+        }
+      }
+
+      // Combine chunks into a single Blob
+      const blob = new Blob(chunks as BlobPart[], { type: 'application/zip' });
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
       return blob;
     } catch (error) {
