@@ -102,13 +102,11 @@
   async function handleSync() {
     if (isSyncing) return; // Prevent multiple simultaneous syncs
 
-    try {
-      // Sync with all authenticated providers
-      // State is managed automatically by unifiedSyncService
-      await unifiedCloudManager.syncProgress();
-    } catch (error) {
-      console.error('Manual sync failed:', error);
-      showSnackbar('Sync failed');
+    // Sync with all authenticated providers
+    // State is managed automatically by unifiedSyncService
+    const result = await unifiedCloudManager.syncProgress();
+    if (result.failed > 0) {
+      showSnackbar(result.results[0]?.error || 'Sync failed');
     }
   }
 

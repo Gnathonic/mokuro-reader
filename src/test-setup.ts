@@ -1,5 +1,5 @@
 // Vitest setup file for global test configuration
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 
 // Polyfill Blob.arrayBuffer() for jsdom environment
 // jsdom's Blob doesn't implement arrayBuffer() method which is needed by @zip.js/zip.js
@@ -34,6 +34,58 @@ Object.defineProperty(window, 'matchMedia', {
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn()
   }))
+});
+
+function createStorageMock() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    get length() {
+      return store.size;
+    }
+  };
+}
+
+function ensureStorageApi(storage: unknown) {
+  return !!(
+    storage &&
+    typeof (storage as { getItem?: unknown }).getItem === 'function' &&
+    typeof (storage as { setItem?: unknown }).setItem === 'function' &&
+    typeof (storage as { removeItem?: unknown }).removeItem === 'function' &&
+    typeof (storage as { clear?: unknown }).clear === 'function'
+  );
+}
+
+function installStorageMocksIfNeeded() {
+  if (!ensureStorageApi(window.localStorage)) {
+    const mock = createStorageMock();
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: mock });
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: mock });
+  }
+
+  if (!ensureStorageApi(window.sessionStorage)) {
+    const mock = createStorageMock();
+    Object.defineProperty(window, 'sessionStorage', { configurable: true, value: mock });
+    Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: mock });
+  }
+}
+
+// Ensure valid storage APIs exist before test modules are evaluated.
+installStorageMocksIfNeeded();
+
+// Some tests mutate storage globals; repair before each test case.
+beforeEach(() => {
+  installStorageMocksIfNeeded();
 });
 
 // Mock Worker for jsdom environment

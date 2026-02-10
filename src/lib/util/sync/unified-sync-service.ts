@@ -1,5 +1,4 @@
 import { writable, get } from 'svelte/store';
-import { progressTrackerStore } from '../progress-tracker';
 import {
   volumesWithTrash,
   profiles,
@@ -7,7 +6,6 @@ import {
   parseVolumesFromJson,
   migrateProfiles
 } from '$lib/settings';
-import { showSnackbar } from '../snackbar';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 
@@ -55,9 +53,6 @@ class UnifiedSyncService {
     // Prevent concurrent syncs
     if (this.syncLock) {
       console.log('⏭️ Sync already in progress, skipping');
-      if (!options.silent) {
-        showSnackbar('Sync already in progress');
-      }
       return {
         totalProviders: 0,
         succeeded: 0,
@@ -74,9 +69,6 @@ class UnifiedSyncService {
 
     if (authenticatedProviders.length === 0) {
       console.log('ℹ️ No authenticated providers to sync');
-      if (!options.silent) {
-        showSnackbar('No cloud providers connected');
-      }
       this.syncLock = false;
       this.isSyncingStore.set(false);
       return {
@@ -87,21 +79,10 @@ class UnifiedSyncService {
       };
     }
 
-    const processId = 'unified-sync';
-
     try {
-      if (!options.silent) {
-        progressTrackerStore.addProcess({
-          id: processId,
-          description: 'Syncing with cloud providers',
-          progress: 0,
-          status: `Syncing with ${authenticatedProviders.length} provider(s)...`
-        });
-      }
-
       // Sync with all providers in parallel
       const results = await Promise.allSettled(
-        authenticatedProviders.map((provider) => this.syncProvider(provider, options))
+        authenticatedProviders.map((provider) => this.syncProviderCore(provider, options))
       );
 
       // Count successes and failures
@@ -127,20 +108,6 @@ class UnifiedSyncService {
         }
       });
 
-      // Show completion message
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 100,
-          status: 'Sync complete'
-        });
-
-        if (failed === 0) {
-          showSnackbar(`Synced with ${succeeded} provider(s) successfully`);
-        } else {
-          showSnackbar(`Synced with ${succeeded} provider(s), ${failed} failed`);
-        }
-      }
-
       return {
         totalProviders: authenticatedProviders.length,
         succeeded,
@@ -149,13 +116,6 @@ class UnifiedSyncService {
       };
     } catch (error) {
       console.error('Unified sync error:', error);
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 0,
-          status: 'Sync failed'
-        });
-        showSnackbar('Sync failed');
-      }
       return {
         totalProviders: authenticatedProviders.length,
         succeeded: 0,
@@ -167,9 +127,6 @@ class UnifiedSyncService {
         }))
       };
     } finally {
-      if (!options.silent) {
-        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-      }
       this.syncLock = false;
       this.isSyncingStore.set(false);
     }
@@ -182,9 +139,31 @@ class UnifiedSyncService {
     provider: SyncProvider,
     options: SyncOptions = {}
   ): Promise<ProviderSyncResult> {
-    // Set syncing state
-    this.isSyncingStore.set(true);
+    if (this.syncLock) {
+      return {
+        provider: provider.type,
+        success: false,
+        error: 'Sync already in progress'
+      };
+    }
 
+    this.syncLock = true;
+    this.isSyncingStore.set(true);
+    try {
+      return await this.syncProviderCore(provider, options);
+    } finally {
+      this.syncLock = false;
+      this.isSyncingStore.set(false);
+    }
+  }
+
+  /**
+   * Sync with a single provider without touching global sync lock/state.
+   */
+  private async syncProviderCore(
+    provider: SyncProvider,
+    options: SyncOptions = {}
+  ): Promise<ProviderSyncResult> {
     try {
       console.log(`🔄 Syncing with ${provider.name}...`);
       console.log('🔄 Sync options:', options);
@@ -233,9 +212,6 @@ class UnifiedSyncService {
         success: false,
         error: errorMessage
       };
-    } finally {
-      // Clear syncing state
-      this.isSyncingStore.set(false);
     }
   }
 

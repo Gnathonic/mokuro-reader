@@ -10,7 +10,6 @@ import { pairMokuroWithSources } from './pairing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
 import { saveVolume, volumeExists } from './database';
-import { promptMissingFiles, type MissingFilesInfo } from '$lib/util/modals';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
   FileEntry,
@@ -19,8 +18,6 @@ import type {
   DecompressedVolume,
   ProcessedVolume
 } from './types';
-import { progressTrackerStore } from '$lib/util/progress-tracker';
-import { showSnackbar } from '$lib/util/snackbar';
 import {
   isImageExtension,
   isMokuroExtension,
@@ -33,7 +30,7 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from '$lib/util/file-processing-pool';
-import { promptImageOnlyImport, type SeriesImportInfo } from '$lib/util/modals';
+import { getImportUiBridge, type MissingFilesInfo } from './import-ui';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
 import { generateUUID } from '$lib/util/uuid';
 import {
@@ -70,39 +67,28 @@ export const isImporting = writable<boolean>(false);
  * Add an import item to the global progress tracker
  */
 function addToProgressTracker(item: ImportQueueItem): void {
-  progressTrackerStore.addProcess({
-    id: `import-${item.id}`,
-    description: `Importing ${item.displayTitle}`,
-    status: 'Queued',
-    progress: 0
-  });
+  getImportUiBridge().addProgress(`import-${item.id}`, `Importing ${item.displayTitle}`, 'Queued', 0);
 }
 
 /**
  * Update an import item's progress in the global tracker
  */
 function updateProgressTracker(id: string, status: string, progress: number): void {
-  progressTrackerStore.updateProcess(`import-${id}`, {
-    status,
-    progress
-  });
+  getImportUiBridge().updateProgress(`import-${id}`, status, progress);
 }
 
 /**
  * Remove an import item from the global progress tracker
  */
 function removeFromProgressTracker(id: string): void {
-  progressTrackerStore.removeProcess(`import-${id}`);
+  getImportUiBridge().removeProgress(`import-${id}`);
 }
 
 /**
  * Mark an import as failed in the progress tracker (keeps visible briefly)
  */
 function markProgressTrackerError(id: string, error: string): void {
-  progressTrackerStore.updateProcess(`import-${id}`, {
-    status: `Failed: ${error}`,
-    progress: 0
-  });
+  getImportUiBridge().updateProgress(`import-${id}`, `Failed: ${error}`, 0);
   // Remove after delay so user can see the error
   setTimeout(() => {
     removeFromProgressTracker(id);
@@ -857,7 +843,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     }
 
     if (pairingResult.pairings.length === 0) {
-      showSnackbar('No importable volumes found');
+      getImportUiBridge().notify('No importable volumes found');
       return result;
     }
 
@@ -878,7 +864,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
 
     if (allPairings.length === 0) {
-      showSnackbar('No volumes to import');
+      getImportUiBridge().notify('No volumes to import');
       return result;
     }
 
@@ -950,7 +936,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    showSnackbar(`Import failed: ${message}`);
+    getImportUiBridge().notify(`Import failed: ${message}`);
     result.success = false;
     result.errors.push(message);
     return result;
@@ -971,18 +957,13 @@ async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boole
   }
 
   // Convert to sorted list
-  const seriesList: SeriesImportInfo[] = [...seriesGroups.entries()]
+  const seriesList = [...seriesGroups.entries()]
     .map(([seriesName, volumeCount]) => ({ seriesName, volumeCount }))
     .sort((a, b) => a.seriesName.localeCompare(b.seriesName));
 
-  // Show confirmation modal
-  return new Promise<boolean>((resolve) => {
-    promptImageOnlyImport(
-      seriesList,
-      pairings.length,
-      () => resolve(true),
-      () => resolve(false)
-    );
+  return getImportUiBridge().promptImageOnly({
+    seriesList,
+    totalVolumeCount: pairings.length
   });
 }
 
@@ -991,13 +972,7 @@ async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boole
  * Shows the list of missing files and lets user choose to import anyway
  */
 async function promptForMissingFiles(info: MissingFilesInfo): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    promptMissingFiles(
-      info,
-      () => resolve(true), // Import anyway
-      () => resolve(false) // Cancel
-    );
-  });
+  return getImportUiBridge().promptMissing(info);
 }
 
 /**

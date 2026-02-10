@@ -30,7 +30,8 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn(),
       delete: vi.fn()
     },
-    transaction: vi.fn()
+    transaction: vi.fn(),
+    processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
 }));
 

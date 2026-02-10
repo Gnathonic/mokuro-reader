@@ -23,6 +23,7 @@
   // Track in-flight loads to prevent duplicates
   let loadingUuids = $state<Set<string>>(new Set());
   let isVisible = $state(false);
+  let visibilityElement = $state<HTMLElement | null>(null);
   // Counter to trigger redraws when loads complete
   let drawTrigger = $state(0);
 
@@ -62,12 +63,11 @@
   function canvasAction(node: HTMLCanvasElement, isFirst: boolean) {
     if (!isFirst) return;
 
+    visibilityElement = node;
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
-          isVisible = true;
-          observer.disconnect();
-        }
+        // Keep this dynamic: offscreen canvases should stop drawing/loading.
+        isVisible = entry.isIntersecting;
       },
       { rootMargin: '200px', threshold: 0 }
     );
@@ -76,6 +76,7 @@
 
     return {
       destroy() {
+        visibilityElement = null;
         observer.disconnect();
       }
     };
@@ -114,7 +115,7 @@
         loadingUuids = new Set(loadingUuids);
 
         thumbnailCache
-          .get(vol.volume_uuid, vol.thumbnail, i, null)
+          .get(vol.volume_uuid, vol.thumbnail, i, visibilityElement)
           .then(() => {
             // Trigger redraw when load completes
             drawTrigger++;

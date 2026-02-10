@@ -189,10 +189,10 @@ describe('shouldShowSinglePage', () => {
       expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(true);
     });
 
-    it('should return true when next page is wide spread', () => {
+    it('should return false when next page is wide spread', () => {
       const current = createPage(1000, 1500);
       const next = createPage(2000, 1000); // Wide spread
-      expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(true);
+      expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(false);
     });
 
     it('should return false for normal portrait pages in landscape', () => {
@@ -207,11 +207,11 @@ describe('shouldShowSinglePage', () => {
       expect(shouldShowSinglePage('auto', current, next, undefined)).toBe(true);
     });
 
-    it('should return true when previous page has different width', () => {
+    it('should return false when previous page has different width', () => {
       const previous = createPage(1500, 2000); // Different width
       const current = createPage(1000, 1500);
       const next = createPage(1000, 1500);
-      expect(shouldShowSinglePage('auto', current, next, previous)).toBe(true);
+      expect(shouldShowSinglePage('auto', current, next, previous)).toBe(false);
     });
 
     it('should return false when all pages have similar widths', () => {

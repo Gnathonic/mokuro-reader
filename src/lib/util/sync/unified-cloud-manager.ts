@@ -74,23 +74,23 @@ class UnifiedCloudManager {
   /**
    * Get all cloud volumes (current cached value)
    */
-  getAllCloudVolumes(): any[] {
-    return cacheManager.getAllFiles();
+  getAllCloudVolumes(): CloudFileMetadata[] {
+    return cacheManager.getAllFiles() as CloudFileMetadata[];
   }
 
   /**
    * Get cloud volume by file ID
    */
-  getCloudVolume(fileId: string): any | undefined {
+  getCloudVolume(fileId: string): CloudFileMetadata | undefined {
     const volumes = this.getAllCloudVolumes();
-    return volumes.find((v: any) => v.fileId === fileId);
+    return volumes.find((v) => v.fileId === fileId);
   }
 
   /**
    * Get cloud volumes for a specific series
    */
-  getCloudVolumesBySeries(seriesTitle: string): any[] {
-    return cacheManager.getBySeries(seriesTitle);
+  getCloudVolumesBySeries(seriesTitle: string): CloudFileMetadata[] {
+    return cacheManager.getBySeries(seriesTitle) as CloudFileMetadata[];
   }
 
   /**
@@ -201,9 +201,9 @@ class UnifiedCloudManager {
     };
 
     // Check if provider has a deleteSeriesFolder method
-    if ('deleteSeriesFolder' in provider && typeof provider.deleteSeriesFolder === 'function') {
+    if (provider.deleteSeriesFolder) {
       try {
-        await (provider as any).deleteSeriesFolder(seriesTitle);
+        await provider.deleteSeriesFolder(seriesTitle);
 
         // Remove all volumes from cache
         const cache = cacheManager.getCache(provider.type);
@@ -214,9 +214,14 @@ class UnifiedCloudManager {
         }
 
         return { succeeded: seriesVolumes.length, failed: 0 };
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Check if this is a "folder not found" error - fall back to individual deletion
-        if (error?.errorType === 'FOLDER_NOT_FOUND') {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'errorType' in error &&
+          (error as { errorType?: string }).errorType === 'FOLDER_NOT_FOUND'
+        ) {
           console.log(`Series folder not found, falling back to individual file deletion`);
           return deleteFilesIndividually();
         }
@@ -241,9 +246,9 @@ class UnifiedCloudManager {
   /**
    * Get cloud file metadata by path from the current provider
    */
-  getCloudFile(seriesTitle: string, volumeTitle: string): any | null {
+  getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.get(path);
+    return cacheManager.get(path) as CloudFileMetadata | null;
   }
 
   /**
@@ -263,7 +268,7 @@ class UnifiedCloudManager {
   /**
    * Update cache entry (e.g., after modifying description)
    */
-  updateCacheEntry(fileId: string, updates: Partial<any>): void {
+  updateCacheEntry(fileId: string, updates: Partial<CloudFileMetadata>): void {
     const provider = this.getActiveProvider();
     if (!provider) return;
 

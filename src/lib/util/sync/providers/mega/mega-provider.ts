@@ -136,6 +136,9 @@ export class MegaProvider implements SyncProvider {
   private storage: any = null;
   private mokuroFolder: any = null;
   private initPromise: Promise<void>;
+  private workerShareLinksToCleanup = new Set<string>();
+  private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
+  private static readonly WORKER_SHARE_LINK_THROTTLE_MS = 200;
 
   constructor() {
     if (browser) {
@@ -930,6 +933,44 @@ export class MegaProvider implements SyncProvider {
         false,
         true
       );
+    }
+  }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { megaEmail: email, megaPassword: password };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    const mokuroFolder = await this.ensureMokuroFolder();
+    await this.ensureSeriesFolder(seriesTitle, mokuroFolder);
+  }
+
+  async getWorkerDownloadCredentials(fileId: string): Promise<Record<string, any>> {
+    const result = await (this.workerShareLinkMutex = this.workerShareLinkMutex.then(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, MegaProvider.WORKER_SHARE_LINK_THROTTLE_MS)
+      );
+
+      const shareUrl = await this.createShareLink(fileId);
+      this.workerShareLinksToCleanup.add(fileId);
+      return { megaShareUrl: shareUrl };
+    }));
+
+    return result || {};
+  }
+
+  async cleanupWorkerDownload(fileId: string): Promise<void> {
+    if (!this.workerShareLinksToCleanup.has(fileId)) return;
+
+    try {
+      await this.deleteShareLink(fileId);
+    } catch (error) {
+      console.warn(`Failed to cleanup MEGA share link for ${fileId}:`, error);
+    } finally {
+      this.workerShareLinksToCleanup.delete(fileId);
     }
   }
 

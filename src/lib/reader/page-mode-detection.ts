@@ -71,10 +71,6 @@ export function shouldShowSinglePage(
       return true;
     }
 
-    if (nextPage && isWideSpread(nextPage)) {
-      return true;
-    }
-
     // For portrait-oriented pages, check width consistency
     // Only pair pages if they have similar widths (within 20%)
     if (currentPage && nextPage) {
@@ -86,12 +82,6 @@ export function shouldShowSinglePage(
         // Check if current and next pages have similar widths
         if (!haveSimilarWidths(currentPage, nextPage)) {
           return true; // Don't pair pages with different widths
-        }
-
-        // Check if there's a previous page and it has dissimilar width
-        // This catches cases where we're right after a cover/oddity
-        if (previousPage && !haveSimilarWidths(previousPage, currentPage)) {
-          return true; // Current page might be a cover or oddity, show alone
         }
       }
     }
