@@ -2,9 +2,11 @@
   import type { VolumeMetadata } from '$lib/types';
   import { ListgroupItem, Spinner } from 'flowbite-svelte';
   import { progress } from '$lib/settings';
+  import { volumes as catalogVolumes } from '$lib/catalog';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     series_uuid: string;
@@ -26,6 +28,7 @@
   let firstVolume = $derived(sortedVolumes[0]);
 
   let volume = $derived(firstUnreadVolume ?? firstVolume);
+  let liveVolume = $derived(volume ? ($catalogVolumes?.[volume.volume_uuid] ?? volume) : undefined);
   let isComplete = $derived(!firstUnreadVolume);
   let isPlaceholderOnly = $derived(volume?.isPlaceholder === true);
 
@@ -47,14 +50,35 @@
 
   // Create blob URL from inline thumbnail
   let thumbnailUrl = $state<string | undefined>(undefined);
+  let thumbnailKey = $state<string | undefined>(undefined);
+
+  function getThumbnailKey(volumeUuid: string, thumbnail?: File): string | undefined {
+    if (!thumbnail) return undefined;
+    return `${volumeUuid}:${thumbnail.name}:${thumbnail.size}:${thumbnail.lastModified}:${thumbnail.type}`;
+  }
+
   $effect(() => {
-    if (!volume?.thumbnail) {
-      thumbnailUrl = undefined;
+    const nextKey = liveVolume
+      ? getThumbnailKey(liveVolume.volume_uuid, liveVolume.thumbnail)
+      : undefined;
+    if (nextKey === thumbnailKey) {
       return;
     }
-    const url = URL.createObjectURL(volume.thumbnail);
-    thumbnailUrl = url;
-    return () => URL.revokeObjectURL(url);
+
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+      thumbnailUrl = undefined;
+    }
+
+    thumbnailKey = nextKey;
+    if (!liveVolume?.thumbnail) return;
+    thumbnailUrl = URL.createObjectURL(liveVolume.thumbnail);
+  });
+
+  onDestroy(() => {
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+    }
   });
 
   // Use title for placeholder-only (handles transition when first volume downloads)
@@ -92,6 +116,12 @@
               alt="img"
               class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
             />
+          {:else}
+            <div
+              class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+            >
+              Cover
+            </div>
           {/if}
         </div>
       </a>

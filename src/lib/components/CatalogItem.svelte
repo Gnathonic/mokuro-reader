@@ -81,6 +81,10 @@
     return dims;
   });
 
+  // Local series can briefly have no usable thumbnail while generation catches up.
+  // In that window, render a stable placeholder stack instead of a blank canvas.
+  let hasRenderableThumbnails = $derived(thumbnailDimensions.size > 0);
+
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
     isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
@@ -396,7 +400,7 @@
             {/each}
           </div>
         </div>
-      {:else if stackedVolumes.length > 0}
+      {:else if stackedVolumes.length > 0 && hasRenderableThumbnails}
         <!-- Stacked diagonal layout: dynamic stepping based on settings -->
         <div
           class="relative pt-4 pb-6"
@@ -415,6 +419,31 @@
                 {stepSizes}
               />
             {/key}
+          </div>
+        </div>
+      {:else if stackedVolumes.length > 0}
+        <!-- Local volumes exist, but thumbnails are not ready yet -->
+        <div
+          class="relative pt-4 pb-6"
+          style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
+        >
+          <div
+            class="relative overflow-hidden"
+            style="width: {containerDimensions.innerWidth}px; height: {containerDimensions.innerHeight}px;"
+          >
+            {#each Array(Math.max(stackedVolumes.length, 1)) as _, i}
+              <div
+                class="absolute flex items-center justify-center border border-gray-300 bg-gray-200 dark:border-gray-600 dark:bg-gray-800"
+                style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {stepSizes.leftOffset +
+                  i * stepSizes.horizontal}px; top: {stepSizes.topOffset +
+                  i * stepSizes.vertical}px; z-index: {Math.max(stackedVolumes.length, 1) -
+                  i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
+              >
+                {#if i === 0}
+                  <span class="text-sm text-gray-500 dark:text-gray-400">Generating...</span>
+                {/if}
+              </div>
+            {/each}
           </div>
         </div>
       {/if}

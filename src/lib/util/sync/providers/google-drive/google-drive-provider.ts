@@ -167,6 +167,10 @@ class GoogleDriveProvider implements SyncProvider {
     console.log('Google Drive logged out');
   }
 
+  async reauthenticate(): Promise<void> {
+    tokenManager.reAuthenticate();
+  }
+
   // VOLUME STORAGE METHODS
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {
@@ -839,6 +843,27 @@ class GoogleDriveProvider implements SyncProvider {
   async ensureSeriesFolder(seriesTitle: string): Promise<string> {
     const rootFolderId = await this.ensureReaderFolder();
     return this.findOrCreateFolder(rootFolderId, seriesTitle);
+  }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    let token = '';
+    tokenManager.token.subscribe((value) => {
+      token = value;
+    })();
+    return { accessToken: token };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
+    const seriesFolderId = await this.ensureSeriesFolder(seriesTitle);
+    return { seriesFolderId };
+  }
+
+  async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
+    let token = '';
+    tokenManager.token.subscribe((value) => {
+      token = value;
+    })();
+    return { accessToken: token };
   }
 }
 

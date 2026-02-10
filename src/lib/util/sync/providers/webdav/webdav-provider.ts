@@ -855,6 +855,27 @@ export class WebDAVProvider implements SyncProvider {
       };
     }
   }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    await this.ensureMokuroFolder();
+    await this.ensureSeriesFolder(seriesTitle);
+  }
+
+  async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+  }
 }
 
 export const webdavProvider = new WebDAVProvider();

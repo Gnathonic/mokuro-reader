@@ -24,6 +24,7 @@
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
+  import { startThumbnailProcessing } from '$lib/catalog/db';
   import { get } from 'svelte/store';
 
   // Migration state
@@ -78,6 +79,9 @@
         return;
       }
     }
+
+    // Start background thumbnail generation once startup checks are complete
+    startThumbnailProcessing();
 
     // Fire and forget - don't block app initialization
     initializeProviders().catch((error) => {

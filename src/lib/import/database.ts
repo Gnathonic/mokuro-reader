@@ -92,6 +92,19 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
       files: sortedFiles
     });
   });
+
+  // Import-time thumbnail generation can fail for some files.
+  // Trigger best-effort background recovery so UI placeholders resolve
+  // without requiring navigation or refresh.
+  if (
+    !volumeMetadata.thumbnail ||
+    !volumeMetadata.thumbnail_width ||
+    !volumeMetadata.thumbnail_height
+  ) {
+    db.processThumbnails(1).catch((error) => {
+      console.error('Failed to recover missing thumbnail after import:', error);
+    });
+  }
 }
 
 /**

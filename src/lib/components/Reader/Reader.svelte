@@ -52,7 +52,7 @@
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
-  import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { isWideSpread, shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
 
@@ -97,40 +97,104 @@
   function left(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: left is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     } else {
       // LTR: left is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     }
   }
 
   function right(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: right is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     } else {
       // LTR: right is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     }
+  }
+
+  // Calculate target page when navigating forward.
+  // Uses "half-step" (+1) when the next image is a spread while current view is dual.
+  function calculateForwardTarget(currentPage: number): number {
+    const currentIndex = currentPage - 1;
+
+    if (!pages || currentIndex < 0 || currentIndex >= pages.length) {
+      return currentPage + navAmount;
+    }
+
+    const currentPageData = pages[currentIndex];
+    const nextPageData = pages[currentIndex + 1];
+    const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
+
+    const currentIsSingle = shouldShowSinglePage(
+      volumeSettings.singlePageView ?? 'auto',
+      currentPageData,
+      nextPageData,
+      previousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    if (currentIsSingle) {
+      return currentPage + 1;
+    }
+
+    // Half-step correction for off-alignment spreads:
+    // Current dual view is [N, N+1], next spread is [N+2, N+3].
+    // The further page from current in forward direction is N+3.
+    const forwardLookaheadPage = pages[currentIndex + 3];
+    const lookaheadIsWide = forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
+
+    if (
+      currentPageData &&
+      nextPageData &&
+      !isWideSpread(currentPageData) &&
+      lookaheadIsWide
+    ) {
+      return currentPage + 1;
+    }
+
+    return currentPage + 2;
   }
 
   // Calculate target page when navigating backward, accounting for single-page exceptions
   function calculateBackwardTarget(currentPage: number): number {
-    const targetIndex = currentPage - 2; // Try going back by current navAmount (assuming dual)
+    if (currentPage <= 1) return 0;
 
+    const currentIndex = currentPage - 1;
+    const currentPageData = pages?.[currentIndex];
+    const currentNextPageData = pages?.[currentIndex + 1];
+    const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
+
+    const currentShouldBeSingle = shouldShowSinglePage(
+      volumeSettings.singlePageView ?? 'auto',
+      currentPageData,
+      currentNextPageData,
+      currentPreviousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    // Mirror of forward half-step fix:
+    // when moving backward from a dual view, inspect the further page in the
+    // previous spread chunk (currentPage - 2). If that page is wide, half-step.
+    if (!currentShouldBeSingle) {
+      const previousSpreadFurtherPage = pages?.[currentIndex - 2];
+      if (previousSpreadFurtherPage && isWideSpread(previousSpreadFurtherPage)) {
+        return currentPage - 1;
+      }
+    }
+
+    const targetIndex = currentPage - 2;
     if (targetIndex < 0) {
-      return currentPage - 1; // Just go back 1 if we're near the start
+      return currentPage - 1;
     }
 
     const targetPage = pages?.[targetIndex];
     const targetNextPage = pages?.[targetIndex + 1];
     const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
 
-    // Check if the target page should be shown in single mode
     const targetShouldBeSingle = shouldShowSinglePage(
       volumeSettings.singlePageView ?? 'auto',
       targetPage,
@@ -140,13 +204,17 @@
       volumeSettings.hasCover
     );
 
-    if (targetShouldBeSingle) {
-      // Target is a single-page exception, only go back by 1
-      return currentPage - 1;
-    } else {
-      // Target is dual-page, go back by current navAmount
-      return currentPage - navAmount;
-    }
+    return targetShouldBeSingle ? currentPage - 1 : currentPage - 2;
+  }
+
+  function navigateForward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateForwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
+  }
+
+  function navigateBackward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateBackwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
   }
 
   function changePage(newPage: number, ingoreTimeOut = false) {
@@ -270,7 +338,7 @@
         scrollImage('up');
         return;
       case 'PageUp':
-        changePage(page - navAmount, true);
+        navigateBackward(true);
         return;
       case 'ArrowRight':
         right(event, true);
@@ -280,7 +348,7 @@
         return;
       case 'PageDown':
       case 'Space':
-        changePage(page + navAmount, true);
+        navigateForward(true);
         return;
       case 'Home':
         changePage(1, true);

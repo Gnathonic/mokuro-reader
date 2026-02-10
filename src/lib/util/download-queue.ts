@@ -3,7 +3,6 @@ import type { VolumeMetadata } from '$lib/types';
 import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
 import type { VolumeMetadata as WorkerVolumeMetadata } from './worker-pool';
-import { tokenManager } from './sync/providers/google-drive/token-manager';
 import { db } from '$lib/catalog/db';
 import { driveApiClient } from './sync/providers/google-drive/api-client';
 import { driveFilesCache } from './sync/providers/google-drive/drive-files-cache';
@@ -52,13 +51,6 @@ const queueStore = writable<QueueItem[]>([]);
 
 // Track if this queue is currently using the shared pool
 let processingStarted = false;
-
-// Track MEGA share links that need cleanup after download
-const megaShareLinksToCleanup = new Map<string, string>(); // fileId -> fileId (for cleanup)
-
-// Rate limiting for MEGA share link creation using a promise chain as mutex
-let megaShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
-const MEGA_SHARE_LINK_THROTTLE_MS = 200; // 200ms between share link creations
 
 // Subscribe to queue changes and update progress tracker
 queueStore.subscribe((queue) => {
@@ -248,38 +240,13 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
  * Implements rate limiting to prevent API congestion
  */
 async function getProviderCredentials(provider: ProviderType, fileId: string): Promise<any> {
-  if (provider === 'google-drive') {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return { accessToken: token };
-  } else if (provider === 'webdav') {
-    // Get WebDAV credentials from localStorage
-    const serverUrl = localStorage.getItem('webdav_server_url');
-    const username = localStorage.getItem('webdav_username');
-    const password = localStorage.getItem('webdav_password');
-    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
-  } else if (provider === 'mega') {
-    // Serialize MEGA share link creation using a promise chain as mutex
-    // This prevents concurrent API calls that could trigger rate limiting
-    const result = await (megaShareLinkMutex = megaShareLinkMutex.then(async () => {
-      // Add throttle delay between each share link creation
-      await new Promise((resolve) => setTimeout(resolve, MEGA_SHARE_LINK_THROTTLE_MS));
-
-      // Create a temporary share link for this file (with built-in retry logic)
-      const { megaProvider } = await import('./sync/providers/mega/mega-provider');
-      const shareUrl = await megaProvider.createShareLink(fileId);
-
-      // Track this share link for cleanup after download
-      megaShareLinksToCleanup.set(fileId, fileId);
-
-      return { megaShareUrl: shareUrl };
-    }));
-
-    return result;
+  const activeProvider = unifiedCloudManager.getActiveProvider();
+  if (!activeProvider || activeProvider.type !== provider) {
+    throw new Error(`Active provider mismatch for download credentials: expected ${provider}`);
   }
-  return {};
+  return activeProvider.getWorkerDownloadCredentials
+    ? await activeProvider.getWorkerDownloadCredentials(fileId)
+    : {};
 }
 
 /**
@@ -436,17 +403,11 @@ function checkAndTerminatePool(): void {
  * will automatically reuse the existing link. This provides a self-healing behavior
  * where orphaned links are eventually reused and cleaned up on successful downloads.
  */
-async function cleanupMegaShareLink(fileId: string): Promise<void> {
-  if (megaShareLinksToCleanup.has(fileId)) {
-    try {
-      const { megaProvider } = await import('./sync/providers/mega/mega-provider');
-      await megaProvider.deleteShareLink(fileId);
-      megaShareLinksToCleanup.delete(fileId);
-    } catch (error) {
-      console.warn(`Failed to cleanup MEGA share link for ${fileId}:`, error);
-      // Still remove from tracking to prevent memory leak
-      megaShareLinksToCleanup.delete(fileId);
-    }
+async function cleanupProviderDownloadCredentials(providerType: ProviderType, fileId: string): Promise<void> {
+  const activeProvider = unifiedCloudManager.getActiveProvider();
+  if (!activeProvider || activeProvider.type !== providerType) return;
+  if (activeProvider.cleanupWorkerDownload) {
+    await activeProvider.cleanupWorkerDownload(fileId);
   }
 }
 
@@ -540,16 +501,14 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             error instanceof Error ? error.message : 'Unknown error'
           );
         } finally {
-          // Cleanup MEGA share link if this was a MEGA download
-          await cleanupMegaShareLink(item.cloudFileId);
+          await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
           releaseMemory();
           checkAndTerminatePool();
         }
       },
       onError: async (data) => {
         console.error(`Error downloading ${item.volumeTitle}:`, data.error);
-        // Cleanup MEGA share link if this was a MEGA download
-        await cleanupMegaShareLink(item.cloudFileId);
+        await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
         handleDownloadError(item, processId, data.error);
         checkAndTerminatePool();
 

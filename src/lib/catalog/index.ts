@@ -107,22 +107,41 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
     // Don't clear if the store just emitted a new object reference for the same volume
     if (newUuid !== currentVolumeDataLastUuid) {
       currentVolumeDataLastUuid = newUuid;
+      currentVolumeDataLoadedUuid = undefined;
+      currentVolumeDataRequestId++;
       // Clear old data synchronously to prevent state leaks between volumes
       set(undefined);
     }
 
     if ($currentVolume) {
+      // If this volume's data is already loaded, skip redundant re-fetches.
+      // This prevents reader flashes when unrelated volumes are imported.
+      if (currentVolumeDataLoadedUuid === $currentVolume.volume_uuid) {
+        return;
+      }
+
+      const requestId = ++currentVolumeDataRequestId;
+      const volumeUuid = $currentVolume.volume_uuid;
+
       // Assemble VolumeData from volume_ocr and volume_files tables
       Promise.all([
-        db.volume_ocr.get($currentVolume.volume_uuid),
-        db.volume_files.get($currentVolume.volume_uuid)
+        db.volume_ocr.get(volumeUuid),
+        db.volume_files.get(volumeUuid)
       ]).then(([ocr, files]) => {
+        // Ignore stale async results if user navigated away while fetching.
+        if (requestId !== currentVolumeDataRequestId) {
+          return;
+        }
+
+        currentVolumeDataLoadedUuid = volumeUuid;
         if (ocr) {
           set({
-            volume_uuid: $currentVolume.volume_uuid,
+            volume_uuid: volumeUuid,
             pages: ocr.pages,
             files: files?.files
           });
+        } else {
+          set(undefined);
         }
       });
     }
@@ -132,6 +151,10 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
 
 // Track last volume UUID to prevent unnecessary data clears
 let currentVolumeDataLastUuid: string | undefined;
+// Track which volume UUID has fully loaded data in currentVolumeData.
+let currentVolumeDataLoadedUuid: string | undefined;
+// Monotonic token to ignore stale async fetches.
+let currentVolumeDataRequestId = 0;
 
 /**
  * Japanese character count for current volume.
