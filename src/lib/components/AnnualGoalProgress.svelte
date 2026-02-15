@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Card, Button, Input, Label } from 'flowbite-svelte';
   import { ChartPieSolid, CheckCircleSolid, ExclamationCircleSolid } from 'flowbite-svelte-icons';
+  import { nav } from '$lib/util/hash-router';
   import {
     activeGoalProgress,
     activeGoalSelection,
@@ -157,7 +158,7 @@
 </script>
 
 <Card class="mb-6 w-full max-w-none p-5">
-  <div class="flex items-start justify-between">
+  <div class="flex flex-wrap items-start justify-between gap-2">
     <div class="flex items-center gap-3">
       <ChartPieSolid class="h-8 w-8 text-primary-500" />
       <div>
@@ -203,47 +204,39 @@
               {isCreatingCustom ? 'Cancel' : 'New'}
             </Button>
           {/if}
-        </div>
-        {#if isEditing}
-          <div class="mt-2 flex items-center gap-2">
-            <Label class="text-sm text-gray-400">Target volumes:</Label>
-            <Input
-              type="number"
-              min="1"
-              max="500"
-              bind:value={editValue}
-              class="w-24"
-              size="sm"
-              onkeydown={handleKeydown}
-            />
-            <Button size="xs" color="primary" onclick={saveGoal}>Save</Button>
-            <Button size="xs" color="alternative" onclick={cancelEditing}>Cancel</Button>
-          </div>
-        {:else}
-          <p class="text-sm text-gray-400">
-            Read {progress.targetVolumes} volumes in {progress.periodLabel}
-            <button
-              class="ml-2 text-primary-400 hover:text-primary-300 hover:underline"
-              onclick={startEditing}
-            >
-              Edit
-            </button>
-          </p>
-          {#if selection.goalType === 'custom' && $customGoals.length === 0}
-            <p class="mt-1 text-xs text-gray-500">Create a custom goal to get started.</p>
+          {#if isEditing}
+            <div class="mt-2 flex items-center gap-2">
+              <Label class="text-sm text-gray-400">Target volumes:</Label>
+              <Input
+                type="number"
+                min="1"
+                max="500"
+                bind:value={editValue}
+                class="w-24"
+                size="sm"
+                onkeydown={handleKeydown}
+              />
+              <Button size="xs" color="primary" onclick={saveGoal}>Save</Button>
+              <Button size="xs" color="alternative" onclick={cancelEditing}>Cancel</Button>
+            </div>
+          {:else}
+            <p class="text-sm text-gray-400">
+              Read {progress.targetVolumes} volumes in {progress.periodLabel}
+              <button
+                class="ml-2 text-primary-400 hover:text-primary-300 hover:underline"
+                onclick={startEditing}
+              >
+                Edit
+              </button>
+            </p>
+            {#if selection.goalType === 'custom' && $customGoals.length === 0}
+              <p class="mt-1 text-xs text-gray-500">Create a custom goal to get started.</p>
+            {/if}
           {/if}
-        {/if}
+        </div>
       </div>
     </div>
-
-    <div class="text-right">
-      <span class="text-2xl font-bold {config.color}">
-        {progress.progressPercent.toFixed(1)}%
-      </span>
-      <p class="text-xs text-gray-500">
-        of {progress.expectedProgressPercent.toFixed(1)}% expected
-      </p>
-    </div>
+    <Button size="xs" color="alternative" onclick={() => nav.toManageGoals()}>Manage Goals</Button>
   </div>
 
   <!-- Progress bar -->
@@ -267,10 +260,10 @@
   </div>
 
   <!-- Stats row -->
-  <div class="mt-4 grid grid-cols-2 gap-4 text-center sm:grid-cols-4">
+  <div class="mt-4 grid grid-cols-2 gap-4 text-center sm:grid-cols-5">
     <div>
       <p class="text-2xl font-bold text-gray-200">{progress.completedVolumes}</p>
-      <p class="text-xs text-gray-500">Completed</p>
+      <p class="text-xs text-gray-500">Volumes Completed</p>
     </div>
     <div>
       <p class="text-2xl font-bold text-gray-200">{progress.inProgressVolumes}</p>
@@ -283,6 +276,14 @@
     <div>
       <p class="text-2xl font-bold text-gray-200">{progress.daysRemaining}</p>
       <p class="text-xs text-gray-500">Days Left</p>
+    </div>
+    <div>
+      <span class="text-2xl font-bold {config.color}">
+        {progress.progressPercent.toFixed(1)}%
+      </span>
+      <p class="text-xs text-gray-500">
+        of {progress.expectedProgressPercent.toFixed(1)}% expected
+      </p>
     </div>
   </div>
 

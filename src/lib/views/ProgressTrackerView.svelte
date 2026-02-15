@@ -438,14 +438,6 @@
 <div class="min-h-[90svh] w-full p-4">
   <div class="mb-6 flex flex-wrap items-center justify-between gap-2">
     <h1 class="text-3xl font-bold">Progress Tracker</h1>
-
-    {#if hasVolumes}
-      <div class="flex flex-wrap items-center gap-2">
-        <Button size="sm" color="alternative" onclick={() => nav.toManageGoals()}>
-          Manage Goals
-        </Button>
-      </div>
-    {/if}
   </div>
 
   <!-- Annual Goal Progress -->
