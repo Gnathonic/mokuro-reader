@@ -4,22 +4,28 @@
     volumeDeadlines,
     setVolumeDeadline,
     removeVolumeDeadline,
-    calculatePagesPerDay,
     dateUtils
   } from '$lib/settings/goals';
+  import type { ProgressTargetMode } from '$lib/settings/misc';
 
   interface Props {
     volumeId: string;
     remainingPages: number;
+    pagesReadInPeriod?: number | null;
+    targetPagesPerPeriod?: number | null;
+    targetMode?: ProgressTargetMode;
   }
 
-  let { volumeId, remainingPages }: Props = $props();
+  let {
+    volumeId,
+    remainingPages,
+    pagesReadInPeriod = null,
+    targetPagesPerPeriod = null,
+    targetMode = 'daily'
+  }: Props = $props();
 
   // Get the deadline for this volume from the store
   let deadline = $derived($volumeDeadlines[volumeId] || null);
-
-  // Calculate pages per day needed
-  let pagesPerDay = $derived(calculatePagesPerDay(remainingPages, deadline));
 
   // Local state for showing the date picker
   let isEditing = $state(false);
@@ -104,16 +110,21 @@
 
   // Determine urgency color
   let urgencyClass = $derived.by(() => {
-    if (!deadline || !pagesPerDay) return 'text-gray-400';
+    if (!deadline || !targetPagesPerPeriod) return 'text-gray-400';
 
     const daysRemaining = dateUtils.calculateDaysRemaining(deadline);
 
     if (daysRemaining <= 0) return 'text-red-500 font-bold';
-    if (pagesPerDay > 50) return 'text-red-400';
-    if (pagesPerDay > 30) return 'text-yellow-500';
-    if (pagesPerDay > 15) return 'text-blue-500';
+    if (targetPagesPerPeriod > 50) return 'text-red-400';
+    if (targetPagesPerPeriod > 30) return 'text-yellow-500';
+    if (targetPagesPerPeriod > 15) return 'text-blue-500';
     return 'text-green-600';
   });
+
+  // Show the deadline display when deadline is set and progress data is available
+  let showDeadlineDisplay = $derived(
+    pagesReadInPeriod !== null && targetPagesPerPeriod !== null && deadline !== null
+  );
 </script>
 
 <div class="goal deadline-controls relative mt-1 text-center">
@@ -124,9 +135,10 @@
       onclick={showDatePicker}
       title={deadline ? `Deadline: ${deadline}` : 'Click to set a deadline'}
     >
-      {#if deadline && pagesPerDay !== null}
+      {#if showDeadlineDisplay}
         <div class={urgencyClass}>
-          {pagesPerDay} p/day
+          {pagesReadInPeriod}/{targetPagesPerPeriod}
+          {targetMode === 'daily' ? 'p/day' : 'p/wk'}
         </div>
         <div class="ml-1 text-gray-500">
           ({deadlineDisplay})

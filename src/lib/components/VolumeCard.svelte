@@ -2,6 +2,7 @@
   import { nav } from '$lib/util/hash-router';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
+  import type { ProgressTargetMode } from '$lib/settings/misc';
 
   interface Props {
     volumeId: string;
@@ -15,6 +16,9 @@
     onHover: (volumeId: string | null) => void;
     showProgressBar?: boolean;
     showDeadline?: boolean;
+    pagesReadInPeriod?: number | null;
+    targetPagesPerPeriod?: number | null;
+    targetMode?: ProgressTargetMode;
   }
 
   let {
@@ -27,7 +31,10 @@
     isHovered,
     onHover,
     showProgressBar = true,
-    showDeadline = true
+    showDeadline = true,
+    pagesReadInPeriod = null,
+    targetPagesPerPeriod = null,
+    targetMode = 'daily'
   }: Props = $props();
 </script>
 
@@ -60,7 +67,13 @@
   {/if}
 
   {#if showDeadline}
-    <VolumeDeadline {volumeId} {remainingPages} />
+    <VolumeDeadline
+      {volumeId}
+      {remainingPages}
+      {pagesReadInPeriod}
+      {targetPagesPerPeriod}
+      {targetMode}
+    />
   {/if}
 </div>
 

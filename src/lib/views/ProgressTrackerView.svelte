@@ -1,13 +1,21 @@
 <script lang="ts">
   import { Button, Card } from 'flowbite-svelte';
-  import { BookSolid, SortOutline } from 'flowbite-svelte-icons';
-  import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
+  import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
+  import {
+    volumes,
+    VolumeData,
+    progress,
+    calculatePagesReadInPeriod
+  } from '$lib/settings/volume-data';
   import { volumes as catalogVolumes } from '$lib/catalog';
   import { miscSettings, updateMiscSetting, type ProgressTrackerSorting } from '$lib/settings';
   import { onMount } from 'svelte';
   import {
     volumeDeadlines,
-    calculatePagesPerDay,
+    calculateTargetPagesPerPeriod,
+    getCurrentPeriodStart,
+    getNextResetTime,
+    formatRelativeResetTime,
     dateUtils,
     finalizeClosedGoalSnapshots,
     activeGoalPeriod,
@@ -18,12 +26,64 @@
   import { nav } from '$lib/util/hash-router';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
+  import ProgressTargetSettingsModal from '$lib/components/ProgressTargetSettingsModal.svelte';
 
   // Check if volumes is empty
   let hasVolumes = $derived($volumes && Object.keys($volumes).length > 0);
 
   // Create typed entries for iteration
   let volumeEntries = $derived(Object.entries($volumes) as [string, VolumeData][]);
+
+  // Settings modal state
+  let settingsModalOpen = $state(false);
+
+  // Calculate current period start for progress tracking
+  let currentPeriodStart = $derived(
+    getCurrentPeriodStart(
+      $miscSettings.progressTargetMode ?? 'daily',
+      $miscSettings.progressResetHour ?? 0,
+      $miscSettings.progressResetDay ?? 1
+    )
+  );
+
+  // Calculate next reset time and format for display
+  let nextResetTimestamp = $derived(
+    getNextResetTime(
+      $miscSettings.progressTargetMode ?? 'daily',
+      $miscSettings.progressResetHour ?? 0,
+      $miscSettings.progressResetDay ?? 1
+    )
+  );
+
+  let relativeResetTime = $derived(formatRelativeResetTime(nextResetTimestamp));
+
+  // Format reset display with day name for weekly mode
+  let resetTimeDisplay = $derived.by(() => {
+    const resetDate = new Date(nextResetTimestamp);
+    const hour12 =
+      resetDate.getHours() === 0
+        ? 12
+        : resetDate.getHours() > 12
+          ? resetDate.getHours() - 12
+          : resetDate.getHours();
+    const period = resetDate.getHours() < 12 ? 'AM' : 'PM';
+    const timeStr = `${hour12}:00 ${period}`;
+
+    if (($miscSettings.progressTargetMode ?? 'daily') === 'weekly') {
+      const dayNames = [
+        'Sunday',
+        'Monday',
+        'Tuesday',
+        'Wednesday',
+        'Thursday',
+        'Friday',
+        'Saturday'
+      ];
+      const dayName = dayNames[resetDate.getDay()];
+      return `Resets ${dayName} at ${timeStr} in ${relativeResetTime}`;
+    }
+    return `Resets in ${relativeResetTime}`;
+  });
 
   // Store blob URLs for thumbnails
   let thumbnailUrls = $state<Map<string, string>>(new Map());
@@ -118,6 +178,15 @@
     updateMiscSetting('progressTrackerSorting', sortOrder[nextIndex]);
   }
 
+  function cycleTargetMode() {
+    const newMode = ($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'weekly' : 'daily';
+    updateMiscSetting('progressTargetMode', newMode);
+  }
+
+  function openSettings() {
+    settingsModalOpen = true;
+  }
+
   onMount(() => {
     finalizeClosedGoalSnapshots();
   });
@@ -125,12 +194,25 @@
   // Helper function to create entries with sort data
   function createEntriesWithSortData(entries: [string, VolumeData][]) {
     const deadlines = $volumeDeadlines;
+    const mode = $miscSettings.progressTargetMode ?? 'daily';
+    const periodStart = currentPeriodStart;
 
     return entries.map(([volumeId, volumeData]) => {
       const stats = volumeStats.get(volumeId);
       const remainingPages = stats?.remainingPages ?? 0;
       const deadline = deadlines[volumeId] || null;
-      const pagesPerDay = calculatePagesPerDay(remainingPages, deadline);
+
+      // Calculate pages read in current period
+      const pagesReadInPeriod = calculatePagesReadInPeriod(volumeData.recentPageTurns, periodStart);
+
+      // Calculate target pages per period
+      const targetPagesPerPeriod = calculateTargetPagesPerPeriod(
+        remainingPages,
+        deadline,
+        mode,
+        pagesReadInPeriod,
+        periodStart
+      );
       const daysUntilDeadline = deadline ? dateUtils.calculateDaysRemaining(deadline) : null;
       const lastProgressUpdate = new Date(volumeData.lastProgressUpdate || 0).getTime();
 
@@ -138,7 +220,8 @@
         volumeId,
         volumeData,
         remainingPages,
-        pagesPerDay,
+        targetPagesPerPeriod,
+        pagesReadInPeriod,
         daysUntilDeadline,
         lastProgressUpdate,
         hasDeadline: deadline !== null
@@ -157,14 +240,14 @@
           return b.lastProgressUpdate - a.lastProgressUpdate;
 
         case 'pages-per-day':
-          // Highest pages per day first (most urgent)
+          // Highest target per period first (most urgent)
           // Volumes without deadlines go to the end
-          if (a.pagesPerDay === null && b.pagesPerDay === null) {
+          if (a.targetPagesPerPeriod === null && b.targetPagesPerPeriod === null) {
             return b.lastProgressUpdate - a.lastProgressUpdate;
           }
-          if (a.pagesPerDay === null) return 1;
-          if (b.pagesPerDay === null) return -1;
-          return b.pagesPerDay - a.pagesPerDay;
+          if (a.targetPagesPerPeriod === null) return 1;
+          if (b.targetPagesPerPeriod === null) return -1;
+          return b.targetPagesPerPeriod - a.targetPagesPerPeriod;
 
         case 'fewest-pages':
           // Fewest remaining pages first (closest to completion)
@@ -318,11 +401,36 @@
     <!-- Currently Reading Section -->
     {#if !isGoalClosed && volumeSections.currentlyReading.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
-        <h2 class="mb-4 text-xl font-semibold">Currently Reading</h2>
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-xl font-semibold">Currently Reading</h2>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-500">{resetTimeDisplay}</span>
+            <Button
+              size="xs"
+              color="alternative"
+              onclick={cycleTargetMode}
+              title={`Switch to ${($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'weekly' : 'daily'} targets`}
+              class="flex h-8 items-center justify-center"
+            >
+              <span class="text-xs">
+                {($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'Daily' : 'Weekly'}
+              </span>
+            </Button>
+            <Button
+              size="xs"
+              color="alternative"
+              onclick={openSettings}
+              title="Progress target settings"
+              class="flex h-8 w-8 items-center justify-center p-0"
+            >
+              <CogOutline class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
         <div
           class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
         >
-          {#each volumeSections.currentlyReading as { volumeId, volumeData }}
+          {#each volumeSections.currentlyReading as { volumeId, volumeData, pagesReadInPeriod, targetPagesPerPeriod }}
             {@const stats = volumeStats.get(volumeId)!}
             <VolumeCard
               {volumeId}
@@ -336,6 +444,9 @@
               onHover={(id) => (hoveredVolume = id)}
               showProgressBar={true}
               showDeadline={true}
+              {pagesReadInPeriod}
+              {targetPagesPerPeriod}
+              targetMode={$miscSettings.progressTargetMode ?? 'daily'}
             />
           {/each}
         </div>
@@ -397,6 +508,9 @@
     {/if}
   {/if}
 </div>
+
+<!-- Progress Target Settings Modal -->
+<ProgressTargetSettingsModal bind:open={settingsModalOpen} />
 
 <style>
   :root {
