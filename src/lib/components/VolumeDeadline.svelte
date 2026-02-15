@@ -138,7 +138,7 @@
       {#if showDeadlineDisplay}
         <div class={urgencyClass}>
           {pagesReadInPeriod}/{targetPagesPerPeriod}
-          {targetMode === 'daily' ? 'p/day' : 'p/wk'}
+          {targetMode === 'daily' ? 'pages' : 'pages'}
         </div>
         <div class="ml-1 text-gray-500">
           ({deadlineDisplay})
