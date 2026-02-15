@@ -2,11 +2,15 @@ import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
 export type ProgressTrackerSorting = 'last-read' | 'pages-per-day' | 'fewest-pages' | 'deadline';
+export type ProgressTargetMode = 'daily' | 'weekly';
 
 export type MiscSettings = {
   galleryLayout: 'grid' | 'list';
   gallerySorting: 'ASC' | 'DESC' | 'SMART';
   progressTrackerSorting: ProgressTrackerSorting;
+  progressTargetMode: ProgressTargetMode;
+  progressResetHour: number; // 0-23, hour when daily/weekly targets reset
+  progressResetDay: number; // 0-6 (Sunday-Saturday), day when weekly targets reset
   deviceRamGB: 4 | 8 | 16 | 32;
   turboMode: boolean;
   gdriveAutoReAuth: boolean;
@@ -32,6 +36,9 @@ const defaultSettings: MiscSettings = {
   galleryLayout: 'grid',
   gallerySorting: 'SMART',
   progressTrackerSorting: 'last-read',
+  progressTargetMode: 'daily',
+  progressResetHour: 0, // Midnight
+  progressResetDay: 1, // Monday
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
   gdriveAutoReAuth: true // Keep users synced during long reading sessions

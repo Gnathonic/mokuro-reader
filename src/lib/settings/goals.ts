@@ -178,6 +178,169 @@ export const dateUtils = {
   }
 };
 
+/**
+ * Get the start timestamp of the current period based on mode and reset settings
+ * @param mode - 'daily' or 'weekly'
+ * @param resetHour - Hour (0-23) when period resets
+ * @param resetDay - Day of week (0=Sunday, 1=Monday, etc.) when weekly period resets
+ * @returns Timestamp (ms) of when the current period started
+ */
+export function getCurrentPeriodStart(
+  mode: 'daily' | 'weekly',
+  resetHour: number,
+  resetDay?: number
+): number {
+  const now = new Date();
+
+  if (mode === 'daily') {
+    // Calculate today's reset time
+    const todayReset = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      resetHour,
+      0,
+      0,
+      0
+    );
+
+    // If we haven't reached today's reset time yet, period started yesterday at reset time
+    if (now < todayReset) {
+      const yesterdayReset = new Date(todayReset);
+      yesterdayReset.setDate(yesterdayReset.getDate() - 1);
+      return yesterdayReset.getTime();
+    }
+
+    return todayReset.getTime();
+  } else {
+    // Weekly mode
+    const targetDay = resetDay ?? 1; // Default to Monday
+    const currentDay = now.getDay();
+
+    // Calculate days since last reset day
+    let daysSinceReset = (currentDay - targetDay + 7) % 7;
+
+    // Calculate this week's reset time
+    const thisWeekReset = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - daysSinceReset,
+      resetHour,
+      0,
+      0,
+      0
+    );
+
+    // If we haven't reached this week's reset time yet, period started last week
+    if (now < thisWeekReset) {
+      const lastWeekReset = new Date(thisWeekReset);
+      lastWeekReset.setDate(lastWeekReset.getDate() - 7);
+      return lastWeekReset.getTime();
+    }
+
+    return thisWeekReset.getTime();
+  }
+}
+
+/**
+ * Get the timestamp of the next reset time
+ * @param mode - 'daily' or 'weekly'
+ * @param resetHour - Hour (0-23) when period resets
+ * @param resetDay - Day of week (0=Sunday, 1=Monday, etc.) when weekly period resets
+ * @returns Timestamp (ms) of when the next reset will occur
+ */
+export function getNextResetTime(
+  mode: 'daily' | 'weekly',
+  resetHour: number,
+  resetDay?: number
+): number {
+  const now = new Date();
+
+  if (mode === 'daily') {
+    // Calculate today's reset time
+    const todayReset = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      resetHour,
+      0,
+      0,
+      0
+    );
+
+    // If we've passed today's reset, next reset is tomorrow
+    if (now >= todayReset) {
+      const tomorrowReset = new Date(todayReset);
+      tomorrowReset.setDate(tomorrowReset.getDate() + 1);
+      return tomorrowReset.getTime();
+    }
+
+    return todayReset.getTime();
+  } else {
+    // Weekly mode
+    const targetDay = resetDay ?? 1; // Default to Monday
+    const currentDay = now.getDay();
+
+    // Calculate days until next reset day
+    let daysUntilReset = (targetDay - currentDay + 7) % 7;
+
+    // Calculate this week's potential reset time
+    const thisWeekReset = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + daysUntilReset,
+      resetHour,
+      0,
+      0,
+      0
+    );
+
+    // If it's the reset day but we've passed the reset hour, or if daysUntilReset is 0,
+    // we need to check if we've passed the reset time
+    if (daysUntilReset === 0 && now >= thisWeekReset) {
+      const nextWeekReset = new Date(thisWeekReset);
+      nextWeekReset.setDate(nextWeekReset.getDate() + 7);
+      return nextWeekReset.getTime();
+    }
+
+    return thisWeekReset.getTime();
+  }
+}
+
+/**
+ * Format a timestamp as a relative time string
+ * @param timestamp - Future timestamp in milliseconds
+ * @returns Formatted string like "4h 23m" or "2d 5h"
+ */
+export function formatRelativeResetTime(timestamp: number): string {
+  const now = Date.now();
+  const diffMs = timestamp - now;
+
+  if (diffMs <= 0) return 'now';
+
+  const totalMinutes = Math.floor(diffMs / (1000 * 60));
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    if (hours > 0) {
+      return `${days}d ${hours}h`;
+    }
+    return `${days}d`;
+  }
+
+  if (hours > 0) {
+    if (minutes > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${hours}h`;
+  }
+
+  return `${minutes}m`;
+}
+
 export function buildSeasonKey(year: number, seasonIndex: number): string {
   const name = dateUtils.seasonNames[seasonIndex] || 'Unknown';
   return `${year}-${name}`;
@@ -1122,18 +1285,37 @@ export function removeVolumeDeadline(volumeId: string) {
 }
 
 /**
- * Calculate pages per day needed to meet a deadline
+ * Calculate target pages per period (daily or weekly) to meet a deadline
+ * Excludes pages already read in the current period
+ * @param remainingPages - Total pages remaining in the volume
+ * @param deadline - Deadline date string (YYYY-MM-DD) or null
+ * @param mode - 'daily' or 'weekly'
+ * @param pagesReadInCurrentPeriod - Pages read since the current period started
+ * @param periodStartTimestamp - Timestamp when the current period started
+ * @returns Target pages to read per period, or null if no deadline
  */
-export function calculatePagesPerDay(
+export function calculateTargetPagesPerPeriod(
   remainingPages: number,
-  deadline: string | null
+  deadline: string | null,
+  mode: 'daily' | 'weekly',
+  pagesReadInCurrentPeriod: number,
+  periodStartTimestamp: number
 ): number | null {
   if (!deadline || remainingPages <= 0) return null;
 
-  const daysRemaining = dateUtils.calculateDaysRemaining(deadline);
-  if (daysRemaining <= 0) return remainingPages; // All pages today!
+  // Calculate pages still needed (excluding what's been read this period)
+  const pagesStillNeeded = Math.max(0, remainingPages - pagesReadInCurrentPeriod);
 
-  return Math.ceil(remainingPages / daysRemaining);
+  // Calculate periods remaining until deadline
+  const periodStart = new Date(periodStartTimestamp);
+  const deadlineParts = deadline.split('-').map(Number);
+  const deadlineDate = new Date(deadlineParts[0], deadlineParts[1] - 1, deadlineParts[2]);
+
+  const msPerPeriod = mode === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  const msUntilDeadline = deadlineDate.getTime() - periodStart.getTime();
+  const periodsRemaining = Math.max(1, Math.ceil(msUntilDeadline / msPerPeriod));
+
+  return Math.ceil(pagesStillNeeded / periodsRemaining);
 }
 
 // ================================
