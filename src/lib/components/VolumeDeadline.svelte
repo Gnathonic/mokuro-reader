@@ -108,17 +108,23 @@
     }
   });
 
-  // Determine urgency color
+  // Determine urgency color based on progress
   let urgencyClass = $derived.by(() => {
-    if (!deadline || !targetPagesPerPeriod) return 'text-gray-400';
+    if (!deadline || !targetPagesPerPeriod || pagesReadInPeriod === null) return 'text-gray-400';
 
     const daysRemaining = dateUtils.calculateDaysRemaining(deadline);
 
+    // If deadline has passed, always show as urgent
     if (daysRemaining <= 0) return 'text-red-500 font-bold';
-    if (targetPagesPerPeriod > 50) return 'text-red-400';
-    if (targetPagesPerPeriod > 30) return 'text-yellow-500';
-    if (targetPagesPerPeriod > 15) return 'text-blue-500';
-    return 'text-green-600';
+
+    // Calculate progress ratio
+    const progressRatio = pagesReadInPeriod / targetPagesPerPeriod;
+
+    // Color based on progress toward target
+    if (progressRatio >= 1.0) return 'text-green-600 font-bold'; // On track or ahead
+    if (progressRatio >= 0.75) return 'text-blue-500'; // Close to target
+    if (progressRatio >= 0.5) return 'text-yellow-500'; // Halfway there
+    return 'text-red-400'; // Falling behind
   });
 
   // Show the deadline display when deadline is set and progress data is available
