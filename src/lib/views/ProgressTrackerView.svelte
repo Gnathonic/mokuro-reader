@@ -229,6 +229,76 @@
     });
   }
 
+  // Helper function to sort Future Reads by added date (newest first)
+  function sortByAddedDate(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
+    return [...entriesWithSortData].sort((a, b) => {
+      const aAddedOn = a.volumeData.addedOn ? new Date(a.volumeData.addedOn).getTime() : null;
+      const bAddedOn = b.volumeData.addedOn ? new Date(b.volumeData.addedOn).getTime() : null;
+
+      // If both have addedOn, sort by it (newest first)
+      if (aAddedOn !== null && bAddedOn !== null) {
+        return bAddedOn - aAddedOn;
+      }
+
+      // If one has addedOn and the other doesn't, prioritize the one with addedOn
+      if (aAddedOn !== null && bAddedOn === null) {
+        return -1;
+      }
+      if (aAddedOn === null && bAddedOn !== null) {
+        return 1;
+      }
+
+      // If neither has addedOn, fall back to lastProgressUpdate
+      const aLastUpdate = a.lastProgressUpdate;
+      const bLastUpdate = b.lastProgressUpdate;
+
+      if (aLastUpdate !== 0 && bLastUpdate !== 0) {
+        return bLastUpdate - aLastUpdate;
+      }
+
+      // If one has lastProgressUpdate and the other doesn't, prioritize the one with it
+      if (aLastUpdate !== 0 && bLastUpdate === 0) {
+        return -1;
+      }
+      if (aLastUpdate === 0 && bLastUpdate !== 0) {
+        return 1;
+      }
+
+      // Both have no timestamps, maintain current order
+      return 0;
+    });
+  }
+
+  // Helper function to sort Completed Volumes by completion date (oldest first)
+  function sortByCompletionDate(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
+    const completedMap = $completedAtMap;
+
+    return [...entriesWithSortData].sort((a, b) => {
+      const aCompletedAt = completedMap[a.volumeId]
+        ? new Date(completedMap[a.volumeId]).getTime()
+        : null;
+      const bCompletedAt = completedMap[b.volumeId]
+        ? new Date(completedMap[b.volumeId]).getTime()
+        : null;
+
+      // If both have completedAt, sort by it (oldest first)
+      if (aCompletedAt !== null && bCompletedAt !== null) {
+        return aCompletedAt - bCompletedAt;
+      }
+
+      // If one has completedAt and the other doesn't, prioritize the one with completedAt
+      if (aCompletedAt !== null && bCompletedAt === null) {
+        return -1;
+      }
+      if (aCompletedAt === null && bCompletedAt !== null) {
+        return 1;
+      }
+
+      // If neither has completedAt, fall back to lastProgressUpdate (oldest first)
+      return a.lastProgressUpdate - b.lastProgressUpdate;
+    });
+  }
+
   // Helper function to sort entries
   function sortEntries(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
     const sorting = $miscSettings.progressTrackerSorting;
@@ -347,8 +417,8 @@
 
     return {
       currentlyReading: sortEntries(createEntriesWithSortData(currentlyReading)),
-      futureReads: sortEntries(createEntriesWithSortData(filteredFutureReads)),
-      completedVolumes: sortEntries(createEntriesWithSortData(completedVolumes))
+      futureReads: sortByAddedDate(createEntriesWithSortData(filteredFutureReads)),
+      completedVolumes: sortByCompletionDate(createEntriesWithSortData(completedVolumes))
     };
   });
 
@@ -374,16 +444,6 @@
         <Button size="sm" color="alternative" onclick={() => nav.toManageGoals()}>
           Manage Goals
         </Button>
-        <Button
-          size="sm"
-          color="alternative"
-          onclick={cycleSorting}
-          title={sortTitles[$miscSettings.progressTrackerSorting]}
-          class="flex h-10 items-center justify-center"
-        >
-          <SortOutline class="h-5 w-5" />
-          <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
-        </Button>
       </div>
     {/if}
   </div>
@@ -405,6 +465,16 @@
           <h2 class="text-xl font-semibold">Currently Reading</h2>
           <div class="flex items-center gap-2">
             <span class="text-xs text-gray-500">{resetTimeDisplay}</span>
+            <Button
+              size="xs"
+              color="alternative"
+              onclick={cycleSorting}
+              title={sortTitles[$miscSettings.progressTrackerSorting]}
+              class="flex h-8 items-center justify-center"
+            >
+              <SortOutline class="h-4 w-4" />
+              <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
+            </Button>
             <Button
               size="xs"
               color="alternative"
