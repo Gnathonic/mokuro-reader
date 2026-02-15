@@ -295,7 +295,7 @@
     {/if}
     <div>
       <span class="font-medium {config.color} mr-[0.25em]">{config.label}</span>
-      <span class="text-sm text-gray-400"> — {config.description}</span>
+      <span class="text-sm text-gray-400"> {config.description}</span>
     </div>
   </div>
 
