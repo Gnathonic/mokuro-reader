@@ -78,13 +78,16 @@
     }
 
     // Cloud path: use enriched placeholders, capped to prevent cache thrashing
+    if (useCompactForCloud) {
+      return enrichedPlaceholders.slice(0, 1);
+    }
     const limit = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
     return enrichedPlaceholders.slice(0, limit);
   });
 
   // Key for CompositeCanvas - forces fresh component on settings change
   let compositeKey = $derived(
-    `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}`
+    `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}-${($catalogSettings?.compactCloudSeries ?? false) ? 'compact' : 'full'}`
   );
 
   // Check if this series is downloading or queued
