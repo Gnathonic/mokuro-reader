@@ -5,6 +5,8 @@ export type ExtractionSettings = {
   asCbz: boolean;
   individualVolumes: boolean;
   includeSeriesTitle: boolean;
+  includeSidecars: boolean;
+  embedSidecarsInArchive: boolean;
 };
 
 export type ExtractionSettingsKey = keyof ExtractionSettings;
@@ -12,7 +14,9 @@ export type ExtractionSettingsKey = keyof ExtractionSettings;
 const defaultSettings: ExtractionSettings = {
   asCbz: true,
   individualVolumes: true,
-  includeSeriesTitle: true
+  includeSeriesTitle: true,
+  includeSidecars: true,
+  embedSidecarsInArchive: true
 };
 
 const stored = browser ? window.localStorage.getItem('extractionSettings') : undefined;

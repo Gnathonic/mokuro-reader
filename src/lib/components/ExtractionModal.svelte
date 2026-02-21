@@ -10,6 +10,8 @@
   let asCbz = $state($extractionSettings.asCbz);
   let individualVolumes = $state($extractionSettings.individualVolumes);
   let includeSeriesTitle = $state($extractionSettings.includeSeriesTitle);
+  let includeSidecars = $state($extractionSettings.includeSidecars);
+  let embedSidecarsInArchive = $state($extractionSettings.embedSidecarsInArchive);
   let firstVolumePreview = $state('');
   let currentVolume = $state<{ series_title: string; volume_title: string } | null>(null);
 
@@ -40,7 +42,13 @@
 
   function handleExtract() {
     if ($extractionModalStore?.onConfirm) {
-      $extractionModalStore.onConfirm(asCbz, individualVolumes, includeSeriesTitle);
+      $extractionModalStore.onConfirm(
+        asCbz,
+        individualVolumes,
+        includeSeriesTitle,
+        includeSidecars,
+        embedSidecarsInArchive
+      );
     }
     open = false;
   }
@@ -68,6 +76,16 @@
     includeSeriesTitle = value;
     updateExtractionSetting('includeSeriesTitle', value);
     if (currentVolume) updateFilenamePreview(currentVolume);
+  }
+
+  function updateIncludeSidecars(value: boolean) {
+    includeSidecars = value;
+    updateExtractionSetting('includeSidecars', value);
+  }
+
+  function updateEmbedSidecarsInArchive(value: boolean) {
+    embedSidecarsInArchive = value;
+    updateExtractionSetting('embedSidecarsInArchive', value);
   }
 
   run(() => {
@@ -110,6 +128,29 @@
             checked={includeSeriesTitle}
             onchange={(e) =>
               updateIncludeSeriesTitle((e.target as HTMLInputElement)?.checked ?? false)}
+          />
+        </div>
+      {/if}
+
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+          >Export sidecars (.mokuro + .webp)</span
+        >
+        <Toggle
+          checked={includeSidecars}
+          onchange={(e) => updateIncludeSidecars((e.target as HTMLInputElement)?.checked ?? false)}
+        />
+      </div>
+
+      {#if includeSidecars}
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >Embed thumbnail sidecar in archive</span
+          >
+          <Toggle
+            checked={embedSidecarsInArchive}
+            onchange={(e) =>
+              updateEmbedSidecarsInArchive((e.target as HTMLInputElement)?.checked ?? false)}
           />
         </div>
       {/if}

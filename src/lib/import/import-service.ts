@@ -103,11 +103,40 @@ function markProgressTrackerError(id: string, error: string): void {
  * Convert File objects to FileEntry format
  */
 function filesToEntries(files: File[]): FileEntry[] {
-  return files.map((file) => {
+  const sourceStems = new Set(
+    files
+      .map((file) => file.webkitRelativePath || file.name)
+      .map((path) => path.split('/').pop() || path)
+      .map((name) => {
+        const lower = name.toLowerCase();
+        if (lower.endsWith('.mokuro.gz')) return name.slice(0, -10);
+        if (lower.endsWith('.mokuro')) return name.slice(0, -7);
+        if (/\.(cbz|zip|cbr|rar|7z)$/i.test(name)) return name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+        return '';
+      })
+      .filter(Boolean)
+      .map((stem) => stem.toLowerCase())
+  );
+
+  return files
+    .map((file) => {
     // Use webkitRelativePath if available, otherwise use name
     const path = file.webkitRelativePath || file.name;
     return { path, file };
-  });
+    })
+    .filter((entry) => !isThumbnailSidecarPath(entry.path, sourceStems));
+}
+
+function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolean {
+  const filename = path.split('/').pop()?.toLowerCase() || '';
+  if (!filename.endsWith('.webp')) return false;
+  if (!sourceStems || sourceStems.size === 0) return false;
+  const stem = filename.slice(0, -5);
+  return sourceStems.has(stem);
+}
+
+function getThumbnailCandidatePaths(basePath: string): string[] {
+  return [`${basePath}.webp`];
 }
 
 // ============================================
@@ -376,6 +405,7 @@ async function processArchiveContents(
       const file = new File([entry.data], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
     } else if (isImageExtension(ext)) {
+      if (isThumbnailSidecarPath(entry.filename)) continue;
       // Image file - placeholder only (empty data)
       const file = new File([], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
@@ -425,6 +455,34 @@ async function processArchiveContents(
 
   // Combine confirmed pairings
   const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
+
+  // Extract embedded thumbnail sidecars (small files) for matched volumes only.
+  // We keep this separate from image extraction so sidecars do not become pages.
+  const thumbnailCandidates = new Set<string>();
+  const pairingThumbPaths = new Map<string, string[]>();
+  for (const pairing of allPairings) {
+    const candidates = getThumbnailCandidatePaths(pairing.basePath);
+    pairingThumbPaths.set(pairing.id, candidates);
+    for (const candidate of candidates) {
+      thumbnailCandidates.add(candidate);
+    }
+  }
+
+  const thumbnailByPath = new Map<string, File>();
+  if (thumbnailCandidates.size > 0) {
+    const thumbResult = await decompressArchiveRaw(
+      archiveFile,
+      undefined,
+      { pathPrefixes: Array.from(thumbnailCandidates) }
+    );
+    for (const entry of thumbResult.entries) {
+      const filename = entry.filename.split('/').pop() || entry.filename;
+      thumbnailByPath.set(
+        entry.filename.toLowerCase(),
+        new File([entry.data], filename, { lastModified: Date.now() })
+      );
+    }
+  }
 
   // If no pairings and no nested archives, nothing to import
   if (allPairings.length === 0 && nestedArchivePaths.length === 0) {
@@ -477,11 +535,21 @@ async function processArchiveContents(
       // Create DecompressedVolume for processing
       const decompressed: DecompressedVolume = {
         mokuroFile: pairing.mokuroFile,
+        thumbnailSidecar: null,
         imageFiles: volumeImageFiles,
         basePath: pairing.basePath,
         sourceType: 'local',
         nestedArchives: []
       };
+
+      const thumbCandidates = pairingThumbPaths.get(pairing.id) || [];
+      for (const candidate of thumbCandidates) {
+        const thumb = thumbnailByPath.get(candidate.toLowerCase());
+        if (thumb) {
+          decompressed.thumbnailSidecar = thumb;
+          break;
+        }
+      }
 
       try {
         // Check for missing files before processing (same as directory flow)
@@ -571,6 +639,7 @@ function directoryToDecompressed(source: PairedSource): DecompressedVolume {
 
   return {
     mokuroFile: source.mokuroFile,
+    thumbnailSidecar: null,
     imageFiles: source.source.files,
     basePath: source.basePath,
     sourceType: 'local',
@@ -598,6 +667,7 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
 
   return {
     mokuroFile: source.mokuroFile,
+    thumbnailSidecar: null,
     imageFiles,
     basePath: source.basePath,
     sourceType: 'local',

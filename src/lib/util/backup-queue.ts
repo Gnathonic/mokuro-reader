@@ -10,6 +10,12 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+import { loadVolumeSidecars, downloadFileBlob } from './volume-sidecars';
+
+export interface SidecarOptions {
+  includeSidecars: boolean;
+  embedSidecarsInArchive: boolean;
+}
 // Note: prepareVolumeData is no longer used - worker reads from IndexedDB directly
 
 // Type for provider instances (real or export)
@@ -24,6 +30,7 @@ export interface BackupQueueItem {
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'backing-up';
   downloadFilename?: string; // Only for export-for-download pseudo-provider
+  sidecarOptions: SidecarOptions;
 }
 
 interface SeriesQueueStatus {
@@ -64,7 +71,8 @@ queueStore.subscribe((queue) => {
  */
 export function queueVolumeForBackup(
   volume: VolumeMetadata,
-  providerInstance?: SyncProvider
+  providerInstance?: SyncProvider,
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
@@ -93,7 +101,8 @@ export function queueVolumeForBackup(
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
     volumeMetadata: volume,
-    status: 'queued'
+    status: 'queued',
+    sidecarOptions
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -108,7 +117,8 @@ export function queueVolumeForBackup(
 export function queueVolumeForExport(
   volume: VolumeMetadata,
   filename: string,
-  extension: 'zip' | 'cbz' = 'cbz'
+  extension: 'zip' | 'cbz' = 'cbz',
+  sidecarOptions: SidecarOptions = { includeSidecars: false, embedSidecarsInArchive: false }
 ): void {
   const queue = get(queueStore);
 
@@ -128,7 +138,8 @@ export function queueVolumeForExport(
     uploadConcurrencyLimit: exportProvider.uploadConcurrencyLimit,
     volumeMetadata: volume,
     status: 'queued',
-    downloadFilename: filename
+    downloadFilename: filename,
+    sidecarOptions
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -142,7 +153,8 @@ export function queueVolumeForExport(
  */
 export function queueSeriesVolumesForBackup(
   volumes: VolumeMetadata[],
-  providerInstance?: SyncProvider
+  providerInstance?: SyncProvider,
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
@@ -173,7 +185,7 @@ export function queueSeriesVolumesForBackup(
   });
 
   // Add each volume individually (duplicate check happens in queueVolumeForBackup)
-  sorted.forEach((volume) => queueVolumeForBackup(volume, targetProvider));
+  sorted.forEach((volume) => queueVolumeForBackup(volume, targetProvider, sidecarOptions));
 }
 
 /**
@@ -331,7 +343,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             volumeUuid: item.volumeUuid,
             volumeTitle: item.volumeTitle,
             seriesTitle: item.seriesTitle,
-            downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`
+            downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`,
+            embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
           };
         }
 
@@ -344,7 +357,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           volumeUuid: item.volumeUuid,
           volumeTitle: item.volumeTitle,
           seriesTitle: item.seriesTitle,
-          credentials
+          credentials,
+          embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
         };
       },
       onProgress: (data) => {
@@ -368,6 +382,16 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             link.download = item.downloadFilename || `${item.volumeTitle}.cbz`;
             link.click();
             URL.revokeObjectURL(url);
+
+            if (item.sidecarOptions.includeSidecars) {
+              const sidecars = await loadVolumeSidecars(item.volumeUuid);
+              if (sidecars.mokuroFile) {
+                downloadFileBlob(sidecars.mokuroFile);
+              }
+              if (sidecars.thumbnailFile) {
+                downloadFileBlob(sidecars.thumbnailFile);
+              }
+            }
 
             getBackupUiBridge().notify(`Exported ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
@@ -403,6 +427,22 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                 size: 0 // Size unknown at this point, will be updated on next full fetch
               });
               console.log(`✅ Added ${path} to ${provider!.type} cache`);
+            }
+          }
+
+          if (item.sidecarOptions.includeSidecars) {
+            const sidecars = await loadVolumeSidecars(item.volumeUuid);
+            if (sidecars.mokuroFile) {
+              await provider!.uploadFile(
+                `${item.seriesTitle}/${item.volumeTitle}.mokuro`,
+                sidecars.mokuroFile
+              );
+            }
+            if (sidecars.thumbnailFile) {
+              await provider!.uploadFile(
+                `${item.seriesTitle}/${item.volumeTitle}.webp`,
+                sidecars.thumbnailFile
+              );
             }
           }
 

@@ -471,7 +471,7 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * @returns Processed volume ready for database
  */
 export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
-  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives } = input;
+  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;
@@ -576,7 +576,23 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 
   const firstImage = coverImagePath ? imageFiles.get(coverImagePath) : null;
 
-  if (firstImage) {
+  // If a thumbnail sidecar is provided, use it directly as the local cover thumbnail.
+  // This preserves externally curated covers and skips generation from page images.
+  if (thumbnailSidecar) {
+    thumbnail = thumbnailSidecar;
+    try {
+      const dims = await getImageDimensions(thumbnailSidecar);
+      thumbnailWidth = dims.width;
+      thumbnailHeight = dims.height;
+    } catch (error) {
+      // Keep sidecar as-is even if dimension probing fails.
+      // Use first page dimensions as a best-effort fallback to avoid triggering
+      // background thumbnail regeneration that would overwrite custom covers.
+      console.warn('Failed to read sidecar thumbnail dimensions; keeping sidecar as-is:', error);
+      thumbnailWidth = pages[0]?.img_width || 1;
+      thumbnailHeight = pages[0]?.img_height || 1;
+    }
+  } else if (firstImage) {
     try {
       const result = await generateThumbnail(firstImage);
       thumbnail = result.file;

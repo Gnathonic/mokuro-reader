@@ -121,6 +121,7 @@ interface CompressFromDbMessage {
   seriesTitle: string;
   credentials?: ProviderCredentials;
   downloadFilename?: string; // For local export
+  embedThumbnailSidecar?: boolean;
 }
 
 type WorkerMessage =
@@ -247,14 +248,15 @@ async function downloadFromWebDAV(
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/');
-  const fullUrl = `${url}${encodedPath}`;
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+  const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+  const fullUrl = `${baseUrl}${encodedPath}`;
 
-  const response = await fetch(fullUrl, {
-    headers: {
-      Authorization: authHeader
-    }
-  });
+  const headers: Record<string, string> = {};
+  if (username || password) {
+    headers.Authorization = 'Basic ' + btoa(`${username}:${password}`);
+  }
+
+  const response = await fetch(fullUrl, { headers });
 
   if (!response.ok) {
     throw new Error(`WebDAV download failed: ${response.status} ${response.statusText}`);
@@ -1130,14 +1132,18 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing volume ${volumeTitle} from IndexedDB...`);
 
       // Compress using shared utility (handles streaming from IndexedDB)
-      const cbzBlob = await compressVolumeFromDb(volumeUuid, (completed, total) => {
-        const progressMessage: UploadProgressMessage = {
-          type: 'progress',
-          phase: 'compressing',
-          progress: (completed / total) * 100
-        };
-        ctx.postMessage(progressMessage);
-      });
+      const cbzBlob = await compressVolumeFromDb(
+        volumeUuid,
+        (completed, total) => {
+          const progressMessage: UploadProgressMessage = {
+            type: 'progress',
+            phase: 'compressing',
+            progress: (completed / total) * 100
+          };
+          ctx.postMessage(progressMessage);
+        },
+        { embedThumbnailSidecar: message.embedThumbnailSidecar === true }
+      );
 
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 

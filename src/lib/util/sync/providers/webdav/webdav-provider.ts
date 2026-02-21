@@ -550,9 +550,12 @@ export class WebDAVProvider implements SyncProvider {
             await processFolder(item.filename);
           } else {
             const name = item.basename.toLowerCase();
-            // Include CBZ files and JSON config files
+            // Include CBZ files, sidecars, and JSON config files
             if (
               name.endsWith('.cbz') ||
+              name.endsWith('.mokuro') ||
+              name.endsWith('.mokuro.gz') ||
+              name.endsWith('.webp') ||
               item.basename === 'volume-data.json' ||
               item.basename === 'profiles.json'
             ) {
@@ -609,9 +612,12 @@ export class WebDAVProvider implements SyncProvider {
     for (const item of contents) {
       if (item.type === 'file') {
         const name = item.basename.toLowerCase();
-        // Include CBZ files and JSON config files
+        // Include CBZ files, sidecars, and JSON config files
         if (
           name.endsWith('.cbz') ||
+          name.endsWith('.mokuro') ||
+          name.endsWith('.mokuro.gz') ||
+          name.endsWith('.webp') ||
           item.basename === 'volume-data.json' ||
           item.basename === 'profiles.json'
         ) {

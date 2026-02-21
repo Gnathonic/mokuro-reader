@@ -439,12 +439,16 @@ export class MegaProvider implements SyncProvider {
         // Skip non-files
         if ((file as any).directory) continue;
 
-        // Check if file is a CBZ or JSON
+        // Check if file is a CBZ, sidecar, or JSON
         const name = (file as any).name || '';
         const isCbz = name.toLowerCase().endsWith('.cbz');
+        const isSidecar =
+          name.toLowerCase().endsWith('.mokuro') ||
+          name.toLowerCase().endsWith('.mokuro.gz') ||
+          name.toLowerCase().endsWith('.webp');
         const isJson = name === 'volume-data.json' || name === 'profiles.json';
 
-        if (!isCbz && !isJson) continue;
+        if (!isCbz && !isSidecar && !isJson) continue;
 
         // Check if file is in ANY mokuro-reader folder or subfolder
         let parent = (file as any).parent;

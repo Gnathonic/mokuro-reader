@@ -149,7 +149,8 @@ function getDatabase(): Dexie {
  */
 export async function compressVolumeFromDb(
   volumeUuid: string,
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  options: { embedThumbnailSidecar?: boolean } = {}
 ): Promise<Blob> {
   const db = getDatabase();
 
@@ -183,8 +184,11 @@ export async function compressVolumeFromDb(
   const placeholderPaths = new Set(volume.missing_page_paths || []);
   const validFilenames = filenames.filter((f) => !placeholderPaths.has(f));
 
-  // Total items: folder + files + mokuro file (if present)
-  const totalItems = validFilenames.length + (metadata ? 1 : 0) + 1;
+  const thumbnailSidecar = options.embedThumbnailSidecar ? volume.thumbnail : null;
+
+  // Total items: folder + files + mokuro file (if present) + thumbnail sidecar (optional)
+  const totalItems =
+    validFilenames.length + (metadata ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
   let completedItems = 0;
 
   // Create zip writer with BlobWriter to avoid memory issues
@@ -249,6 +253,17 @@ export async function compressVolumeFromDb(
   // Add mokuro metadata file
   if (metadata) {
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
+    completedItems++;
+    if (onProgress) onProgress(completedItems, totalItems);
+  }
+
+  // Add thumbnail sidecar when requested (used by sidecar-aware exports/backups)
+  if (thumbnailSidecar) {
+    const thumbBuffer = await thumbnailSidecar.arrayBuffer();
+    await zipWriter.add(
+      `${volumeTitle}.webp`,
+      new Uint8ArrayReader(new Uint8Array(thumbBuffer))
+    );
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
   }

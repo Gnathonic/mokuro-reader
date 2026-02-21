@@ -86,6 +86,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         // Count by file type
         const typeCounts: Record<string, number> = {};
         const cbzFiles: any[] = [];
+        const webpFiles: any[] = [];
         const volumeDataFiles: any[] = [];
         const profilesFiles: any[] = [];
         const folderNames = new Map<string, string>();
@@ -109,6 +110,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
+          } else if (item.name.endsWith('.webp')) {
+            webpFiles.push(item);
           } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
             volumeDataFiles.push(item);
           } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
@@ -124,15 +127,17 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         }
 
         console.log('File type counts:', typeCounts);
-        console.log(`Found ${cbzFiles.length} .cbz files and ${folderNames.size} folders`);
+        console.log(
+          `Found ${cbzFiles.length} .cbz files, ${webpFiles.length} .webp files and ${folderNames.size} folders`
+        );
         console.log('Folder names:', foundFolderNames);
 
         // Build cache from files using the folder map
         // Group by series title (folder name) for efficient series-based operations
         const cacheMap = new Map<string, DriveFileMetadata[]>();
 
-        // Add .cbz files (group by series title)
-        for (const file of cbzFiles) {
+        // Add .cbz and .webp files (group by series title)
+        for (const file of [...cbzFiles, ...webpFiles]) {
           const parentId = file.parents?.[0];
           const parentName = parentId ? folderNames.get(parentId) : null;
 
@@ -198,7 +203,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         }
 
         console.log(
-          `Cached ${cbzFiles.length} .cbz files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
+          `Cached ${cbzFiles.length} .cbz files, ${webpFiles.length} .webp files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
         );
         this.cache.set(cacheMap);
         this.lastFetchTime = Date.now();

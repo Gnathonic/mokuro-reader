@@ -454,10 +454,22 @@
         volume_title: manga[0].volume_title
       };
 
-      promptExtraction(firstVolume, async (asCbz, individualVolumes, includeSeriesTitle) => {
+      promptExtraction(
+        firstVolume,
+        async (
+          asCbz,
+          individualVolumes,
+          includeSeriesTitle,
+          includeSidecars,
+          embedSidecarsInArchive
+        ) => {
         loading = true;
-        loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle);
-      });
+          loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle, {
+            includeSidecars,
+            embedSidecarsInArchive
+          });
+        }
+      );
     }
   }
 

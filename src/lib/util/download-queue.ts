@@ -32,6 +32,7 @@ export interface QueueItem {
   volumeTitle: string;
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'downloading';
+  libraryId?: string;
 }
 
 interface SeriesQueueStatus {
@@ -44,6 +45,29 @@ interface SeriesQueueStatus {
 interface DecompressedEntry {
   filename: string;
   data: ArrayBuffer;
+}
+
+function getBaseStem(basePath: string): string {
+  const filename = basePath.split('/').pop() || basePath;
+  return filename.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+}
+
+function isThumbnailSidecar(filename: string, basePath: string): boolean {
+  const normalized = filename.toLowerCase();
+  if (normalized.includes('/')) return false;
+  const stem = getBaseStem(basePath).toLowerCase();
+  return normalized === `${stem}.webp`;
+}
+
+async function parseMokuroGzEntry(entry: DecompressedEntry, normalizedFilename: string): Promise<File | null> {
+  if (typeof DecompressionStream === 'undefined') {
+    return null;
+  }
+
+  const stream = new Blob([entry.data]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const decompressedBlob = await new Response(stream).blob();
+  const mokuroName = normalizedFilename.replace(/\.gz$/i, '');
+  return new File([decompressedBlob], mokuroName, { type: 'application/json' });
 }
 
 // Internal queue state
@@ -99,7 +123,8 @@ export function queueVolume(volume: VolumeMetadata): void {
     seriesTitle: volume.series_title,
     volumeTitle: volume.volume_title,
     volumeMetadata: volume,
-    status: 'queued'
+    status: 'queued',
+    libraryId: volume.libraryId
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -176,7 +201,9 @@ function parseFilename(filename: string): { series: string; volume: string } {
 export function queueVolumesFromCloudFiles(
   cloudFiles: import('./sync/provider-interface').CloudFileMetadata[]
 ): void {
-  const placeholders: VolumeMetadata[] = cloudFiles.map((file) => {
+  const placeholders: VolumeMetadata[] = cloudFiles
+    .filter((file) => file.path.toLowerCase().endsWith('.cbz'))
+    .map((file) => {
     // Look up file in cache to get proper path with parent folder
     // The cache has the full path (e.g., "SeriesName/Volume01.cbz")
     const cachedFile = unifiedCloudManager.getCloudVolume(file.fileId);
@@ -190,23 +217,23 @@ export function queueVolumesFromCloudFiles(
     const seriesUuid = generateDeterministicUUID(seriesTitle);
     const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
-    return {
-      mokuro_version: '0.0.0', // Placeholder - will be updated after download
-      series_title: seriesTitle,
-      series_uuid: seriesUuid,
-      volume_title: volumeTitle,
-      volume_uuid: volumeUuid,
-      page_count: 0, // Placeholder - will be updated after download
-      character_count: 0, // Placeholder - will be updated after download
-      page_char_counts: [], // Placeholder - will be updated after download
-      isPlaceholder: true,
-      cloudProvider: file.provider,
-      cloudFileId: file.fileId,
-      cloudModifiedTime: file.modifiedTime,
-      cloudSize: file.size,
-      cloudPath: filePath // Store path for processing (from cache if available)
-    };
-  });
+      return {
+        mokuro_version: '0.0.0', // Placeholder - will be updated after download
+        series_title: seriesTitle,
+        series_uuid: seriesUuid,
+        volume_title: volumeTitle,
+        volume_uuid: volumeUuid,
+        page_count: 0, // Placeholder - will be updated after download
+        character_count: 0, // Placeholder - will be updated after download
+        page_char_counts: [], // Placeholder - will be updated after download
+        isPlaceholder: true,
+        cloudProvider: file.provider,
+        cloudFileId: file.fileId,
+        cloudModifiedTime: file.modifiedTime,
+        cloudSize: file.size,
+        cloudPath: filePath // Store path for processing (from cache if available)
+      };
+    });
 
   queueSeriesVolumes(placeholders);
 }
@@ -239,7 +266,24 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
  * For MEGA, creates a temporary share link instead of passing credentials
  * Implements rate limiting to prevent API congestion
  */
-async function getProviderCredentials(provider: ProviderType, fileId: string): Promise<any> {
+async function getProviderCredentials(
+  provider: ProviderType,
+  fileId: string,
+  libraryId?: string
+): Promise<any> {
+  if (libraryId) {
+    const { getLibraryById } = await import('$lib/settings/libraries');
+    const library = getLibraryById(libraryId);
+    if (!library) {
+      throw new Error(`Library not found: ${libraryId}`);
+    }
+    return {
+      webdavUrl: library.serverUrl.replace(/\/$/, ''),
+      webdavUsername: library.username,
+      webdavPassword: library.password
+    };
+  }
+
   const activeProvider = unifiedCloudManager.getActiveProvider();
   if (!activeProvider || activeProvider.type !== provider) {
     throw new Error(`Active provider mismatch for download credentials: expected ${provider}`);
@@ -253,11 +297,12 @@ async function getProviderCredentials(provider: ProviderType, fileId: string): P
  * Convert worker decompressed entries to DecompressedVolume format
  * for use with the unified import system
  */
-function entriesToDecompressedVolume(
+async function entriesToDecompressedVolume(
   entries: DecompressedEntry[],
   basePath: string
-): DecompressedVolume {
+): Promise<DecompressedVolume> {
   let mokuroFile: File | null = null;
+  let thumbnailSidecar: File | null = null;
   const imageFiles = new Map<string, File>();
   const nestedArchives: File[] = [];
 
@@ -273,6 +318,15 @@ function entriesToDecompressedVolume(
     if (normalizedFilename.endsWith('.mokuro')) {
       // Found mokuro file
       mokuroFile = new File([entry.data], normalizedFilename, { type: 'application/json' });
+    } else if (normalizedFilename.endsWith('.mokuro.gz')) {
+      const decompressedMokuro = await parseMokuroGzEntry(entry, normalizedFilename);
+      if (decompressedMokuro) {
+        mokuroFile = decompressedMokuro;
+      }
+    } else if (isThumbnailSidecar(normalizedFilename, basePath)) {
+      const mimeType = getImageMimeType(extension);
+      thumbnailSidecar = new File([entry.data], normalizedFilename, { type: mimeType });
+      console.log('[Download Queue] Detected thumbnail sidecar entry:', normalizedFilename);
     } else if (['zip', 'cbz', 'cbr', 'rar', '7z'].includes(extension)) {
       // Nested archive
       nestedArchives.push(new File([entry.data], normalizedFilename));
@@ -290,6 +344,7 @@ function entriesToDecompressedVolume(
 
   return {
     mokuroFile,
+    thumbnailSidecar,
     imageFiles,
     basePath,
     sourceType: 'cloud',
@@ -311,7 +366,7 @@ async function processVolumeData(
     (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath || placeholder.volume_title;
 
   // Convert entries to DecompressedVolume format
-  const decompressedVolume = entriesToDecompressedVolume(entries, basePath);
+  const decompressedVolume = await entriesToDecompressedVolume(entries, basePath);
 
   // Use unified import system to process the volume
   // This handles missing pages, image-only volumes, placeholder generation, etc.
@@ -372,6 +427,109 @@ async function processVolumeData(
   }
 }
 
+function getSidecarCandidatesForPlaceholder(placeholder: VolumeMetadata): string[] {
+  const cloudPath =
+    (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath ||
+    `${placeholder.series_title}/${placeholder.volume_title}.cbz`;
+  const noExt = cloudPath.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+  return [
+    `${noExt}.mokuro`,
+    `${noExt}.mokuro.gz`,
+    `${noExt}.webp`
+  ];
+}
+
+function normalizePathKey(value: string): string {
+  return normalizeFilename(value).toLowerCase();
+}
+
+function basename(path: string): string {
+  return path.split('/').pop() || path;
+}
+
+function findSidecarFiles(
+  placeholder: VolumeMetadata,
+  allFiles: import('./sync/provider-interface').CloudFileMetadata[]
+): import('./sync/provider-interface').CloudFileMetadata[] {
+  const exactCandidates = new Set(
+    getSidecarCandidatesForPlaceholder(placeholder).map((candidate) => normalizePathKey(candidate))
+  );
+
+  // Fast path: exact normalized path match
+  const exactMatches = allFiles.filter((file) => exactCandidates.has(normalizePathKey(file.path)));
+  if (exactMatches.length > 0) {
+    console.log(
+      '[Download Queue] Sidecar exact matches:',
+      exactMatches.map((file) => file.path)
+    );
+    return exactMatches;
+  }
+
+  // Fallback: robust basename/stem matching to handle encoded paths and naming variance.
+  const targetStem = normalizePathKey(placeholder.volume_title);
+  const seriesPrefix = `${normalizePathKey(placeholder.series_title)}/`;
+
+  const fallbackMatches = allFiles.filter((file) => {
+    const filePathKey = normalizePathKey(file.path);
+    if (!filePathKey.startsWith(seriesPrefix)) return false;
+
+    const name = normalizePathKey(basename(file.path));
+    return (
+      name === `${targetStem}.mokuro` ||
+      name === `${targetStem}.mokuro.gz` ||
+      name === `${targetStem}.webp`
+    );
+  });
+
+  if (fallbackMatches.length > 0) {
+    console.log(
+      '[Download Queue] Sidecar fallback matches:',
+      fallbackMatches.map((file) => file.path)
+    );
+  } else {
+    console.log('[Download Queue] No sidecar matches found for:', placeholder.series_title, placeholder.volume_title);
+  }
+
+  return fallbackMatches;
+}
+
+async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<DecompressedEntry[]> {
+  const provider = unifiedCloudManager.getActiveProvider();
+  if (!provider) return [];
+
+  // Use a live provider listing here (not just cache) so we pick up freshly uploaded sidecars
+  // and avoid stale-cache misses for custom thumbnails.
+  let allFiles = unifiedCloudManager.getAllCloudVolumes();
+  try {
+    const liveFiles = await provider.listCloudVolumes();
+    if (liveFiles.length > 0) {
+      allFiles = liveFiles;
+    }
+  } catch (error) {
+    console.warn('Failed live sidecar listing, falling back to cache:', error);
+  }
+
+  const selected = findSidecarFiles(placeholder, allFiles);
+  if (selected.length > 0) {
+    console.log(
+      '[Download Queue] Downloading sidecars:',
+      selected.map((sidecar) => sidecar.path)
+    );
+  }
+
+  const sidecarEntries: DecompressedEntry[] = [];
+  for (const sidecar of selected) {
+    const blob = await provider.downloadFile(sidecar);
+    const data = await blob.arrayBuffer();
+    sidecarEntries.push({
+      filename: sidecar.path.split('/').pop() || sidecar.path,
+      data
+    });
+  }
+
+  return sidecarEntries;
+}
+
 /**
  * Handle download errors consistently
  */
@@ -418,10 +576,10 @@ async function cleanupProviderDownloadCredentials(providerType: ProviderType, fi
  * - MEGA: Workers download from share link via MEGA API and decompress
  */
 async function processDownload(item: QueueItem, processId: string): Promise<void> {
-  // Get the active provider (single-provider architecture - only one provider active at a time)
-  const provider = unifiedCloudManager.getActiveProvider();
+  const isLibraryDownload = !!item.libraryId;
+  const provider = isLibraryDownload ? null : unifiedCloudManager.getActiveProvider();
 
-  if (!provider) {
+  if (!isLibraryDownload && !provider) {
     handleDownloadError(item, processId, `No cloud provider authenticated`);
     return;
   }
@@ -429,8 +587,11 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
   const pool = await getFileProcessingPool();
   const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
-  // Check if provider supports worker downloads
-  if (provider.supportsWorkerDownload) {
+  const providerType = isLibraryDownload ? 'webdav' : provider!.type;
+  const downloadConcurrencyLimit = isLibraryDownload ? 8 : provider!.downloadConcurrencyLimit;
+  const supportsWorkerDownload = isLibraryDownload ? true : provider!.supportsWorkerDownload;
+
+  if (supportsWorkerDownload) {
     // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
     // Estimate memory requirement (download + decompress + processing overhead)
     // More accurate multiplier: compressed file + decompressed data + working memory
@@ -450,17 +611,21 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
     const task: WorkerTask = {
       id: item.cloudFileId,
       memoryRequirement,
-      provider: `${provider.type}:download`, // Provider:operation identifier for concurrency tracking
-      providerConcurrencyLimit: provider.downloadConcurrencyLimit, // Provider's download limit
+      provider: `${providerType}:download`,
+      providerConcurrencyLimit: downloadConcurrencyLimit,
       metadata: workerMetadata,
       // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
       prepareData: async () => {
         // Get provider credentials (for MEGA, this creates a temporary share link)
-        const credentials = await getProviderCredentials(provider.type, item.cloudFileId);
+        const credentials = await getProviderCredentials(
+          providerType,
+          item.cloudFileId,
+          item.libraryId
+        );
 
         return {
           mode: 'download-and-decompress',
-          provider: provider.type,
+          provider: providerType,
           fileId: item.cloudFileId,
           fileName: item.volumeTitle + '.cbz',
           credentials,
@@ -481,7 +646,14 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             status: 'Processing files...'
           });
 
-          await processVolumeData(data.entries, item.volumeMetadata);
+          const sidecarEntries = await downloadSidecarEntries(item.volumeMetadata);
+          const allEntries =
+            sidecarEntries.length > 0 ? [...data.entries, ...sidecarEntries] : data.entries;
+          console.log(
+            '[Download Queue] Sidecar entries merged:',
+            sidecarEntries.map((entry) => entry.filename)
+          );
+          await processVolumeData(allEntries, item.volumeMetadata);
 
           progressTrackerStore.updateProcess(processId, {
             progress: 100,
@@ -501,14 +673,18 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             error instanceof Error ? error.message : 'Unknown error'
           );
         } finally {
-          await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
+          if (!isLibraryDownload) {
+            await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
+          }
           releaseMemory();
           checkAndTerminatePool();
         }
       },
       onError: async (data) => {
         console.error(`Error downloading ${item.volumeTitle}:`, data.error);
-        await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
+        if (!isLibraryDownload) {
+          await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
+        }
         handleDownloadError(item, processId, data.error);
         checkAndTerminatePool();
 
@@ -556,8 +732,9 @@ async function processQueue(): Promise<void> {
   }
 
   // Get active provider (single-provider architecture)
+  const isLibraryDownload = !!item.libraryId;
   const provider = unifiedCloudManager.getActiveProvider();
-  if (!provider) {
+  if (!isLibraryDownload && !provider) {
     console.error(`[Download Queue] No cloud provider authenticated, skipping ${item.volumeTitle}`);
     return;
   }

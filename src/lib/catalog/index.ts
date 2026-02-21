@@ -6,10 +6,11 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
+import { libraryFilesStore, generateLibraryPlaceholders } from '$lib/util/libraries';
+import { selectedLibraryId } from '$lib/settings/libraries';
 
 // Single source of truth from the database
-// Initial value is null to indicate "loading" state (vs {} which means "loaded but empty")
-export const volumes = readable<Record<string, VolumeMetadata> | null>(null, (set) => {
+export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   const subscription = liveQuery(async () => {
     const volumesArray = await db.volumes.toArray();
 
@@ -28,51 +29,51 @@ export const volumes = readable<Record<string, VolumeMetadata> | null>(null, (se
   return () => subscription.unsubscribe();
 });
 
-// Merge local volumes with cloud placeholders
-// Returns null while volumes are still loading
+// Merge local volumes with cloud placeholders and library placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles],
-  ([$volumes, $cloudFiles]) => {
-    // Propagate loading state
-    if ($volumes === null) {
-      return null;
-    }
-
-    // Skip placeholder generation if no cloud files
-    if ($cloudFiles.size === 0) {
-      return $volumes;
-    }
-
-    // Generate placeholders synchronously
-    const placeholders = generatePlaceholders($cloudFiles, Object.values($volumes));
-
-    // Combine local volumes with placeholders
+  [volumes, unifiedCloudManager.cloudFiles, libraryFilesStore, selectedLibraryId],
+  ([$volumes, $cloudFiles, $libraryFiles, $selectedLibraryId]) => {
     const combined = { ...$volumes };
+    const localVolumes = Object.values($volumes);
 
-    for (const placeholder of placeholders) {
-      combined[placeholder.volume_uuid] = placeholder;
+    // Generate cloud provider placeholders
+    if ($cloudFiles.size > 0) {
+      const cloudPlaceholders = generatePlaceholders($cloudFiles, localVolumes);
+      for (const placeholder of cloudPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
+    }
+
+    // Generate library placeholders
+    if ($libraryFiles.size > 0) {
+      // Pass all combined volumes so library placeholders don't duplicate cloud placeholders
+      const allVolumes = Object.values(combined);
+      const libraryPlaceholders = generateLibraryPlaceholders(
+        $libraryFiles,
+        allVolumes,
+        $selectedLibraryId
+      );
+      for (const placeholder of libraryPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
     }
 
     return combined;
   },
-  null as Record<string, VolumeMetadata> | null
+  {} as Record<string, VolumeMetadata>
 );
 
 // Each derived store needs to be passed as an array if using multiple inputs
-// Returns null while loading, [] when loaded but empty
 export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlaceholders]) => {
-  // Propagate loading state (null means still loading)
-  if ($volumesWithPlaceholders === null) {
+  // Return null while loading (before first data emission)
+  if ($volumesWithPlaceholders === undefined) {
     return null;
   }
   return deriveSeriesFromVolumes(Object.values($volumesWithPlaceholders));
 });
 
-// Returns null while catalog is loading, [] if series not found after load
 export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
-  // Propagate loading state
-  if ($catalog === null) return null;
-  if (!$routeParams.manga) return [];
+  if (!$catalog || !$routeParams.manga) return [];
 
   // Primary: match by title (folder name) - handles placeholder→local transition
   let series = $catalog.find((s) => s.title === $routeParams.manga);
@@ -85,12 +86,8 @@ export const currentSeries = derived([routeParams, catalog], ([$routeParams, $ca
   return series?.volumes || [];
 });
 
-// Returns null while volumes are loading, undefined if volume not found after load
 export const currentVolume = derived([routeParams, volumes], ([$routeParams, $volumes]) => {
-  // Propagate loading state
-  if ($volumes === null) return null;
-
-  if ($routeParams && $routeParams.volume) {
+  if ($routeParams && $volumes && $routeParams.volume) {
     return $volumes[$routeParams.volume]; // Direct lookup instead of find()
   }
   return undefined;
@@ -107,41 +104,22 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
     // Don't clear if the store just emitted a new object reference for the same volume
     if (newUuid !== currentVolumeDataLastUuid) {
       currentVolumeDataLastUuid = newUuid;
-      currentVolumeDataLoadedUuid = undefined;
-      currentVolumeDataRequestId++;
       // Clear old data synchronously to prevent state leaks between volumes
       set(undefined);
     }
 
     if ($currentVolume) {
-      // If this volume's data is already loaded, skip redundant re-fetches.
-      // This prevents reader flashes when unrelated volumes are imported.
-      if (currentVolumeDataLoadedUuid === $currentVolume.volume_uuid) {
-        return;
-      }
-
-      const requestId = ++currentVolumeDataRequestId;
-      const volumeUuid = $currentVolume.volume_uuid;
-
       // Assemble VolumeData from volume_ocr and volume_files tables
       Promise.all([
-        db.volume_ocr.get(volumeUuid),
-        db.volume_files.get(volumeUuid)
+        db.volume_ocr.get($currentVolume.volume_uuid),
+        db.volume_files.get($currentVolume.volume_uuid)
       ]).then(([ocr, files]) => {
-        // Ignore stale async results if user navigated away while fetching.
-        if (requestId !== currentVolumeDataRequestId) {
-          return;
-        }
-
-        currentVolumeDataLoadedUuid = volumeUuid;
         if (ocr) {
           set({
-            volume_uuid: volumeUuid,
+            volume_uuid: $currentVolume.volume_uuid,
             pages: ocr.pages,
             files: files?.files
           });
-        } else {
-          set(undefined);
         }
       });
     }
@@ -151,10 +129,6 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
 
 // Track last volume UUID to prevent unnecessary data clears
 let currentVolumeDataLastUuid: string | undefined;
-// Track which volume UUID has fully loaded data in currentVolumeData.
-let currentVolumeDataLoadedUuid: string | undefined;
-// Monotonic token to ignore stale async fetches.
-let currentVolumeDataRequestId = 0;
 
 /**
  * Japanese character count for current volume.

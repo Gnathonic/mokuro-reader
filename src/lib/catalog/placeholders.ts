@@ -38,6 +38,7 @@ function parseCloudPath(
 
   const folderName = parts[0];
   const volumeWithExt = parts[1];
+  if (!volumeWithExt.toLowerCase().endsWith('.cbz')) return null;
 
   // Remove .cbz extension
   const volumeTitle = volumeWithExt.replace(/\.cbz$/i, '');
@@ -110,10 +111,18 @@ export function generatePlaceholders(
     }
   }
 
-  // Flatten Map values into a single array
+  // Flatten Map values into a single array and split out .webp sidecars
   const cloudFiles: CloudVolumeWithProvider[] = [];
+  const thumbnailMap = new Map<string, string>(); // basePath -> fileId
   for (const files of cloudFilesMap.values()) {
-    cloudFiles.push(...files);
+    for (const file of files) {
+      if (file.path.toLowerCase().endsWith('.webp')) {
+        const basePath = file.path.replace(/\.webp$/i, '');
+        thumbnailMap.set(basePath, file.fileId);
+      } else {
+        cloudFiles.push(file);
+      }
+    }
   }
 
   // Find cloud-only files
@@ -132,6 +141,11 @@ export function generatePlaceholders(
 
     const placeholder = createPlaceholder(cloudFile, seriesUuid);
     if (placeholder) {
+      const basePath = cloudFile.path.replace(/\.cbz$/i, '');
+      const thumbnailFileId = thumbnailMap.get(basePath);
+      if (thumbnailFileId) {
+        placeholder.cloudThumbnailFileId = thumbnailFileId;
+      }
       placeholders.push(placeholder);
     }
   }

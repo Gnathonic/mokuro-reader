@@ -297,15 +297,27 @@
     clearServiceWorkerCache();
     // Storage quota is fetched reactively via $effect when auth state changes
 
-    // Pre-fill WebDAV form fields from last session (Issue #206 Lesson #10)
-    try {
-      const webdavProviderInstance = await providerManager.getOrLoadProvider('webdav');
-      const lastUrl = webdavProviderInstance.getLastServerUrl?.();
-      const lastUsername = webdavProviderInstance.getLastUsername?.();
-      if (lastUrl) webdavUrl = lastUrl;
-      if (lastUsername) webdavUsername = lastUsername;
-    } catch {
-      // Provider not loadable, ignore
+    // Check for deep-link query params (e.g. #/cloud?server=...&username=...)
+    const hashQuery = window.location.hash.split('?')[1];
+    if (hashQuery) {
+      const params = new URLSearchParams(hashQuery);
+      const deepServer = params.get('server');
+      const deepUsername = params.get('username');
+      if (deepServer) webdavUrl = deepServer;
+      if (deepUsername) webdavUsername = deepUsername;
+    }
+
+    // Pre-fill WebDAV form fields from last session (if not already set by deep link)
+    if (!webdavUrl || !webdavUsername) {
+      try {
+        const webdavProviderInstance = await providerManager.getOrLoadProvider('webdav');
+        const lastUrl = webdavProviderInstance.getLastServerUrl?.();
+        const lastUsername = webdavProviderInstance.getLastUsername?.();
+        if (!webdavUrl && lastUrl) webdavUrl = lastUrl;
+        if (!webdavUsername && lastUsername) webdavUsername = lastUsername;
+      } catch {
+        // Provider not loadable, ignore
+      }
     }
   });
 

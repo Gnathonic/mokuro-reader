@@ -66,7 +66,11 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
     page_char_counts: pageCharCounts,
     thumbnail:
       metadata.thumbnail instanceof Blob
-        ? new File([metadata.thumbnail], 'thumbnail.jpg', { type: 'image/jpeg' })
+        ? metadata.thumbnail instanceof File
+          ? metadata.thumbnail
+          : new File([metadata.thumbnail], 'thumbnail', {
+              type: metadata.thumbnail.type || 'image/jpeg'
+            })
         : undefined,
     thumbnail_width: metadata.thumbnailWidth,
     thumbnail_height: metadata.thumbnailHeight,

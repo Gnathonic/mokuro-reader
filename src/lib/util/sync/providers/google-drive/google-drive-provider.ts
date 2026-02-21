@@ -193,6 +193,7 @@ class GoogleDriveProvider implements SyncProvider {
       // Build folder map (folder ID -> folder name)
       const folderNames = new Map<string, string>();
       const cbzFiles: any[] = [];
+      const sidecarFiles: any[] = [];
       const jsonFiles: any[] = [];
 
       for (const item of allItems) {
@@ -200,6 +201,12 @@ class GoogleDriveProvider implements SyncProvider {
           folderNames.set(item.id, item.name);
         } else if (item.name.endsWith('.cbz')) {
           cbzFiles.push(item);
+        } else if (
+          item.name.endsWith('.mokuro') ||
+          item.name.endsWith('.mokuro.gz') ||
+          item.name.endsWith('.webp')
+        ) {
+          sidecarFiles.push(item);
         } else if (
           item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA ||
           item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES
@@ -209,7 +216,7 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       console.log(
-        `Found ${cbzFiles.length} CBZ files, ${jsonFiles.length} JSON files, and ${folderNames.size} folders`
+        `Found ${cbzFiles.length} CBZ files, ${sidecarFiles.length} sidecar files, ${jsonFiles.length} JSON files, and ${folderNames.size} folders`
       );
 
       // Transform all files to DriveFileMetadata format with paths
@@ -236,6 +243,25 @@ class GoogleDriveProvider implements SyncProvider {
         }
       }
 
+      // Add sidecar files (same parent-path resolution as CBZ files)
+      for (const file of sidecarFiles) {
+        const parentId = file.parents?.[0];
+        const parentName = parentId ? folderNames.get(parentId) : null;
+        if (!parentName) continue;
+
+        const path = `${parentName}/${file.name}`;
+        cloudVolumes.push({
+          provider: 'google-drive',
+          fileId: file.id,
+          path,
+          modifiedTime: file.modifiedTime || new Date().toISOString(),
+          size: file.size ? parseInt(file.size) : 0,
+          description: file.description,
+          parentId,
+          name: file.name
+        });
+      }
+
       // Add JSON files (no parent folder in path, just filename)
       for (const file of jsonFiles) {
         cloudVolumes.push({
@@ -251,7 +277,7 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       console.log(
-        `✅ Listed ${cloudVolumes.length} files from Google Drive (${cbzFiles.length} CBZ, ${jsonFiles.length} JSON)`
+        `✅ Listed ${cloudVolumes.length} files from Google Drive (${cbzFiles.length} CBZ, ${sidecarFiles.length} sidecars, ${jsonFiles.length} JSON)`
       );
       return cloudVolumes;
     } catch (error) {
@@ -280,7 +306,11 @@ class GoogleDriveProvider implements SyncProvider {
       const seriesTitle = pathParts.join('/');
 
       // Determine MIME type from extension
-      const mimeType = fileName.endsWith('.json') ? 'application/json' : 'application/x-cbz';
+      const mimeType = fileName.endsWith('.json')
+        ? 'application/json'
+        : fileName.endsWith('.webp')
+          ? 'image/webp'
+          : 'application/x-cbz';
 
       // Ensure folder structure exists
       const rootFolderId = await this.ensureReaderFolder();
