@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { catalog } from '$lib/catalog';
   import { Button, Listgroup, Search } from 'flowbite-svelte';
   import CatalogItem from './CatalogItem.svelte';
@@ -19,7 +20,114 @@
   import { showSnackbar } from '$lib/util';
   import type { ProviderType } from '$lib/util/sync/provider-interface';
 
+  const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
+
   let search = $state('');
+  let pendingRestoreY = $state<number | null>(null);
+  let restoringScroll = $state(false);
+  let restoreAttempts = $state(0);
+  let restoreRaf: number | null = null;
+
+  function getScrollingElement(): HTMLElement {
+    return (document.scrollingElement as HTMLElement) || document.documentElement || document.body;
+  }
+
+  function getScrollY(): number {
+    const scroller = getScrollingElement();
+    return window.scrollY || scroller.scrollTop || document.documentElement.scrollTop || document.body.scrollTop || 0;
+  }
+
+  function getMaxScrollY(): number {
+    const scroller = getScrollingElement();
+    const scrollerMax = scroller.scrollHeight - scroller.clientHeight;
+    const docMax = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+    const bodyMax = document.body.scrollHeight - document.body.clientHeight;
+    return Math.max(0, scrollerMax, docMax, bodyMax);
+  }
+
+  function setScrollY(y: number) {
+    window.scrollTo(0, y);
+    const scroller = getScrollingElement();
+    if (scroller.scrollTop !== y) {
+      scroller.scrollTop = y;
+    }
+  }
+
+  function persistCatalogScrollPosition() {
+    try {
+      sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(getScrollY()));
+    } catch (error) {
+      console.debug('Failed to persist catalog scroll position:', error);
+    }
+  }
+
+  function loadPendingCatalogScrollPosition() {
+    try {
+      const saved = sessionStorage.getItem(CATALOG_SCROLL_Y_KEY);
+      if (!saved) return;
+
+      const y = Number(saved);
+      if (!Number.isFinite(y) || y < 0) return;
+      pendingRestoreY = y;
+    } catch (error) {
+      console.debug('Failed to restore catalog scroll position:', error);
+    }
+  }
+
+  function stopRestoreLoop() {
+    restoringScroll = false;
+    restoreAttempts = 0;
+    if (restoreRaf !== null) {
+      cancelAnimationFrame(restoreRaf);
+      restoreRaf = null;
+    }
+  }
+
+  function restoreCatalogScrollStep() {
+    if (pendingRestoreY === null) {
+      stopRestoreLoop();
+      return;
+    }
+
+    const maxY = getMaxScrollY();
+    const targetY = Math.min(pendingRestoreY, maxY);
+    setScrollY(targetY);
+
+    const reachedTarget = Math.abs(getScrollY() - targetY) <= 2;
+    const enoughHeight = maxY >= pendingRestoreY - 2;
+
+    restoreAttempts += 1;
+    if ((reachedTarget && enoughHeight) || restoreAttempts >= 240) {
+      pendingRestoreY = null;
+      stopRestoreLoop();
+      return;
+    }
+
+    restoreRaf = requestAnimationFrame(restoreCatalogScrollStep);
+  }
+
+  function startRestoreLoop() {
+    if (pendingRestoreY === null || restoringScroll) return;
+    restoringScroll = true;
+    restoreAttempts = 0;
+    restoreRaf = requestAnimationFrame(restoreCatalogScrollStep);
+  }
+
+  onMount(() => {
+    loadPendingCatalogScrollPosition();
+    startRestoreLoop();
+
+    const onScroll = () => {
+      persistCatalogScrollPosition();
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+
+    return () => {
+      stopRestoreLoop();
+      window.removeEventListener('scroll', onScroll);
+    };
+  });
 
   // Check if any cloud provider is authenticated
   let hasAuthenticatedProvider = $derived(unifiedCloudManager.getDefaultProvider() !== null);
@@ -138,6 +246,14 @@
     return Object.entries(placeholdersByProvider)
       .map(([provider, count]) => `${count} ${providerNames[provider] || provider}`)
       .join(' • ');
+  });
+
+  $effect(() => {
+    // Re-attempt restoration as catalog data/layout changes while loading.
+    sortedCatalog.length;
+    $miscSettings.galleryLayout;
+    $miscSettings.gallerySorting;
+    startRestoreLoop();
   });
 
   async function downloadAllPlaceholders() {

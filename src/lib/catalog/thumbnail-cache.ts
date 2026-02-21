@@ -11,8 +11,8 @@
  *
  * Priority system:
  * - Base priority: stack position (0 = front/visible, higher = behind)
- * - Sub-priority: FILO timestamp (recent requests first within same priority)
- * - Visibility check: skip off-screen items before dispatch
+ * - Sub-priority: FIFO timestamp (older requests first within same priority)
+ * - Visibility check: prefer on-screen items before dispatch
  */
 
 import type {
@@ -58,6 +58,11 @@ class ThumbnailCache {
   private nextRequestId = 0;
   private pendingDecodes = new Map<number, PendingDecode>();
   private workersReady = false;
+  private maxConcurrentLoads = 4;
+  // Worker cold-start can stall early catalog paints.
+  // Use a short main-thread warm-up burst, then hand off to workers.
+  private mainThreadWarmupDecodesRemaining = 12;
+  private workerWarmupUntil = 0;
 
   constructor() {
     this.initWorkers();
@@ -70,7 +75,16 @@ class ThumbnailCache {
     // Only initialize in browser environment
     if (typeof window === 'undefined') return;
 
-    const numWorkers = Math.max((navigator.hardwareConcurrency || 4) * 2, 4);
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isFirefox = userAgent.includes('firefox');
+
+    // Firefox tends to thrash with large decode queues; keep it tighter.
+    const maxWorkers = isFirefox ? 3 : 6;
+    this.maxConcurrentLoads = isFirefox ? 3 : 6;
+
+    // Keep worker count bounded to avoid decode storms in very large catalogs.
+    const numWorkers = Math.min(Math.max(navigator.hardwareConcurrency || 4, 2), maxWorkers);
+    this.workerWarmupUntil = Date.now() + 3000;
 
     for (let i = 0; i < numWorkers; i++) {
       const worker = new Worker(
@@ -190,35 +204,53 @@ class ThumbnailCache {
   }
 
   /**
-   * Process queued loads with concurrency limit
-   * Two-tier priority: base priority (stack position) + sub-priority (FILO timestamp)
-   * Checks visibility before dispatch, skips off-screen items
+   * Compare queue priority for dispatch order.
+   * Lower priority number wins; older timestamp wins within same priority.
+   */
+  private isHigherPriority(a: QueuedLoad, b: QueuedLoad): boolean {
+    if (a.priority !== b.priority) {
+      return a.priority < b.priority;
+    }
+    return a.timestamp < b.timestamp;
+  }
+
+  /**
+   * Pick next queue item index, preferring currently visible items.
+   */
+  private pickNextItemIndex(): number {
+    if (this.queue.length === 0) return -1;
+
+    let bestVisibleIndex = -1;
+    let bestAnyIndex = 0;
+
+    for (let i = 0; i < this.queue.length; i++) {
+      const item = this.queue[i];
+
+      if (this.isHigherPriority(item, this.queue[bestAnyIndex])) {
+        bestAnyIndex = i;
+      }
+
+      if (this.isVisible(item.element)) {
+        if (
+          bestVisibleIndex === -1 ||
+          this.isHigherPriority(item, this.queue[bestVisibleIndex])
+        ) {
+          bestVisibleIndex = i;
+        }
+      }
+    }
+
+    return bestVisibleIndex !== -1 ? bestVisibleIndex : bestAnyIndex;
+  }
+
+  /**
+   * Process queued loads with concurrency limit.
    */
   private processQueue(): void {
-    const maxConcurrent = this.workers.length || 4;
+    const maxConcurrent = Math.min(this.workers.length || 4, this.maxConcurrentLoads);
     while (this.queue.length > 0 && this.activeLoads < maxConcurrent) {
-      // Sort by priority (ascending), then by timestamp (descending = FILO)
-      // Result: [priority 0 newest, priority 0 older, priority 1 newest, ...]
-      this.queue.sort((a, b) => {
-        if (a.priority !== b.priority) {
-          return a.priority - b.priority; // Lower priority number = higher priority
-        }
-        return b.timestamp - a.timestamp; // Newer first (FILO)
-      });
-
-      // Find first visible item (from start = highest priority first)
-      let itemIndex = -1;
-      for (let i = 0; i < this.queue.length; i++) {
-        if (this.isVisible(this.queue[i].element)) {
-          itemIndex = i;
-          break;
-        }
-      }
-
-      // No visible items - take the highest priority item anyway
-      if (itemIndex === -1) {
-        itemIndex = 0;
-      }
+      const itemIndex = this.pickNextItemIndex();
+      if (itemIndex === -1) return;
 
       const item = this.queue.splice(itemIndex, 1)[0];
       this.activeLoads++;
@@ -292,7 +324,14 @@ class ThumbnailCache {
    * Load and decode a thumbnail using worker
    */
   private async load(volumeUuid: string, file: File): Promise<CacheEntry> {
-    const bitmap = await this.decodeInWorker(file);
+    const useMainThreadWarmup =
+      this.mainThreadWarmupDecodesRemaining > 0 || Date.now() < this.workerWarmupUntil;
+    const bitmap = useMainThreadWarmup
+      ? await createImageBitmap(file)
+      : await this.decodeInWorker(file);
+    if (useMainThreadWarmup && this.mainThreadWarmupDecodesRemaining > 0) {
+      this.mainThreadWarmupDecodesRemaining--;
+    }
     const size = bitmap.width * bitmap.height * 4; // RGBA
 
     // Evict if needed before adding

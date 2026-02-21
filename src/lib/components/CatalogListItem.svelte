@@ -7,6 +7,7 @@
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { onDestroy } from 'svelte';
+  const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
     series_uuid: string;
@@ -85,8 +86,15 @@
   // Use UUID for local series (handles edge case of same-name series)
   let navId = $derived(isPlaceholderOnly ? volume?.series_title || '' : series_uuid);
 
+  function persistCatalogScrollPosition() {
+    const y =
+      window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(y));
+  }
+
   async function handleClick(e: MouseEvent) {
     e.preventDefault();
+    persistCatalogScrollPosition();
     nav.toSeries(navId);
   }
 </script>
