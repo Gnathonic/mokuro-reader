@@ -81,6 +81,7 @@ export { saveVolume, volumeExists, deleteVolume } from './database';
 // Import Service (main entry point)
 export {
   importFiles,
+  importArchiveWithOptionalMokuro,
   importQueue,
   currentImport,
   isImporting,

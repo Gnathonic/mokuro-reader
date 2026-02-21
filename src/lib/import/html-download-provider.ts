@@ -1,6 +1,8 @@
 import { getItems } from '$lib/upload';
 import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
+import { getFileProcessingPool } from '$lib/util/file-processing-pool';
+import { generateUUID } from '$lib/util/uuid';
 
 export type HtmlImportType = 'directory' | 'cbz';
 
@@ -14,6 +16,9 @@ export interface HtmlDownloadRequest {
 }
 
 export interface HtmlDownloadResult {
+  bundleType: 'directory' | 'single' | 'pair' | 'triple';
+  archiveFile: File | null;
+  mokuroFile: File | null;
   importFiles: File[];
   coverFile: File | null;
 }
@@ -21,6 +26,125 @@ export interface HtmlDownloadResult {
 export interface HtmlDownloadProgress {
   status: string;
   progress: number;
+}
+
+async function fetchBlobWithProgress(
+  url: string,
+  onProgress?: (loaded: number, total: number | null) => void
+): Promise<{ response: Response; blob: Blob }> {
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch: ${response.status}`);
+  }
+
+  const totalHeader = response.headers.get('content-length');
+  const total = totalHeader ? Number(totalHeader) : null;
+  const body = response.body;
+  if (!body) {
+    const blob = await response.blob();
+    onProgress?.(blob.size, total);
+    return { response, blob };
+  }
+
+  const reader = body.getReader();
+  const chunks: ArrayBuffer[] = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+      loaded += value.byteLength;
+      onProgress?.(loaded, total);
+    }
+  }
+
+  const blob = new Blob(chunks, {
+    type: response.headers.get('content-type') || 'application/octet-stream'
+  });
+  onProgress?.(blob.size, total);
+  return { response, blob };
+}
+
+async function downloadCbzBundleViaWorker(
+  cbzUrl: string,
+  normalizedVolume: string,
+  mokuroUrls: string[],
+  coverUrls: string[],
+  onProgress?: (state: HtmlDownloadProgress) => void
+): Promise<{
+  archiveFile: File;
+  mokuroFile: File | null;
+  coverFile: File | null;
+}> {
+  const pool = await getFileProcessingPool();
+  const taskId = `html-download-${generateUUID()}`;
+
+  return await new Promise((resolve, reject) => {
+    pool.addTask({
+      id: taskId,
+      memoryRequirement: 128 * 1024 * 1024,
+      provider: 'html-download:download',
+      providerConcurrencyLimit: 4,
+      data: {
+        mode: 'download-http-bundle',
+        fileId: taskId,
+        fileName: `${normalizedVolume}.cbz`,
+        archiveUrl: cbzUrl,
+        mokuroUrls,
+        coverUrls
+      },
+      onProgress: (data) => {
+        if (!data?.total || data.total <= 0) {
+          onProgress?.({ status: 'Downloading CBZ...', progress: 40 });
+          return;
+        }
+        const pct = Math.round((data.loaded / data.total) * 100);
+        onProgress?.({
+          status: `Downloading CBZ... ${pct}%`,
+          progress: 5 + Math.round((pct / 100) * 63)
+        });
+      },
+      onComplete: (result, completeTask) => {
+        completeTask();
+        const bundle = result?.bundle;
+        if (!bundle?.archive?.data) {
+          reject(new Error('Worker download bundle missing archive payload'));
+          return;
+        }
+
+        const archiveFile = new File([bundle.archive.data], `${normalizedVolume}.cbz`, {
+          type: bundle.archive.contentType || 'application/zip'
+        });
+        setRelativePath(archiveFile, `/${normalizedVolume}.cbz`);
+
+        let mokuroFile: File | null = null;
+        if (bundle.mokuro?.data) {
+          mokuroFile = new File([bundle.mokuro.data], `${normalizedVolume}.mokuro`, {
+            type: bundle.mokuro.contentType || 'application/json'
+          });
+          setRelativePath(mokuroFile, `/${normalizedVolume}.mokuro`);
+        }
+
+        let coverFile: File | null = null;
+        if (bundle.cover?.data) {
+          const extFromPath = extensionFromPath(bundle.cover.url);
+          const extFromMime = extensionFromMimeType(bundle.cover.contentType || '');
+          const extension = extFromPath || extFromMime || 'webp';
+          coverFile = new File([bundle.cover.data], `${normalizedVolume}.${extension}`, {
+            type: bundle.cover.contentType || 'image/webp'
+          });
+          setRelativePath(coverFile, `/${normalizedVolume}.${extension}`);
+        }
+
+        resolve({ archiveFile, mokuroFile, coverFile });
+      },
+      onError: (error) => {
+        reject(new Error(error?.error || 'HTML worker download failed'));
+      }
+    });
+  });
 }
 
 function setRelativePath(file: File, relativePath: string): void {
@@ -101,14 +225,33 @@ function extensionFromMimeType(contentType: string | null): string {
 }
 
 async function tryFetchMokuroSidecar(
-  volumeBaseUrl: string,
-  normalizedVolume: string
+  volumeBaseUrls: string[],
+  normalizedVolume: string,
+  onStatus?: (status: string, progress: number) => void
 ): Promise<File | null> {
-  const response = await fetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
-  if (!response.ok) {
+  const totalCandidates = volumeBaseUrls.length * 2; // .mokuro + .mokuro.gz
+  let checked = 0;
+
+  for (const volumeBaseUrl of volumeBaseUrls) {
+    onStatus?.('Checking OCR sidecar (.mokuro)...', 72 + Math.round((checked / totalCandidates) * 10));
+    const response = await fetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
+    checked++;
+    if (response.ok) {
+      const blob = await response.blob();
+      const file = new File([blob], `${normalizedVolume}.mokuro`, {
+        type: blob.type || 'application/json'
+      });
+      setRelativePath(file, `/${normalizedVolume}.mokuro`);
+      return file;
+    }
+
     // Support servers storing compressed sidecar as .mokuro.gz
+    onStatus?.('Checking OCR sidecar (.mokuro.gz)...', 72 + Math.round((checked / totalCandidates) * 10));
     const gzResponse = await fetch(`${volumeBaseUrl}.mokuro.gz`, { cache: 'no-store' });
-    if (!gzResponse.ok || typeof DecompressionStream === 'undefined') return null;
+    checked++;
+    if (!gzResponse.ok || typeof DecompressionStream === 'undefined') {
+      continue;
+    }
     const gzBlob = await gzResponse.blob();
     const stream = gzBlob.stream().pipeThrough(new DecompressionStream('gzip'));
     const blob = await new Response(stream).blob();
@@ -119,18 +262,32 @@ async function tryFetchMokuroSidecar(
     return file;
   }
 
-  const blob = await response.blob();
-  const file = new File([blob], `${normalizedVolume}.mokuro`, {
-    type: blob.type || 'application/json'
-  });
-  setRelativePath(file, `/${normalizedVolume}.mokuro`);
-  return file;
+  return null;
+}
+
+function getVolumeBaseUrls(request: HtmlDownloadRequest): string[] {
+  if (request.cbzUrl) {
+    try {
+      const cbzUrl = new URL(request.cbzUrl, window.location.href);
+      const basePathname = cbzUrl.pathname.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+
+      // Try with auth/query token first, then plain path fallback.
+      const withQuery = `${cbzUrl.origin}${basePathname}${cbzUrl.search}`;
+      const withoutQuery = `${cbzUrl.origin}${basePathname}`;
+      return withQuery === withoutQuery ? [withQuery] : [withQuery, withoutQuery];
+    } catch {
+      return [request.cbzUrl.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '')];
+    }
+  }
+
+  return [`${request.source}/${encodeURIComponent(request.manga)}/${encodeURIComponent(request.volume)}`];
 }
 
 async function tryFetchCoverSidecar(
   request: HtmlDownloadRequest,
   normalizedVolume: string,
-  volumeBaseUrl: string
+  volumeBaseUrl: string,
+  onStatus?: (status: string, progress: number) => void
 ): Promise<File | null> {
   const candidateUrls: string[] = [];
 
@@ -144,7 +301,12 @@ async function tryFetchCoverSidecar(
 
   candidateUrls.push(`${volumeBaseUrl}.webp`);
 
-  for (const coverUrl of candidateUrls) {
+  for (let index = 0; index < candidateUrls.length; index++) {
+    const coverUrl = candidateUrls[index];
+    onStatus?.(
+      `Checking cover sidecar (${index + 1}/${candidateUrls.length})...`,
+      84 + Math.round((index / Math.max(candidateUrls.length, 1)) * 10)
+    );
     console.log('[HTML Download] Trying thumbnail sidecar:', coverUrl);
     const response = await fetch(coverUrl, { cache: 'no-store' });
     if (!response.ok) {
@@ -161,6 +323,7 @@ async function tryFetchCoverSidecar(
     const file = new File([blob], filename, { type: blob.type || 'image/webp' });
     setRelativePath(file, `/${filename}`);
     console.log('[HTML Download] Using thumbnail sidecar:', filename, `(${blob.size} bytes)`);
+    onStatus?.('Downloaded cover sidecar', 95);
     return file;
   }
 
@@ -177,9 +340,8 @@ class HtmlDownloadPseudoProvider {
     onProgress?: (state: HtmlDownloadProgress) => void
   ): Promise<HtmlDownloadResult> {
     const normalizedVolume = normalizeFilename(request.volume);
-    const volumeBaseUrl = request.cbzUrl
-      ? request.cbzUrl.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '')
-      : `${request.source}/${encodeURIComponent(request.manga)}/${encodeURIComponent(request.volume)}`;
+    const volumeBaseUrls = getVolumeBaseUrls(request);
+    const volumeBaseUrl = volumeBaseUrls[0];
     const importFiles: File[] = [];
     let coverFile: File | null = null;
 
@@ -190,34 +352,58 @@ class HtmlDownloadPseudoProvider {
 
     if (request.type === 'cbz') {
       const cbzTarget = request.cbzUrl || `${volumeBaseUrl}.cbz`;
-      const cbzRes = await fetch(cbzTarget, { cache: 'no-store' });
-      if (!cbzRes.ok) {
-        throw new Error(`Failed to fetch CBZ file: ${cbzRes.status}`);
+      const mokuroUrls = volumeBaseUrls.flatMap((base) => [`${base}.mokuro`, `${base}.mokuro.gz`]);
+      const coverUrls: string[] = [];
+      if (request.cover) {
+        coverUrls.push(
+          /^https?:\/\//i.test(request.cover)
+            ? request.cover
+            : `${request.source}/${request.cover.replace(/^\/+/, '')}`
+        );
       }
+      coverUrls.push(`${volumeBaseUrl}.webp`);
 
-      const cbzBlob = await cbzRes.blob();
-      const cbzFile = new File([cbzBlob], `${normalizedVolume}.cbz`, {
-        type: cbzBlob.type || 'application/zip'
-      });
-      setRelativePath(cbzFile, `/${normalizedVolume}.cbz`);
-      importFiles.push(cbzFile);
-
-      onProgress?.({ status: 'Fetching OCR sidecar (optional)...', progress: 70 });
-
-      const mokuroFile = await tryFetchMokuroSidecar(volumeBaseUrl, normalizedVolume);
-      if (mokuroFile) {
-        importFiles.push(mokuroFile);
+      onProgress?.({ status: 'Downloading via worker...', progress: 5 });
+      const bundle = await downloadCbzBundleViaWorker(
+        cbzTarget,
+        normalizedVolume,
+        mokuroUrls,
+        coverUrls,
+        onProgress
+      );
+      importFiles.push(bundle.archiveFile);
+      if (bundle.mokuroFile) {
+        importFiles.push(bundle.mokuroFile);
+      } else {
+        console.log('[HTML Download] No mokuro sidecar found for volume:', normalizedVolume);
       }
-
-      coverFile = await tryFetchCoverSidecar(request, normalizedVolume, volumeBaseUrl);
-      return { importFiles, coverFile };
+      coverFile = bundle.coverFile;
+      onProgress?.({ status: 'Download complete', progress: 98 });
+      const bundleType: HtmlDownloadResult['bundleType'] =
+        bundle.mokuroFile && coverFile ? 'triple' : bundle.mokuroFile || coverFile ? 'pair' : 'single';
+      return {
+        bundleType,
+        archiveFile: bundle.archiveFile,
+        mokuroFile: bundle.mokuroFile,
+        importFiles,
+        coverFile
+      };
     }
 
-    const mokuroFile = await tryFetchMokuroSidecar(volumeBaseUrl, normalizedVolume);
+    const mokuroFile = await tryFetchMokuroSidecar(
+      volumeBaseUrls,
+      normalizedVolume,
+      (status, progress) => onProgress?.({ status, progress })
+    );
     if (mokuroFile) {
       importFiles.push(mokuroFile);
     }
-    coverFile = await tryFetchCoverSidecar(request, normalizedVolume, volumeBaseUrl);
+    coverFile = await tryFetchCoverSidecar(
+      request,
+      normalizedVolume,
+      volumeBaseUrl,
+      (status, progress) => onProgress?.({ status, progress })
+    );
 
     onProgress?.({ status: 'Fetching image list...', progress: 5 });
 
@@ -264,7 +450,13 @@ class HtmlDownloadPseudoProvider {
       });
     }
 
-    return { importFiles, coverFile };
+    return {
+      bundleType: 'directory',
+      archiveFile: null,
+      mokuroFile,
+      importFiles,
+      coverFile
+    };
   }
 }
 

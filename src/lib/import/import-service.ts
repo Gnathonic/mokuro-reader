@@ -690,8 +690,75 @@ async function processSingleVolume(
   try {
     onProgress?.('Preparing...', 0);
 
-    // For archive sources, use two-pass extraction for memory efficiency
-    // processArchiveContents handles everything: scan, extract per-volume, process, save
+    // For archive + external mokuro, process as a single explicit pair.
+    // This avoids generic intra-archive pairing that can split CBZ and sidecar imports.
+    if (source.source.type === 'archive' && source.mokuroFile) {
+      onProgress?.('Decompressing...', 20);
+      const archiveEntries = await decompressArchiveRaw(source.source.file, (status, progress) => {
+        onProgress?.(status, progress);
+      });
+
+      const archiveStem = source.source.file.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '').toLowerCase();
+      const imageFiles = new Map<string, File>();
+      for (const entry of archiveEntries.entries) {
+        const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
+        if (!isImageExtension(ext)) continue;
+        if (isSystemFile(entry.filename)) continue;
+
+        // Ignore embedded cover sidecar if it matches archive stem.
+        const filename = entry.filename.split('/').pop() || entry.filename;
+        const lowerFilename = filename.toLowerCase();
+        if (lowerFilename.endsWith('.webp') && lowerFilename === `${archiveStem}.webp`) {
+          continue;
+        }
+
+        imageFiles.set(entry.filename, new File([entry.data], filename, { lastModified: Date.now() }));
+      }
+
+      const decompressed: DecompressedVolume = {
+        mokuroFile: source.mokuroFile,
+        thumbnailSidecar: null,
+        imageFiles,
+        basePath: source.basePath,
+        sourceType: 'local',
+        nestedArchives: []
+      };
+
+      onProgress?.('Checking files...', 45);
+      const mokuroData = await parseMokuroFile(source.mokuroFile);
+      const matchResult = matchImagesToPages(mokuroData.pages, decompressed.imageFiles);
+      if (matchResult.missing.length > 0) {
+        const shouldContinue = await promptForMissingFiles({
+          volumeName: mokuroData.volume || source.basePath,
+          missingFiles: matchResult.missing,
+          totalPages: mokuroData.pages.length
+        });
+        if (!shouldContinue) {
+          return {
+            success: false,
+            error: `Import cancelled - ${matchResult.missing.length} missing files`
+          };
+        }
+      }
+
+      onProgress?.('Processing...', 60);
+      const processed = await processVolume(decompressed);
+
+      if (await volumeExists(processed.metadata.volumeUuid)) {
+        return {
+          success: false,
+          error: `Volume "${processed.metadata.volume}" already exists`
+        };
+      }
+
+      onProgress?.('Saving...', 85);
+      await saveVolume(processed);
+      onProgress?.('Complete', 100);
+      return { success: true };
+    }
+
+    // For archive-only sources, use two-pass extraction for memory efficiency.
+    // processArchiveContents handles scan, extraction, pairing, and saving.
     if (source.source.type === 'archive') {
       const result = await processArchiveContents(
         source.source.file,
@@ -885,6 +952,70 @@ export interface ImportResult {
 export interface ImportOptions {
   /** Called when pairing is complete with the number of volumes found */
   onPreparing?: (volumesFound: number) => void;
+}
+
+function createArchiveSource(archiveFile: File, mokuroFile: File | null): PairedSource {
+  const path = archiveFile.webkitRelativePath || archiveFile.name;
+  const { stem } = parseFilePath(path);
+  const estimatedSize = archiveFile.size + (mokuroFile?.size || 0);
+
+  return {
+    id: generateUUID(),
+    mokuroFile,
+    source: { type: 'archive', file: archiveFile },
+    basePath: stem || archiveFile.name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, ''),
+    estimatedSize,
+    imageOnly: false
+  };
+}
+
+export async function importArchiveWithOptionalMokuro(
+  archiveFile: File,
+  mokuroFile: File | null
+): Promise<ImportResult> {
+  const result: ImportResult = {
+    success: true,
+    imported: 0,
+    failed: 0,
+    errors: []
+  };
+
+  const pairedSource = createArchiveSource(archiveFile, mokuroFile);
+  const queueItem = createLocalQueueItem(pairedSource);
+  addToProgressTracker(queueItem);
+
+  isImporting.set(true);
+  currentImport.set({ ...queueItem, status: 'processing' });
+  updateProgressTracker(queueItem.id, 'Processing', 5);
+
+  try {
+    const processResult = await processSingleVolume(pairedSource, (status, progress) => {
+      updateProgressTracker(queueItem.id, status, progress);
+    });
+
+    if (processResult.additionalSources && processResult.additionalSources.length > 0) {
+      const newItems = processResult.additionalSources.map(createLocalQueueItem);
+      newItems.forEach(addToProgressTracker);
+      importQueue.update((q) => [...q, ...newItems]);
+      processQueue();
+      result.imported += processResult.additionalSources.length;
+    }
+
+    if (processResult.success) {
+      result.imported += 1;
+      removeFromProgressTracker(queueItem.id);
+    } else {
+      result.success = false;
+      result.failed = 1;
+      result.errors.push(processResult.error || 'Unknown error');
+      markProgressTrackerError(queueItem.id, processResult.error || 'Unknown error');
+    }
+  } finally {
+    isImporting.set(false);
+    currentImport.set(null);
+  }
+
+  return result;
 }
 
 export async function importFiles(files: File[], options?: ImportOptions): Promise<ImportResult> {

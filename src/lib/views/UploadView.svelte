@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { importFiles, htmlDownloadProvider, getUploadParamsFromLocation, parseHtmlDownloadRequest } from '$lib/import';
+  import {
+    importFiles,
+    importArchiveWithOptionalMokuro,
+    htmlDownloadProvider,
+    getUploadParamsFromLocation,
+    parseHtmlDownloadRequest
+  } from '$lib/import';
   import { db } from '$lib/catalog/db';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
@@ -113,8 +119,14 @@
 
       const existingUuids = new Set((await db.volumes.toArray()).map((volume) => volume.volume_uuid));
 
-      // Process files using unified import
-      await importFiles(files);
+      // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
+      // post-download pairing for archive+sidecar combinations.
+      if (downloaded.archiveFile && request.type === 'cbz') {
+        await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
+      } else {
+        // Directory mode and fallback paths still use generic import pairing.
+        await importFiles(files);
+      }
 
       if (downloaded.coverFile) {
         await applyDownloadedCoverSidecar(downloaded.coverFile, existingUuids, normalizedVolume);
