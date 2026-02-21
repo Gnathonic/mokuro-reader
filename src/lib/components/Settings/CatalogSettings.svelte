@@ -129,7 +129,9 @@
                 handleSettingChange();
               }}
             />
-            <p class="text-xs text-gray-500 dark:text-gray-400">0 = show all volumes in series</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              0 = show all volumes in series. Cloud series are capped at 25 thumbnails.
+            </p>
           </div>
 
           <!-- Hide completed -->

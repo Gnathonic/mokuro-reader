@@ -550,9 +550,12 @@ export class WebDAVProvider implements SyncProvider {
             await processFolder(item.filename);
           } else {
             const name = item.basename.toLowerCase();
-            // Include CBZ files and JSON config files
+            // Include CBZ files, sidecars, and JSON config files
             if (
               name.endsWith('.cbz') ||
+              name.endsWith('.mokuro') ||
+              name.endsWith('.mokuro.gz') ||
+              name.endsWith('.webp') ||
               item.basename === 'volume-data.json' ||
               item.basename === 'profiles.json'
             ) {
@@ -609,9 +612,12 @@ export class WebDAVProvider implements SyncProvider {
     for (const item of contents) {
       if (item.type === 'file') {
         const name = item.basename.toLowerCase();
-        // Include CBZ files and JSON config files
+        // Include CBZ files, sidecars, and JSON config files
         if (
           name.endsWith('.cbz') ||
+          name.endsWith('.mokuro') ||
+          name.endsWith('.mokuro.gz') ||
+          name.endsWith('.webp') ||
           item.basename === 'volume-data.json' ||
           item.basename === 'profiles.json'
         ) {
@@ -854,6 +860,27 @@ export class WebDAVProvider implements SyncProvider {
         available: null
       };
     }
+  }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    await this.ensureMokuroFolder();
+    await this.ensureSeriesFolder(seriesTitle);
+  }
+
+  async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
   }
 }
 

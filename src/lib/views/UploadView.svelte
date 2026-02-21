@@ -1,23 +1,92 @@
 <script lang="ts">
-  import Loader from '$lib/components/Loader.svelte';
-  import { getItems } from '$lib/upload';
-  import { importFiles, IMAGE_EXTENSIONS } from '$lib/import';
+  import {
+    importFiles,
+    importArchiveWithOptionalMokuro,
+    htmlDownloadProvider,
+    getUploadParamsFromLocation,
+    parseHtmlDownloadRequest
+  } from '$lib/import';
+  import { db } from '$lib/catalog/db';
+  import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { onMount } from 'svelte';
 
-  // Use window.location.search for query params (works alongside hash routing)
-  const searchParams = new window.URLSearchParams(window.location.search);
-  const BASE_URL = searchParams.get('source') || 'https://mokuro.moe/manga';
-  const manga = searchParams.get('manga');
-  const volume = searchParams.get('volume');
-  const url = `${BASE_URL}/${manga}/${volume}`;
+  const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);
+  const request = parseHtmlDownloadRequest(uploadParams);
+
+  function normalizeTitle(value: string): string {
+    return normalizeFilename(value).trim().toLowerCase();
+  }
+
+  async function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+
+      img.onload = () => {
+        const width = img.naturalWidth || 1;
+        const height = img.naturalHeight || 1;
+        URL.revokeObjectURL(url);
+        resolve({ width, height });
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to decode sidecar thumbnail'));
+      };
+
+      img.src = url;
+    });
+  }
+
+  async function applyDownloadedCoverSidecar(
+    coverFile: File,
+    existingUuids: Set<string>,
+    requestVolume: string
+  ): Promise<void> {
+    const allVolumes = await db.volumes.toArray();
+    const importedVolumes = allVolumes.filter((volume) => !existingUuids.has(volume.volume_uuid));
+
+    if (importedVolumes.length === 0) {
+      console.warn('[HTML Download] Cover sidecar downloaded but no newly imported volume was found');
+      return;
+    }
+
+    const normalizedRequestVolume = normalizeTitle(requestVolume);
+    const targetVolume =
+      importedVolumes.find((volume) => normalizeTitle(volume.volume_title) === normalizedRequestVolume) ||
+      importedVolumes.find((volume) => normalizeTitle(volume.volume_uuid) === normalizedRequestVolume) ||
+      importedVolumes[0];
+
+    let dims = { width: 1, height: 1 };
+    try {
+      dims = await getImageDimensions(coverFile);
+    } catch (error) {
+      console.warn('[HTML Download] Failed to read sidecar dimensions; using fallback dimensions', error);
+    }
+
+    await db.volumes.update(targetVolume.volume_uuid, {
+      thumbnail: coverFile,
+      thumbnail_width: dims.width,
+      thumbnail_height: dims.height
+    });
+    thumbnailCache.invalidate(targetVolume.volume_uuid);
+
+    console.log(
+      '[HTML Download] Applied sidecar thumbnail to imported volume:',
+      targetVolume.volume_title,
+      targetVolume.volume_uuid
+    );
+  }
 
   async function onImport() {
-    const normalizedVolume = normalizeFilename(volume || '');
+    if (!request) return;
+
+    const normalizedVolume = normalizeFilename(request.volume);
     const processId = `cross-site-import-${Date.now()}`;
-    const displayName = decodeURIComponent(volume || normalizedVolume);
+    const displayName = decodeURIComponent(request.volume || normalizedVolume);
 
     // Navigate to catalog immediately
     nav.toCatalog({ replaceState: true });
@@ -26,90 +95,42 @@
     progressTrackerStore.addProcess({
       id: processId,
       description: `Importing ${displayName}`,
-      status: 'Fetching mokuro file...',
+      status: request.type === 'cbz' ? 'Fetching volume archive...' : 'Fetching source files...',
       progress: 0
     });
 
     try {
-      const files: File[] = [];
-
-      // Fetch mokuro file
-      const mokuroRes = await fetch(url + '.mokuro', { cache: 'no-store' });
-      if (!mokuroRes.ok) {
-        throw new Error(`Failed to fetch mokuro file: ${mokuroRes.status}`);
-      }
-      const mokuroBlob = await mokuroRes.blob();
-      const mokuroFile = new File([mokuroBlob], normalizedVolume + '.mokuro', {
-        type: mokuroBlob.type
-      });
-
-      Object.defineProperty(mokuroFile, 'webkitRelativePath', {
-        value: '/' + normalizedVolume + '.mokuro'
-      });
-
-      progressTrackerStore.updateProcess(processId, {
-        status: 'Fetching image list...',
-        progress: 5
-      });
-
-      // Fetch directory listing
-      const res = await fetch(url + '/');
-      if (!res.ok) {
-        throw new Error(`Failed to fetch directory: ${res.status}`);
-      }
-      const html = await res.text();
-
-      const items = getItems(html);
-
-      // Filter to just images using shared IMAGE_EXTENSIONS
-      const imageItems = items.filter((item) => {
-        const ext = (item.pathname.split('.').at(-1) || '').toLowerCase();
-        return IMAGE_EXTENSIONS.has(ext);
-      });
-
-      const totalImages = imageItems.length;
-      let completed = 0;
-
-      progressTrackerStore.updateProcess(processId, {
-        status: `Downloading images (0/${totalImages})...`,
-        progress: 10
-      });
-
-      // Download images
-      for (const item of imageItems) {
-        const image = await fetch(url + item.pathname);
-        if (!image.ok) {
-          console.warn(`Failed to fetch image: ${item.pathname}`);
-          completed++;
-          continue;
-        }
-        const blob = await image.blob();
-        const normalizedPath = normalizeFilename(item.pathname);
-        const file = new File([blob], normalizedPath.substring(1));
-        Object.defineProperty(file, 'webkitRelativePath', {
-          value: '/' + normalizedVolume + normalizedPath
-        });
-
-        files.push(file);
-        completed++;
-
-        // Update progress (10-90% range for downloads)
-        const downloadProgress = 10 + Math.floor((completed / totalImages) * 80);
+      const downloaded = await htmlDownloadProvider.download(request, (state) => {
         progressTrackerStore.updateProcess(processId, {
-          status: `Downloading images (${completed}/${totalImages})...`,
-          progress: downloadProgress
+          status: state.status,
+          progress: state.progress
         });
-      }
+      });
+      const files = downloaded.importFiles;
 
-      files.push(mokuroFile);
+      if (files.length === 0) {
+        throw new Error('No importable files found at source URL');
+      }
 
       progressTrackerStore.updateProcess(processId, {
         status: 'Adding to catalog...',
         progress: 95
       });
 
-      // Process files using unified import
-      await importFiles(files);
+      const existingUuids = new Set((await db.volumes.toArray()).map((volume) => volume.volume_uuid));
+
+      // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
+      // post-download pairing for archive+sidecar combinations.
+      if (downloaded.archiveFile && request.type === 'cbz') {
+        await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
+      } else {
+        // Directory mode and fallback paths still use generic import pairing.
+        await importFiles(files);
+      }
+
+      if (downloaded.coverFile) {
+        await applyDownloadedCoverSidecar(downloaded.coverFile, existingUuids, normalizedVolume);
+      }
 
       progressTrackerStore.updateProcess(processId, {
         status: 'Complete',
@@ -142,11 +163,11 @@
   }
 
   onMount(() => {
-    if (!manga || !volume) {
+    if (!request) {
       showSnackbar('Invalid import URL - missing manga or volume parameter');
       onCancel();
     } else {
-      const displayName = decodeURIComponent(volume || '');
+      const displayName = decodeURIComponent(request.volume || '');
       promptConfirmation(`Import ${displayName} into catalog?`, onImport, onCancel);
     }
   });

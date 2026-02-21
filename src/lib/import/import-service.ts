@@ -10,7 +10,6 @@ import { pairMokuroWithSources } from './pairing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
 import { saveVolume, volumeExists } from './database';
-import { promptMissingFiles, type MissingFilesInfo } from '$lib/util/modals';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
   FileEntry,
@@ -19,8 +18,6 @@ import type {
   DecompressedVolume,
   ProcessedVolume
 } from './types';
-import { progressTrackerStore } from '$lib/util/progress-tracker';
-import { showSnackbar } from '$lib/util/snackbar';
 import {
   isImageExtension,
   isMokuroExtension,
@@ -33,7 +30,7 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from '$lib/util/file-processing-pool';
-import { promptImageOnlyImport, type SeriesImportInfo } from '$lib/util/modals';
+import { getImportUiBridge, type MissingFilesInfo } from './import-ui';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
 import { generateUUID } from '$lib/util/uuid';
 import {
@@ -70,39 +67,28 @@ export const isImporting = writable<boolean>(false);
  * Add an import item to the global progress tracker
  */
 function addToProgressTracker(item: ImportQueueItem): void {
-  progressTrackerStore.addProcess({
-    id: `import-${item.id}`,
-    description: `Importing ${item.displayTitle}`,
-    status: 'Queued',
-    progress: 0
-  });
+  getImportUiBridge().addProgress(`import-${item.id}`, `Importing ${item.displayTitle}`, 'Queued', 0);
 }
 
 /**
  * Update an import item's progress in the global tracker
  */
 function updateProgressTracker(id: string, status: string, progress: number): void {
-  progressTrackerStore.updateProcess(`import-${id}`, {
-    status,
-    progress
-  });
+  getImportUiBridge().updateProgress(`import-${id}`, status, progress);
 }
 
 /**
  * Remove an import item from the global progress tracker
  */
 function removeFromProgressTracker(id: string): void {
-  progressTrackerStore.removeProcess(`import-${id}`);
+  getImportUiBridge().removeProgress(`import-${id}`);
 }
 
 /**
  * Mark an import as failed in the progress tracker (keeps visible briefly)
  */
 function markProgressTrackerError(id: string, error: string): void {
-  progressTrackerStore.updateProcess(`import-${id}`, {
-    status: `Failed: ${error}`,
-    progress: 0
-  });
+  getImportUiBridge().updateProgress(`import-${id}`, `Failed: ${error}`, 0);
   // Remove after delay so user can see the error
   setTimeout(() => {
     removeFromProgressTracker(id);
@@ -117,11 +103,40 @@ function markProgressTrackerError(id: string, error: string): void {
  * Convert File objects to FileEntry format
  */
 function filesToEntries(files: File[]): FileEntry[] {
-  return files.map((file) => {
+  const sourceStems = new Set(
+    files
+      .map((file) => file.webkitRelativePath || file.name)
+      .map((path) => path.split('/').pop() || path)
+      .map((name) => {
+        const lower = name.toLowerCase();
+        if (lower.endsWith('.mokuro.gz')) return name.slice(0, -10);
+        if (lower.endsWith('.mokuro')) return name.slice(0, -7);
+        if (/\.(cbz|zip|cbr|rar|7z)$/i.test(name)) return name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+        return '';
+      })
+      .filter(Boolean)
+      .map((stem) => stem.toLowerCase())
+  );
+
+  return files
+    .map((file) => {
     // Use webkitRelativePath if available, otherwise use name
     const path = file.webkitRelativePath || file.name;
     return { path, file };
-  });
+    })
+    .filter((entry) => !isThumbnailSidecarPath(entry.path, sourceStems));
+}
+
+function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolean {
+  const filename = path.split('/').pop()?.toLowerCase() || '';
+  if (!filename.endsWith('.webp')) return false;
+  if (!sourceStems || sourceStems.size === 0) return false;
+  const stem = filename.slice(0, -5);
+  return sourceStems.has(stem);
+}
+
+function getThumbnailCandidatePaths(basePath: string): string[] {
+  return [`${basePath}.webp`];
 }
 
 // ============================================
@@ -390,6 +405,7 @@ async function processArchiveContents(
       const file = new File([entry.data], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
     } else if (isImageExtension(ext)) {
+      if (isThumbnailSidecarPath(entry.filename)) continue;
       // Image file - placeholder only (empty data)
       const file = new File([], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
@@ -413,11 +429,63 @@ async function processArchiveContents(
     });
   }
 
-  // Filter out image-only pairings from archives - we only auto-import volumes with mokuro
+  // Separate image-only pairings from mokuro pairings (same as directory flow)
   const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
+  const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
 
-  // If no mokuro pairings and no nested archives, nothing to import
-  if (mokuroPairings.length === 0 && nestedArchivePaths.length === 0) {
+  // For image-only pairings at root level, use archive filename as basePath for series extraction
+  // But preserve the original path for file extraction
+  const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
+  const originalBasePaths = new Map<string, string>();
+  for (const pairing of imageOnlyPairings) {
+    if (pairing.basePath === '.' || pairing.basePath === '') {
+      originalBasePaths.set(pairing.id, pairing.basePath);
+      pairing.basePath = archiveStem;
+    }
+  }
+
+  // If there are image-only pairings, prompt user for confirmation
+  let confirmedImageOnlyPairings: PairedSource[] = [];
+  if (imageOnlyPairings.length > 0) {
+    const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
+    if (confirmed) {
+      confirmedImageOnlyPairings = imageOnlyPairings;
+    }
+  }
+
+  // Combine confirmed pairings
+  const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
+
+  // Extract embedded thumbnail sidecars (small files) for matched volumes only.
+  // We keep this separate from image extraction so sidecars do not become pages.
+  const thumbnailCandidates = new Set<string>();
+  const pairingThumbPaths = new Map<string, string[]>();
+  for (const pairing of allPairings) {
+    const candidates = getThumbnailCandidatePaths(pairing.basePath);
+    pairingThumbPaths.set(pairing.id, candidates);
+    for (const candidate of candidates) {
+      thumbnailCandidates.add(candidate);
+    }
+  }
+
+  const thumbnailByPath = new Map<string, File>();
+  if (thumbnailCandidates.size > 0) {
+    const thumbResult = await decompressArchiveRaw(
+      archiveFile,
+      undefined,
+      { pathPrefixes: Array.from(thumbnailCandidates) }
+    );
+    for (const entry of thumbResult.entries) {
+      const filename = entry.filename.split('/').pop() || entry.filename;
+      thumbnailByPath.set(
+        entry.filename.toLowerCase(),
+        new File([entry.data], filename, { lastModified: Date.now() })
+      );
+    }
+  }
+
+  // If no pairings and no nested archives, nothing to import
+  if (allPairings.length === 0 && nestedArchivePaths.length === 0) {
     return { success: false, error: 'No importable volumes found in archive' };
   }
 
@@ -426,23 +494,23 @@ async function processArchiveContents(
   const allNestedSources: PairedSource[] = [];
   let successCount = 0;
   let lastError: string | undefined;
-  const totalVolumes = mokuroPairings.length;
-  const volumeTimes: number[] = [];
+  const totalVolumes = allPairings.length;
 
   // Only extract and process volumes if there are pairings
   if (totalVolumes > 0) {
-    console.log(`[Streaming Import] Starting extraction of ${totalVolumes} volumes`);
-
     // Build volume definitions for extraction
-    const volumeDefs: VolumeExtractDef[] = mokuroPairings.map((pairing, i) => ({
-      id: `vol-${i}`,
-      pathPrefix: pairing.basePath
-    }));
+    // Use original basePath for extraction (images are at that path), not the renamed one
+    const volumeDefs: VolumeExtractDef[] = allPairings.map((pairing, i) => {
+      const pathPrefix = originalBasePaths.get(pairing.id) ?? pairing.basePath;
+      return {
+        id: `vol-${i}`,
+        pathPrefix
+      };
+    });
 
     onProgress?.(`Extracting ${totalVolumes} volumes...`, 20);
 
     // Single-pass extraction for all volumes
-    const extractStart = performance.now();
     const allVolumeFiles = await streamExtractAllVolumes(
       archiveFile,
       volumeDefs,
@@ -452,14 +520,9 @@ async function processArchiveContents(
         onProgress?.(status, overallProgress);
       }
     );
-    const extractTime = performance.now() - extractStart;
-    console.log(`[Streaming Import] Extraction complete: ${(extractTime / 1000).toFixed(1)}s`);
-
     // Process each volume sequentially (to manage memory during processing)
-    console.log(`[Streaming Import] Starting processing of ${totalVolumes} volumes`);
-    for (let i = 0; i < mokuroPairings.length; i++) {
-      const volumeStart = performance.now();
-      const pairing = mokuroPairings[i];
+    for (let i = 0; i < allPairings.length; i++) {
+      const pairing = allPairings[i];
       const volumeId = `vol-${i}`;
       const volumeImageFiles = allVolumeFiles.get(volumeId) || new Map();
 
@@ -472,11 +535,21 @@ async function processArchiveContents(
       // Create DecompressedVolume for processing
       const decompressed: DecompressedVolume = {
         mokuroFile: pairing.mokuroFile,
+        thumbnailSidecar: null,
         imageFiles: volumeImageFiles,
         basePath: pairing.basePath,
         sourceType: 'local',
         nestedArchives: []
       };
+
+      const thumbCandidates = pairingThumbPaths.get(pairing.id) || [];
+      for (const candidate of thumbCandidates) {
+        const thumb = thumbnailByPath.get(candidate.toLowerCase());
+        if (thumb) {
+          decompressed.thumbnailSidecar = thumb;
+          break;
+        }
+      }
 
       try {
         // Check for missing files before processing (same as directory flow)
@@ -520,22 +593,10 @@ async function processArchiveContents(
         console.error(`[Archive Import] Error processing volume ${i + 1}:`, err);
       }
 
-      const volumeTime = performance.now() - volumeStart;
-      volumeTimes.push(volumeTime);
-      const avg = volumeTimes.reduce((a, b) => a + b, 0) / volumeTimes.length;
-      console.log(
-        `[Streaming Import] Volume ${i + 1}/${totalVolumes}: ${volumeTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms)`
-      );
-
       // Clear this volume's files to free memory before next volume
       volumeImageFiles.clear();
       allVolumeFiles.delete(volumeId);
     }
-
-    const processTime = volumeTimes.reduce((a, b) => a + b, 0);
-    console.log(
-      `[Streaming Import] Processing complete: ${totalVolumes} volumes in ${(processTime / 1000).toFixed(1)}s (avg: ${(processTime / totalVolumes).toFixed(0)}ms/vol)`
-    );
   }
 
   // Extract nested archives if any
@@ -578,6 +639,7 @@ function directoryToDecompressed(source: PairedSource): DecompressedVolume {
 
   return {
     mokuroFile: source.mokuroFile,
+    thumbnailSidecar: null,
     imageFiles: source.source.files,
     basePath: source.basePath,
     sourceType: 'local',
@@ -605,6 +667,7 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
 
   return {
     mokuroFile: source.mokuroFile,
+    thumbnailSidecar: null,
     imageFiles,
     basePath: source.basePath,
     sourceType: 'local',
@@ -627,8 +690,75 @@ async function processSingleVolume(
   try {
     onProgress?.('Preparing...', 0);
 
-    // For archive sources, use two-pass extraction for memory efficiency
-    // processArchiveContents handles everything: scan, extract per-volume, process, save
+    // For archive + external mokuro, process as a single explicit pair.
+    // This avoids generic intra-archive pairing that can split CBZ and sidecar imports.
+    if (source.source.type === 'archive' && source.mokuroFile) {
+      onProgress?.('Decompressing...', 20);
+      const archiveEntries = await decompressArchiveRaw(source.source.file, (status, progress) => {
+        onProgress?.(status, progress);
+      });
+
+      const archiveStem = source.source.file.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '').toLowerCase();
+      const imageFiles = new Map<string, File>();
+      for (const entry of archiveEntries.entries) {
+        const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
+        if (!isImageExtension(ext)) continue;
+        if (isSystemFile(entry.filename)) continue;
+
+        // Ignore embedded cover sidecar if it matches archive stem.
+        const filename = entry.filename.split('/').pop() || entry.filename;
+        const lowerFilename = filename.toLowerCase();
+        if (lowerFilename.endsWith('.webp') && lowerFilename === `${archiveStem}.webp`) {
+          continue;
+        }
+
+        imageFiles.set(entry.filename, new File([entry.data], filename, { lastModified: Date.now() }));
+      }
+
+      const decompressed: DecompressedVolume = {
+        mokuroFile: source.mokuroFile,
+        thumbnailSidecar: null,
+        imageFiles,
+        basePath: source.basePath,
+        sourceType: 'local',
+        nestedArchives: []
+      };
+
+      onProgress?.('Checking files...', 45);
+      const mokuroData = await parseMokuroFile(source.mokuroFile);
+      const matchResult = matchImagesToPages(mokuroData.pages, decompressed.imageFiles);
+      if (matchResult.missing.length > 0) {
+        const shouldContinue = await promptForMissingFiles({
+          volumeName: mokuroData.volume || source.basePath,
+          missingFiles: matchResult.missing,
+          totalPages: mokuroData.pages.length
+        });
+        if (!shouldContinue) {
+          return {
+            success: false,
+            error: `Import cancelled - ${matchResult.missing.length} missing files`
+          };
+        }
+      }
+
+      onProgress?.('Processing...', 60);
+      const processed = await processVolume(decompressed);
+
+      if (await volumeExists(processed.metadata.volumeUuid)) {
+        return {
+          success: false,
+          error: `Volume "${processed.metadata.volume}" already exists`
+        };
+      }
+
+      onProgress?.('Saving...', 85);
+      await saveVolume(processed);
+      onProgress?.('Complete', 100);
+      return { success: true };
+    }
+
+    // For archive-only sources, use two-pass extraction for memory efficiency.
+    // processArchiveContents handles scan, extraction, pairing, and saving.
     if (source.source.type === 'archive') {
       const result = await processArchiveContents(
         source.source.file,
@@ -730,20 +860,12 @@ async function processQueue(): Promise<void> {
   isImporting.set(true);
   incrementPoolUsers(); // Track pool usage for proper cleanup
 
-  // Session-level timing
-  const sessionStart = performance.now();
-  const itemTimes: number[] = [];
-  let itemCount = 0;
-
   try {
     while (true) {
       const queue = get(importQueue);
       const nextItem = queue.find((item) => item.status === 'queued');
 
       if (!nextItem) break;
-
-      const itemStart = performance.now();
-      itemCount++;
 
       // Update status
       importQueue.update((q) =>
@@ -793,27 +915,9 @@ async function processQueue(): Promise<void> {
         markProgressTrackerError(nextItem.id, result.error || 'Unknown error');
       }
 
-      // Log timing for this item
-      const itemTime = performance.now() - itemStart;
-      itemTimes.push(itemTime);
-      const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
-      const remaining = get(importQueue).filter((i) => i.status === 'queued').length;
-      console.log(
-        `[Queue] Item ${itemCount}: ${itemTime.toFixed(0)}ms (avg: ${avg.toFixed(0)}ms, ${remaining} remaining)`
-      );
-
       currentImport.set(null);
     }
   } finally {
-    // Log session summary
-    if (itemTimes.length > 0) {
-      const totalTime = performance.now() - sessionStart;
-      const avg = itemTimes.reduce((a, b) => a + b, 0) / itemTimes.length;
-      console.log(
-        `[Queue] Session complete: ${itemCount} items in ${(totalTime / 1000).toFixed(1)}s (avg: ${avg.toFixed(0)}ms/item)`
-      );
-    }
-
     processingQueue = false;
     isImporting.set(false);
     currentImport.set(null);
@@ -850,6 +954,70 @@ export interface ImportOptions {
   onPreparing?: (volumesFound: number) => void;
 }
 
+function createArchiveSource(archiveFile: File, mokuroFile: File | null): PairedSource {
+  const path = archiveFile.webkitRelativePath || archiveFile.name;
+  const { stem } = parseFilePath(path);
+  const estimatedSize = archiveFile.size + (mokuroFile?.size || 0);
+
+  return {
+    id: generateUUID(),
+    mokuroFile,
+    source: { type: 'archive', file: archiveFile },
+    basePath: stem || archiveFile.name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, ''),
+    estimatedSize,
+    imageOnly: false
+  };
+}
+
+export async function importArchiveWithOptionalMokuro(
+  archiveFile: File,
+  mokuroFile: File | null
+): Promise<ImportResult> {
+  const result: ImportResult = {
+    success: true,
+    imported: 0,
+    failed: 0,
+    errors: []
+  };
+
+  const pairedSource = createArchiveSource(archiveFile, mokuroFile);
+  const queueItem = createLocalQueueItem(pairedSource);
+  addToProgressTracker(queueItem);
+
+  isImporting.set(true);
+  currentImport.set({ ...queueItem, status: 'processing' });
+  updateProgressTracker(queueItem.id, 'Processing', 5);
+
+  try {
+    const processResult = await processSingleVolume(pairedSource, (status, progress) => {
+      updateProgressTracker(queueItem.id, status, progress);
+    });
+
+    if (processResult.additionalSources && processResult.additionalSources.length > 0) {
+      const newItems = processResult.additionalSources.map(createLocalQueueItem);
+      newItems.forEach(addToProgressTracker);
+      importQueue.update((q) => [...q, ...newItems]);
+      processQueue();
+      result.imported += processResult.additionalSources.length;
+    }
+
+    if (processResult.success) {
+      result.imported += 1;
+      removeFromProgressTracker(queueItem.id);
+    } else {
+      result.success = false;
+      result.failed = 1;
+      result.errors.push(processResult.error || 'Unknown error');
+      markProgressTrackerError(queueItem.id, processResult.error || 'Unknown error');
+    }
+  } finally {
+    isImporting.set(false);
+    currentImport.set(null);
+  }
+
+  return result;
+}
+
 export async function importFiles(files: File[], options?: ImportOptions): Promise<ImportResult> {
   const result: ImportResult = {
     success: true,
@@ -876,7 +1044,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     }
 
     if (pairingResult.pairings.length === 0) {
-      showSnackbar('No importable volumes found');
+      getImportUiBridge().notify('No importable volumes found');
       return result;
     }
 
@@ -897,7 +1065,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
 
     if (allPairings.length === 0) {
-      showSnackbar('No volumes to import');
+      getImportUiBridge().notify('No volumes to import');
       return result;
     }
 
@@ -969,7 +1137,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    showSnackbar(`Import failed: ${message}`);
+    getImportUiBridge().notify(`Import failed: ${message}`);
     result.success = false;
     result.errors.push(message);
     return result;
@@ -990,18 +1158,13 @@ async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boole
   }
 
   // Convert to sorted list
-  const seriesList: SeriesImportInfo[] = [...seriesGroups.entries()]
+  const seriesList = [...seriesGroups.entries()]
     .map(([seriesName, volumeCount]) => ({ seriesName, volumeCount }))
     .sort((a, b) => a.seriesName.localeCompare(b.seriesName));
 
-  // Show confirmation modal
-  return new Promise<boolean>((resolve) => {
-    promptImageOnlyImport(
-      seriesList,
-      pairings.length,
-      () => resolve(true),
-      () => resolve(false)
-    );
+  return getImportUiBridge().promptImageOnly({
+    seriesList,
+    totalVolumeCount: pairings.length
   });
 }
 
@@ -1010,13 +1173,7 @@ async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boole
  * Shows the list of missing files and lets user choose to import anyway
  */
 async function promptForMissingFiles(info: MissingFilesInfo): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    promptMissingFiles(
-      info,
-      () => resolve(true), // Import anyway
-      () => resolve(false) // Cancel
-    );
-  });
+  return getImportUiBridge().promptMissing(info);
 }
 
 /**

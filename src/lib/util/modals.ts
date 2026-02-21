@@ -36,14 +36,26 @@ export function promptConfirmation(
 type ExtractionModal = {
   open: boolean;
   firstVolume?: { series_title: string; volume_title: string };
-  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void;
+  onConfirm?: (
+    asCbz: boolean,
+    individualVolumes: boolean,
+    includeSeriesTitle: boolean,
+    includeSidecars: boolean,
+    embedSidecarsInArchive: boolean
+  ) => void;
   onCancel?: () => void;
 };
 export const extractionModalStore = writable<ExtractionModal | undefined>(undefined);
 
 export function promptExtraction(
   firstVolume: { series_title: string; volume_title: string },
-  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void,
+  onConfirm?: (
+    asCbz: boolean,
+    individualVolumes: boolean,
+    includeSeriesTitle: boolean,
+    includeSidecars: boolean,
+    embedSidecarsInArchive: boolean
+  ) => void,
   onCancel?: () => void
 ) {
   extractionModalStore.set({
@@ -246,4 +258,47 @@ export function updateImportPreparing(details: Partial<ImportPreparingModal>) {
  */
 export function closeImportPreparing() {
   importPreparingModalStore.set(undefined);
+}
+
+export type AddLibraryModalParams = {
+  url?: string;
+  name?: string;
+  username?: string;
+  path?: string;
+};
+
+type AddLibraryModal = {
+  open: boolean;
+  editingId?: string;
+  params?: AddLibraryModalParams;
+  onSave?: () => void;
+  onCancel?: () => void;
+};
+
+export const addLibraryModalStore = writable<AddLibraryModal | undefined>(undefined);
+
+export function promptAddLibrary(
+  params?: AddLibraryModalParams,
+  onSave?: () => void,
+  onCancel?: () => void
+) {
+  addLibraryModalStore.set({
+    open: true,
+    params,
+    onSave,
+    onCancel
+  });
+}
+
+export function promptEditLibrary(libraryId: string, onSave?: () => void, onCancel?: () => void) {
+  addLibraryModalStore.set({
+    open: true,
+    editingId: libraryId,
+    onSave,
+    onCancel
+  });
+}
+
+export function closeAddLibraryModal() {
+  addLibraryModalStore.set(undefined);
 }

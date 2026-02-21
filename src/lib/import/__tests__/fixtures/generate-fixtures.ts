@@ -1057,6 +1057,122 @@ async function createAsyncFixtures(): Promise<void> {
     ])
   );
 
+  // ============================================
+  // IMAGE-ONLY ARCHIVE FIXTURES
+  // ============================================
+
+  // 11. image-only-archive-single
+  // A single CBZ containing only images (no mokuro)
+  // This is the bug case: flat archives don't import
+  const imageOnlyArchiveSingle = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-single',
+    {
+      'manga.cbz': imageOnlyArchiveSingle
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false // Note: imageOnly is determined after archive extraction
+      }
+    ])
+  );
+
+  // 12. image-only-archive-multiple
+  // Multiple CBZ files, each containing only images (no mokuro)
+  // Simulates dragging a folder of raw CBZ files
+  const imageOnlyArchive1 = await createCbzImagesOnly(2);
+  const imageOnlyArchive2 = await createCbzImagesOnly(2);
+  const imageOnlyArchive3 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-multiple',
+    {
+      'Series Name v01.cbz': imageOnlyArchive1,
+      'Series Name v02.cbz': imageOnlyArchive2,
+      'Series Name v03.cbz': imageOnlyArchive3
+    },
+    createExpected(3, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v02',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v03',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 13. image-only-archive-with-metadata-suffix
+  // CBZ files with metadata in filename like "(2023) (Digital) (scan-group)"
+  // Tests that series name extraction strips this metadata
+  const metadataArchive1 = await createCbzImagesOnly(2);
+  const metadataArchive2 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-with-metadata-suffix',
+    {
+      'Test Manga With Long Name v01 (2023) (Digital) (scan-group).cbz': metadataArchive1,
+      'Test Manga With Long Name v02 (2023) (Digital) (scan-group).cbz': metadataArchive2
+    },
+    createExpected(2, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Test Manga With Long Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Test Manga With Long Name v02',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 14. image-only-archive-in-folder
+  // A folder containing multiple image-only CBZ files
+  // Simulates the exact user scenario: dragging "Test Manga With Long Name" folder
+  const folderArchive1 = await createCbzImagesOnly(2);
+  const folderArchive2 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-in-folder',
+    {
+      'Series Name/Series Name v01 (2023) (Digital).cbz': folderArchive1,
+      'Series Name/Series Name v02 (2023) (Digital).cbz': folderArchive2
+    },
+    createExpected(2, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v02',
+        imageOnly: false
+      }
+    ])
+  );
+
   // 10. archive-with-external-mokuro
   // CBZ with images only + external mokuro file
   // This tests the fix for flat archives with external mokuro pairing

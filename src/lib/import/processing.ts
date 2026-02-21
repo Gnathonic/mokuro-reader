@@ -20,7 +20,11 @@ import type {
   ArchiveSource
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
-import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import {
+  extractSeriesName,
+  extractTitlesFromPath,
+  generateDeterministicUUID
+} from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 
 // ============================================
@@ -304,44 +308,12 @@ export function matchImagesToPages(
 // ============================================
 
 /**
- * Generates a deterministic UUID from a string using a simple hash
- * This ensures the same series name always produces the same UUID,
- * allowing image-only volumes from the same series to be grouped together.
- */
-function generateDeterministicUUID(input: string): string {
-  // Normalize input for consistent hashing
-  const normalized = input.toLowerCase().trim();
-
-  // Simple hash function (djb2 algorithm)
-  let hash1 = 5381;
-  let hash2 = 52711;
-
-  for (let i = 0; i < normalized.length; i++) {
-    const char = normalized.charCodeAt(i);
-    hash1 = (hash1 * 33) ^ char;
-    hash2 = (hash2 * 33) ^ char;
-  }
-
-  // Convert to positive numbers
-  hash1 = hash1 >>> 0;
-  hash2 = hash2 >>> 0;
-
-  // Create UUID-like format from hashes
-  const hex1 = hash1.toString(16).padStart(8, '0');
-  const hex2 = hash2.toString(16).padStart(8, '0');
-
-  // Create additional variation
-  const hash3 = ((hash1 ^ hash2) >>> 0).toString(16).padStart(8, '0');
-  const hash4 = ((hash1 + hash2) >>> 0).toString(16).padStart(8, '0');
-
-  return `${hex1}-${hex2.slice(0, 4)}-4${hex2.slice(5, 8)}-${(8 + (parseInt(hash3[0], 16) % 4)).toString(16)}${hash3.slice(1, 4)}-${hash3.slice(4)}${hash4.slice(0, 4)}`;
-}
-
-/**
  * Extract series and volume info from a base path
  *
- * Assumes path structure like: "Author/Series Name/Volume 01"
- * Falls back to using path segments for series/volume names
+ * Uses sophisticated extraction that handles:
+ * - Metadata stripping: "(2023) (Digital) (1r0n)" removed
+ * - Volume patterns: "v01", "Vol 1", "第01巻", etc.
+ * - Suspect parent detection: "Downloads", "Manga", etc. are skipped
  *
  * @param basePath - The base path of the volume
  * @returns Extracted series and volume names
@@ -351,21 +323,12 @@ export function extractVolumeInfo(basePath: string): VolumeInfo {
     return { series: 'Untitled', volume: 'Untitled' };
   }
 
-  const parts = basePath.split('/').filter((p) => p.length > 0);
+  // Use the sophisticated extraction from shared module
+  const { seriesTitle, volumeTitle } = extractTitlesFromPath(basePath);
 
-  if (parts.length === 0) {
-    return { series: 'Untitled', volume: 'Untitled' };
-  }
-
-  if (parts.length === 1) {
-    // Single segment - use it for both
-    return { series: parts[0], volume: parts[0] };
-  }
-
-  // Two or more segments - last is volume, second-to-last is series
   return {
-    series: parts[parts.length - 2],
-    volume: parts[parts.length - 1]
+    series: seriesTitle,
+    volume: volumeTitle
   };
 }
 
@@ -508,7 +471,7 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * @returns Processed volume ready for database
  */
 export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
-  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives } = input;
+  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;
@@ -613,7 +576,23 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
 
   const firstImage = coverImagePath ? imageFiles.get(coverImagePath) : null;
 
-  if (firstImage) {
+  // If a thumbnail sidecar is provided, use it directly as the local cover thumbnail.
+  // This preserves externally curated covers and skips generation from page images.
+  if (thumbnailSidecar) {
+    thumbnail = thumbnailSidecar;
+    try {
+      const dims = await getImageDimensions(thumbnailSidecar);
+      thumbnailWidth = dims.width;
+      thumbnailHeight = dims.height;
+    } catch (error) {
+      // Keep sidecar as-is even if dimension probing fails.
+      // Use first page dimensions as a best-effort fallback to avoid triggering
+      // background thumbnail regeneration that would overwrite custom covers.
+      console.warn('Failed to read sidecar thumbnail dimensions; keeping sidecar as-is:', error);
+      thumbnailWidth = pages[0]?.img_width || 1;
+      thumbnailHeight = pages[0]?.img_height || 1;
+    }
+  } else if (firstImage) {
     try {
       const result = await generateThumbnail(firstImage);
       thumbnail = result.file;
@@ -689,8 +668,13 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     seriesUuid = generateDeterministicUUID(seriesName);
   }
 
+  // Generate deterministic volume UUID from series + volume name
+  // This ensures the same volume gets the same UUID across devices
+  const volumeUuid =
+    mokuroData?.volumeUuid || generateDeterministicUUID(`${seriesName}/${volumeInfo.volume}`);
+
   const metadata: ProcessedMetadata = {
-    volumeUuid: mokuroData?.volumeUuid || generateUUID(),
+    volumeUuid,
     seriesUuid,
     series: seriesName,
     volume: volumeInfo.volume,

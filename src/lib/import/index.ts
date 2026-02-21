@@ -53,6 +53,17 @@ export {
   createLocalQueueItem
 } from './local-provider';
 
+// HTML Download Pseudo-Provider
+export {
+  htmlDownloadProvider,
+  getUploadParamsFromLocation,
+  parseHtmlDownloadRequest,
+  type HtmlDownloadRequest,
+  type HtmlDownloadResult,
+  type HtmlDownloadProgress,
+  type HtmlImportType
+} from './html-download-provider';
+
 // Processing
 export {
   processVolume,
@@ -70,6 +81,7 @@ export { saveVolume, volumeExists, deleteVolume } from './database';
 // Import Service (main entry point)
 export {
   importFiles,
+  importArchiveWithOptionalMokuro,
   importQueue,
   currentImport,
   isImporting,

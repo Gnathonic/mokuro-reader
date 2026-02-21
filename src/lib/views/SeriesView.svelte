@@ -30,6 +30,7 @@
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import { onMount } from 'svelte';
+  import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
 
@@ -157,9 +158,12 @@
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
+  // Returns null while loading, undefined if series not found, array if found
   let allVolumes = $derived.by(() => {
     const seriesVolumes = $currentSeries;
-    if (!seriesVolumes || seriesVolumes.length === 0) return undefined;
+    // Propagate loading state (null = loading, [] = not found)
+    if (seriesVolumes === null) return null;
+    if (seriesVolumes.length === 0) return undefined;
 
     // Create a copy to sort
     const volumesToSort = [...seriesVolumes];
@@ -192,6 +196,16 @@
   // Separate real volumes from placeholders
   let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
+  let volumeListRenderKey = $derived.by(() =>
+    manga
+      .map((vol) => {
+        const thumbSig = vol.thumbnail
+          ? `${vol.thumbnail.name}:${vol.thumbnail.size}:${vol.thumbnail.lastModified}:${vol.thumbnail.type}`
+          : 'none';
+        return `${vol.volume_uuid}:${thumbSig}:${vol.thumbnail_width ?? 0}:${vol.thumbnail_height ?? 0}`;
+      })
+      .join('|')
+  );
 
   let loading = $state(false);
 
@@ -200,6 +214,17 @@
   let renameValue = $state('');
   let renameError = $state('');
   let renameSaving = $state(false);
+  let renameInputEl = $state<HTMLInputElement | null>(null);
+
+  // Focus rename field when entering rename mode (avoids a11y autofocus warning).
+  $effect(() => {
+    if (isRenaming) {
+      tick().then(() => {
+        renameInputEl?.focus();
+        renameInputEl?.select();
+      });
+    }
+  });
 
   // Subscribe to unified cloud cache updates
   let cloudFiles = $state<Map<string, any[]>>(new Map());
@@ -429,10 +454,22 @@
         volume_title: manga[0].volume_title
       };
 
-      promptExtraction(firstVolume, async (asCbz, individualVolumes, includeSeriesTitle) => {
+      promptExtraction(
+        firstVolume,
+        async (
+          asCbz,
+          individualVolumes,
+          includeSeriesTitle,
+          includeSidecars,
+          embedSidecarsInArchive
+        ) => {
         loading = true;
-        loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle);
-      });
+          loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle, {
+            includeSidecars,
+            embedSidecarsInArchive
+          });
+        }
+      );
     }
   }
 
@@ -653,7 +690,8 @@
 <svelte:head>
   <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
-{#if !$catalog || $catalog.length === 0}
+{#if $catalog === null || allVolumes === null}
+  <!-- Still loading from IndexedDB -->
   <div class="flex items-center justify-center p-16">
     <Spinner size="12" />
   </div>
@@ -665,11 +703,11 @@
         <div class="flex min-w-0 flex-1 items-center gap-2 px-2">
           <input
             type="text"
+            bind:this={renameInputEl}
             bind:value={renameValue}
             onkeydown={handleRenameKeydown}
             disabled={renameSaving}
             class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xl font-bold text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
-            autofocus
           />
           <button
             onclick={saveRename}
@@ -808,9 +846,11 @@
           </div>
         {/if}
 
-        {#each manga as volume (volume.volume_uuid)}
-          <VolumeItem {volume} variant="list" />
-        {/each}
+        {#key volumeListRenderKey}
+          {#each manga as volume (volume.volume_uuid)}
+            <VolumeItem {volume} variant="list" />
+          {/each}
+        {/key}
 
         {#if placeholders && placeholders.length > 0}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
@@ -833,9 +873,11 @@
       <!-- Grid view -->
       <div class="flex flex-col gap-4">
         <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
-          {#each manga as volume (volume.volume_uuid)}
-            <VolumeItem {volume} variant="grid" />
-          {/each}
+          {#key volumeListRenderKey}
+            {#each manga as volume (volume.volume_uuid)}
+              <VolumeItem {volume} variant="grid" />
+            {/each}
+          {/key}
         </div>
 
         {#if placeholders && placeholders.length > 0 && hasAnyProvider}
@@ -913,5 +955,8 @@
     {/if}
   </div>
 {:else}
-  <div class="flex justify-center p-16">Manga not found</div>
+  <div class="flex flex-col items-center justify-center gap-4 p-16">
+    <p class="text-lg text-gray-400">Series not found</p>
+    <Button color="primary" onclick={() => nav.toCatalog()}>Go to Catalog</Button>
+  </div>
 {/if}

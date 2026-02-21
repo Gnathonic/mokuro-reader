@@ -93,6 +93,15 @@ interface StreamExtractMessage {
   }>;
 }
 
+interface DownloadHttpBundleMessage {
+  mode: 'download-http-bundle';
+  fileId: string;
+  fileName: string;
+  archiveUrl: string;
+  mokuroUrls: string[];
+  coverUrls: string[];
+}
+
 // Upload messages
 interface CompressAndUploadMessage {
   mode: 'compress-and-upload';
@@ -121,11 +130,13 @@ interface CompressFromDbMessage {
   seriesTitle: string;
   credentials?: ProviderCredentials;
   downloadFilename?: string; // For local export
+  embedThumbnailSidecar?: boolean;
 }
 
 type WorkerMessage =
   | DownloadAndDecompressMessage
   | DecompressOnlyMessage
+  | DownloadHttpBundleMessage
   | StreamExtractMessage
   | CompressAndUploadMessage
   | CompressAndReturnMessage
@@ -153,6 +164,11 @@ interface DownloadCompleteMessage {
   data: ArrayBuffer;
   entries: DecompressedEntry[];
   metadata?: VolumeMetadata;
+  bundle?: {
+    archive: { url: string; data: ArrayBuffer; contentType?: string };
+    mokuro?: { url: string; data: ArrayBuffer; contentType?: string };
+    cover?: { url: string; data: ArrayBuffer; contentType?: string };
+  };
 }
 
 interface UploadCompleteMessage {
@@ -247,14 +263,15 @@ async function downloadFromWebDAV(
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/');
-  const fullUrl = `${url}${encodedPath}`;
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
+  const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+  const fullUrl = `${baseUrl}${encodedPath}`;
 
-  const response = await fetch(fullUrl, {
-    headers: {
-      Authorization: authHeader
-    }
-  });
+  const headers: Record<string, string> = {};
+  if (username || password) {
+    headers.Authorization = 'Basic ' + btoa(`${username}:${password}`);
+  }
+
+  const response = await fetch(fullUrl, { headers });
 
   if (!response.ok) {
     throw new Error(`WebDAV download failed: ${response.status} ${response.statusText}`);
@@ -540,6 +557,60 @@ async function decompressCbz(
 
   await zipReader.close();
   return decompressedEntries;
+}
+
+async function downloadFromUrl(
+  url: string,
+  onProgress?: (loaded: number, total: number) => void
+): Promise<{ data: ArrayBuffer; contentType?: string }> {
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`HTTP download failed: ${response.status}`);
+  }
+
+  const total = parseInt(response.headers.get('content-length') || '0', 10);
+  const contentType = response.headers.get('content-type') || undefined;
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const data = await response.arrayBuffer();
+    onProgress?.(data.byteLength, total || data.byteLength);
+    return { data, contentType };
+  }
+
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      loaded += value.byteLength;
+      onProgress?.(loaded, total || loaded);
+    }
+  }
+
+  const full = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    full.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { data: full.buffer, contentType };
+}
+
+async function tryDownloadOptionalUrl(
+  urls: string[]
+): Promise<{ url: string; data: ArrayBuffer; contentType?: string } | undefined> {
+  for (const url of urls) {
+    try {
+      const result = await downloadFromUrl(url);
+      return { url, data: result.data, contentType: result.contentType };
+    } catch {
+      // best effort
+    }
+  }
+  return undefined;
 }
 
 // ===========================
@@ -854,6 +925,41 @@ ctx.addEventListener('message', async (event) => {
       ctx.postMessage(completeMessage, transferables);
 
       console.log(`Worker: Sent complete message for ${fileName}`);
+    } else if (message.mode === 'download-http-bundle') {
+      const { fileId, fileName, archiveUrl, mokuroUrls, coverUrls } = message;
+
+      const archive = await downloadFromUrl(archiveUrl, (loaded, total) => {
+        const progressMessage: DownloadProgressMessage = {
+          type: 'progress',
+          fileId,
+          loaded,
+          total
+        };
+        ctx.postMessage(progressMessage);
+      });
+
+      const mokuro = await tryDownloadOptionalUrl(mokuroUrls);
+      const cover = await tryDownloadOptionalUrl(coverUrls);
+
+      const completeMessage: DownloadCompleteMessage = {
+        type: 'complete',
+        fileId,
+        fileName,
+        data: new ArrayBuffer(0),
+        entries: [],
+        bundle: {
+          archive: { url: archiveUrl, data: archive.data, contentType: archive.contentType },
+          ...(mokuro ? { mokuro } : {}),
+          ...(cover ? { cover } : {})
+        }
+      };
+
+      const transferables: Transferable[] = [archive.data];
+      if (mokuro?.data) transferables.push(mokuro.data);
+      if (cover?.data) transferables.push(cover.data);
+      ctx.postMessage(completeMessage, transferables);
+
+      console.log(`Worker: Sent HTTP bundle complete message for ${fileName}`);
     } else if (message.mode === 'stream-extract') {
       // ========== STREAM EXTRACT MODE ==========
       // Extracts in parallel batches, sending each immediately to prevent memory exhaustion
@@ -1130,14 +1236,18 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressing volume ${volumeTitle} from IndexedDB...`);
 
       // Compress using shared utility (handles streaming from IndexedDB)
-      const cbzBlob = await compressVolumeFromDb(volumeUuid, (completed, total) => {
-        const progressMessage: UploadProgressMessage = {
-          type: 'progress',
-          phase: 'compressing',
-          progress: (completed / total) * 100
-        };
-        ctx.postMessage(progressMessage);
-      });
+      const cbzBlob = await compressVolumeFromDb(
+        volumeUuid,
+        (completed, total) => {
+          const progressMessage: UploadProgressMessage = {
+            type: 'progress',
+            phase: 'compressing',
+            progress: (completed / total) * 100
+          };
+          ctx.postMessage(progressMessage);
+        },
+        { embedThumbnailSidecar: message.embedThumbnailSidecar === true }
+      );
 
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 

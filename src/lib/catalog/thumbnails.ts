@@ -98,6 +98,37 @@ function prescaleCanvas(srcCanvas: HTMLCanvasElement, maxPixels: number): HTMLCa
   return scaled;
 }
 
+/**
+ * Convert an existing thumbnail File to WebP format for cloud upload.
+ * The input is already resized (~250x350), so this is just a format conversion.
+ */
+export async function convertToWebP(thumbnailFile: File): Promise<Blob> {
+  const img = new Image();
+  const imgUrl = URL.createObjectURL(thumbnailFile);
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = imgUrl;
+  });
+  URL.revokeObjectURL(imgUrl);
+
+  console.log(`[convertToWebP] Input: ${img.width}x${img.height}, file: ${thumbnailFile.name} (${thumbnailFile.size} bytes)`);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.drawImage(img, 0, 0);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error('WebP conversion failed'))),
+      'image/webp',
+      1.0
+    );
+  });
+}
+
 export async function generateThumbnail(
   file: File,
   maxWidth = 250,

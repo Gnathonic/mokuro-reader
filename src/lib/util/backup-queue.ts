@@ -1,9 +1,7 @@
 import { writable, get } from 'svelte/store';
 import type { VolumeMetadata } from '$lib/types';
-import { progressTrackerStore } from './progress-tracker';
 import type { WorkerTask } from './worker-pool';
-import { tokenManager } from './sync/providers/google-drive/token-manager';
-import { showSnackbar } from './snackbar';
+import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
@@ -12,6 +10,12 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+import { loadVolumeSidecars, downloadFileBlob } from './volume-sidecars';
+
+export interface SidecarOptions {
+  includeSidecars: boolean;
+  embedSidecarsInArchive: boolean;
+}
 // Note: prepareVolumeData is no longer used - worker reads from IndexedDB directly
 
 // Type for provider instances (real or export)
@@ -26,6 +30,7 @@ export interface BackupQueueItem {
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'backing-up';
   downloadFilename?: string; // Only for export-for-download pseudo-provider
+  sidecarOptions: SidecarOptions;
 }
 
 interface SeriesQueueStatus {
@@ -45,24 +50,19 @@ let processingStarted = false;
 // Each call waits for the previous one to finish before proceeding
 let queueLock = Promise.resolve();
 
-// Series folder initialization lock (provider-agnostic)
-// Prevents multiple concurrent workers from racing to create the same series folder
-// Maps "provider:seriesTitle" -> Promise that resolves when folder is guaranteed to exist
-const seriesFolderLocks = new Map<string, Promise<void>>();
+// Series upload target initialization lock (provider-agnostic)
+// Prevents multiple concurrent workers from racing to prepare the same provider+series target
+// Maps "provider:seriesTitle" -> Promise that resolves when target is guaranteed to exist
+const seriesFolderLocks = new Map<string, Promise<Record<string, any> | void>>();
 
 // Subscribe to queue changes and update progress tracker
 queueStore.subscribe((queue) => {
   const totalCount = queue.length;
 
   if (totalCount > 0) {
-    progressTrackerStore.addProcess({
-      id: 'backup-queue-overall',
-      description: 'Backup Queue',
-      status: `${totalCount} in queue`,
-      progress: 0
-    });
+    getBackupUiBridge().addProgress('backup-queue-overall', 'Backup Queue', `${totalCount} in queue`, 0);
   } else {
-    progressTrackerStore.removeProcess('backup-queue-overall');
+    getBackupUiBridge().removeProgress('backup-queue-overall');
   }
 });
 
@@ -71,13 +71,14 @@ queueStore.subscribe((queue) => {
  */
 export function queueVolumeForBackup(
   volume: VolumeMetadata,
-  providerInstance?: SyncProvider
+  providerInstance?: SyncProvider,
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
-    showSnackbar('Please connect to a cloud storage provider first');
+    getBackupUiBridge().notify('Please connect to a cloud storage provider first');
     return;
   }
 
@@ -100,7 +101,8 @@ export function queueVolumeForBackup(
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
     volumeMetadata: volume,
-    status: 'queued'
+    status: 'queued',
+    sidecarOptions
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -115,7 +117,8 @@ export function queueVolumeForBackup(
 export function queueVolumeForExport(
   volume: VolumeMetadata,
   filename: string,
-  extension: 'zip' | 'cbz' = 'cbz'
+  extension: 'zip' | 'cbz' = 'cbz',
+  sidecarOptions: SidecarOptions = { includeSidecars: false, embedSidecarsInArchive: false }
 ): void {
   const queue = get(queueStore);
 
@@ -135,7 +138,8 @@ export function queueVolumeForExport(
     uploadConcurrencyLimit: exportProvider.uploadConcurrencyLimit,
     volumeMetadata: volume,
     status: 'queued',
-    downloadFilename: filename
+    downloadFilename: filename,
+    sidecarOptions
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -149,13 +153,14 @@ export function queueVolumeForExport(
  */
 export function queueSeriesVolumesForBackup(
   volumes: VolumeMetadata[],
-  providerInstance?: SyncProvider
+  providerInstance?: SyncProvider,
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
-    showSnackbar('Please connect to a cloud storage provider first');
+    getBackupUiBridge().notify('Please connect to a cloud storage provider first');
     return;
   }
 
@@ -180,7 +185,7 @@ export function queueSeriesVolumesForBackup(
   });
 
   // Add each volume individually (duplicate check happens in queueVolumeForBackup)
-  sorted.forEach((volume) => queueVolumeForBackup(volume, targetProvider));
+  sorted.forEach((volume) => queueVolumeForBackup(volume, targetProvider, sidecarOptions));
 }
 
 /**
@@ -211,43 +216,21 @@ export function getSeriesBackupQueueStatus(seriesTitle: string): SeriesQueueStat
   };
 }
 
-/**
- * Ensure series folder exists for any provider (with race condition protection)
- * Provider-agnostic mutex prevents concurrent folder creation for the same series
- */
-async function ensureSeriesFolder(
-  provider: BackupProviderType,
-  seriesTitle: string,
-  credentials: any
-): Promise<any> {
-  const lockKey = `${provider}:${seriesTitle}`;
+async function prepareSeriesUploadTarget(
+  provider: SyncProvider,
+  seriesTitle: string
+): Promise<Record<string, any> | void> {
+  if (!provider.prepareUploadTarget) return;
 
-  // Check if folder initialization is already in progress or complete
+  const lockKey = `${provider.type}:${seriesTitle}`;
   const existingLock = seriesFolderLocks.get(lockKey);
   if (existingLock) {
-    await existingLock;
-    // Return provider-specific data after lock resolves
-    if (provider === 'google-drive') {
-      return await ensureGoogleDriveFolder(seriesTitle, credentials.accessToken);
-    }
-    return; // MEGA and WebDAV don't need to return folder references
+    return await existingLock;
   }
 
-  // Start folder creation and store the promise
   const lockPromise = (async () => {
     try {
-      if (provider === 'google-drive') {
-        await ensureGoogleDriveFolder(seriesTitle, credentials.accessToken);
-      } else if (provider === 'mega') {
-        await ensureMEGAFolder(seriesTitle, credentials.megaEmail, credentials.megaPassword);
-      } else if (provider === 'webdav') {
-        await ensureWebDAVFolder(
-          seriesTitle,
-          credentials.webdavUrl,
-          credentials.webdavUsername,
-          credentials.webdavPassword
-        );
-      }
+      return await provider.prepareUploadTarget!(seriesTitle);
     } catch (error) {
       // On error, remove lock so it can be retried
       seriesFolderLocks.delete(lockKey);
@@ -256,165 +239,31 @@ async function ensureSeriesFolder(
   })();
 
   seriesFolderLocks.set(lockKey, lockPromise);
-  await lockPromise;
-
-  // Return provider-specific data
-  if (provider === 'google-drive') {
-    return await ensureGoogleDriveFolder(seriesTitle, credentials.accessToken);
-  }
+  return await lockPromise;
 }
 
-/**
- * Google Drive: Ensure series folder exists and return folder ID
- */
-async function ensureGoogleDriveFolder(seriesTitle: string, accessToken: string): Promise<string> {
-  const escapedSeriesTitle = seriesTitle.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+async function getUploadWorkerCredentials(
+  provider: SyncProvider,
+  seriesTitle: string
+): Promise<Record<string, any>> {
+  const baseCredentials = provider.getWorkerUploadCredentials
+    ? await provider.getWorkerUploadCredentials()
+    : {};
 
-  // Ensure mokuro-reader root folder exists
-  const rootQuery = `name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const rootSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(rootQuery)}&fields=files(id,name)`;
-  const rootResponse = await fetch(rootSearchUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  const rootData = await rootResponse.json();
-
-  let rootFolderId: string;
-  if (rootData.files?.length > 0) {
-    rootFolderId = rootData.files[0].id;
-  } else {
-    const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'mokuro-reader',
-        mimeType: 'application/vnd.google-apps.folder'
-      })
-    });
-    rootFolderId = (await createResponse.json()).id;
-  }
-
-  // Ensure series folder exists
-  const seriesQuery = `name='${escapedSeriesTitle}' and '${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const seriesSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(seriesQuery)}&fields=files(id,name)`;
-  const seriesResponse = await fetch(seriesSearchUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  const seriesData = await seriesResponse.json();
-
-  if (seriesData.files?.length > 0) {
-    return seriesData.files[0].id;
-  }
-
-  const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: seriesTitle,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: [rootFolderId]
-    })
-  });
-  return (await createResponse.json()).id;
-}
-
-/**
- * MEGA: Ensure series folder exists in main thread
- * Workers will create their own Storage instances, but folders will already exist
- */
-async function ensureMEGAFolder(
-  seriesTitle: string,
-  email: string,
-  password: string
-): Promise<void> {
-  const { Storage } = await import('megajs');
-  const storage = new Storage({ email, password });
-  await storage.ready;
-
-  // Ensure mokuro-reader folder exists
-  let mokuroFolder = storage.root.children?.find(
-    (c: any) => c.name === 'mokuro-reader' && c.directory
-  );
-  if (!mokuroFolder) {
-    mokuroFolder = await storage.root.mkdir('mokuro-reader');
-  }
-
-  // Ensure series folder exists
-  let seriesFolder = mokuroFolder.children?.find((c: any) => c.name === seriesTitle && c.directory);
-  if (!seriesFolder) {
-    await mokuroFolder.mkdir(seriesTitle);
-  }
-}
-
-/**
- * WebDAV: Ensure series folder path exists
- */
-async function ensureWebDAVFolder(
-  seriesTitle: string,
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<void> {
-  const authHeader = 'Basic ' + btoa(`${username}:${password}`);
-  const path = `mokuro-reader/${seriesTitle}`;
-  const parts = path.split('/').filter((p) => p);
-
-  let currentPath = '';
-  for (const part of parts) {
-    currentPath += `/${part}`;
-    const folderUrl = `${serverUrl}${currentPath}`;
-
-    try {
-      const response = await fetch(folderUrl, {
-        method: 'MKCOL',
-        headers: { Authorization: authHeader }
-      });
-      // 201 = created, 405 = already exists (both OK)
-      if (!response.ok && response.status !== 405) {
-        console.warn(`Failed to create folder ${currentPath}: ${response.status}`);
-      }
-    } catch (error) {
-      console.warn(`Error creating folder ${currentPath}:`, error);
-    }
-  }
-}
-
-/**
- * Get provider credentials for worker uploads
- */
-async function getProviderCredentials(provider: BackupProviderType): Promise<any> {
-  if (provider === 'google-drive') {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return { accessToken: token };
-  } else if (provider === 'webdav') {
-    const serverUrl = localStorage.getItem('webdav_server_url');
-    const username = localStorage.getItem('webdav_username');
-    const password = localStorage.getItem('webdav_password');
-    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
-  } else if (provider === 'mega') {
-    // MEGA credentials need to be passed to worker (can't access localStorage in worker)
-    const email = localStorage.getItem('mega_email');
-    const password = localStorage.getItem('mega_password');
-    return { megaEmail: email, megaPassword: password };
-  }
-  return {};
+  const targetData = await prepareSeriesUploadTarget(provider, seriesTitle);
+  return { ...baseCredentials, ...(targetData || {}) };
 }
 
 /**
  * Handle backup errors consistently
  */
 function handleBackupError(item: BackupQueueItem, processId: string, errorMessage: string): void {
-  progressTrackerStore.updateProcess(processId, {
-    progress: 0,
-    status: `Error: ${errorMessage}`
-  });
-  showSnackbar(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
+  getBackupUiBridge().updateProgress(processId, `Error: ${errorMessage}`, 0);
+  getBackupUiBridge().notify(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
   queueStore.update((q) =>
     q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
   );
-  setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+  setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
 }
 
 /**
@@ -484,10 +333,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       // Worker reads from IndexedDB directly - avoids memory issues with large volumes
       // by not transferring file data through postMessage
       prepareData: async () => {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 5,
-          status: 'Preparing...'
-        });
+        getBackupUiBridge().updateProgress(processId, 'Preparing...', 5);
 
         // Handle export-for-download (pseudo-provider)
         if (isExport) {
@@ -497,21 +343,13 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             volumeUuid: item.volumeUuid,
             volumeTitle: item.volumeTitle,
             seriesTitle: item.seriesTitle,
-            downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`
+            downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`,
+            embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
           };
         }
 
         // Handle real cloud providers
-        const credentials = await getProviderCredentials(provider!.type);
-
-        // Ensure series folder exists BEFORE worker starts (prevents race conditions)
-        // This is provider-agnostic and works for Google Drive, MEGA, and WebDAV
-        const folderData = await ensureSeriesFolder(provider!.type, item.seriesTitle, credentials);
-
-        // For Google Drive, pass folder ID to worker to avoid redundant folder lookups
-        if (provider!.type === 'google-drive' && folderData) {
-          credentials.seriesFolderId = folderData;
-        }
+        const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
 
         return {
           mode: 'compress-from-db',
@@ -519,7 +357,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           volumeUuid: item.volumeUuid,
           volumeTitle: item.volumeTitle,
           seriesTitle: item.seriesTitle,
-          credentials
+          credentials,
+          embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
         };
       },
       onProgress: (data) => {
@@ -527,19 +366,13 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         // Each phase goes from 0-100%
         const status = data.phase === 'compressing' ? 'Compressing...' : 'Uploading...';
 
-        progressTrackerStore.updateProcess(processId, {
-          progress: percent,
-          status
-        });
+        getBackupUiBridge().updateProgress(processId, status, percent);
       },
       onComplete: async (data, releaseMemory) => {
         try {
           // Handle export-for-download (trigger browser download)
           if (isExport && data?.data) {
-            progressTrackerStore.updateProcess(processId, {
-              progress: 100,
-              status: 'Download ready'
-            });
+            getBackupUiBridge().updateProgress(processId, 'Download ready', 100);
 
             // Trigger browser download using Transferable Object data
             const blob = new Blob([data.data], { type: 'application/x-cbz' });
@@ -550,22 +383,29 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             link.click();
             URL.revokeObjectURL(url);
 
-            showSnackbar(`Exported ${item.volumeTitle} successfully`);
+            if (item.sidecarOptions.includeSidecars) {
+              const sidecars = await loadVolumeSidecars(item.volumeUuid);
+              if (sidecars.mokuroFile) {
+                downloadFileBlob(sidecars.mokuroFile);
+              }
+              if (sidecars.thumbnailFile) {
+                downloadFileBlob(sidecars.thumbnailFile);
+              }
+            }
+
+            getBackupUiBridge().notify(`Exported ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
               q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
             );
-            setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+            setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
 
             return; // Early return for export
           }
 
           // Handle real cloud backup
-          progressTrackerStore.updateProcess(processId, {
-            progress: 100,
-            status: 'Backup complete'
-          });
+          getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
 
-          showSnackbar(`Backed up ${item.volumeTitle} successfully`);
+          getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
           queueStore.update((q) =>
             q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
           );
@@ -590,10 +430,26 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             }
           }
 
+          if (item.sidecarOptions.includeSidecars) {
+            const sidecars = await loadVolumeSidecars(item.volumeUuid);
+            if (sidecars.mokuroFile) {
+              await provider!.uploadFile(
+                `${item.seriesTitle}/${item.volumeTitle}.mokuro`,
+                sidecars.mokuroFile
+              );
+            }
+            if (sidecars.thumbnailFile) {
+              await provider!.uploadFile(
+                `${item.seriesTitle}/${item.volumeTitle}.webp`,
+                sidecars.thumbnailFile
+              );
+            }
+          }
+
           // Note: Full cache refresh is deferred until all uploads complete (see checkAndTerminatePool)
           // to prevent overlapping fetches from overwriting manual cache additions
 
-          setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+          setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
         } catch (error) {
           console.error(
             `Failed to finalize ${isExport ? 'export' : 'backup'} for ${item.volumeTitle}:`,
@@ -683,12 +539,12 @@ async function processQueue(): Promise<void> {
 
     // Add progress tracker
     const isExport = isPseudoProvider(item.provider);
-    progressTrackerStore.addProcess({
-      id: processId,
-      description: isExport ? `Exporting ${item.volumeTitle}` : `Backing up ${item.volumeTitle}`,
-      progress: 0,
-      status: 'Queued...'
-    });
+    getBackupUiBridge().addProgress(
+      processId,
+      isExport ? `Exporting ${item.volumeTitle}` : `Backing up ${item.volumeTitle}`,
+      'Queued...',
+      0
+    );
 
     console.log(`[Backup Queue] Processing ${isExport ? 'export' : 'backup'}:`, {
       volumeTitle: item.volumeTitle,

@@ -4,8 +4,6 @@
   import {
     promptConfirmation,
     showSnackbar,
-    syncReadProgress,
-    READER_FOLDER,
     showWebDAVError
   } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -15,7 +13,6 @@
     type StorageQuota
   } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
-  import { tokenManager } from '$lib/util/sync/providers/google-drive';
   import { Alert, Badge, Button, Radio, Toggle, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid, InfoCircleSolid } from 'flowbite-svelte-icons';
@@ -28,6 +25,8 @@
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
+
+  const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
   // Get store references for auto-subscription
   const providerStatusStore = providerManager.status;
@@ -199,25 +198,26 @@
     try {
       // Lazy-load Google Drive provider for file picker functionality
       const provider = await providerManager.getOrLoadProvider('google-drive');
-      // Cast to access Drive-specific methods
-      const driveProvider = provider as typeof provider & {
-        showFilePicker: () => Promise<
-          Array<{ id: string; name: string | undefined; mimeType: string | undefined }>
-        >;
-        getCloudFileMetadata: (
-          files: Array<{ id: string; name: string | undefined; mimeType: string | undefined }>
-        ) => Promise<import('$lib/util/sync/provider-interface').CloudFileMetadata[]>;
-      };
+      if (!provider.showFilePicker) {
+        throw new Error('File picker is not supported by this provider');
+      }
 
       // Use provider's file picker - it handles all the Drive-specific logic
-      const pickedFiles = await driveProvider.showFilePicker();
+      const pickedFiles = await provider.showFilePicker();
 
       if (pickedFiles.length === 0) {
         return; // User cancelled or no files selected
       }
 
-      // Fetch full metadata from Drive API
-      const cloudFiles = await driveProvider.getCloudFileMetadata(pickedFiles);
+      // Look up files in cache - it has proper paths with parent folders
+      const cloudFiles = pickedFiles
+        .map((picked) => unifiedCloudManager.getCloudVolume(picked.id))
+        .filter((f): f is NonNullable<typeof f> => f != null);
+
+      if (cloudFiles.length === 0) {
+        showSnackbar('Selected files not found in cloud cache. Try refreshing.');
+        return;
+      }
 
       // Queue volumes for download via the unified queue system
       queueVolumesFromCloudFiles(cloudFiles);
@@ -245,13 +245,13 @@
     try {
       // Sync profiles using smart merge logic
       console.log('🔘 Calling unifiedSyncService.syncProvider with syncProfiles: true');
-      await unifiedSyncService.syncProvider(provider, { syncProfiles: true, silent: false });
-      console.log('🔘 Sync completed successfully');
-      showSnackbar('Profiles synced');
-    } catch (error) {
-      console.error('Profile sync error:', error);
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      showSnackbar(`Sync failed: ${message}`);
+      const result = await unifiedSyncService.syncProvider(provider, { syncProfiles: true });
+      if (result.success) {
+        console.log('🔘 Sync completed successfully');
+        showSnackbar('Profiles synced');
+      } else {
+        showSnackbar(`Sync failed: ${result.error || 'Unknown error'}`);
+      }
     } finally {
       isSyncingProfiles = false;
     }
@@ -259,7 +259,22 @@
 
   // For backward compatibility with the button in the cloud page
   async function performSync() {
-    await syncReadProgress();
+    const result = await unifiedCloudManager.syncProgress();
+    if (result.failed > 0) {
+      throw new Error(result.results[0]?.error || 'Sync failed');
+    }
+  }
+
+  async function triggerGoogleReauth() {
+    const provider = providerManager.getProviderInstance('google-drive');
+    if (!provider) {
+      throw new Error('Google Drive provider is not loaded');
+    }
+    if (provider.reauthenticate) {
+      await provider.reauthenticate();
+      return;
+    }
+    await provider.login();
   }
 
   /**
@@ -282,15 +297,27 @@
     clearServiceWorkerCache();
     // Storage quota is fetched reactively via $effect when auth state changes
 
-    // Pre-fill WebDAV form fields from last session (Issue #206 Lesson #10)
-    try {
-      const webdavProviderInstance = await providerManager.getOrLoadProvider('webdav');
-      const lastUrl = (webdavProviderInstance as any).getLastServerUrl?.();
-      const lastUsername = (webdavProviderInstance as any).getLastUsername?.();
-      if (lastUrl) webdavUrl = lastUrl;
-      if (lastUsername) webdavUsername = lastUsername;
-    } catch {
-      // Provider not loadable, ignore
+    // Check for deep-link query params (e.g. #/cloud?server=...&username=...)
+    const hashQuery = window.location.hash.split('?')[1];
+    if (hashQuery) {
+      const params = new URLSearchParams(hashQuery);
+      const deepServer = params.get('server');
+      const deepUsername = params.get('username');
+      if (deepServer) webdavUrl = deepServer;
+      if (deepUsername) webdavUsername = deepUsername;
+    }
+
+    // Pre-fill WebDAV form fields from last session (if not already set by deep link)
+    if (!webdavUrl || !webdavUsername) {
+      try {
+        const webdavProviderInstance = await providerManager.getOrLoadProvider('webdav');
+        const lastUrl = webdavProviderInstance.getLastServerUrl?.();
+        const lastUsername = webdavProviderInstance.getLastUsername?.();
+        if (!webdavUrl && lastUrl) webdavUrl = lastUrl;
+        if (!webdavUsername && lastUsername) webdavUsername = lastUsername;
+      } catch {
+        // Provider not loadable, ignore
+      }
     }
   });
 
@@ -379,13 +406,13 @@
   }
 
   async function handleProviderSync() {
-    try {
-      // Use unified sync service - handles merge logic, deletion tracking, and tombstone purging
-      await unifiedCloudManager.syncProgress();
-      showSnackbar('Synced read progress');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+    // Use unified sync service - handles merge logic, deletion tracking, and tombstone purging
+    const result = await unifiedCloudManager.syncProgress();
+    if (result.failed > 0) {
+      const message = result.results[0]?.error || 'Unknown error';
       showSnackbar(`Sync failed: ${message}`);
+    } else {
+      showSnackbar('Synced read progress');
     }
   }
 
@@ -719,7 +746,7 @@
               </p>
               <p class="text-center text-sm text-gray-500">
                 Or use the picker to download ZIP/CBZ files you've added to the <span
-                  class="text-primary-600">{READER_FOLDER}</span
+                  class="text-primary-600">{CLOUD_ROOT_FOLDER}</span
                 > folder in Drive.
               </p>
             {:else}
@@ -854,16 +881,17 @@
                         // Use 5 second timeout to escape Chrome's user gesture window (~2-5 seconds)
                         // This properly tests if popups are allowed for true background triggers (like auto re-auth)
                         setTimeout(() => {
-                          try {
-                            tokenManager.reAuthenticate();
-                            showSnackbar(
-                              '✅ Test triggered - if you see the Google auth popup, popups are allowed!'
-                            );
-                          } catch (error) {
-                            showSnackbar(
-                              '❌ Test failed - popup was blocked! Please enable popups for this site.'
-                            );
-                          }
+                          triggerGoogleReauth()
+                            .then(() => {
+                              showSnackbar(
+                                '✅ Test triggered - if you see the Google auth popup, popups are allowed!'
+                              );
+                            })
+                            .catch(() => {
+                              showSnackbar(
+                                '❌ Test failed - popup was blocked! Please enable popups for this site.'
+                              );
+                            });
                         }, 5000);
                       }}
                     >

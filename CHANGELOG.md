@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.4.0] - 2026-02-20
+
+### Added
+
+- **Bulk cover cropping** - Crop a cover and apply the same crop region to the next volume in the series, making it easy to set consistent covers across an entire series
+- **Cloud thumbnail previews** - Cloud-only volumes now show cover thumbnails in the catalog before downloading
+- **Faster catalog scrolling** - Thumbnail rendering rewritten for smoother performance, especially on mobile
+- **AnkiConnect field action badges** - Visual indicators showing Append/Unchanged/Replace behavior for each field
+
+### Changed
+
+- **AnkiConnect field modal layout** - Tiered accordion design for clearer field organization
+- **Cloud sync now preserves cover images** - Uploads and downloads keep your custom covers and metadata intact
+
+### Fixed
+
+- **Duplicate cloud folders** - Automatically detects and merges duplicate series folders
+- **Google Drive series deletion** - No longer fails intermittently
+- **Mobile import page reloads** - Fixed unexpected full-page reloads during file imports on mobile
+- **Image-only archive imports** - Now prompts for confirmation instead of silently failing
+- **Routing race conditions** - Fixed premature redirect to catalog when the library loads slowly
+- **Loading vs not-found states** - Proper distinction between "loading" and "does not exist" for series/volumes
+- **Zoom notification removed** - No longer interferes with Yomitan dictionary popups
+- **Image dragging in cropper** - Disabled unwanted drag behavior during crop selection
+- **AnkiConnect field modal fixes** - Truncated long previews, proper crop bounds, scroll wheel support, improved styling
+- **Reader spread navigation** - Fixed forward/backward paging with two-page spreads
+
+## [1.3.0] - 2026-01-06
+
+### Added
+
+- **Dynamic AnkiConnect field mapping** - Configure which template populates each Anki field with a visual UI
+- **Template variables for fields** - Use `{selection}`, `{sentence}`, `{image}`, `{series}`, `{volume}` in any field
+- **Mixed field templates** - Combine text and images in the same field (e.g., `{sentence} {image}`)
+- **Android mode detection** - Auto-detects AnkiConnect Android limitations with manual override option
+- **Connection-gated AnkiConnect settings** - Settings only appear after connecting, with live model/deck/field data from Anki
+
+### Changed
+
+- **AnkiConnect settings redesign** - Complete overhaul with connection status, enable toggle, and organized sections
+- **Card mode selection** - Now uses radio buttons instead of dropdown for clearer selection
+
 ## [1.2.3] - 2026-01-15
 
 ### Added

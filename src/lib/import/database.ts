@@ -66,7 +66,11 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
     page_char_counts: pageCharCounts,
     thumbnail:
       metadata.thumbnail instanceof Blob
-        ? new File([metadata.thumbnail], 'thumbnail.jpg', { type: 'image/jpeg' })
+        ? metadata.thumbnail instanceof File
+          ? metadata.thumbnail
+          : new File([metadata.thumbnail], 'thumbnail', {
+              type: metadata.thumbnail.type || 'image/jpeg'
+            })
         : undefined,
     thumbnail_width: metadata.thumbnailWidth,
     thumbnail_height: metadata.thumbnailHeight,
@@ -92,6 +96,19 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
       files: sortedFiles
     });
   });
+
+  // Import-time thumbnail generation can fail for some files.
+  // Trigger best-effort background recovery so UI placeholders resolve
+  // without requiring navigation or refresh.
+  if (
+    !volumeMetadata.thumbnail ||
+    !volumeMetadata.thumbnail_width ||
+    !volumeMetadata.thumbnail_height
+  ) {
+    db.processThumbnails(1).catch((error) => {
+      console.error('Failed to recover missing thumbnail after import:', error);
+    });
+  }
 }
 
 /**

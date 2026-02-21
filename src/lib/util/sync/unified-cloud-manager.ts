@@ -74,23 +74,23 @@ class UnifiedCloudManager {
   /**
    * Get all cloud volumes (current cached value)
    */
-  getAllCloudVolumes(): any[] {
-    return cacheManager.getAllFiles();
+  getAllCloudVolumes(): CloudFileMetadata[] {
+    return cacheManager.getAllFiles() as CloudFileMetadata[];
   }
 
   /**
    * Get cloud volume by file ID
    */
-  getCloudVolume(fileId: string): any | undefined {
+  getCloudVolume(fileId: string): CloudFileMetadata | undefined {
     const volumes = this.getAllCloudVolumes();
-    return volumes.find((v: any) => v.fileId === fileId);
+    return volumes.find((v) => v.fileId === fileId);
   }
 
   /**
    * Get cloud volumes for a specific series
    */
-  getCloudVolumesBySeries(seriesTitle: string): any[] {
-    return cacheManager.getBySeries(seriesTitle);
+  getCloudVolumesBySeries(seriesTitle: string): CloudFileMetadata[] {
+    return cacheManager.getBySeries(seriesTitle) as CloudFileMetadata[];
   }
 
   /**
@@ -182,26 +182,8 @@ class UnifiedCloudManager {
       return { succeeded: 0, failed: 0 };
     }
 
-    // Check if provider has a deleteSeriesFolder method
-    if ('deleteSeriesFolder' in provider && typeof provider.deleteSeriesFolder === 'function') {
-      try {
-        await (provider as any).deleteSeriesFolder(seriesTitle);
-
-        // Remove all volumes from cache
-        const cache = cacheManager.getCache(provider.type);
-        if (cache && cache.removeById) {
-          for (const volume of seriesVolumes) {
-            cache.removeById(volume.fileId);
-          }
-        }
-
-        return { succeeded: seriesVolumes.length, failed: 0 };
-      } catch (error) {
-        console.error(`Failed to delete series folder:`, error);
-        return { succeeded: 0, failed: seriesVolumes.length };
-      }
-    } else {
-      // Fallback: delete individual files if provider doesn't support folder deletion
+    // Helper to delete files individually
+    const deleteFilesIndividually = async (): Promise<{ succeeded: number; failed: number }> => {
       let successCount = 0;
       let failCount = 0;
 
@@ -216,6 +198,40 @@ class UnifiedCloudManager {
       }
 
       return { succeeded: successCount, failed: failCount };
+    };
+
+    // Check if provider has a deleteSeriesFolder method
+    if (provider.deleteSeriesFolder) {
+      try {
+        await provider.deleteSeriesFolder(seriesTitle);
+
+        // Remove all volumes from cache
+        const cache = cacheManager.getCache(provider.type);
+        if (cache && cache.removeById) {
+          for (const volume of seriesVolumes) {
+            cache.removeById(volume.fileId);
+          }
+        }
+
+        return { succeeded: seriesVolumes.length, failed: 0 };
+      } catch (error: unknown) {
+        // Check if this is a "folder not found" error - fall back to individual deletion
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'errorType' in error &&
+          (error as { errorType?: string }).errorType === 'FOLDER_NOT_FOUND'
+        ) {
+          console.log(`Series folder not found, falling back to individual file deletion`);
+          return deleteFilesIndividually();
+        }
+
+        console.error(`Failed to delete series folder:`, error);
+        return { succeeded: 0, failed: seriesVolumes.length };
+      }
+    } else {
+      // Provider doesn't support folder deletion - delete files individually
+      return deleteFilesIndividually();
     }
   }
 
@@ -230,9 +246,9 @@ class UnifiedCloudManager {
   /**
    * Get cloud file metadata by path from the current provider
    */
-  getCloudFile(seriesTitle: string, volumeTitle: string): any | null {
+  getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.get(path);
+    return cacheManager.get(path) as CloudFileMetadata | null;
   }
 
   /**
@@ -252,7 +268,7 @@ class UnifiedCloudManager {
   /**
    * Update cache entry (e.g., after modifying description)
    */
-  updateCacheEntry(fileId: string, updates: Partial<any>): void {
+  updateCacheEntry(fileId: string, updates: Partial<CloudFileMetadata>): void {
     const provider = this.getActiveProvider();
     if (!provider) return;
 

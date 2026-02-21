@@ -2,11 +2,12 @@
   import {
     deleteVolume,
     progress,
-    volumes,
+    volumes as readingVolumes,
     settings,
     markVolumeAsComplete,
     markVolumeAsUnread
   } from '$lib/settings';
+  import { volumes as catalogVolumes } from '$lib/catalog';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
@@ -27,6 +28,7 @@
   } from 'flowbite-svelte-icons';
   import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
+  import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -35,6 +37,7 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     volume: VolumeMetadata;
@@ -46,7 +49,24 @@
   const volName = decodeURI(volume.volume_title);
 
   let volume_uuid = $derived(volume.volume_uuid);
-  let volumeData = $derived($volumes?.[volume.volume_uuid]);
+  let volumeData = $derived($readingVolumes?.[volume.volume_uuid]);
+  let dbVolume = $state<VolumeMetadata | null>(null);
+  let liveVolume = $derived(dbVolume ?? $catalogVolumes?.[volume.volume_uuid] ?? volume);
+  // Watch this specific row directly so thumbnail updates repaint immediately.
+  $effect(() => {
+    const subscription = liveQuery(() => db.volumes.get(volume.volume_uuid)).subscribe({
+      next: (value) => {
+        // Force a fresh object identity so Svelte reacts even if Dexie
+        // reuses object references while blob fields changed.
+        dbVolume = value ? { ...value } : null;
+      },
+      error: (err) => {
+        console.error('VolumeItem liveQuery error:', err);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
   let isComplete = $derived(isVolumeComplete(currentPage, volume.page_count));
@@ -109,16 +129,36 @@
     return getEffectiveReadingTime(volumeData, idleTimeoutMs);
   });
   let charsRead = $derived(volumeData?.chars || 0);
-  let totalChars = $state<number | undefined>(undefined);
+  let fallbackTotalChars = $state<number | undefined>(undefined);
+  let totalCharsRequestId = 0;
 
-  // Calculate Japanese character count from pages data (matches reading tracker)
+  // Prefer metadata totals (fast/sync) and only hit OCR table when absent.
+  let metadataTotalChars = $derived.by(() => {
+    if (liveVolume.character_count && liveVolume.character_count > 0) {
+      return liveVolume.character_count;
+    }
+    if (liveVolume.page_char_counts?.length) {
+      return liveVolume.page_char_counts[liveVolume.page_char_counts.length - 1];
+    }
+    return undefined;
+  });
+  let totalChars = $derived(metadataTotalChars ?? fallbackTotalChars);
+
+  // Fallback for legacy/partial metadata.
   $effect(() => {
+    fallbackTotalChars = undefined;
+    if (metadataTotalChars && metadataTotalChars > 0) {
+      return;
+    }
+
+    const requestId = ++totalCharsRequestId;
     db.volume_ocr.get(volume.volume_uuid).then((data) => {
-      if (data?.pages) {
-        const { charCount } = getCharCount(data.pages);
-        if (charCount > 0) {
-          totalChars = charCount;
-        }
+      if (requestId !== totalCharsRequestId) return;
+      if (!data?.pages) return;
+
+      const { charCount } = getCharCount(data.pages);
+      if (charCount > 0) {
+        fallbackTotalChars = charCount;
       }
     });
   });
@@ -126,13 +166,50 @@
   // Create blob URL from inline thumbnail
   let thumbnailUrl = $state<string | undefined>(undefined);
   $effect(() => {
-    if (!volume.thumbnail) {
+    if (!liveVolume.thumbnail) {
       thumbnailUrl = undefined;
       return;
     }
-    const url = URL.createObjectURL(volume.thumbnail);
+
+    const url = URL.createObjectURL(liveVolume.thumbnail);
     thumbnailUrl = url;
     return () => URL.revokeObjectURL(url);
+  });
+
+  // Some insert/update paths can miss live notifications for blob fields.
+  // While thumbnail is missing, poll this row until it appears.
+  $effect(() => {
+    if (liveVolume.isPlaceholder || liveVolume.thumbnail) {
+      return;
+    }
+
+    let canceled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    const pollForThumbnail = async () => {
+      const refreshed = await db.volumes.get(volume.volume_uuid);
+      if (canceled) return;
+
+      if (refreshed?.thumbnail) {
+        dbVolume = { ...refreshed };
+        return;
+      }
+
+      timerId = setTimeout(pollForThumbnail, 1000);
+    };
+
+    timerId = setTimeout(pollForThumbnail, 1000);
+
+    return () => {
+      canceled = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  });
+
+  onDestroy(() => {
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+    }
   });
 
   // Calculate estimated time remaining for incomplete volumes
@@ -349,6 +426,13 @@
             style="margin-right:10px;"
             class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
           />
+        {:else}
+          <div
+            style="margin-right:10px;"
+            class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+          >
+            Cover
+          </div>
         {/if}
         <div
           class:text-green-400={isComplete}
@@ -507,7 +591,7 @@
               class="h-auto w-auto border border-gray-900 bg-black sm:max-h-[350px] sm:max-w-[250px]"
             />
           {:else}
-            <PlaceholderThumbnail />
+            <PlaceholderThumbnail message="Generating thumbnail..." />
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">

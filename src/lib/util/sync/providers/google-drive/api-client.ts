@@ -303,6 +303,22 @@ class DriveApiClient {
   }
 
   /**
+   * Move a file/folder to a new parent folder
+   * Uses addParents/removeParents to move without copying
+   */
+  async moveFile(fileId: string, newParentId: string, oldParentId: string): Promise<void> {
+    return this.handleApiCall(async () => {
+      await gapi.client.drive.files.update({
+        fileId,
+        addParents: newParentId,
+        removeParents: oldParentId,
+        fields: 'id,parents',
+        resource: {} // Empty resource required by gapi types
+      });
+    });
+  }
+
+  /**
    * Get file metadata
    * @param fileId The file ID
    * @param fields Comma-separated list of fields to retrieve (e.g., 'description', 'name,description')

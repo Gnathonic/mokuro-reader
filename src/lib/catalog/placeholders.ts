@@ -1,23 +1,7 @@
 import type { VolumeMetadata } from '$lib/types';
 import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
 import { browser } from '$app/environment';
-
-/**
- * Generate a deterministic UUID from a string (used for placeholder UUIDs)
- */
-function generateUuidFromString(str: string): string {
-  // Simple hash-based UUID generation
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-
-  // Format as UUID-like string with placeholder prefix
-  const hex = Math.abs(hash).toString(16).padStart(8, '0');
-  return `placeholder-${hex}`;
-}
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 
 /**
  * Extract series title from description field
@@ -54,6 +38,7 @@ function parseCloudPath(
 
   const folderName = parts[0];
   const volumeWithExt = parts[1];
+  if (!volumeWithExt.toLowerCase().endsWith('.cbz')) return null;
 
   // Remove .cbz extension
   const volumeTitle = volumeWithExt.replace(/\.cbz$/i, '');
@@ -76,8 +61,9 @@ function createPlaceholder(
 
   const { seriesTitle, volumeTitle } = parsed;
 
-  // Use fileId for volume UUID to ensure uniqueness
-  const volumeUuid = generateUuidFromString(cloudFile.fileId);
+  // Generate deterministic volume UUID from series + volume name
+  // This ensures the same volume gets the same UUID across devices
+  const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
   return {
     mokuro_version: 'unknown', // Will be filled in after download
@@ -94,7 +80,8 @@ function createPlaceholder(
     cloudProvider: cloudFile.provider,
     cloudFileId: cloudFile.fileId,
     cloudModifiedTime: cloudFile.modifiedTime,
-    cloudSize: cloudFile.size
+    cloudSize: cloudFile.size,
+    cloudPath: cloudFile.path // Store path for series extraction during download
   };
 }
 
@@ -124,10 +111,18 @@ export function generatePlaceholders(
     }
   }
 
-  // Flatten Map values into a single array
+  // Flatten Map values into a single array and split out .webp sidecars
   const cloudFiles: CloudVolumeWithProvider[] = [];
+  const thumbnailMap = new Map<string, string>(); // basePath -> fileId
   for (const files of cloudFilesMap.values()) {
-    cloudFiles.push(...files);
+    for (const file of files) {
+      if (file.path.toLowerCase().endsWith('.webp')) {
+        const basePath = file.path.replace(/\.webp$/i, '');
+        thumbnailMap.set(basePath, file.fileId);
+      } else {
+        cloudFiles.push(file);
+      }
+    }
   }
 
   // Find cloud-only files
@@ -142,10 +137,15 @@ export function generatePlaceholders(
     // Use existing series UUID if we have local volumes with this series title
     // Otherwise generate a deterministic UUID for a new series
     const seriesUuid =
-      seriesTitleToUuid.get(parsed.seriesTitle) || generateUuidFromString(parsed.seriesTitle);
+      seriesTitleToUuid.get(parsed.seriesTitle) || generateDeterministicUUID(parsed.seriesTitle);
 
     const placeholder = createPlaceholder(cloudFile, seriesUuid);
     if (placeholder) {
+      const basePath = cloudFile.path.replace(/\.cbz$/i, '');
+      const thumbnailFileId = thumbnailMap.get(basePath);
+      if (thumbnailFileId) {
+        placeholder.cloudThumbnailFileId = thumbnailFileId;
+      }
       placeholders.push(placeholder);
     }
   }

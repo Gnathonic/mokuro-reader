@@ -110,7 +110,8 @@ describe('zipManga', () => {
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume,
       'Test Manga - Volume 1.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
   });
 
@@ -132,7 +133,8 @@ describe('zipManga', () => {
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume,
       'Test Manga - Volume 1.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
   });
 
@@ -144,7 +146,8 @@ describe('zipManga', () => {
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume,
       'Volume 1.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
   });
 
@@ -168,12 +171,14 @@ describe('zipManga', () => {
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume,
       'Test Manga - Volume 1.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume2,
       'Test Manga - Volume 2.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
   });
 
@@ -193,7 +198,8 @@ describe('zipManga', () => {
     expect(backupQueue.queueVolumeForExport).toHaveBeenCalledWith(
       mockVolume,
       'Test Manga - Volume 1.zip',
-      'zip'
+      'zip',
+      { includeSidecars: false, embedSidecarsInArchive: false }
     );
   });
 });

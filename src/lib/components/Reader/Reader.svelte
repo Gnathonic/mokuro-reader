@@ -11,7 +11,6 @@
     zoomDefault,
     zoomDefaultWithLayoutWait,
     zoomFitToScreen,
-    zoomNotification,
     handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
@@ -29,14 +28,23 @@
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
-  import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
+  import {
+    openCreateModal,
+    openUpdateModal,
+    sendQuickCapture,
+    getLastCardInfo,
+    getCardAgeInMin,
+    extractFieldValues,
+    getModelConfig,
+    type VolumeMetadata
+  } from '$lib/anki-connect';
+  import { showSnackbar } from '$lib/util';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
     CaretRightSolid,
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
-  import Cropper from './Cropper.svelte';
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
@@ -44,7 +52,7 @@
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
-  import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { isWideSpread, shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
 
@@ -89,40 +97,104 @@
   function left(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: left is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     } else {
       // LTR: left is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     }
   }
 
   function right(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: right is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     } else {
       // LTR: right is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     }
+  }
+
+  // Calculate target page when navigating forward.
+  // Uses "half-step" (+1) when the next image is a spread while current view is dual.
+  function calculateForwardTarget(currentPage: number): number {
+    const currentIndex = currentPage - 1;
+
+    if (!pages || currentIndex < 0 || currentIndex >= pages.length) {
+      return currentPage + navAmount;
+    }
+
+    const currentPageData = pages[currentIndex];
+    const nextPageData = pages[currentIndex + 1];
+    const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
+
+    const currentIsSingle = shouldShowSinglePage(
+      volumeSettings.singlePageView ?? 'auto',
+      currentPageData,
+      nextPageData,
+      previousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    if (currentIsSingle) {
+      return currentPage + 1;
+    }
+
+    // Half-step correction for off-alignment spreads:
+    // Current dual view is [N, N+1], next spread is [N+2, N+3].
+    // The further page from current in forward direction is N+3.
+    const forwardLookaheadPage = pages[currentIndex + 3];
+    const lookaheadIsWide = forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
+
+    if (
+      currentPageData &&
+      nextPageData &&
+      !isWideSpread(currentPageData) &&
+      lookaheadIsWide
+    ) {
+      return currentPage + 1;
+    }
+
+    return currentPage + 2;
   }
 
   // Calculate target page when navigating backward, accounting for single-page exceptions
   function calculateBackwardTarget(currentPage: number): number {
-    const targetIndex = currentPage - 2; // Try going back by current navAmount (assuming dual)
+    if (currentPage <= 1) return 0;
 
+    const currentIndex = currentPage - 1;
+    const currentPageData = pages?.[currentIndex];
+    const currentNextPageData = pages?.[currentIndex + 1];
+    const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
+
+    const currentShouldBeSingle = shouldShowSinglePage(
+      volumeSettings.singlePageView ?? 'auto',
+      currentPageData,
+      currentNextPageData,
+      currentPreviousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    // Mirror of forward half-step fix:
+    // when moving backward from a dual view, inspect the further page in the
+    // previous spread chunk (currentPage - 2). If that page is wide, half-step.
+    if (!currentShouldBeSingle) {
+      const previousSpreadFurtherPage = pages?.[currentIndex - 2];
+      if (previousSpreadFurtherPage && isWideSpread(previousSpreadFurtherPage)) {
+        return currentPage - 1;
+      }
+    }
+
+    const targetIndex = currentPage - 2;
     if (targetIndex < 0) {
-      return currentPage - 1; // Just go back 1 if we're near the start
+      return currentPage - 1;
     }
 
     const targetPage = pages?.[targetIndex];
     const targetNextPage = pages?.[targetIndex + 1];
     const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
 
-    // Check if the target page should be shown in single mode
     const targetShouldBeSingle = shouldShowSinglePage(
       volumeSettings.singlePageView ?? 'auto',
       targetPage,
@@ -132,13 +204,17 @@
       volumeSettings.hasCover
     );
 
-    if (targetShouldBeSingle) {
-      // Target is a single-page exception, only go back by 1
-      return currentPage - 1;
-    } else {
-      // Target is dual-page, go back by current navAmount
-      return currentPage - navAmount;
-    }
+    return targetShouldBeSingle ? currentPage - 1 : currentPage - 2;
+  }
+
+  function navigateForward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateForwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
+  }
+
+  function navigateBackward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateBackwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
   }
 
   function changePage(newPage: number, ingoreTimeOut = false) {
@@ -158,7 +234,7 @@
       // AND trying to go further in that direction
       if (newPage < 1 && page === 1) {
         // Already on first page, trying to go back - navigate to previous volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -168,7 +244,7 @@
         return;
       } else if (newPage > pages.length && page === pages.length) {
         // Already on last page, trying to go forward - navigate to next volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -262,7 +338,7 @@
         scrollImage('up');
         return;
       case 'PageUp':
-        changePage(page - navAmount, true);
+        navigateBackward(true);
         return;
       case 'ArrowRight':
         right(event, true);
@@ -272,7 +348,7 @@
         return;
       case 'PageDown':
       case 'Space':
-        changePage(page + navAmount, true);
+        navigateForward(true);
         return;
       case 'Home':
         changePage(1, true);
@@ -386,11 +462,15 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer and popovers
+  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
     const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer or popovers
-    if (target.closest('#settings') || target.closest('[data-popover]')) {
+    // Don't capture wheel events from settings drawer, popovers, or modals
+    if (
+      target.closest('#settings') ||
+      target.closest('[data-popover]') ||
+      target.closest('dialog')
+    ) {
       return;
     }
     panzoomHandleWheel(e);
@@ -764,16 +844,44 @@
     lines: string[];
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+    imageUrl?: string; // Captured at right-click time for reliability
+    pageIndex?: number; // Which page the context menu was opened on
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
 
+  // Extract image URL from an element by traversing up to find background-image
+  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
+    if (!element) return null;
+    let current: HTMLElement | null = element;
+    while (current) {
+      const bgImage = getComputedStyle(current).backgroundImage;
+      if (bgImage && bgImage !== 'none') {
+        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+        if (match) return match[1];
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function handleTextBoxContextMenu(data: ContextMenuData) {
-    contextMenuData = data;
+    // Capture the image URL immediately while the DOM is in a known good state
+    // This prevents issues when Yomitan or other extensions modify the DOM
+    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    const pageIndex = $volumes[volume!.volume_uuid]?.progress
+      ? ($volumes[volume!.volume_uuid].progress || 1) - 1
+      : index;
+
+    contextMenuData = {
+      ...data,
+      imageUrl,
+      pageIndex
+    };
     showContextMenu = true;
   }
 
-  function handleContextMenuAddToAnki(selection: string) {
+  async function handleContextMenuAddToAnki(selection: string) {
     if (!contextMenuData || !volume) return;
 
     const volumeMetadata: VolumeMetadata = {
@@ -781,40 +889,113 @@
       volumeTitle: volume.volume_title
     };
 
-    // Get the image URL from the element or current page
-    const imgElement = contextMenuData.imgElement;
-    let url: string | null = null;
+    // Use pre-captured image URL (captured at right-click time for reliability)
+    const url = contextMenuData.imageUrl;
 
-    if (imgElement) {
-      // Traverse up to find the MangaPage div with background-image
-      let current: HTMLElement | null = imgElement;
-      while (current) {
-        const bgImage = getComputedStyle(current).backgroundImage;
-        if (bgImage && bgImage !== 'none') {
-          const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-          if (match) {
-            url = match[1];
-            break;
-          }
-        }
-        current = current.parentElement;
-      }
+    if (!url) {
+      showSnackbar('Error: Could not get page image');
+      return;
     }
 
-    if (url) {
-      const fullSentence = contextMenuData.lines.join(' ');
-      // Use selection for card front if provided, otherwise use full sentence
-      const cardFront = selection || fullSentence;
-      const ankiTags = $settings.ankiConnectSettings.tags || '';
-      showCropper(
-        url,
-        cardFront,
-        fullSentence,
-        ankiTags,
-        volumeMetadata,
-        undefined,
-        contextMenuData.textBox
-      );
+    const fullSentence = contextMenuData.lines.join(' ');
+    const cardFront = selection || fullSentence;
+    const ankiTags = $settings.ankiConnectSettings.tags || '';
+    const textBox = contextMenuData.textBox;
+    // Use captured page index for reliability (in case page changed between right-click and menu click)
+    const pageIndex =
+      contextMenuData.pageIndex ?? ($volumes[volume.volume_uuid]?.progress || 1) - 1;
+    const pageNumber = pageIndex + 1;
+    const currentPage = pages[pageIndex];
+    const pageFilename = currentPage?.img_path;
+    const cardMode = $settings.ankiConnectSettings.cardMode;
+
+    if (cardMode === 'update') {
+      // Update mode: fetch previous card values
+      const lastCard = await getLastCardInfo();
+
+      if (!lastCard || !lastCard.noteId) {
+        showSnackbar('No recent card found to update');
+        return;
+      }
+
+      const cardAge = getCardAgeInMin(lastCard.noteId);
+      if (cardAge >= 5) {
+        showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
+        return;
+      }
+
+      const previousValues = extractFieldValues(lastCard);
+
+      // Get the model config to check for quickCapture setting
+      const modelConfig = getModelConfig(lastCard.modelName, 'update');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'update',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          previousValues,
+          lastCard.noteId,
+          lastCard.tags,
+          lastCard.modelName,
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openUpdateModal(
+          url,
+          previousValues,
+          lastCard.noteId,
+          lastCard.modelName,
+          lastCard.tags, // existing tags from the card
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
+    } else {
+      // Create mode
+      const { selectedModel } = $settings.ankiConnectSettings;
+      const modelConfig = getModelConfig(selectedModel, 'create');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'create',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          undefined, // previousValues (not used for create)
+          undefined, // previousCardId (not used for create)
+          undefined, // previousTags (not used for create)
+          undefined, // modelName (not needed for create)
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openCreateModal(
+          url,
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
     }
   }
 
@@ -833,14 +1014,6 @@
       notificationKey = '';
     }, 2000);
   }
-
-  // Subscribe to zoom notifications from panzoom
-  $effect(() => {
-    const zoom = $zoomNotification;
-    if (zoom) {
-      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
-    }
-  });
 
   function rotatePageMode() {
     if (!volume) return;
@@ -924,7 +1097,6 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
-  <Cropper />
   <TextBoxPicker />
   <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
     <div class="flex flex-col gap-3">
@@ -1084,8 +1256,20 @@
       style:width={`${$settings.edgeButtonWidth}px`}
     ></button>
   {/if}
-{:else}
+{:else if volume === null}
+  <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else}
+  <!-- Volume not found or no data -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">Volume not found</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {/if}

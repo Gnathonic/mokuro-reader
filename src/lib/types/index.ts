@@ -42,12 +42,18 @@ export interface VolumeMetadata {
   cloudFileId?: string;
   cloudModifiedTime?: string;
   cloudSize?: number;
+  cloudPath?: string; // Full path for series extraction during download
+  cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail (.webp)
 
   // Legacy Drive-specific fields (kept for backward compatibility)
   // When present without cloudProvider, assumed to be google-drive
   driveFileId?: string;
   driveModifiedTime?: string;
   driveSize?: number;
+
+  // Library fields (for read-only WebDAV library sources)
+  libraryId?: string;
+  libraryName?: string;
 }
 
 // v3 table: volume_ocr

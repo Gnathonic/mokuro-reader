@@ -6,6 +6,8 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
+import { libraryFilesStore, generateLibraryPlaceholders } from '$lib/util/libraries';
+import { selectedLibraryId } from '$lib/settings/libraries';
 
 // Single source of truth from the database
 export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
@@ -27,23 +29,33 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   return () => subscription.unsubscribe();
 });
 
-// Merge local volumes with cloud placeholders
+// Merge local volumes with cloud placeholders and library placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles],
-  ([$volumes, $cloudFiles]) => {
-    // Skip placeholder generation if no cloud files
-    if ($cloudFiles.size === 0) {
-      return $volumes;
+  [volumes, unifiedCloudManager.cloudFiles, libraryFilesStore, selectedLibraryId],
+  ([$volumes, $cloudFiles, $libraryFiles, $selectedLibraryId]) => {
+    const combined = { ...$volumes };
+    const localVolumes = Object.values($volumes);
+
+    // Generate cloud provider placeholders
+    if ($cloudFiles.size > 0) {
+      const cloudPlaceholders = generatePlaceholders($cloudFiles, localVolumes);
+      for (const placeholder of cloudPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
     }
 
-    // Generate placeholders synchronously
-    const placeholders = generatePlaceholders($cloudFiles, Object.values($volumes));
-
-    // Combine local volumes with placeholders
-    const combined = { ...$volumes };
-
-    for (const placeholder of placeholders) {
-      combined[placeholder.volume_uuid] = placeholder;
+    // Generate library placeholders
+    if ($libraryFiles.size > 0) {
+      // Pass all combined volumes so library placeholders don't duplicate cloud placeholders
+      const allVolumes = Object.values(combined);
+      const libraryPlaceholders = generateLibraryPlaceholders(
+        $libraryFiles,
+        allVolumes,
+        $selectedLibraryId
+      );
+      for (const placeholder of libraryPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
     }
 
     return combined;

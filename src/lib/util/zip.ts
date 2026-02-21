@@ -4,12 +4,22 @@ import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { compressVolume, type MokuroMetadata } from './compress-volume';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
+import { loadVolumeSidecars } from './volume-sidecars';
+
+export interface ExportSidecarOptions {
+  includeSidecars: boolean;
+  embedSidecarsInArchive: boolean;
+}
 
 export async function zipManga(
   manga: VolumeMetadata[],
   asCbz = false,
   individualVolumes = false,
-  includeSeriesTitle = true
+  includeSeriesTitle = true,
+  sidecarOptions: ExportSidecarOptions = {
+    includeSidecars: false,
+    embedSidecarsInArchive: false
+  }
 ) {
   const extension = asCbz ? 'cbz' : 'zip';
 
@@ -21,12 +31,12 @@ export async function zipManga(
         ? `${volume.series_title} - ${volume.volume_title}.${extension}`
         : `${volume.volume_title}.${extension}`;
 
-      backupQueue.queueVolumeForExport(volume, filename, extension);
+      backupQueue.queueVolumeForExport(volume, filename, extension, sidecarOptions);
     }
   } else {
     // Multi-volume export: Keep blocking approach for now (edge case, less common)
     const filename = `${manga[0].series_title}.${extension}`;
-    await createAndDownloadArchive(manga, asCbz, filename);
+    await createAndDownloadArchive(manga, asCbz, filename, sidecarOptions);
   }
 
   return false;
@@ -192,7 +202,8 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
 async function addVolumeToArchiveWithProgress(
   zipWriter: ZipWriter<Blob>,
   volume: VolumeMetadata,
-  onFileAdded: () => void
+  onFileAdded: () => void,
+  sidecarOptions?: ExportSidecarOptions
 ): Promise<void> {
   const volumeOcr = await db.volume_ocr.get(volume.volume_uuid);
   const volumeFiles = await db.volume_files.get(volume.volume_uuid);
@@ -238,6 +249,16 @@ async function addVolumeToArchiveWithProgress(
       new TextReader(JSON.stringify(mokuroData))
     );
   }
+
+  if (sidecarOptions?.includeSidecars && sidecarOptions.embedSidecarsInArchive) {
+    const sidecars = await loadVolumeSidecars(volume.volume_uuid);
+    if (sidecars.thumbnailFile) {
+      await zipWriter.add(
+        sidecars.thumbnailFile.name,
+        new BlobReader(sidecars.thumbnailFile)
+      );
+    }
+  }
 }
 
 /**
@@ -250,7 +271,8 @@ async function addVolumeToArchiveWithProgress(
  */
 export async function createArchiveBlob(
   volumes: VolumeMetadata[],
-  seriesTitle?: string
+  seriesTitle?: string,
+  sidecarOptions?: ExportSidecarOptions
 ): Promise<Blob> {
   // For single volume, use shared compression function (returns Blob directly)
   if (volumes.length === 1) {
@@ -289,7 +311,7 @@ export async function createArchiveBlob(
           const progress = Math.round((completedFiles / totalFiles) * 100);
           progressTrackerStore.updateProcess(processId, { progress });
         }
-      });
+      }, sidecarOptions);
     }
 
     // Close the archive and get the Blob directly
@@ -326,11 +348,12 @@ export async function createArchiveBlob(
 async function createAndDownloadArchive(
   volumes: VolumeMetadata[],
   asCbz: boolean,
-  filename: string
+  filename: string,
+  sidecarOptions?: ExportSidecarOptions
 ) {
   // Use series title for progress tracking
   const seriesTitle = volumes[0]?.series_title;
-  const zipFileBlob = await createArchiveBlob(volumes, seriesTitle);
+  const zipFileBlob = await createArchiveBlob(volumes, seriesTitle, sidecarOptions);
 
   // Create a download link
   const link = document.createElement('a');
