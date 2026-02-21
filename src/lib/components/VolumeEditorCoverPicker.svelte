@@ -7,13 +7,40 @@
   import Cropper from 'cropperjs';
   import 'cropperjs/dist/cropper.css';
 
+  interface CropTemplate {
+    xPercent: number;
+    yPercent: number;
+    widthPercent: number;
+    heightPercent: number;
+    aspectRatio: number;
+  }
+
+  interface SelectionContext {
+    pageIndex: number | null;
+    cropZone: CropTemplate | null;
+  }
+
   interface Props {
     volumeUuid: string;
-    onSelect: (file: File) => void;
+    initialPageIndex?: number | null;
+    openCropperOnLoad?: boolean;
+    lastCropZone?: CropTemplate | null;
+    hasNextVolume?: boolean;
+    onSelect: (file: File, context?: SelectionContext) => void;
+    onSelectAndNext?: (file: File, context?: SelectionContext) => void;
     onCancel: () => void;
   }
 
-  let { volumeUuid, onSelect, onCancel }: Props = $props();
+  let {
+    volumeUuid,
+    initialPageIndex = null,
+    openCropperOnLoad = false,
+    lastCropZone = null,
+    hasNextVolume = false,
+    onSelect,
+    onSelectAndNext,
+    onCancel
+  }: Props = $props();
 
   let open = $state(true);
   let loading = $state(true);
@@ -52,6 +79,17 @@
           file: f.file,
           url: URL.createObjectURL(f.file)
         }));
+        if (pages.length > 0) {
+          const defaultIndex = Math.min(
+            Math.max(initialPageIndex ?? 0, 0),
+            pages.length - 1
+          );
+          selectedPageIndex = defaultIndex;
+          if (openCropperOnLoad) {
+            cropImage = pages[defaultIndex]?.url || null;
+            showCropper = cropImage !== null;
+          }
+        }
       }
     } catch (err) {
       console.error('Error loading pages:', err);
@@ -74,7 +112,7 @@
         showSnackbar('Please select a valid image file');
         return;
       }
-      onSelect(file);
+      onSelect(file, { pageIndex: null, cropZone: null });
       handleClose();
     }
   }
@@ -85,7 +123,10 @@
 
   function handleUsePage() {
     if (selectedPageIndex !== null && pages[selectedPageIndex]) {
-      onSelect(pages[selectedPageIndex].file);
+      onSelect(pages[selectedPageIndex].file, {
+        pageIndex: selectedPageIndex,
+        cropZone: null
+      });
       handleClose();
     }
   }
@@ -173,7 +214,10 @@
 
       if (blob) {
         const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
-        onSelect(file);
+        onSelect(file, {
+          pageIndex: selectedPageIndex,
+          cropZone: getCurrentCropZone()
+        });
         handleClose();
       }
     } catch (err) {
@@ -209,6 +253,101 @@
 
   function handleReset() {
     cropper?.reset();
+  }
+
+  function getCurrentCropZone() {
+    if (!cropper) return null;
+    const data = cropper.getData(true);
+    const imageData = cropper.getImageData();
+    const naturalWidth = imageData.naturalWidth;
+    const naturalHeight = imageData.naturalHeight;
+
+    if (!naturalWidth || !naturalHeight || !data.width || !data.height) {
+      return null;
+    }
+
+    return {
+      xPercent: data.x / naturalWidth,
+      yPercent: data.y / naturalHeight,
+      widthPercent: data.width / naturalWidth,
+      heightPercent: data.height / naturalHeight,
+      aspectRatio: data.width / data.height
+    };
+  }
+
+  function applyLastCropZone() {
+    if (!cropper || !lastCropZone) return;
+
+    const imageData = cropper.getImageData();
+    const imageWidth = imageData.naturalWidth;
+    const imageHeight = imageData.naturalHeight;
+
+    if (!imageWidth || !imageHeight) return;
+
+    const aspectRatio = Math.max(lastCropZone.aspectRatio, 0.0001);
+    const widthFromPercent = Math.max(lastCropZone.widthPercent * imageWidth, 1);
+    const heightFromPercent = Math.max(lastCropZone.heightPercent * imageHeight, 1);
+
+    // Preserve crop aspect ratio while staying close to stored relative size.
+    let width = widthFromPercent;
+    let height = width / aspectRatio;
+    if (height > heightFromPercent) {
+      height = heightFromPercent;
+      width = height * aspectRatio;
+    }
+
+    // Clamp crop size to image bounds while preserving aspect ratio.
+    const maxWidthByHeight = imageHeight * aspectRatio;
+    const maxWidth = Math.min(imageWidth, maxWidthByHeight);
+    if (width > maxWidth) {
+      width = maxWidth;
+      height = width / aspectRatio;
+    }
+
+    const maxHeight = imageWidth / aspectRatio;
+    if (height > imageHeight) {
+      height = imageHeight;
+      width = height * aspectRatio;
+    } else if (height > maxHeight) {
+      height = maxHeight;
+      width = height * aspectRatio;
+    }
+
+    // Apply relative origin and clamp so the crop always fits in the image.
+    const clampedX = Math.min(Math.max(lastCropZone.xPercent * imageWidth, 0), imageWidth - width);
+    const clampedY = Math.min(Math.max(lastCropZone.yPercent * imageHeight, 0), imageHeight - height);
+
+    cropper.setData({
+      x: clampedX,
+      y: clampedY,
+      width,
+      height
+    });
+  }
+
+  async function handleCropConfirmAndNext() {
+    if (!cropper || !onSelectAndNext) return;
+
+    try {
+      const canvas = cropper.getCroppedCanvas({
+        imageSmoothingEnabled: true,
+        imageSmoothingQuality: 'high'
+      });
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', 0.9)
+      );
+
+      if (blob) {
+        const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
+        onSelectAndNext(file, {
+          pageIndex: selectedPageIndex,
+          cropZone: getCurrentCropZone()
+        });
+        handleClose();
+      }
+    } catch (err) {
+      console.error('Error cropping image for next volume:', err);
+    }
   }
 
   // Handle backdrop mousedown - dismiss on mousedown outside content, not mouseup
@@ -258,11 +397,17 @@
         <span class="text-sm text-gray-600 dark:text-gray-400">Zoom</span>
         <Button size="xs" color="light" onclick={handleZoomIn}>+</Button>
         <Button size="xs" color="light" onclick={handleReset} class="ml-4">Reset</Button>
+        {#if lastCropZone}
+          <Button size="xs" color="light" onclick={applyLastCropZone}>Copy Last Crop Zone</Button>
+        {/if}
       </div>
 
       <div class="flex justify-end gap-2">
         <Button color="alternative" onclick={handleCropCancel}>Back</Button>
         <Button color="primary" onclick={handleCropConfirm}>Use Cropped Image</Button>
+        {#if onSelectAndNext && hasNextVolume}
+          <Button color="blue" onclick={handleCropConfirmAndNext}>Use + Next Volume</Button>
+        {/if}
       </div>
     {:else}
       <!-- Selection View -->

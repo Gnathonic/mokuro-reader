@@ -219,3 +219,30 @@ export async function calculateVolumeCharacterCount(volumeUuid: string): Promise
   const { charCount } = getCharCount(volumeOcr.pages);
   return charCount;
 }
+
+/**
+ * Get the next volume UUID in a series using natural title sort.
+ */
+export async function getNextVolumeUuidInSeries(
+  seriesUuid: string,
+  currentVolumeUuid: string
+): Promise<string | null> {
+  const seriesVolumes = await db.volumes.where('series_uuid').equals(seriesUuid).toArray();
+  if (seriesVolumes.length === 0) {
+    return null;
+  }
+
+  seriesVolumes.sort((a, b) =>
+    a.volume_title.localeCompare(b.volume_title, undefined, {
+      numeric: true,
+      sensitivity: 'base'
+    })
+  );
+
+  const currentIndex = seriesVolumes.findIndex((v) => v.volume_uuid === currentVolumeUuid);
+  if (currentIndex < 0 || currentIndex + 1 >= seriesVolumes.length) {
+    return null;
+  }
+
+  return seriesVolumes[currentIndex + 1]?.volume_uuid || null;
+}
