@@ -1,29 +1,31 @@
 # Changelog
 
-## [1.4.0] - Unreleased (Draft)
+## [1.4.0] - 2026-02-20
 
 ### Added
 
-- **Catalog thumbnail performance overhaul** - Complete rewrite of thumbnail rendering for smoother scrolling
-  - Single composite canvas per series instead of multiple overlapping canvases
-  - Canvas segmentation (1024px max) prevents GPU memory issues on mobile devices
-  - Worker pool for off-main-thread image decoding (scales with CPU cores)
-  - Priority queue loads front covers first, skips off-screen items
-  - LRU cache with 100MB soft limit for GPU-ready ImageBitmaps
+- **Bulk cover cropping** - Crop a cover and apply the same crop region to the next volume in the series, making it easy to set consistent covers across an entire series
+- **Cloud thumbnail previews** - Cloud-only volumes now show cover thumbnails in the catalog before downloading
+- **Faster catalog scrolling** - Thumbnail rendering rewritten for smoother performance, especially on mobile
 - **AnkiConnect field action badges** - Visual indicators showing Append/Unchanged/Replace behavior for each field
 
 ### Changed
 
 - **AnkiConnect field modal layout** - Tiered accordion design for clearer field organization
+- **Cloud sync now preserves cover images** - Uploads and downloads keep your custom covers and metadata intact
 
 ### Fixed
 
-- **Routing race conditions** - Fixed premature redirect to catalog when library loads slowly
+- **Duplicate cloud folders** - Automatically detects and merges duplicate series folders
+- **Google Drive series deletion** - No longer fails intermittently
+- **Mobile import page reloads** - Fixed unexpected full-page reloads during file imports on mobile
+- **Image-only archive imports** - Now prompts for confirmation instead of silently failing
+- **Routing race conditions** - Fixed premature redirect to catalog when the library loads slowly
 - **Loading vs not-found states** - Proper distinction between "loading" and "does not exist" for series/volumes
-- **Series/Volume not found pages** - Clear messaging with back-to-catalog navigation
 - **Zoom notification removed** - No longer interferes with Yomitan dictionary popups
 - **Image dragging in cropper** - Disabled unwanted drag behavior during crop selection
 - **AnkiConnect field modal fixes** - Truncated long previews, proper crop bounds, scroll wheel support, improved styling
+- **Reader spread navigation** - Fixed forward/backward paging with two-page spreads
 
 ## [1.3.0] - 2026-01-06
 
