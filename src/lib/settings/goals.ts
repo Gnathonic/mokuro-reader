@@ -1304,7 +1304,7 @@ export function calculateTargetPagesPerPeriod(
   if (!deadline || remainingPages <= 0) return null;
 
   // Calculate pages still needed (excluding what's been read this period)
-  const pagesStillNeeded = Math.max(0, remainingPages - pagesReadInCurrentPeriod);
+  const pagesStillNeeded = Math.max(0, remainingPages);
 
   // Calculate periods remaining until deadline
   const periodStart = new Date(periodStartTimestamp);
@@ -1314,8 +1314,11 @@ export function calculateTargetPagesPerPeriod(
   const msPerPeriod = mode === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
   const msUntilDeadline = deadlineDate.getTime() - periodStart.getTime();
   const periodsRemaining = Math.max(1, Math.ceil(msUntilDeadline / msPerPeriod));
+  console.log(
+    `Calculating target pages per ${mode}: ${pagesReadInCurrentPeriod} pages read this period, ${pagesStillNeeded} pages needed, ${periodsRemaining} periods remaining`
+  );
 
-  return Math.ceil(pagesStillNeeded / periodsRemaining);
+  return Math.ceil((pagesReadInCurrentPeriod + pagesStillNeeded) / periodsRemaining);
 }
 
 // ================================
