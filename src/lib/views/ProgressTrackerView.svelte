@@ -153,21 +153,24 @@
   // Sorting configuration
   const sortOrder: ProgressTrackerSorting[] = [
     'last-read',
-    'pages-per-day',
+    'pages-per-period',
+    'pages-to-goal',
     'fewest-pages',
     'deadline'
   ];
 
   const sortLabels: Record<ProgressTrackerSorting, string> = {
     'last-read': 'Last Read',
-    'pages-per-day': 'Pages/Day',
+    'pages-per-period': 'Pages/Day',
+    'pages-to-goal': 'Pages to Goal',
     'fewest-pages': 'Fewest Pages',
     deadline: 'Deadline'
   };
 
   const sortTitles: Record<ProgressTrackerSorting, string> = {
     'last-read': 'Sorted by most recently read',
-    'pages-per-day': 'Sorted by highest pages per day needed to reach deadline',
+    'pages-per-period': 'Sorted by highest pages per day needed to reach deadline',
+    'pages-to-goal': 'Sorted by most pages remaining to reach period goal',
     'fewest-pages': 'Sorted by fewest pages remaining',
     deadline: 'Sorted by soonest deadline'
   };
@@ -213,6 +216,8 @@
         pagesReadInPeriod,
         periodStart
       );
+      const pagesToGoal =
+        targetPagesPerPeriod !== null ? targetPagesPerPeriod - pagesReadInPeriod : null;
       const daysUntilDeadline = deadline ? dateUtils.calculateDaysRemaining(deadline) : null;
       const lastProgressUpdate = new Date(volumeData.lastProgressUpdate || 0).getTime();
 
@@ -222,6 +227,7 @@
         remainingPages,
         targetPagesPerPeriod,
         pagesReadInPeriod,
+        pagesToGoal,
         daysUntilDeadline,
         lastProgressUpdate,
         hasDeadline: deadline !== null
@@ -309,7 +315,7 @@
           // Most recently read first
           return b.lastProgressUpdate - a.lastProgressUpdate;
 
-        case 'pages-per-day':
+        case 'pages-per-period':
           // Highest target per period first (most urgent)
           // Volumes without deadlines go to the end
           if (a.targetPagesPerPeriod === null && b.targetPagesPerPeriod === null) {
@@ -318,6 +324,16 @@
           if (a.targetPagesPerPeriod === null) return 1;
           if (b.targetPagesPerPeriod === null) return -1;
           return b.targetPagesPerPeriod - a.targetPagesPerPeriod;
+
+        case 'pages-to-goal':
+          // Highest pages remaining to reach goal first (most behind)
+          // Volumes without targets go to the end
+          if (a.pagesToGoal === null && b.pagesToGoal === null) {
+            return b.lastProgressUpdate - a.lastProgressUpdate;
+          }
+          if (a.pagesToGoal === null) return 1;
+          if (b.pagesToGoal === null) return -1;
+          return b.pagesToGoal - a.pagesToGoal;
 
         case 'fewest-pages':
           // Fewest remaining pages first (closest to completion)
@@ -453,20 +469,10 @@
     <!-- Currently Reading Section -->
     {#if !isGoalClosed && volumeSections.currentlyReading.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
-        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-xl font-semibold">Currently Reading</h2>
           <div class="flex items-center gap-2">
             <span class="text-xs text-gray-500">{resetTimeDisplay}</span>
-            <Button
-              size="xs"
-              color="alternative"
-              onclick={cycleSorting}
-              title={sortTitles[$miscSettings.progressTrackerSorting]}
-              class="flex h-8 items-center justify-center"
-            >
-              <SortOutline class="h-4 w-4" />
-              <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
-            </Button>
             <Button
               size="xs"
               color="alternative"
@@ -477,6 +483,16 @@
               <span class="text-xs">
                 {($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'Daily' : 'Weekly'}
               </span>
+            </Button>
+            <Button
+              size="xs"
+              color="alternative"
+              onclick={cycleSorting}
+              title={sortTitles[$miscSettings.progressTrackerSorting]}
+              class="flex h-8 items-center justify-center"
+            >
+              <SortOutline class="h-4 w-4" />
+              <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
             </Button>
             <Button
               size="xs"
@@ -518,26 +534,28 @@
     <!-- Future Reads Section -->
     {#if !isGoalClosed && volumeSections.futureReads.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
-        <h2 class="mb-4 text-xl font-semibold">Future Reads</h2>
-        <div
-          class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
-        >
-          {#each volumeSections.futureReads as { volumeId, volumeData }}
-            {@const stats = volumeStats.get(volumeId)!}
-            <VolumeCard
-              {volumeId}
-              seriesId={volumeData.series_uuid}
-              volumeTitle={volumeData.volume_title}
-              thumbnailUrl={thumbnailUrls.get(volumeId)}
-              progressPercent={stats.progressPercent}
-              progressPercentString={stats.progressPercentString}
-              remainingPages={stats.remainingPages}
-              isHovered={hoveredVolume === volumeId}
-              onHover={(id) => (hoveredVolume = id)}
-              showProgressBar={false}
-              showDeadline={false}
-            />
-          {/each}
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="mb-2 text-xl font-semibold">Future Reads</h2>
+          <div
+            class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
+          >
+            {#each volumeSections.futureReads as { volumeId, volumeData }}
+              {@const stats = volumeStats.get(volumeId)!}
+              <VolumeCard
+                {volumeId}
+                seriesId={volumeData.series_uuid}
+                volumeTitle={volumeData.volume_title}
+                thumbnailUrl={thumbnailUrls.get(volumeId)}
+                progressPercent={stats.progressPercent}
+                progressPercentString={stats.progressPercentString}
+                remainingPages={stats.remainingPages}
+                isHovered={hoveredVolume === volumeId}
+                onHover={(id) => (hoveredVolume = id)}
+                showProgressBar={false}
+                showDeadline={false}
+              />
+            {/each}
+          </div>
         </div>
       </Card>
     {/if}
@@ -545,26 +563,28 @@
     <!-- Completed Volumes Section -->
     {#if volumeSections.completedVolumes.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
-        <h2 class="mb-4 text-xl font-semibold">Completed Volumes</h2>
-        <div
-          class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
-        >
-          {#each volumeSections.completedVolumes as { volumeId, volumeData }}
-            {@const stats = volumeStats.get(volumeId)!}
-            <VolumeCard
-              {volumeId}
-              seriesId={volumeData.series_uuid}
-              volumeTitle={volumeData.volume_title}
-              thumbnailUrl={thumbnailUrls.get(volumeId)}
-              progressPercent={stats.progressPercent}
-              progressPercentString={stats.progressPercentString}
-              remainingPages={stats.remainingPages}
-              isHovered={hoveredVolume === volumeId}
-              onHover={(id) => (hoveredVolume = id)}
-              showProgressBar={false}
-              showDeadline={false}
-            />
-          {/each}
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="mb-2 text-xl font-semibold">Completed Volumes</h2>
+          <div
+            class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
+          >
+            {#each volumeSections.completedVolumes as { volumeId, volumeData }}
+              {@const stats = volumeStats.get(volumeId)!}
+              <VolumeCard
+                {volumeId}
+                seriesId={volumeData.series_uuid}
+                volumeTitle={volumeData.volume_title}
+                thumbnailUrl={thumbnailUrls.get(volumeId)}
+                progressPercent={stats.progressPercent}
+                progressPercentString={stats.progressPercentString}
+                remainingPages={stats.remainingPages}
+                isHovered={hoveredVolume === volumeId}
+                onHover={(id) => (hoveredVolume = id)}
+                showProgressBar={false}
+                showDeadline={false}
+              />
+            {/each}
+          </div>
         </div>
       </Card>
     {/if}

@@ -1,7 +1,12 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
-export type ProgressTrackerSorting = 'last-read' | 'pages-per-day' | 'fewest-pages' | 'deadline';
+export type ProgressTrackerSorting =
+  | 'last-read'
+  | 'pages-per-period'
+  | 'pages-to-goal'
+  | 'fewest-pages'
+  | 'deadline';
 export type ProgressTargetMode = 'daily' | 'weekly';
 
 export type MiscSettings = {
