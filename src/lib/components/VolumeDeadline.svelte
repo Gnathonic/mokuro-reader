@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { CloseCircleSolid } from 'flowbite-svelte-icons';
   import {
     volumeDeadlines,
     setVolumeDeadline,
@@ -62,13 +61,9 @@
 
     if (newDeadline) {
       setVolumeDeadline(volumeId, newDeadline);
+    } else {
+      removeVolumeDeadline(volumeId);
     }
-    isEditing = false;
-  }
-
-  function handleRemoveDeadline(e: Event) {
-    e.stopPropagation();
-    removeVolumeDeadline(volumeId);
     isEditing = false;
   }
 
@@ -78,12 +73,8 @@
     }
   }
 
-  function handleBlur(e: FocusEvent) {
-    // Only hide if we're not clicking on the remove button
-    const relatedTarget = e.relatedTarget as HTMLElement;
-    if (!relatedTarget?.closest('.deadline-controls')) {
-      hideDatePicker();
-    }
+  function handleBlur() {
+    hideDatePicker();
   }
 
   // Format the deadline for display
@@ -155,26 +146,17 @@
     </button>
   {:else}
     <!-- Edit mode -->
-    <div class="flex items-center gap-1 rounded bg-gray-700 p-1">
+    <div class="box-border rounded bg-gray-700 p-1">
       <input
         bind:this={dateInputRef}
         type="date"
         value={dateInputValue}
-        class="flex-1 rounded border-none bg-gray-600 px-2 py-1 text-xs text-white"
+        class="box-border w-full rounded border-none bg-gray-600 p-1 text-xs text-white"
         min={dateUtils.formatDate(new Date())}
         onchange={handleDateChange}
         onkeydown={handleKeydown}
         onblur={handleBlur}
       />
-      {#if deadline}
-        <button
-          class="rounded p-1 text-red-400 transition-colors hover:bg-gray-600 hover:text-red-300"
-          onclick={handleRemoveDeadline}
-          title="Remove deadline"
-        >
-          <CloseCircleSolid class="h-4 w-4" />
-        </button>
-      {/if}
     </div>
   {/if}
 </div>
