@@ -8,7 +8,12 @@
     calculatePagesReadInPeriod
   } from '$lib/settings/volume-data';
   import { volumes as catalogVolumes } from '$lib/catalog';
-  import { miscSettings, updateMiscSetting, type ProgressTrackerSorting } from '$lib/settings';
+  import {
+    miscSettings,
+    updateMiscSetting,
+    type ProgressTrackerSorting,
+    type ProgressTargetMode
+  } from '$lib/settings';
   import { onMount } from 'svelte';
   import {
     volumeDeadlines,
@@ -195,11 +200,12 @@
   });
 
   // Helper function to create entries with sort data
-  function createEntriesWithSortData(entries: [string, VolumeData][]) {
-    const deadlines = $volumeDeadlines;
-    const mode = $miscSettings.progressTargetMode ?? 'daily';
-    const periodStart = currentPeriodStart;
-
+  function createEntriesWithSortData(
+    entries: [string, VolumeData][],
+    deadlines: Record<string, string>,
+    mode: ProgressTargetMode,
+    periodStart: number
+  ) {
     return entries.map(([volumeId, volumeData]) => {
       const stats = volumeStats.get(volumeId);
       const remainingPages = stats?.remainingPages ?? 0;
@@ -365,6 +371,11 @@
     const snapshot = $activeGoalSnapshot;
     const completedMap = $completedAtMap;
 
+    // Explicitly track deadline changes to ensure reactivity
+    const deadlines = $volumeDeadlines;
+    const mode = $miscSettings.progressTargetMode ?? 'daily';
+    const periodStart = currentPeriodStart;
+
     for (const [volumeId, volumeData] of volumeEntries) {
       const currentPage = $progress[volumeId] ?? 0;
       const totalPages = $catalogVolumes[volumeId]?.page_count ?? 0;
@@ -432,9 +443,15 @@
     }
 
     return {
-      currentlyReading: sortEntries(createEntriesWithSortData(currentlyReading)),
-      futureReads: sortByAddedDate(createEntriesWithSortData(filteredFutureReads)),
-      completedVolumes: sortByCompletionDate(createEntriesWithSortData(completedVolumes))
+      currentlyReading: sortEntries(
+        createEntriesWithSortData(currentlyReading, deadlines, mode, periodStart)
+      ),
+      futureReads: sortByAddedDate(
+        createEntriesWithSortData(filteredFutureReads, deadlines, mode, periodStart)
+      ),
+      completedVolumes: sortByCompletionDate(
+        createEntriesWithSortData(completedVolumes, deadlines, mode, periodStart)
+      )
     };
   });
 
