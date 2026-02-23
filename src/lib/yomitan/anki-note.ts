@@ -5,10 +5,13 @@ import {
   syncAnkiWeb,
   type VolumeMetadata
 } from '$lib/anki-connect';
+import type { TermDictionaryEntry } from 'yomitan-core';
 import { settings } from '$lib/settings';
-import type { YomitanAnkiButtonUiState } from '$lib/yomitan/core';
+import type { YomitanAnkiButtonUiState } from '$lib/yomitan/anki-button-ui';
 import { getInstalledDictionaries } from '$lib/yomitan/core';
 import { importCoreAnkiModule } from '$lib/yomitan/anki-core';
+
+const PRECHECK_WARNING_TITLE = 'Could not verify duplicates; add may create a duplicate.';
 
 export async function getPopupFieldMarkers(): Promise<string[]> {
   const ankiModule = await importCoreAnkiModule();
@@ -30,7 +33,7 @@ export async function getPopupFieldMarkers(): Promise<string[]> {
 }
 
 export async function buildPopupAnkiNote(
-  dictionaryEntry: unknown,
+  dictionaryEntry: TermDictionaryEntry,
   sourceText: string,
   metadata?: VolumeMetadata
 ) {
@@ -112,7 +115,7 @@ export async function buildPopupAnkiNote(
 }
 
 export async function addPopupAnkiNote(
-  dictionaryEntry: unknown,
+  dictionaryEntry: TermDictionaryEntry,
   sourceText: string,
   metadata?: VolumeMetadata
 ) {
@@ -136,7 +139,7 @@ export type PopupAnkiPrecheckResult = {
 };
 
 export async function getPopupAnkiButtonStates(
-  dictionaryEntries: unknown[],
+  dictionaryEntries: TermDictionaryEntry[],
   sourceText: string,
   metadata?: VolumeMetadata
 ): Promise<PopupAnkiPrecheckResult> {
@@ -153,7 +156,10 @@ export async function getPopupAnkiButtonStates(
 
   if (typeof AnkiConnect !== 'function') {
     return {
-      buttonStates: dictionaryEntries.map(() => ({ state: 'unknown' })),
+      buttonStates: dictionaryEntries.map(() => ({
+        state: 'ready',
+        title: PRECHECK_WARNING_TITLE
+      })),
       hadConnectionError: true
     };
   }
@@ -182,8 +188,8 @@ export async function getPopupAnkiButtonStates(
     const result = noteResults[index];
     if (result.status === 'rejected') {
       return {
-        state: 'unknown',
-        title: 'Could not verify duplicates; add may create a duplicate.'
+        state: 'ready',
+        title: PRECHECK_WARNING_TITLE
       };
     }
     return { state: 'ready' };
@@ -223,11 +229,12 @@ export async function getPopupAnkiButtonStates(
       hadConnectionError: false
     };
   } catch {
+    const hasDuplicate = buttonStates.some((state) => state.state === 'duplicate');
     return {
       buttonStates: buttonStates.map((state) => ({
         ...state,
-        state: state.state === 'ready' || state.state === 'duplicate' ? 'unknown' : state.state,
-        title: 'Could not verify duplicates; add may create a duplicate.'
+        state: state.state === 'duplicate' && hasDuplicate ? 'duplicate' : 'ready',
+        title: PRECHECK_WARNING_TITLE
       })),
       hadConnectionError: true
     };

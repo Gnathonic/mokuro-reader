@@ -103,7 +103,7 @@ describe('getPopupAnkiButtonStates', () => {
       })
     );
 
-    const result = await getPopupAnkiButtonStates([{}], '猫');
+    const result = await getPopupAnkiButtonStates([{} as never], '猫');
 
     expect(result.hadConnectionError).toBe(false);
     expect(result.buttonStates[0]?.state).toBe('duplicate');
@@ -124,13 +124,13 @@ describe('getPopupAnkiButtonStates', () => {
       })
     );
 
-    const result = await getPopupAnkiButtonStates([{}], '猫');
+    const result = await getPopupAnkiButtonStates([{} as never], '猫');
 
     expect(result.hadConnectionError).toBe(false);
     expect(result.buttonStates[0]?.state).toBe('duplicate');
   });
 
-  it('fails open with unknown state when precheck connection fails', async () => {
+  it('fails open with ready state when precheck connection fails', async () => {
     ankiCoreMocks.importCoreAnkiModule.mockResolvedValue(
       createMockAnkiModule({
         canAddNotesWithErrorDetail: async () => {
@@ -139,9 +139,9 @@ describe('getPopupAnkiButtonStates', () => {
       })
     );
 
-    const result = await getPopupAnkiButtonStates([{}], '猫');
+    const result = await getPopupAnkiButtonStates([{} as never], '猫');
 
     expect(result.hadConnectionError).toBe(true);
-    expect(result.buttonStates[0]?.state).toBe('unknown');
+    expect(result.buttonStates[0]?.state).toBe('ready');
   });
 });

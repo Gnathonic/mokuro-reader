@@ -1,13 +1,20 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import YomitanDrawer from './YomitanDrawer.svelte';
+
+const rendererMocks = vi.hoisted(() => ({
+  prepareHost: vi.fn(),
+  renderTermEntries: vi.fn(),
+  updateHost: vi.fn(),
+  destroy: vi.fn()
+}));
 
 const coreMocks = vi.hoisted(() => ({
   getInstalledDictionaries: vi.fn(),
   buildEnabledDictionaryMap: vi.fn(),
   tokenizeText: vi.fn(),
   lookupTerm: vi.fn(),
-  renderTermEntriesHtml: vi.fn()
+  createTermEntryRenderer: vi.fn()
 }));
 
 const preferenceMocks = vi.hoisted(() => ({
@@ -28,6 +35,20 @@ vi.mock('$lib/yomitan/anki-note', () => ankiNoteMocks);
 describe('YomitanDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        entryNode.textContent = `entry-${index}`;
+
+        return {
+          index,
+          entry,
+          entryNode
+        };
+      });
+    });
+
+    coreMocks.createTermEntryRenderer.mockReturnValue(rendererMocks);
     coreMocks.getInstalledDictionaries.mockResolvedValue([
       { title: 'JMdict', importDate: Date.now() }
     ]);
@@ -45,16 +66,13 @@ describe('YomitanDrawer', () => {
     });
   });
 
-  it('renders token buttons and dictionary iframe after token click', async () => {
+  it('renders token buttons and mounts yomitan results renderer after token click', async () => {
     coreMocks.tokenizeText.mockResolvedValue([
       { text: '日本語', reading: 'にほんご', term: '日本語', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
-    const { getByText, container } = render(YomitanDrawer, {
+    const { getByText, queryByTitle, getByTestId } = render(YomitanDrawer, {
       open: true,
       sourceText: '日本語'
     });
@@ -63,9 +81,10 @@ describe('YomitanDrawer', () => {
     await fireEvent.click(getByText('日本語'));
 
     await waitFor(() => {
-      const iframe = container.querySelector('iframe');
-      expect(iframe).toBeTruthy();
-      expect((iframe as HTMLIFrameElement).srcdoc).toContain('result');
+      expect(coreMocks.createTermEntryRenderer).toHaveBeenCalled();
+      expect(rendererMocks.renderTermEntries).toHaveBeenCalled();
+      expect(getByTestId('yomitan-results')).toBeTruthy();
+      expect(queryByTitle('Yomitan dictionary results')).toBeNull();
     });
   });
 
@@ -94,18 +113,14 @@ describe('YomitanDrawer', () => {
       { text: '、', reading: '', term: '、', selectable: false, kind: 'other' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
-    const { container, getByText, getAllByRole } = render(YomitanDrawer, {
+    const { getByText, getAllByRole } = render(YomitanDrawer, {
       open: true,
       sourceText: '猫、'
     });
 
     await waitFor(() => {
-      const iframe = container.querySelector('iframe');
-      expect(iframe).toBeTruthy();
+      expect(coreMocks.createTermEntryRenderer).toHaveBeenCalled();
     });
 
     const punctuation = getByText('、');
@@ -122,9 +137,6 @@ describe('YomitanDrawer', () => {
       { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
     const onClose = vi.fn();
 
     const { getByLabelText } = render(YomitanDrawer, {
@@ -148,9 +160,6 @@ describe('YomitanDrawer', () => {
       entries: [{ id: term }],
       originalTextLength: 1
     }));
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
     const { getByText } = render(YomitanDrawer, {
       open: true,
@@ -187,14 +196,11 @@ describe('YomitanDrawer', () => {
     });
   });
 
-  it('renders checking state first, then duplicate state after precheck', async () => {
+  it('hides button until precheck completes, then shows duplicate state', async () => {
     coreMocks.tokenizeText.mockResolvedValue([
       { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
     let resolvePrecheck: ((value: unknown) => void) | null = null;
     ankiNoteMocks.getPopupAnkiButtonStates.mockReturnValue(
@@ -203,17 +209,15 @@ describe('YomitanDrawer', () => {
       })
     );
 
-    render(YomitanDrawer, {
+    const view = render(YomitanDrawer, {
       open: true,
       sourceText: '猫',
       ankiEnabled: true
     });
 
     await waitFor(() => {
-      const hasCheckingState = coreMocks.renderTermEntriesHtml.mock.calls.some(
-        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'checking'
-      );
-      expect(hasCheckingState).toBe(true);
+      expect(view.queryByRole('button', { name: 'Add duplicate' })).toBeNull();
+      expect(view.queryByRole('button', { name: 'Add to Anki' })).toBeNull();
     });
 
     if (!resolvePrecheck) {
@@ -225,10 +229,7 @@ describe('YomitanDrawer', () => {
     });
 
     await waitFor(() => {
-      const hasDuplicateState = coreMocks.renderTermEntriesHtml.mock.calls.some(
-        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'duplicate'
-      );
-      expect(hasDuplicateState).toBe(true);
+      expect(view.getByRole('button', { name: 'Add duplicate' })).toBeTruthy();
     });
   });
 
@@ -237,44 +238,24 @@ describe('YomitanDrawer', () => {
       { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
     ankiNoteMocks.getPopupAnkiButtonStates.mockResolvedValue({
       buttonStates: [{ state: 'ready' }],
       hadConnectionError: false
     });
     ankiNoteMocks.addPopupAnkiNote.mockResolvedValue({ noteId: 42, errors: [] });
 
-    const { container } = render(YomitanDrawer, {
+    const view = render(YomitanDrawer, {
       open: true,
       sourceText: '猫',
       ankiEnabled: true
     });
 
-    const iframe = await waitFor(() => {
-      const frame = container.querySelector('iframe');
-      expect(frame).toBeTruthy();
-      return frame as HTMLIFrameElement;
-    });
-
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        data: { type: 'yomitan-add-note', entryIndex: 0 },
-        source: iframe.contentWindow
-      })
-    );
+    const addButton = await waitFor(() => view.getByRole('button', { name: 'Add to Anki' }));
+    await fireEvent.click(addButton);
 
     await waitFor(() => {
       expect(ankiNoteMocks.addPopupAnkiNote).toHaveBeenCalled();
-      const hasAddingState = coreMocks.renderTermEntriesHtml.mock.calls.some(
-        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'adding'
-      );
-      const hasAddedState = coreMocks.renderTermEntriesHtml.mock.calls.some(
-        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'added'
-      );
-      expect(hasAddingState).toBe(true);
-      expect(hasAddedState).toBe(true);
+      expect(view.getByRole('button', { name: 'Added ✓' })).toBeTruthy();
     });
   });
 
@@ -287,9 +268,6 @@ describe('YomitanDrawer', () => {
       entries: [{ id: term }],
       originalTextLength: 1
     }));
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
     let resolveCat: ((value: unknown) => void) | null = null;
     let resolveDog: ((value: unknown) => void) | null = null;
@@ -305,7 +283,7 @@ describe('YomitanDrawer', () => {
       }
     );
 
-    const { getByText } = render(YomitanDrawer, {
+    const { getByText, queryByRole, getByRole } = render(YomitanDrawer, {
       open: true,
       sourceText: '猫犬',
       ankiEnabled: true
@@ -329,11 +307,8 @@ describe('YomitanDrawer', () => {
     });
 
     await waitFor(() => {
-      const lastCall =
-        coreMocks.renderTermEntriesHtml.mock.calls[
-          coreMocks.renderTermEntriesHtml.mock.calls.length - 1
-        ];
-      expect(lastCall?.[1]?.ankiButtonStates?.[0]?.state).toBe('ready');
+      expect(getByRole('button', { name: 'Add to Anki' })).toBeTruthy();
+      expect(queryByRole('button', { name: 'Add duplicate' })).toBeNull();
     });
   });
 
@@ -342,9 +317,6 @@ describe('YomitanDrawer', () => {
       { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue(
-      '<html><body><div>result</div></body></html>'
-    );
 
     const onCloseAllowed = vi.fn();
     const first = render(YomitanDrawer, {

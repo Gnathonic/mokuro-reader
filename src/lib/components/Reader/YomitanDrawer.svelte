@@ -2,17 +2,17 @@
   import { Button, Drawer } from 'flowbite-svelte';
   import { BookOpenSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
-  import { showSnackbar } from '$lib/util/snackbar';
+  import type { TermDictionaryEntry } from 'yomitan-core';
+  import type { VolumeMetadata } from '$lib/anki-connect';
   import {
     buildEnabledDictionaryMap,
     getInstalledDictionaries,
     lookupTerm,
-    renderTermEntriesHtml,
     tokenizeText,
-    type YomitanAnkiButtonUiState,
     type YomitanDictionarySummary,
     type YomitanToken
   } from '$lib/yomitan/core';
+  import type { YomitanAnkiButtonUiState } from '$lib/yomitan/anki-button-ui';
   import {
     buildYomitanDebugSnapshot,
     copyTextToClipboard,
@@ -26,7 +26,8 @@
     saveDictionaryPreferences
   } from '$lib/yomitan/preferences';
   import { addPopupAnkiNote, getPopupAnkiButtonStates } from '$lib/yomitan/anki-note';
-  import type { VolumeMetadata } from '$lib/anki-connect';
+  import { showSnackbar } from '$lib/util/snackbar';
+  import YomitanResults from './YomitanResults.svelte';
 
   interface Props {
     open?: boolean;
@@ -51,23 +52,22 @@
   let dictionaries = $state<YomitanDictionarySummary[]>([]);
   let tokens = $state<YomitanToken[]>([]);
   let selectedTokenIndex = $state<number | null>(null);
-  let lookupHtml = $state('');
   let loading = $state(false);
   let lookupLoading = $state(false);
   let errorMessage = $state('');
   let noEntries = $state(false);
   let selectionMessage = $state('');
-  let lookupFrame: HTMLIFrameElement | null = $state(null);
-  let lookupFrameHeight = $state(0);
-  let awaitingLookupFrameLoad = $state(false);
-  let lookupEntries = $state<unknown[]>([]);
+  let lookupEntries = $state<TermDictionaryEntry[]>([]);
   let selectedTokenText = $state('');
   let ankiButtonStates = $state<YomitanAnkiButtonUiState[]>([]);
+  let ankiButtonChecked = $state<boolean[]>([]);
+  let ankiButtonFadeIn = $state<boolean[]>([]);
   let lookupRequestId = $state(0);
   let ankiPrecheckWarningShown = $state(false);
   let drawerPanel: HTMLElement | null = $state(null);
   let debugEnabled = $state(false);
   let addingToAnki = $derived(ankiButtonStates.some((state) => state.state === 'adding'));
+
   const transitionParams = {
     y: 320,
     duration: 200,
@@ -88,7 +88,7 @@
           tokenCount: tokens.length,
           selectableCount: tokens.filter((token) => token.selectable).length,
           selectedTokenIndex,
-          hasLookupHtml: Boolean(lookupHtml),
+          lookupEntryCount: lookupEntries.length,
           noEntries,
           errorMessage,
           sourceTextLength: sourceText.length,
@@ -132,43 +132,18 @@
     dictionaries = [];
     tokens = [];
     selectedTokenIndex = null;
-    lookupHtml = '';
     errorMessage = '';
     noEntries = false;
     selectionMessage = '';
     loading = false;
     lookupLoading = false;
-    awaitingLookupFrameLoad = false;
-    lookupFrameHeight = 0;
     lookupEntries = [];
     selectedTokenText = '';
     ankiButtonStates = [];
+    ankiButtonChecked = [];
+    ankiButtonFadeIn = [];
     lookupRequestId = 0;
     ankiPrecheckWarningShown = false;
-  }
-
-  function handleIframeMessage(event: MessageEvent) {
-    if (!lookupFrame || event.source !== lookupFrame.contentWindow) return;
-
-    const data = event.data as { type?: string; height?: unknown; entryIndex?: unknown } | null;
-    if (!data) return;
-
-    if (data.type === 'yomitan-iframe-height') {
-      const nextHeight = typeof data.height === 'number' ? Math.ceil(data.height) : 0;
-      if (nextHeight > 0) {
-        lookupFrameHeight = nextHeight;
-      }
-      return;
-    }
-
-    if (data.type === 'yomitan-add-note') {
-      const entryIndex =
-        typeof data.entryIndex === 'number' ? data.entryIndex : Number(data.entryIndex);
-      if (!Number.isFinite(entryIndex) || entryIndex < 0 || entryIndex >= lookupEntries.length) {
-        return;
-      }
-      void handleAddToAnki(entryIndex);
-    }
   }
 
   async function handleAddToAnki(entryIndex: number) {
@@ -197,6 +172,18 @@
       const message = error instanceof Error ? error.message : String(error);
       showSnackbar(`Failed to add note: ${message}`);
     }
+  }
+
+  function showAnkiButtonsAfterPrecheck(requestId: number, states: YomitanAnkiButtonUiState[]) {
+    if (requestId !== lookupRequestId) return;
+    const visible = states.map(() => true);
+    ankiButtonStates = states;
+    ankiButtonChecked = visible;
+    ankiButtonFadeIn = visible;
+    requestAnimationFrame(() => {
+      if (requestId !== lookupRequestId) return;
+      ankiButtonFadeIn = states.map(() => false);
+    });
   }
 
   async function loadAndTokenizeText() {
@@ -285,12 +272,12 @@
 
   async function handleTokenClick(token: YomitanToken, index: number) {
     if (!token.selectable) return;
-    if (selectedTokenIndex === index && (lookupHtml || noEntries || lookupLoading)) {
+    if (selectedTokenIndex === index && (lookupEntries.length > 0 || noEntries || lookupLoading)) {
       return;
     }
+
     selectedTokenIndex = index;
     lookupLoading = true;
-    awaitingLookupFrameLoad = false;
     noEntries = false;
     selectionMessage = '';
     ankiPrecheckWarningShown = false;
@@ -313,6 +300,7 @@
       if (currentLookupRequestId !== lookupRequestId) {
         return;
       }
+
       selectedTokenText = token.text;
       lookupEntries = lookup.entries;
       debugYomitan('lookup:complete', {
@@ -320,20 +308,24 @@
         entryCount: lookup.entries.length,
         originalTextLength: lookup.originalTextLength
       });
+
       if (!lookup.entries.length) {
         ankiButtonStates = [];
+        ankiButtonChecked = [];
+        ankiButtonFadeIn = [];
         noEntries = true;
         return;
       }
 
       if (ankiEnabled) {
-        ankiButtonStates = lookup.entries.map(() => ({ state: 'checking' }));
+        ankiButtonStates = lookup.entries.map(() => ({ state: 'ready' }));
+        ankiButtonChecked = lookup.entries.map(() => false);
+        ankiButtonFadeIn = lookup.entries.map(() => false);
       } else {
         ankiButtonStates = [];
+        ankiButtonChecked = [];
+        ankiButtonFadeIn = [];
       }
-
-      await rerenderLookupHtml(currentLookupRequestId);
-      awaitingLookupFrameLoad = true;
 
       if (ankiEnabled) {
         void precheckAnkiButtonStates(currentLookupRequestId, lookup.entries, token.text);
@@ -347,24 +339,13 @@
       showSnackbar('Failed to look up token in Yomitan.');
       noEntries = true;
     } finally {
-      if (!awaitingLookupFrameLoad) {
-        lookupLoading = false;
-      }
+      lookupLoading = false;
     }
-  }
-
-  async function rerenderLookupHtml(requestId: number) {
-    const html = await renderTermEntriesHtml(lookupEntries, {
-      showAnkiAddButton: ankiEnabled,
-      ankiButtonStates: ankiEnabled ? ankiButtonStates : undefined
-    });
-    if (requestId !== lookupRequestId) return;
-    lookupHtml = html;
   }
 
   async function precheckAnkiButtonStates(
     requestId: number,
-    entries: unknown[],
+    entries: TermDictionaryEntry[],
     tokenText: string
   ) {
     try {
@@ -372,8 +353,7 @@
       const result = await getPopupAnkiButtonStates(entries, source, volumeMetadata);
       if (requestId !== lookupRequestId) return;
 
-      ankiButtonStates = result.buttonStates;
-      await rerenderLookupHtml(requestId);
+      showAnkiButtonsAfterPrecheck(requestId, result.buttonStates);
 
       if (result.hadConnectionError && !ankiPrecheckWarningShown) {
         ankiPrecheckWarningShown = true;
@@ -382,11 +362,13 @@
     } catch (error) {
       if (requestId !== lookupRequestId) return;
       console.error('Failed to precheck Yomitan entries in Anki:', error);
-      ankiButtonStates = entries.map(() => ({
-        state: 'unknown',
-        title: 'Could not verify duplicates; add may create a duplicate.'
-      }));
-      await rerenderLookupHtml(requestId);
+      showAnkiButtonsAfterPrecheck(
+        requestId,
+        entries.map(() => ({
+          state: 'ready',
+          title: 'Could not verify duplicates; add may create a duplicate.'
+        }))
+      );
       if (!ankiPrecheckWarningShown) {
         ankiPrecheckWarningShown = true;
         showSnackbar('Could not verify duplicates in Anki. You can still add cards.');
@@ -396,17 +378,15 @@
 
   async function updateAnkiButtonState(entryIndex: number, nextState: YomitanAnkiButtonUiState) {
     if (entryIndex < 0 || entryIndex >= ankiButtonStates.length) return;
-    const currentLookupRequestId = lookupRequestId;
     ankiButtonStates = ankiButtonStates.map((state, index) =>
       index === entryIndex ? nextState : state
     );
-    await rerenderLookupHtml(currentLookupRequestId);
-  }
-
-  function handleLookupFrameLoad() {
-    if (!awaitingLookupFrameLoad) return;
-    awaitingLookupFrameLoad = false;
-    lookupLoading = false;
+    ankiButtonChecked = ankiButtonChecked.map((checked, index) =>
+      index === entryIndex ? true : checked
+    );
+    ankiButtonFadeIn = ankiButtonFadeIn.map((fadeIn, index) =>
+      index === entryIndex ? false : fadeIn
+    );
   }
 
   $effect(() => {
@@ -429,7 +409,6 @@
 </script>
 
 <svelte:window
-  onmessage={handleIframeMessage}
   ondragstart={(event) => {
     if (open) {
       event.preventDefault();
@@ -511,14 +490,6 @@
 
     <div class="flex min-h-0 flex-1 flex-col bg-gray-900">
       <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
-        {#if !loading && addingToAnki}
-          <div class="fade-in pointer-events-none absolute top-3 right-3 z-20">
-            <div class="pointer-events-auto rounded bg-gray-800/90 px-2 py-1 text-xs text-gray-100">
-              Adding...
-            </div>
-          </div>
-        {/if}
-
         {#if selectionMessage}
           <div
             class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600"
@@ -529,17 +500,20 @@
           <div class="flex h-full items-center justify-center text-sm text-gray-600">
             No dictionary entries found for this token.
           </div>
-        {:else if lookupHtml}
+        {:else if lookupEntries.length > 0}
           <div class="fade-in h-full overflow-x-hidden overflow-y-auto">
-            <iframe
-              bind:this={lookupFrame}
-              title="Yomitan dictionary results"
-              class="block w-full border-0 bg-[#1e1e1e]"
-              scrolling="yes"
-              style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y; background-color:#1e1e1e;`}
-              srcdoc={lookupHtml}
-              onload={handleLookupFrameLoad}
-            ></iframe>
+            <YomitanResults
+              entries={lookupEntries}
+              dictionaryInfo={dictionaries}
+              theme="dark"
+              {ankiEnabled}
+              {ankiButtonStates}
+              {ankiButtonChecked}
+              {ankiButtonFadeIn}
+              onAddToAnki={(entryIndex) => {
+                void handleAddToAnki(entryIndex);
+              }}
+            />
           </div>
         {/if}
 
