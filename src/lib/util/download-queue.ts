@@ -20,7 +20,13 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { normalizeFilename } from './misc';
-import { getImageMimeType, processVolume, saveVolume, isSystemFile } from '$lib/import';
+import {
+  getImageMimeType,
+  isImageExtension,
+  processVolume,
+  saveVolume,
+  isSystemFile
+} from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 
@@ -331,14 +337,17 @@ async function entriesToDecompressedVolume(
       // Nested archive
       nestedArchives.push(new File([entry.data], normalizedFilename));
     } else {
-      // Image file - determine MIME type
-      const mimeType = getImageMimeType(extension);
-      if (mimeType) {
-        imageFiles.set(
-          normalizedFilename,
-          new File([entry.data], normalizedFilename, { type: mimeType })
-        );
+      // Only keep known image extensions as pages.
+      // Unknown files were previously coerced to application/octet-stream and surfaced
+      // as broken "page 1" entries in the cover picker.
+      if (!isImageExtension(extension)) {
+        continue;
       }
+      const mimeType = getImageMimeType(extension);
+      imageFiles.set(
+        normalizedFilename,
+        new File([entry.data], normalizedFilename, { type: mimeType })
+      );
     }
   }
 
