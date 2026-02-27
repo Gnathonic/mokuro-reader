@@ -16,7 +16,7 @@ const defaultSettings: ExtractionSettings = {
   individualVolumes: true,
   includeSeriesTitle: true,
   includeSidecars: true,
-  embedSidecarsInArchive: true
+  embedSidecarsInArchive: false
 };
 
 const stored = browser ? window.localStorage.getItem('extractionSettings') : undefined;

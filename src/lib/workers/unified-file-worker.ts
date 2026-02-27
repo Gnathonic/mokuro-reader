@@ -131,6 +131,7 @@ interface CompressFromDbMessage {
   credentials?: ProviderCredentials;
   downloadFilename?: string; // For local export
   embedThumbnailSidecar?: boolean;
+  embedMokuroInArchive?: boolean;
 }
 
 type WorkerMessage =
@@ -1376,7 +1377,10 @@ ctx.addEventListener('message', async (event) => {
           };
           ctx.postMessage(progressMessage);
         },
-        { embedThumbnailSidecar: message.embedThumbnailSidecar === true }
+        {
+          embedThumbnailSidecar: message.embedThumbnailSidecar === true,
+          embedMokuroInArchive: message.embedMokuroInArchive !== false
+        }
       );
 
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);

@@ -72,7 +72,7 @@ queueStore.subscribe((queue) => {
 export function queueVolumeForBackup(
   volume: VolumeMetadata,
   providerInstance?: SyncProvider,
-  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
@@ -154,7 +154,7 @@ export function queueVolumeForExport(
 export function queueSeriesVolumesForBackup(
   volumes: VolumeMetadata[],
   providerInstance?: SyncProvider,
-  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: true }
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
 ): void {
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
@@ -358,7 +358,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           volumeTitle: item.volumeTitle,
           seriesTitle: item.seriesTitle,
           credentials,
-          embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
+          embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
+          // Cloud uploads store OCR metadata as a separate sidecar file.
+          embedMokuroInArchive: false
         };
       },
       onProgress: (data) => {

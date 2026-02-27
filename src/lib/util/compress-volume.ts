@@ -150,7 +150,7 @@ function getDatabase(): Dexie {
 export async function compressVolumeFromDb(
   volumeUuid: string,
   onProgress?: (completed: number, total: number) => void,
-  options: { embedThumbnailSidecar?: boolean } = {}
+  options: { embedThumbnailSidecar?: boolean; embedMokuroInArchive?: boolean } = {}
 ): Promise<Blob> {
   const db = getDatabase();
 
@@ -164,6 +164,7 @@ export async function compressVolumeFromDb(
   }
 
   const volumeTitle = volume.volume_title;
+  const embedMokuroInArchive = options.embedMokuroInArchive !== false;
 
   // Build mokuro metadata
   const isImageOnly = volume.mokuro_version === '';
@@ -186,9 +187,9 @@ export async function compressVolumeFromDb(
 
   const thumbnailSidecar = options.embedThumbnailSidecar ? volume.thumbnail : null;
 
-  // Total items: folder + files + mokuro file (if present) + thumbnail sidecar (optional)
+  // Total items: folder + files + embedded mokuro file (optional) + thumbnail sidecar (optional)
   const totalItems =
-    validFilenames.length + (metadata ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
+    validFilenames.length + (metadata && embedMokuroInArchive ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
   let completedItems = 0;
 
   // Create zip writer with BlobWriter to avoid memory issues
@@ -250,8 +251,8 @@ export async function compressVolumeFromDb(
     if (onProgress) onProgress(completedItems, totalItems);
   }
 
-  // Add mokuro metadata file
-  if (metadata) {
+  // Add mokuro metadata file only when embedding is enabled.
+  if (metadata && embedMokuroInArchive) {
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
