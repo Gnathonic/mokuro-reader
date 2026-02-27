@@ -36,7 +36,9 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   }
 
   let mokuroFile: File | null = null;
-  if (volume.mokuro_version !== '') {
+  const hasMokuroVersion =
+    typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
+  if (hasMokuroVersion) {
     const volumeOcr = await db.volume_ocr.get(volumeUuid);
     if (volumeOcr?.pages) {
       const metadata = buildMokuroMetadata(volume, volumeOcr.pages);
