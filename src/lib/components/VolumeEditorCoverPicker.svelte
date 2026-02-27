@@ -154,13 +154,17 @@
       const useTargetAspect = imageAspect >= targetAspect;
 
       cropper = new Cropper(img, {
-        viewMode: 1, // Restrict crop box to image bounds
-        dragMode: 'move',
+        viewMode: 1, // Keep crop box constrained to the actual image
+        dragMode: 'crop',
         autoCropArea: 1, // Start with full coverage
         restore: false,
         guides: true,
         center: true,
         highlight: false,
+        movable: false,
+        zoomable: false,
+        zoomOnWheel: false,
+        zoomOnTouch: false,
         cropBoxMovable: true,
         cropBoxResizable: true,
         toggleDragModeOnDblclick: false,
@@ -243,16 +247,22 @@
     onCancel();
   }
 
-  function handleZoomIn() {
-    cropper?.zoom(0.1);
-  }
-
-  function handleZoomOut() {
-    cropper?.zoom(-0.1);
-  }
-
   function handleReset() {
     cropper?.reset();
+  }
+
+  function handleRotate90() {
+    if (!cropper) return;
+    cropper.rotate(90);
+
+    // Recenter rotated image canvas in the cropper viewport.
+    const container = cropper.getContainerData();
+    const canvas = cropper.getCanvasData();
+    cropper.setCanvasData({
+      ...canvas,
+      left: (container.width - canvas.width) / 2,
+      top: (container.height - canvas.height) / 2
+    });
   }
 
   function getCurrentCropZone() {
@@ -393,10 +403,8 @@
       </div>
 
       <div class="mb-4 flex items-center justify-center gap-2">
-        <Button size="xs" color="light" onclick={handleZoomOut}>−</Button>
-        <span class="text-sm text-gray-600 dark:text-gray-400">Zoom</span>
-        <Button size="xs" color="light" onclick={handleZoomIn}>+</Button>
-        <Button size="xs" color="light" onclick={handleReset} class="ml-4">Reset</Button>
+        <Button size="xs" color="light" onclick={handleReset}>Reset</Button>
+        <Button size="xs" color="light" onclick={handleRotate90}>Rotate 90°</Button>
         {#if lastCropZone}
           <Button size="xs" color="light" onclick={applyLastCropZone}>Copy Last Crop Zone</Button>
         {/if}
