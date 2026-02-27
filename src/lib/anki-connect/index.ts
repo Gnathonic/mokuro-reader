@@ -136,6 +136,7 @@ export function resolveTemplate(
   }
 
   let resolved = template;
+  const existingPlaceholders: string[] = [];
 
   // Replace {selection} with selected text
   if (selectedText) {
@@ -182,7 +183,11 @@ export function resolveTemplate(
   // Replace {existing} with existing value of the current field (for update mode)
   if (options?.previousValues && options?.fieldName) {
     const existingValue = options.previousValues[options.fieldName] || '';
-    resolved = resolved.replace(/\{existing\}/g, existingValue);
+    resolved = resolved.replace(/\{existing\}/g, () => {
+      const token = `__MOKURO_EXISTING_${existingPlaceholders.length}__`;
+      existingPlaceholders.push(existingValue);
+      return token;
+    });
   } else {
     resolved = resolved.replace(/\{existing\}/g, '');
   }
@@ -195,6 +200,15 @@ export function resolveTemplate(
 
   // Convert newlines to <br> for Anki
   resolved = resolved.replace(/\n/g, '<br>');
+
+  // Restore raw existing HTML after normalization.
+  // This prevents converting newlines inside <style> blocks to <br>, which breaks CSS.
+  if (existingPlaceholders.length > 0) {
+    resolved = resolved.replace(/__MOKURO_EXISTING_(\d+)__/g, (_match, idx) => {
+      const index = Number(idx);
+      return existingPlaceholders[index] ?? '';
+    });
+  }
 
   return resolved || null;
 }
