@@ -123,6 +123,8 @@ export interface ProviderCredentials {
   [key: string]: any;
 }
 
+export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
+
 /**
  * Base metadata for a cloud-stored file (CBZ file)
  * This is the common interface - use provider-specific types when possible
@@ -237,9 +239,15 @@ export interface SyncProvider {
    * @param path Target path (e.g., "SeriesTitle/VolumeTitle.cbz")
    * @param blob File data as Blob
    * @param description Optional file description
+   * @param onProgress Optional progress callback (loaded, total)
    * @returns File ID in cloud storage
    */
-  uploadFile(path: string, blob: Blob, description?: string): Promise<string>;
+  uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string>;
 
   /**
    * Download a file from cloud storage
