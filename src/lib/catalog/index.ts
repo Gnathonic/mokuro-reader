@@ -6,7 +6,7 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
-import { libraryFilesStore, generateLibraryPlaceholders } from '$lib/util/libraries';
+import { libraryFilesStore, libraryMokuroFilesStore, generateLibraryPlaceholders } from '$lib/util/libraries';
 import { selectedLibraryId } from '$lib/settings/libraries';
 
 // Single source of truth from the database
@@ -31,8 +31,8 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
 
 // Merge local volumes with cloud placeholders and library placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles, libraryFilesStore, selectedLibraryId],
-  ([$volumes, $cloudFiles, $libraryFiles, $selectedLibraryId]) => {
+  [volumes, unifiedCloudManager.cloudFiles, libraryFilesStore, libraryMokuroFilesStore, selectedLibraryId],
+  ([$volumes, $cloudFiles, $libraryFiles, $libraryMokuroFiles, $selectedLibraryId]) => {
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);
 
@@ -50,6 +50,7 @@ export const volumesWithPlaceholders = derived(
       const allVolumes = Object.values(combined);
       const libraryPlaceholders = generateLibraryPlaceholders(
         $libraryFiles,
+        $libraryMokuroFiles,
         allVolumes,
         $selectedLibraryId
       );
@@ -75,8 +76,9 @@ export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlacehol
 export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
   if (!$catalog || !$routeParams.manga) return [];
 
+  const routeKey = $routeParams.manga.trim().replace(/\s+/g, ' ').toLowerCase();
   // Primary: match by title (folder name) - handles placeholder→local transition
-  let series = $catalog.find((s) => s.title === $routeParams.manga);
+  let series = $catalog.find((s) => s.title.trim().replace(/\s+/g, ' ').toLowerCase() === routeKey);
 
   // Fallback: match by UUID (for legacy URLs)
   if (!series) {

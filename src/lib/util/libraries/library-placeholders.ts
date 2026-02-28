@@ -7,6 +7,7 @@ import { browser } from '$app/environment';
 import type { VolumeMetadata } from '$lib/types';
 import type { LibraryFileMetadata } from './library-webdav-client';
 import { getLibraryById } from '$lib/settings/libraries';
+import { enqueueLibraryOcrUpgrade } from './library-ocr-upgrade-queue';
 
 /**
  * Generate a deterministic UUID from a string
@@ -101,6 +102,7 @@ function createLibraryPlaceholder(
  */
 export function generateLibraryPlaceholders(
 	libraryFilesMap: Map<string, LibraryFileMetadata[]>,
+	libraryMokuroFilesMap: Map<string, LibraryFileMetadata[]>,
 	localVolumes: VolumeMetadata[],
 	selectedLibraryId: string | null
 ): VolumeMetadata[] {
@@ -112,8 +114,13 @@ export function generateLibraryPlaceholders(
 	// Create a set of local volume paths for fast lookup
 	// Include both local volumes and any cloud placeholders (to avoid duplicates)
 	const localPaths = new Set<string>();
+	const localVolumeByPath = new Map<string, VolumeMetadata>();
 	for (const vol of localVolumes) {
-		localPaths.add(`${vol.series_title}/${vol.volume_title}.cbz`.toLowerCase());
+		const key = `${vol.series_title}/${vol.volume_title}.cbz`.toLowerCase();
+		localPaths.add(key);
+		if (!vol.isPlaceholder && !localVolumeByPath.has(key)) {
+			localVolumeByPath.set(key, vol);
+		}
 	}
 
 	// Create a map of series titles to their UUIDs from local volumes
@@ -133,6 +140,23 @@ export function generateLibraryPlaceholders(
 			continue;
 		}
 
+		const mokuroLookup = new Map<string, LibraryFileMetadata>();
+		const mokuroFiles = libraryMokuroFilesMap.get(libraryId) || [];
+		console.log(
+			`[Library OCR Upgrade] Matcher scan for library ${libraryId}: ${files.length} archives, ${mokuroFiles.length} mokuro sidecars`
+		);
+		for (const sidecar of mokuroFiles) {
+			const cbzLikePath = sidecar.path.replace(/\.mokuro(?:\.gz)?$/i, '.cbz');
+			const parsedSidecar = parseLibraryPath(cbzLikePath);
+			if (!parsedSidecar) continue;
+			const key = `${parsedSidecar.seriesTitle}/${parsedSidecar.volumeTitle}`.toLowerCase();
+			// Prefer plain .mokuro over gz when both exist.
+			const existing = mokuroLookup.get(key);
+			if (!existing || existing.path.toLowerCase().endsWith('.mokuro.gz')) {
+				mokuroLookup.set(key, sidecar);
+			}
+		}
+
 		// Get library name
 		const library = getLibraryById(libraryId);
 		const libraryName = library?.name || 'Unknown Library';
@@ -144,6 +168,35 @@ export function generateLibraryPlaceholders(
 			// Check if already exists locally (case-insensitive)
 			const localPath = `${parsed.seriesTitle}/${parsed.volumeTitle}.cbz`.toLowerCase();
 			if (localPaths.has(localPath)) {
+				const localVolume = localVolumeByPath.get(localPath);
+				const mokuroKey = `${parsed.seriesTitle}/${parsed.volumeTitle}`.toLowerCase();
+				const remoteMokuro = mokuroLookup.get(mokuroKey);
+				if (
+					localVolume &&
+					(typeof localVolume.mokuro_version !== 'string' ||
+						localVolume.mokuro_version.trim() === '') &&
+					remoteMokuro
+				) {
+					console.log(
+						'[Library OCR Upgrade] Match found, enqueueing upgrade:',
+						`${localVolume.series_title}/${localVolume.volume_title}`,
+						'using',
+						remoteMokuro.path
+					);
+					enqueueLibraryOcrUpgrade(localVolume, remoteMokuro);
+				} else if (localVolume && !remoteMokuro) {
+					console.log(
+						'[Library OCR Upgrade] Local image-only match has no remote mokuro sidecar:',
+						`${localVolume.series_title}/${localVolume.volume_title}`
+					);
+				} else if (localVolume) {
+					console.log(
+						'[Library OCR Upgrade] Local match already has OCR, skipping:',
+						`${localVolume.series_title}/${localVolume.volume_title}`,
+						'mokuro_version=',
+						localVolume.mokuro_version
+					);
+				}
 				continue;
 			}
 
