@@ -166,9 +166,9 @@ export function resolveTemplate(
     resolved = resolved.replace(/\{volume\}/g, '');
   }
 
-  // Replace {page_num} with page number (1-indexed for display)
+  // Replace {page_num} with page number (already 1-indexed from callers)
   if (options?.pageNumber !== undefined) {
-    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber + 1));
+    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber));
   } else {
     resolved = resolved.replace(/\{page_num\}/g, '');
   }

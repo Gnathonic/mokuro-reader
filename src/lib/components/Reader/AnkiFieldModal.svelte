@@ -93,7 +93,7 @@
       vars.push({ template: '{volume}', value: metadata.volumeTitle });
     }
     if (store.pageNumber !== undefined) {
-      vars.push({ template: '{page_num}', value: String(store.pageNumber + 1) });
+      vars.push({ template: '{page_num}', value: String(store.pageNumber) });
     }
     if (store.pageFilename) {
       vars.push({ template: '{page_filename}', value: store.pageFilename });
