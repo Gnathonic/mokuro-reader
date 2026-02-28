@@ -51,6 +51,9 @@
   let showCropper = $state(false);
   let cropImage = $state<string | null>(null);
   let cropper: Cropper | null = null;
+  let generatedCropImageUrl = $state<string | null>(null);
+  let appendedPageIndex = $state<number | null>(null);
+  let appendCandidateIndex = $state<number | null>(null);
 
   onMount(async () => {
     await loadPages();
@@ -61,8 +64,8 @@
     for (const page of pages) {
       URL.revokeObjectURL(page.url);
     }
-    if (cropImage) {
-      URL.revokeObjectURL(cropImage);
+    if (generatedCropImageUrl) {
+      URL.revokeObjectURL(generatedCropImageUrl);
     }
     if (cropper) {
       cropper.destroy();
@@ -87,6 +90,7 @@
           selectedPageIndex = defaultIndex;
           if (openCropperOnLoad) {
             cropImage = pages[defaultIndex]?.url || null;
+            appendCandidateIndex = getDefaultAppendCandidateIndex(defaultIndex);
             showCropper = cropImage !== null;
           }
         }
@@ -133,9 +137,98 @@
 
   async function handleCropPage() {
     if (selectedPageIndex !== null && pages[selectedPageIndex]) {
+      clearGeneratedCropImage();
       cropImage = pages[selectedPageIndex].url;
+      appendedPageIndex = null;
+      appendCandidateIndex = getDefaultAppendCandidateIndex(selectedPageIndex);
       showCropper = true;
     }
+  }
+
+  function clearGeneratedCropImage() {
+    if (generatedCropImageUrl) {
+      URL.revokeObjectURL(generatedCropImageUrl);
+      generatedCropImageUrl = null;
+    }
+  }
+
+  function getDefaultAppendCandidateIndex(baseIndex: number | null): number | null {
+    if (baseIndex === null || pages.length < 2) return null;
+    if (baseIndex + 1 < pages.length) return baseIndex + 1;
+    if (baseIndex - 1 >= 0) return baseIndex - 1;
+    return null;
+  }
+
+  function handleAppendCandidateChange(event: Event) {
+    const value = Number.parseInt((event.target as HTMLSelectElement).value, 10);
+    appendCandidateIndex = Number.isFinite(value) ? value : null;
+  }
+
+  async function loadImageBitmap(file: File): Promise<ImageBitmap> {
+    return await createImageBitmap(file);
+  }
+
+  async function stitchPagesHorizontally(first: File, second: File): Promise<File> {
+    const [img1, img2] = await Promise.all([loadImageBitmap(first), loadImageBitmap(second)]);
+    const width = img1.width + img2.width;
+    const height = Math.max(img1.height, img2.height);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      img1.close();
+      img2.close();
+      throw new Error('Could not get canvas context');
+    }
+
+    ctx.drawImage(img1, 0, 0);
+    ctx.drawImage(img2, img1.width, 0);
+    img1.close();
+    img2.close();
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.95)
+    );
+    if (!blob) {
+      throw new Error('Failed to stitch images');
+    }
+
+    return new File([blob], 'appended-cover.jpg', { type: 'image/jpeg' });
+  }
+
+  async function appendSecondImage() {
+    if (
+      selectedPageIndex === null ||
+      appendCandidateIndex === null ||
+      selectedPageIndex === appendCandidateIndex ||
+      !pages[selectedPageIndex] ||
+      !pages[appendCandidateIndex]
+    ) {
+      return;
+    }
+
+    try {
+      const stitched = await stitchPagesHorizontally(
+        pages[selectedPageIndex].file,
+        pages[appendCandidateIndex].file
+      );
+      clearGeneratedCropImage();
+      generatedCropImageUrl = URL.createObjectURL(stitched);
+      cropImage = generatedCropImageUrl;
+      appendedPageIndex = appendCandidateIndex;
+    } catch (err) {
+      console.error('Error appending second image for cover crop:', err);
+      showSnackbar('Failed to append second image');
+    }
+  }
+
+  function removeAppendedImage() {
+    if (selectedPageIndex === null || !pages[selectedPageIndex]) return;
+    clearGeneratedCropImage();
+    cropImage = pages[selectedPageIndex].url;
+    appendedPageIndex = null;
   }
 
   function initCropper(img: HTMLImageElement) {
@@ -234,6 +327,8 @@
       cropper.destroy();
       cropper = null;
     }
+    clearGeneratedCropImage();
+    appendedPageIndex = null;
     showCropper = false;
     cropImage = null;
   }
@@ -243,6 +338,8 @@
       cropper.destroy();
       cropper = null;
     }
+    clearGeneratedCropImage();
+    appendedPageIndex = null;
     open = false;
     onCancel();
   }
@@ -394,17 +491,43 @@
       <div
         class="cropper-container relative mb-4 h-[70dvh] w-full overflow-hidden rounded-lg bg-gray-900"
       >
-        <img
-          src={cropImage}
-          alt="Crop preview"
-          class="cropper-image block max-w-full"
-          use:initCropper
-        />
+        {#key cropImage}
+          <img
+            src={cropImage}
+            alt="Crop preview"
+            class="cropper-image block max-w-full"
+            use:initCropper
+          />
+        {/key}
       </div>
 
       <div class="mb-4 flex items-center justify-center gap-2">
         <Button size="xs" color="light" onclick={handleReset}>Reset</Button>
         <Button size="xs" color="light" onclick={handleRotate90}>Rotate 90°</Button>
+        {#if selectedPageIndex !== null && pages.length > 1}
+          <select
+            class="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            value={appendCandidateIndex ?? ''}
+            onchange={handleAppendCandidateChange}
+          >
+            {#each pages as page, index}
+              {#if index !== selectedPageIndex}
+                <option value={index}>Append page {index + 1}</option>
+              {/if}
+            {/each}
+          </select>
+          <Button
+            size="xs"
+            color="light"
+            onclick={appendSecondImage}
+            disabled={appendCandidateIndex === null}
+          >
+            Append
+          </Button>
+          {#if appendedPageIndex !== null}
+            <Button size="xs" color="light" onclick={removeAppendedImage}>Remove Appended</Button>
+          {/if}
+        {/if}
         {#if lastCropZone}
           <Button size="xs" color="light" onclick={applyLastCropZone}>Copy Last Crop Zone</Button>
         {/if}
