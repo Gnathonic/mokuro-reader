@@ -27,13 +27,15 @@
     page: Page;
     src?: File;
     volumeUuid: string;
+    /** 0-based page index within the volume */
+    pageIndex?: number;
     /** Force text visibility (for placeholder/missing pages) */
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
   }
 
-  let { page, src, volumeUuid, forceVisible = false, onContextMenu }: Props = $props();
+  let { page, src, volumeUuid, pageIndex, forceVisible = false, onContextMenu }: Props = $props();
 
   interface TextBoxData {
     left: string;
@@ -337,7 +339,8 @@
     if (!url) return;
 
     // Get current page number for {page} template
-    const pageNumber = $volumes[volumeUuid]?.progress || 1;
+    // Use the explicit pageIndex prop (0-based) when available, otherwise fall back to progress
+    const pageNumber = pageIndex != null ? pageIndex + 1 : ($volumes[volumeUuid]?.progress || 1);
 
     if (cardMode === 'update') {
       // Update mode: fetch previous card values with retry
