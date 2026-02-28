@@ -264,33 +264,68 @@ class DriveApiClient {
   async uploadFile(
     blob: Blob,
     metadata: { name: string; mimeType: string; parents?: string[] },
-    fileId?: string
+    fileId?: string,
+    onProgress?: (loaded: number, total: number) => void
   ): Promise<{ id: string }> {
-    return this.handleApiCall(async () => {
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', blob);
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+    form.append('file', blob);
 
-      const url = `https://www.googleapis.com/upload/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
-      const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
+    const url = `https://www.googleapis.com/upload/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
+    const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
 
-      if (!token) {
-        throw new DriveApiError('No valid token available');
+    if (!token) {
+      throw new DriveApiError('No valid token available');
+    }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(fileId ? 'PATCH' : 'POST', url);
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.responseType = 'json';
+
+      if (onProgress) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            onProgress(event.loaded, event.total);
+          }
+        };
       }
 
-      const response = await fetch(url, {
-        method: fileId ? 'PATCH' : 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`
-        },
-        body: form
-      });
+      xhr.onload = async () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const response = xhr.response;
+          if (response && typeof response === 'object' && 'id' in response) {
+            resolve(response as { id: string });
+            return;
+          }
 
-      if (!response.ok) {
-        throw new DriveApiError(`Upload failed: ${response.statusText}`, response.status);
-      }
+          try {
+            const parsed = JSON.parse(xhr.responseText || '{}') as { id?: string };
+            if (parsed.id) {
+              resolve({ id: parsed.id });
+            } else {
+              reject(new DriveApiError('Upload succeeded but response is missing file id', xhr.status));
+            }
+          } catch {
+            reject(new DriveApiError('Upload response parsing failed', xhr.status));
+          }
+        } else if (xhr.status === 401 || xhr.status === 403) {
+          try {
+            await handleAuthError(xhr.status);
+          } catch (error) {
+            reject(error);
+          }
+        } else {
+          reject(new DriveApiError(`Upload failed: ${xhr.statusText}`, xhr.status));
+        }
+      };
 
-      return await response.json();
+      xhr.onerror = () => reject(new DriveApiError('Network error during upload', 0, true));
+      xhr.ontimeout = () => reject(new DriveApiError('Upload timed out', 0, true));
+      xhr.onabort = () => reject(new DriveApiError('Upload aborted', 0, true));
+
+      xhr.send(form);
     });
   }
 

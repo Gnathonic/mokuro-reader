@@ -4,7 +4,8 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
-  StorageQuota
+  StorageQuota,
+  UploadPayload
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
@@ -25,6 +26,11 @@ const STORAGE_KEYS = {
 const MOKURO_FOLDER = 'mokuro-reader';
 const VOLUME_DATA_FILE = 'volume-data.json';
 const PROFILES_FILE = 'profiles.json';
+function getUploadPayloadSize(payload: UploadPayload): number {
+  if (payload instanceof Blob) return payload.size;
+  if (payload instanceof ArrayBuffer) return payload.byteLength;
+  return payload.byteLength;
+}
 
 /**
  * Exponential backoff with jitter for retrying MEGA API calls
@@ -523,12 +529,21 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
 
+    const payloadSize = getUploadPayloadSize(blob);
     try {
+      if (onProgress) {
+        onProgress(0, payloadSize);
+      }
       // Wrap upload in retry logic to handle stale cache
       const fileId = await retryWithCacheRefresh(
         async () => {
@@ -545,9 +560,15 @@ export class MegaProvider implements SyncProvider {
             targetFolder = await this.ensureSeriesFolder(seriesFolderName, mokuroFolder);
           }
 
-          // Convert Blob to ArrayBuffer
-          const arrayBuffer = await blob.arrayBuffer();
-          const buffer = new Uint8Array(arrayBuffer);
+          let buffer: Uint8Array;
+          if (blob instanceof Uint8Array) {
+            buffer = blob;
+          } else if (blob instanceof ArrayBuffer) {
+            buffer = new Uint8Array(blob);
+          } else {
+            const arrayBuffer = await blob.arrayBuffer();
+            buffer = new Uint8Array(arrayBuffer);
+          }
 
           // Check if file already exists
           const children = await this.listFolder(targetFolder);
@@ -570,8 +591,8 @@ export class MegaProvider implements SyncProvider {
           }
 
           // Upload new file
-          return new Promise<string>((resolve, reject) => {
-            targetFolder.upload(
+          const uploadedFileId = await new Promise<string>((resolve, reject) => {
+            const uploadStream = targetFolder.upload(
               {
                 name: fileName,
                 size: buffer.length
@@ -582,17 +603,27 @@ export class MegaProvider implements SyncProvider {
                   reject(error);
                 } else {
                   const fileId = file?.nodeId || file?.id || '';
+                  if (onProgress) {
+                    onProgress(buffer.length, buffer.length);
+                  }
                   console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
                   resolve(fileId);
                 }
               }
             );
+            if (onProgress && uploadStream && typeof uploadStream.on === 'function') {
+              uploadStream.on('progress', (progress: any) => {
+                const loaded = Number(progress?.bytesUploaded ?? progress?.bytesLoaded ?? 0);
+                const total = Number(progress?.bytesTotal ?? buffer.length);
+                onProgress(loaded, total > 0 ? total : buffer.length);
+              });
+            }
           });
+          return uploadedFileId;
         },
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
       );
-
       // Refresh cache from MEGA's internal storage.files (which auto-updates on upload)
       // Skip reinitialize since storage.files is already fresh
       await megaCache.fetch(true);
