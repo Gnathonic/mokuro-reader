@@ -10,7 +10,7 @@ import {
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
-import { loadVolumeSidecars, downloadFileBlob } from './volume-sidecars';
+import { downloadFileBlob } from './volume-sidecars';
 
 export interface SidecarOptions {
   includeSidecars: boolean;
@@ -38,6 +38,20 @@ interface SeriesQueueStatus {
   hasBackingUp: boolean;
   queuedCount: number;
   backingUpCount: number;
+}
+
+interface WorkerUploadSidecars {
+  mokuro?: { filename: string; blob: Blob };
+  thumbnail?: { filename: string; blob: Blob };
+}
+
+interface WorkerUploadCompleteData {
+  type: 'complete';
+  fileId?: string;
+  size?: number;
+  data?: Uint8Array;
+  filename?: string;
+  sidecars?: WorkerUploadSidecars;
 }
 
 // Internal queue state
@@ -344,7 +358,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             volumeTitle: item.volumeTitle,
             seriesTitle: item.seriesTitle,
             downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`,
-            embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive
+            embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
+            includeSidecars: item.sidecarOptions.includeSidecars
           };
         }
 
@@ -360,24 +375,39 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           credentials,
           embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
           // Cloud uploads store OCR metadata as a separate sidecar file.
-          embedMokuroInArchive: false
+          embedMokuroInArchive: false,
+          downloadFilename: `${item.volumeTitle}.cbz`,
+          includeSidecars: item.sidecarOptions.includeSidecars
         };
       },
       onProgress: (data) => {
-        const percent = Math.round(data.progress);
-        // Each phase goes from 0-100%
-        const status = data.phase === 'compressing' ? 'Compressing...' : 'Uploading...';
-
-        getBackupUiBridge().updateProgress(processId, status, percent);
+        if (data.phase === 'compressing') {
+          getBackupUiBridge().updateProgress(processId, 'Compressing...', Math.round(data.progress));
+          return;
+        }
+        if (data.phase === 'sidecars') {
+          // Sidecar uploads are informational only and don't affect tracked progress.
+          getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
+          return;
+        }
+        if (data.phase === 'uploading') {
+          getBackupUiBridge().updateProgress(
+            processId,
+            'Uploading archive...',
+            Math.round(data.progress)
+          );
+        }
       },
-      onComplete: async (data, releaseMemory) => {
+      onComplete: async (rawData, releaseMemory) => {
         try {
+          const data = rawData as WorkerUploadCompleteData;
           // Handle export-for-download (trigger browser download)
           if (isExport && data?.data) {
             getBackupUiBridge().updateProgress(processId, 'Download ready', 100);
 
             // Trigger browser download using Transferable Object data
-            const blob = new Blob([data.data], { type: 'application/x-cbz' });
+            const archiveBytes = new Uint8Array(data.data);
+            const blob = new Blob([archiveBytes], { type: 'application/x-cbz' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
@@ -385,13 +415,20 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             link.click();
             URL.revokeObjectURL(url);
 
-            if (item.sidecarOptions.includeSidecars) {
-              const sidecars = await loadVolumeSidecars(item.volumeUuid);
-              if (sidecars.mokuroFile) {
-                downloadFileBlob(sidecars.mokuroFile);
+            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+              if (data.sidecars.mokuro) {
+                downloadFileBlob(
+                  new File([data.sidecars.mokuro.blob], data.sidecars.mokuro.filename, {
+                    type: data.sidecars.mokuro.blob.type || 'application/json'
+                  })
+                );
               }
-              if (sidecars.thumbnailFile) {
-                downloadFileBlob(sidecars.thumbnailFile);
+              if (data.sidecars.thumbnail) {
+                downloadFileBlob(
+                  new File([data.sidecars.thumbnail.blob], data.sidecars.thumbnail.filename, {
+                    type: data.sidecars.thumbnail.blob.type || 'image/webp'
+                  })
+                );
               }
             }
 
@@ -404,49 +441,35 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             return; // Early return for export
           }
 
-          // Handle real cloud backup
-          getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+          // Handle real cloud backup (worker-driven upload flow)
+          const uploadedFileId = data?.fileId;
+          if (!uploadedFileId) {
+            throw new Error('Backup worker did not return cloud file ID');
+          }
 
+          const { cacheManager } = await import('./sync/cache-manager');
+          const cache = cacheManager.getCache(provider!.type);
+          const addToCache = (path: string, fileId: string, size: number): void => {
+            if (!cache || !cache.add) return;
+            cache.add(path, {
+              fileId,
+              path,
+              modifiedTime: new Date().toISOString(),
+              size
+            });
+            console.log(`✅ Added ${path} to ${provider!.type} cache`);
+          };
+
+          const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
+          addToCache(archivePath, uploadedFileId, data.size || 0);
+
+          getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
           queueStore.update((q) =>
             q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
           );
 
-          // Add the uploaded file to cache immediately for ALL providers
-          // This ensures the UI updates right away, showing the file as backed up
-          if (data?.fileId) {
-            const { cacheManager } = await import('./sync/cache-manager');
-            const cache = cacheManager.getCache(provider!.type);
-            const path = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
-
-            if (cache && cache.add) {
-              // All providers now use the same interface: full path as first parameter
-              // The cache implementations internally extract the series title for Map grouping
-              cache.add(path, {
-                fileId: data.fileId,
-                path,
-                modifiedTime: new Date().toISOString(),
-                size: 0 // Size unknown at this point, will be updated on next full fetch
-              });
-              console.log(`✅ Added ${path} to ${provider!.type} cache`);
-            }
-          }
-
-          if (item.sidecarOptions.includeSidecars) {
-            const sidecars = await loadVolumeSidecars(item.volumeUuid);
-            if (sidecars.mokuroFile) {
-              await provider!.uploadFile(
-                `${item.seriesTitle}/${item.volumeTitle}.mokuro`,
-                sidecars.mokuroFile
-              );
-            }
-            if (sidecars.thumbnailFile) {
-              await provider!.uploadFile(
-                `${item.seriesTitle}/${item.volumeTitle}.webp`,
-                sidecars.thumbnailFile
-              );
-            }
-          }
+          // Archive cache entry is added immediately after upload.
 
           // Note: Full cache refresh is deferred until all uploads complete (see checkAndTerminatePool)
           // to prevent overlapping fetches from overwriting manual cache additions

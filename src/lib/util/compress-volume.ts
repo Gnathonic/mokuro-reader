@@ -14,6 +14,26 @@ export interface MokuroMetadata {
   chars: number;
 }
 
+export interface VolumeSidecarBlobData {
+  filename: string;
+  blob: Blob;
+}
+
+export interface VolumeSidecarBlobResult {
+  mokuro?: VolumeSidecarBlobData;
+  thumbnail?: VolumeSidecarBlobData;
+}
+
+function extensionFromMimeType(contentType: string): string {
+  const value = contentType.toLowerCase();
+  if (value.includes('webp')) return 'webp';
+  if (value.includes('png')) return 'png';
+  if (value.includes('jpeg') || value.includes('jpg')) return 'jpg';
+  if (value.includes('avif')) return 'avif';
+  if (value.includes('gif')) return 'gif';
+  return 'webp';
+}
+
 /**
  * Shared compression function that works in both main thread and Web Workers
  * Creates a CBZ file (ZIP with manga pages + optional mokuro metadata)
@@ -134,6 +154,49 @@ function getDatabase(): Dexie {
     });
   }
   return workerDb;
+}
+
+export async function generateVolumeSidecarsFromDb(
+  volumeUuid: string
+): Promise<VolumeSidecarBlobResult> {
+  const db = getDatabase();
+
+  const volume = await db.table('volumes').get(volumeUuid);
+  if (!volume) {
+    throw new Error(`Volume ${volumeUuid} not found in database`);
+  }
+
+  const sidecars: VolumeSidecarBlobResult = {};
+  const hasMokuroVersion =
+    typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
+  if (hasMokuroVersion) {
+    const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
+    if (volumeOcr?.pages) {
+      const metadata: MokuroMetadata = {
+        version: volume.mokuro_version,
+        title: volume.series_title,
+        title_uuid: volume.series_uuid,
+        volume: volume.volume_title,
+        volume_uuid: volume.volume_uuid,
+        pages: volumeOcr.pages,
+        chars: volume.character_count
+      };
+      sidecars.mokuro = {
+        filename: `${volume.volume_title}.mokuro`,
+        blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+      };
+    }
+  }
+
+  if (volume.thumbnail) {
+    const ext = extensionFromMimeType(volume.thumbnail.type || 'image/webp');
+    sidecars.thumbnail = {
+      filename: `${volume.volume_title}.${ext}`,
+      blob: volume.thumbnail
+    };
+  }
+
+  return sidecars;
 }
 
 /**
