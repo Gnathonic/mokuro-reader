@@ -14,12 +14,11 @@
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
-    series_uuid: string;
     volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
     providerName?: string; // Shared across all items - avoids repeated lookups
   }
 
-  let { series_uuid, volumes, providerName = 'Cloud' }: Props = $props();
+  let { volumes, providerName = 'Cloud' }: Props = $props();
 
   // Volumes are pre-sorted by catalog store (natural sort)
   let seriesVolumes = $derived(volumes);
@@ -429,9 +428,8 @@
     };
   });
 
-  // Use title for placeholder-only (handles transition when first volume downloads)
-  // Use UUID for local series (handles edge case of same-name series)
-  let navId = $derived(isPlaceholderOnly ? volume?.series_title || '' : series_uuid);
+  // Use series title for navigation so grouping and routing align with user-visible identity.
+  let navId = $derived(volume?.series_title || '');
 
   function persistCatalogScrollPosition() {
     const y =
