@@ -75,7 +75,8 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
     thumbnail_width: metadata.thumbnailWidth,
     thumbnail_height: metadata.thumbnailHeight,
     missing_pages: metadata.missingPages,
-    missing_page_paths: metadata.missingPagePaths
+    missing_page_paths: metadata.missingPagePaths,
+    spine_width: metadata.spineWidth
   };
 
   // Write to all 3 tables atomically

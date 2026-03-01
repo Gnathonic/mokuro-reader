@@ -12,6 +12,7 @@ export interface MokuroMetadata {
   volume_uuid: string;
   pages: any[];
   chars: number;
+  spine_width?: number;
 }
 
 export interface VolumeSidecarBlobData {
@@ -240,7 +241,8 @@ export async function compressVolumeFromDb(
         volume: volume.volume_title,
         volume_uuid: volume.volume_uuid,
         pages: volumeOcr?.pages || [],
-        chars: volume.character_count
+        chars: volume.character_count,
+        ...(volume.spine_width != null && { spine_width: volume.spine_width })
       };
 
   // Get list of files, excluding placeholders

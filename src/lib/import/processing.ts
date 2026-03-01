@@ -42,6 +42,7 @@ export interface ParsedMokuro {
   volumeUuid: string;
   pages: MokuroPage[];
   chars: number;
+  spineWidth?: number;
 }
 
 /**
@@ -177,7 +178,8 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     volume: obj.volume as string,
     volumeUuid: obj.volume_uuid as string,
     pages: obj.pages as MokuroPage[],
-    chars: (obj.chars as number) ?? 0
+    chars: (obj.chars as number) ?? 0,
+    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number })
   };
 }
 
@@ -688,7 +690,8 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     missingPages: matchResult.missing.length > 0 ? matchResult.missing.length : undefined,
     missingPagePaths: matchResult.missing.length > 0 ? matchResult.missing : undefined,
     imageOnly: isImageOnly,
-    sourceType
+    sourceType,
+    spineWidth: mokuroData?.spineWidth
   };
 
   return {
