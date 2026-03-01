@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.5.0] - 2026-02-28
+
+### Added
+
+- **WebDAV download retry** - Failed downloads now retry automatically with resume support
+- **Easier OCR with mokuro-bunko** - Image-only volumes uploaded to a [mokuro-bunko](https://github.com/Gnathonic/mokuro-bunko) for OCR processing will automatically have their text data added locally on the next refresh.
+- **Catalog drop shadow toggle** - Drop shadows on catalog thumbnails can now be disabled, improving the appearance of spine showcase mode
+- **Delete cloud-only series** - Remove series from cloud storage directly without needing to download them first
+- **Volume keyboard shortcuts** - Hover over a volume on the series page and press E to edit, C to change cover, Delete to remove, or Shift+Delete to delete from cloud
+- **Cover page stitching** - Combine two pages side-by-side when cropping a cover, great for spread artwork split across two pages
+- **Cover picker improvements** - Rotate images, pages in reading order, and custom covers sync to the cloud automatically
+- **Escape closes modals** - Pressing Escape in the volume editor or cover picker closes the modal instead of leaving the series page
+
+### Changed
+
+- **Smarter series grouping** - Local and cloud volumes now always appear together in the catalog even if they were imported separately or have slight differences in naming
+
+### Fixed
+
+- **Dual page cover handling** - Fixed cover page consuming two pages instead of one when dual page mode is set explicitly
+- **AnkiConnect page numbers** - Correct page numbers in templates, including dual-page captures
+- **AnkiConnect tags on mobile** - Fixed tags appearing in update mode on Android when they should be disabled
+- **AnkiConnect card updates** - Updating existing cards now preserves their formatting
+
 ## [1.4.0] - 2026-02-20
 
 ### Added
