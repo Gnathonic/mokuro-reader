@@ -15,6 +15,7 @@ import type {
 } from '$lib/settings/settings';
 import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
+import { isMobilePlatform } from '$lib/util/platform';
 import { get } from 'svelte/store';
 
 export * from './cropper';
@@ -995,8 +996,8 @@ export async function updateLastCard(
       return;
     }
 
-    // Add tags if provided
-    if (resolvedTags && resolvedTags.length > 0) {
+    // Add tags if provided (AnkiConnect Android doesn't support addTags, so skip on mobile)
+    if (resolvedTags && resolvedTags.length > 0 && !isMobilePlatform()) {
       await ankiConnect('addTags', { notes: [id], tags: resolvedTags }, { silent: true });
     }
 
