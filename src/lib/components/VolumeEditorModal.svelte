@@ -83,6 +83,22 @@
 
   let pendingOpenCoverPicker = false;
 
+  // Capture Escape so it doesn't propagate to the series page's back-navigation handler
+  $effect(() => {
+    if (!open) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        handleClose();
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown, true);
+    return () => window.removeEventListener('keydown', handleKeydown, true);
+  });
+
   onMount(() => {
     const unsubscribe = volumeEditorModalStore.subscribe(async (value) => {
       if (value?.open && value.volumeUuid) {

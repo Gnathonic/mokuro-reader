@@ -55,6 +55,26 @@
   let appendedPageIndex = $state<number | null>(null);
   let appendCandidateIndex = $state<number | null>(null);
 
+  // Capture Escape so it doesn't propagate to the series page's back-navigation handler
+  $effect(() => {
+    if (!open) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        if (showCropper) {
+          handleCropCancel();
+        } else {
+          handleClose();
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown, true);
+    return () => window.removeEventListener('keydown', handleKeydown, true);
+  });
+
   onMount(async () => {
     await loadPages();
   });
