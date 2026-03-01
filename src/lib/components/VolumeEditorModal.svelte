@@ -81,12 +81,19 @@
   // Series options for dropdown
   let seriesOptions = $state<{ uuid: string; title: string }[]>([]);
 
+  let pendingOpenCoverPicker = false;
+
   onMount(() => {
     const unsubscribe = volumeEditorModalStore.subscribe(async (value) => {
       if (value?.open && value.volumeUuid) {
         open = true;
         volumeUuid = value.volumeUuid;
+        pendingOpenCoverPicker = value.openCoverPicker ?? false;
         await loadVolumeData();
+        if (pendingOpenCoverPicker) {
+          pendingOpenCoverPicker = false;
+          openCoverPicker();
+        }
       }
     });
     return unsubscribe;
@@ -130,7 +137,8 @@
 
       // Determine next-volume availability for "Use + Next Volume"
       hasNextSeriesVolume =
-        (await getNextVolumeUuidInSeries(data.metadata.series_uuid, data.metadata.volume_uuid)) !== null;
+        (await getNextVolumeUuidInSeries(data.metadata.series_uuid, data.metadata.volume_uuid)) !==
+        null;
 
       // Regenerate thumbnail URL
       if (thumbnailUrl) {
@@ -408,9 +416,7 @@
               {/if}
             </div>
             <div class="flex gap-1">
-              <Button size="xs" color="light" onclick={openCoverPicker}>
-                Change
-              </Button>
+              <Button size="xs" color="light" onclick={openCoverPicker}>Change</Button>
               <Button size="xs" color="light" onclick={handleResetCover} disabled={saving}>
                 Reset
               </Button>

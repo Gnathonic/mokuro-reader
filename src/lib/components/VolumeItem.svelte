@@ -287,8 +287,8 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
-  function onToggleStatusClicked(e: Event) {
-    e.stopPropagation();
+  function onToggleStatusClicked(e?: Event) {
+    e?.stopPropagation();
     if (isComplete) {
       markVolumeAsUnread(volume_uuid);
       showSnackbar(`Marked ${volName} as unread`);
@@ -301,8 +301,8 @@
       }
     }
   }
-  async function onDeleteClicked(e: Event) {
-    e.stopPropagation();
+  async function onDeleteClicked(e?: Event) {
+    e?.stopPropagation();
 
     // Check if volume is backed up to cloud
     const hasCloudBackup = hasAuthenticatedProvider && isBackedUp;
@@ -370,19 +370,86 @@
     );
   }
 
-  function onViewTextClicked(e: Event) {
-    e.stopPropagation();
+  function onViewTextClicked(e?: Event) {
+    e?.stopPropagation();
     const seriesId = $routeParams.manga;
     if (seriesId) nav.toVolumeText(seriesId, volume_uuid);
   }
 
-  function onEditClicked(e: Event) {
-    e.stopPropagation();
+  function onEditClicked(e?: Event) {
+    e?.stopPropagation();
     promptVolumeEditor(volume_uuid);
   }
 
-  async function onBackupClicked(e: Event) {
-    e.stopPropagation();
+  function onChangeCover() {
+    promptVolumeEditor(volume_uuid, { openCoverPicker: true });
+  }
+
+  async function onCloudDeleteOnly() {
+    if (!isBackedUp || !cloudFile || isReadOnlyMode) {
+      showSnackbar('Volume is not backed up to cloud');
+      return;
+    }
+    const providerName =
+      cloudFile.provider === 'google-drive'
+        ? 'Drive'
+        : cloudFile.provider === 'mega'
+          ? 'MEGA'
+          : 'cloud';
+    promptConfirmation(`Delete ${volName} from ${providerName}?`, async () => {
+      try {
+        await unifiedCloudManager.deleteFile(cloudFile!);
+        showSnackbar(`Deleted from ${providerName}`);
+      } catch (error) {
+        console.error('Failed to delete from cloud:', error);
+        showSnackbar(`Failed to delete from ${providerName}`);
+      }
+    });
+  }
+
+  // Keyboard shortcuts when hovering over a volume
+  let isHovered = $state(false);
+
+  function isTypingInInput(): boolean {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable)
+      return true;
+    return false;
+  }
+
+  $effect(() => {
+    if (!isHovered) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (isTypingInInput()) return;
+
+      switch (e.key) {
+        case 'e':
+          e.preventDefault();
+          onEditClicked();
+          break;
+        case 'Delete':
+          e.preventDefault();
+          if (e.shiftKey) {
+            onCloudDeleteOnly();
+          } else {
+            onDeleteClicked();
+          }
+          break;
+        case 'c':
+          e.preventDefault();
+          onChangeCover();
+          break;
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
+
+  async function onBackupClicked(e?: Event) {
+    e?.stopPropagation();
 
     // If already backed up, delete from cloud
     if (isBackedUp && cloudFile) {
@@ -412,8 +479,11 @@
 
 {#if $routeParams.manga}
   {#if variant === 'list'}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => (isHovered = false)}
     >
       <ListgroupItem
         onclick={() => $routeParams.manga && nav.toReader($routeParams.manga, volume_uuid)}
@@ -499,9 +569,12 @@
     </div>
   {:else}
     <!-- Grid view -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="relative flex flex-col gap-2 rounded-lg border-2 border-transparent p-3 transition-colors hover:bg-gray-100 sm:w-[278px] dark:hover:bg-gray-700"
       class:!border-green-400={isComplete}
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => (isHovered = false)}
     >
       <!-- Actions menu button -->
       <button
