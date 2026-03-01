@@ -16,8 +16,9 @@
 
   // Get series volumes from catalog - match by title first (for placeholder URLs), then UUID
   let seriesData = $derived(
-    $catalog?.find((item) => item.title.trim().replace(/\s+/g, ' ').toLowerCase() === normalizedSeriesId) ||
-      $catalog?.find((item) => item.series_uuid === seriesId)
+    $catalog?.find(
+      (item) => item.title.trim().replace(/\s+/g, ' ').toLowerCase() === normalizedSeriesId
+    ) || $catalog?.find((item) => item.series_uuid === seriesId)
   );
   let volumes = $derived(
     seriesData?.volumes

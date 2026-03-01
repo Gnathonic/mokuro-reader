@@ -18,7 +18,16 @@
     highlightIndex?: number | null;
   }
 
-  let { volumes, canvasWidth, canvasHeight, getCanvasDimensions, stepSizes, dropShadow = true, volumeOffsets = new Map(), highlightIndex = null }: Props = $props();
+  let {
+    volumes,
+    canvasWidth,
+    canvasHeight,
+    getCanvasDimensions,
+    stepSizes,
+    dropShadow = true,
+    volumeOffsets = new Map(),
+    highlightIndex = null
+  }: Props = $props();
 
   // Hardware limits for canvas segments
   const MAX_SEGMENT_SIZE = 1024;
@@ -106,7 +115,8 @@
       cumOffset += volumeOffsets.get(i) ?? 0;
     }
     // Align rightmost volume's right edge to canvasWidth
-    const lastDims = volumes.length > 0 ? getCanvasDimensions(volumes[volumes.length - 1].volume_uuid) : null;
+    const lastDims =
+      volumes.length > 0 ? getCanvasDimensions(volumes[volumes.length - 1].volume_uuid) : null;
     const lastWidth = lastDims?.width ?? 0;
     const rightEdge = (leftPositions[volumes.length - 1] ?? 0) + lastWidth;
     const alignShift = canvasWidth - rightEdge;

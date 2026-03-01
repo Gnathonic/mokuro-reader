@@ -144,14 +144,10 @@
     // Current dual view is [N, N+1], next spread is [N+2, N+3].
     // The further page from current in forward direction is N+3.
     const forwardLookaheadPage = pages[currentIndex + 3];
-    const lookaheadIsWide = forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
+    const lookaheadIsWide =
+      forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
 
-    if (
-      currentPageData &&
-      nextPageData &&
-      !isWideSpread(currentPageData) &&
-      lookaheadIsWide
-    ) {
+    if (currentPageData && nextPageData && !isWideSpread(currentPageData) && lookaheadIsWide) {
       return currentPage + 1;
     }
 

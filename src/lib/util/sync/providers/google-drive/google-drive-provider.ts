@@ -770,7 +770,10 @@ class GoogleDriveProvider implements SyncProvider {
     if (folders.length === 0) {
       // No folder exists - create one
       console.log(`📁 Creating folder: ${folderName}`);
-      return await driveApiClient.createFolder(folderName, parentId === 'root' ? undefined : parentId);
+      return await driveApiClient.createFolder(
+        folderName,
+        parentId === 'root' ? undefined : parentId
+      );
     }
 
     // Return first folder found (oldest if multiple - they'll be deduped later)
@@ -780,7 +783,9 @@ class GoogleDriveProvider implements SyncProvider {
         const dateB = new Date(b.createdTime || 0).getTime();
         return dateA - dateB;
       });
-      console.log(`⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`);
+      console.log(
+        `⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`
+      );
     }
 
     return folders[0].id;
@@ -791,13 +796,11 @@ class GoogleDriveProvider implements SyncProvider {
    * Returns an object that implements FolderOperations
    */
   getFolderOperations(): FolderOperations {
-    const self = this;
-
     return {
       rootFolderName: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
 
-      async listFolders(): Promise<FolderInfo[]> {
-        await self.ensureInitialized();
+      listFolders: async (): Promise<FolderInfo[]> => {
+        await this.ensureInitialized();
         const items = await driveApiClient.listFiles(
           `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
           'files(id,name,parents,createdTime)'
@@ -810,8 +813,8 @@ class GoogleDriveProvider implements SyncProvider {
         }));
       },
 
-      async listFolderContents(folderId: string): Promise<FolderItem[]> {
-        await self.ensureInitialized();
+      listFolderContents: async (folderId: string): Promise<FolderItem[]> => {
+        await this.ensureInitialized();
         const items = await driveApiClient.listFiles(
           `'${folderId}' in parents and trashed=false`,
           'files(id,name,mimeType)'
@@ -823,23 +826,23 @@ class GoogleDriveProvider implements SyncProvider {
         }));
       },
 
-      async moveItem(itemId: string, newParentId: string, oldParentId: string): Promise<void> {
-        await self.ensureInitialized();
+      moveItem: async (itemId: string, newParentId: string, oldParentId: string): Promise<void> => {
+        await this.ensureInitialized();
         await driveApiClient.moveFile(itemId, newParentId, oldParentId);
       },
 
-      async deleteFolder(folderId: string): Promise<void> {
-        await self.ensureInitialized();
+      deleteFolder: async (folderId: string): Promise<void> => {
+        await this.ensureInitialized();
         await driveApiClient.deleteFile(folderId);
       },
 
-      async deleteFile(fileId: string): Promise<void> {
-        await self.ensureInitialized();
+      deleteFile: async (fileId: string): Promise<void> => {
+        await this.ensureInitialized();
         await driveApiClient.deleteFile(fileId);
       },
 
-      onRootFolderConfirmed(folderId: string): void {
-        self.readerFolderId = folderId;
+      onRootFolderConfirmed: (folderId: string): void => {
+        this.readerFolderId = folderId;
         driveFilesCache.setReaderFolderId(folderId);
       }
     };
@@ -880,7 +883,10 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       // Find or create the folder (dedup handled separately by FolderDeduplicator)
-      const folderId = await this.findOrCreateFolder('root', GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+      const folderId = await this.findOrCreateFolder(
+        'root',
+        GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER
+      );
 
       // Store in both caches
       this.readerFolderId = folderId;

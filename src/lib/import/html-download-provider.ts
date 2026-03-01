@@ -233,7 +233,10 @@ async function tryFetchMokuroSidecar(
   let checked = 0;
 
   for (const volumeBaseUrl of volumeBaseUrls) {
-    onStatus?.('Checking OCR sidecar (.mokuro)...', 72 + Math.round((checked / totalCandidates) * 10));
+    onStatus?.(
+      'Checking OCR sidecar (.mokuro)...',
+      72 + Math.round((checked / totalCandidates) * 10)
+    );
     const response = await fetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
     checked++;
     if (response.ok) {
@@ -246,7 +249,10 @@ async function tryFetchMokuroSidecar(
     }
 
     // Support servers storing compressed sidecar as .mokuro.gz
-    onStatus?.('Checking OCR sidecar (.mokuro.gz)...', 72 + Math.round((checked / totalCandidates) * 10));
+    onStatus?.(
+      'Checking OCR sidecar (.mokuro.gz)...',
+      72 + Math.round((checked / totalCandidates) * 10)
+    );
     const gzResponse = await fetch(`${volumeBaseUrl}.mokuro.gz`, { cache: 'no-store' });
     checked++;
     if (!gzResponse.ok || typeof DecompressionStream === 'undefined') {
@@ -280,7 +286,9 @@ function getVolumeBaseUrls(request: HtmlDownloadRequest): string[] {
     }
   }
 
-  return [`${request.source}/${encodeURIComponent(request.manga)}/${encodeURIComponent(request.volume)}`];
+  return [
+    `${request.source}/${encodeURIComponent(request.manga)}/${encodeURIComponent(request.volume)}`
+  ];
 }
 
 async function tryFetchCoverSidecar(
@@ -380,7 +388,11 @@ class HtmlDownloadPseudoProvider {
       coverFile = bundle.coverFile;
       onProgress?.({ status: 'Download complete', progress: 98 });
       const bundleType: HtmlDownloadResult['bundleType'] =
-        bundle.mokuroFile && coverFile ? 'triple' : bundle.mokuroFile || coverFile ? 'pair' : 'single';
+        bundle.mokuroFile && coverFile
+          ? 'triple'
+          : bundle.mokuroFile || coverFile
+            ? 'pair'
+            : 'single';
       return {
         bundleType,
         archiveFile: bundle.archiveFile,
@@ -441,9 +453,7 @@ class HtmlDownloadPseudoProvider {
       importFiles.push(imageFile);
       completed++;
 
-      const downloadProgress = totalImages
-        ? 10 + Math.floor((completed / totalImages) * 80)
-        : 90;
+      const downloadProgress = totalImages ? 10 + Math.floor((completed / totalImages) * 80) : 90;
       onProgress?.({
         status: `Downloading images (${completed}/${totalImages})...`,
         progress: downloadProgress

@@ -253,10 +253,7 @@ async function addVolumeToArchiveWithProgress(
   if (sidecarOptions?.includeSidecars && sidecarOptions.embedSidecarsInArchive) {
     const sidecars = await loadVolumeSidecars(volume.volume_uuid);
     if (sidecars.thumbnailFile) {
-      await zipWriter.add(
-        sidecars.thumbnailFile.name,
-        new BlobReader(sidecars.thumbnailFile)
-      );
+      await zipWriter.add(sidecars.thumbnailFile.name, new BlobReader(sidecars.thumbnailFile));
     }
   }
 }
@@ -305,13 +302,18 @@ export async function createArchiveBlob(
   try {
     // Add each volume sequentially to track progress
     for (const volume of volumes) {
-      await addVolumeToArchiveWithProgress(zipWriter, volume, () => {
-        completedFiles++;
-        if (processId) {
-          const progress = Math.round((completedFiles / totalFiles) * 100);
-          progressTrackerStore.updateProcess(processId, { progress });
-        }
-      }, sidecarOptions);
+      await addVolumeToArchiveWithProgress(
+        zipWriter,
+        volume,
+        () => {
+          completedFiles++;
+          if (processId) {
+            const progress = Math.round((completedFiles / totalFiles) * 100);
+            progressTrackerStore.updateProcess(processId, { progress });
+          }
+        },
+        sidecarOptions
+      );
     }
 
     // Close the archive and get the Blob directly

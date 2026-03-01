@@ -1,5 +1,10 @@
 import { derived, type Readable } from 'svelte/store';
-import type { SyncProvider, CloudFileMetadata, ProviderType, UploadPayload } from './provider-interface';
+import type {
+  SyncProvider,
+  CloudFileMetadata,
+  ProviderType,
+  UploadPayload
+} from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';

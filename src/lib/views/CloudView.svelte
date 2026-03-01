@@ -1,11 +1,7 @@
 <script lang="ts">
   import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
 
-  import {
-    promptConfirmation,
-    showSnackbar,
-    showWebDAVError
-  } from '$lib/util';
+  import { promptConfirmation, showSnackbar, showWebDAVError } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import {
     ProviderError,

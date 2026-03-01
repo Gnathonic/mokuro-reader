@@ -305,7 +305,9 @@ class DriveApiClient {
             if (parsed.id) {
               resolve({ id: parsed.id });
             } else {
-              reject(new DriveApiError('Upload succeeded but response is missing file id', xhr.status));
+              reject(
+                new DriveApiError('Upload succeeded but response is missing file id', xhr.status)
+              );
             }
           } catch {
             reject(new DriveApiError('Upload response parsing failed', xhr.status));

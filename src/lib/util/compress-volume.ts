@@ -254,7 +254,10 @@ export async function compressVolumeFromDb(
 
   // Total items: folder + files + embedded mokuro file (optional) + thumbnail sidecar (optional)
   const totalItems =
-    validFilenames.length + (metadata && embedMokuroInArchive ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
+    validFilenames.length +
+    (metadata && embedMokuroInArchive ? 1 : 0) +
+    (thumbnailSidecar ? 1 : 0) +
+    1;
   let completedItems = 0;
 
   // Create zip writer with BlobWriter to avoid memory issues
@@ -326,10 +329,7 @@ export async function compressVolumeFromDb(
   // Add thumbnail sidecar when requested (used by sidecar-aware exports/backups)
   if (thumbnailSidecar) {
     const thumbBuffer = await thumbnailSidecar.arrayBuffer();
-    await zipWriter.add(
-      `${volumeTitle}.webp`,
-      new Uint8ArrayReader(new Uint8Array(thumbBuffer))
-    );
+    await zipWriter.add(`${volumeTitle}.webp`, new Uint8ArrayReader(new Uint8Array(thumbBuffer)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
   }

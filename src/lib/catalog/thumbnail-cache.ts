@@ -15,10 +15,7 @@
  * - Visibility check: prefer on-screen items before dispatch
  */
 
-import type {
-  DecodeRequest,
-  DecodeResponse
-} from '$lib/workers/thumbnail-decode-worker';
+import type { DecodeRequest, DecodeResponse } from '$lib/workers/thumbnail-decode-worker';
 
 export interface CacheEntry {
   bitmap: ImageBitmap;
@@ -231,10 +228,7 @@ class ThumbnailCache {
       }
 
       if (this.isVisible(item.element)) {
-        if (
-          bestVisibleIndex === -1 ||
-          this.isHigherPriority(item, this.queue[bestVisibleIndex])
-        ) {
+        if (bestVisibleIndex === -1 || this.isHigherPriority(item, this.queue[bestVisibleIndex])) {
           bestVisibleIndex = i;
         }
       }

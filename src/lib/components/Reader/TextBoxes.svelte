@@ -340,7 +340,7 @@
 
     // Get current page number for {page} template
     // Use the explicit pageIndex prop (0-based) when available, otherwise fall back to progress
-    const pageNumber = pageIndex != null ? pageIndex + 1 : ($volumes[volumeUuid]?.progress || 1);
+    const pageNumber = pageIndex != null ? pageIndex + 1 : $volumes[volumeUuid]?.progress || 1;
 
     if (cardMode === 'update') {
       // Update mode: fetch previous card values with retry

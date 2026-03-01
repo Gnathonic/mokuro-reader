@@ -34,7 +34,13 @@
 
   function getScrollY(): number {
     const scroller = getScrollingElement();
-    return window.scrollY || scroller.scrollTop || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    return (
+      window.scrollY ||
+      scroller.scrollTop ||
+      document.documentElement.scrollTop ||
+      document.body.scrollTop ||
+      0
+    );
   }
 
   function getMaxScrollY(): number {

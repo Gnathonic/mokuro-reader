@@ -67,7 +67,12 @@ export const isImporting = writable<boolean>(false);
  * Add an import item to the global progress tracker
  */
 function addToProgressTracker(item: ImportQueueItem): void {
-  getImportUiBridge().addProgress(`import-${item.id}`, `Importing ${item.displayTitle}`, 'Queued', 0);
+  getImportUiBridge().addProgress(
+    `import-${item.id}`,
+    `Importing ${item.displayTitle}`,
+    'Queued',
+    0
+  );
 }
 
 /**
@@ -111,7 +116,8 @@ function filesToEntries(files: File[]): FileEntry[] {
         const lower = name.toLowerCase();
         if (lower.endsWith('.mokuro.gz')) return name.slice(0, -10);
         if (lower.endsWith('.mokuro')) return name.slice(0, -7);
-        if (/\.(cbz|zip|cbr|rar|7z)$/i.test(name)) return name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+        if (/\.(cbz|zip|cbr|rar|7z)$/i.test(name))
+          return name.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
         return '';
       })
       .filter(Boolean)
@@ -120,9 +126,9 @@ function filesToEntries(files: File[]): FileEntry[] {
 
   return files
     .map((file) => {
-    // Use webkitRelativePath if available, otherwise use name
-    const path = file.webkitRelativePath || file.name;
-    return { path, file };
+      // Use webkitRelativePath if available, otherwise use name
+      const path = file.webkitRelativePath || file.name;
+      return { path, file };
     })
     .filter((entry) => !isThumbnailSidecarPath(entry.path, sourceStems));
 }
@@ -470,11 +476,9 @@ async function processArchiveContents(
 
   const thumbnailByPath = new Map<string, File>();
   if (thumbnailCandidates.size > 0) {
-    const thumbResult = await decompressArchiveRaw(
-      archiveFile,
-      undefined,
-      { pathPrefixes: Array.from(thumbnailCandidates) }
-    );
+    const thumbResult = await decompressArchiveRaw(archiveFile, undefined, {
+      pathPrefixes: Array.from(thumbnailCandidates)
+    });
     for (const entry of thumbResult.entries) {
       const filename = entry.filename.split('/').pop() || entry.filename;
       thumbnailByPath.set(
@@ -698,7 +702,9 @@ async function processSingleVolume(
         onProgress?.(status, progress);
       });
 
-      const archiveStem = source.source.file.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '').toLowerCase();
+      const archiveStem = source.source.file.name
+        .replace(/\.(zip|cbz|cbr|rar|7z)$/i, '')
+        .toLowerCase();
       const imageFiles = new Map<string, File>();
       for (const entry of archiveEntries.entries) {
         const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
@@ -712,7 +718,10 @@ async function processSingleVolume(
           continue;
         }
 
-        imageFiles.set(entry.filename, new File([entry.data], filename, { lastModified: Date.now() }));
+        imageFiles.set(
+          entry.filename,
+          new File([entry.data], filename, { lastModified: Date.now() })
+        );
       }
 
       const decompressed: DecompressedVolume = {

@@ -6,7 +6,11 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
-import { libraryFilesStore, libraryMokuroFilesStore, generateLibraryPlaceholders } from '$lib/util/libraries';
+import {
+  libraryFilesStore,
+  libraryMokuroFilesStore,
+  generateLibraryPlaceholders
+} from '$lib/util/libraries';
 import { selectedLibraryId } from '$lib/settings/libraries';
 
 // Single source of truth from the database
@@ -31,7 +35,13 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
 
 // Merge local volumes with cloud placeholders and library placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles, libraryFilesStore, libraryMokuroFilesStore, selectedLibraryId],
+  [
+    volumes,
+    unifiedCloudManager.cloudFiles,
+    libraryFilesStore,
+    libraryMokuroFilesStore,
+    selectedLibraryId
+  ],
   ([$volumes, $cloudFiles, $libraryFiles, $libraryMokuroFiles, $selectedLibraryId]) => {
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);

@@ -112,7 +112,9 @@ export async function convertToWebP(thumbnailFile: File): Promise<Blob> {
   });
   URL.revokeObjectURL(imgUrl);
 
-  console.log(`[convertToWebP] Input: ${img.width}x${img.height}, file: ${thumbnailFile.name} (${thumbnailFile.size} bytes)`);
+  console.log(
+    `[convertToWebP] Input: ${img.width}x${img.height}, file: ${thumbnailFile.name} (${thumbnailFile.size} bytes)`
+  );
   const canvas = document.createElement('canvas');
   canvas.width = img.width;
   canvas.height = img.height;

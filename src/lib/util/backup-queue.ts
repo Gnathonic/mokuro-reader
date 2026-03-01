@@ -74,7 +74,12 @@ queueStore.subscribe((queue) => {
   const totalCount = queue.length;
 
   if (totalCount > 0) {
-    getBackupUiBridge().addProgress('backup-queue-overall', 'Backup Queue', `${totalCount} in queue`, 0);
+    getBackupUiBridge().addProgress(
+      'backup-queue-overall',
+      'Backup Queue',
+      `${totalCount} in queue`,
+      0
+    );
   } else {
     getBackupUiBridge().removeProgress('backup-queue-overall');
   }
@@ -382,7 +387,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       },
       onProgress: (data) => {
         if (data.phase === 'compressing') {
-          getBackupUiBridge().updateProgress(processId, 'Compressing...', Math.round(data.progress));
+          getBackupUiBridge().updateProgress(
+            processId,
+            'Compressing...',
+            Math.round(data.progress)
+          );
           return;
         }
         if (data.phase === 'sidecars') {

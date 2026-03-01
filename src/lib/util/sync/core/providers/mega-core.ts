@@ -95,13 +95,7 @@ export const megaCore: CloudProviderCore = {
     });
   },
 
-  async uploadFile({
-    seriesTitle,
-    filename,
-    blob,
-    credentials,
-    onProgress
-  }): Promise<string> {
+  async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
     const email = requireCredentialString(credentials, 'megaEmail', 'MEGA credentials');
     const password = requireCredentialString(credentials, 'megaPassword', 'MEGA credentials');
     const storage = await getUploadStorage(email, password);

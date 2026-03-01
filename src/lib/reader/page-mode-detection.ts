@@ -61,7 +61,6 @@ export function shouldShowSinglePage(
 
   // Auto mode logic
   if (mode === 'auto') {
-
     // Portrait orientation → single page
     if (isPortraitOrientation()) {
       return true;

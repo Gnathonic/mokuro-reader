@@ -202,13 +202,7 @@ export const webdavCore: CloudProviderCore = {
     return buffer;
   },
 
-  async uploadFile({
-    seriesTitle,
-    filename,
-    blob,
-    credentials,
-    onProgress
-  }): Promise<string> {
+  async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
     const serverUrl = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
     const username = optionalCredentialString(credentials, 'webdavUsername');
     const password = optionalCredentialString(credentials, 'webdavPassword');

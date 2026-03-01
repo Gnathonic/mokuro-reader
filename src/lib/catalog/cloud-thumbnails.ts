@@ -45,7 +45,10 @@ async function downloadThumbnailWithTimeout(volume: VolumeMetadata): Promise<Blo
   });
 
   const timeoutPromise = new Promise<Blob>((_, reject) => {
-    setTimeout(() => reject(new Error(`Thumbnail download timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
+    setTimeout(
+      () => reject(new Error(`Thumbnail download timed out after ${FETCH_TIMEOUT_MS}ms`)),
+      FETCH_TIMEOUT_MS
+    );
   });
 
   try {
@@ -110,7 +113,9 @@ export async function fetchCloudThumbnail(
       });
       URL.revokeObjectURL(imgUrl);
 
-      console.log(`[CloudThumbnail] ${volume.volume_title}: bitmap=${width}x${height}, img=${imgDims.w}x${imgDims.h}, file size: ${file.size} bytes`);
+      console.log(
+        `[CloudThumbnail] ${volume.volume_title}: bitmap=${width}x${height}, img=${imgDims.w}x${imgDims.h}, file size: ${file.size} bytes`
+      );
       const result: CloudThumbnailResult = { file, width, height };
       cache.set(volume.volume_uuid, result);
       return result;

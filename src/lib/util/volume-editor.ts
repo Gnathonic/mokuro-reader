@@ -73,9 +73,13 @@ async function getPageOrderComparator(
     const normalizedB = normalizeFilename(b).toLowerCase();
 
     const aIndex =
-      pageIndexByPath.get(normalizedA) ?? pageIndexByBasename.get(basename(normalizedA)) ?? Infinity;
+      pageIndexByPath.get(normalizedA) ??
+      pageIndexByBasename.get(basename(normalizedA)) ??
+      Infinity;
     const bIndex =
-      pageIndexByPath.get(normalizedB) ?? pageIndexByBasename.get(basename(normalizedB)) ?? Infinity;
+      pageIndexByPath.get(normalizedB) ??
+      pageIndexByBasename.get(basename(normalizedB)) ??
+      Infinity;
 
     if (aIndex !== bIndex) {
       return aIndex - bIndex;

@@ -100,7 +100,9 @@ export function generatePlaceholders(
   }
 
   // Create a set of local volume paths for fast lookup
-  const localPaths = new Set(localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`));
+  const localPaths = new Set(
+    localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`)
+  );
   const localVolumeByPath = new Map<string, VolumeMetadata>();
   const localImageOnlyByVolumeTitle = new Map<string, VolumeMetadata[]>();
   for (const vol of localVolumes) {

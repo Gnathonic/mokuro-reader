@@ -472,7 +472,7 @@
           includeSidecars,
           embedSidecarsInArchive
         ) => {
-        loading = true;
+          loading = true;
           loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle, {
             includeSidecars,
             embedSidecarsInArchive
