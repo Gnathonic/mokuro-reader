@@ -29,6 +29,7 @@
       centerHorizontal: boolean;
       centerVertical: boolean;
       compactCloudSeries: boolean;
+      dropShadow: boolean;
     }
   > = {
     compact: {
@@ -38,7 +39,8 @@
       hideReadVolumes: true,
       centerHorizontal: true,
       centerVertical: true,
-      compactCloudSeries: false
+      compactCloudSeries: false,
+      dropShadow: true
     },
     default: {
       stackCount: 3,
@@ -47,7 +49,8 @@
       hideReadVolumes: true,
       centerHorizontal: true,
       centerVertical: false,
-      compactCloudSeries: false
+      compactCloudSeries: false,
+      dropShadow: true
     },
     spine: {
       stackCount: 0, // 0 = all volumes in series
@@ -56,7 +59,8 @@
       hideReadVolumes: false,
       centerHorizontal: true,
       centerVertical: true,
-      compactCloudSeries: true
+      compactCloudSeries: true,
+      dropShadow: false
     }
   };
 
@@ -71,6 +75,7 @@
       updateCatalogSetting('centerHorizontal', config.centerHorizontal);
       updateCatalogSetting('centerVertical', config.centerVertical);
       updateCatalogSetting('compactCloudSeries', config.compactCloudSeries);
+      updateCatalogSetting('dropShadow', config.dropShadow);
     }
   }
 
@@ -220,6 +225,19 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               Show cloud-only series as single thumbnails
             </p>
+          </div>
+
+          <!-- Drop shadow -->
+          <div class="mt-4">
+            <Toggle
+              checked={$catalogSettings?.dropShadow ?? true}
+              onchange={(e) => {
+                updateCatalogSetting('dropShadow', e.currentTarget.checked);
+                handleSettingChange();
+              }}
+            >
+              Drop shadow
+            </Toggle>
           </div>
         {/if}
       </div>
