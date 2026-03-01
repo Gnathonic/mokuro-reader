@@ -110,18 +110,34 @@ export class LibraryWebDAVClient {
 	 * List all CBZ files in the library
 	 */
 	async listFiles(): Promise<LibraryFileMetadata[]> {
+		return this.listByExtensions(['.cbz', '.zip']);
+	}
+
+	/**
+	 * List all mokuro sidecar files in the library
+	 */
+	async listMokuroFiles(): Promise<LibraryFileMetadata[]> {
+		return this.listByExtensions(['.mokuro', '.mokuro.gz']);
+	}
+
+	private async listByExtensions(extensions: string[]): Promise<LibraryFileMetadata[]> {
 		if (!this.client) {
 			await this.connect();
 		}
 
 		const client = this.client!;
 		const basePath = this.basePath;
+		const normalizedExtensions = extensions.map((ext) => ext.toLowerCase());
 
 		try {
 			// Try Depth: infinity first if not known to be unsupported
 			if (this.supportsDepthInfinity !== false) {
 				try {
-					const files = await this.listWithDepthInfinity(client, basePath);
+					const files = await this.listWithDepthInfinity(
+						client,
+						basePath,
+						normalizedExtensions
+					);
 					if (this.supportsDepthInfinity === null) {
 						console.log(`[Library ${this.config.name}] Server supports Depth: infinity`);
 						this.supportsDepthInfinity = true;
@@ -152,7 +168,7 @@ export class LibraryWebDAVClient {
 			}
 
 			// Fall back to recursive listing
-			return await this.listRecursive(client, basePath);
+			return await this.listRecursive(client, basePath, normalizedExtensions);
 		} catch (error) {
 			throw this.wrapError(error);
 		}
@@ -163,7 +179,8 @@ export class LibraryWebDAVClient {
 	 */
 	private async listWithDepthInfinity(
 		client: WebDAVClient,
-		basePath: string
+		basePath: string,
+		extensions: string[]
 	): Promise<LibraryFileMetadata[]> {
 		const contents = (await client.getDirectoryContents(basePath, {
 			deep: true
@@ -180,8 +197,7 @@ export class LibraryWebDAVClient {
 		for (const item of contents) {
 			if (item.type === 'file') {
 				const name = item.basename.toLowerCase();
-				// Only include CBZ files for libraries
-				if (name.endsWith('.cbz') || name.endsWith('.zip')) {
+				if (extensions.some((ext) => name.endsWith(ext))) {
 					const relativePath = this.getRelativePath(item.filename, basePath);
 					files.push({
 						libraryId: this.config.id,
@@ -203,7 +219,8 @@ export class LibraryWebDAVClient {
 	 */
 	private async listRecursive(
 		client: WebDAVClient,
-		basePath: string
+		basePath: string,
+		extensions: string[]
 	): Promise<LibraryFileMetadata[]> {
 		const files: LibraryFileMetadata[] = [];
 
@@ -221,7 +238,7 @@ export class LibraryWebDAVClient {
 					await processFolder(item.filename);
 				} else {
 					const name = item.basename.toLowerCase();
-					if (name.endsWith('.cbz') || name.endsWith('.zip')) {
+					if (extensions.some((ext) => name.endsWith(ext))) {
 						const relativePath = this.getRelativePath(item.filename, basePath);
 						files.push({
 							libraryId: this.config.id,

@@ -15,6 +15,7 @@ import type {
 } from '$lib/settings/settings';
 import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
+import { isMobilePlatform } from '$lib/util/platform';
 import { get } from 'svelte/store';
 
 export * from './cropper';
@@ -136,6 +137,7 @@ export function resolveTemplate(
   }
 
   let resolved = template;
+  const existingPlaceholders: string[] = [];
 
   // Replace {selection} with selected text
   if (selectedText) {
@@ -165,9 +167,9 @@ export function resolveTemplate(
     resolved = resolved.replace(/\{volume\}/g, '');
   }
 
-  // Replace {page_num} with page number (1-indexed for display)
+  // Replace {page_num} with page number (already 1-indexed from callers)
   if (options?.pageNumber !== undefined) {
-    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber + 1));
+    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber));
   } else {
     resolved = resolved.replace(/\{page_num\}/g, '');
   }
@@ -182,7 +184,11 @@ export function resolveTemplate(
   // Replace {existing} with existing value of the current field (for update mode)
   if (options?.previousValues && options?.fieldName) {
     const existingValue = options.previousValues[options.fieldName] || '';
-    resolved = resolved.replace(/\{existing\}/g, existingValue);
+    resolved = resolved.replace(/\{existing\}/g, () => {
+      const token = `__MOKURO_EXISTING_${existingPlaceholders.length}__`;
+      existingPlaceholders.push(existingValue);
+      return token;
+    });
   } else {
     resolved = resolved.replace(/\{existing\}/g, '');
   }
@@ -195,6 +201,15 @@ export function resolveTemplate(
 
   // Convert newlines to <br> for Anki
   resolved = resolved.replace(/\n/g, '<br>');
+
+  // Restore raw existing HTML after normalization.
+  // This prevents converting newlines inside <style> blocks to <br>, which breaks CSS.
+  if (existingPlaceholders.length > 0) {
+    resolved = resolved.replace(/__MOKURO_EXISTING_(\d+)__/g, (_match, idx) => {
+      const index = Number(idx);
+      return existingPlaceholders[index] ?? '';
+    });
+  }
 
   return resolved || null;
 }
@@ -981,8 +996,8 @@ export async function updateLastCard(
       return;
     }
 
-    // Add tags if provided
-    if (resolvedTags && resolvedTags.length > 0) {
+    // Add tags if provided (AnkiConnect Android doesn't support addTags, so skip on mobile)
+    if (resolvedTags && resolvedTags.length > 0 && !isMobilePlatform()) {
       await ankiConnect('addTags', { notes: [id], tags: resolvedTags }, { silent: true });
     }
 

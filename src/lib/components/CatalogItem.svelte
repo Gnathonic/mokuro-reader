@@ -14,12 +14,11 @@
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
-    series_uuid: string;
     volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
     providerName?: string; // Shared across all items - avoids repeated lookups
   }
 
-  let { series_uuid, volumes, providerName = 'Cloud' }: Props = $props();
+  let { volumes, providerName = 'Cloud' }: Props = $props();
 
   // Volumes are pre-sorted by catalog store (natural sort)
   let seriesVolumes = $derived(volumes);
@@ -78,14 +77,152 @@
     }
 
     // Cloud path: use enriched placeholders, capped to prevent cache thrashing
+    if (useCompactForCloud) {
+      return enrichedPlaceholders.slice(0, 1);
+    }
     const limit = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
     return enrichedPlaceholders.slice(0, limit);
   });
 
+  let showDropShadow = $derived($catalogSettings?.dropShadow ?? true);
+
+  // Per-series horizontal offset adjustment (in-memory only, not persisted)
+  let hOffsetAdjust = $state(0);
+  // Per-volume horizontal offset adjustments (index → pixels)
+  let volumeOffsets = $state<Map<number, number>>(new Map());
+  let isHovered = $state(false);
+  let modifierState = $state<'none' | 'shift' | 'alt-shift'>('none');
+  let hoveredVolumeIndex = $state<number | null>(null);
+  let containerEl = $state<HTMLElement | null>(null);
+  let outerEl = $state<HTMLElement | null>(null);
+
+  const ADJUST_STEP = 0.25; // % per scroll tick for series
+  const VOLUME_ADJUST_STEP = 1; // pixels per scroll tick for individual volume
+
+  // Cumulative offset at index i = sum of volumeOffsets[0..i-1]
+  // Each volume's offset pushes all subsequent volumes
+  function getCumulativeOffset(index: number): number {
+    let total = 0;
+    for (let i = 0; i < index; i++) {
+      total += volumeOffsets.get(i) ?? 0;
+    }
+    return total;
+  }
+
+  // Total cascading offset across all volumes (affects container sizing)
+  // Only offsets 0..N-2 matter; the last volume's offset has no volume after it
+  function getCumulativeOffsetTotal(count: number): number {
+    return getCumulativeOffset(count - 1);
+  }
+
+  function updateModifierState(e: KeyboardEvent | MouseEvent) {
+    if (e.shiftKey && e.altKey) {
+      modifierState = 'alt-shift';
+    } else if (e.shiftKey) {
+      modifierState = 'shift';
+    } else {
+      modifierState = 'none';
+    }
+  }
+
+  function handleKeyChange(e: KeyboardEvent) {
+    if (!isHovered) return;
+    updateModifierState(e);
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (!isHovered) return;
+    updateModifierState(e);
+
+    if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
+      // Alt+Shift+Scroll: adjust individual volume
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
+      const current = volumeOffsets.get(hoveredVolumeIndex) ?? 0;
+      const next = new Map(volumeOffsets);
+      next.set(hoveredVolumeIndex, current + delta);
+      volumeOffsets = next;
+    } else if (e.shiftKey && !e.altKey) {
+      // Shift+Scroll: adjust series offset
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP;
+      hOffsetAdjust += delta;
+    }
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
+      // Alt+Shift+RMB: reset individual volume offset
+      e.preventDefault();
+      const next = new Map(volumeOffsets);
+      next.delete(hoveredVolumeIndex);
+      volumeOffsets = next;
+    } else if (e.shiftKey && !e.altKey) {
+      // Shift+RMB: reset series offset
+      e.preventDefault();
+      hOffsetAdjust = 0;
+    }
+  }
+
+  // Determine which volume index the mouse is over based on cascading positions
+  function handleMouseMove(e: MouseEvent) {
+    updateModifierState(e);
+    if (!containerEl || stackedVolumes.length <= 1) {
+      hoveredVolumeIndex = 0;
+      return;
+    }
+
+    const rect = containerEl.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+
+    const sizes = stackedVolumes.length > 0 && hasRenderableThumbnails ? stepSizes : placeholderStepSizes;
+    const count = stackedVolumes.length;
+
+    // Build cascading left positions
+    let cumOffset = 0;
+    const positions: number[] = [];
+    for (let i = 0; i < count; i++) {
+      positions[i] = sizes.leftOffset + i * sizes.horizontal + cumOffset;
+      cumOffset += volumeOffsets.get(i) ?? 0;
+    }
+
+    // Hit test front-to-back (index 0 is front/leftmost, drawn on top)
+    for (let i = 0; i < count; i++) {
+      const left = positions[i];
+      const right = left + BASE_WIDTH;
+      if (mouseX >= left && mouseX <= right) {
+        hoveredVolumeIndex = i;
+        return;
+      }
+    }
+    hoveredVolumeIndex = count - 1;
+  }
+
+  $effect(() => {
+    if (isHovered) {
+      window.addEventListener('keydown', handleKeyChange);
+      window.addEventListener('keyup', handleKeyChange);
+      // Non-passive wheel listener so we can preventDefault on shift+scroll
+      outerEl?.addEventListener('wheel', handleWheel as EventListener, { passive: false });
+      return () => {
+        window.removeEventListener('keydown', handleKeyChange);
+        window.removeEventListener('keyup', handleKeyChange);
+        outerEl?.removeEventListener('wheel', handleWheel as EventListener);
+      };
+    } else {
+      modifierState = 'none';
+    }
+  });
+
   // Key for CompositeCanvas - forces fresh component on settings change
+  let volumeOffsetsKey = $derived([...volumeOffsets.entries()].map(([k, v]) => `${k}:${v}`).join(','));
   let compositeKey = $derived(
-    `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}`
+    `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}-${($catalogSettings?.compactCloudSeries ?? false) ? 'compact' : 'full'}-${showDropShadow}-${hOffsetAdjust}-${volumeOffsetsKey}`
   );
+
+  // Visual indicator state
+  let showSeriesIndicator = $derived(isHovered && modifierState === 'shift');
+  let showVolumeIndicator = $derived(isHovered && modifierState === 'alt-shift');
 
   // Check if this series is downloading or queued
   let isDownloading = $derived(
@@ -197,7 +334,7 @@
     }
 
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
+    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
     // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
     const vOffsetPercent =
       stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
@@ -213,8 +350,11 @@
     const extraWidth = BASE_WIDTH * hOffsetPercent * (effectiveStackCount - 1);
     const extraHeight = BASE_HEIGHT * vOffsetPercent * (effectiveStackCount - 1);
 
-    // Inner container (thumbnail area)
-    const innerWidth = Math.round(baseWidth + extraWidth);
+    // Per-volume offsets cascade: each offset shifts all subsequent volumes
+    const cumulativeOffsetPx = getCumulativeOffsetTotal(effectiveStackCount);
+
+    // Inner container (thumbnail area) — clamp so it never shrinks below one volume
+    const innerWidth = Math.max(BASE_WIDTH, Math.round(baseWidth + extraWidth + cumulativeOffsetPx));
     const innerHeight = Math.round(BASE_HEIGHT + extraHeight);
 
     // Outer container (with padding)
@@ -248,7 +388,7 @@
   // Calculate step sizes and centering/spreading offsets
   let stepSizes = $derived.by(() => {
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
+    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
     // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
     const vOffsetPercent =
       stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
@@ -335,7 +475,7 @@
     }
 
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = ($catalogSettings?.horizontalStep ?? 11) / 100;
+    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
     const vOffsetPercent =
       stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
     const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
@@ -426,9 +566,8 @@
     };
   });
 
-  // Use title for placeholder-only (handles transition when first volume downloads)
-  // Use UUID for local series (handles edge case of same-name series)
-  let navId = $derived(isPlaceholderOnly ? volume?.series_title || '' : series_uuid);
+  // Use series title for navigation so grouping and routing align with user-visible identity.
+  let navId = $derived(volume?.series_title || '');
 
   function persistCatalogScrollPosition() {
     const y =
@@ -445,11 +584,20 @@
 
 {#if volume}
   <a href="#/series/{encodeURIComponent(navId)}" onclick={handleClick}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
+      bind:this={outerEl}
       class:text-green-400={isComplete}
       class:opacity-70={isPlaceholderOnly}
-      class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 border-transparent p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+      class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+      class:border-transparent={!showSeriesIndicator}
+      class:border-blue-400={showSeriesIndicator}
+      class:border-dashed={showSeriesIndicator}
       class:cursor-pointer={isPlaceholderOnly}
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => { isHovered = false; hoveredVolumeIndex = null; }}
+      onmousemove={handleMouseMove}
+      oncontextmenu={handleContextMenu}
     >
       {#if stackedVolumes.length > 0 && hasRenderableThumbnails}
         <!-- CompositeCanvas - unified for BOTH local and cloud thumbnails -->
@@ -458,6 +606,7 @@
           style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
         >
           <div
+            bind:this={containerEl}
             class="relative overflow-hidden"
             style="width: {containerDimensions.innerWidth}px; height: {containerDimensions.innerHeight}px;"
           >
@@ -468,6 +617,9 @@
                 canvasHeight={containerDimensions.innerHeight}
                 {getCanvasDimensions}
                 {stepSizes}
+                dropShadow={showDropShadow}
+                {volumeOffsets}
+                highlightIndex={showVolumeIndicator ? hoveredVolumeIndex : null}
               />
             {/key}
           </div>
@@ -494,11 +646,14 @@
           >
             {#each Array(placeholderStepSizes.count) as _, i}
               <div
-                class="absolute flex items-center justify-center border border-gray-300 bg-gray-200 dark:border-gray-600 dark:bg-gray-800"
+                class="absolute flex items-center justify-center bg-gray-200 dark:bg-gray-800"
+                class:border={showDropShadow}
+                class:border-gray-300={showDropShadow}
+                class:dark:border-gray-600={showDropShadow}
                 style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {placeholderStepSizes.leftOffset +
-                  i * placeholderStepSizes.horizontal}px; top: {placeholderStepSizes.topOffset +
+                  i * placeholderStepSizes.horizontal + getCumulativeOffset(i)}px; top: {placeholderStepSizes.topOffset +
                   i * placeholderStepSizes.vertical}px; z-index: {placeholderStepSizes.count -
-                  i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
+                  i};{showDropShadow ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));' : ''}"
               >
                 {#if i === 0}
                   <div class="flex flex-col items-center gap-3">
@@ -527,11 +682,14 @@
           >
             {#each Array(Math.max(stackedVolumes.length, 1)) as _, i}
               <div
-                class="absolute flex items-center justify-center border border-gray-300 bg-gray-200 dark:border-gray-600 dark:bg-gray-800"
+                class="absolute flex items-center justify-center bg-gray-200 dark:bg-gray-800"
+                class:border={showDropShadow}
+                class:border-gray-300={showDropShadow}
+                class:dark:border-gray-600={showDropShadow}
                 style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {stepSizes.leftOffset +
-                  i * stepSizes.horizontal}px; top: {stepSizes.topOffset +
+                  i * stepSizes.horizontal + getCumulativeOffset(i)}px; top: {stepSizes.topOffset +
                   i * stepSizes.vertical}px; z-index: {Math.max(stackedVolumes.length, 1) -
-                  i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));"
+                  i};{showDropShadow ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));' : ''}"
               >
                 {#if i === 0}
                   <span class="text-sm text-gray-500 dark:text-gray-400">Generating...</span>

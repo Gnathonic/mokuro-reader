@@ -15,6 +15,7 @@ import { getOrCreateFolder, findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -44,6 +45,15 @@ class GoogleDriveProvider implements SyncProvider {
   private readerFolderId: string | null = null;
   private initializePromise: Promise<void> | null = null;
   private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
+  private cloudCore = getCloudProviderCore('google-drive');
+
+  private getAccessToken(): string {
+    let token = '';
+    tokenManager.token.subscribe((value) => {
+      token = value;
+    })();
+    return token;
+  }
 
   isAuthenticated(): boolean {
     return tokenManager.isAuthenticated();
@@ -291,7 +301,12 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: Blob,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
     }
@@ -323,25 +338,34 @@ class GoogleDriveProvider implements SyncProvider {
       // Find existing file for replacement
       const existingFileId = await findFile(fileName, targetFolderId);
 
-      // Upload (create or update)
-      const metadata = {
-        name: fileName,
+      // Upload (create or update) via shared provider core.
+      const token = this.getAccessToken();
+      if (!token) {
+        throw new Error('No access token available');
+      }
+      const uploadedFileId = await this.cloudCore.uploadFile({
+        seriesTitle,
+        filename: fileName,
+        blob,
+        credentials: {
+          accessToken: token,
+          seriesFolderId: targetFolderId
+        },
         mimeType,
-        ...(existingFileId ? {} : { parents: [targetFolderId] })
-      };
-
-      const result = await driveApiClient.uploadFile(blob, metadata, existingFileId || undefined);
+        existingFileId: existingFileId || undefined,
+        onProgress
+      });
 
       // Update cache
       await driveFilesCache.fetch();
 
       // Update file description if provided
       if (description) {
-        await driveApiClient.updateFileDescription(result.id, description);
+        await driveApiClient.updateFileDescription(uploadedFileId, description);
       }
 
-      console.log(`✅ Uploaded ${fileName} to Google Drive (${result.id})`);
-      return result.id;
+      console.log(`✅ Uploaded ${fileName} to Google Drive (${uploadedFileId})`);
+      return uploadedFileId;
     } catch (error) {
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -368,8 +392,16 @@ class GoogleDriveProvider implements SyncProvider {
     const fileId = file.fileId;
 
     try {
-      // Use api-client's downloadFile method (includes auth error handling)
-      const blob = await driveApiClient.downloadFile(fileId, onProgress);
+      const token = this.getAccessToken();
+      if (!token) {
+        throw new Error('No access token available');
+      }
+      const data = await this.cloudCore.downloadFile({
+        fileId,
+        credentials: { accessToken: token },
+        onProgress: onProgress || (() => {})
+      });
+      const blob = new Blob([data], { type: 'application/zip' });
       console.log(`✅ Downloaded file from Google Drive (${fileId})`);
       return blob;
     } catch (error) {

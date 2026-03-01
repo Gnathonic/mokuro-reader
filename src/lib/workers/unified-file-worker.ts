@@ -9,14 +9,15 @@ import {
   getMimeType,
   BlobReader
 } from '@zip.js/zip.js';
-import { File as MegaFile, Storage } from 'megajs';
 import {
   compressVolume,
   compressVolumeFromDb,
+  generateVolumeSidecarsFromDb,
   type MokuroMetadata
 } from '$lib/util/compress-volume';
-import { uploadToWebDAV } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { matchFileToVolume } from '$lib/import/archive-extraction';
+import { getWorkerCloudProvider } from './cloud-providers';
+import type { WorkerProviderCredentials, WorkerProviderType } from './cloud-providers/types';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -34,26 +35,12 @@ interface VolumeMetadata {
   cloudSize?: number;
 }
 
-interface ProviderCredentials {
-  // Google Drive
-  accessToken?: string;
-  seriesFolderId?: string; // Pre-created folder ID (avoids race conditions)
-
-  // WebDAV
-  webdavUrl?: string;
-  webdavUsername?: string;
-  webdavPassword?: string;
-
-  // MEGA
-  megaShareUrl?: string; // For downloads
-  megaEmail?: string; // For uploads
-  megaPassword?: string; // For uploads
-}
+type ProviderCredentials = WorkerProviderCredentials;
 
 // Download messages
 interface DownloadAndDecompressMessage {
   mode: 'download-and-decompress';
-  provider: 'google-drive' | 'webdav' | 'mega';
+  provider: WorkerProviderType;
   fileId: string;
   fileName: string;
   credentials: ProviderCredentials;
@@ -105,7 +92,7 @@ interface DownloadHttpBundleMessage {
 // Upload messages
 interface CompressAndUploadMessage {
   mode: 'compress-and-upload';
-  provider: 'google-drive' | 'webdav' | 'mega';
+  provider: WorkerProviderType;
   volumeTitle: string;
   seriesTitle: string;
   metadata: MokuroMetadata;
@@ -124,13 +111,15 @@ interface CompressAndReturnMessage {
 /** Compress from IndexedDB and optionally upload to cloud provider */
 interface CompressFromDbMessage {
   mode: 'compress-from-db';
-  provider: 'google-drive' | 'webdav' | 'mega' | null; // null = local export (return data)
+  provider: WorkerProviderType | null; // null = local export (return data)
   volumeUuid: string;
   volumeTitle: string;
   seriesTitle: string;
   credentials?: ProviderCredentials;
   downloadFilename?: string; // For local export
   embedThumbnailSidecar?: boolean;
+  embedMokuroInArchive?: boolean;
+  includeSidecars?: boolean;
 }
 
 type WorkerMessage =
@@ -152,7 +141,7 @@ interface DownloadProgressMessage {
 
 interface UploadProgressMessage {
   type: 'progress';
-  phase: 'compressing' | 'uploading';
+  phase: 'compressing' | 'sidecars' | 'uploading';
   progress: number; // 0-100
 }
 
@@ -174,8 +163,13 @@ interface DownloadCompleteMessage {
 interface UploadCompleteMessage {
   type: 'complete';
   fileId?: string; // For cloud uploads
+  size?: number; // Archive size in bytes (for optimistic cache entry)
   data?: Uint8Array; // For local exports (Transferable Object)
   filename?: string; // For local exports
+  sidecars?: {
+    mokuro?: { filename: string; blob: Blob };
+    thumbnail?: { filename: string; blob: Blob };
+  };
 }
 
 interface ErrorMessage {
@@ -187,191 +181,6 @@ interface ErrorMessage {
 interface DecompressedEntry {
   filename: string;
   data: ArrayBuffer;
-}
-
-// ===========================
-// DOWNLOAD FUNCTIONS
-// ===========================
-
-/**
- * Download from Google Drive using access token
- * Returns ArrayBuffer directly to avoid intermediate Blob creation and disk writes
- */
-async function downloadFromGoogleDrive(
-  fileId: string,
-  accessToken: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<ArrayBuffer> {
-  // First get the file size
-  const sizeResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?fields=size`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    }
-  );
-
-  if (!sizeResponse.ok) {
-    throw new Error(`Failed to get file size: ${sizeResponse.statusText}`);
-  }
-
-  const sizeData = await sizeResponse.json();
-  const totalSize = parseInt(sizeData.size, 10);
-
-  // Now download the file with progress tracking
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-  xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-  xhr.responseType = 'arraybuffer';
-
-  return new Promise((resolve, reject) => {
-    xhr.onprogress = (event) => {
-      onProgress(event.loaded, totalSize);
-    };
-
-    xhr.onerror = () => reject(new Error('Network error during download'));
-    xhr.ontimeout = () => reject(new Error('Download timed out'));
-    xhr.onabort = () => reject(new Error('Download aborted'));
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(xhr.response as ArrayBuffer);
-      } else {
-        reject(new Error(`HTTP error ${xhr.status}: ${xhr.statusText}`));
-      }
-    };
-
-    xhr.send();
-  });
-}
-
-/**
- * Download from WebDAV server using Basic Auth
- * Returns ArrayBuffer directly to avoid intermediate Blob creation and disk writes
- */
-async function downloadFromWebDAV(
-  fileId: string,
-  url: string,
-  username: string,
-  password: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<ArrayBuffer> {
-  // Encode each path segment to handle special chars like # → %23
-  // Without this, # is treated as URL fragment and stripped
-  const encodedPath = fileId
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-  const fullUrl = `${baseUrl}${encodedPath}`;
-
-  const headers: Record<string, string> = {};
-  if (username || password) {
-    headers.Authorization = 'Basic ' + btoa(`${username}:${password}`);
-  }
-
-  const response = await fetch(fullUrl, { headers });
-
-  if (!response.ok) {
-    throw new Error(`WebDAV download failed: ${response.status} ${response.statusText}`);
-  }
-
-  const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-  const reader = response.body?.getReader();
-
-  if (!reader) {
-    throw new Error('Response body is not readable');
-  }
-
-  const chunks: Uint8Array[] = [];
-  let receivedLength = 0;
-
-  // Throttle progress updates to ~15/second (matches XHR behavior)
-  let lastProgressUpdate = 0;
-  const PROGRESS_THROTTLE_MS = 67; // ~15 updates per second
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    chunks.push(value);
-    receivedLength += value.length;
-
-    // Only send progress update if enough time has passed
-    const now = Date.now();
-    if (now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
-      onProgress(receivedLength, contentLength || receivedLength);
-      lastProgressUpdate = now;
-    }
-  }
-
-  // Always send final progress update at 100%
-  onProgress(receivedLength, contentLength || receivedLength);
-
-  // Use Blob to combine chunks - avoids allocating a second copy of the entire file
-  const blob = new Blob(chunks as BlobPart[]);
-  const buffer = await blob.arrayBuffer();
-  // Clear chunks array to free memory
-  chunks.length = 0;
-  return buffer;
-}
-
-/**
- * Download from MEGA using a share link via the MEGA API
- * The share link includes the decryption key, MEGA API handles download
- * Returns ArrayBuffer directly to avoid intermediate Blob creation and disk writes
- */
-async function downloadFromMega(
-  shareUrl: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    try {
-      // Load file from share link using MEGA API
-      const file = MegaFile.fromURL(shareUrl);
-
-      // Load file metadata
-      file.loadAttributes((error) => {
-        if (error) {
-          reject(new Error(`MEGA metadata failed: ${error.message}`));
-          return;
-        }
-
-        const totalSize = file.size || 0;
-
-        // Download file with progress tracking
-        const stream = file.download({});
-        const chunks: Uint8Array[] = [];
-        let loaded = 0;
-
-        stream.on('data', (chunk: Uint8Array) => {
-          chunks.push(chunk);
-          loaded += chunk.length;
-          onProgress(loaded, totalSize);
-        });
-
-        stream.on('end', async () => {
-          // Use Blob to combine chunks - avoids allocating a second copy of the entire file
-          const blob = new Blob(chunks as BlobPart[]);
-          const buffer = await blob.arrayBuffer();
-          // Clear chunks array to free memory before resolving
-          chunks.length = 0;
-          resolve(buffer);
-        });
-
-        stream.on('error', (error: Error) => {
-          reject(new Error(`MEGA download failed: ${error.message}`));
-        });
-      });
-    } catch (error) {
-      reject(
-        new Error(
-          `MEGA initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`
-        )
-      );
-    }
-  });
 }
 
 /** Filter options for selective extraction */
@@ -445,35 +254,26 @@ function isSystemFile(path: string): boolean {
 function matchesFilter(filename: string, filter?: ExtractFilter): boolean {
   if (!filter) return true;
 
-  // Check extension filter
   if (filter.extensions && filter.extensions.length > 0) {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     if (filter.extensions.includes(ext)) return true;
   }
 
-  // Check path prefix filter
   if (filter.pathPrefixes && filter.pathPrefixes.length > 0) {
     for (const prefix of filter.pathPrefixes) {
       if (filename.startsWith(prefix + '/') || filename === prefix) return true;
     }
   }
 
-  // If both filters are specified, match either; if only one, that one must match
   if (filter.extensions?.length && filter.pathPrefixes?.length) {
-    return false; // Neither matched
+    return false;
   }
-  if (filter.extensions?.length) return false; // Extension filter didn't match
-  if (filter.pathPrefixes?.length) return false; // Path filter didn't match
+  if (filter.extensions?.length) return false;
+  if (filter.pathPrefixes?.length) return false;
 
-  return true; // No filters = match all
+  return true;
 }
 
-/**
- * Decompress a CBZ file from Blob or ArrayBuffer into entries
- * Uses BlobReader for streaming - handles large files (>2GB) without loading into ArrayBuffer
- * Optional filter allows extracting only specific files (e.g., mokuro files first, then images per volume)
- * If listOnly is true, returns file list without extracting content (for planning extraction)
- */
 // Concurrency limit for parallel extraction - higher = faster but more memory
 const EXTRACT_CONCURRENCY = 16;
 
@@ -483,26 +283,18 @@ async function decompressCbz(
   listOnly?: boolean,
   listAllExtractFiltered?: boolean
 ): Promise<DecompressedEntry[]> {
-  // Convert ArrayBuffer to Blob if needed (for downloaded data)
   const blob = data instanceof Blob ? data : new Blob([data]);
-
-  // Use BlobReader for streaming - doesn't require loading entire file into memory at once
   const zipReader = new ZipReader(new BlobReader(blob));
-
-  // Get all entries from the zip file
   const entries = await zipReader.getEntries();
 
-  // Categorize entries
   const toExtract: { entry: (typeof entries)[0]; filename: string }[] = [];
   const toList: string[] = [];
 
   for (const entry of entries) {
     if (entry.directory) continue;
-    // Skip system files (macOS, Windows, Linux metadata)
     if (isSystemFile(entry.filename)) continue;
 
     const matchesFilterCriteria = matchesFilter(entry.filename, filter);
-
     if (!listAllExtractFiltered && !matchesFilterCriteria) {
       continue;
     }
@@ -520,17 +312,13 @@ async function decompressCbz(
     }
   }
 
-  // Build results
   const decompressedEntries: DecompressedEntry[] = [];
 
-  // Add list-only entries (no extraction needed)
   for (const filename of toList) {
     decompressedEntries.push({ filename, data: new ArrayBuffer(0) });
   }
 
-  // Extract entries in parallel batches
   if (toExtract.length > 0) {
-    // Process in batches for controlled concurrency
     for (let i = 0; i < toExtract.length; i += EXTRACT_CONCURRENCY) {
       const batch = toExtract.slice(i, i + EXTRACT_CONCURRENCY);
 
@@ -614,196 +402,6 @@ async function tryDownloadOptionalUrl(
 }
 
 // ===========================
-// UPLOAD FUNCTIONS
-// ===========================
-
-/**
- * Upload to Google Drive using resumable upload
- * Progress: 0-100% of upload phase
- */
-async function uploadToGoogleDrive(
-  cbzBlob: Blob,
-  filename: string,
-  seriesFolderId: string,
-  accessToken: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<string> {
-  console.log(`Worker: Uploading ${filename} to Google Drive...`);
-
-  // Use pre-created folder ID (created in backup-queue to avoid race conditions)
-  const metadata = {
-    name: filename,
-    mimeType: 'application/x-cbz',
-    parents: [seriesFolderId]
-  };
-
-  // Step 1: Initiate resumable upload session
-  const initResponse = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(metadata)
-    }
-  );
-
-  if (!initResponse.ok) {
-    throw new Error(`Upload init failed: ${initResponse.status} ${initResponse.statusText}`);
-  }
-
-  const uploadUrl = initResponse.headers.get('Location');
-  if (!uploadUrl) {
-    throw new Error('No upload URL returned');
-  }
-
-  // Step 2: Upload the actual file data with progress tracking
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', uploadUrl);
-    xhr.setRequestHeader('Content-Type', 'application/x-cbz');
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const result = JSON.parse(xhr.responseText);
-        console.log(`Worker: Upload complete, file ID: ${result.id}`);
-        resolve(result.id);
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Network error during upload'));
-    xhr.ontimeout = () => reject(new Error('Upload timed out'));
-
-    // Send Blob directly - browser streams the data
-    xhr.send(cbzBlob);
-  });
-}
-
-/**
- * Upload to MEGA
- * Progress: 0-100% of upload phase
- */
-async function uploadToMEGA(
-  cbzBlob: Blob,
-  filename: string,
-  seriesTitle: string,
-  email: string,
-  password: string,
-  onProgress: (loaded: number, total: number) => void
-): Promise<string> {
-  console.log(`Worker: Uploading ${filename} to MEGA...`);
-
-  if (!email || !password) {
-    throw new Error('MEGA credentials not provided');
-  }
-
-  // Create MEGA storage instance
-  const storage = new Storage({ email, password });
-
-  // Wait for ready
-  await storage.ready;
-
-  // Ensure folder structure exists
-  let currentFolder = storage.root;
-
-  // Create/find mokuro-reader folder
-  let mokuroFolder = currentFolder.children?.find(
-    (child: any) => child.name === 'mokuro-reader' && child.directory
-  );
-
-  if (!mokuroFolder) {
-    mokuroFolder = await currentFolder.mkdir('mokuro-reader');
-  }
-
-  // Create/find series folder
-  let seriesFolder = mokuroFolder.children?.find(
-    (child: any) => child.name === seriesTitle && child.directory
-  );
-
-  if (!seriesFolder) {
-    seriesFolder = await mokuroFolder.mkdir(seriesTitle);
-  }
-
-  // Upload file to series folder using chunked streaming to avoid OOM
-  console.log(`Worker: Starting MEGA upload for ${filename}, size: ${cbzBlob.size} bytes`);
-
-  try {
-    const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
-
-    // Create upload stream without passing data - we'll write chunks manually
-    const uploadStream = seriesFolder.upload({ name: filename, size: cbzBlob.size });
-
-    // Wait for upload to complete while streaming chunks
-    await new Promise<void>((resolve, reject) => {
-      let offset = 0;
-
-      uploadStream.on('progress', (stats: any) => {
-        // megajs progress: { bytesLoaded, bytesUploaded, bytesTotal }
-        // Use bytesUploaded for actual upload progress to server
-        const uploaded = stats?.bytesUploaded || stats?.loaded || 0;
-        const total = stats?.bytesTotal || stats?.total || cbzBlob.size;
-        onProgress(uploaded, total);
-      });
-
-      uploadStream.on('complete', () => {
-        console.log('Worker: MEGA upload stream completed');
-        resolve();
-      });
-
-      uploadStream.on('error', (err: any) => {
-        console.error('Worker: MEGA upload stream error:', err);
-        reject(err);
-      });
-
-      // Stream chunks to MEGA
-      const writeNextChunk = async () => {
-        if (offset >= cbzBlob.size) {
-          uploadStream.end();
-          return;
-        }
-
-        const chunk = cbzBlob.slice(offset, Math.min(offset + CHUNK_SIZE, cbzBlob.size));
-        const arrayBuffer = await chunk.arrayBuffer();
-        uploadStream.write(new Uint8Array(arrayBuffer));
-        offset += CHUNK_SIZE;
-
-        // Use setTimeout to avoid blocking event loop and allow GC
-        setTimeout(() => writeNextChunk(), 0);
-      };
-
-      writeNextChunk();
-    });
-
-    // After upload completes, find the file in the folder's children
-    // The file should now be in seriesFolder.children
-    const uploadedFile = seriesFolder.children?.find(
-      (child: any) => child.name === filename && !child.directory
-    );
-
-    if (!uploadedFile || !uploadedFile.nodeId) {
-      console.error('Worker: Could not find uploaded file in folder children');
-      throw new Error('MEGA upload succeeded but could not find uploaded file');
-    }
-
-    console.log(`Worker: MEGA upload complete, file ID: ${uploadedFile.nodeId}`);
-    return uploadedFile.nodeId;
-  } catch (error: any) {
-    console.error('Worker: MEGA upload error:', error);
-    throw new Error(`MEGA upload failed: ${error.message || error}`);
-  }
-}
-
-// ===========================
 // MAIN MESSAGE HANDLER
 // ===========================
 
@@ -824,50 +422,11 @@ ctx.addEventListener('message', async (event) => {
       const { provider, fileId, fileName, credentials, metadata } = message;
       console.log(`Worker: Starting download for ${fileName} (${fileId})`);
 
-      let arrayBuffer: ArrayBuffer;
-
-      // Download based on provider - all return ArrayBuffer directly
-      if (provider === 'google-drive') {
-        if (!credentials.accessToken) {
-          throw new Error('Missing access token for Google Drive');
-        }
-        arrayBuffer = await downloadFromGoogleDrive(
-          fileId,
-          credentials.accessToken,
-          (loaded, total) => {
-            const progressMessage: DownloadProgressMessage = {
-              type: 'progress',
-              fileId,
-              loaded,
-              total
-            };
-            ctx.postMessage(progressMessage);
-          }
-        );
-      } else if (provider === 'webdav') {
-        if (!credentials.webdavUrl) {
-          throw new Error('Missing WebDAV URL');
-        }
-        arrayBuffer = await downloadFromWebDAV(
-          fileId,
-          credentials.webdavUrl,
-          credentials.webdavUsername ?? '',
-          credentials.webdavPassword ?? '',
-          (loaded, total) => {
-            const progressMessage: DownloadProgressMessage = {
-              type: 'progress',
-              fileId,
-              loaded,
-              total
-            };
-            ctx.postMessage(progressMessage);
-          }
-        );
-      } else if (provider === 'mega') {
-        if (!credentials.megaShareUrl) {
-          throw new Error('Missing MEGA share URL');
-        }
-        arrayBuffer = await downloadFromMega(credentials.megaShareUrl, (loaded, total) => {
+      const cloudProvider = getWorkerCloudProvider(provider);
+      const arrayBuffer = await cloudProvider.downloadFile({
+        fileId,
+        credentials,
+        onProgress: (loaded, total) => {
           const progressMessage: DownloadProgressMessage = {
             type: 'progress',
             fileId,
@@ -875,10 +434,8 @@ ctx.addEventListener('message', async (event) => {
             total
           };
           ctx.postMessage(progressMessage);
-        });
-      } else {
-        throw new Error(`Unsupported provider: ${provider}`);
-      }
+        }
+      });
 
       console.log(`Worker: Download complete for ${fileName}`);
 
@@ -1102,72 +659,27 @@ ctx.addEventListener('message', async (event) => {
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
 
       // Phase 2: Upload (0-100%)
-      let fileId: string;
-      const filename = `${volumeTitle}.cbz`;
-
-      if (provider === 'google-drive') {
-        if (!credentials.accessToken || !credentials.seriesFolderId) {
-          throw new Error('Missing Google Drive access token or series folder ID');
-        }
-        fileId = await uploadToGoogleDrive(
-          cbzBlob,
-          filename,
-          credentials.seriesFolderId,
-          credentials.accessToken,
-          (loaded, total) => {
-            const uploadProgress = (loaded / total) * 100; // 0-100% upload
-            const progressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'uploading',
-              progress: uploadProgress
-            };
-            ctx.postMessage(progressMessage);
-          }
-        );
-      } else if (provider === 'webdav') {
-        if (!credentials.webdavUrl) {
-          throw new Error('Missing WebDAV URL');
-        }
-        fileId = await uploadToWebDAV(
-          credentials.webdavUrl,
-          credentials.webdavUsername ?? '',
-          credentials.webdavPassword ?? '',
-          seriesTitle,
-          filename,
-          cbzBlob,
-          (loaded, total) => {
-            const uploadProgress = (loaded / total) * 100; // 0-100% upload
-            const progressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'uploading',
-              progress: uploadProgress
-            };
-            ctx.postMessage(progressMessage);
-          }
-        );
-      } else if (provider === 'mega') {
-        if (!credentials.megaEmail || !credentials.megaPassword) {
-          throw new Error('Missing MEGA credentials');
-        }
-        fileId = await uploadToMEGA(
-          cbzBlob,
-          filename,
-          seriesTitle,
-          credentials.megaEmail,
-          credentials.megaPassword,
-          (loaded, total) => {
-            const uploadProgress = (loaded / total) * 100; // 0-100% upload
-            const progressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'uploading',
-              progress: uploadProgress
-            };
-            ctx.postMessage(progressMessage);
-          }
-        );
-      } else {
-        throw new Error(`Unsupported provider: ${provider}`);
+      if (!credentials) {
+        throw new Error(`Missing ${provider} worker credentials`);
       }
+      const cloudProvider = getWorkerCloudProvider(provider);
+      const filename = `${volumeTitle}.cbz`;
+      const fileId = await cloudProvider.uploadFile({
+        seriesTitle,
+        filename,
+        blob: cbzBlob,
+        credentials,
+        mimeType: 'application/x-cbz',
+        onProgress: (loaded, total) => {
+          const uploadProgress = total > 0 ? (loaded / total) * 100 : 0;
+          const progressMessage: UploadProgressMessage = {
+            type: 'progress',
+            phase: 'uploading',
+            progress: uploadProgress
+          };
+          ctx.postMessage(progressMessage);
+        }
+      });
 
       // Send completion message
       const completeMessage: UploadCompleteMessage = {
@@ -1246,7 +758,10 @@ ctx.addEventListener('message', async (event) => {
           };
           ctx.postMessage(progressMessage);
         },
-        { embedThumbnailSidecar: message.embedThumbnailSidecar === true }
+        {
+          embedThumbnailSidecar: message.embedThumbnailSidecar === true,
+          embedMokuroInArchive: message.embedMokuroInArchive !== false
+        }
       );
 
       console.log(`Worker: Compressed ${volumeTitle} (${cbzBlob.size} bytes)`);
@@ -1257,83 +772,102 @@ ctx.addEventListener('message', async (event) => {
         console.log(`Worker: Returning compressed data for download`);
         const cbzArrayBuffer = await cbzBlob.arrayBuffer();
         const cbzData = new Uint8Array(cbzArrayBuffer);
+        let sidecars:
+          | {
+              mokuro?: { filename: string; blob: Blob };
+              thumbnail?: { filename: string; blob: Blob };
+            }
+          | undefined;
+        if (message.includeSidecars === true) {
+          const generated = await generateVolumeSidecarsFromDb(volumeUuid);
+          if (generated.mokuro || generated.thumbnail) {
+            sidecars = {};
+            if (generated.mokuro) {
+              sidecars.mokuro = generated.mokuro;
+            }
+            if (generated.thumbnail) {
+              sidecars.thumbnail = generated.thumbnail;
+            }
+          }
+        }
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
           data: cbzData,
-          filename: downloadFilename || `${volumeTitle}.cbz`
+          filename: downloadFilename || `${volumeTitle}.cbz`,
+          sidecars
         };
         ctx.postMessage(completeMessage, [cbzData.buffer]);
         console.log(`Worker: Export complete for ${volumeTitle}`);
       } else {
         // Upload to cloud provider
-        let fileId: string;
+        if (!credentials) {
+          throw new Error(`Missing ${provider} worker credentials`);
+        }
+        const cloudProvider = getWorkerCloudProvider(provider);
         const filename = `${volumeTitle}.cbz`;
 
-        if (provider === 'google-drive') {
-          if (!credentials?.accessToken || !credentials?.seriesFolderId) {
-            throw new Error('Missing Google Drive access token or series folder ID');
-          }
-          fileId = await uploadToGoogleDrive(
-            cbzBlob,
-            filename,
-            credentials.seriesFolderId,
-            credentials.accessToken,
-            (loaded, total) => {
-              const progressMessage: UploadProgressMessage = {
-                type: 'progress',
-                phase: 'uploading',
-                progress: (loaded / total) * 100
-              };
-              ctx.postMessage(progressMessage);
-            }
-          );
-        } else if (provider === 'webdav') {
-          // Use shared WebDAV upload utility
-          if (!credentials?.webdavUrl) {
-            throw new Error('Missing WebDAV URL');
-          }
-          fileId = await uploadToWebDAV(
-            credentials.webdavUrl,
-            credentials.webdavUsername ?? '',
-            credentials.webdavPassword ?? '',
+        const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob): Promise<void> => {
+          await cloudProvider.uploadFile({
             seriesTitle,
-            filename,
-            cbzBlob,
-            (loaded, total) => {
-              const progressMessage: UploadProgressMessage = {
-                type: 'progress',
-                phase: 'uploading',
-                progress: (loaded / total) * 100
-              };
-              ctx.postMessage(progressMessage);
-            }
-          );
-        } else if (provider === 'mega') {
-          if (!credentials?.megaEmail || !credentials?.megaPassword) {
-            throw new Error('Missing MEGA credentials');
+            filename: sidecarFilename,
+            blob: sidecarBlob,
+            credentials,
+            mimeType: sidecarBlob.type || 'application/octet-stream'
+          });
+        };
+
+        if (message.includeSidecars === true) {
+          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+          const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
+          if (generatedSidecars.mokuro) {
+            sidecarsToUpload.push(generatedSidecars.mokuro);
           }
-          fileId = await uploadToMEGA(
-            cbzBlob,
-            filename,
-            seriesTitle,
-            credentials.megaEmail,
-            credentials.megaPassword,
-            (loaded, total) => {
-              const progressMessage: UploadProgressMessage = {
-                type: 'progress',
-                phase: 'uploading',
-                progress: (loaded / total) * 100
-              };
-              ctx.postMessage(progressMessage);
+          if (generatedSidecars.thumbnail) {
+            sidecarsToUpload.push(generatedSidecars.thumbnail);
+          }
+
+          if (sidecarsToUpload.length > 0) {
+            const sidecarProgressMessage: UploadProgressMessage = {
+              type: 'progress',
+              phase: 'sidecars',
+              progress: 100
+            };
+
+            ctx.postMessage(sidecarProgressMessage);
+            for (const sidecar of sidecarsToUpload) {
+              console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
+              await uploadSidecar(sidecar.filename, sidecar.blob);
+              ctx.postMessage(sidecarProgressMessage);
             }
-          );
-        } else {
-          throw new Error(`Unsupported provider: ${provider}`);
+          }
         }
+
+        ctx.postMessage({
+          type: 'progress',
+          phase: 'uploading',
+          progress: 0
+        } satisfies UploadProgressMessage);
+
+        const fileId = await cloudProvider.uploadFile({
+          seriesTitle,
+          filename,
+          blob: cbzBlob,
+          credentials,
+          mimeType: 'application/x-cbz',
+          onProgress: (loaded, total) => {
+            const progressMessage: UploadProgressMessage = {
+              type: 'progress',
+              phase: 'uploading',
+              progress: total > 0 ? (loaded / total) * 100 : 0
+            };
+            ctx.postMessage(progressMessage);
+          }
+        });
 
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
-          fileId
+          fileId,
+          size: cbzBlob.size
         };
         ctx.postMessage(completeMessage);
         console.log(`Worker: Backup complete for ${volumeTitle}`);

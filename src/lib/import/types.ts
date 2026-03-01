@@ -184,6 +184,8 @@ export interface ProcessedMetadata {
   imageOnly?: boolean;
   /** Where this volume came from */
   sourceType?: 'local' | 'cloud';
+  /** Spine width in pixels (from mokuro metadata) */
+  spineWidth?: number;
 }
 
 /**

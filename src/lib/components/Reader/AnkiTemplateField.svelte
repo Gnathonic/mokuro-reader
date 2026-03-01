@@ -22,6 +22,8 @@
     isModified?: boolean;
     willUpdate?: boolean; // True if this field will change the card (not just {existing})
     configureMode?: boolean;
+    disabled?: boolean; // Disable editing (field is shown but not interactive)
+    disabledReason?: string; // Explanation shown when disabled
     hint?: string; // Helper text shown in expanded view
     spaceBeforeInsert?: boolean; // Add space before inserted templates (for tags)
     onTemplateChange?: (template: string) => void;
@@ -40,6 +42,8 @@
     isModified = false,
     willUpdate = false,
     configureMode = false,
+    disabled = false,
+    disabledReason,
     hint,
     spaceBeforeInsert = false,
     onTemplateChange,
@@ -174,8 +178,9 @@
   <!-- Header - always visible, clickable to expand -->
   <button
     type="button"
-    class="flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+    class="flex w-full items-start gap-2 px-2 py-1.5 text-left {disabled ? 'opacity-50' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}"
     onclick={toggleExpand}
+    {disabled}
   >
     <span class="mt-0.5 text-gray-400 transition-transform duration-200" class:rotate-90={expanded}>
       <ChevronRightOutline class="h-3 w-3" />
@@ -185,7 +190,9 @@
     >
     <!-- Preview - truncated to keep rows compact -->
     <span class="flex-1 truncate text-sm text-gray-900 dark:text-white">
-      {#if configureMode}
+      {#if disabled}
+        <span class="text-xs italic text-gray-400 dark:text-gray-500">{disabledReason || 'Disabled'}</span>
+      {:else if configureMode}
         <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">{template || '(not set)'}</code>
       {:else}
         {displayResolvedValue || '(empty)'}

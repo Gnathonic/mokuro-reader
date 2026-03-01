@@ -81,12 +81,35 @@
   // Series options for dropdown
   let seriesOptions = $state<{ uuid: string; title: string }[]>([]);
 
+  let pendingOpenCoverPicker = false;
+
+  // Capture Escape so it doesn't propagate to the series page's back-navigation handler
+  $effect(() => {
+    if (!open) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        handleClose();
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown, true);
+    return () => window.removeEventListener('keydown', handleKeydown, true);
+  });
+
   onMount(() => {
     const unsubscribe = volumeEditorModalStore.subscribe(async (value) => {
       if (value?.open && value.volumeUuid) {
         open = true;
         volumeUuid = value.volumeUuid;
+        pendingOpenCoverPicker = value.openCoverPicker ?? false;
         await loadVolumeData();
+        if (pendingOpenCoverPicker) {
+          pendingOpenCoverPicker = false;
+          openCoverPicker();
+        }
       }
     });
     return unsubscribe;
@@ -130,7 +153,8 @@
 
       // Determine next-volume availability for "Use + Next Volume"
       hasNextSeriesVolume =
-        (await getNextVolumeUuidInSeries(data.metadata.series_uuid, data.metadata.volume_uuid)) !== null;
+        (await getNextVolumeUuidInSeries(data.metadata.series_uuid, data.metadata.volume_uuid)) !==
+        null;
 
       // Regenerate thumbnail URL
       if (thumbnailUrl) {
@@ -408,9 +432,7 @@
               {/if}
             </div>
             <div class="flex gap-1">
-              <Button size="xs" color="light" onclick={openCoverPicker}>
-                Change
-              </Button>
+              <Button size="xs" color="light" onclick={openCoverPicker}>Change</Button>
               <Button size="xs" color="light" onclick={handleResetCover} disabled={saving}>
                 Reset
               </Button>

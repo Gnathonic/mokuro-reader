@@ -51,15 +51,16 @@ export function shouldShowSinglePage(
 ): boolean {
   // Explicit mode overrides
   if (mode === 'single') return true;
+
+  // Cover page is always displayed alone regardless of mode
+  if (isFirstPage && hasCover) {
+    return true;
+  }
+
   if (mode === 'dual') return false;
 
   // Auto mode logic
   if (mode === 'auto') {
-    // Special case: First page with cover should always be single
-    // This ensures covers don't get paired with spreads or other exceptions
-    if (isFirstPage && hasCover) {
-      return true;
-    }
 
     // Portrait orientation → single page
     if (isPortraitOrientation()) {

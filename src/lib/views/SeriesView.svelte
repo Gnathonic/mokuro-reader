@@ -323,18 +323,23 @@
       return;
     }
 
-    // Efficient O(1) lookup: Get series files from Map by series title
-    const seriesTitle = manga[0].series_title;
-    const seriesFiles = cloudFiles.get(seriesTitle) || [];
+    // Build a path set from all cloud files to avoid lookup inconsistencies
+    // between different cache adapters and grouping keys.
+    const cloudPathSet = new Set<string>();
+    for (const files of cloudFiles.values()) {
+      for (const file of files) {
+        cloudPathSet.add(file.path);
+      }
+    }
 
     allBackedUp = manga.every((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some((f) => f.path === path);
+      return cloudPathSet.has(path);
     });
 
     anyBackedUp = manga.some((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some((f) => f.path === path);
+      return cloudPathSet.has(path);
     });
 
     console.log(
@@ -342,8 +347,8 @@
       allBackedUp,
       'anyBackedUp:',
       anyBackedUp,
-      'seriesFiles:',
-      seriesFiles.length
+      'cloudPaths:',
+      cloudPathSet.size
     );
   });
 
@@ -372,10 +377,8 @@
     }
   }
 
-  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
-    if (!volumes || volumes.length === 0) return;
-
-    const seriesTitle = volumes[0].series_title;
+  async function deleteSeriesFromCloudByTitle(seriesTitle: string) {
+    if (!seriesTitle) return;
 
     // Check if any volumes are backed up (efficient O(1) Map lookup)
     const backedUpVolumes = cloudFiles.get(seriesTitle) || [];
@@ -403,22 +406,28 @@
     }
   }
 
-  async function onDeleteFromCloud() {
-    if (!manga || manga.length === 0) return;
+  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
+    if (!volumes || volumes.length === 0) return;
+    await deleteSeriesFromCloudByTitle(volumes[0].series_title);
+  }
 
-    // Check if any provider is authenticated
+  async function onDeleteFromCloud() {
     if (!hasAnyProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
       return;
     }
 
-    if (!anyBackedUp) {
+    const seriesTitle = manga?.[0]?.series_title || placeholders?.[0]?.series_title;
+    if (!seriesTitle) return;
+
+    const hasBackups = (cloudFiles.get(seriesTitle) || []).length > 0;
+    if (!hasBackups) {
       showSnackbar(`No backups found in ${providerDisplayName}`);
       return;
     }
 
-    promptConfirmation(`Delete ${manga[0].series_title} from ${providerDisplayName}?`, async () => {
-      await deleteSeriesFromCloud(manga);
+    promptConfirmation(`Delete ${seriesTitle} from ${providerDisplayName}?`, async () => {
+      await deleteSeriesFromCloudByTitle(seriesTitle);
     });
   }
 
@@ -483,9 +492,17 @@
       return;
     }
 
-    // Filter out already backed up volumes using unified cloud manager
+    // Filter out already backed up volumes using the same cloud path set
+    // used by the current view status calculations.
+    const cloudPathSet = new Set<string>();
+    for (const files of cloudFiles.values()) {
+      for (const file of files) {
+        cloudPathSet.add(file.path);
+      }
+    }
+
     const volumesToBackup = manga.filter(
-      (vol) => !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
+      (vol) => !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
     );
 
     if (volumesToBackup.length === 0) {
@@ -937,6 +954,21 @@
           <span class="break-words">List</span>
         {/if}
       </Button>
+
+      <Button id="placeholder-series-menu" color="light" class="!min-w-0 !p-2.5">
+        <DotsVerticalOutline class="h-5 w-5" />
+      </Button>
+      <Dropdown triggeredBy="#placeholder-series-menu" placement="bottom-end">
+        {#if hasAnyProvider && !isReadOnlyMode}
+          <DropdownItem
+            onclick={onDeleteFromCloud}
+            class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
+          >
+            <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Delete from {providerDisplayName}</span>
+          </DropdownItem>
+        {/if}
+      </Dropdown>
     </div>
 
     <!-- Volume List/Grid -->

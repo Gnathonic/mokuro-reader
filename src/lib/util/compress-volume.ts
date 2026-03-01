@@ -12,6 +12,27 @@ export interface MokuroMetadata {
   volume_uuid: string;
   pages: any[];
   chars: number;
+  spine_width?: number;
+}
+
+export interface VolumeSidecarBlobData {
+  filename: string;
+  blob: Blob;
+}
+
+export interface VolumeSidecarBlobResult {
+  mokuro?: VolumeSidecarBlobData;
+  thumbnail?: VolumeSidecarBlobData;
+}
+
+function extensionFromMimeType(contentType: string): string {
+  const value = contentType.toLowerCase();
+  if (value.includes('webp')) return 'webp';
+  if (value.includes('png')) return 'png';
+  if (value.includes('jpeg') || value.includes('jpg')) return 'jpg';
+  if (value.includes('avif')) return 'avif';
+  if (value.includes('gif')) return 'gif';
+  return 'webp';
 }
 
 /**
@@ -136,6 +157,49 @@ function getDatabase(): Dexie {
   return workerDb;
 }
 
+export async function generateVolumeSidecarsFromDb(
+  volumeUuid: string
+): Promise<VolumeSidecarBlobResult> {
+  const db = getDatabase();
+
+  const volume = await db.table('volumes').get(volumeUuid);
+  if (!volume) {
+    throw new Error(`Volume ${volumeUuid} not found in database`);
+  }
+
+  const sidecars: VolumeSidecarBlobResult = {};
+  const hasMokuroVersion =
+    typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
+  if (hasMokuroVersion) {
+    const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
+    if (volumeOcr?.pages) {
+      const metadata: MokuroMetadata = {
+        version: volume.mokuro_version,
+        title: volume.series_title,
+        title_uuid: volume.series_uuid,
+        volume: volume.volume_title,
+        volume_uuid: volume.volume_uuid,
+        pages: volumeOcr.pages,
+        chars: volume.character_count
+      };
+      sidecars.mokuro = {
+        filename: `${volume.volume_title}.mokuro`,
+        blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+      };
+    }
+  }
+
+  if (volume.thumbnail) {
+    const ext = extensionFromMimeType(volume.thumbnail.type || 'image/webp');
+    sidecars.thumbnail = {
+      filename: `${volume.volume_title}.${ext}`,
+      blob: volume.thumbnail
+    };
+  }
+
+  return sidecars;
+}
+
 /**
  * Compress a volume by streaming files directly from IndexedDB
  * This avoids memory issues with large volumes by:
@@ -150,7 +214,7 @@ function getDatabase(): Dexie {
 export async function compressVolumeFromDb(
   volumeUuid: string,
   onProgress?: (completed: number, total: number) => void,
-  options: { embedThumbnailSidecar?: boolean } = {}
+  options: { embedThumbnailSidecar?: boolean; embedMokuroInArchive?: boolean } = {}
 ): Promise<Blob> {
   const db = getDatabase();
 
@@ -164,6 +228,7 @@ export async function compressVolumeFromDb(
   }
 
   const volumeTitle = volume.volume_title;
+  const embedMokuroInArchive = options.embedMokuroInArchive !== false;
 
   // Build mokuro metadata
   const isImageOnly = volume.mokuro_version === '';
@@ -176,7 +241,8 @@ export async function compressVolumeFromDb(
         volume: volume.volume_title,
         volume_uuid: volume.volume_uuid,
         pages: volumeOcr?.pages || [],
-        chars: volume.character_count
+        chars: volume.character_count,
+        ...(volume.spine_width != null && { spine_width: volume.spine_width })
       };
 
   // Get list of files, excluding placeholders
@@ -186,9 +252,9 @@ export async function compressVolumeFromDb(
 
   const thumbnailSidecar = options.embedThumbnailSidecar ? volume.thumbnail : null;
 
-  // Total items: folder + files + mokuro file (if present) + thumbnail sidecar (optional)
+  // Total items: folder + files + embedded mokuro file (optional) + thumbnail sidecar (optional)
   const totalItems =
-    validFilenames.length + (metadata ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
+    validFilenames.length + (metadata && embedMokuroInArchive ? 1 : 0) + (thumbnailSidecar ? 1 : 0) + 1;
   let completedItems = 0;
 
   // Create zip writer with BlobWriter to avoid memory issues
@@ -250,8 +316,8 @@ export async function compressVolumeFromDb(
     if (onProgress) onProgress(completedItems, totalItems);
   }
 
-  // Add mokuro metadata file
-  if (metadata) {
+  // Add mokuro metadata file only when embedding is enabled.
+  if (metadata && embedMokuroInArchive) {
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);

@@ -21,6 +21,7 @@
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
   import AnkiTemplateField from '$lib/components/Reader/AnkiTemplateField.svelte';
+  import { isMobilePlatform } from '$lib/util/platform';
   import { onMount, onDestroy } from 'svelte';
   import CropperJS from 'cropperjs';
   import 'cropperjs/dist/cropper.css';
@@ -93,7 +94,7 @@
       vars.push({ template: '{volume}', value: metadata.volumeTitle });
     }
     if (store.pageNumber !== undefined) {
-      vars.push({ template: '{page_num}', value: String(store.pageNumber + 1) });
+      vars.push({ template: '{page_num}', value: String(store.pageNumber) });
     }
     if (store.pageFilename) {
       vars.push({ template: '{page_filename}', value: store.pageFilename });
@@ -1008,6 +1009,8 @@
                 configureMode={mode === 'configure'}
                 isModified={isTagsModified()}
                 willUpdate={tagsWillUpdate()}
+                disabled={mode === 'update' && isMobilePlatform()}
+                disabledReason="Not supported by AnkiConnect Android"
                 hint="Spaces separate tags"
                 spaceBeforeInsert={true}
               />

@@ -20,7 +20,13 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { normalizeFilename } from './misc';
-import { getImageMimeType, processVolume, saveVolume, isSystemFile } from '$lib/import';
+import {
+  getImageMimeType,
+  isImageExtension,
+  processVolume,
+  saveVolume,
+  isSystemFile
+} from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 
@@ -331,14 +337,17 @@ async function entriesToDecompressedVolume(
       // Nested archive
       nestedArchives.push(new File([entry.data], normalizedFilename));
     } else {
-      // Image file - determine MIME type
-      const mimeType = getImageMimeType(extension);
-      if (mimeType) {
-        imageFiles.set(
-          normalizedFilename,
-          new File([entry.data], normalizedFilename, { type: mimeType })
-        );
+      // Only keep known image extensions as pages.
+      // Unknown files were previously coerced to application/octet-stream and surfaced
+      // as broken "page 1" entries in the cover picker.
+      if (!isImageExtension(extension)) {
+        continue;
       }
+      const mimeType = getImageMimeType(extension);
+      imageFiles.set(
+        normalizedFilename,
+        new File([entry.data], normalizedFilename, { type: mimeType })
+      );
     }
   }
 
@@ -371,6 +380,17 @@ async function processVolumeData(
   // Use unified import system to process the volume
   // This handles missing pages, image-only volumes, placeholder generation, etc.
   const processedVolume = await processVolume(decompressedVolume);
+
+  // Keep cloud placeholder series identity for image-only imports so they stay grouped
+  // with existing volumes before OCR sidecars are applied.
+  const isImageOnly =
+    !processedVolume.metadata.mokuroVersion || processedVolume.metadata.mokuroVersion.trim() === '';
+  if (isImageOnly) {
+    processedVolume.metadata.series = placeholder.series_title;
+    processedVolume.metadata.seriesUuid = placeholder.series_uuid;
+    processedVolume.metadata.volume = placeholder.volume_title;
+    processedVolume.metadata.volumeUuid = placeholder.volume_uuid;
+  }
 
   // Check if volume already exists
   const existingVolume = await db.volumes
@@ -447,6 +467,11 @@ function basename(path: string): string {
   return path.split('/').pop() || path;
 }
 
+function dirname(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx >= 0 ? path.slice(0, idx) : '';
+}
+
 function findSidecarFiles(
   placeholder: VolumeMetadata,
   allFiles: import('./sync/provider-interface').CloudFileMetadata[]
@@ -467,11 +492,18 @@ function findSidecarFiles(
 
   // Fallback: robust basename/stem matching to handle encoded paths and naming variance.
   const targetStem = normalizePathKey(placeholder.volume_title);
+  const cloudPath =
+    (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath ||
+    `${placeholder.series_title}/${placeholder.volume_title}.cbz`;
+  const cloudDir = normalizePathKey(dirname(cloudPath));
   const seriesPrefix = `${normalizePathKey(placeholder.series_title)}/`;
 
   const fallbackMatches = allFiles.filter((file) => {
     const filePathKey = normalizePathKey(file.path);
-    if (!filePathKey.startsWith(seriesPrefix)) return false;
+    // Prefer the original cloud directory when available, then fall back to series title.
+    if (cloudDir && !filePathKey.startsWith(`${cloudDir}/`) && !filePathKey.startsWith(seriesPrefix)) {
+      return false;
+    }
 
     const name = normalizePathKey(basename(file.path));
     return (
@@ -486,29 +518,18 @@ function findSidecarFiles(
       '[Download Queue] Sidecar fallback matches:',
       fallbackMatches.map((file) => file.path)
     );
-  } else {
-    console.log('[Download Queue] No sidecar matches found for:', placeholder.series_title, placeholder.volume_title);
+    return fallbackMatches;
   }
 
-  return fallbackMatches;
+  console.log('[Download Queue] No sidecar matches found for:', placeholder.series_title, placeholder.volume_title);
+  return [];
 }
 
 async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<DecompressedEntry[]> {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return [];
 
-  // Use a live provider listing here (not just cache) so we pick up freshly uploaded sidecars
-  // and avoid stale-cache misses for custom thumbnails.
-  let allFiles = unifiedCloudManager.getAllCloudVolumes();
-  try {
-    const liveFiles = await provider.listCloudVolumes();
-    if (liveFiles.length > 0) {
-      allFiles = liveFiles;
-    }
-  } catch (error) {
-    console.warn('Failed live sidecar listing, falling back to cache:', error);
-  }
-
+  const allFiles = unifiedCloudManager.getAllCloudVolumes();
   const selected = findSidecarFiles(placeholder, allFiles);
   if (selected.length > 0) {
     console.log(

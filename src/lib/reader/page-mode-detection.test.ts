@@ -157,10 +157,16 @@ describe('shouldShowSinglePage', () => {
       expect(shouldShowSinglePage('single', current, next, undefined)).toBe(true);
     });
 
-    it('should always return false for dual mode', () => {
+    it('should return false for dual mode on normal pages', () => {
       const current = createPage(1000, 1500);
       const next = createPage(1000, 1500);
       expect(shouldShowSinglePage('dual', current, next, undefined)).toBe(false);
+    });
+
+    it('should return true for dual mode on cover page', () => {
+      const current = createPage(1000, 1500);
+      const next = createPage(1000, 1500);
+      expect(shouldShowSinglePage('dual', current, next, undefined, true, true)).toBe(true);
     });
   });
 

@@ -24,6 +24,7 @@ export {
 	clearClientCache,
 	clearAllClients,
 	libraryFilesStore,
+	libraryMokuroFilesStore,
 	libraryStatusStore,
 	isAnyLibraryFetching,
 	totalLibraryFileCount,

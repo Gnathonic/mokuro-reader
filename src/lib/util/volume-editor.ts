@@ -3,14 +3,105 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { isImageExtension } from '$lib/import';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
 import { get } from 'svelte/store';
-import { generateThumbnail } from '$lib/catalog/thumbnails';
+import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
 import type { VolumeMetadata } from '$lib/types';
 import { getCharCount } from '$lib/util/count-chars';
+import { normalizeFilename } from '$lib/util/misc';
+import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 
 type Volumes = Record<string, VolumeData>;
+
+function isLikelyGeneratedMissingPlaceholder(path: string, file: File): boolean {
+  if (!file?.type || file.type.toLowerCase() !== 'image/png') {
+    return false;
+  }
+
+  // Our generated missing placeholders can keep original filename extensions (e.g. .jpg)
+  // while always being PNG blobs. Use this mismatch as a conservative legacy-data filter.
+  const lowerPath = path.toLowerCase();
+  return (
+    lowerPath.endsWith('.jpg') ||
+    lowerPath.endsWith('.jpeg') ||
+    lowerPath.endsWith('.webp') ||
+    lowerPath.endsWith('.avif') ||
+    lowerPath.endsWith('.gif') ||
+    lowerPath.endsWith('.bmp') ||
+    lowerPath.endsWith('.tif') ||
+    lowerPath.endsWith('.tiff')
+  );
+}
+
+function isCoverCandidateImage(path: string, file: File): boolean {
+  if (file.type?.toLowerCase().startsWith('image/')) {
+    return true;
+  }
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  return isImageExtension(ext);
+}
+
+function basename(path: string): string {
+  return path.split('/').pop() || path;
+}
+
+async function getPageOrderComparator(
+  volumeUuid: string
+): Promise<(a: string, b: string) => number> {
+  const volumeOcr = await db.volume_ocr.get(volumeUuid);
+  const pages = volumeOcr?.pages || [];
+
+  const pageIndexByPath = new Map<string, number>();
+  const pageIndexByBasename = new Map<string, number>();
+
+  pages.forEach((page, index) => {
+    const normalizedPath = normalizeFilename(page.img_path).toLowerCase();
+    const normalizedBase = basename(normalizedPath);
+
+    if (!pageIndexByPath.has(normalizedPath)) {
+      pageIndexByPath.set(normalizedPath, index);
+    }
+    if (!pageIndexByBasename.has(normalizedBase)) {
+      pageIndexByBasename.set(normalizedBase, index);
+    }
+  });
+
+  return (a: string, b: string) => {
+    const normalizedA = normalizeFilename(a).toLowerCase();
+    const normalizedB = normalizeFilename(b).toLowerCase();
+
+    const aIndex =
+      pageIndexByPath.get(normalizedA) ?? pageIndexByBasename.get(basename(normalizedA)) ?? Infinity;
+    const bIndex =
+      pageIndexByPath.get(normalizedB) ?? pageIndexByBasename.get(basename(normalizedB)) ?? Infinity;
+
+    if (aIndex !== bIndex) {
+      return aIndex - bIndex;
+    }
+
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  };
+}
+
+async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File): Promise<void> {
+  const provider = unifiedCloudManager.getActiveProvider();
+  if (!provider || !provider.isAuthenticated()) {
+    return;
+  }
+
+  const volume = await db.volumes.get(volumeUuid);
+  if (!volume) {
+    throw new Error(`Volume ${volumeUuid} not found`);
+  }
+
+  const coverWebP = await convertToWebP(thumbnailFile);
+  await unifiedCloudManager.uploadFile(
+    `${volume.series_title}/${volume.volume_title}.webp`,
+    coverWebP
+  );
+}
 
 /**
  * Get all unique series from the catalog for the series dropdown
@@ -130,6 +221,8 @@ export async function updateVolumeCover(volumeUuid: string, imageFile: File): Pr
     thumbnail_width: thumbnailResult.width,
     thumbnail_height: thumbnailResult.height
   });
+
+  await syncCoverSidecarToCloud(volumeUuid, thumbnailResult.file);
 }
 
 /**
@@ -141,14 +234,26 @@ export async function resetVolumeCover(volumeUuid: string): Promise<void> {
   if (!volumeFiles?.files) {
     throw new Error('Volume files not found');
   }
+  const volume = await db.volumes.get(volumeUuid);
+  if (!volume) {
+    throw new Error(`Volume ${volumeUuid} not found`);
+  }
 
-  // Get file paths sorted naturally
-  const filePaths = Object.keys(volumeFiles.files).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
+  // Exclude known placeholder pages generated for missing files.
+  const placeholderPaths = new Set(volume.missing_page_paths || []);
+  const compareByPageOrder = await getPageOrderComparator(volumeUuid);
+  const candidatePaths = Object.keys(volumeFiles.files).filter((path) => {
+    if (placeholderPaths.has(path)) return false;
+    const file = volumeFiles.files[path];
+    if (!isCoverCandidateImage(path, file)) return false;
+    return !isLikelyGeneratedMissingPlaceholder(path, file);
+  });
+
+  // Prefer OCR page order, then natural filename order.
+  const filePaths = candidatePaths.sort(compareByPageOrder);
 
   if (filePaths.length === 0) {
-    throw new Error('No image files in volume');
+    throw new Error('No non-placeholder image files in volume');
   }
 
   // Use the first image file
@@ -166,6 +271,8 @@ export async function resetVolumeCover(volumeUuid: string): Promise<void> {
     thumbnail_width: thumbnailResult.width,
     thumbnail_height: thumbnailResult.height
   });
+
+  await syncCoverSidecarToCloud(volumeUuid, thumbnailResult.file);
 }
 
 /**
@@ -179,10 +286,16 @@ export async function getVolumeFiles(
     return null;
   }
 
+  const compareByPageOrder = await getPageOrderComparator(volumeUuid);
+
   // Get file paths sorted naturally
-  const filePaths = Object.keys(volumeFiles.files).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
+  const filePaths = Object.keys(volumeFiles.files)
+    .filter((path) => {
+      const file = volumeFiles.files[path];
+      if (!isCoverCandidateImage(path, file)) return false;
+      return true;
+    })
+    .sort(compareByPageOrder);
 
   return filePaths.map((path) => ({
     path,

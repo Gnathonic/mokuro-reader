@@ -111,6 +111,7 @@ export type CatalogSettings = {
   centerHorizontal: boolean;
   centerVertical: boolean;
   compactCloudSeries: boolean;
+  dropShadow: boolean;
 };
 
 export type Settings = {
@@ -285,7 +286,8 @@ const defaultSettings: Settings = {
     hideReadVolumes: true,
     centerHorizontal: true,
     centerVertical: false,
-    compactCloudSeries: false
+    compactCloudSeries: false,
+    dropShadow: true
   }
 };
 

@@ -22,6 +22,7 @@ export type LibraryStatus = 'idle' | 'fetching' | 'ready' | 'error';
 interface LibraryState {
 	status: LibraryStatus;
 	files: LibraryFileMetadata[];
+	mokuroFiles: LibraryFileMetadata[];
 	error?: string;
 }
 
@@ -62,11 +63,12 @@ export function clearAllClients(): void {
  */
 export async function fetchLibrary(config: LibraryConfig): Promise<LibraryFileMetadata[]> {
 	// Update status to fetching
-	libraryStatesStore.update((states) => {
+		libraryStatesStore.update((states) => {
 		const newStates = new Map(states);
 		newStates.set(config.id, {
 			status: 'fetching',
 			files: states.get(config.id)?.files || [],
+			mokuroFiles: states.get(config.id)?.mokuroFiles || [],
 			error: undefined
 		});
 		return newStates;
@@ -74,7 +76,7 @@ export async function fetchLibrary(config: LibraryConfig): Promise<LibraryFileMe
 
 	try {
 		const client = getClient(config);
-		const files = await client.listFiles();
+		const [files, mokuroFiles] = await Promise.all([client.listFiles(), client.listMokuroFiles()]);
 
 		// Update with success
 		libraryStatesStore.update((states) => {
@@ -82,6 +84,7 @@ export async function fetchLibrary(config: LibraryConfig): Promise<LibraryFileMe
 			newStates.set(config.id, {
 				status: 'ready',
 				files,
+				mokuroFiles,
 				error: undefined
 			});
 			return newStates;
@@ -101,6 +104,7 @@ export async function fetchLibrary(config: LibraryConfig): Promise<LibraryFileMe
 			newStates.set(config.id, {
 				status: 'error',
 				files: states.get(config.id)?.files || [], // Keep old files on error
+				mokuroFiles: states.get(config.id)?.mokuroFiles || [], // Keep old sidecars on error
 				error: errorMessage
 			});
 			return newStates;
@@ -220,6 +224,23 @@ export const libraryStatusStore: Readable<Map<string, LibraryStatus>> = derived(
 			statusMap.set(libraryId, state.status);
 		}
 		return statusMap;
+	}
+);
+
+/**
+ * Reactive store of library mokuro sidecar files
+ * Map<libraryId, LibraryFileMetadata[]>
+ */
+export const libraryMokuroFilesStore: Readable<Map<string, LibraryFileMetadata[]>> = derived(
+	libraryStatesStore,
+	($states) => {
+		const filesMap = new Map<string, LibraryFileMetadata[]>();
+		for (const [libraryId, state] of $states) {
+			if (state.mokuroFiles.length > 0) {
+				filesMap.set(libraryId, state.mokuroFiles);
+			}
+		}
+		return filesMap;
 	}
 );
 

@@ -13,9 +13,12 @@
       leftOffset: number;
       topOffset: number;
     };
+    dropShadow?: boolean;
+    volumeOffsets?: Map<number, number>;
+    highlightIndex?: number | null;
   }
 
-  let { volumes, canvasWidth, canvasHeight, getCanvasDimensions, stepSizes }: Props = $props();
+  let { volumes, canvasWidth, canvasHeight, getCanvasDimensions, stepSizes, dropShadow = true, volumeOffsets = new Map(), highlightIndex = null }: Props = $props();
 
   // Hardware limits for canvas segments
   const MAX_SEGMENT_SIZE = 1024;
@@ -92,7 +95,21 @@
       dims: { width: number; height: number };
       x: number;
       y: number;
+      index: number;
     }[] = [];
+
+    // Pre-compute cascading left positions: each volume's offset shifts all volumes after it
+    const leftPositions: number[] = [];
+    let cumOffset = 0;
+    for (let i = 0; i < volumes.length; i++) {
+      leftPositions[i] = i * stepSizes.horizontal + cumOffset;
+      cumOffset += volumeOffsets.get(i) ?? 0;
+    }
+    // Align rightmost volume's right edge to canvasWidth
+    const lastDims = volumes.length > 0 ? getCanvasDimensions(volumes[volumes.length - 1].volume_uuid) : null;
+    const lastWidth = lastDims?.width ?? 0;
+    const rightEdge = (leftPositions[volumes.length - 1] ?? 0) + lastWidth;
+    const alignShift = canvasWidth - rightEdge;
 
     for (let i = 0; i < volumes.length; i++) {
       const vol = volumes[i];
@@ -105,10 +122,9 @@
       const entry = thumbnailCache.getSync(vol.volume_uuid);
 
       if (entry) {
-        const rightOffset = (volumes.length - 1 - i) * stepSizes.horizontal;
-        const x = canvasWidth - rightOffset - dims.width;
+        const x = leftPositions[i] + alignShift;
         const y = stepSizes.topOffset + i * stepSizes.vertical;
-        volumePositions.push({ entry, dims, x, y });
+        volumePositions.push({ entry, dims, x, y, index: i });
       } else if (!loadingUuids.has(vol.volume_uuid)) {
         // Not in cache and not loading - trigger async load
         loadingUuids.add(vol.volume_uuid);
@@ -150,7 +166,7 @@
 
       // Draw volumes that intersect this segment (back to front)
       for (let i = volumePositions.length - 1; i >= 0; i--) {
-        const { entry, dims, x, y } = volumePositions[i];
+        const { entry, dims, x, y, index } = volumePositions[i];
 
         // Check if volume intersects this segment (both X and Y)
         const volRight = x + dims.width;
@@ -163,20 +179,35 @@
         const localX = x - segment.startX;
         const localY = y - segment.startY;
 
-        // Draw drop shadow
         ctx.save();
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-        ctx.shadowBlur = 6;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 4;
+
+        if (dropShadow) {
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+          ctx.shadowBlur = 6;
+          ctx.shadowOffsetX = 2;
+          ctx.shadowOffsetY = 4;
+        }
 
         // Draw the thumbnail
         ctx.drawImage(entry.bitmap, localX, localY, dims.width, dims.height);
 
-        // Draw border
-        ctx.strokeStyle = '#111827'; // gray-900
-        ctx.lineWidth = 1;
-        ctx.strokeRect(localX, localY, dims.width, dims.height);
+        if (dropShadow) {
+          // Draw border
+          ctx.strokeStyle = '#111827'; // gray-900
+          ctx.lineWidth = 1;
+          ctx.strokeRect(localX, localY, dims.width, dims.height);
+        }
+
+        // Highlight individual volume when targeted
+        if (highlightIndex === index) {
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+          ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'; // blue-500
+          ctx.lineWidth = 2;
+          ctx.strokeRect(localX, localY, dims.width, dims.height);
+        }
 
         ctx.restore();
       }
@@ -193,6 +224,8 @@
     void stepSizes;
     void volumes;
     void isVisible;
+    void highlightIndex;
+    void volumeOffsets;
 
     // Use rAF to ensure DOM is ready
     requestAnimationFrame(draw);

@@ -15,6 +15,8 @@
     message?: string;
     /** Volume metadata for cloud thumbnail fetching */
     volume?: VolumeMetadata;
+    /** Whether to show drop shadow on stacked items */
+    dropShadow?: boolean;
   }
 
   let {
@@ -22,7 +24,8 @@
     isDownloading = false,
     showDownloadUI = false,
     message,
-    volume
+    volume,
+    dropShadow = true
   }: Props = $props();
 
   // Limit stack to 3 items max
@@ -94,10 +97,13 @@
   >
     {#each Array(stackCount) as _, i}
       <div
-        class="flex items-center justify-center border border-gray-300 bg-gray-200 sm:h-[350px] sm:w-[250px] dark:border-gray-600 dark:bg-gray-800"
+        class="flex items-center justify-center bg-gray-200 sm:h-[350px] sm:w-[250px] dark:bg-gray-800"
+        class:border={dropShadow}
+        class:border-gray-300={dropShadow}
+        class:dark:border-gray-600={dropShadow}
         class:absolute={stackCount > 1}
         style={stackCount > 1
-          ? `left: ${i * stepH}px; top: ${i * stepV}px; z-index: ${stackCount - i}; filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));`
+          ? `left: ${i * stepH}px; top: ${i * stepV}px; z-index: ${stackCount - i};${dropShadow ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));' : ''}`
           : ''}
       >
         {#if i === 0}

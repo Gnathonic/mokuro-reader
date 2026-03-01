@@ -197,18 +197,23 @@ export function promptMissingFiles(
 type VolumeEditorModal = {
   open: boolean;
   volumeUuid: string;
+  openCoverPicker?: boolean;
   onSave?: () => void;
   onCancel?: () => void;
 };
 
 export const volumeEditorModalStore = writable<VolumeEditorModal | undefined>(undefined);
 
-export function promptVolumeEditor(volumeUuid: string, onSave?: () => void, onCancel?: () => void) {
+export function promptVolumeEditor(
+  volumeUuid: string,
+  options?: { openCoverPicker?: boolean; onSave?: () => void; onCancel?: () => void }
+) {
   volumeEditorModalStore.set({
     open: true,
     volumeUuid,
-    onSave,
-    onCancel
+    openCoverPicker: options?.openCoverPicker,
+    onSave: options?.onSave,
+    onCancel: options?.onCancel
   });
 }
 

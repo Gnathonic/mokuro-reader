@@ -11,19 +11,24 @@ function sortTitles(a: Series, b: Series) {
   return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
 }
 
+function normalizeSeriesTitle(title: string): string {
+  return title.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 export function deriveSeriesFromVolumes(volumeEntries: Array<VolumeMetadata>) {
-  // Group volumes by series_uuid
+  // Group volumes by normalized series title (user-visible identity)
   const titleMap = new Map<string, Series>();
 
   for (const entry of volumeEntries) {
-    let volumes = titleMap.get(entry.series_uuid);
+    const key = normalizeSeriesTitle(entry.series_title);
+    let volumes = titleMap.get(key);
     if (volumes === undefined) {
       volumes = {
         title: entry.series_title,
         series_uuid: entry.series_uuid,
         volumes: []
       };
-      titleMap.set(entry.series_uuid, volumes);
+      titleMap.set(key, volumes);
     }
     volumes.volumes.push(entry);
   }

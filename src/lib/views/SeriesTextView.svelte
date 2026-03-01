@@ -12,10 +12,11 @@
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
 
   let seriesId = $derived($routeParams.manga || '');
+  let normalizedSeriesId = $derived(seriesId.trim().replace(/\s+/g, ' ').toLowerCase());
 
   // Get series volumes from catalog - match by title first (for placeholder URLs), then UUID
   let seriesData = $derived(
-    $catalog?.find((item) => item.title === seriesId) ||
+    $catalog?.find((item) => item.title.trim().replace(/\s+/g, ' ').toLowerCase() === normalizedSeriesId) ||
       $catalog?.find((item) => item.series_uuid === seriesId)
   );
   let volumes = $derived(

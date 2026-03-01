@@ -1203,6 +1203,7 @@
                   src={imageCache.getFile(index + 1)!}
                   cachedUrl={cachedImageUrl2}
                   volumeUuid={volume.volume_uuid}
+                  pageIndex={index + 1}
                   forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
                 />
@@ -1212,6 +1213,7 @@
                 src={imageCache.getFile(index)!}
                 cachedUrl={cachedImageUrl1}
                 volumeUuid={volume.volume_uuid}
+                pageIndex={index}
                 forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                 onContextMenu={handleTextBoxContextMenu}
               />

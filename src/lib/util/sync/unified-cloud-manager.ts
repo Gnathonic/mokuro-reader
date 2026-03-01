@@ -1,5 +1,5 @@
 import { derived, type Readable } from 'svelte/store';
-import type { SyncProvider, CloudFileMetadata, ProviderType } from './provider-interface';
+import type { SyncProvider, CloudFileMetadata, ProviderType, UploadPayload } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
@@ -103,13 +103,24 @@ class UnifiedCloudManager {
   /**
    * Upload a volume CBZ to the current provider
    */
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
     }
 
-    const fileId = await provider.uploadFile(path, blob, description);
+    const fileId = await provider.uploadFile(path, blob, description, onProgress);
+    const uploadSize =
+      blob instanceof Blob
+        ? blob.size
+        : blob instanceof ArrayBuffer
+          ? blob.byteLength
+          : blob.byteLength;
 
     // Update cache via cacheManager
     const cache = cacheManager.getCache(provider.type);
@@ -118,7 +129,7 @@ class UnifiedCloudManager {
         fileId,
         path,
         modifiedTime: new Date().toISOString(),
-        size: blob.size,
+        size: uploadSize,
         description
       });
     }
@@ -182,12 +193,51 @@ class UnifiedCloudManager {
       return { succeeded: 0, failed: 0 };
     }
 
+    const getBasePath = (path: string): string => {
+      const lower = path.toLowerCase();
+      if (lower.endsWith('.cbz')) return path.slice(0, -4);
+      if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
+      if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+      if (lower.endsWith('.webp')) return path.slice(0, -5);
+      return path;
+    };
+
+    const archives: CloudFileMetadata[] = [];
+    const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
+    for (const file of seriesVolumes) {
+      if (file.path.toLowerCase().endsWith('.cbz')) {
+        archives.push(file);
+        continue;
+      }
+      const base = getBasePath(file.path);
+      const existing = nonArchivesByBase.get(base);
+      if (existing) {
+        existing.push(file);
+      } else {
+        nonArchivesByBase.set(base, [file]);
+      }
+    }
+
+    const orderedSeriesVolumes: CloudFileMetadata[] = [];
+    for (const archive of archives) {
+      orderedSeriesVolumes.push(archive);
+      const base = getBasePath(archive.path);
+      const related = nonArchivesByBase.get(base);
+      if (related && related.length > 0) {
+        orderedSeriesVolumes.push(...related);
+        nonArchivesByBase.delete(base);
+      }
+    }
+    for (const leftovers of nonArchivesByBase.values()) {
+      orderedSeriesVolumes.push(...leftovers);
+    }
+
     // Helper to delete files individually
     const deleteFilesIndividually = async (): Promise<{ succeeded: number; failed: number }> => {
       let successCount = 0;
       let failCount = 0;
 
-      for (const volume of seriesVolumes) {
+      for (const volume of orderedSeriesVolumes) {
         try {
           await this.deleteFile(volume);
           successCount++;
@@ -208,7 +258,7 @@ class UnifiedCloudManager {
         // Remove all volumes from cache
         const cache = cacheManager.getCache(provider.type);
         if (cache && cache.removeById) {
-          for (const volume of seriesVolumes) {
+          for (const volume of orderedSeriesVolumes) {
             cache.removeById(volume.fileId);
           }
         }
