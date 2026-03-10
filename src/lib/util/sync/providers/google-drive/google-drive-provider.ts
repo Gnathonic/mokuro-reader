@@ -11,7 +11,7 @@ import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manage
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
-import { getOrCreateFolder, findFile } from '$lib/util/backup';
+import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
@@ -332,7 +332,7 @@ class GoogleDriveProvider implements SyncProvider {
       let targetFolderId = rootFolderId;
 
       if (seriesTitle) {
-        targetFolderId = await getOrCreateFolder(seriesTitle, rootFolderId);
+        targetFolderId = await this.ensureSeriesFolder(seriesTitle);
       }
 
       // Find existing file for replacement
@@ -442,6 +442,150 @@ class GoogleDriveProvider implements SyncProvider {
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
         'DELETE_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<DriveFileMetadata> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+
+    await this.ensureInitialized();
+
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file as DriveFileMetadata;
+    }
+
+    try {
+      const pathParts = normalizedNewPath.split('/');
+      const newFileName = pathParts.pop() || normalizedNewPath;
+      const newSeriesTitle = pathParts.join('/');
+      const targetFolderId = newSeriesTitle
+        ? await this.ensureSeriesFolder(newSeriesTitle)
+        : await this.ensureReaderFolder();
+
+      const existingTargetId = await findFile(newFileName, targetFolderId);
+      if (existingTargetId && existingTargetId !== file.fileId) {
+        throw new ProviderError(
+          `Target file already exists at '${normalizedNewPath}'`,
+          'google-drive',
+          'TARGET_EXISTS'
+        );
+      }
+
+      const driveFile = file as DriveFileMetadata;
+      const oldParentId =
+        driveFile.parentId ||
+        (file.path.includes('/')
+          ? (await this.findFolderByPath(file.path.split('/').slice(0, -1).join('/')))?.id
+          : null);
+
+      const updated = await driveApiClient.updateFileMetadata(
+        file.fileId,
+        { name: newFileName },
+        {
+          addParents: oldParentId && oldParentId !== targetFolderId ? targetFolderId : undefined,
+          removeParents: oldParentId && oldParentId !== targetFolderId ? oldParentId : undefined,
+          fields: 'id,name,parents,modifiedTime,size,description'
+        }
+      );
+
+      return {
+        provider: 'google-drive',
+        fileId: updated.id || file.fileId,
+        path: normalizedNewPath,
+        modifiedTime: updated.modifiedTime || new Date().toISOString(),
+        size: updated.size ? parseInt(updated.size, 10) : file.size,
+        description: updated.description ?? file.description,
+        parentId: updated.parents?.[0] || targetFolderId,
+        name: updated.name || newFileName
+      };
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'google-drive',
+        'RENAME_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFolder(oldPath: string, newPath: string): Promise<DriveFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+
+    await this.ensureInitialized();
+
+    const normalizedOldPath = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOldPath === normalizedNewPath) {
+      return driveFilesCache.getDriveFilesBySeries(normalizedOldPath);
+    }
+
+    try {
+      const existingFiles = driveFilesCache.getDriveFilesBySeries(normalizedOldPath);
+      if (existingFiles.length === 0) {
+        return [];
+      }
+
+      const folder = await this.findFolderByPath(normalizedOldPath);
+      if (!folder) {
+        throw new ProviderError(
+          `Series folder '${normalizedOldPath}' not found`,
+          'google-drive',
+          'FOLDER_NOT_FOUND'
+        );
+      }
+
+      const targetFolder = await this.findFolderByPath(normalizedNewPath);
+      if (targetFolder && targetFolder.id !== folder.id) {
+        throw new ProviderError(
+          `Target series folder already exists at '${normalizedNewPath}'`,
+          'google-drive',
+          'TARGET_EXISTS'
+        );
+      }
+
+      const pathParts = normalizedNewPath.split('/');
+      const newFolderName = pathParts.pop() || normalizedNewPath;
+      const newParentPath = pathParts.join('/');
+      const targetParentId = newParentPath
+        ? await this.ensureSeriesFolder(newParentPath)
+        : await this.ensureReaderFolder();
+
+      await driveApiClient.updateFileMetadata(
+        folder.id,
+        { name: newFolderName },
+        {
+          addParents:
+            folder.parentId && folder.parentId !== targetParentId ? targetParentId : undefined,
+          removeParents:
+            folder.parentId && folder.parentId !== targetParentId ? folder.parentId : undefined,
+          fields: 'id,name,parents'
+        }
+      );
+
+      return existingFiles.map((existingFile) => ({
+        ...existingFile,
+        path: `${normalizedNewPath}${existingFile.path.slice(normalizedOldPath.length)}`
+      }));
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'google-drive',
+        'RENAME_FAILED',
         false,
         true
       );
@@ -791,6 +935,81 @@ class GoogleDriveProvider implements SyncProvider {
     return folders[0].id;
   }
 
+  private async findFolder(
+    parentId: string,
+    folderName: string
+  ): Promise<{ id: string; parentId: string | null; name: string } | null> {
+    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+
+    const folders = await driveApiClient.listFiles(
+      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+      'files(id,name,parents,createdTime)'
+    );
+
+    if (folders.length === 0) {
+      return null;
+    }
+
+    folders.sort((a, b) => {
+      const dateA = new Date(a.createdTime || 0).getTime();
+      const dateB = new Date(b.createdTime || 0).getTime();
+      return dateA - dateB;
+    });
+
+    const folder = folders[0];
+    return {
+      id: folder.id,
+      name: folder.name,
+      parentId: folder.parents?.[0] || null
+    };
+  }
+
+  private async findFolderByPath(
+    folderPath: string
+  ): Promise<{ id: string; parentId: string | null; name: string } | null> {
+    const normalizedPath = folderPath.replace(/^\/+|\/+$/g, '');
+    if (!normalizedPath) {
+      const rootFolderId = await this.ensureReaderFolder();
+      return {
+        id: rootFolderId,
+        name: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+        parentId: 'root'
+      };
+    }
+
+    const rootFolderId = await this.ensureReaderFolder();
+    let currentFolder: { id: string; parentId: string | null; name: string } | null = {
+      id: rootFolderId,
+      name: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+      parentId: 'root'
+    };
+
+    for (const part of normalizedPath.split('/').filter(Boolean)) {
+      currentFolder = await this.findFolder(currentFolder.id, part);
+      if (!currentFolder) {
+        return null;
+      }
+    }
+
+    return currentFolder;
+  }
+
+  private async ensureFolderPath(folderPath: string): Promise<string> {
+    const normalizedPath = folderPath.replace(/^\/+|\/+$/g, '');
+    const rootFolderId = await this.ensureReaderFolder();
+    if (!normalizedPath) {
+      return rootFolderId;
+    }
+
+    let currentParentId = rootFolderId;
+    for (const part of normalizedPath.split('/').filter(Boolean)) {
+      currentParentId = await this.findOrCreateFolder(currentParentId, part);
+    }
+
+    return currentParentId;
+  }
+
   /**
    * Get folder operations interface for the FolderDeduplicator
    * Returns an object that implements FolderOperations
@@ -909,8 +1128,7 @@ class GoogleDriveProvider implements SyncProvider {
    * Public so backup-queue can use it instead of duplicating logic
    */
   async ensureSeriesFolder(seriesTitle: string): Promise<string> {
-    const rootFolderId = await this.ensureReaderFolder();
-    return this.findOrCreateFolder(rootFolderId, seriesTitle);
+    return this.ensureFolderPath(seriesTitle);
   }
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {

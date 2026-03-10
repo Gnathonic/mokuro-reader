@@ -414,6 +414,41 @@ export class MegaProvider implements SyncProvider {
     });
   }
 
+  private getNodeById(fileId: string): any | null {
+    const files = Object.values(this.storage.files || {});
+    return files.find((f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory) || null;
+  }
+
+  private async findFolderByPath(folderPath: string, rootFolder: any): Promise<any | null> {
+    const pathParts = folderPath.split('/').filter(Boolean);
+    let currentFolder = rootFolder;
+
+    for (const folderName of pathParts) {
+      const children = await this.listFolder(currentFolder);
+      const nextFolder = children.find((f: any) => f.name === folderName && f.directory);
+      if (!nextFolder) {
+        return null;
+      }
+      currentFolder = nextFolder;
+    }
+
+    return currentFolder;
+  }
+
+  private buildRenamedCloudFile(
+    file: CloudFileMetadata,
+    nextPath: string,
+    fileId?: string,
+    modifiedTime?: string
+  ): CloudFileMetadata {
+    return {
+      ...file,
+      fileId: fileId || file.fileId,
+      path: nextPath,
+      modifiedTime: modifiedTime || new Date().toISOString()
+    };
+  }
+
   // VOLUME STORAGE METHODS
 
   async listCloudVolumes(
@@ -770,6 +805,171 @@ export class MegaProvider implements SyncProvider {
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'mega',
         'DELETE_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file;
+    }
+
+    try {
+      return await retryWithCacheRefresh(
+        async () => {
+          const megaFile = this.getNodeById(file.fileId);
+          if (!megaFile) {
+            throw new Error('File not found');
+          }
+
+          const pathParts = normalizedNewPath.split('/');
+          const newFileName = pathParts.pop() || normalizedNewPath;
+          const newSeriesPath = pathParts.join('/');
+          const mokuroFolder = await this.ensureMokuroFolder();
+          const targetFolder = newSeriesPath
+            ? await this.ensureSeriesFolder(newSeriesPath, mokuroFolder)
+            : mokuroFolder;
+
+          const targetChildren = await this.listFolder(targetFolder);
+          const existingTarget = targetChildren.find(
+            (child: any) =>
+              !child.directory &&
+              child.name === newFileName &&
+              child !== megaFile &&
+              child.nodeId !== megaFile.nodeId &&
+              child.id !== megaFile.id
+          );
+          if (existingTarget) {
+            throw new ProviderError(
+              `Target file already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          if (megaFile.parent !== targetFolder) {
+            await megaFile.moveTo(targetFolder);
+          }
+          if (megaFile.name !== newFileName) {
+            await megaFile.rename(newFileName);
+          }
+
+          const nextFileId = megaFile.nodeId || megaFile.id || file.fileId;
+          return this.buildRenamedCloudFile(file, normalizedNewPath, nextFileId);
+        },
+        `Rename file ${file.fileId} in MEGA`,
+        () => this.reinitialize()
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'mega',
+        'RENAME_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedOldPath = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOldPath === normalizedNewPath) {
+      return megaCache.getBySeries(normalizedOldPath);
+    }
+
+    const existingFiles = megaCache.getBySeries(normalizedOldPath);
+    if (existingFiles.length === 0) {
+      return [];
+    }
+
+    try {
+      await retryWithCacheRefresh(
+        async () => {
+          const mokuroFolder = await this.ensureMokuroFolder();
+          const sourceFolder = await this.findFolderByPath(normalizedOldPath, mokuroFolder);
+          if (!sourceFolder) {
+            throw new ProviderError(
+              `Series folder '${normalizedOldPath}' not found`,
+              'mega',
+              'FOLDER_NOT_FOUND'
+            );
+          }
+
+          const existingTargetFolder = await this.findFolderByPath(normalizedNewPath, mokuroFolder);
+          if (existingTargetFolder && existingTargetFolder !== sourceFolder) {
+            throw new ProviderError(
+              `Target series folder already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          const pathParts = normalizedNewPath.split('/');
+          const newFolderName = pathParts.pop() || normalizedNewPath;
+          const newParentPath = pathParts.join('/');
+          const targetParent = newParentPath
+            ? await this.ensureSeriesFolder(newParentPath, mokuroFolder)
+            : mokuroFolder;
+
+          const targetChildren = await this.listFolder(targetParent);
+          const conflictingFolder = targetChildren.find(
+            (child: any) =>
+              child.directory &&
+              child.name === newFolderName &&
+              child !== sourceFolder &&
+              child.nodeId !== sourceFolder.nodeId &&
+              child.id !== sourceFolder.id
+          );
+          if (conflictingFolder) {
+            throw new ProviderError(
+              `Target series folder already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          if (sourceFolder.parent !== targetParent) {
+            await sourceFolder.moveTo(targetParent);
+          }
+          if (sourceFolder.name !== newFolderName) {
+            await sourceFolder.rename(newFolderName);
+          }
+        },
+        `Rename series folder '${normalizedOldPath}' in MEGA`,
+        () => this.reinitialize()
+      );
+
+      return existingFiles.map((file) =>
+        this.buildRenamedCloudFile(
+          file,
+          `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
+          file.fileId,
+          file.modifiedTime
+        )
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'mega',
+        'RENAME_FAILED',
         false,
         true
       );
