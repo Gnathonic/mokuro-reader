@@ -12,6 +12,7 @@ import { db } from '$lib/catalog/db';
 import { requestPersistentStorage } from '$lib/util/upload';
 import type { ProcessedVolume } from './types';
 import type { VolumeMetadata } from '$lib/types';
+import { naturalSort } from '$lib/util/natural-sort';
 
 /**
  * Check if a volume already exists in the database
@@ -42,9 +43,7 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
 
   // Sort files by name for consistent ordering
   const sortedFiles = Object.fromEntries(
-    Object.entries(fileData.files).sort(([aKey], [bKey]) =>
-      aKey.localeCompare(bKey, undefined, { numeric: true, sensitivity: 'base' })
-    )
+    Object.entries(fileData.files).sort(([aKey], [bKey]) => naturalSort(aKey, bKey))
   );
 
   // Calculate page_char_counts from pages

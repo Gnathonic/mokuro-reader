@@ -4,6 +4,7 @@
 
 import { db } from '$lib/catalog/db';
 import { isImageExtension } from '$lib/import';
+import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
 import { get } from 'svelte/store';
 import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
@@ -85,7 +86,7 @@ async function getPageOrderComparator(
       return aIndex - bIndex;
     }
 
-    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    return naturalSort(a, b);
   };
 }
 

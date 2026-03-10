@@ -3,10 +3,7 @@ import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
-
-function naturalSort(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-}
+import { naturalSort } from '$lib/util/natural-sort';
 
 export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;

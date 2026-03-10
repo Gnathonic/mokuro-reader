@@ -26,6 +26,7 @@ import {
   generateDeterministicUUID
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
+import { naturalSort } from '$lib/util/natural-sort';
 
 // ============================================
 // TYPES
@@ -281,12 +282,8 @@ export function matchImagesToPages(
     const matchRatio = matched.length / pages.length;
     if (matchRatio < 0.5) {
       // Sort both lists naturally (numeric-aware)
-      const sortedMissing = [...missing].sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-      );
-      const sortedExtra = [...extra].sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-      );
+      const sortedMissing = [...missing].sort(naturalSort);
+      const sortedExtra = [...extra].sort(naturalSort);
 
       // Pair them positionally
       for (let i = 0; i < sortedMissing.length; i++) {
@@ -518,9 +515,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     totalChars = mokuroData.chars || cumulativeCounts[cumulativeCounts.length - 1] || 0;
   } else {
     // Image-only: sort images and create minimal pages with dimensions
-    const sortedImages = Array.from(imageFiles.keys()).sort((a, b) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-    );
+    const sortedImages = Array.from(imageFiles.keys()).sort(naturalSort);
 
     // Get dimensions for each image
     pages = await Promise.all(
