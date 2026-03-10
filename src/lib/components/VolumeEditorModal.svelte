@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Button, Modal, Label, Input, Select, Spinner, Fileupload } from 'flowbite-svelte';
+  import { Button, Modal, Label, Input, Select, Spinner } from 'flowbite-svelte';
   import { volumeEditorModalStore, closeVolumeEditor } from '$lib/util/modals';
   import {
     getAllSeriesOptions,
     generateNewSeriesUuid,
     updateVolumeInDb,
+    renameVolumeInCloud,
     updateVolumeStats,
     updateVolumeCover,
     resetVolumeCover,
@@ -26,8 +27,6 @@
 
   // Original data for comparison
   let originalMetadata: VolumeMetadata | null = $state(null);
-  let originalStats: VolumeData | null = $state(null);
-
   // Editable form state
   let seriesUuid = $state('');
   let seriesTitle = $state('');
@@ -132,8 +131,6 @@
       }
 
       originalMetadata = data.metadata;
-      originalStats = data.stats;
-
       // Populate form fields
       seriesUuid = data.metadata.series_uuid;
       seriesTitle = data.metadata.series_title;
@@ -221,6 +218,13 @@
       }
       if (volumeTitle !== originalMetadata.volume_title) {
         metadataUpdates.volume_title = volumeTitle;
+      }
+
+      if (
+        finalSeriesTitle !== originalMetadata.series_title ||
+        volumeTitle !== originalMetadata.volume_title
+      ) {
+        await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
       }
 
       if (Object.keys(metadataUpdates).length > 0) {

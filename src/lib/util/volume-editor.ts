@@ -150,6 +150,29 @@ export async function updateVolumeInDb(
 }
 
 /**
+ * Propagate a volume title/series rename to the active cloud provider before local metadata changes.
+ */
+export async function renameVolumeInCloud(
+  originalMetadata: VolumeMetadata,
+  nextSeriesTitle: string,
+  nextVolumeTitle: string
+): Promise<void> {
+  if (
+    originalMetadata.series_title === nextSeriesTitle &&
+    originalMetadata.volume_title === nextVolumeTitle
+  ) {
+    return;
+  }
+
+  await unifiedCloudManager.renameVolume(
+    originalMetadata.series_title,
+    originalMetadata.volume_title,
+    nextSeriesTitle,
+    nextVolumeTitle
+  );
+}
+
+/**
  * Update volume stats in localStorage
  */
 export function updateVolumeStats(

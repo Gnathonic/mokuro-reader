@@ -651,6 +651,7 @@
       // Execute the rename for this series UUID
       await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
+      nav.toSeries(newTitle, { replaceState: true });
       showSnackbar(`Renamed to "${newTitle}"`);
       isRenaming = false;
       renameValue = '';
