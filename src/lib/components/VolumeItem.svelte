@@ -12,6 +12,8 @@
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
+  import { promptExtraction } from '$lib/util/modals';
+  import { zipManga } from '$lib/util/zip';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
   import {
@@ -24,7 +26,8 @@
     CloudArrowUpOutline,
     ImageOutline,
     ExclamationCircleOutline,
-    EditOutline
+    EditOutline,
+    DownloadSolid
   } from 'flowbite-svelte-icons';
   import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
@@ -475,6 +478,27 @@
     backupQueue.queueVolumeForBackup(volume);
     showSnackbar(`Added ${volume.volume_title} to backup queue`);
   }
+
+  function onExtractClicked(e?: Event) {
+    e?.stopPropagation();
+    promptExtraction(
+      { series_title: volume.series_title, volume_title: volume.volume_title },
+      async (
+        asCbz,
+        _individualVolumes,
+        includeSeriesTitle,
+        includeSidecars,
+        embedSidecarsInArchive
+      ) => {
+        await zipManga([volume], asCbz, true, includeSeriesTitle, {
+          includeSidecars,
+          embedSidecarsInArchive
+        });
+      },
+      undefined,
+      true
+    );
+  }
 </script>
 
 {#if $routeParams.manga}
@@ -541,6 +565,13 @@
               <FileLinesOutline class="z-10 text-blue-400 hover:text-blue-500" />
             </button>
             <button
+              onclick={onExtractClicked}
+              class="flex items-center justify-center"
+              title="Extract volume"
+            >
+              <DownloadSolid class="z-10 text-gray-400 hover:text-gray-300" />
+            </button>
+            <button
               onclick={onEditClicked}
               class="flex items-center justify-center"
               title="Edit volume"
@@ -601,6 +632,13 @@
         >
           <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
           <span class="flex-1 text-left">View text</span>
+        </DropdownItem>
+        <DropdownItem
+          onclick={onExtractClicked}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Extract</span>
         </DropdownItem>
         {#if hasAuthenticatedProvider && !isReadOnlyMode}
           {#if isCloudLoading}
