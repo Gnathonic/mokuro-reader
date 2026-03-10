@@ -16,6 +16,19 @@ export interface CloudVolumeWithProvider extends CloudFileMetadata {
   provider: ProviderType;
 }
 
+function normalizeCloudPath(path: string): string {
+  return path.replace(/^\/+|\/+$/g, '');
+}
+
+function stripManagedFileExtension(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.cbz')) return path.slice(0, -4);
+  if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
+  if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+  if (lower.endsWith('.webp')) return path.slice(0, -5);
+  return path;
+}
+
 /**
  * Unified Cloud Manager - Single Provider Design
  *
@@ -182,6 +195,101 @@ class UnifiedCloudManager {
     }
   }
 
+  private replaceCachedFile(oldFile: CloudFileMetadata, updatedFile: CloudFileMetadata): void {
+    const provider = this.getActiveProvider();
+    if (!provider) return;
+
+    const cache = cacheManager.getCache(provider.type);
+    cache?.removeById?.(oldFile.fileId);
+    cache?.add?.(updatedFile.path, updatedFile);
+  }
+
+  private getManagedCloudFilesForVolume(
+    seriesTitle: string,
+    volumeTitle: string
+  ): CloudFileMetadata[] {
+    const basePath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}`);
+    return this.getCloudVolumesBySeries(seriesTitle).filter(
+      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+  }
+
+  /**
+   * Rename or move a backed-up volume and its sidecars in the current provider.
+   * Returns the number of remote files updated.
+   */
+  async renameVolume(
+    oldSeriesTitle: string,
+    oldVolumeTitle: string,
+    newSeriesTitle: string,
+    newVolumeTitle: string
+  ): Promise<number> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return 0;
+    }
+
+    const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
+    const newBasePath = normalizeCloudPath(`${newSeriesTitle}/${newVolumeTitle}`);
+    if (oldBasePath === newBasePath) {
+      return 0;
+    }
+
+    await this.fetchAllCloudVolumes();
+
+    const filesToRename = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    if (filesToRename.length === 0) {
+      return 0;
+    }
+
+    for (const file of filesToRename) {
+      const oldPath = normalizeCloudPath(file.path);
+      const suffix = oldPath.slice(oldBasePath.length);
+      const updatedFile = await provider.renameFile(file, `${newBasePath}${suffix}`);
+      this.replaceCachedFile(file, updatedFile);
+    }
+
+    return filesToRename.length;
+  }
+
+  /**
+   * Rename or move a backed-up series folder in the current provider.
+   * Returns the number of remote files updated.
+   */
+  async renameSeries(oldSeriesTitle: string, newSeriesTitle: string): Promise<number> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return 0;
+    }
+
+    const normalizedOldTitle = normalizeCloudPath(oldSeriesTitle);
+    const normalizedNewTitle = normalizeCloudPath(newSeriesTitle);
+    if (normalizedOldTitle === normalizedNewTitle) {
+      return 0;
+    }
+
+    await this.fetchAllCloudVolumes();
+
+    const existingFiles = this.getCloudVolumesBySeries(oldSeriesTitle);
+    if (existingFiles.length === 0) {
+      return 0;
+    }
+
+    const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
+
+    const cache = cacheManager.getCache(provider.type);
+    if (cache?.removeById && cache?.add) {
+      for (const file of existingFiles) {
+        cache.removeById(file.fileId);
+      }
+      for (const file of renamedFiles) {
+        cache.add(file.path, file);
+      }
+    }
+
+    return renamedFiles.length;
+  }
+
   /**
    * Delete an entire series folder (all volumes in the series)
    */
@@ -198,15 +306,6 @@ class UnifiedCloudManager {
       return { succeeded: 0, failed: 0 };
     }
 
-    const getBasePath = (path: string): string => {
-      const lower = path.toLowerCase();
-      if (lower.endsWith('.cbz')) return path.slice(0, -4);
-      if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
-      if (lower.endsWith('.mokuro')) return path.slice(0, -7);
-      if (lower.endsWith('.webp')) return path.slice(0, -5);
-      return path;
-    };
-
     const archives: CloudFileMetadata[] = [];
     const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
     for (const file of seriesVolumes) {
@@ -214,7 +313,7 @@ class UnifiedCloudManager {
         archives.push(file);
         continue;
       }
-      const base = getBasePath(file.path);
+      const base = stripManagedFileExtension(file.path);
       const existing = nonArchivesByBase.get(base);
       if (existing) {
         existing.push(file);
@@ -226,7 +325,7 @@ class UnifiedCloudManager {
     const orderedSeriesVolumes: CloudFileMetadata[] = [];
     for (const archive of archives) {
       orderedSeriesVolumes.push(archive);
-      const base = getBasePath(archive.path);
+      const base = stripManagedFileExtension(archive.path);
       const related = nonArchivesByBase.get(base);
       if (related && related.length > 0) {
         orderedSeriesVolumes.push(...related);
