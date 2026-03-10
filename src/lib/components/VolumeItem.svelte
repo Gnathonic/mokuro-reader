@@ -1,6 +1,6 @@
 <script lang="ts">
   import {
-    deleteVolume,
+    deleteVolume as deleteVolumeStats,
     progress,
     volumes as readingVolumes,
     settings,
@@ -31,6 +31,7 @@
   } from 'flowbite-svelte-icons';
   import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
+  import { deleteVolume as deleteStoredVolume } from '$lib/import';
   import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
@@ -321,16 +322,11 @@
     promptConfirmation(
       `Delete ${volName}?`,
       async (deleteStats = false, deleteCloud = false) => {
-        // Delete from all 3 tables
-        await Promise.all([
-          db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete(),
-          db.volume_ocr.delete(volume.volume_uuid),
-          db.volume_files.delete(volume.volume_uuid)
-        ]);
+        await deleteStoredVolume(volume.volume_uuid);
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {
-          deleteVolume(volume.volume_uuid);
+          deleteVolumeStats(volume.volume_uuid);
         }
 
         // Delete from cloud if checkbox checked
