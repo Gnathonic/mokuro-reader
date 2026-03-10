@@ -115,9 +115,6 @@ export function applySwUpdate() {
 export function dismissSwUpdate() {
   swUpdateAvailable.set(false);
   if (browser) {
-    localStorage.setItem(
-      SW_UPDATE_DISMISSED_UNTIL_KEY,
-      String(Date.now() + SW_UPDATE_DISMISS_MS)
-    );
+    localStorage.setItem(SW_UPDATE_DISMISSED_UNTIL_KEY, String(Date.now() + SW_UPDATE_DISMISS_MS));
   }
 }

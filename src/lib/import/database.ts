@@ -20,7 +20,7 @@ import type { VolumeMetadata } from '$lib/types';
  * @returns True if the volume exists
  */
 export async function volumeExists(volumeUuid: string): Promise<boolean> {
-  const existing = await db.volumes.where('volume_uuid').equals(volumeUuid).first();
+  const existing = await db.volumes.get(volumeUuid);
   return existing !== undefined;
 }
 
@@ -35,11 +35,7 @@ export async function volumeExists(volumeUuid: string): Promise<boolean> {
  */
 export async function saveVolume(volume: ProcessedVolume): Promise<void> {
   const { metadata, ocrData, fileData } = volume;
-
-  // Check for duplicates
-  if (await volumeExists(metadata.volumeUuid)) {
-    throw new Error(`Volume ${metadata.volumeUuid} already exists in database`);
-  }
+  const canonicalVolumeUuid = metadata.volumeUuid;
 
   // Request persistent storage
   await requestPersistentStorage();
@@ -81,19 +77,38 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
 
   // Write to all 3 tables atomically
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
+    const [existingVolume, existingOcr, existingFiles] = await Promise.all([
+      db.volumes.get(canonicalVolumeUuid),
+      db.volume_ocr.get(canonicalVolumeUuid),
+      db.volume_files.get(canonicalVolumeUuid)
+    ]);
+
+    if (existingVolume) {
+      throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
+    }
+
+    // Clean up stale rows left behind by an interrupted delete before re-importing.
+    if (existingOcr) {
+      await db.volume_ocr.delete(canonicalVolumeUuid);
+    }
+
+    if (existingFiles) {
+      await db.volume_files.delete(canonicalVolumeUuid);
+    }
+
     // Write metadata
     await db.volumes.add(volumeMetadata);
 
     // Write OCR data (strip cumulativeChars as it's stored in page_char_counts)
     const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
     await db.volume_ocr.add({
-      volume_uuid: ocrData.volume_uuid,
+      volume_uuid: canonicalVolumeUuid,
       pages: pagesForDb as any // Cast to any since Page type is stricter
     });
 
     // Write files
     await db.volume_files.add({
-      volume_uuid: fileData.volume_uuid,
+      volume_uuid: canonicalVolumeUuid,
       files: sortedFiles
     });
   });

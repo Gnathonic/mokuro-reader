@@ -178,7 +178,9 @@
   <!-- Header - always visible, clickable to expand -->
   <button
     type="button"
-    class="flex w-full items-start gap-2 px-2 py-1.5 text-left {disabled ? 'opacity-50' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}"
+    class="flex w-full items-start gap-2 px-2 py-1.5 text-left {disabled
+      ? 'opacity-50'
+      : 'hover:bg-gray-50 dark:hover:bg-gray-800'}"
     onclick={toggleExpand}
     {disabled}
   >
@@ -191,7 +193,9 @@
     <!-- Preview - truncated to keep rows compact -->
     <span class="flex-1 truncate text-sm text-gray-900 dark:text-white">
       {#if disabled}
-        <span class="text-xs italic text-gray-400 dark:text-gray-500">{disabledReason || 'Disabled'}</span>
+        <span class="text-xs text-gray-400 italic dark:text-gray-500"
+          >{disabledReason || 'Disabled'}</span
+        >
       {:else if configureMode}
         <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">{template || '(not set)'}</code>
       {:else}

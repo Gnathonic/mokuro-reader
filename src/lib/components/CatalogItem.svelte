@@ -175,7 +175,8 @@
     const rect = containerEl.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
 
-    const sizes = stackedVolumes.length > 0 && hasRenderableThumbnails ? stepSizes : placeholderStepSizes;
+    const sizes =
+      stackedVolumes.length > 0 && hasRenderableThumbnails ? stepSizes : placeholderStepSizes;
     const count = stackedVolumes.length;
 
     // Build cascading left positions
@@ -215,7 +216,9 @@
   });
 
   // Key for CompositeCanvas - forces fresh component on settings change
-  let volumeOffsetsKey = $derived([...volumeOffsets.entries()].map(([k, v]) => `${k}:${v}`).join(','));
+  let volumeOffsetsKey = $derived(
+    [...volumeOffsets.entries()].map(([k, v]) => `${k}:${v}`).join(',')
+  );
   let compositeKey = $derived(
     `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}-${($catalogSettings?.compactCloudSeries ?? false) ? 'compact' : 'full'}-${showDropShadow}-${hOffsetAdjust}-${volumeOffsetsKey}`
   );
@@ -354,7 +357,10 @@
     const cumulativeOffsetPx = getCumulativeOffsetTotal(effectiveStackCount);
 
     // Inner container (thumbnail area) — clamp so it never shrinks below one volume
-    const innerWidth = Math.max(BASE_WIDTH, Math.round(baseWidth + extraWidth + cumulativeOffsetPx));
+    const innerWidth = Math.max(
+      BASE_WIDTH,
+      Math.round(baseWidth + extraWidth + cumulativeOffsetPx)
+    );
     const innerHeight = Math.round(BASE_HEIGHT + extraHeight);
 
     // Outer container (with padding)
@@ -486,7 +492,9 @@
 
     // For placeholders, use capped count to match stackedVolumes sizing
     const maxCount = isPlaceholderOnly
-      ? (stackCountSetting === 0 ? MAX_CLOUD_STACK : Math.min(stackCountSetting, MAX_CLOUD_STACK))
+      ? stackCountSetting === 0
+        ? MAX_CLOUD_STACK
+        : Math.min(stackCountSetting, MAX_CLOUD_STACK)
       : stackCountSetting;
     const actualCount = Math.min(seriesVolumes.length, maxCount);
     const effectiveStackCount = maxCount;
@@ -553,7 +561,9 @@
       // Fetch async
       fetchCloudThumbnail(vol).then((result) => {
         if (cancelled || !result) return;
-        console.log(`[CatalogItem] Cloud thumbnail loaded: ${vol.volume_title} ${result.width}x${result.height}`);
+        console.log(
+          `[CatalogItem] Cloud thumbnail loaded: ${vol.volume_title} ${result.width}x${result.height}`
+        );
         cloudThumbnailData[vol.volume_uuid] = result;
       });
     }
@@ -570,8 +580,7 @@
   let navId = $derived(volume?.series_title || '');
 
   function persistCatalogScrollPosition() {
-    const y =
-      window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    const y = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
     sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(y));
   }
 
@@ -595,7 +604,10 @@
       class:border-dashed={showSeriesIndicator}
       class:cursor-pointer={isPlaceholderOnly}
       onmouseenter={() => (isHovered = true)}
-      onmouseleave={() => { isHovered = false; hoveredVolumeIndex = null; }}
+      onmouseleave={() => {
+        isHovered = false;
+        hoveredVolumeIndex = null;
+      }}
       onmousemove={handleMouseMove}
       oncontextmenu={handleContextMenu}
     >
@@ -651,9 +663,12 @@
                 class:border-gray-300={showDropShadow}
                 class:dark:border-gray-600={showDropShadow}
                 style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {placeholderStepSizes.leftOffset +
-                  i * placeholderStepSizes.horizontal + getCumulativeOffset(i)}px; top: {placeholderStepSizes.topOffset +
+                  i * placeholderStepSizes.horizontal +
+                  getCumulativeOffset(i)}px; top: {placeholderStepSizes.topOffset +
                   i * placeholderStepSizes.vertical}px; z-index: {placeholderStepSizes.count -
-                  i};{showDropShadow ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));' : ''}"
+                  i};{showDropShadow
+                  ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));'
+                  : ''}"
               >
                 {#if i === 0}
                   <div class="flex flex-col items-center gap-3">
@@ -687,9 +702,12 @@
                 class:border-gray-300={showDropShadow}
                 class:dark:border-gray-600={showDropShadow}
                 style="width: {BASE_WIDTH}px; height: {BASE_HEIGHT}px; left: {stepSizes.leftOffset +
-                  i * stepSizes.horizontal + getCumulativeOffset(i)}px; top: {stepSizes.topOffset +
+                  i * stepSizes.horizontal +
+                  getCumulativeOffset(i)}px; top: {stepSizes.topOffset +
                   i * stepSizes.vertical}px; z-index: {Math.max(stackedVolumes.length, 1) -
-                  i};{showDropShadow ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));' : ''}"
+                  i};{showDropShadow
+                  ? ' filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));'
+                  : ''}"
               >
                 {#if i === 0}
                   <span class="text-sm text-gray-500 dark:text-gray-400">Generating...</span>

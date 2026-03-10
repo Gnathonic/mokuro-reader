@@ -50,21 +50,30 @@
     const importedVolumes = allVolumes.filter((volume) => !existingUuids.has(volume.volume_uuid));
 
     if (importedVolumes.length === 0) {
-      console.warn('[HTML Download] Cover sidecar downloaded but no newly imported volume was found');
+      console.warn(
+        '[HTML Download] Cover sidecar downloaded but no newly imported volume was found'
+      );
       return;
     }
 
     const normalizedRequestVolume = normalizeTitle(requestVolume);
     const targetVolume =
-      importedVolumes.find((volume) => normalizeTitle(volume.volume_title) === normalizedRequestVolume) ||
-      importedVolumes.find((volume) => normalizeTitle(volume.volume_uuid) === normalizedRequestVolume) ||
+      importedVolumes.find(
+        (volume) => normalizeTitle(volume.volume_title) === normalizedRequestVolume
+      ) ||
+      importedVolumes.find(
+        (volume) => normalizeTitle(volume.volume_uuid) === normalizedRequestVolume
+      ) ||
       importedVolumes[0];
 
     let dims = { width: 1, height: 1 };
     try {
       dims = await getImageDimensions(coverFile);
     } catch (error) {
-      console.warn('[HTML Download] Failed to read sidecar dimensions; using fallback dimensions', error);
+      console.warn(
+        '[HTML Download] Failed to read sidecar dimensions; using fallback dimensions',
+        error
+      );
     }
 
     await db.volumes.update(targetVolume.volume_uuid, {
@@ -117,7 +126,9 @@
         progress: 95
       });
 
-      const existingUuids = new Set((await db.volumes.toArray()).map((volume) => volume.volume_uuid));
+      const existingUuids = new Set(
+        (await db.volumes.toArray()).map((volume) => volume.volume_uuid)
+      );
 
       // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
       // post-download pairing for archive+sidecar combinations.

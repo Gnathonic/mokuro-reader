@@ -73,9 +73,13 @@ async function getPageOrderComparator(
     const normalizedB = normalizeFilename(b).toLowerCase();
 
     const aIndex =
-      pageIndexByPath.get(normalizedA) ?? pageIndexByBasename.get(basename(normalizedA)) ?? Infinity;
+      pageIndexByPath.get(normalizedA) ??
+      pageIndexByBasename.get(basename(normalizedA)) ??
+      Infinity;
     const bIndex =
-      pageIndexByPath.get(normalizedB) ?? pageIndexByBasename.get(basename(normalizedB)) ?? Infinity;
+      pageIndexByPath.get(normalizedB) ??
+      pageIndexByBasename.get(basename(normalizedB)) ??
+      Infinity;
 
     if (aIndex !== bIndex) {
       return aIndex - bIndex;
@@ -143,6 +147,29 @@ export async function updateVolumeInDb(
   updates: Partial<VolumeMetadata>
 ): Promise<void> {
   await db.volumes.update(volumeUuid, updates);
+}
+
+/**
+ * Propagate a volume title/series rename to the active cloud provider before local metadata changes.
+ */
+export async function renameVolumeInCloud(
+  originalMetadata: VolumeMetadata,
+  nextSeriesTitle: string,
+  nextVolumeTitle: string
+): Promise<void> {
+  if (
+    originalMetadata.series_title === nextSeriesTitle &&
+    originalMetadata.volume_title === nextVolumeTitle
+  ) {
+    return;
+  }
+
+  await unifiedCloudManager.renameVolume(
+    originalMetadata.series_title,
+    originalMetadata.volume_title,
+    nextSeriesTitle,
+    nextVolumeTitle
+  );
 }
 
 /**

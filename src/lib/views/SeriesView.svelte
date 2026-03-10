@@ -3,12 +3,12 @@
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
-  import { db } from '$lib/catalog/db';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
-  import { deleteVolume, volumes, progress, settings } from '$lib/settings';
+  import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
+  import { deleteVolume as deleteStoredVolume } from '$lib/import';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -355,18 +355,15 @@
   async function confirmDelete(deleteStats = false, deleteCloud = false) {
     const seriesUuid = manga?.[0].series_uuid;
     if (seriesUuid) {
-      manga?.forEach((vol) => {
-        const volId = vol.volume_uuid;
-        // Delete from all 3 tables in v3 schema
-        db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
-        db.volume_ocr.delete(vol.volume_uuid);
-        db.volume_files.delete(vol.volume_uuid);
+      await Promise.all(
+        (manga || []).map(async (vol) => {
+          await deleteStoredVolume(vol.volume_uuid);
 
-        // Only delete stats and progress if the checkbox is checked
-        if (deleteStats) {
-          deleteVolume(volId);
-        }
-      });
+          if (deleteStats) {
+            deleteVolumeStats(vol.volume_uuid);
+          }
+        })
+      );
 
       // Delete from cloud if checkbox checked
       if (deleteCloud && hasAnyProvider && manga) {
@@ -472,7 +469,7 @@
           includeSidecars,
           embedSidecarsInArchive
         ) => {
-        loading = true;
+          loading = true;
           loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle, {
             includeSidecars,
             embedSidecarsInArchive
@@ -654,6 +651,7 @@
       // Execute the rename for this series UUID
       await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
+      nav.toSeries(newTitle, { replaceState: true });
       showSnackbar(`Renamed to "${newTitle}"`);
       isRenaming = false;
       renameValue = '';

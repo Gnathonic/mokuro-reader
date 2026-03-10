@@ -85,8 +85,7 @@
   let navId = $derived(volume?.series_title || '');
 
   function persistCatalogScrollPosition() {
-    const y =
-      window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    const y = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
     sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(y));
   }
 

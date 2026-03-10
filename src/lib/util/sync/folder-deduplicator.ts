@@ -82,7 +82,10 @@ class FolderDeduplicator {
    * @param ops Folder operations for this provider
    * @returns Result with counts of what was merged
    */
-  async deduplicateAll(provider: ProviderType, ops: FolderOperations): Promise<DeduplicationResult> {
+  async deduplicateAll(
+    provider: ProviderType,
+    ops: FolderOperations
+  ): Promise<DeduplicationResult> {
     const result: DeduplicationResult = {
       groupsMerged: 0,
       foldersDeleted: 0,
@@ -112,7 +115,9 @@ class FolderDeduplicator {
         return result;
       }
 
-      console.log(`[Dedup:${provider}] Found ${duplicateGroups.length} duplicate group(s) to merge`);
+      console.log(
+        `[Dedup:${provider}] Found ${duplicateGroups.length} duplicate group(s) to merge`
+      );
 
       // Merge each group
       for (const group of duplicateGroups) {

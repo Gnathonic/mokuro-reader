@@ -726,6 +726,36 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  private buildWebDAVFileMetadata(
+    file: CloudFileMetadata,
+    path: string,
+    modifiedTime?: string
+  ): CloudFileMetadata {
+    return {
+      ...file,
+      fileId: `${MOKURO_FOLDER}/${path}`,
+      path,
+      modifiedTime: modifiedTime || new Date().toISOString()
+    };
+  }
+
+  private isWebDAVPermissionError(errorMessage: string): boolean {
+    return (
+      errorMessage.includes('401') ||
+      errorMessage.includes('403') ||
+      errorMessage.includes('405') ||
+      errorMessage.includes('Unauthorized') ||
+      errorMessage.includes('Forbidden') ||
+      errorMessage.includes('Method Not Allowed') ||
+      errorMessage.includes('Permission denied')
+    );
+  }
+
+  private throwWritePermissionError(message: string): never {
+    this.markAsReadOnly();
+    throw new ProviderError(message, 'webdav', 'PERMISSION_DENIED', false, false, 'permission');
+  }
+
   async downloadFile(
     file: import('../../provider-interface').CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void
@@ -767,32 +797,136 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Check for permission errors - mark as read-only
-      // 401 = Unauthorized (read-only token), 403 = Forbidden, 405 = Method Not Allowed
-      if (
-        errorMessage.includes('401') ||
-        errorMessage.includes('403') ||
-        errorMessage.includes('405') ||
-        errorMessage.includes('Unauthorized') ||
-        errorMessage.includes('Forbidden') ||
-        errorMessage.includes('Method Not Allowed') ||
-        errorMessage.includes('Permission denied')
-      ) {
-        this.markAsReadOnly();
-        throw new ProviderError(
-          'Delete permission denied - server is read-only',
-          'webdav',
-          'PERMISSION_DENIED',
-          false,
-          false,
-          'permission'
-        );
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Delete permission denied - server is read-only');
       }
 
       throw new ProviderError(
         `Failed to delete file: ${errorMessage}`,
         'webdav',
         'DELETE_FAILED',
+        false,
+        true,
+        'unknown'
+      );
+    }
+  }
+
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file;
+    }
+
+    const newPathParts = normalizedNewPath.split('/');
+    newPathParts.pop();
+    const destinationFolder = newPathParts.join('/');
+    const destinationFullPath = `${MOKURO_FOLDER}/${normalizedNewPath}`;
+
+    try {
+      if (destinationFolder) {
+        await this.ensureSeriesFolder(destinationFolder);
+      } else {
+        await this.ensureMokuroFolder();
+      }
+
+      if (await this.client.exists(destinationFullPath)) {
+        throw new ProviderError(
+          `Target file already exists at '${normalizedNewPath}'`,
+          'webdav',
+          'TARGET_EXISTS'
+        );
+      }
+
+      await this.client.moveFile(file.fileId, destinationFullPath, { overwrite: false });
+      console.log(`✅ Renamed ${file.path} to ${normalizedNewPath} in WebDAV`);
+      return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Rename permission denied - server is read-only');
+      }
+
+      throw new ProviderError(
+        `Failed to rename file: ${errorMessage}`,
+        'webdav',
+        'RENAME_FAILED',
+        false,
+        true,
+        'unknown'
+      );
+    }
+  }
+
+  async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedOldPath = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOldPath === normalizedNewPath) {
+      const allFiles = await this.listCloudVolumes();
+      return allFiles.filter((file) => file.path.startsWith(`${normalizedOldPath}/`));
+    }
+
+    const sourceFullPath = `${MOKURO_FOLDER}/${normalizedOldPath}`;
+    const destinationFullPath = `${MOKURO_FOLDER}/${normalizedNewPath}`;
+    const renamedFiles = (await this.listCloudVolumes())
+      .filter((file) => file.path.startsWith(`${normalizedOldPath}/`))
+      .map((file) =>
+        this.buildWebDAVFileMetadata(
+          file,
+          `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
+          file.modifiedTime
+        )
+      );
+
+    try {
+      const newPathParts = normalizedNewPath.split('/');
+      newPathParts.pop();
+      const destinationParent = newPathParts.join('/');
+      if (destinationParent) {
+        await this.ensureSeriesFolder(destinationParent);
+      } else {
+        await this.ensureMokuroFolder();
+      }
+
+      if (await this.client.exists(destinationFullPath)) {
+        throw new ProviderError(
+          `Target series folder already exists at '${normalizedNewPath}'`,
+          'webdav',
+          'TARGET_EXISTS'
+        );
+      }
+
+      await this.client.moveFile(sourceFullPath, destinationFullPath, { overwrite: false });
+      console.log(
+        `✅ Renamed series folder ${normalizedOldPath} to ${normalizedNewPath} in WebDAV`
+      );
+      return renamedFiles;
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Rename permission denied - server is read-only');
+      }
+
+      throw new ProviderError(
+        `Failed to rename series folder: ${errorMessage}`,
+        'webdav',
+        'RENAME_FAILED',
         false,
         true,
         'unknown'

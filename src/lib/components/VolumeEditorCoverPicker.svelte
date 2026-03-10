@@ -103,10 +103,7 @@
           url: URL.createObjectURL(f.file)
         }));
         if (pages.length > 0) {
-          const defaultIndex = Math.min(
-            Math.max(initialPageIndex ?? 0, 0),
-            pages.length - 1
-          );
+          const defaultIndex = Math.min(Math.max(initialPageIndex ?? 0, 0), pages.length - 1);
           selectedPageIndex = defaultIndex;
           if (openCropperOnLoad) {
             cropImage = pages[defaultIndex]?.url || null;
@@ -442,7 +439,10 @@
 
     // Apply relative origin and clamp so the crop always fits in the image.
     const clampedX = Math.min(Math.max(lastCropZone.xPercent * imageWidth, 0), imageWidth - width);
-    const clampedY = Math.min(Math.max(lastCropZone.yPercent * imageHeight, 0), imageHeight - height);
+    const clampedY = Math.min(
+      Math.max(lastCropZone.yPercent * imageHeight, 0),
+      imageHeight - height
+    );
 
     cropper.setData({
       x: clampedX,

@@ -4,7 +4,10 @@ import type { VolumeMetadata } from '$lib/types';
 import type { LibraryFileMetadata } from './library-webdav-client';
 import { getLibraryById } from '$lib/settings/libraries';
 import { getLibraryClient } from './library-cache-manager';
-import { unifiedCloudManager, type CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
+import {
+  unifiedCloudManager,
+  type CloudVolumeWithProvider
+} from '$lib/util/sync/unified-cloud-manager';
 import type { ProviderType } from '$lib/util/sync/provider-interface';
 
 type LibraryUpgradeTask = {
@@ -83,7 +86,8 @@ async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<Fil
 }
 
 async function applyUpgrade(task: UpgradeTask): Promise<void> {
-  const taskScope = task.kind === 'library' ? `library:${task.libraryId}` : `cloud:${task.provider}`;
+  const taskScope =
+    task.kind === 'library' ? `library:${task.libraryId}` : `cloud:${task.provider}`;
   console.log(
     '[Library OCR Upgrade] Starting task:',
     task.volumeUuid,
@@ -187,7 +191,12 @@ async function processQueue(): Promise<void> {
         console.warn('[Library OCR Upgrade] Failed to auto-upgrade volume:', error);
       } finally {
         pendingTaskIds.delete(taskId);
-        console.log('[Library OCR Upgrade] Task complete:', taskId, 'remaining=', queuedTasks.length);
+        console.log(
+          '[Library OCR Upgrade] Task complete:',
+          taskId,
+          'remaining=',
+          queuedTasks.length
+        );
       }
     }
   } finally {
@@ -196,7 +205,10 @@ async function processQueue(): Promise<void> {
   }
 }
 
-export function enqueueLibraryOcrUpgrade(volume: VolumeMetadata, sidecar: LibraryFileMetadata): void {
+export function enqueueLibraryOcrUpgrade(
+  volume: VolumeMetadata,
+  sidecar: LibraryFileMetadata
+): void {
   if (volume.isPlaceholder) {
     console.log('[Library OCR Upgrade] Skip enqueue for placeholder volume:', volume.volume_uuid);
     return;
@@ -236,9 +248,15 @@ export function enqueueLibraryOcrUpgrade(volume: VolumeMetadata, sidecar: Librar
   void processQueue();
 }
 
-export function enqueueCloudOcrUpgrade(volume: VolumeMetadata, sidecar: CloudVolumeWithProvider): void {
+export function enqueueCloudOcrUpgrade(
+  volume: VolumeMetadata,
+  sidecar: CloudVolumeWithProvider
+): void {
   if (volume.isPlaceholder) {
-    console.log('[Library OCR Upgrade] Skip cloud enqueue for placeholder volume:', volume.volume_uuid);
+    console.log(
+      '[Library OCR Upgrade] Skip cloud enqueue for placeholder volume:',
+      volume.volume_uuid
+    );
     return;
   }
   const currentMokuroVersion =

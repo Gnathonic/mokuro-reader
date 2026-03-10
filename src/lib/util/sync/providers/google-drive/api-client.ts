@@ -305,7 +305,9 @@ class DriveApiClient {
             if (parsed.id) {
               resolve({ id: parsed.id });
             } else {
-              reject(new DriveApiError('Upload succeeded but response is missing file id', xhr.status));
+              reject(
+                new DriveApiError('Upload succeeded but response is missing file id', xhr.status)
+              );
             }
           } catch {
             reject(new DriveApiError('Upload response parsing failed', xhr.status));
@@ -350,6 +352,30 @@ class DriveApiClient {
         fields: 'id,parents',
         resource: {} // Empty resource required by gapi types
       });
+    });
+  }
+
+  /**
+   * Update Drive file metadata and optionally move it between folders.
+   */
+  async updateFileMetadata(
+    fileId: string,
+    resource: Record<string, any>,
+    options?: {
+      addParents?: string;
+      removeParents?: string;
+      fields?: string;
+    }
+  ): Promise<DriveFile> {
+    return this.handleApiCall(async () => {
+      const { result } = await gapi.client.drive.files.update({
+        fileId,
+        resource,
+        addParents: options?.addParents,
+        removeParents: options?.removeParents,
+        fields: options?.fields || 'id,name,parents,modifiedTime,size,description'
+      });
+      return result as DriveFile;
     });
   }
 

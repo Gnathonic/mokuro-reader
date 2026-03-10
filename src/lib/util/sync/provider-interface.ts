@@ -84,6 +84,14 @@ class ExportProvider {
     throw new Error('Export provider does not support cloud operations');
   }
 
+  async renameFile(_file: CloudFileMetadata, _newPath: string): Promise<CloudFileMetadata> {
+    throw new Error('Export provider does not support cloud operations');
+  }
+
+  async renameFolder(_oldPath: string, _newPath: string): Promise<CloudFileMetadata[]> {
+    throw new Error('Export provider does not support cloud operations');
+  }
+
   async getStorageQuota(): Promise<StorageQuota> {
     throw new Error('Export provider does not support cloud operations');
   }
@@ -265,6 +273,18 @@ export interface SyncProvider {
    * @param file Cloud file metadata (provider extracts internal ID)
    */
   deleteFile(file: CloudFileMetadata): Promise<void>;
+
+  /**
+   * Rename or move a file within cloud storage.
+   * Returns refreshed metadata for cache replacement.
+   */
+  renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata>;
+
+  /**
+   * Rename or move a folder within cloud storage.
+   * Returns refreshed metadata for affected files so caches can be updated safely.
+   */
+  renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]>;
 
   /**
    * Optional provider-optimized deletion of an entire series folder.

@@ -23,7 +23,15 @@
     onContextMenu?: (data: ContextMenuData) => void;
   }
 
-  let { page, src, cachedUrl, volumeUuid, pageIndex, forceVisible = false, onContextMenu }: Props = $props();
+  let {
+    page,
+    src,
+    cachedUrl,
+    volumeUuid,
+    pageIndex,
+    forceVisible = false,
+    onContextMenu
+  }: Props = $props();
 
   let url = $state('');
 

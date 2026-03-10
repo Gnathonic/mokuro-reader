@@ -25,10 +25,12 @@ import {
   isImageExtension,
   processVolume,
   saveVolume,
+  deleteVolume as deleteStoredVolume,
   isSystemFile
 } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
+import { shouldReplaceDownloadedVolume } from './download-volume-repair';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -65,7 +67,10 @@ function isThumbnailSidecar(filename: string, basePath: string): boolean {
   return normalized === `${stem}.webp`;
 }
 
-async function parseMokuroGzEntry(entry: DecompressedEntry, normalizedFilename: string): Promise<File | null> {
+async function parseMokuroGzEntry(
+  entry: DecompressedEntry,
+  normalizedFilename: string
+): Promise<File | null> {
   if (typeof DecompressionStream === 'undefined') {
     return null;
   }
@@ -210,18 +215,18 @@ export function queueVolumesFromCloudFiles(
   const placeholders: VolumeMetadata[] = cloudFiles
     .filter((file) => file.path.toLowerCase().endsWith('.cbz'))
     .map((file) => {
-    // Look up file in cache to get proper path with parent folder
-    // The cache has the full path (e.g., "SeriesName/Volume01.cbz")
-    const cachedFile = unifiedCloudManager.getCloudVolume(file.fileId);
-    const filePath = cachedFile?.path || file.path;
+      // Look up file in cache to get proper path with parent folder
+      // The cache has the full path (e.g., "SeriesName/Volume01.cbz")
+      const cachedFile = unifiedCloudManager.getCloudVolume(file.fileId);
+      const filePath = cachedFile?.path || file.path;
 
-    // Use sophisticated extraction for consistent series names
-    const { seriesTitle, volumeTitle } = extractTitlesFromPath(filePath);
+      // Use sophisticated extraction for consistent series names
+      const { seriesTitle, volumeTitle } = extractTitlesFromPath(filePath);
 
-    // Generate deterministic UUIDs from series + volume names
-    // This ensures the same volume gets the same UUID across devices
-    const seriesUuid = generateDeterministicUUID(seriesTitle);
-    const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
+      // Generate deterministic UUIDs from series + volume names
+      // This ensures the same volume gets the same UUID across devices
+      const seriesUuid = generateDeterministicUUID(seriesTitle);
+      const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
       return {
         mokuro_version: '0.0.0', // Placeholder - will be updated after download
@@ -390,15 +395,28 @@ async function processVolumeData(
     processedVolume.metadata.seriesUuid = placeholder.series_uuid;
     processedVolume.metadata.volume = placeholder.volume_title;
     processedVolume.metadata.volumeUuid = placeholder.volume_uuid;
+    processedVolume.ocrData.volume_uuid = placeholder.volume_uuid;
+    processedVolume.fileData.volume_uuid = placeholder.volume_uuid;
   }
 
-  // Check if volume already exists
-  const existingVolume = await db.volumes
-    .where('volume_uuid')
-    .equals(processedVolume.metadata.volumeUuid)
-    .first();
+  const [existingVolume, existingOcr, existingFiles] = await Promise.all([
+    db.volumes.get(processedVolume.metadata.volumeUuid),
+    db.volume_ocr.get(processedVolume.metadata.volumeUuid),
+    db.volume_files.get(processedVolume.metadata.volumeUuid)
+  ]);
 
-  if (!existingVolume) {
+  if (
+    shouldReplaceDownloadedVolume(
+      existingVolume,
+      existingOcr,
+      existingFiles,
+      processedVolume.metadata.mokuroVersion
+    )
+  ) {
+    if (existingVolume) {
+      await deleteStoredVolume(processedVolume.metadata.volumeUuid);
+    }
+
     // Save using unified database function
     await saveVolume(processedVolume);
   }
@@ -452,11 +470,7 @@ function getSidecarCandidatesForPlaceholder(placeholder: VolumeMetadata): string
     (placeholder as VolumeMetadata & { cloudPath?: string }).cloudPath ||
     `${placeholder.series_title}/${placeholder.volume_title}.cbz`;
   const noExt = cloudPath.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
-  return [
-    `${noExt}.mokuro`,
-    `${noExt}.mokuro.gz`,
-    `${noExt}.webp`
-  ];
+  return [`${noExt}.mokuro`, `${noExt}.mokuro.gz`, `${noExt}.webp`];
 }
 
 function normalizePathKey(value: string): string {
@@ -501,7 +515,11 @@ function findSidecarFiles(
   const fallbackMatches = allFiles.filter((file) => {
     const filePathKey = normalizePathKey(file.path);
     // Prefer the original cloud directory when available, then fall back to series title.
-    if (cloudDir && !filePathKey.startsWith(`${cloudDir}/`) && !filePathKey.startsWith(seriesPrefix)) {
+    if (
+      cloudDir &&
+      !filePathKey.startsWith(`${cloudDir}/`) &&
+      !filePathKey.startsWith(seriesPrefix)
+    ) {
       return false;
     }
 
@@ -521,7 +539,11 @@ function findSidecarFiles(
     return fallbackMatches;
   }
 
-  console.log('[Download Queue] No sidecar matches found for:', placeholder.series_title, placeholder.volume_title);
+  console.log(
+    '[Download Queue] No sidecar matches found for:',
+    placeholder.series_title,
+    placeholder.volume_title
+  );
   return [];
 }
 
@@ -582,7 +604,10 @@ function checkAndTerminatePool(): void {
  * will automatically reuse the existing link. This provides a self-healing behavior
  * where orphaned links are eventually reused and cleaned up on successful downloads.
  */
-async function cleanupProviderDownloadCredentials(providerType: ProviderType, fileId: string): Promise<void> {
+async function cleanupProviderDownloadCredentials(
+  providerType: ProviderType,
+  fileId: string
+): Promise<void> {
   const activeProvider = unifiedCloudManager.getActiveProvider();
   if (!activeProvider || activeProvider.type !== providerType) return;
   if (activeProvider.cleanupWorkerDownload) {

@@ -35,6 +35,7 @@ export function promptConfirmation(
 
 type ExtractionModal = {
   open: boolean;
+  singleVolume?: boolean;
   firstVolume?: { series_title: string; volume_title: string };
   onConfirm?: (
     asCbz: boolean,
@@ -56,10 +57,12 @@ export function promptExtraction(
     includeSidecars: boolean,
     embedSidecarsInArchive: boolean
   ) => void,
-  onCancel?: () => void
+  onCancel?: () => void,
+  singleVolume?: boolean
 ) {
   extractionModalStore.set({
     open: true,
+    singleVolume,
     firstVolume,
     onConfirm,
     onCancel

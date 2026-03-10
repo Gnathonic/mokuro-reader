@@ -45,7 +45,9 @@
 
     const cached = getCachedCloudThumbnail(volume.volume_uuid);
     if (cached) {
-      console.log(`[PlaceholderThumbnail] ${volume.volume_title}: using cached ${cached.width}x${cached.height}`);
+      console.log(
+        `[PlaceholderThumbnail] ${volume.volume_title}: using cached ${cached.width}x${cached.height}`
+      );
       const url = URL.createObjectURL(cached.file);
       cloudThumbnailUrl = url;
       return () => URL.revokeObjectURL(url);
@@ -54,7 +56,9 @@
     let cancelled = false;
     fetchCloudThumbnail(volume).then((result) => {
       if (cancelled || !result) return;
-      console.log(`[PlaceholderThumbnail] ${volume.volume_title}: fetched ${result.width}x${result.height}`);
+      console.log(
+        `[PlaceholderThumbnail] ${volume.volume_title}: fetched ${result.width}x${result.height}`
+      );
       const url = URL.createObjectURL(result.file);
       cloudThumbnailUrl = url;
     });
