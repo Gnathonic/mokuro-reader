@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.1] - 2026-03-09
+
+### Added
+
+- **Volume export** - Export individual volumes from the volume menu, with the same options as series export
+- **Cloud rename** - Renaming a series or volume now renames the files in Google Drive, MEGA, and WebDAV too
+
+### Fixed
+
+- **Google Drive downloads missing text** - Volumes downloaded from Google Drive were missing their text overlay data, appearing as image-only
+
 ## [1.5.0] - 2026-02-28
 
 ### Added
