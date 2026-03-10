@@ -25,10 +25,12 @@ import {
   isImageExtension,
   processVolume,
   saveVolume,
+  deleteVolume as deleteStoredVolume,
   isSystemFile
 } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
+import { shouldReplaceDownloadedVolume } from './download-volume-repair';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -393,15 +395,28 @@ async function processVolumeData(
     processedVolume.metadata.seriesUuid = placeholder.series_uuid;
     processedVolume.metadata.volume = placeholder.volume_title;
     processedVolume.metadata.volumeUuid = placeholder.volume_uuid;
+    processedVolume.ocrData.volume_uuid = placeholder.volume_uuid;
+    processedVolume.fileData.volume_uuid = placeholder.volume_uuid;
   }
 
-  // Check if volume already exists
-  const existingVolume = await db.volumes
-    .where('volume_uuid')
-    .equals(processedVolume.metadata.volumeUuid)
-    .first();
+  const [existingVolume, existingOcr, existingFiles] = await Promise.all([
+    db.volumes.get(processedVolume.metadata.volumeUuid),
+    db.volume_ocr.get(processedVolume.metadata.volumeUuid),
+    db.volume_files.get(processedVolume.metadata.volumeUuid)
+  ]);
 
-  if (!existingVolume) {
+  if (
+    shouldReplaceDownloadedVolume(
+      existingVolume,
+      existingOcr,
+      existingFiles,
+      processedVolume.metadata.mokuroVersion
+    )
+  ) {
+    if (existingVolume) {
+      await deleteStoredVolume(processedVolume.metadata.volumeUuid);
+    }
+
     // Save using unified database function
     await saveVolume(processedVolume);
   }

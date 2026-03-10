@@ -88,12 +88,9 @@ describe('saveVolume', () => {
         await callback();
       }
     );
-    // Set up where().equals().first() chain for duplicate check
-    (db.volumes.where as any).mockReturnValue({
-      equals: vi.fn().mockReturnValue({
-        first: vi.fn().mockResolvedValue(undefined)
-      })
-    });
+    (db.volumes.get as any).mockResolvedValue(undefined);
+    (db.volume_ocr.get as any).mockResolvedValue(undefined);
+    (db.volume_files.get as any).mockResolvedValue(undefined);
   });
 
   it('writes to all three tables', async () => {
@@ -145,7 +142,7 @@ describe('saveVolume', () => {
     await saveVolume(volume);
 
     const addCall = (db.volume_ocr.add as any).mock.calls[0][0];
-    expect(addCall.volume_uuid).toBe('test-uuid');
+    expect(addCall.volume_uuid).toBe('test-volume-uuid');
     // cumulativeChars is stripped as it's stored in page_char_counts
     expect(addCall.pages).toEqual([{ img_path: 'p1.jpg', blocks: [{ lines: ['test'] }] }]);
   });
@@ -163,7 +160,7 @@ describe('saveVolume', () => {
     await saveVolume(volume);
 
     const addCall = (db.volume_files.add as any).mock.calls[0][0];
-    expect(addCall.volume_uuid).toBe('test-uuid');
+    expect(addCall.volume_uuid).toBe('test-volume-uuid');
     // Files should be present (sorting is done in the implementation)
     expect(Object.keys(addCall.files)).toHaveLength(3);
   });
@@ -182,15 +179,61 @@ describe('saveVolume', () => {
 
   it('prevents duplicate imports', async () => {
     // Set up mock to return existing volume
-    (db.volumes.where as any).mockReturnValue({
-      equals: vi.fn().mockReturnValue({
-        first: vi.fn().mockResolvedValue({ volume_uuid: 'existing' })
-      })
-    });
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'existing' });
 
     const volume = createProcessedVolume();
 
     await expect(saveVolume(volume)).rejects.toThrow(/already exists/i);
+  });
+
+  it('cleans stale OCR and file rows before re-importing', async () => {
+    (db.volume_ocr.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid', pages: [] });
+    (db.volume_files.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      files: {}
+    });
+
+    const volume = createProcessedVolume();
+
+    await saveVolume(volume);
+
+    expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-volume-uuid');
+    expect(db.volume_files.delete).toHaveBeenCalledWith('test-volume-uuid');
+    expect(db.volumes.add).toHaveBeenCalledTimes(1);
+    expect(db.volume_ocr.add).toHaveBeenCalledTimes(1);
+    expect(db.volume_files.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes OCR and file rows using the metadata volume UUID', async () => {
+    const volume = createProcessedVolume({
+      metadata: {
+        volumeUuid: 'canonical-uuid',
+        seriesUuid: 'test-series-uuid',
+        series: 'Test Series',
+        volume: 'Test Volume',
+        mokuroVersion: '0.2.0',
+        pageCount: 1,
+        chars: 10,
+        thumbnail: new Blob(['thumbnail']),
+        thumbnailWidth: 200,
+        thumbnailHeight: 300
+      },
+      ocrData: {
+        volume_uuid: 'stale-uuid',
+        pages: [{ img_path: 'p1.jpg', blocks: [], cumulativeChars: 10 }]
+      },
+      fileData: {
+        volume_uuid: 'stale-uuid',
+        files: {
+          'page001.jpg': new File([], 'page001.jpg')
+        }
+      }
+    });
+
+    await saveVolume(volume);
+
+    expect((db.volume_ocr.add as any).mock.calls[0][0].volume_uuid).toBe('canonical-uuid');
+    expect((db.volume_files.add as any).mock.calls[0][0].volume_uuid).toBe('canonical-uuid');
   });
 
   it('calculates page_char_counts from pages', async () => {
@@ -216,11 +259,7 @@ describe('volumeExists', () => {
   });
 
   it('returns true if volume exists', async () => {
-    (db.volumes.where as any).mockReturnValue({
-      equals: vi.fn().mockReturnValue({
-        first: vi.fn().mockResolvedValue({ volume_uuid: 'existing' })
-      })
-    });
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'existing' });
 
     const exists = await volumeExists('existing');
 
@@ -228,11 +267,7 @@ describe('volumeExists', () => {
   });
 
   it('returns false if volume does not exist', async () => {
-    (db.volumes.where as any).mockReturnValue({
-      equals: vi.fn().mockReturnValue({
-        first: vi.fn().mockResolvedValue(undefined)
-      })
-    });
+    (db.volumes.get as any).mockResolvedValue(undefined);
 
     const exists = await volumeExists('not-found');
 
