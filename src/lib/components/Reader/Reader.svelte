@@ -73,16 +73,30 @@
   );
 
   let start: Date;
+  let textBoxWasActive = false;
 
   function mouseDown() {
     start = new Date();
   }
 
+  function handleOverlayPointerDown(e: PointerEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest('.textBox')) {
+      textBoxWasActive = true;
+    }
+  }
+
   function handleOverlayToggle(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
-    // Only toggle if clicking on blank space (not text boxes)
+    // Clicking on a text box — don't toggle
     if (target.closest('.textBox')) return;
+
+    // First tap outside after interacting with a text box dismisses it without toggling
+    if (textBoxWasActive) {
+      textBoxWasActive = false;
+      return;
+    }
 
     overlaysVisible = !overlaysVisible;
   }
@@ -1094,44 +1108,44 @@
   />
   <SettingsButton visible={overlaysVisible} />
   <TextBoxPicker />
-  <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
-    <div class="flex flex-col gap-3">
-      <div class="z-10 flex flex-row items-center gap-5">
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
-          <BackwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={(e) => left(e, true)}>
-          <CaretLeftSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <Input
-          type="number"
-          size="sm"
-          bind:value={manualPage}
-          onclick={onInputClick}
-          onchange={onManualPageChange}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              onManualPageChange();
-              if (e.currentTarget && 'blur' in e.currentTarget) {
-                (e.currentTarget as HTMLElement).blur();
-              }
-            }
-          }}
-          onblur={onManualPageChange}
-        />
-        <button onclick={(e) => right(e, true)}>
-          <CaretRightSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
-          <ForwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-      </div>
-      <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
-        <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
-      </div>
-    </div>
-  </Popover>
   {#if overlaysVisible}
+    <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
+      <div class="flex flex-col gap-3">
+        <div class="z-10 flex flex-row items-center gap-5">
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
+            <BackwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={(e) => left(e, true)}>
+            <CaretLeftSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <Input
+            type="number"
+            size="sm"
+            bind:value={manualPage}
+            onclick={onInputClick}
+            onchange={onManualPageChange}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                onManualPageChange();
+                if (e.currentTarget && 'blur' in e.currentTarget) {
+                  (e.currentTarget as HTMLElement).blur();
+                }
+              }
+            }}
+            onblur={onManualPageChange}
+          />
+          <button onclick={(e) => right(e, true)}>
+            <CaretRightSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
+            <ForwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+        </div>
+        <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
+          <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
+        </div>
+      </div>
+    </Popover>
     <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
       {#key page}
         <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
@@ -1181,6 +1195,7 @@
         class="grid"
         style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
+        onpointerdown={handleOverlayPointerDown}
         onclick={handleOverlayToggle}
         role="none"
         id="manga-panel"
