@@ -70,7 +70,12 @@ describe('driveFilesCache', () => {
 
     await driveFilesCache.fetch();
 
-    expect(driveFilesCache.getAllFiles().map((file) => file.path).sort()).toEqual([
+    expect(
+      driveFilesCache
+        .getAllFiles()
+        .map((file) => file.path)
+        .sort()
+    ).toEqual([
       'Series/Volume 1.cbz',
       'Series/Volume 1.mokuro',
       'Series/Volume 1.mokuro.gz',

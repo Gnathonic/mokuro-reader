@@ -1120,7 +1120,12 @@
   <SettingsButton visible={overlaysVisible} />
   <TextBoxPicker />
   {#if overlaysVisible}
-    <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
+    <Popover
+      placement="bottom"
+      trigger="click"
+      triggeredBy="#page-num"
+      class="z-20 w-full max-w-xs"
+    >
       <div class="flex flex-col gap-3">
         <div class="z-10 flex flex-row items-center gap-5">
           <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
