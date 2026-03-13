@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.2] - 2026-03-12
+
+### Fixed
+
+- **Overlay toggle on text box dismiss** - Tapping outside an OCR text box to dismiss it no longer toggles the reader overlay visibility
+- **Overlay toggle on pan** - Click-dragging to pan the manga page no longer toggles the reader overlay
+- **Page seek controls after overlay toggle** - The page seek popover now works correctly after hiding and showing the overlay
+
 ## [1.5.1] - 2026-03-09
 
 ### Added
