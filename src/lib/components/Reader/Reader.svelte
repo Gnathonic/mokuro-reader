@@ -74,12 +74,18 @@
 
   let start: Date;
   let textBoxWasActive = false;
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  const DRAG_THRESHOLD = 5;
 
   function mouseDown() {
     start = new Date();
   }
 
   function handleOverlayPointerDown(e: PointerEvent) {
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+
     const target = e.target as HTMLElement;
     if (target.closest('.textBox')) {
       textBoxWasActive = true;
@@ -91,6 +97,11 @@
 
     // Clicking on a text box — don't toggle
     if (target.closest('.textBox')) return;
+
+    // Ignore drags/pans — only toggle on stationary clicks
+    const dx = e.clientX - pointerDownX;
+    const dy = e.clientY - pointerDownY;
+    if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) return;
 
     // First tap outside after interacting with a text box dismisses it without toggling
     if (textBoxWasActive) {
