@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3] - 2026-03-13
+
+### Fixed
+
+- **Long-press text box layout** - Text boxes now calculate their font size on touch, so long-pressing an OCR box on mobile shows the correct layout immediately
+- **Multiple volume dropdowns open** - Opening a volume's dropdown menu now closes any other open dropdown
+
 ## [1.5.2] - 2026-03-12
 
 ### Fixed
