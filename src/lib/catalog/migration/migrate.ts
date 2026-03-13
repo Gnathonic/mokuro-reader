@@ -5,10 +5,7 @@ import { countChars } from '$lib/util/count-chars';
 import { deleteOldDatabase } from './detection';
 import type { MigrationProgressCallback } from './types';
 import { generateThumbnail, type ThumbnailResult } from '../thumbnails';
-
-function naturalSort(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-}
+import { naturalSort } from '$lib/util/natural-sort';
 
 /**
  * Get the first image file from a files record (sorted naturally).

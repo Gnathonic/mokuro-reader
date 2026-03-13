@@ -1,4 +1,5 @@
 import type { VolumeData, VolumeMetadata, Page } from '$lib/types';
+import { naturalSort } from '$lib/util/natural-sort';
 import {
   extractTitlesFromPath,
   extractSeriesName,
@@ -107,9 +108,7 @@ export async function generateFallbackVolumeData(
   const volumeUuid = generateDeterministicUUID(`${finalSeriesName}/${volumeTitle}`);
 
   // Sort image files naturally (1.jpg, 2.jpg, 10.jpg instead of 1.jpg, 10.jpg, 2.jpg)
-  const sortedFileNames = Object.keys(imageFiles).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
+  const sortedFileNames = Object.keys(imageFiles).sort(naturalSort);
 
   // Create Page objects for each image
   const pages: Page[] = await Promise.all(

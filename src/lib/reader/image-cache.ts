@@ -15,12 +15,7 @@ export interface CachedImage {
   loading: Promise<void> | null;
 }
 
-/**
- * Natural sort comparator for filenames
- */
-function naturalSort(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-}
+import { naturalSort } from '$lib/util/natural-sort';
 
 /**
  * Match files to pages using fuzzy matching strategies
