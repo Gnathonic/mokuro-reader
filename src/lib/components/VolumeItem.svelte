@@ -1,3 +1,12 @@
+<script module lang="ts">
+  // Shared across all VolumeItem instances to ensure only one dropdown is open at a time
+  const menuCloseCallbacks = new Set<() => void>();
+
+  function closeAllMenus() {
+    menuCloseCallbacks.forEach((cb) => cb());
+  }
+</script>
+
 <script lang="ts">
   import {
     deleteVolume as deleteVolumeStats,
@@ -49,6 +58,13 @@
   }
 
   let { volume, variant = 'list' }: Props = $props();
+
+  let menuOpen = $state(false);
+  const closeMenu = () => {
+    menuOpen = false;
+  };
+  menuCloseCallbacks.add(closeMenu);
+  onDestroy(() => menuCloseCallbacks.delete(closeMenu));
 
   const volName = decodeURI(volume.volume_title);
 
@@ -610,11 +626,12 @@
         onclick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          closeAllMenus();
         }}
       >
         <DotsVerticalOutline class="h-4 w-4 text-white" />
       </button>
-      <Dropdown triggeredBy="#volume-menu-{volume_uuid}" placement="bottom-end">
+      <Dropdown triggeredBy="#volume-menu-{volume_uuid}" placement="bottom-end" bind:isOpen={menuOpen}>
         <DropdownItem
           onclick={onEditClicked}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"

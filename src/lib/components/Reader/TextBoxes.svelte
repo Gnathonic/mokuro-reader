@@ -253,7 +253,7 @@
   function handleTextBoxHover(element: HTMLDivElement, params: [number, string]) {
     const [index, initialFontSize] = params;
 
-    const onMouseEnter = () => {
+    const calculate = () => {
       // Skip if already processed, OCR is hidden, or using manual font size
       if (processedTextBoxes.has(index) || display !== 'block' || $settings.fontSize !== 'auto')
         return;
@@ -289,11 +289,14 @@
       });
     };
 
-    element.addEventListener('mouseenter', onMouseEnter);
+    element.addEventListener('mouseenter', calculate);
+    // touchstart fires before long-press reveals the text box
+    element.addEventListener('touchstart', calculate, { passive: true });
 
     return {
       destroy() {
-        element.removeEventListener('mouseenter', onMouseEnter);
+        element.removeEventListener('mouseenter', calculate);
+        element.removeEventListener('touchstart', calculate);
       }
     };
   }
