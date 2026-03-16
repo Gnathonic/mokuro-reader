@@ -1,16 +1,28 @@
+<script module lang="ts">
+  // Shared across all VolumeItem instances to ensure only one dropdown is open at a time
+  const menuCloseCallbacks = new Set<() => void>();
+
+  function closeAllMenus() {
+    menuCloseCallbacks.forEach((cb) => cb());
+  }
+</script>
+
 <script lang="ts">
   import {
-    deleteVolume,
+    deleteVolume as deleteVolumeStats,
     progress,
-    volumes,
+    volumes as readingVolumes,
     settings,
     markVolumeAsComplete,
     markVolumeAsUnread
   } from '$lib/settings';
+  import { volumes as catalogVolumes } from '$lib/catalog';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
+  import { promptExtraction } from '$lib/util/modals';
+  import { zipManga } from '$lib/util/zip';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
   import {
@@ -23,10 +35,13 @@
     CloudArrowUpOutline,
     ImageOutline,
     ExclamationCircleOutline,
-    EditOutline
+    EditOutline,
+    DownloadSolid
   } from 'flowbite-svelte-icons';
   import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
+  import { deleteVolume as deleteStoredVolume } from '$lib/import';
+  import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -35,6 +50,7 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     volume: VolumeMetadata;
@@ -43,10 +59,34 @@
 
   let { volume, variant = 'list' }: Props = $props();
 
+  let menuOpen = $state(false);
+  const closeMenu = () => {
+    menuOpen = false;
+  };
+  menuCloseCallbacks.add(closeMenu);
+  onDestroy(() => menuCloseCallbacks.delete(closeMenu));
+
   const volName = decodeURI(volume.volume_title);
 
   let volume_uuid = $derived(volume.volume_uuid);
-  let volumeData = $derived($volumes?.[volume.volume_uuid]);
+  let volumeData = $derived($readingVolumes?.[volume.volume_uuid]);
+  let dbVolume = $state<VolumeMetadata | null>(null);
+  let liveVolume = $derived(dbVolume ?? $catalogVolumes?.[volume.volume_uuid] ?? volume);
+  // Watch this specific row directly so thumbnail updates repaint immediately.
+  $effect(() => {
+    const subscription = liveQuery(() => db.volumes.get(volume.volume_uuid)).subscribe({
+      next: (value) => {
+        // Force a fresh object identity so Svelte reacts even if Dexie
+        // reuses object references while blob fields changed.
+        dbVolume = value ? { ...value } : null;
+      },
+      error: (err) => {
+        console.error('VolumeItem liveQuery error:', err);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
   let isComplete = $derived(isVolumeComplete(currentPage, volume.page_count));
@@ -109,16 +149,36 @@
     return getEffectiveReadingTime(volumeData, idleTimeoutMs);
   });
   let charsRead = $derived(volumeData?.chars || 0);
-  let totalChars = $state<number | undefined>(undefined);
+  let fallbackTotalChars = $state<number | undefined>(undefined);
+  let totalCharsRequestId = 0;
 
-  // Calculate Japanese character count from pages data (matches reading tracker)
+  // Prefer metadata totals (fast/sync) and only hit OCR table when absent.
+  let metadataTotalChars = $derived.by(() => {
+    if (liveVolume.character_count && liveVolume.character_count > 0) {
+      return liveVolume.character_count;
+    }
+    if (liveVolume.page_char_counts?.length) {
+      return liveVolume.page_char_counts[liveVolume.page_char_counts.length - 1];
+    }
+    return undefined;
+  });
+  let totalChars = $derived(metadataTotalChars ?? fallbackTotalChars);
+
+  // Fallback for legacy/partial metadata.
   $effect(() => {
+    fallbackTotalChars = undefined;
+    if (metadataTotalChars && metadataTotalChars > 0) {
+      return;
+    }
+
+    const requestId = ++totalCharsRequestId;
     db.volume_ocr.get(volume.volume_uuid).then((data) => {
-      if (data?.pages) {
-        const { charCount } = getCharCount(data.pages);
-        if (charCount > 0) {
-          totalChars = charCount;
-        }
+      if (requestId !== totalCharsRequestId) return;
+      if (!data?.pages) return;
+
+      const { charCount } = getCharCount(data.pages);
+      if (charCount > 0) {
+        fallbackTotalChars = charCount;
       }
     });
   });
@@ -126,13 +186,50 @@
   // Create blob URL from inline thumbnail
   let thumbnailUrl = $state<string | undefined>(undefined);
   $effect(() => {
-    if (!volume.thumbnail) {
+    if (!liveVolume.thumbnail) {
       thumbnailUrl = undefined;
       return;
     }
-    const url = URL.createObjectURL(volume.thumbnail);
+
+    const url = URL.createObjectURL(liveVolume.thumbnail);
     thumbnailUrl = url;
     return () => URL.revokeObjectURL(url);
+  });
+
+  // Some insert/update paths can miss live notifications for blob fields.
+  // While thumbnail is missing, poll this row until it appears.
+  $effect(() => {
+    if (liveVolume.isPlaceholder || liveVolume.thumbnail) {
+      return;
+    }
+
+    let canceled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    const pollForThumbnail = async () => {
+      const refreshed = await db.volumes.get(volume.volume_uuid);
+      if (canceled) return;
+
+      if (refreshed?.thumbnail) {
+        dbVolume = { ...refreshed };
+        return;
+      }
+
+      timerId = setTimeout(pollForThumbnail, 1000);
+    };
+
+    timerId = setTimeout(pollForThumbnail, 1000);
+
+    return () => {
+      canceled = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  });
+
+  onDestroy(() => {
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+    }
   });
 
   // Calculate estimated time remaining for incomplete volumes
@@ -210,8 +307,8 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
-  function onToggleStatusClicked(e: Event) {
-    e.stopPropagation();
+  function onToggleStatusClicked(e?: Event) {
+    e?.stopPropagation();
     if (isComplete) {
       markVolumeAsUnread(volume_uuid);
       showSnackbar(`Marked ${volName} as unread`);
@@ -224,8 +321,8 @@
       }
     }
   }
-  async function onDeleteClicked(e: Event) {
-    e.stopPropagation();
+  async function onDeleteClicked(e?: Event) {
+    e?.stopPropagation();
 
     // Check if volume is backed up to cloud
     const hasCloudBackup = hasAuthenticatedProvider && isBackedUp;
@@ -241,16 +338,11 @@
     promptConfirmation(
       `Delete ${volName}?`,
       async (deleteStats = false, deleteCloud = false) => {
-        // Delete from all 3 tables
-        await Promise.all([
-          db.volumes.where('volume_uuid').equals(volume.volume_uuid).delete(),
-          db.volume_ocr.delete(volume.volume_uuid),
-          db.volume_files.delete(volume.volume_uuid)
-        ]);
+        await deleteStoredVolume(volume.volume_uuid);
 
         // Only delete stats and progress if the checkbox is checked
         if (deleteStats) {
-          deleteVolume(volume.volume_uuid);
+          deleteVolumeStats(volume.volume_uuid);
         }
 
         // Delete from cloud if checkbox checked
@@ -293,19 +385,86 @@
     );
   }
 
-  function onViewTextClicked(e: Event) {
-    e.stopPropagation();
+  function onViewTextClicked(e?: Event) {
+    e?.stopPropagation();
     const seriesId = $routeParams.manga;
     if (seriesId) nav.toVolumeText(seriesId, volume_uuid);
   }
 
-  function onEditClicked(e: Event) {
-    e.stopPropagation();
+  function onEditClicked(e?: Event) {
+    e?.stopPropagation();
     promptVolumeEditor(volume_uuid);
   }
 
-  async function onBackupClicked(e: Event) {
-    e.stopPropagation();
+  function onChangeCover() {
+    promptVolumeEditor(volume_uuid, { openCoverPicker: true });
+  }
+
+  async function onCloudDeleteOnly() {
+    if (!isBackedUp || !cloudFile || isReadOnlyMode) {
+      showSnackbar('Volume is not backed up to cloud');
+      return;
+    }
+    const providerName =
+      cloudFile.provider === 'google-drive'
+        ? 'Drive'
+        : cloudFile.provider === 'mega'
+          ? 'MEGA'
+          : 'cloud';
+    promptConfirmation(`Delete ${volName} from ${providerName}?`, async () => {
+      try {
+        await unifiedCloudManager.deleteFile(cloudFile!);
+        showSnackbar(`Deleted from ${providerName}`);
+      } catch (error) {
+        console.error('Failed to delete from cloud:', error);
+        showSnackbar(`Failed to delete from ${providerName}`);
+      }
+    });
+  }
+
+  // Keyboard shortcuts when hovering over a volume
+  let isHovered = $state(false);
+
+  function isTypingInInput(): boolean {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable)
+      return true;
+    return false;
+  }
+
+  $effect(() => {
+    if (!isHovered) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (isTypingInInput()) return;
+
+      switch (e.key) {
+        case 'e':
+          e.preventDefault();
+          onEditClicked();
+          break;
+        case 'Delete':
+          e.preventDefault();
+          if (e.shiftKey) {
+            onCloudDeleteOnly();
+          } else {
+            onDeleteClicked();
+          }
+          break;
+        case 'c':
+          e.preventDefault();
+          onChangeCover();
+          break;
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
+
+  async function onBackupClicked(e?: Event) {
+    e?.stopPropagation();
 
     // If already backed up, delete from cloud
     if (isBackedUp && cloudFile) {
@@ -331,12 +490,36 @@
     backupQueue.queueVolumeForBackup(volume);
     showSnackbar(`Added ${volume.volume_title} to backup queue`);
   }
+
+  function onExtractClicked(e?: Event) {
+    e?.stopPropagation();
+    promptExtraction(
+      { series_title: volume.series_title, volume_title: volume.volume_title },
+      async (
+        asCbz,
+        _individualVolumes,
+        includeSeriesTitle,
+        includeSidecars,
+        embedSidecarsInArchive
+      ) => {
+        await zipManga([volume], asCbz, true, includeSeriesTitle, {
+          includeSidecars,
+          embedSidecarsInArchive
+        });
+      },
+      undefined,
+      true
+    );
+  }
 </script>
 
 {#if $routeParams.manga}
   {#if variant === 'list'}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => (isHovered = false)}
     >
       <ListgroupItem
         onclick={() => $routeParams.manga && nav.toReader($routeParams.manga, volume_uuid)}
@@ -349,6 +532,13 @@
             style="margin-right:10px;"
             class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
           />
+        {:else}
+          <div
+            style="margin-right:10px;"
+            class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+          >
+            Cover
+          </div>
         {/if}
         <div
           class:text-green-400={isComplete}
@@ -387,6 +577,13 @@
               <FileLinesOutline class="z-10 text-blue-400 hover:text-blue-500" />
             </button>
             <button
+              onclick={onExtractClicked}
+              class="flex items-center justify-center"
+              title="Extract volume"
+            >
+              <DownloadSolid class="z-10 text-gray-400 hover:text-gray-300" />
+            </button>
+            <button
               onclick={onEditClicked}
               class="flex items-center justify-center"
               title="Edit volume"
@@ -415,9 +612,12 @@
     </div>
   {:else}
     <!-- Grid view -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="relative flex flex-col gap-2 rounded-lg border-2 border-transparent p-3 transition-colors hover:bg-gray-100 sm:w-[278px] dark:hover:bg-gray-700"
       class:!border-green-400={isComplete}
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => (isHovered = false)}
     >
       <!-- Actions menu button -->
       <button
@@ -426,11 +626,16 @@
         onclick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          closeAllMenus();
         }}
       >
         <DotsVerticalOutline class="h-4 w-4 text-white" />
       </button>
-      <Dropdown triggeredBy="#volume-menu-{volume_uuid}" placement="bottom-end">
+      <Dropdown
+        triggeredBy="#volume-menu-{volume_uuid}"
+        placement="bottom-end"
+        bind:isOpen={menuOpen}
+      >
         <DropdownItem
           onclick={onEditClicked}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"
@@ -444,6 +649,13 @@
         >
           <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
           <span class="flex-1 text-left">View text</span>
+        </DropdownItem>
+        <DropdownItem
+          onclick={onExtractClicked}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Extract</span>
         </DropdownItem>
         {#if hasAuthenticatedProvider && !isReadOnlyMode}
           {#if isCloudLoading}
@@ -507,7 +719,7 @@
               class="h-auto w-auto border border-gray-900 bg-black sm:max-h-[350px] sm:max-w-[250px]"
             />
           {:else}
-            <PlaceholderThumbnail />
+            <PlaceholderThumbnail message="Generating thumbnail..." />
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">

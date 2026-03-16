@@ -26,19 +26,40 @@ export function expandTextBoxBounds(
   ];
 }
 
-type CropperModal = {
+/**
+ * Modal modes for the unified Anki field modal:
+ * - configure: Edit raw template strings for field mapping (no cropper)
+ * - create: Create new card with resolved templates (shows cropper)
+ * - update: Update existing card with {existing} support (shows cropper)
+ */
+export type AnkiModalMode = 'configure' | 'create' | 'update';
+
+type AnkiFieldModal = {
   open: boolean;
+  mode: AnkiModalMode;
   image?: string;
   selectedText?: string; // The selected/highlighted text (for Front field)
   sentence?: string; // The full sentence/all lines (for Sentence field)
   tags?: string;
   metadata?: VolumeMetadata;
+  pageNumber?: number;
+  pageFilename?: string; // The filename of the current page image
   pages?: Page[]; // Available pages with textboxes for visual selection
   textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+  previousValues?: Record<string, string>; // field name -> previous value
+  previousTags?: string[]; // existing tags on the card being updated
+  previousCardId?: number;
+  modelName?: string; // For update mode: the model name from the card being updated
 };
 
-export const cropperStore = writable<CropperModal | undefined>(undefined);
+// Backwards compatibility alias
+type CropperModal = AnkiFieldModal;
 
+export const cropperStore = writable<AnkiFieldModal | undefined>(undefined);
+
+/**
+ * Legacy function for backwards compatibility - opens modal in create mode
+ */
 export function showCropper(
   image: string,
   selectedText?: string,
@@ -48,16 +69,92 @@ export function showCropper(
   pages?: Page[],
   textBox?: [number, number, number, number]
 ) {
+  openCreateModal(image, selectedText, sentence, tags, metadata, pages, textBox);
+}
+
+/**
+ * Opens the modal in configure mode (no cropper, raw templates)
+ * @param modelName - Optional model name to configure. If not provided, uses the selected model from settings.
+ */
+export function openConfigureModal(modelName?: string) {
   cropperStore.set({
     open: true,
+    mode: 'configure',
+    modelName
+  });
+}
+
+/**
+ * Opens the modal in create mode (cropper + resolved templates)
+ */
+export function openCreateModal(
+  image: string,
+  selectedText?: string,
+  sentence?: string,
+  tags?: string,
+  metadata?: VolumeMetadata,
+  pages?: Page[],
+  textBox?: [number, number, number, number],
+  pageNumber?: number,
+  pageFilename?: string
+) {
+  cropperStore.set({
+    open: true,
+    mode: 'create',
     image,
     selectedText,
     sentence,
     tags,
     metadata,
     pages,
-    textBox
+    textBox,
+    pageNumber,
+    pageFilename
   });
+}
+
+/**
+ * Opens the modal in update mode (cropper + {existing} support)
+ */
+export function openUpdateModal(
+  image: string,
+  previousValues: Record<string, string>,
+  previousCardId: number,
+  modelName: string,
+  previousTags?: string[],
+  selectedText?: string,
+  sentence?: string,
+  tags?: string,
+  metadata?: VolumeMetadata,
+  pages?: Page[],
+  textBox?: [number, number, number, number],
+  pageNumber?: number,
+  pageFilename?: string
+) {
+  cropperStore.set({
+    open: true,
+    mode: 'update',
+    image,
+    selectedText,
+    sentence,
+    tags,
+    metadata,
+    pages,
+    textBox,
+    pageNumber,
+    pageFilename,
+    previousValues,
+    previousTags,
+    previousCardId,
+    modelName
+  });
+}
+
+/**
+ * Closes the modal
+ */
+export function closeAnkiModal() {
+  cropperStore.set({ open: false, mode: 'create' });
 }
 
 async function createImage(url: string) {
@@ -126,7 +223,7 @@ export async function getCroppedImg(
     settings.ankiConnectSettings.heightField
   );
   const blob = await canvas.convertToBlob({
-    type: 'image/webp',
+    type: 'image/jpeg',
     quality: settings.ankiConnectSettings.qualityField
   });
 

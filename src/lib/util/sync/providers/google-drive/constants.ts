@@ -4,6 +4,7 @@ export interface DriveFile {
   mimeType: string;
   size?: string;
   modifiedTime?: string;
+  createdTime?: string;
   parents?: string[];
   description?: string;
 }

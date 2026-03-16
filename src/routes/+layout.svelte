@@ -12,6 +12,7 @@
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
   import VolumeEditorModal from '$lib/components/VolumeEditorModal.svelte';
+  import AnkiFieldModal from '$lib/components/Reader/AnkiFieldModal.svelte';
   import ImportPreparingModal from '$lib/components/ImportPreparingModal.svelte';
   import ProgressTracker from '$lib/components/ProgressTracker.svelte';
   import NightModeFilter from '$lib/components/NightModeFilter.svelte';
@@ -23,6 +24,7 @@
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
+  import { startThumbnailProcessing } from '$lib/catalog/db';
   import { get } from 'svelte/store';
 
   // Migration state
@@ -78,6 +80,9 @@
       }
     }
 
+    // Start background thumbnail generation once startup checks are complete
+    startThumbnailProcessing();
+
     // Fire and forget - don't block app initialization
     initializeProviders().catch((error) => {
       console.error('Failed to initialize providers:', error);
@@ -112,6 +117,7 @@
     <WebDAVErrorModal />
     <MissingFilesModal />
     <VolumeEditorModal />
+    <AnkiFieldModal />
     <ImportPreparingModal />
     <ProgressTracker />
     <NightModeFilter />

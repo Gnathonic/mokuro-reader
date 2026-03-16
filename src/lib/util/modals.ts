@@ -35,19 +35,34 @@ export function promptConfirmation(
 
 type ExtractionModal = {
   open: boolean;
+  singleVolume?: boolean;
   firstVolume?: { series_title: string; volume_title: string };
-  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void;
+  onConfirm?: (
+    asCbz: boolean,
+    individualVolumes: boolean,
+    includeSeriesTitle: boolean,
+    includeSidecars: boolean,
+    embedSidecarsInArchive: boolean
+  ) => void;
   onCancel?: () => void;
 };
 export const extractionModalStore = writable<ExtractionModal | undefined>(undefined);
 
 export function promptExtraction(
   firstVolume: { series_title: string; volume_title: string },
-  onConfirm?: (asCbz: boolean, individualVolumes: boolean, includeSeriesTitle: boolean) => void,
-  onCancel?: () => void
+  onConfirm?: (
+    asCbz: boolean,
+    individualVolumes: boolean,
+    includeSeriesTitle: boolean,
+    includeSidecars: boolean,
+    embedSidecarsInArchive: boolean
+  ) => void,
+  onCancel?: () => void,
+  singleVolume?: boolean
 ) {
   extractionModalStore.set({
     open: true,
+    singleVolume,
     firstVolume,
     onConfirm,
     onCancel
@@ -185,18 +200,23 @@ export function promptMissingFiles(
 type VolumeEditorModal = {
   open: boolean;
   volumeUuid: string;
+  openCoverPicker?: boolean;
   onSave?: () => void;
   onCancel?: () => void;
 };
 
 export const volumeEditorModalStore = writable<VolumeEditorModal | undefined>(undefined);
 
-export function promptVolumeEditor(volumeUuid: string, onSave?: () => void, onCancel?: () => void) {
+export function promptVolumeEditor(
+  volumeUuid: string,
+  options?: { openCoverPicker?: boolean; onSave?: () => void; onCancel?: () => void }
+) {
   volumeEditorModalStore.set({
     open: true,
     volumeUuid,
-    onSave,
-    onCancel
+    openCoverPicker: options?.openCoverPicker,
+    onSave: options?.onSave,
+    onCancel: options?.onCancel
   });
 }
 
@@ -246,4 +266,47 @@ export function updateImportPreparing(details: Partial<ImportPreparingModal>) {
  */
 export function closeImportPreparing() {
   importPreparingModalStore.set(undefined);
+}
+
+export type AddLibraryModalParams = {
+  url?: string;
+  name?: string;
+  username?: string;
+  path?: string;
+};
+
+type AddLibraryModal = {
+  open: boolean;
+  editingId?: string;
+  params?: AddLibraryModalParams;
+  onSave?: () => void;
+  onCancel?: () => void;
+};
+
+export const addLibraryModalStore = writable<AddLibraryModal | undefined>(undefined);
+
+export function promptAddLibrary(
+  params?: AddLibraryModalParams,
+  onSave?: () => void,
+  onCancel?: () => void
+) {
+  addLibraryModalStore.set({
+    open: true,
+    params,
+    onSave,
+    onCancel
+  });
+}
+
+export function promptEditLibrary(libraryId: string, onSave?: () => void, onCancel?: () => void) {
+  addLibraryModalStore.set({
+    open: true,
+    editingId: libraryId,
+    onSave,
+    onCancel
+  });
+}
+
+export function closeAddLibraryModal() {
+  addLibraryModalStore.set(undefined);
 }

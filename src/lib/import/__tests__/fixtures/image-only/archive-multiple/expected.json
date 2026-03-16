@@ -1,0 +1,23 @@
+{
+  "count": 3,
+  "pairings": [
+    {
+      "sourceType": "archive",
+      "hasMokuro": false,
+      "basePathContains": "Series Name v01",
+      "imageOnly": false
+    },
+    {
+      "sourceType": "archive",
+      "hasMokuro": false,
+      "basePathContains": "Series Name v02",
+      "imageOnly": false
+    },
+    {
+      "sourceType": "archive",
+      "hasMokuro": false,
+      "basePathContains": "Series Name v03",
+      "imageOnly": false
+    }
+  ]
+}

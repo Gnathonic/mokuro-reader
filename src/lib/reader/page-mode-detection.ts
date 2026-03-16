@@ -51,16 +51,16 @@ export function shouldShowSinglePage(
 ): boolean {
   // Explicit mode overrides
   if (mode === 'single') return true;
+
+  // Cover page is always displayed alone regardless of mode
+  if (isFirstPage && hasCover) {
+    return true;
+  }
+
   if (mode === 'dual') return false;
 
   // Auto mode logic
   if (mode === 'auto') {
-    // Special case: First page with cover should always be single
-    // This ensures covers don't get paired with spreads or other exceptions
-    if (isFirstPage && hasCover) {
-      return true;
-    }
-
     // Portrait orientation → single page
     if (isPortraitOrientation()) {
       return true;
@@ -68,10 +68,6 @@ export function shouldShowSinglePage(
 
     // Landscape orientation → check for wide spreads
     if (currentPage && isWideSpread(currentPage)) {
-      return true;
-    }
-
-    if (nextPage && isWideSpread(nextPage)) {
       return true;
     }
 
@@ -86,12 +82,6 @@ export function shouldShowSinglePage(
         // Check if current and next pages have similar widths
         if (!haveSimilarWidths(currentPage, nextPage)) {
           return true; // Don't pair pages with different widths
-        }
-
-        // Check if there's a previous page and it has dissimilar width
-        // This catches cases where we're right after a cover/oddity
-        if (previousPage && !haveSimilarWidths(previousPage, currentPage)) {
-          return true; // Current page might be a cover or oddity, show alone
         }
       }
     }

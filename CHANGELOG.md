@@ -1,5 +1,97 @@
 # Changelog
 
+## [1.5.3] - 2026-03-13
+
+### Fixed
+
+- **Long-press text box layout** - Text boxes now calculate their font size on touch, so long-pressing an OCR box on mobile shows the correct layout immediately
+- **Multiple volume dropdowns open** - Opening a volume's dropdown menu now closes any other open dropdown
+
+## [1.5.2] - 2026-03-12
+
+### Fixed
+
+- **Overlay toggle on text box dismiss** - Tapping outside an OCR text box to dismiss it no longer toggles the reader overlay visibility
+- **Overlay toggle on pan** - Click-dragging to pan the manga page no longer toggles the reader overlay
+- **Page seek controls after overlay toggle** - The page seek popover now works correctly after hiding and showing the overlay
+
+## [1.5.1] - 2026-03-09
+
+### Added
+
+- **Volume export** - Export individual volumes from the volume menu, with the same options as series export
+- **Cloud rename** - Renaming a series or volume now renames the files in Google Drive, MEGA, and WebDAV too
+
+### Fixed
+
+- **Google Drive downloads missing text** - Volumes downloaded from Google Drive were missing their text overlay data, appearing as image-only
+
+## [1.5.0] - 2026-02-28
+
+### Added
+
+- **WebDAV download retry** - Failed downloads now retry automatically with resume support
+- **Easier OCR with mokuro-bunko** - Image-only volumes uploaded to a [mokuro-bunko](https://github.com/Gnathonic/mokuro-bunko) for OCR processing will automatically have their text data added locally on the next refresh.
+- **Catalog drop shadow toggle** - Drop shadows on catalog thumbnails can now be disabled, improving the appearance of spine showcase mode
+- **Delete cloud-only series** - Remove series from cloud storage directly without needing to download them first
+- **Volume keyboard shortcuts** - Hover over a volume on the series page and press E to edit, C to change cover, Delete to remove, or Shift+Delete to delete from cloud
+- **Cover page stitching** - Combine two pages side-by-side when cropping a cover, great for spread artwork split across two pages
+- **Cover picker improvements** - Rotate images, pages in reading order, and custom covers sync to the cloud automatically
+- **Escape closes modals** - Pressing Escape in the volume editor or cover picker closes the modal instead of leaving the series page
+
+### Changed
+
+- **Smarter series grouping** - Local and cloud volumes now always appear together in the catalog even if they were imported separately or have slight differences in naming
+
+### Fixed
+
+- **Dual page cover handling** - Fixed cover page consuming two pages instead of one when dual page mode is set explicitly
+- **AnkiConnect page numbers** - Correct page numbers in templates, including dual-page captures
+- **AnkiConnect tags on mobile** - Fixed tags appearing in update mode on Android when they should be disabled
+- **AnkiConnect card updates** - Updating existing cards now preserves their formatting
+
+## [1.4.0] - 2026-02-20
+
+### Added
+
+- **Bulk cover cropping** - Crop a cover and apply the same crop region to the next volume in the series, making it easy to set consistent covers across an entire series
+- **Cloud thumbnail previews** - Cloud-only volumes now show cover thumbnails in the catalog before downloading
+- **Faster catalog scrolling** - Thumbnail rendering rewritten for smoother performance, especially on mobile
+- **AnkiConnect field action badges** - Visual indicators showing Append/Unchanged/Replace behavior for each field
+
+### Changed
+
+- **AnkiConnect field modal layout** - Tiered accordion design for clearer field organization
+- **Cloud sync now preserves cover images** - Uploads and downloads keep your custom covers and metadata intact
+
+### Fixed
+
+- **Duplicate cloud folders** - Automatically detects and merges duplicate series folders
+- **Google Drive series deletion** - No longer fails intermittently
+- **Mobile import page reloads** - Fixed unexpected full-page reloads during file imports on mobile
+- **Image-only archive imports** - Now prompts for confirmation instead of silently failing
+- **Routing race conditions** - Fixed premature redirect to catalog when the library loads slowly
+- **Loading vs not-found states** - Proper distinction between "loading" and "does not exist" for series/volumes
+- **Zoom notification removed** - No longer interferes with Yomitan dictionary popups
+- **Image dragging in cropper** - Disabled unwanted drag behavior during crop selection
+- **AnkiConnect field modal fixes** - Truncated long previews, proper crop bounds, scroll wheel support, improved styling
+- **Reader spread navigation** - Fixed forward/backward paging with two-page spreads
+
+## [1.3.0] - 2026-01-06
+
+### Added
+
+- **Dynamic AnkiConnect field mapping** - Configure which template populates each Anki field with a visual UI
+- **Template variables for fields** - Use `{selection}`, `{sentence}`, `{image}`, `{series}`, `{volume}` in any field
+- **Mixed field templates** - Combine text and images in the same field (e.g., `{sentence} {image}`)
+- **Android mode detection** - Auto-detects AnkiConnect Android limitations with manual override option
+- **Connection-gated AnkiConnect settings** - Settings only appear after connecting, with live model/deck/field data from Anki
+
+### Changed
+
+- **AnkiConnect settings redesign** - Complete overhaul with connection status, enable toggle, and organized sections
+- **Card mode selection** - Now uses radio buttons instead of dropdown for clearer selection
+
 ## [1.2.3] - 2026-01-15
 
 ### Added

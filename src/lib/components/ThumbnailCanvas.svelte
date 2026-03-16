@@ -6,6 +6,7 @@
     file: File | undefined;
     width: number;
     height: number;
+    priority?: number; // Stack position: 0 = front (highest), 1, 2... = behind
     class?: string;
     style?: string;
   }
@@ -15,6 +16,7 @@
     file,
     width,
     height,
+    priority = 0,
     class: className = '',
     style: styleStr = ''
   }: Props = $props();
@@ -32,6 +34,7 @@
     if (!file) return;
 
     const targetFile = file;
+    const targetPriority = priority;
     let hasRendered = false;
 
     function render() {
@@ -54,9 +57,9 @@
         return;
       }
 
-      // Async load (throttled by cache)
+      // Async load (throttled by cache) - pass priority and element for visibility check
       thumbnailCache
-        .get(targetUuid, targetFile)
+        .get(targetUuid, targetFile, targetPriority, node)
         .then((entry) => {
           if (hasRendered) return;
           const ctx = node.getContext('2d');

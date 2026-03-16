@@ -84,6 +84,14 @@ class ExportProvider {
     throw new Error('Export provider does not support cloud operations');
   }
 
+  async renameFile(_file: CloudFileMetadata, _newPath: string): Promise<CloudFileMetadata> {
+    throw new Error('Export provider does not support cloud operations');
+  }
+
+  async renameFolder(_oldPath: string, _newPath: string): Promise<CloudFileMetadata[]> {
+    throw new Error('Export provider does not support cloud operations');
+  }
+
   async getStorageQuota(): Promise<StorageQuota> {
     throw new Error('Export provider does not support cloud operations');
   }
@@ -122,6 +130,8 @@ export interface ProviderCredentials {
   // WebDAV: { serverUrl: string, username: string, password: string }
   [key: string]: any;
 }
+
+export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
 
 /**
  * Base metadata for a cloud-stored file (CBZ file)
@@ -237,9 +247,15 @@ export interface SyncProvider {
    * @param path Target path (e.g., "SeriesTitle/VolumeTitle.cbz")
    * @param blob File data as Blob
    * @param description Optional file description
+   * @param onProgress Optional progress callback (loaded, total)
    * @returns File ID in cloud storage
    */
-  uploadFile(path: string, blob: Blob, description?: string): Promise<string>;
+  uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string>;
 
   /**
    * Download a file from cloud storage
@@ -259,10 +275,66 @@ export interface SyncProvider {
   deleteFile(file: CloudFileMetadata): Promise<void>;
 
   /**
+   * Rename or move a file within cloud storage.
+   * Returns refreshed metadata for cache replacement.
+   */
+  renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata>;
+
+  /**
+   * Rename or move a folder within cloud storage.
+   * Returns refreshed metadata for affected files so caches can be updated safely.
+   */
+  renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]>;
+
+  /**
+   * Optional provider-optimized deletion of an entire series folder.
+   * Implementations may fall back to deleting files individually.
+   */
+  deleteSeriesFolder?(seriesTitle: string): Promise<void>;
+
+  /**
    * Get storage quota information from the provider
    * @returns Storage quota with used, total, and available bytes
    */
   getStorageQuota(): Promise<StorageQuota>;
+
+  /**
+   * Optional: Return provider-specific credentials needed by upload workers.
+   * Keep credential source/provider details encapsulated in the provider implementation.
+   */
+  getWorkerUploadCredentials?(): Promise<Record<string, any>>;
+
+  /**
+   * Optional: Ensure upload target (e.g., series folder) exists before worker upload starts.
+   * Returns provider-specific fields that should be merged into worker credentials.
+   */
+  prepareUploadTarget?(seriesTitle: string): Promise<Record<string, any> | void>;
+
+  /**
+   * Optional: Return provider-specific credentials needed by download workers.
+   */
+  getWorkerDownloadCredentials?(fileId: string): Promise<Record<string, any>>;
+
+  /**
+   * Optional: Cleanup any temporary download credentials/resources (e.g., temporary share links).
+   */
+  cleanupWorkerDownload?(fileId: string): Promise<void>;
+
+  /**
+   * Optional: Trigger provider-specific re-authentication flow.
+   */
+  reauthenticate?(): Promise<void>;
+
+  /**
+   * Optional Google Drive picker integration.
+   */
+  showFilePicker?(): Promise<Array<{ id: string; name?: string; mimeType?: string }>>;
+
+  /**
+   * Optional WebDAV helpers for pre-filling login fields.
+   */
+  getLastServerUrl?(): string | null;
+  getLastUsername?(): string | null;
 }
 
 // WebDAV-specific error types for detailed modal guidance

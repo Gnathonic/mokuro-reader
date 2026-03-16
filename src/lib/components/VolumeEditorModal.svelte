@@ -1,18 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Button, Modal, Label, Input, Select, Spinner, Fileupload } from 'flowbite-svelte';
+  import { Button, Modal, Label, Input, Select, Spinner } from 'flowbite-svelte';
   import { volumeEditorModalStore, closeVolumeEditor } from '$lib/util/modals';
   import {
     getAllSeriesOptions,
     generateNewSeriesUuid,
     updateVolumeInDb,
+    renameVolumeInCloud,
     updateVolumeStats,
-    resetVolumeProgress,
     updateVolumeCover,
     resetVolumeCover,
     getVolumeData,
-    getVolumeFiles,
-    calculateVolumeCharacterCount
+    calculateVolumeCharacterCount,
+    getNextVolumeUuidInSeries
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
   import type { VolumeMetadata } from '$lib/types';
@@ -27,8 +27,6 @@
 
   // Original data for comparison
   let originalMetadata: VolumeMetadata | null = $state(null);
-  let originalStats: VolumeData | null = $state(null);
-
   // Editable form state
   let seriesUuid = $state('');
   let seriesTitle = $state('');
@@ -68,24 +66,59 @@
   // Cover
   let thumbnailUrl = $state<string | null>(null);
   let showCoverPicker = $state(false);
+  let hasNextSeriesVolume = $state(false);
+  let coverPickerInitialPageIndex = $state<number | null>(null);
+  let coverPickerOpenCropperOnLoad = $state(false);
+  let lastCropZone = $state<{
+    xPercent: number;
+    yPercent: number;
+    widthPercent: number;
+    heightPercent: number;
+    aspectRatio: number;
+  } | null>(null);
 
   // Series options for dropdown
   let seriesOptions = $state<{ uuid: string; title: string }[]>([]);
+
+  let pendingOpenCoverPicker = false;
+
+  // Capture Escape so it doesn't propagate to the series page's back-navigation handler
+  $effect(() => {
+    if (!open) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        handleClose();
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown, true);
+    return () => window.removeEventListener('keydown', handleKeydown, true);
+  });
 
   onMount(() => {
     const unsubscribe = volumeEditorModalStore.subscribe(async (value) => {
       if (value?.open && value.volumeUuid) {
         open = true;
         volumeUuid = value.volumeUuid;
+        pendingOpenCoverPicker = value.openCoverPicker ?? false;
         await loadVolumeData();
+        if (pendingOpenCoverPicker) {
+          pendingOpenCoverPicker = false;
+          openCoverPicker();
+        }
       }
     });
     return unsubscribe;
   });
 
-  async function loadVolumeData() {
+  async function loadVolumeData(targetVolumeUuid: string = volumeUuid) {
     loading = true;
     try {
+      volumeUuid = targetVolumeUuid;
+
       // Load series options
       seriesOptions = await getAllSeriesOptions();
 
@@ -98,8 +131,6 @@
       }
 
       originalMetadata = data.metadata;
-      originalStats = data.stats;
-
       // Populate form fields
       seriesUuid = data.metadata.series_uuid;
       seriesTitle = data.metadata.series_title;
@@ -117,7 +148,15 @@
       isNewSeries = false;
       newSeriesName = '';
 
-      // Generate thumbnail URL
+      // Determine next-volume availability for "Use + Next Volume"
+      hasNextSeriesVolume =
+        (await getNextVolumeUuidInSeries(data.metadata.series_uuid, data.metadata.volume_uuid)) !==
+        null;
+
+      // Regenerate thumbnail URL
+      if (thumbnailUrl) {
+        URL.revokeObjectURL(thumbnailUrl);
+      }
       if (data.metadata.thumbnail) {
         thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
       } else {
@@ -179,6 +218,13 @@
       }
       if (volumeTitle !== originalMetadata.volume_title) {
         metadataUpdates.volume_title = volumeTitle;
+      }
+
+      if (
+        finalSeriesTitle !== originalMetadata.series_title ||
+        volumeTitle !== originalMetadata.volume_title
+      ) {
+        await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
       }
 
       if (Object.keys(metadataUpdates).length > 0) {
@@ -245,9 +291,77 @@
     return validImageMimeTypes.has(file.type) || file.type.startsWith('image/');
   }
 
-  function handleCoverSelected(file: File) {
+  function openCoverPicker() {
+    coverPickerInitialPageIndex = null;
+    coverPickerOpenCropperOnLoad = false;
+    showCoverPicker = true;
+  }
+
+  function applyCoverPickerContext(context?: {
+    pageIndex: number | null;
+    cropZone: {
+      xPercent: number;
+      yPercent: number;
+      widthPercent: number;
+      heightPercent: number;
+      aspectRatio: number;
+    } | null;
+  }) {
+    if (!context) return;
+    coverPickerInitialPageIndex = context.pageIndex;
+    if (context.cropZone) {
+      lastCropZone = context.cropZone;
+    }
+  }
+
+  async function handleCoverSelected(
+    file: File,
+    context?: {
+      pageIndex: number | null;
+      cropZone: {
+        xPercent: number;
+        yPercent: number;
+        widthPercent: number;
+        heightPercent: number;
+        aspectRatio: number;
+      } | null;
+    }
+  ) {
     showCoverPicker = false;
-    saveCover(file);
+    applyCoverPickerContext(context);
+    await saveCover(file);
+  }
+
+  async function handleCoverSelectedAndNext(
+    file: File,
+    context?: {
+      pageIndex: number | null;
+      cropZone: {
+        xPercent: number;
+        yPercent: number;
+        widthPercent: number;
+        heightPercent: number;
+        aspectRatio: number;
+      } | null;
+    }
+  ) {
+    showCoverPicker = false;
+    applyCoverPickerContext(context);
+
+    const currentVolumeUuid = volumeUuid;
+    const currentSeriesUuid = seriesUuid;
+
+    await saveCover(file);
+
+    const nextVolumeUuid = await getNextVolumeUuidInSeries(currentSeriesUuid, currentVolumeUuid);
+    if (!nextVolumeUuid) {
+      showSnackbar('No next volume in this series');
+      return;
+    }
+
+    coverPickerOpenCropperOnLoad = true;
+    await loadVolumeData(nextVolumeUuid);
+    showCoverPicker = true;
   }
 
   async function saveCover(file: File) {
@@ -322,9 +436,7 @@
               {/if}
             </div>
             <div class="flex gap-1">
-              <Button size="xs" color="light" onclick={() => (showCoverPicker = true)}>
-                Change
-              </Button>
+              <Button size="xs" color="light" onclick={openCoverPicker}>Change</Button>
               <Button size="xs" color="light" onclick={handleResetCover} disabled={saving}>
                 Reset
               </Button>
@@ -476,7 +588,12 @@
 {#if showCoverPicker}
   <VolumeEditorCoverPicker
     {volumeUuid}
+    initialPageIndex={coverPickerInitialPageIndex}
+    openCropperOnLoad={coverPickerOpenCropperOnLoad}
+    {lastCropZone}
+    hasNextVolume={hasNextSeriesVolume}
     onSelect={handleCoverSelected}
+    onSelectAndNext={handleCoverSelectedAndNext}
     onCancel={() => (showCoverPicker = false)}
   />
 {/if}
