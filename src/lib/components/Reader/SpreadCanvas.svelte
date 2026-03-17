@@ -3,7 +3,7 @@
 	import type { PageSpread } from '$lib/reader/spread-grouping';
 	import type { TileConfig } from '$lib/reader/tile/tile-config';
 	import { TileRenderer } from '$lib/reader/tile/tile-renderer';
-	import { TileDecoder, type DecodeResult } from '$lib/reader/tile/tile-decoder';
+	import { TileDecoder } from '$lib/reader/tile/tile-decoder';
 	import TextBoxes from './TextBoxes.svelte';
 	import { onMount, onDestroy } from 'svelte';
 
@@ -31,10 +31,10 @@
 		decoder
 	}: Props = $props();
 
-	let canvas: HTMLCanvasElement | undefined = $state();
-	let renderer: TileRenderer | null = null;
+	// One canvas + renderer per page in the spread
+	let canvases: HTMLCanvasElement[] = $state([]);
+	let renderers: TileRenderer[] = [];
 	let loaded = $state(false);
-	let decodeResults = $state<DecodeResult[]>([]);
 
 	// Compute native spread dimensions
 	let nativeW = $derived(
@@ -48,7 +48,7 @@
 			: spread.pages[0].img_height
 	);
 
-	// Page entries with x-offsets for positioning text overlays
+	// Page entries with x-offsets for positioning
 	let entries = $derived.by(() => {
 		if (spread.type === 'dual') {
 			const [p0, p1] = spread.pages;
@@ -66,74 +66,49 @@
 		return [{ page: spread.pages[0], pageIndex: spread.pageIndices[0], xOffset: 0 }];
 	});
 
-	onMount(async () => {
-		if (!canvas) return;
-
-		renderer = new TileRenderer(config);
-		await renderer.init(canvas, nativeW, nativeH);
-
+	onMount(() => {
 		// If already visible when mounted, start loading
 		if (visible) {
-			loadTiles();
+			initAndLoad();
 		}
 	});
 
 	onDestroy(() => {
-		if (renderer) {
+		for (const renderer of renderers) {
 			renderer.destroy();
-			renderer = null;
 		}
-		// Close any decode result bitmaps we still hold
-		for (const result of decodeResults) {
-			for (const tile of result.tiles) {
-				tile.bitmap.close();
-			}
-		}
-		decodeResults = [];
+		renderers = [];
 	});
 
 	// React to visibility changes
 	$effect(() => {
-		if (visible && renderer?.initialized && !loaded) {
-			loadTiles();
+		if (visible && !loaded) {
+			initAndLoad();
 		}
 	});
 
-	async function loadTiles() {
-		if (!renderer || loaded) return;
+	async function initAndLoad() {
+		if (loaded || renderers.length > 0) return;
+
+		// Wait a tick for canvases to bind
+		await new Promise((r) => requestAnimationFrame(r));
 
 		try {
-			// Decode each page in the spread
-			const allTiles: Array<{ col: number; row: number; bitmap: ImageBitmap }> = [];
-			const results: DecodeResult[] = [];
+			for (let i = 0; i < entries.length; i++) {
+				const entry = entries[i];
+				const file = files[entry.pageIndex];
+				const canvas = canvases[i];
+				if (!file || !canvas) continue;
 
-			for (let i = 0; i < spread.pageIndices.length; i++) {
-				const pageIndex = spread.pageIndices[i];
-				const file = files[pageIndex];
-				if (!file) continue;
+				// Create renderer for this page
+				const renderer = new TileRenderer(config);
+				await renderer.init(canvas, entry.page.img_width, entry.page.img_height);
+				renderers.push(renderer);
 
+				// Decode and upload tiles
 				const result = await decoder.decodePage(file, config);
-				results.push(result);
-
-				// Calculate x-offset for this page within the spread
-				const entry = entries.find((e) => e.pageIndex === pageIndex);
-				const xOffsetPx = entry?.xOffset ?? 0;
-
-				// Adjust tile positions by the page offset within the spread
-				const colOffset = Math.floor(xOffsetPx / config.contentSize);
-				const pxOffset = xOffsetPx - colOffset * config.contentSize;
-
-				for (const tile of result.tiles) {
-					allTiles.push({
-						col: tile.col + colOffset,
-						row: tile.row,
-						bitmap: tile.bitmap
-					});
-				}
+				renderer.setTiles(result.tiles);
 			}
-
-			decodeResults = results;
-			renderer.setTiles(allTiles);
 			loaded = true;
 		} catch (err) {
 			console.error('Failed to load tiles for spread:', spread.pageIndices, err);
@@ -152,17 +127,21 @@
 		style:height={`${nativeH}px`}
 		style:transform={`scale(${scale})`}
 	>
-		<!-- PixiJS canvas renders the tiled page images -->
-		<canvas
-			bind:this={canvas}
-			width={nativeW}
-			height={nativeH}
-			class="absolute inset-0"
-		></canvas>
+		<!-- One canvas per page, positioned within the spread -->
+		{#each entries as entry, i (entry.pageIndex)}
+			<div
+				class="absolute top-0"
+				style:left={`${entry.xOffset}px`}
+				style:width={`${entry.page.img_width}px`}
+				style:height={`${entry.page.img_height}px`}
+			>
+				<canvas
+					bind:this={canvases[i]}
+					width={entry.page.img_width}
+					height={entry.page.img_height}
+				></canvas>
 
-		<!-- HTML text overlay on top of canvas for extension compatibility -->
-		{#each entries as entry (entry.pageIndex)}
-			<div class="absolute top-0" style:left={`${entry.xOffset}px`}>
+				<!-- HTML text overlay on top of canvas -->
 				<TextBoxes
 					page={entry.page}
 					src={files[entry.pageIndex]}

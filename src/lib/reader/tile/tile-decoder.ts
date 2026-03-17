@@ -37,7 +37,7 @@ export class TileDecoder {
 
 	constructor() {
 		this.worker = new Worker(
-			new URL('$lib/workers/tile-decode-worker.ts', import.meta.url),
+			new URL('../../workers/tile-decode-worker.ts', import.meta.url),
 			{ type: 'module' }
 		);
 

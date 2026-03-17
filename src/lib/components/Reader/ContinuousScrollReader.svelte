@@ -55,35 +55,26 @@
 	let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
 	let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
 
-	// Overlay toggle — 1:1 from Reader.svelte
+	// Overlay toggle
 	let textBoxWasActive = false;
 	let pointerDownX = 0;
 	let pointerDownY = 0;
 	const DRAG_THRESHOLD = 5;
 
-	// Zoom — CSS transform on content only, containers stay 100vh
-	let userZoom = $state(1);
-	let isZoomAnimating = $state(false);
+	// Zoom — CSS zoom on content wrapper via direct DOM manipulation.
+	// Only $state is updated when animation settles, not every frame.
+	// This avoids Svelte re-rendering the entire template at 60fps.
+	let userZoom = $state(1); // Only updated on settle for snap/conditional logic
+	let zoomWrapper: HTMLDivElement | undefined = $state();
 	const ZOOM_LEVELS = [1, 1.5, 2, 3];
-
-	// Panning (when zoomed)
-	let isPanning = $state(false);
-	let panStartX = 0;
-	let panStartY = 0;
-	let panOffsetX = $state(0);
-	let panOffsetY = $state(0);
-	let panStartOffsetX = 0;
-	let panStartOffsetY = 0;
 
 	// Tile rendering
 	let tileConfig: TileConfig | null = $state(null);
 	let decoder: TileDecoder | null = $state(null);
 	let visibleSpreads = $state(new Set<number>());
 
-	// Progress tracking — which spread we last reported
+	// Progress tracking
 	let lastReportedSpreadIdx = $state(-1);
-
-	// Page we last reported — to detect external page changes
 	let lastReportedPage = currentPage;
 
 	// Scroll event suppression during programmatic scrolls
@@ -114,9 +105,17 @@
 		)
 	);
 
-	// Fit-to-screen scale for each spread
+	// Scale spread based on zoom mode setting
 	function fitScale(spread: PageSpread): number {
 		const { w, h } = nativeSize(spread);
+		const zoomMode = $settings.continuousZoomDefault;
+
+		if (zoomMode === 'zoomFitToWidth') {
+			return viewportWidth / w;
+		} else if (zoomMode === 'zoomOriginal') {
+			return 1;
+		}
+		// zoomFitToScreen (default)
 		return Math.min(viewportWidth / w, viewportHeight / h);
 	}
 
@@ -233,7 +232,7 @@
 		const oldSpreads = prevSpreads;
 		prevSpreads = spreads;
 
-		if (!oldSpreads) return; // initial — onMount handles it
+		if (!oldSpreads) return;
 
 		const oldSpread =
 			lastReportedSpreadIdx >= 0 && lastReportedSpreadIdx < oldSpreads.length
@@ -252,6 +251,20 @@
 		});
 	});
 
+	// React to zoom mode changes — preserve current spread position
+	let prevZoomMode = $settings.continuousZoomDefault;
+	$effect(() => {
+		const zoomMode = $settings.continuousZoomDefault;
+		if (zoomMode === prevZoomMode) return;
+		prevZoomMode = zoomMode;
+
+		tick().then(() => {
+			if (lastReportedSpreadIdx >= 0) {
+				scrollToSpread(lastReportedSpreadIdx, false);
+			}
+		});
+	});
+
 	// ============================================================
 	// Lifecycle
 	// ============================================================
@@ -259,14 +272,10 @@
 	let visibilityObserver: IntersectionObserver | undefined;
 
 	onMount(async () => {
-		// Initialize tile config from device capabilities
 		const detected = await detectTileConfig();
 		tileConfig = applyUrlParamOverrides(detected);
-
-		// Create shared decoder for all spread canvases
 		decoder = new TileDecoder();
 
-		// Set up IntersectionObserver to track which spreads are near the viewport
 		visibilityObserver = new IntersectionObserver(
 			(entries) => {
 				let changed = false;
@@ -307,7 +316,7 @@
 		visibilityObserver?.disconnect();
 		scrollContainer?.removeEventListener('wheel', handleWheel);
 		if (scrollEndTimer) clearTimeout(scrollEndTimer);
-
+		zoomAnimator.destroy();
 		if (decoder) {
 			decoder.destroy();
 			decoder = null;
@@ -346,12 +355,18 @@
 				scrollContainer?.scrollBy({ top: -viewportHeight * 0.8, behavior: 'smooth' });
 				break;
 			case 'ArrowLeft':
+				e.preventDefault();
+				scrollContainer?.scrollBy({ left: -viewportWidth * 0.5, behavior: 'smooth' });
+				break;
+			case 'ArrowRight':
+				e.preventDefault();
+				scrollContainer?.scrollBy({ left: viewportWidth * 0.5, behavior: 'smooth' });
+				break;
 			case 'PageDown':
 			case ' ':
 				e.preventDefault();
 				navigateToNextSpread();
 				break;
-			case 'ArrowRight':
 			case 'PageUp':
 				e.preventDefault();
 				navigateToPrevSpread();
@@ -397,25 +412,94 @@
 	}
 
 	// ============================================================
-	// Zoom — CSS transform only, container height stays 100vh
+	// Zoom — Animator-driven, direct DOM manipulation
+	//
+	// The Animator drives zoom. Its onFrame callback directly sets
+	// zoomWrapper.style.zoom and scrollContainer.scrollLeft/Top.
+	// This bypasses Svelte reactivity — no re-render per frame.
+	// userZoom ($state) is only updated on settle for template logic
+	// (scroll-snap, padding conditionals).
 	// ============================================================
 
+	import { Animator } from '$lib/reader/animator';
+
+	// Anchor: content-space point that stays fixed at a viewport position
+	let anchorContentX = 0;
+	let anchorContentY = 0;
+	let anchorViewX = 0;
+	let anchorViewY = 0;
+
+	let zoomTarget = 1; // Discrete target from ZOOM_LEVELS
+	let currentZoom = 1; // Live value (not $state — updated by animator)
+
+	const zoomAnimator = new Animator(
+		1,
+		(z) => {
+			currentZoom = z;
+
+			// Direct DOM manipulation — no Svelte reactivity
+			if (zoomWrapper) {
+				zoomWrapper.style.zoom = z === 1 ? '' : String(z);
+				zoomWrapper.style.paddingLeft = z > 1.01 ? '50vw' : '';
+				zoomWrapper.style.paddingRight = z > 1.01 ? '50vw' : '';
+			}
+			if (scrollContainer) {
+				scrollContainer.scrollLeft = anchorContentX * z - anchorViewX;
+				scrollContainer.scrollTop = anchorContentY * z - anchorViewY;
+			}
+		},
+		{
+			factor: 0.18,
+			onSettle: () => {
+				// Sync $state only on settle — triggers one Svelte update
+				userZoom = zoomTarget;
+			}
+		}
+	);
+
+	function setZoomAnchor(clientX: number, clientY: number) {
+		if (!scrollContainer) return;
+		const rect = scrollContainer.getBoundingClientRect();
+		anchorViewX = clientX - rect.left;
+		anchorViewY = clientY - rect.top;
+		const z = currentZoom || 1;
+		anchorContentX = (scrollContainer.scrollLeft + anchorViewX) / z;
+		anchorContentY = (scrollContainer.scrollTop + anchorViewY) / z;
+	}
+
+	function zoomToPoint(clientX: number, clientY: number) {
+		const curIdx = findClosestZoomIndex(zoomTarget);
+		const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
+		setZoomAnchor(clientX, clientY);
+		zoomTarget = ZOOM_LEVELS[nextIdx];
+		zoomAnimator.setTarget(zoomTarget);
+	}
+
 	function cycleZoom(direction: number) {
-		const curIdx = ZOOM_LEVELS.indexOf(userZoom);
-		let nextIdx = curIdx < 0 ? (direction > 0 ? 1 : 0) : curIdx + direction;
+		if (!scrollContainer) return;
+		const rect = scrollContainer.getBoundingClientRect();
+		const curIdx = findClosestZoomIndex(zoomTarget);
+		let nextIdx = curIdx + direction;
 		nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
 		const newZoom = ZOOM_LEVELS[nextIdx];
-		if (newZoom === userZoom) return;
+		if (newZoom === zoomTarget) return;
 
-		isZoomAnimating = true;
-		userZoom = newZoom;
-		if (newZoom === 1) {
-			panOffsetX = 0;
-			panOffsetY = 0;
+		setZoomAnchor(rect.left + rect.width / 2, rect.top + rect.height / 2);
+		zoomTarget = newZoom;
+		zoomAnimator.setTarget(zoomTarget);
+	}
+
+	function findClosestZoomIndex(zoom: number): number {
+		let bestIdx = 0;
+		let bestDist = Infinity;
+		for (let i = 0; i < ZOOM_LEVELS.length; i++) {
+			const dist = Math.abs(ZOOM_LEVELS[i] - zoom);
+			if (dist < bestDist) {
+				bestDist = dist;
+				bestIdx = i;
+			}
 		}
-		setTimeout(() => {
-			isZoomAnimating = false;
-		}, 300);
+		return bestIdx;
 	}
 
 	function handleWheel(e: WheelEvent) {
@@ -426,54 +510,67 @@
 	}
 
 	// ============================================================
-	// Overlay + panning + double-tap
+	// Click-drag panning + overlay toggle + double-tap zoom
+	//
+	// Drag panning: pointerdown starts tracking, pointermove scrolls
+	// the container. No preventDefault on pointerdown so click events
+	// still fire. wasDrag flag distinguishes drags from taps.
 	// ============================================================
 
-	function handleOverlayPointerDown(e: PointerEvent) {
+	let isDragging = false;
+	let wasDrag = false;
+	let dragStartScrollLeft = 0;
+	let dragStartScrollTop = 0;
+
+	function handlePointerDown(e: PointerEvent) {
 		pointerDownX = e.clientX;
 		pointerDownY = e.clientY;
 
 		if ((e.target as HTMLElement).closest('.textBox')) {
 			textBoxWasActive = true;
+			return;
 		}
 
 		if (e.button !== 0) return;
-		if ((e.target as HTMLElement).closest('.textBox')) return;
 
-		if (userZoom > 1) {
-			isPanning = true;
-			panStartX = e.clientX;
-			panStartY = e.clientY;
-			panStartOffsetX = panOffsetX;
-			panStartOffsetY = panOffsetY;
-			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		}
+		isDragging = true;
+		wasDrag = false;
+		dragStartScrollLeft = scrollContainer?.scrollLeft ?? 0;
+		dragStartScrollTop = scrollContainer?.scrollTop ?? 0;
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
 	function handlePointerMove(e: PointerEvent) {
-		if (!isPanning) return;
-		panOffsetX = panStartOffsetX + (e.clientX - panStartX);
-		panOffsetY = panStartOffsetY + (e.clientY - panStartY);
+		if (!isDragging || !scrollContainer) return;
+		const dx = e.clientX - pointerDownX;
+		const dy = e.clientY - pointerDownY;
+
+		// Only start dragging after exceeding threshold
+		if (!wasDrag && dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+			wasDrag = true;
+		}
+
+		if (wasDrag) {
+			scrollContainer.scrollLeft = dragStartScrollLeft - dx;
+			scrollContainer.scrollTop = dragStartScrollTop - dy;
+		}
 	}
 
 	function handlePointerUp(e: PointerEvent) {
-		if (isPanning) {
+		if (isDragging) {
 			try {
 				(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 			} catch {}
 		}
-		isPanning = false;
+		isDragging = false;
 	}
 
 	let lastTapTime = 0;
 	const DOUBLE_TAP_DELAY = 300;
 
-	function handleOverlayToggle(e: MouseEvent) {
+	function handleClick(e: MouseEvent) {
 		if ((e.target as HTMLElement).closest('.textBox')) return;
-
-		const dx = e.clientX - pointerDownX;
-		const dy = e.clientY - pointerDownY;
-		if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+		if (wasDrag) return;
 
 		if (textBoxWasActive) {
 			textBoxWasActive = false;
@@ -483,17 +580,7 @@
 		const now = Date.now();
 		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
-			const curIdx = ZOOM_LEVELS.indexOf(userZoom);
-			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
-			isZoomAnimating = true;
-			userZoom = ZOOM_LEVELS[nextIdx];
-			if (ZOOM_LEVELS[nextIdx] === 1) {
-				panOffsetX = 0;
-				panOffsetY = 0;
-			}
-			setTimeout(() => {
-				isZoomAnimating = false;
-			}, 300);
+			zoomToPoint(e.clientX, e.clientY);
 			return;
 		}
 		lastTapTime = now;
@@ -519,42 +606,30 @@
 	<div
 		bind:this={scrollContainer}
 		class="h-full w-full scrollbar-hide"
-		style:overflow-y={userZoom > 1 ? 'hidden' : 'auto'}
-		style:overflow-x="hidden"
+		style:overflow="auto"
 		style:overscroll-behavior="none"
-		style:scroll-snap-type={$settings.scrollSnap ? 'y mandatory' : 'none'}
+		style:scroll-snap-type={$settings.scrollSnap && userZoom === 1 ? 'y mandatory' : 'none'}
 		onscroll={handleScroll}
+		onpointerdown={handlePointerDown}
+		onpointermove={handlePointerMove}
+		onpointerup={handlePointerUp}
+		onpointercancel={handlePointerUp}
+		onclick={handleClick}
 		role="none"
 	>
-		{#if tileConfig && decoder}
-			{#each spreads as spread, spreadIndex (spread.pageIndices[0])}
-				{@const scale = fitScale(spread)}
-				{@const isActive = spreadIndex === lastReportedSpreadIdx}
-				<!--
-					Each spread is a full-viewport slide.
-					Height is ALWAYS 100% of container — zoom does not change this.
-				-->
-				<div
-					class="flex items-center justify-center"
-					style:height="100%"
-					style:min-height="100%"
-					style:scroll-snap-align={$settings.scrollSnap ? 'start' : 'none'}
-					style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-					data-spread-index={spreadIndex}
-					onpointerdown={handleOverlayPointerDown}
-					onpointermove={handlePointerMove}
-					onpointerup={handlePointerUp}
-					onpointercancel={handlePointerUp}
-					onclick={handleOverlayToggle}
-					role="none"
-				>
+		<!-- Zoom wrapper: style.zoom set directly by animator (not Svelte reactivity) -->
+		<div bind:this={zoomWrapper}>
+			{#if tileConfig && decoder}
+				{#each spreads as spread, spreadIndex (spread.pageIndices[0])}
+					{@const scale = fitScale(spread)}
+					{@const isFitToScreen = $settings.continuousZoomDefault === 'zoomFitToScreen'}
 					<div
-						class="relative"
-						style:transform={isActive && userZoom !== 1
-							? `scale(${userZoom}) translate(${panOffsetX / userZoom}px, ${panOffsetY / userZoom}px)`
-							: 'none'}
-						style:transition={isZoomAnimating ? 'transform 0.3s ease' : 'none'}
-						style:cursor={isPanning ? 'grabbing' : userZoom > 1 ? 'grab' : 'default'}
+						class="flex items-center justify-center"
+						style:height={isFitToScreen ? '100vh' : 'auto'}
+						style:min-height={isFitToScreen ? '100vh' : 'auto'}
+						style:scroll-snap-align={$settings.scrollSnap && userZoom === 1 ? 'start' : 'none'}
+						style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+						data-spread-index={spreadIndex}
 					>
 						<SpreadCanvas
 							{spread}
@@ -568,9 +643,9 @@
 							{decoder}
 						/>
 					</div>
-				</div>
-			{/each}
-		{/if}
+				{/each}
+			{/if}
+		</div>
 	</div>
 </div>
 
