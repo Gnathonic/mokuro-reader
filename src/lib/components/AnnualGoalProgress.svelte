@@ -16,7 +16,7 @@
     buildGoalSnapshotKey,
     type GoalProgress,
     type GoalType
-  } from '$lib/settings/goals';
+  } from '$lib/goals';
 
   // Local state for editing the goal
   let isEditing = $state(false);

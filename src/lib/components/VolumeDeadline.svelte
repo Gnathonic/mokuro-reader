@@ -1,10 +1,5 @@
 <script lang="ts">
-  import {
-    volumeDeadlines,
-    setVolumeDeadline,
-    removeVolumeDeadline,
-    dateUtils
-  } from '$lib/settings/goals';
+  import { volumeDeadlines, setVolumeDeadline, removeVolumeDeadline, dateUtils } from '$lib/goals';
   import type { ProgressTargetMode } from '$lib/settings/misc';
 
   interface Props {

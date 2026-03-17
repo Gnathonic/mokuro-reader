@@ -25,6 +25,7 @@
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { initGoalsLifecycle } from '$lib/goals';
   import { get } from 'svelte/store';
 
   // Migration state
@@ -38,6 +39,10 @@
   let { children }: Props = $props();
 
   inject({ mode: dev ? 'development' : 'production' });
+
+  onMount(() => {
+    return initGoalsLifecycle();
+  });
 
   // Handle global Escape key for back navigation
   function handleKeydown(event: KeyboardEvent) {

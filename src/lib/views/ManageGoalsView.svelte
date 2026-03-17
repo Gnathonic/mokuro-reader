@@ -15,7 +15,7 @@
     type GoalTarget,
     type CustomGoal,
     getCurrentPeriodKey
-  } from '$lib/settings/goals';
+  } from '$lib/goals';
 
   const goalTypes: Exclude<GoalType, 'custom'>[] = ['year', 'season', 'month', 'today'];
 
