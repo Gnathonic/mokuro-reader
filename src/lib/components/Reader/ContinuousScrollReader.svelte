@@ -18,8 +18,16 @@
 		TileDecoder,
 		type TileConfig
 	} from '$lib/reader/tile';
-	import SpreadCanvas from './SpreadCanvas.svelte';
-	import { onMount, onDestroy, tick } from 'svelte';
+	import {
+		computeSpreadLayout,
+		VirtualScroller,
+		ViewportRenderer,
+		CameraController,
+		type SpreadLayoutResult,
+		type CameraState
+	} from '$lib/reader/viewport';
+	import TextBoxes from './TextBoxes.svelte';
+	import { onMount, onDestroy } from 'svelte';
 
 	// ============================================================
 	// Props
@@ -51,34 +59,43 @@
 	// State
 	// ============================================================
 
-	let scrollContainer: HTMLDivElement | undefined = $state();
+	let canvas: HTMLCanvasElement | undefined = $state();
+	let overlayRoot: HTMLDivElement | undefined = $state();
 	let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
 	let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
 
-	// Overlay toggle
-	let textBoxWasActive = false;
-	let pointerDownX = 0;
-	let pointerDownY = 0;
-	const DRAG_THRESHOLD = 5;
+	// Visible spread indices for the text overlay (updated each frame)
+	let visibleSpreadIndices = $state<number[]>([]);
 
-	// Zoom — CSS zoom on content wrapper via direct DOM manipulation.
-	// Only $state is updated when animation settles, not every frame.
-	// This avoids Svelte re-rendering the entire template at 60fps.
-	let userZoom = $state(1); // Only updated on settle for snap/conditional logic
-	let zoomWrapper: HTMLDivElement | undefined = $state();
+	// Core systems (initialized in onMount)
+	let renderer: ViewportRenderer | null = null;
+	let camera: CameraController | null = null;
+	let scroller: VirtualScroller | null = null;
+	let decoder: TileDecoder | null = null;
+	let tileConfig: TileConfig | null = null;
+
+	// Zoom
 	const ZOOM_LEVELS = [1, 1.5, 2, 3];
-
-	// Tile rendering
-	let tileConfig: TileConfig | null = $state(null);
-	let decoder: TileDecoder | null = $state(null);
-	let visibleSpreads = $state(new Set<number>());
+	let zoomTarget = 1;
 
 	// Progress tracking
-	let lastReportedSpreadIdx = $state(-1);
+	let lastReportedSpreadIdx = -1;
 	let lastReportedPage = currentPage;
 
-	// Scroll event suppression during programmatic scrolls
-	let ignoreScrollEvents = false;
+	// Pointer interaction
+	let pointerDownX = 0;
+	let pointerDownY = 0;
+	let isDragging = false;
+	let wasDrag = false;
+	let textBoxWasActive = false;
+	const DRAG_THRESHOLD = 5;
+
+	// Double-tap
+	let lastTapTime = 0;
+	const DOUBLE_TAP_DELAY = 300;
+
+	// Scroll settle timer for progress reporting
+	let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// ============================================================
 	// Derived — spreads, layout
@@ -105,63 +122,234 @@
 		)
 	);
 
-	// Scale spread based on zoom mode setting
-	function fitScale(spread: PageSpread): number {
-		const { w, h } = nativeSize(spread);
+	let layout: SpreadLayoutResult = $derived(
+		computeSpreadLayout(spreads, volumeSettings.rightToLeft ?? true)
+	);
+
+	/**
+	 * Compute the base camera scale from the zoom mode setting.
+	 * This is the scale at which a "typical" spread fits the viewport.
+	 */
+	function baseScale(): number {
+		if (layout.items.length === 0) return 1;
+		// Use the first spread as reference for base scale
+		const ref = layout.items[Math.min(lastReportedSpreadIdx >= 0 ? lastReportedSpreadIdx : 0, layout.items.length - 1)];
 		const zoomMode = $settings.continuousZoomDefault;
 
 		if (zoomMode === 'zoomFitToWidth') {
-			return viewportWidth / w;
+			return viewportWidth / ref.width;
 		} else if (zoomMode === 'zoomOriginal') {
 			return 1;
 		}
-		// zoomFitToScreen (default)
-		return Math.min(viewportWidth / w, viewportHeight / h);
-	}
-
-	function nativeSize(spread: PageSpread) {
-		const w =
-			spread.type === 'dual'
-				? spread.pages[0].img_width + spread.pages[1].img_width
-				: spread.pages[0].img_width;
-		const h =
-			spread.type === 'dual'
-				? Math.max(spread.pages[0].img_height, spread.pages[1].img_height)
-				: spread.pages[0].img_height;
-		return { w, h };
+		// zoomFitToScreen
+		return Math.min(viewportWidth / ref.width, viewportHeight / ref.height);
 	}
 
 	// ============================================================
-	// Progress — report when dominant visible spread changes
+	// Lifecycle
 	// ============================================================
 
-	let scrollEndTimer: ReturnType<typeof setTimeout> | null = null;
+	onMount(async () => {
+		if (!canvas) return;
 
-	function detectDominantSpread(): number {
-		if (!scrollContainer) return -1;
-		const centerY = scrollContainer.clientHeight / 2;
-		const containerTop = scrollContainer.getBoundingClientRect().top;
-		let bestIdx = -1;
-		let bestDist = Infinity;
+		// Initialize tile config
+		const detected = await detectTileConfig();
+		tileConfig = applyUrlParamOverrides(detected);
 
-		for (const el of scrollContainer.querySelectorAll('[data-spread-index]')) {
-			const rect = el.getBoundingClientRect();
-			const elCenter = rect.top - containerTop + rect.height / 2;
-			const dist = Math.abs(elCenter - centerY);
-			if (dist < bestDist) {
-				bestDist = dist;
-				bestIdx = parseInt((el as HTMLElement).dataset.spreadIndex ?? '-1');
+		// Initialize decoder
+		decoder = new TileDecoder();
+
+		// Initialize renderer
+		renderer = new ViewportRenderer(tileConfig);
+		await renderer.init(canvas, viewportWidth, viewportHeight);
+
+		// Initialize camera
+		camera = new CameraController(
+			renderer.stage,
+			viewportWidth,
+			viewportHeight,
+			{
+				onFrame: handleCameraFrame,
+				onSettle: handleCameraSettle
+			}
+		);
+		camera.setLayout(layout);
+
+		// Initialize virtual scroller
+		scroller = new VirtualScroller(layout, viewportHeight);
+
+		// Set initial camera position
+		const initialScale = baseScale();
+		zoomTarget = 1; // User zoom multiplier starts at 1
+		const idx = findSpreadForPage(spreads, currentPage - 1);
+		if (idx >= 0) {
+			lastReportedSpreadIdx = idx;
+			camera.zoomTo(initialScale, viewportWidth / 2, viewportHeight / 2, false);
+			camera.snapToSpread(idx, false);
+		} else {
+			camera.zoomTo(initialScale, viewportWidth / 2, viewportHeight / 2, false);
+		}
+
+		// Do initial visibility check
+		updateVisibility();
+	});
+
+	onDestroy(() => {
+		camera?.destroy();
+		renderer?.destroy();
+		decoder?.destroy();
+		scroller?.clear();
+		if (settleTimer) clearTimeout(settleTimer);
+	});
+
+	// React to layout changes (settings, orientation)
+	let prevLayout: SpreadLayoutResult | null = null;
+	$effect(() => {
+		if (layout === prevLayout || !camera || !scroller) return;
+		prevLayout = layout;
+
+		camera.setLayout(layout);
+		scroller.setLayout(layout);
+
+		// Reposition camera to the current spread
+		if (lastReportedSpreadIdx >= 0 && lastReportedSpreadIdx < layout.items.length) {
+			camera.snapToSpread(lastReportedSpreadIdx, false);
+		}
+		updateVisibility();
+	});
+
+	// React to zoom mode changes
+	let prevZoomMode = '';
+	$effect(() => {
+		const mode = $settings.continuousZoomDefault;
+		if (mode === prevZoomMode || !camera) return;
+		prevZoomMode = mode;
+
+		const newBase = baseScale();
+		camera.zoomTo(newBase * zoomTarget, viewportWidth / 2, viewportHeight / 2, true);
+	});
+
+	// React to external page changes
+	$effect(() => {
+		if (currentPage !== lastReportedPage && camera) {
+			lastReportedPage = currentPage;
+			const idx = findSpreadForPage(spreads, currentPage - 1);
+			if (idx >= 0) {
+				lastReportedSpreadIdx = idx;
+				camera.snapToSpread(idx, true);
 			}
 		}
-		return bestIdx;
+	});
+
+	// ============================================================
+	// Camera callbacks
+	// ============================================================
+
+	function handleCameraFrame(state: CameraState) {
+		// Sync HTML overlay transform
+		if (overlayRoot) {
+			overlayRoot.style.transform =
+				`translate(${-state.x * state.scale}px, ${-state.y * state.scale}px) scale(${state.scale})`;
+		}
+
+		// Update visibility (throttled — check every few frames)
+		updateVisibility();
+
+		// Debounced progress reporting
+		if (settleTimer) clearTimeout(settleTimer);
+		settleTimer = setTimeout(() => {
+			reportProgress();
+			activityTracker.recordActivity();
+		}, 150);
 	}
 
-	function reportProgress(spreadIdx: number) {
-		if (spreadIdx < 0 || spreadIdx >= spreads.length) return;
-		if (spreadIdx === lastReportedSpreadIdx) return;
-		lastReportedSpreadIdx = spreadIdx;
+	function handleCameraSettle(_state: CameraState) {
+		reportProgress();
 
-		const spread = spreads[spreadIdx];
+		// Snap to nearest spread if enabled
+		if ($settings.scrollSnap && camera && zoomTarget === 1) {
+			const dominant = camera.getDominantSpread();
+			if (dominant >= 0 && dominant !== lastReportedSpreadIdx) {
+				camera.snapToSpread(dominant, true);
+			}
+		}
+	}
+
+	// ============================================================
+	// Visibility & tile loading
+	// ============================================================
+
+	function updateVisibility() {
+		if (!camera || !scroller || !renderer || !decoder || !tileConfig) return;
+
+		const { top, bottom } = camera.getWorldRect();
+		const { toLoad, toUnload } = scroller.update(top, bottom);
+
+		// Unload
+		for (const idx of toUnload) {
+			renderer.removeSpread(idx);
+		}
+
+		// Load
+		for (const idx of toLoad) {
+			loadSpread(idx);
+		}
+
+		// Update visible indices for text overlay (only spreads actually on screen)
+		const visibleRange = scroller.getLoaded();
+		const newVisible = [...visibleRange].filter((idx) => {
+			const item = layout.items[idx];
+			if (!item) return false;
+			return item.y + item.height >= top && item.y <= bottom;
+		});
+		// Only update $state if changed (avoid re-render churn)
+		if (
+			newVisible.length !== visibleSpreadIndices.length ||
+			newVisible.some((v, i) => v !== visibleSpreadIndices[i])
+		) {
+			visibleSpreadIndices = newVisible;
+		}
+	}
+
+	async function loadSpread(spreadIndex: number) {
+		if (!renderer || !decoder || !tileConfig) return;
+		if (renderer.hasSpread(spreadIndex)) return;
+
+		const item = layout.items[spreadIndex];
+		if (!item) return;
+
+		try {
+			const pageResults: Array<{ decodeResult: any; xOffset: number }> = [];
+
+			for (const entry of item.pageEntries) {
+				const file = indexedFiles[entry.pageIndex];
+				if (!file) continue;
+
+				const result = await decoder.decodePage(file, tileConfig);
+				pageResults.push({ decodeResult: result, xOffset: entry.xOffset });
+			}
+
+			// Check we're still relevant (might have scrolled away during decode)
+			if (renderer && scroller?.getLoaded().has(spreadIndex)) {
+				renderer.addSpread(spreadIndex, item, pageResults);
+			}
+		} catch (err) {
+			console.error(`Failed to load spread ${spreadIndex}:`, err);
+		}
+	}
+
+	// ============================================================
+	// Progress
+	// ============================================================
+
+	function reportProgress() {
+		if (!camera) return;
+		const dominant = camera.getDominantSpread();
+		if (dominant < 0 || dominant >= spreads.length) return;
+		if (dominant === lastReportedSpreadIdx) return;
+
+		lastReportedSpreadIdx = dominant;
+		const spread = spreads[dominant];
 		const maxPageIndex = Math.max(...spread.pageIndices);
 		const pageNum = maxPageIndex + 1;
 		const { charCount } = getCharCount(pages, pageNum);
@@ -169,165 +357,13 @@
 
 		lastReportedPage = pageNum;
 		onPageChange(pageNum, charCount, isComplete);
-		activityTracker.recordActivity();
-	}
 
-	function handleScroll() {
-		if (!scrollContainer || ignoreScrollEvents) return;
-		activityTracker.recordActivity();
-
-		if (scrollEndTimer) clearTimeout(scrollEndTimer);
-		scrollEndTimer = setTimeout(() => {
-			const idx = detectDominantSpread();
-			if (idx >= 0) reportProgress(idx);
-		}, 150);
-
-		// Auto-advance at bottom
-		const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-		if (scrollTop + clientHeight >= scrollHeight - 2) {
-			onVolumeNav('next');
-		}
-	}
-
-	// ============================================================
-	// Scroll-to helpers
-	// ============================================================
-
-	function scrollToSpread(spreadIdx: number, smooth: boolean) {
-		if (!scrollContainer || spreadIdx < 0) return;
-		ignoreScrollEvents = true;
-
-		const el = scrollContainer.querySelector(`[data-spread-index="${spreadIdx}"]`);
-		if (el) {
-			el.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant', block: 'start' });
-		}
-
-		setTimeout(
-			() => {
-				ignoreScrollEvents = false;
-			},
-			smooth ? 600 : 100
-		);
-	}
-
-	// ============================================================
-	// React to external page changes
-	// ============================================================
-
-	$effect(() => {
-		if (currentPage !== lastReportedPage) {
-			lastReportedPage = currentPage;
-			const idx = findSpreadForPage(spreads, currentPage - 1);
-			if (idx >= 0) {
-				lastReportedSpreadIdx = idx;
-				scrollToSpread(idx, true);
+		// Auto-advance at end
+		if (isComplete) {
+			const worldRect = camera.getWorldRect();
+			if (worldRect.bottom >= layout.totalHeight) {
+				onVolumeNav('next');
 			}
-		}
-	});
-
-	// React to spread re-layout (hasCover, page mode)
-	let prevSpreads: PageSpread[] | null = null;
-	$effect(() => {
-		if (spreads === prevSpreads) return;
-		const oldSpreads = prevSpreads;
-		prevSpreads = spreads;
-
-		if (!oldSpreads) return;
-
-		const oldSpread =
-			lastReportedSpreadIdx >= 0 && lastReportedSpreadIdx < oldSpreads.length
-				? oldSpreads[lastReportedSpreadIdx]
-				: null;
-		const oldPageIdx = oldSpread ? Math.max(...oldSpread.pageIndices) : currentPage - 1;
-
-		tick().then(() => {
-			reobserve();
-			const newIdx = findSpreadForPage(spreads, oldPageIdx);
-			if (newIdx >= 0) {
-				lastReportedSpreadIdx = newIdx;
-				scrollToSpread(newIdx, false);
-				reportProgress(newIdx);
-			}
-		});
-	});
-
-	// React to zoom mode changes — preserve current spread position
-	let prevZoomMode = $settings.continuousZoomDefault;
-	$effect(() => {
-		const zoomMode = $settings.continuousZoomDefault;
-		if (zoomMode === prevZoomMode) return;
-		prevZoomMode = zoomMode;
-
-		tick().then(() => {
-			if (lastReportedSpreadIdx >= 0) {
-				scrollToSpread(lastReportedSpreadIdx, false);
-			}
-		});
-	});
-
-	// ============================================================
-	// Lifecycle
-	// ============================================================
-
-	let visibilityObserver: IntersectionObserver | undefined;
-
-	onMount(async () => {
-		const detected = await detectTileConfig();
-		tileConfig = applyUrlParamOverrides(detected);
-		decoder = new TileDecoder();
-
-		visibilityObserver = new IntersectionObserver(
-			(entries) => {
-				let changed = false;
-				for (const entry of entries) {
-					const idx = parseInt((entry.target as HTMLElement).dataset.spreadIndex ?? '-1');
-					if (idx < 0) continue;
-
-					if (entry.isIntersecting) {
-						if (!visibleSpreads.has(idx)) {
-							visibleSpreads.add(idx);
-							changed = true;
-						}
-					} else {
-						if (visibleSpreads.has(idx)) {
-							visibleSpreads.delete(idx);
-							changed = true;
-						}
-					}
-				}
-				if (changed) visibleSpreads = new Set(visibleSpreads);
-			},
-			{ root: scrollContainer, rootMargin: '200% 0px' }
-		);
-
-		scrollContainer?.addEventListener('wheel', handleWheel, { passive: false });
-
-		requestAnimationFrame(() => {
-			reobserve();
-			const idx = findSpreadForPage(spreads, currentPage - 1);
-			if (idx >= 0) {
-				lastReportedSpreadIdx = idx;
-				scrollToSpread(idx, false);
-			}
-		});
-	});
-
-	onDestroy(() => {
-		visibilityObserver?.disconnect();
-		scrollContainer?.removeEventListener('wheel', handleWheel);
-		if (scrollEndTimer) clearTimeout(scrollEndTimer);
-		zoomAnimator.destroy();
-		if (decoder) {
-			decoder.destroy();
-			decoder = null;
-		}
-	});
-
-	function reobserve() {
-		if (!scrollContainer) return;
-		visibilityObserver?.disconnect();
-		for (const el of scrollContainer.querySelectorAll('[data-spread-index]')) {
-			visibilityObserver?.observe(el);
 		}
 	}
 
@@ -345,22 +381,24 @@
 		)
 			return;
 
+		if (!camera) return;
+
 		switch (e.key) {
 			case 'ArrowDown':
 				e.preventDefault();
-				scrollContainer?.scrollBy({ top: viewportHeight * 0.8, behavior: 'smooth' });
+				camera.panByScreenAnimated(0, -viewportHeight * 0.8);
 				break;
 			case 'ArrowUp':
 				e.preventDefault();
-				scrollContainer?.scrollBy({ top: -viewportHeight * 0.8, behavior: 'smooth' });
+				camera.panByScreenAnimated(0, viewportHeight * 0.8);
 				break;
 			case 'ArrowLeft':
 				e.preventDefault();
-				scrollContainer?.scrollBy({ left: -viewportWidth * 0.5, behavior: 'smooth' });
+				camera.panByScreenAnimated(viewportWidth * 0.5, 0);
 				break;
 			case 'ArrowRight':
 				e.preventDefault();
-				scrollContainer?.scrollBy({ left: viewportWidth * 0.5, behavior: 'smooth' });
+				camera.panByScreenAnimated(-viewportWidth * 0.5, 0);
 				break;
 			case 'PageDown':
 			case ' ':
@@ -373,11 +411,11 @@
 				break;
 			case 'Home':
 				e.preventDefault();
-				scrollToSpread(0, true);
+				camera.snapToSpread(0, true);
 				break;
 			case 'End':
 				e.preventDefault();
-				scrollToSpread(spreads.length - 1, true);
+				camera.snapToSpread(spreads.length - 1, true);
 				break;
 			case '+':
 			case '=':
@@ -392,101 +430,51 @@
 	}
 
 	function navigateToNextSpread() {
-		const current = detectDominantSpread();
+		if (!camera) return;
+		const current = camera.getDominantSpread();
 		const next = (current >= 0 ? current : lastReportedSpreadIdx) + 1;
 		if (next >= spreads.length) {
 			onVolumeNav('next');
 			return;
 		}
-		scrollToSpread(next, true);
+		camera.snapToSpread(next, true);
 	}
 
 	function navigateToPrevSpread() {
-		const current = detectDominantSpread();
+		if (!camera) return;
+		const current = camera.getDominantSpread();
 		const prev = (current >= 0 ? current : lastReportedSpreadIdx) - 1;
 		if (prev < 0) {
 			onVolumeNav('prev');
 			return;
 		}
-		scrollToSpread(prev, true);
+		camera.snapToSpread(prev, true);
 	}
 
 	// ============================================================
-	// Zoom — Animator-driven, direct DOM manipulation
-	//
-	// The Animator drives zoom. Its onFrame callback directly sets
-	// zoomWrapper.style.zoom and scrollContainer.scrollLeft/Top.
-	// This bypasses Svelte reactivity — no re-render per frame.
-	// userZoom ($state) is only updated on settle for template logic
-	// (scroll-snap, padding conditionals).
+	// Zoom
 	// ============================================================
-
-	import { Animator } from '$lib/reader/animator';
-
-	// Anchor: content-space point that stays fixed at a viewport position
-	let anchorContentX = 0;
-	let anchorContentY = 0;
-	let anchorViewX = 0;
-	let anchorViewY = 0;
-
-	let zoomTarget = 1; // Discrete target from ZOOM_LEVELS
-	let currentZoom = 1; // Live value (not $state — updated by animator)
-
-	const zoomAnimator = new Animator(
-		1,
-		(z) => {
-			currentZoom = z;
-
-			// Direct DOM manipulation — no Svelte reactivity
-			if (zoomWrapper) {
-				zoomWrapper.style.zoom = z === 1 ? '' : String(z);
-				zoomWrapper.style.paddingLeft = z > 1.01 ? '50vw' : '';
-				zoomWrapper.style.paddingRight = z > 1.01 ? '50vw' : '';
-			}
-			if (scrollContainer) {
-				scrollContainer.scrollLeft = anchorContentX * z - anchorViewX;
-				scrollContainer.scrollTop = anchorContentY * z - anchorViewY;
-			}
-		},
-		{
-			factor: 0.18,
-			onSettle: () => {
-				// Sync $state only on settle — triggers one Svelte update
-				userZoom = zoomTarget;
-			}
-		}
-	);
-
-	function setZoomAnchor(clientX: number, clientY: number) {
-		if (!scrollContainer) return;
-		const rect = scrollContainer.getBoundingClientRect();
-		anchorViewX = clientX - rect.left;
-		anchorViewY = clientY - rect.top;
-		const z = currentZoom || 1;
-		anchorContentX = (scrollContainer.scrollLeft + anchorViewX) / z;
-		anchorContentY = (scrollContainer.scrollTop + anchorViewY) / z;
-	}
-
-	function zoomToPoint(clientX: number, clientY: number) {
-		const curIdx = findClosestZoomIndex(zoomTarget);
-		const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
-		setZoomAnchor(clientX, clientY);
-		zoomTarget = ZOOM_LEVELS[nextIdx];
-		zoomAnimator.setTarget(zoomTarget);
-	}
 
 	function cycleZoom(direction: number) {
-		if (!scrollContainer) return;
-		const rect = scrollContainer.getBoundingClientRect();
+		if (!camera) return;
 		const curIdx = findClosestZoomIndex(zoomTarget);
 		let nextIdx = curIdx + direction;
 		nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
 		const newZoom = ZOOM_LEVELS[nextIdx];
 		if (newZoom === zoomTarget) return;
 
-		setZoomAnchor(rect.left + rect.width / 2, rect.top + rect.height / 2);
 		zoomTarget = newZoom;
-		zoomAnimator.setTarget(zoomTarget);
+		const effectiveScale = baseScale() * zoomTarget;
+		camera.zoomTo(effectiveScale, viewportWidth / 2, viewportHeight / 2, true);
+	}
+
+	function zoomToPoint(clientX: number, clientY: number) {
+		if (!camera) return;
+		const curIdx = findClosestZoomIndex(zoomTarget);
+		const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
+		zoomTarget = ZOOM_LEVELS[nextIdx];
+		const effectiveScale = baseScale() * zoomTarget;
+		camera.zoomTo(effectiveScale, clientX, clientY, true);
 	}
 
 	function findClosestZoomIndex(zoom: number): number {
@@ -503,24 +491,21 @@
 	}
 
 	function handleWheel(e: WheelEvent) {
-		if (!e.ctrlKey && !e.metaKey) return;
-		e.preventDefault();
-		if (e.deltaY < 0) cycleZoom(1);
-		else if (e.deltaY > 0) cycleZoom(-1);
+		if (!camera) return;
+		if (e.ctrlKey || e.metaKey) {
+			e.preventDefault();
+			if (e.deltaY < 0) cycleZoom(1);
+			else if (e.deltaY > 0) cycleZoom(-1);
+		} else {
+			// Normal wheel: scroll vertically
+			e.preventDefault();
+			camera.panByScreen(0, -e.deltaY);
+		}
 	}
 
 	// ============================================================
-	// Click-drag panning + overlay toggle + double-tap zoom
-	//
-	// Drag panning: pointerdown starts tracking, pointermove scrolls
-	// the container. No preventDefault on pointerdown so click events
-	// still fire. wasDrag flag distinguishes drags from taps.
+	// Pointer interaction: drag pan + tap/double-tap
 	// ============================================================
-
-	let isDragging = false;
-	let wasDrag = false;
-	let dragStartScrollLeft = 0;
-	let dragStartScrollTop = 0;
 
 	function handlePointerDown(e: PointerEvent) {
 		pointerDownX = e.clientX;
@@ -535,24 +520,24 @@
 
 		isDragging = true;
 		wasDrag = false;
-		dragStartScrollLeft = scrollContainer?.scrollLeft ?? 0;
-		dragStartScrollTop = scrollContainer?.scrollTop ?? 0;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
 	function handlePointerMove(e: PointerEvent) {
-		if (!isDragging || !scrollContainer) return;
+		if (!isDragging || !camera) return;
+
 		const dx = e.clientX - pointerDownX;
 		const dy = e.clientY - pointerDownY;
 
-		// Only start dragging after exceeding threshold
 		if (!wasDrag && dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
 			wasDrag = true;
 		}
 
 		if (wasDrag) {
-			scrollContainer.scrollLeft = dragStartScrollLeft - dx;
-			scrollContainer.scrollTop = dragStartScrollTop - dy;
+			// Move camera by the delta since last frame
+			camera.panByScreen(dx, dy);
+			pointerDownX = e.clientX;
+			pointerDownY = e.clientY;
 		}
 	}
 
@@ -564,9 +549,6 @@
 		}
 		isDragging = false;
 	}
-
-	let lastTapTime = 0;
-	const DOUBLE_TAP_DELAY = 300;
 
 	function handleClick(e: MouseEvent) {
 		if ((e.target as HTMLElement).closest('.textBox')) return;
@@ -597,64 +579,58 @@
 	function handleResize() {
 		viewportWidth = window.innerWidth;
 		viewportHeight = window.innerHeight;
+		renderer?.resize(viewportWidth, viewportHeight);
+		camera?.setViewport(viewportWidth, viewportHeight);
+		scroller?.setViewportHeight(viewportHeight);
 	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} onresize={handleResize} />
 
 <div class="fixed inset-0" style:background-color={$settings.backgroundColor}>
-	<div
-		bind:this={scrollContainer}
-		class="h-full w-full scrollbar-hide"
-		style:overflow="auto"
-		style:overscroll-behavior="none"
-		style:scroll-snap-type={$settings.scrollSnap && userZoom === 1 ? 'y mandatory' : 'none'}
-		onscroll={handleScroll}
+	<!-- Single PixiJS canvas for all page rendering -->
+	<canvas
+		bind:this={canvas}
+		class="absolute inset-0 h-full w-full"
+		onwheel={handleWheel}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
 		onpointercancel={handlePointerUp}
 		onclick={handleClick}
-		role="none"
+	></canvas>
+
+	<!-- HTML text overlay: CSS-transformed to match PixiJS camera -->
+	<div
+		bind:this={overlayRoot}
+		class="pointer-events-none absolute inset-0"
+		style:transform-origin="0 0"
+		style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
 	>
-		<!-- Zoom wrapper: style.zoom set directly by animator (not Svelte reactivity) -->
-		<div bind:this={zoomWrapper}>
-			{#if tileConfig && decoder}
-				{#each spreads as spread, spreadIndex (spread.pageIndices[0])}
-					{@const scale = fitScale(spread)}
-					{@const isFitToScreen = $settings.continuousZoomDefault === 'zoomFitToScreen'}
-					<div
-						class="flex items-center justify-center"
-						style:height={isFitToScreen ? '100vh' : 'auto'}
-						style:min-height={isFitToScreen ? '100vh' : 'auto'}
-						style:scroll-snap-align={$settings.scrollSnap && userZoom === 1 ? 'start' : 'none'}
-						style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-						data-spread-index={spreadIndex}
-					>
-						<SpreadCanvas
-							{spread}
-							files={indexedFiles}
-							{volume}
-							config={tileConfig}
-							visible={visibleSpreads.has(spreadIndex)}
-							{scale}
-							rtl={volumeSettings.rightToLeft ?? true}
-							{missingPagePaths}
-							{decoder}
-						/>
-					</div>
-				{/each}
+		{#each visibleSpreadIndices as spreadIdx (spreadIdx)}
+			{@const item = layout.items[spreadIdx]}
+			{@const spread = spreads[spreadIdx]}
+			{#if item && spread}
+				<div
+					class="pointer-events-auto absolute"
+					style:left="0px"
+					style:top={`${item.y}px`}
+					style:width={`${item.width}px`}
+					style:height={`${item.height}px`}
+				>
+					{#each item.pageEntries as entry (entry.pageIndex)}
+						<div class="absolute top-0" style:left={`${entry.xOffset}px`}>
+							<TextBoxes
+								page={entry.page}
+								src={indexedFiles[entry.pageIndex]}
+								volumeUuid={volume.volume_uuid}
+								pageIndex={entry.pageIndex}
+								forceVisible={missingPagePaths.has(entry.page.img_path)}
+							/>
+						</div>
+					{/each}
+				</div>
 			{/if}
-		</div>
+		{/each}
 	</div>
 </div>
-
-<style>
-	.scrollbar-hide {
-		scrollbar-width: none;
-		-ms-overflow-style: none;
-	}
-	.scrollbar-hide::-webkit-scrollbar {
-		display: none;
-	}
-</style>
