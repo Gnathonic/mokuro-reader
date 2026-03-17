@@ -71,6 +71,7 @@
     "page-flip": "^2.0.7",
     "panzoom": "^9.4.3",
     "pica": "^9.0.1",
+    "pixi.js": "^8.17.1",
     "svelte-easy-crop": "^5.0.0",
     "webdav": "^5.8.0"
   },

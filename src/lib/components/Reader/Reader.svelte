@@ -22,7 +22,8 @@
     updateSetting,
     updateVolumeSetting,
     volumes,
-    type VolumeSettings
+    type VolumeSettings,
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
@@ -49,6 +50,7 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import ContinuousScrollReader from './ContinuousScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -351,6 +353,24 @@
       event.preventDefault();
     }
 
+    // In continuous scroll mode, let ContinuousScrollReader handle navigation keys
+    if ($settings.continuousScroll) {
+      const continuousModeKeys = [
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'PageUp',
+        'PageDown',
+        'Space',
+        'Home',
+        'End'
+      ];
+      if (continuousModeKeys.includes(action)) {
+        return;
+      }
+    }
+
     switch (action) {
       case 'ArrowLeft':
         left(event, true);
@@ -412,6 +432,9 @@
       case 'KeyZ':
         rotateZoomMode();
         return;
+      case 'KeyV':
+        toggleContinuousScroll();
+        return;
       case 'Escape':
         navigateBack();
         return;
@@ -427,6 +450,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
     // Capture start position for single-finger gesture
@@ -438,6 +462,7 @@
 
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
@@ -485,6 +510,9 @@
 
   // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
+    // In continuous scroll mode, let ContinuousScrollReader handle wheel events
+    if ($settings.continuousScroll) return;
+
     const target = e.target as HTMLElement;
     // Don't capture wheel events from settings drawer, popovers, or modals
     if (
@@ -1058,7 +1086,69 @@
     showNotification(labels[nextMode], `pagemode-${nextMode}`);
   }
 
+  function toggleContinuousScroll() {
+    const newValue = !$settings.continuousScroll;
+    updateSetting('continuousScroll', newValue);
+    showNotification(
+      newValue ? 'Continuous Scroll On' : 'Continuous Scroll Off',
+      'continuous-scroll-toggle'
+    );
+  }
+
+  function rotateContinuousZoomMode() {
+    const currentMode = $settings.continuousZoomDefault;
+    let nextMode: ContinuousZoomMode;
+
+    // Rotate through: fitToWidth -> fitToScreen -> original -> fitToWidth
+    if (currentMode === 'zoomFitToWidth') {
+      nextMode = 'zoomFitToScreen';
+    } else if (currentMode === 'zoomFitToScreen') {
+      nextMode = 'zoomOriginal';
+    } else {
+      nextMode = 'zoomFitToWidth';
+    }
+
+    updateSetting('continuousZoomDefault', nextMode);
+
+    const labels: Record<ContinuousZoomMode, string> = {
+      zoomFitToWidth: 'Fit to Width',
+      zoomFitToScreen: 'Fit to Screen',
+      zoomOriginal: 'Original Size'
+    };
+    showNotification(labels[nextMode], `zoommode-${nextMode}`);
+  }
+
+  // Callback for ContinuousReader page changes
+  function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
+    if (!volume) return;
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    activityTracker.recordActivity();
+  }
+
+  // Callback for ContinuousReader volume navigation
+  function handleContinuousVolumeNav(direction: 'prev' | 'next') {
+    if (!volume) return;
+    let seriesVolumes = $currentSeries;
+    const currentVolumeIndex = seriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid);
+
+    if (direction === 'prev') {
+      const previousVolume = seriesVolumes[currentVolumeIndex - 1];
+      if (previousVolume) nav.toReader(volume.series_uuid, previousVolume.volume_uuid);
+      else nav.toSeries(volume.series_uuid);
+    } else {
+      const nextVolume = seriesVolumes[currentVolumeIndex + 1];
+      if (nextVolume) nav.toReader(volume.series_uuid, nextVolume.volume_uuid);
+      else nav.toSeries(volume.series_uuid);
+    }
+  }
+
   function rotateZoomMode() {
+    // Continuous mode has its own zoom settings
+    if ($settings.continuousScroll) {
+      rotateContinuousZoomMode();
+      return;
+    }
+
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
@@ -1179,6 +1269,20 @@
       </div>
     {/key}
   {/if}
+  {#if $settings.continuousScroll && volumeData?.files}
+    <!-- Continuous scroll mode -->
+    <ContinuousScrollReader
+      {pages}
+      files={volumeData.files}
+      {volume}
+      {volumeSettings}
+      currentPage={page}
+      onPageChange={handleContinuousPageChange}
+      onVolumeNav={handleContinuousVolumeNav}
+      onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+    />
+  {:else}
+  <!-- Page-based mode -->
   <div class="flex" style:background-color={$settings.backgroundColor}>
     <Panzoom>
       <button
@@ -1284,6 +1388,7 @@
       class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
       style:width={`${$settings.edgeButtonWidth}px`}
     ></button>
+  {/if}
   {/if}
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->

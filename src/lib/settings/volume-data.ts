@@ -35,6 +35,7 @@ export type VolumeSettings = {
   rightToLeft?: boolean;
   singlePageView?: PageViewMode;
   hasCover?: boolean;
+  spreadBreakpoints?: number[];
 };
 
 export type VolumeSettingsKey = keyof VolumeSettings;
