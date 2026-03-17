@@ -14,7 +14,6 @@
     type ProgressTrackerSorting,
     type ProgressTargetMode
   } from '$lib/settings';
-  import { onMount } from 'svelte';
   import {
     volumeDeadlines,
     calculatePeriodPageTargetTotal,
@@ -22,12 +21,11 @@
     getNextResetTime,
     formatRelativeResetTime,
     dateUtils,
-    finalizeClosedGoalSnapshots,
     activeGoalPeriod,
     activeGoalSnapshot,
     completedAtMap,
     isDateWithinRange
-  } from '$lib/settings/goals';
+  } from '$lib/goals';
   import { nav } from '$lib/util/hash-router';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
@@ -194,10 +192,6 @@
   function openSettings() {
     settingsModalOpen = true;
   }
-
-  onMount(() => {
-    finalizeClosedGoalSnapshots();
-  });
 
   // Helper function to create entries with sort data
   function createEntriesWithSortData(
