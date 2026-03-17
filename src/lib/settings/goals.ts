@@ -1,29 +1,14 @@
 import { browser } from '$app/environment';
-import { writable, derived, get } from 'svelte/store';
-import { volumes, type VolumeData } from './volume-data';
+import { writable, derived, get, readable } from 'svelte/store';
+import { volumes, type VolumeData, type PageTurn } from './volume-data';
 import { volumes as catalogVolumes } from '$lib/catalog';
+import { generateUUID } from '$lib/util/uuid';
 
 // ================================
 // TYPES
 // ================================
 
-export type AnnualGoal = {
-  year: number;
-  targetVolumes: number;
-};
-
 export type GoalType = 'year' | 'season' | 'month' | 'today' | 'custom';
-
-export type GoalDefinition = {
-  id: string;
-  type: GoalType;
-  name?: string;
-  targetVolumes: number;
-  enabled: boolean;
-  // For custom goals only (YYYY-MM-DD, local date)
-  startDate?: string;
-  endDate?: string;
-};
 
 export type GoalTarget = {
   goalType: Exclude<GoalType, 'custom'>;
@@ -61,6 +46,7 @@ export type GoalSnapshot = {
   endDate: string; // YYYY-MM-DD (local date)
   closedAt: string; // ISO datetime
   completed: Record<string, string>; // volumeId -> completedAt (ISO datetime)
+  partialProgress: Record<string, number>; // volumeId -> fraction completed within period
 };
 
 type CompletedAtMap = Record<string, string>;
@@ -71,7 +57,6 @@ export type VolumeDeadline = {
 };
 
 export type GoalSettings = {
-  annualGoals: AnnualGoal[];
   volumeDeadlines: Record<string, string>; // volumeId -> deadline (YYYY-MM-DD)
 };
 
@@ -165,16 +150,30 @@ export const dateUtils = {
     return seasonNames[dateUtils.seasonIndex(date)];
   },
 
-  seasonRange: (year: number, seasonIndex: number): { start: Date; end: Date } => {
-    const start = new Date(year, seasonIndex * 3, 1);
-    const end = new Date(year, seasonIndex * 3 + 3, 1);
-    return { start, end };
+  /**
+   * Returns the start and end dates of a calendar quarter.
+   * @param year Full year (e.g. 2025)
+   * @param quarter 0-based index (0 = Q1 Jan–Mar, 1 = Q2 Apr–Jun, 2 = Q3 Jul–Sep, 3 = Q4 Oct–Dec)
+   */
+  seasonRange: (year: number, quarter: number): { start: Date; end: Date } => {
+    if (quarter < 0 || quarter > 3) {
+      throw new RangeError('Quarter must be 0–3');
+    }
+    const month = quarter * 3;
+    return {
+      start: new Date(year, month, 1),
+      end: new Date(year, month + 3, 1)
+    };
   },
 
   monthRange: (year: number, monthIndex: number): { start: Date; end: Date } => {
-    const start = new Date(year, monthIndex, 1);
-    const end = new Date(year, monthIndex + 1, 1);
-    return { start, end };
+    if (monthIndex < 0 || monthIndex > 11) {
+      throw new RangeError('Month index must be 0–11');
+    }
+    return {
+      start: new Date(year, monthIndex, 1),
+      end: new Date(year, monthIndex + 1, 1)
+    };
   }
 };
 
@@ -356,6 +355,58 @@ export function buildYearKey(year: number): string {
 
 export function buildTodayKey(date: Date = new Date()): string {
   return dateUtils.formatDate(date);
+}
+
+function parseLocalDateString(dateString: string): Date | null {
+  const parts = dateString.split('-').map(Number);
+  if (parts.length !== 3) return null;
+
+  const [year, month, day] = parts;
+  if (!year || !month || !day) return null;
+
+  const date = new Date(year, month - 1, day);
+  if (Number.isNaN(date.getTime())) return null;
+
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+
+  return date;
+}
+
+function hasValidCustomGoalDateRange(startDate: string, endDate: string): boolean {
+  const start = parseLocalDateString(startDate);
+  const end = parseLocalDateString(endDate);
+
+  if (!start || !end) return false;
+
+  return start.getTime() <= end.getTime();
+}
+
+function isCustomGoalClosed(
+  goal: Pick<CustomGoal, 'startDate' | 'endDate'>,
+  now = new Date()
+): boolean {
+  const inclusiveEnd = parseLocalDateString(goal.endDate);
+  if (!inclusiveEnd) return false;
+
+  const end = new Date(
+    inclusiveEnd.getFullYear(),
+    inclusiveEnd.getMonth(),
+    inclusiveEnd.getDate() + 1
+  );
+
+  return end.getTime() <= now.getTime();
+}
+
+export function isCustomGoalDateRangeLocked(
+  goal: Pick<CustomGoal, 'id' | 'startDate' | 'endDate'>,
+  now = new Date()
+): boolean {
+  if (isCustomGoalClosed(goal, now)) return true;
+
+  const snapshotKey = buildGoalSnapshotKey('custom', goal.id);
+  return Boolean(get(_goalSnapshots)[snapshotKey]);
 }
 
 export function isDateWithinRange(dateIso: string, start: Date, end: Date): boolean {
@@ -548,12 +599,6 @@ export function getRecentPeriods(
 const currentYear = new Date().getFullYear();
 
 const defaultSettings: GoalSettings = {
-  annualGoals: [
-    {
-      year: currentYear,
-      targetVolumes: 52 // Default: 1 volume per week
-    }
-  ],
   volumeDeadlines: {}
 };
 
@@ -570,7 +615,6 @@ function loadGoalSettings(): GoalSettings {
   try {
     const parsed = JSON.parse(stored);
     return {
-      annualGoals: parsed.annualGoals || defaultSettings.annualGoals,
       volumeDeadlines: parsed.volumeDeadlines || defaultSettings.volumeDeadlines
     };
   } catch {
@@ -580,21 +624,10 @@ function loadGoalSettings(): GoalSettings {
 
 const _goalSettings = writable<GoalSettings>(loadGoalSettings());
 
-const GOAL_SETTINGS_UPDATED_AT_KEY = 'goalSettingsUpdatedAt';
-const GOALS_DATA_UPDATED_AT_KEY = 'goalsDataUpdatedAt';
-const GOAL_SNAPSHOTS_UPDATED_AT_KEY = 'goalSnapshotsUpdatedAt';
-const COMPLETED_AT_UPDATED_AT_KEY = 'completedAtUpdatedAt';
-
-function getStoredUpdatedAt(key: string): string {
-  if (!browser) return new Date(0).toISOString();
-  return window.localStorage.getItem(key) || new Date(0).toISOString();
-}
-
 // Persist to localStorage
 _goalSettings.subscribe((settings) => {
   if (browser) {
     window.localStorage.setItem('goalSettings', JSON.stringify(settings));
-    window.localStorage.setItem(GOAL_SETTINGS_UPDATED_AT_KEY, new Date().toISOString());
   }
 });
 
@@ -643,7 +676,6 @@ const _goalsData = writable<GoalsData>(loadGoalsData());
 _goalsData.subscribe((data) => {
   if (browser) {
     window.localStorage.setItem('goalsData', JSON.stringify(data));
-    window.localStorage.setItem(GOALS_DATA_UPDATED_AT_KEY, new Date().toISOString());
   }
 });
 
@@ -698,9 +730,10 @@ export function setActiveGoalSelection(selection: GoalSelection) {
 }
 
 export function createCustomGoal(goal: Omit<CustomGoal, 'id' | 'createdAt'>) {
+  if (!hasValidCustomGoalDateRange(goal.startDate, goal.endDate)) return;
+
   _goalsData.update((data) => {
-    const cryptoApi = ensureCrypto();
-    const id = cryptoApi?.randomUUID?.() ?? `custom-${Date.now()}`;
+    const id = generateUUID();
     const newGoal: CustomGoal = {
       ...goal,
       id,
@@ -715,9 +748,31 @@ export function createCustomGoal(goal: Omit<CustomGoal, 'id' | 'createdAt'>) {
 }
 
 export function updateCustomGoal(updatedGoal: CustomGoal) {
+  if (!hasValidCustomGoalDateRange(updatedGoal.startDate, updatedGoal.endDate)) return;
+
   _goalsData.update((data) => ({
     ...data,
-    customGoals: data.customGoals.map((goal) => (goal.id === updatedGoal.id ? updatedGoal : goal))
+    customGoals: data.customGoals.map((goal) => {
+      if (goal.id !== updatedGoal.id) return goal;
+
+      if (!isCustomGoalDateRangeLocked(goal)) {
+        return {
+          ...goal,
+          ...updatedGoal,
+          id: goal.id,
+          createdAt: goal.createdAt
+        };
+      }
+
+      return {
+        ...goal,
+        ...updatedGoal,
+        id: goal.id,
+        createdAt: goal.createdAt,
+        startDate: goal.startDate,
+        endDate: goal.endDate
+      };
+    })
   }));
 }
 
@@ -737,7 +792,7 @@ export function removeCustomGoal(customId: string) {
 }
 
 // ================================
-// COMPLETED-AT MAP (LOCAL ONLY)
+// COMPLETED-AT MAP
 // ================================
 
 function loadCompletedAtMapFromVolumes(): CompletedAtMap {
@@ -764,6 +819,15 @@ function loadCompletedAtMapFromVolumes(): CompletedAtMap {
   }
 }
 
+/**
+ * Mirrors the in-memory completed-at map back into the persisted `volumes`
+ * localStorage payload.
+ *
+ * Goal progress/snapshots read from `_completedAtMap`, but older code and
+ * persisted volume records still expect each volume entry to carry its own
+ * `completedAt` field. This keeps both representations aligned after we detect
+ * newly completed volumes.
+ */
 function persistCompletedAtMapToVolumes(map: CompletedAtMap) {
   if (!browser) return;
 
@@ -775,24 +839,24 @@ function persistCompletedAtMapToVolumes(map: CompletedAtMap) {
     if (!parsed || typeof parsed !== 'object') return;
 
     const volumesPayload = parsed as Record<string, Record<string, unknown>>;
-    Object.entries(map).forEach(([volumeId, completedAt]) => {
-      if (!volumesPayload[volumeId]) return;
-      volumesPayload[volumeId] = {
-        ...volumesPayload[volumeId],
-        completedAt
-      };
+    Object.entries(volumesPayload).forEach(([volumeId, volumeData]) => {
+      if (map[volumeId]) {
+        volumesPayload[volumeId] = {
+          ...volumeData,
+          completedAt: map[volumeId]
+        };
+        return;
+      }
+
+      const { completedAt: _completedAt, ...rest } = volumeData;
+      volumesPayload[volumeId] = rest;
     });
 
+    // Persist the merged payload so completion timestamps survive reloads.
     window.localStorage.setItem('volumes', JSON.stringify(volumesPayload));
-    window.localStorage.setItem(COMPLETED_AT_UPDATED_AT_KEY, new Date().toISOString());
   } catch {
     // Ignore storage errors
   }
-}
-
-function ensureCrypto(): Crypto | null {
-  if (typeof crypto !== 'undefined') return crypto;
-  return null;
 }
 
 const _completedAtMap = writable<CompletedAtMap>(loadCompletedAtMapFromVolumes());
@@ -802,46 +866,154 @@ function isVolumeCompleted(volumeData: VolumeData, totalPages: number): boolean 
   return volumeData.completed || (totalPages > 0 && volumeData.progress >= totalPages);
 }
 
-derived([volumes, catalogVolumes], ([$volumes, $catalog]) => ({
-  volumes: $volumes,
-  catalog: $catalog
-})).subscribe(({ volumes: $volumes, catalog: $catalog }) => {
-  if (!browser || !$volumes) return;
+function shouldPreserveCompletedAt(
+  volumeData: VolumeData,
+  totalPages: number,
+  previousCompletedAt?: string
+): boolean {
+  if (!previousCompletedAt) return false;
 
-  let nextMap: CompletedAtMap | null = null;
+  if (isVolumeCompleted(volumeData, totalPages)) {
+    return true;
+  }
 
-  _completedAtMap.update((map) => {
-    let updated = map;
+  if (totalPages > 0) {
+    return false;
+  }
 
-    Object.entries($volumes).forEach(([volumeId, volumeData]) => {
-      if (map[volumeId]) return;
+  return volumeData.progress > 1;
+}
 
-      const totalPages = $catalog[volumeId]?.page_count ?? 0;
-      if (!isVolumeCompleted(volumeData as VolumeData, totalPages)) return;
+function buildCompletedAtMapFromState(
+  allVolumes: Record<string, VolumeData>,
+  catalog: Record<string, { page_count?: number }>,
+  previousMap: CompletedAtMap
+): CompletedAtMap {
+  const nextMap: CompletedAtMap = {};
 
-      if (updated === map) {
-        updated = { ...map };
+  Object.entries(allVolumes).forEach(([volumeId, volumeData]) => {
+    const totalPages = catalog[volumeId]?.page_count ?? 0;
+
+    if (!isVolumeCompleted(volumeData, totalPages)) {
+      if (shouldPreserveCompletedAt(volumeData, totalPages, previousMap[volumeId])) {
+        nextMap[volumeId] = previousMap[volumeId];
+      }
+      return;
+    }
+
+    nextMap[volumeId] =
+      previousMap[volumeId] ?? (volumeData.lastProgressUpdate || new Date().toISOString());
+  });
+
+  return nextMap;
+}
+
+function hasCompletedAtMapChanged(previousMap: CompletedAtMap, nextMap: CompletedAtMap): boolean {
+  const previousEntries = Object.entries(previousMap);
+  const nextEntries = Object.entries(nextMap);
+
+  if (previousEntries.length !== nextEntries.length) return true;
+
+  return nextEntries.some(([volumeId, completedAt]) => previousMap[volumeId] !== completedAt);
+}
+
+// Manage completion tracking with proper cleanup
+const _completionTracking = readable(null, () => {
+  const unsubscribe = derived([volumes, catalogVolumes], ([$volumes, $catalog]) => ({
+    volumes: $volumes,
+    catalog: $catalog
+  })).subscribe(({ volumes: $volumes, catalog: $catalog }) => {
+    if (!browser || !$volumes) return;
+
+    let nextMap: CompletedAtMap | null = null;
+
+    _completedAtMap.update((map) => {
+      const updated = buildCompletedAtMapFromState(
+        $volumes as Record<string, VolumeData>,
+        $catalog as Record<string, { page_count?: number }>,
+        map
+      );
+
+      if (!hasCompletedAtMapChanged(map, updated)) {
+        return map;
       }
 
-      updated[volumeId] = volumeData.lastProgressUpdate || new Date().toISOString();
+      nextMap = updated;
+      return updated;
     });
 
-    nextMap = updated;
-    return updated;
+    if (!nextMap) return;
+
+    Promise.resolve().then(() => {
+      persistCompletedAtMapToVolumes(nextMap as CompletedAtMap);
+    });
   });
 
-  if (!nextMap) return;
-
-  Promise.resolve().then(() => {
-    persistCompletedAtMapToVolumes(nextMap as CompletedAtMap);
-  });
+  return unsubscribe;
 });
 
+// Initialize the completion tracking subscription
+if (browser) {
+  _completionTracking.subscribe(() => {});
+}
+
 // ================================
-// GOAL SNAPSHOTS (CLOSED PERIODS)
+// GOAL SNAPSHOTS
 // ================================
 
 type GoalSnapshots = Record<string, GoalSnapshot>;
+
+function normalizeGoalSnapshot(snapshot: unknown): GoalSnapshot | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+
+  const candidate = snapshot as Partial<GoalSnapshot> & {
+    partialProgress?: unknown;
+    completed?: unknown;
+  };
+
+  if (
+    typeof candidate.goalType !== 'string' ||
+    typeof candidate.periodKey !== 'string' ||
+    typeof candidate.startDate !== 'string' ||
+    typeof candidate.endDate !== 'string' ||
+    typeof candidate.closedAt !== 'string'
+  ) {
+    return null;
+  }
+
+  const completed =
+    candidate.completed && typeof candidate.completed === 'object'
+      ? Object.fromEntries(
+          Object.entries(candidate.completed).filter(
+            ([volumeId, completedAt]) =>
+              typeof volumeId === 'string' && typeof completedAt === 'string'
+          )
+        )
+      : {};
+
+  const partialProgress =
+    candidate.partialProgress && typeof candidate.partialProgress === 'object'
+      ? Object.fromEntries(
+          Object.entries(candidate.partialProgress).filter(
+            ([volumeId, progress]) =>
+              typeof volumeId === 'string' &&
+              typeof progress === 'number' &&
+              Number.isFinite(progress) &&
+              progress > 0
+          )
+        )
+      : {};
+
+  return {
+    goalType: candidate.goalType as GoalType,
+    periodKey: candidate.periodKey,
+    startDate: candidate.startDate,
+    endDate: candidate.endDate,
+    closedAt: candidate.closedAt,
+    completed,
+    partialProgress
+  };
+}
 
 function loadGoalSnapshots(): GoalSnapshots {
   if (!browser) return {};
@@ -850,8 +1022,15 @@ function loadGoalSnapshots(): GoalSnapshots {
   if (!stored) return {};
 
   try {
-    const parsed = JSON.parse(stored);
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== 'object') return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([snapshotKey, snapshotValue]) => {
+        const normalized = normalizeGoalSnapshot(snapshotValue);
+        return normalized ? [[snapshotKey, normalized]] : [];
+      })
+    );
   } catch {
     return {};
   }
@@ -862,80 +1041,10 @@ const _goalSnapshots = writable<GoalSnapshots>(loadGoalSnapshots());
 _goalSnapshots.subscribe((snapshots) => {
   if (browser) {
     window.localStorage.setItem('goalSnapshots', JSON.stringify(snapshots));
-    window.localStorage.setItem(GOAL_SNAPSHOTS_UPDATED_AT_KEY, new Date().toISOString());
   }
 });
 
 export const goalSnapshots = _goalSnapshots;
-
-export function getGoalSettingsUpdatedAt(): string {
-  return getStoredUpdatedAt(GOAL_SETTINGS_UPDATED_AT_KEY);
-}
-
-export function getGoalsDataUpdatedAt(): string {
-  return getStoredUpdatedAt(GOALS_DATA_UPDATED_AT_KEY);
-}
-
-export function getGoalSnapshotsUpdatedAt(): string {
-  return getStoredUpdatedAt(GOAL_SNAPSHOTS_UPDATED_AT_KEY);
-}
-
-export function getCompletedAtUpdatedAt(): string {
-  return getStoredUpdatedAt(COMPLETED_AT_UPDATED_AT_KEY);
-}
-
-export function setGoalSettingsFromSync(settings: GoalSettings, updatedAt: string) {
-  _goalSettings.set(settings);
-  if (browser) {
-    window.localStorage.setItem('goalSettings', JSON.stringify(settings));
-    window.localStorage.setItem(GOAL_SETTINGS_UPDATED_AT_KEY, updatedAt);
-  }
-}
-
-export function setGoalsDataFromSync(data: GoalsData, updatedAt: string) {
-  _goalsData.set(data);
-  if (browser) {
-    window.localStorage.setItem('goalsData', JSON.stringify(data));
-    window.localStorage.setItem(GOALS_DATA_UPDATED_AT_KEY, updatedAt);
-  }
-}
-
-export function setGoalSnapshotsFromSync(snapshots: GoalSnapshots, updatedAt: string) {
-  _goalSnapshots.set(snapshots);
-  if (browser) {
-    window.localStorage.setItem('goalSnapshots', JSON.stringify(snapshots));
-    window.localStorage.setItem(GOAL_SNAPSHOTS_UPDATED_AT_KEY, updatedAt);
-  }
-}
-
-export function mergeCompletedAtMapFromSync(map: CompletedAtMap, updatedAt: string) {
-  _completedAtMap.update((current) => {
-    const merged = { ...current };
-    Object.entries(map).forEach(([volumeId, completedAt]) => {
-      if (!completedAt) return;
-      const existing = merged[volumeId];
-      if (!existing) {
-        merged[volumeId] = completedAt;
-        return;
-      }
-      const existingTime = new Date(existing).getTime();
-      const incomingTime = new Date(completedAt).getTime();
-      if (
-        !Number.isNaN(incomingTime) &&
-        (Number.isNaN(existingTime) || incomingTime < existingTime)
-      ) {
-        merged[volumeId] = completedAt;
-      }
-    });
-    return merged;
-  });
-
-  if (browser) {
-    window.localStorage.setItem(COMPLETED_AT_UPDATED_AT_KEY, updatedAt);
-    const snapshot = get(_completedAtMap);
-    persistCompletedAtMapToVolumes(snapshot);
-  }
-}
 
 export function buildGoalSnapshotKey(goalType: GoalType, periodKey: string): string {
   return `${goalType}:${periodKey}`;
@@ -948,11 +1057,32 @@ export function createSnapshotForPeriod(
   end: Date
 ): GoalSnapshot {
   const completed: Record<string, string> = {};
+  const partialProgress: Record<string, number> = {};
   const completedAtMap = get(_completedAtMap);
+  const allVolumes = get(volumes);
+  const catalog = get(catalogVolumes);
 
   Object.entries(completedAtMap).forEach(([volumeId, completedAt]) => {
     if (completedAt && isDateWithinRange(completedAt, start, end)) {
       completed[volumeId] = completedAt;
+    }
+  });
+
+  Object.entries(allVolumes ?? {}).forEach(([volumeId, volumeData]) => {
+    if (completed[volumeId]) return;
+
+    const totalPages = catalog[volumeId]?.page_count ?? 0;
+    if (totalPages <= 0) return;
+
+    const partial = calculatePartialVolumeProgressInPeriod(
+      (volumeData as VolumeData).recentPageTurns,
+      start,
+      end,
+      totalPages
+    );
+
+    if (partial > 0) {
+      partialProgress[volumeId] = partial;
     }
   });
 
@@ -962,7 +1092,8 @@ export function createSnapshotForPeriod(
     startDate: dateUtils.formatDate(start),
     endDate: dateUtils.formatDate(end),
     closedAt: new Date().toISOString(),
-    completed
+    completed,
+    partialProgress
   };
 }
 
@@ -985,6 +1116,10 @@ export function finalizeGoalSnapshot(
 }
 
 export function finalizeClosedGoalSnapshots() {
+  // TODO: This must be finalized from store/app lifecycle, not only from a view mount.
+  // Historical goal progress depends on these snapshots being created as soon as a
+  // period closes; if this runs only after `ProgressTrackerView` is opened, past-period
+  // results can drift based on later volume changes instead of staying frozen.
   const now = new Date();
   const { targets, customGoals: custom } = get(_goalsData);
   const snapshots = get(_goalSnapshots);
@@ -1053,12 +1188,16 @@ function getCustomPeriod(selection: GoalSelection, custom: CustomGoal[]): GoalPe
   const goal = custom.find((entry) => entry.id === selection.customId);
   if (!goal) return null;
 
-  const [startYear, startMonth, startDay] = goal.startDate.split('-').map(Number);
-  const [endYear, endMonth, endDay] = goal.endDate.split('-').map(Number);
-  if (!startYear || !startMonth || !startDay || !endYear || !endMonth || !endDay) return null;
+  const start = parseLocalDateString(goal.startDate);
+  const inclusiveEnd = parseLocalDateString(goal.endDate);
+  if (!start || !inclusiveEnd) return null;
+  if (start.getTime() > inclusiveEnd.getTime()) return null;
 
-  const start = new Date(startYear, startMonth - 1, startDay);
-  const end = new Date(endYear, endMonth - 1, endDay + 1);
+  const end = new Date(
+    inclusiveEnd.getFullYear(),
+    inclusiveEnd.getMonth(),
+    inclusiveEnd.getDate() + 1
+  );
   return {
     goalType: 'custom',
     periodKey: goal.id,
@@ -1082,9 +1221,46 @@ function getDaysRemainingInPeriod(periodEnd: Date, now = new Date()): number {
   return Math.max(0, Math.round(diffInMs / (1000 * 60 * 60 * 24)));
 }
 
+export function calculatePartialVolumeProgressInPeriod(
+  pageTurns: PageTurn[],
+  periodStart: Date,
+  periodEnd: Date,
+  totalPages: number
+): number {
+  if (totalPages <= 0 || pageTurns.length === 0) return 0;
+
+  const periodStartTimestamp = periodStart.getTime();
+  const periodEndTimestamp = periodEnd.getTime();
+  const uniquePagesRead = new Set(
+    pageTurns
+      .filter(([timestamp]) => timestamp >= periodStartTimestamp && timestamp < periodEndTimestamp)
+      .map(([, pageNumber]) => pageNumber)
+  ).size;
+
+  if (uniquePagesRead <= 0) return 0;
+
+  return Math.min(uniquePagesRead, totalPages) / totalPages;
+}
+
 export const activeGoalProgress = derived(
-  [activeGoalSelection, goalTargets, customGoals, volumes, catalogVolumes, goalSnapshots],
-  ([$selection, $targets, $customGoals, $volumes, $catalog, $snapshots]): GoalProgress => {
+  [
+    activeGoalSelection,
+    goalTargets,
+    customGoals,
+    volumes,
+    catalogVolumes,
+    goalSnapshots,
+    completedAtMap
+  ],
+  ([
+    $selection,
+    $targets,
+    $customGoals,
+    $volumes,
+    $catalog,
+    $snapshots,
+    $completedAtMap
+  ]): GoalProgress => {
     const now = new Date();
     const period =
       $selection.goalType === 'custom'
@@ -1121,13 +1297,19 @@ export const activeGoalProgress = derived(
 
     if (snapshot) {
       completedVolumes = Object.keys(snapshot.completed).length;
+      const snapshotPartialProgress = Object.values(snapshot.partialProgress ?? {});
+      inProgressVolumes = snapshotPartialProgress.length;
+      totalPartialProgress = snapshotPartialProgress.reduce(
+        (total, progress) => total + progress,
+        0
+      );
     } else if ($volumes) {
-      const completedAtMap = get(_completedAtMap);
       Object.entries($volumes).forEach(([volumeId, volumeData]) => {
         const catalogVolume = $catalog[volumeId];
         const totalPages = catalogVolume?.page_count ?? 0;
-        const currentPage = (volumeData as VolumeData).progress ?? 0;
-        const completedAt = completedAtMap[volumeId];
+        const typedVolumeData = volumeData as VolumeData;
+        const currentPage = typedVolumeData.progress ?? 0;
+        const completedAt = $completedAtMap[volumeId];
 
         if (completedAt && isDateWithinRange(completedAt, period.start, period.end)) {
           completedVolumes++;
@@ -1135,10 +1317,16 @@ export const activeGoalProgress = derived(
         }
 
         if (currentPage > 1 && totalPages > 0) {
-          const lastUpdate = (volumeData as VolumeData).lastProgressUpdate;
-          if (lastUpdate && isDateWithinRange(lastUpdate, period.start, period.end)) {
+          const partialProgress = calculatePartialVolumeProgressInPeriod(
+            typedVolumeData.recentPageTurns,
+            period.start,
+            period.end,
+            totalPages
+          );
+
+          if (partialProgress > 0) {
             inProgressVolumes++;
-            totalPartialProgress += currentPage / totalPages;
+            totalPartialProgress += partialProgress;
             totalRemainingPages += totalPages - currentPage;
           }
         }
@@ -1214,37 +1402,6 @@ export const activeGoalSnapshot = derived(
 );
 
 // ================================
-// ANNUAL GOAL FUNCTIONS
-// ================================
-
-/**
- * Get the annual goal for a specific year
- */
-export function getAnnualGoal(year: number = new Date().getFullYear()): number {
-  const settings = get(_goalSettings);
-  const goal = settings.annualGoals.find((g) => g.year === year);
-  return goal?.targetVolumes ?? 52;
-}
-
-/**
- * Set the annual goal for a specific year
- */
-export function setAnnualGoal(targetVolumes: number, year: number = new Date().getFullYear()) {
-  _goalSettings.update((settings) => {
-    const existingIndex = settings.annualGoals.findIndex((g) => g.year === year);
-
-    const updatedGoals = [...settings.annualGoals];
-    if (existingIndex >= 0) {
-      updatedGoals[existingIndex] = { ...updatedGoals[existingIndex], targetVolumes };
-    } else {
-      updatedGoals.push({ year, targetVolumes });
-    }
-
-    return { ...settings, annualGoals: updatedGoals };
-  });
-}
-
-// ================================
 // VOLUME DEADLINE FUNCTIONS
 // ================================
 
@@ -1285,16 +1442,25 @@ export function removeVolumeDeadline(volumeId: string) {
 }
 
 /**
- * Calculate target pages per period (daily or weekly) to meet a deadline
- * Excludes pages already read in the current period
- * @param remainingPages - Total pages remaining in the volume
+ * Calculate the fixed total page target for the current reading period.
+ *
+ * This returns the total target for the whole daily/weekly period, including
+ * pages already read in the current period. As a result, the value stays the
+ * same while the user makes progress during that period. To show how many pages
+ * are left to read before the next reset, subtract `pagesReadInCurrentPeriod`
+ * from this total.
+ *
+ * Example: if the period target is 30 pages and the user has already read 12,
+ * this function still returns 30; the remaining pages for the period is 18.
+ *
+ * @param remainingPages - Total unread pages still left in the volume
  * @param deadline - Deadline date string (YYYY-MM-DD) or null
  * @param mode - 'daily' or 'weekly'
  * @param pagesReadInCurrentPeriod - Pages read since the current period started
  * @param periodStartTimestamp - Timestamp when the current period started
- * @returns Target pages to read per period, or null if no deadline
+ * @returns Fixed total page target for the period, or null if no deadline
  */
-export function calculateTargetPagesPerPeriod(
+export function calculatePeriodPageTargetTotal(
   remainingPages: number,
   deadline: string | null,
   mode: 'daily' | 'weekly',
@@ -1303,27 +1469,30 @@ export function calculateTargetPagesPerPeriod(
 ): number | null {
   if (!deadline || remainingPages <= 0) return null;
 
-  // Calculate pages still needed (excluding what's been read this period)
   const pagesStillNeeded = Math.max(0, remainingPages);
 
-  // Calculate periods remaining until deadline
+  // Count the deadline day as an available reading day, so a deadline of
+  // tomorrow in daily mode means there are two daily periods remaining:
+  // today and tomorrow.
   const periodStart = new Date(periodStartTimestamp);
   const deadlineParts = deadline.split('-').map(Number);
-  const deadlineDate = new Date(deadlineParts[0], deadlineParts[1] - 1, deadlineParts[2]);
-
-  const msPerPeriod = mode === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
-  const msUntilDeadline = deadlineDate.getTime() - periodStart.getTime();
-  const periodsRemaining = Math.max(1, Math.ceil(msUntilDeadline / msPerPeriod));
-  console.log(
-    `Calculating target pages per ${mode}: ${pagesReadInCurrentPeriod} pages read this period, ${pagesStillNeeded} pages needed, ${periodsRemaining} periods remaining`
+  const deadlineInclusiveEnd = new Date(
+    deadlineParts[0],
+    deadlineParts[1] - 1,
+    deadlineParts[2] + 1
   );
 
-  return Math.ceil((pagesReadInCurrentPeriod + pagesStillNeeded) / periodsRemaining);
-}
+  const msPerPeriod = mode === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  const msUntilDeadlineInclusive = deadlineInclusiveEnd.getTime() - periodStart.getTime();
+  const periodsRemainingIncludingCurrent = Math.max(
+    1,
+    Math.ceil(msUntilDeadlineInclusive / msPerPeriod)
+  );
 
-// ================================
-// DERIVED STORES
-// ================================
+  return Math.ceil(
+    (pagesReadInCurrentPeriod + pagesStillNeeded) / periodsRemainingIncludingCurrent
+  );
+}
 
 /**
  * Derived store with deadline info for each volume
@@ -1331,112 +1500,3 @@ export function calculateTargetPagesPerPeriod(
 export const volumeDeadlines = derived(goalSettings, ($settings) => {
   return $settings.volumeDeadlines;
 });
-
-/**
- * Derived store for current year's annual goal
- */
-export const currentAnnualGoal = derived(goalSettings, ($settings) => {
-  const year = new Date().getFullYear();
-  const goal = $settings.annualGoals.find((g) => g.year === year);
-  return goal?.targetVolumes ?? 52;
-});
-
-export type AnnualGoalProgress = {
-  targetVolumes: number;
-  completedVolumes: number;
-  inProgressVolumes: number;
-  totalProgress: number; // Completed + partial progress from in-progress volumes
-  progressPercent: number;
-  expectedProgressPercent: number;
-  status: 'ahead' | 'on-track' | 'behind' | 'far-behind';
-  pagesPerDayForGoal: number;
-  daysRemaining: number;
-};
-
-/**
- * Derived store that calculates annual goal progress
- */
-export const annualGoalProgress = derived(
-  [goalSettings, volumes, catalogVolumes],
-  ([$settings, $volumes, $catalogVolumes]): AnnualGoalProgress => {
-    const year = new Date().getFullYear();
-    const today = new Date();
-    const goal = $settings.annualGoals.find((g: AnnualGoal) => g.year === year);
-    const targetVolumes = goal?.targetVolumes ?? 52;
-
-    let completedVolumes = 0;
-    let inProgressVolumes = 0;
-    let totalPartialProgress = 0;
-    let totalRemainingPages = 0;
-
-    if ($volumes) {
-      Object.entries($volumes).forEach(([volumeId, volumeData]) => {
-        const catalogVolume = $catalogVolumes[volumeId];
-        const totalPages = catalogVolume?.page_count ?? 0;
-        const currentPage = (volumeData as VolumeData).progress ?? 0;
-
-        if ((volumeData as VolumeData).completed || (totalPages > 0 && currentPage >= totalPages)) {
-          completedVolumes++;
-        } else if (currentPage > 1 && totalPages > 0) {
-          // In progress (page 1 counts as not started)
-          inProgressVolumes++;
-          totalPartialProgress += currentPage / totalPages;
-          totalRemainingPages += totalPages - currentPage;
-        }
-      });
-    }
-
-    const totalProgress = completedVolumes + totalPartialProgress;
-    const progressPercent = targetVolumes > 0 ? (totalProgress / targetVolumes) * 100 : 0;
-
-    const daysIntoYear = dateUtils.daysIntoYear(today);
-    const totalDays = dateUtils.daysInYear(today);
-    const expectedProgressPercent = (daysIntoYear / totalDays) * 100;
-
-    const daysRemaining = dateUtils.calculateDaysRemaining(dateUtils.endOfYear(year));
-
-    // Calculate pages per day needed to hit goal
-    // Remaining volumes needed = targetVolumes - completedVolumes - partial progress
-    const remainingVolumeEquivalent = Math.max(0, targetVolumes - totalProgress);
-    // Estimate average pages per volume (rough estimate)
-    const avgPagesPerVolume =
-      totalRemainingPages > 0 && inProgressVolumes > 0
-        ? totalRemainingPages / inProgressVolumes
-        : 200; // Default estimate
-
-    const estimatedRemainingPages = remainingVolumeEquivalent * avgPagesPerVolume;
-    const pagesPerDayForGoal =
-      daysRemaining > 0 ? Math.ceil(estimatedRemainingPages / daysRemaining) : 0;
-
-    // Determine status based on how close we are to expected progress
-    const progressRatio =
-      expectedProgressPercent > 0
-        ? progressPercent / expectedProgressPercent
-        : progressPercent > 0
-          ? 2
-          : 1; // If early in year, any progress is "ahead"
-
-    let status: 'ahead' | 'on-track' | 'behind' | 'far-behind';
-    if (progressRatio >= 1.1) {
-      status = 'ahead';
-    } else if (progressRatio >= 0.9) {
-      status = 'on-track';
-    } else if (progressRatio >= 0.5) {
-      status = 'behind';
-    } else {
-      status = 'far-behind';
-    }
-
-    return {
-      targetVolumes,
-      completedVolumes,
-      inProgressVolumes,
-      totalProgress,
-      progressPercent,
-      expectedProgressPercent,
-      status,
-      pagesPerDayForGoal,
-      daysRemaining
-    };
-  }
-);

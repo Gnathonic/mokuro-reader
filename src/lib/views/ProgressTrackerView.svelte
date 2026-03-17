@@ -17,7 +17,7 @@
   import { onMount } from 'svelte';
   import {
     volumeDeadlines,
-    calculateTargetPagesPerPeriod,
+    calculatePeriodPageTargetTotal,
     getCurrentPeriodStart,
     getNextResetTime,
     formatRelativeResetTime,
@@ -214,8 +214,9 @@
       // Calculate pages read in current period
       const pagesReadInPeriod = calculatePagesReadInPeriod(volumeData.recentPageTurns, periodStart);
 
-      // Calculate target pages per period
-      const targetPagesPerPeriod = calculateTargetPagesPerPeriod(
+      // Fixed total target for this period. This value includes pages already
+      // read this period; subtract `pagesReadInPeriod` to get the remainder.
+      const targetPagesPerPeriod = calculatePeriodPageTargetTotal(
         remainingPages,
         deadline,
         mode,

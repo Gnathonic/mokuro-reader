@@ -4,6 +4,7 @@
   import {
     goalTargets,
     customGoals,
+    isCustomGoalDateRangeLocked,
     setGoalTarget,
     removeGoalTarget,
     updateCustomGoal,
@@ -159,6 +160,7 @@
         {#each $customGoals as goal}
           {#if customEdits[goal.id]}
             {@const edit = customEdits[goal.id]}
+            {@const isDateRangeLocked = isCustomGoalDateRangeLocked(goal)}
             <div class="rounded-lg border border-gray-700 bg-gray-900 p-3">
               <div class="grid gap-2 sm:grid-cols-4">
                 <div>
@@ -191,6 +193,7 @@
                     type="date"
                     value={edit.startDate}
                     size="sm"
+                    disabled={isDateRangeLocked}
                     oninput={(e) =>
                       updateCustomField(goal.id, {
                         startDate: (e.target as HTMLInputElement).value
@@ -203,6 +206,7 @@
                     type="date"
                     value={edit.endDate}
                     size="sm"
+                    disabled={isDateRangeLocked}
                     oninput={(e) =>
                       updateCustomField(goal.id, {
                         endDate: (e.target as HTMLInputElement).value
@@ -210,6 +214,12 @@
                   />
                 </div>
               </div>
+              {#if isDateRangeLocked}
+                <p class="mt-2 text-xs text-gray-400">
+                  Closed custom goals keep their original date range so saved snapshots stay
+                  accurate.
+                </p>
+              {/if}
               <div class="mt-2 flex gap-2">
                 <Button size="xs" color="primary" onclick={() => saveCustom(goal.id)}>Save</Button>
                 <Button size="xs" color="alternative" onclick={() => cancelCustom(goal.id)}>
