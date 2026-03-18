@@ -303,7 +303,15 @@ class UnifiedSyncService {
     reloadCacheOnFileNotFound = true
   ): Promise<any | null> {
     try {
-      const volumeDataFiles = await this.findVolumeDataFiles(provider);
+      let volumeDataFiles = this.findVolumeDataFiles(provider);
+
+      if (volumeDataFiles.length === 0) {
+        const cache = cacheManager.getCache(provider.type);
+        if (cache) {
+          await cache.fetch();
+          volumeDataFiles = this.findVolumeDataFiles(provider);
+        }
+      }
 
       if (volumeDataFiles.length === 0) {
         return null;
@@ -429,7 +437,16 @@ class UnifiedSyncService {
   private async downloadProfilesFile(provider: SyncProvider): Promise<any | null> {
     try {
       console.log('🔎 Finding profiles.json in cache...');
-      const profilesFile = await this.findProfilesFile(provider);
+      let profilesFile = this.findProfilesFile(provider);
+
+      if (!profilesFile) {
+        const cache = cacheManager.getCache(provider.type);
+        if (cache) {
+          await cache.fetch();
+          profilesFile = this.findProfilesFile(provider);
+        }
+      }
+
       console.log('🔎 findProfilesFile result:', profilesFile);
 
       if (!profilesFile) {
@@ -745,7 +762,16 @@ class UnifiedSyncService {
   private async downloadLibrariesFile(provider: SyncProvider): Promise<LibraryConfig[] | null> {
     try {
       console.log('🔎 Finding libraries.json in cache...');
-      const librariesFile = this.findLibrariesFile(provider);
+      let librariesFile = this.findLibrariesFile(provider);
+
+      if (!librariesFile) {
+        const cache = cacheManager.getCache(provider.type);
+        if (cache) {
+          await cache.fetch();
+          librariesFile = this.findLibrariesFile(provider);
+        }
+      }
+
       console.log('🔎 findLibrariesFile result:', librariesFile);
 
       if (!librariesFile) {
