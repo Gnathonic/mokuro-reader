@@ -45,7 +45,15 @@ export class ViewportRenderer {
 			antialias: false,
 			preference: 'webgl',
 			autoDensity: true,
-			resolution: window.devicePixelRatio || 1
+			resolution: window.devicePixelRatio || 1,
+			// Disable PixiJS event system — we handle all input ourselves
+			eventMode: 'none',
+			eventFeatures: {
+				move: false,
+				globalMove: false,
+				click: false,
+				wheel: false
+			}
 		});
 
 		this._initialized = true;
@@ -69,7 +77,8 @@ export class ViewportRenderer {
 	addSpread(
 		spreadIndex: number,
 		layoutItem: SpreadLayoutItem,
-		pageResults: Array<{ decodeResult: DecodeResult; xOffset: number }>
+		pageResults: Array<{ decodeResult: DecodeResult; xOffset: number }>,
+		maxWidth: number = 0
 	): void {
 		if (this._destroyed) return;
 
@@ -77,11 +86,9 @@ export class ViewportRenderer {
 		this.removeSpread(spreadIndex);
 
 		const container = new Container();
-		container.x = 0; // Centered by camera, not by container x
+		// Center the spread horizontally within the content area
+		container.x = maxWidth > 0 ? (maxWidth - layoutItem.width) / 2 : 0;
 		container.y = layoutItem.y;
-
-		// Center the spread horizontally within a normalized width
-		// (handled by the camera/overlay system, not here)
 
 		for (const { decodeResult, xOffset } of pageResults) {
 			for (const tile of decodeResult.tiles) {

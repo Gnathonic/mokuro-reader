@@ -364,7 +364,8 @@
         'PageDown',
         'Space',
         'Home',
-        'End'
+        'End',
+        'KeyO'
       ];
       if (continuousModeKeys.includes(action)) {
         return;
@@ -1094,6 +1095,7 @@
       'continuous-scroll-toggle'
     );
   }
+
 
   function rotateContinuousZoomMode() {
     const currentMode = $settings.continuousZoomDefault;

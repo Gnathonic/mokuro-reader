@@ -11,7 +11,7 @@
     type ContinuousZoomMode
   } from '$lib/settings';
   import { zoomDefault } from '$lib/panzoom';
-  import { AccordionItem, Helper, Toggle, Label, Select } from 'flowbite-svelte';
+  import { AccordionItem, Helper, Toggle, Label, Select, Button } from 'flowbite-svelte';
   import { routeParams } from '$lib/util/hash-router';
 
   const volumeId = $routeParams.volume!;
@@ -88,6 +88,16 @@
         {/if}
       </Toggle>
     {/each}
+    {#if settings.singlePageView !== 'single'}
+      <Button
+        size="xs"
+        color="alternative"
+        onclick={() => window.dispatchEvent(new CustomEvent('offset-spreads'))}
+      >
+        Offset spreads
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(O)</span>
+      </Button>
+    {/if}
 
     <div class="mt-2 border-t border-gray-200 pt-4 dark:border-gray-700">
       <Helper class="mb-3">Scroll mode (applies to all volumes)</Helper>

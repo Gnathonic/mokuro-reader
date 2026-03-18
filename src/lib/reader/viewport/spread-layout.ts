@@ -30,6 +30,8 @@ export interface SpreadLayoutResult {
 	items: SpreadLayoutItem[];
 	/** Total height of all spreads + gaps */
 	totalHeight: number;
+	/** Maximum width of any spread */
+	maxWidth: number;
 	/** Sorted Y positions for binary search */
 	yPositions: number[];
 }
@@ -45,6 +47,7 @@ export function computeSpreadLayout(
 	const items: SpreadLayoutItem[] = [];
 	const yPositions: number[] = [];
 	let y = 0;
+	let maxWidth = 0;
 
 	for (let i = 0; i < spreads.length; i++) {
 		const spread = spreads[i];
@@ -69,13 +72,15 @@ export function computeSpreadLayout(
 			pageEntries
 		});
 
+		if (width > maxWidth) maxWidth = width;
 		yPositions.push(y);
 		y += height + gap;
 	}
 
 	return {
 		items,
-		totalHeight: y > 0 ? y - gap : 0, // Remove trailing gap
+		totalHeight: y > 0 ? y - gap : 0,
+		maxWidth,
 		yPositions
 	};
 }

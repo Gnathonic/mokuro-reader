@@ -59,6 +59,7 @@
 	// State
 	// ============================================================
 
+	let wrapperDiv: HTMLDivElement | undefined = $state();
 	let canvas: HTMLCanvasElement | undefined = $state();
 	let overlayRoot: HTMLDivElement | undefined = $state();
 	let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
@@ -110,6 +111,26 @@
 		return bp.sort((a, b) => a - b);
 	});
 
+	// Ephemeral offset: each press of O adds one more breakpoint,
+	// shifting pairings by 1 each time. Resets on layout settings change.
+	let spreadOffsetCount = $state(0);
+
+	let effectiveBreakpoints = $derived.by(() => {
+		if (spreadOffsetCount === 0) return breakpoints;
+		const bp = [...breakpoints];
+		const bpSet = new Set(bp);
+		// Add N breakpoints at the first N pairable pages
+		let added = 0;
+		for (let i = 0; i < pages.length && added < spreadOffsetCount; i++) {
+			if (!bpSet.has(i)) {
+				bp.push(i);
+				bpSet.add(i);
+				added++;
+			}
+		}
+		return bp.sort((a, b) => a - b);
+	});
+
 	let isPortrait = $derived(isPortraitOrientation());
 
 	let spreads: PageSpread[] = $derived(
@@ -118,7 +139,7 @@
 			volumeSettings.singlePageView ?? 'auto',
 			volumeSettings.rightToLeft ?? true,
 			isPortrait,
-			breakpoints
+			effectiveBreakpoints
 		)
 	);
 
@@ -190,11 +211,28 @@
 			camera.zoomTo(initialScale, viewportWidth / 2, viewportHeight / 2, false);
 		}
 
+		// Register wheel listener with passive: false to allow preventDefault
+		wrapperDiv?.addEventListener('wheel', handleWheelNative, { passive: false });
+
+		// Listen for offset-spreads event from settings UI
+		window.addEventListener('offset-spreads', handleOffsetSpreadsEvent);
+
 		// Do initial visibility check
 		updateVisibility();
 	});
 
+	function handleWheelNative(e: WheelEvent) {
+		e.preventDefault();
+		handleWheel(e);
+	}
+
+	function handleOffsetSpreadsEvent() {
+		offsetSpreads();
+	}
+
 	onDestroy(() => {
+		wrapperDiv?.removeEventListener('wheel', handleWheelNative);
+		window.removeEventListener('offset-spreads', handleOffsetSpreadsEvent);
 		camera?.destroy();
 		renderer?.destroy();
 		decoder?.destroy();
@@ -202,19 +240,34 @@
 		if (settleTimer) clearTimeout(settleTimer);
 	});
 
-	// React to layout changes (settings, orientation)
+	// React to layout changes (settings, orientation, page mode)
 	let prevLayout: SpreadLayoutResult | null = null;
 	$effect(() => {
-		if (layout === prevLayout || !camera || !scroller) return;
+		if (layout === prevLayout || !camera || !scroller || !renderer) return;
+		const isInitial = prevLayout === null;
 		prevLayout = layout;
 
+		// Clear all rendered spreads — positions and groupings have changed
+		renderer.clear();
+		scroller.clear();
+
+		// Update systems with new layout
 		camera.setLayout(layout);
 		scroller.setLayout(layout);
 
-		// Reposition camera to the current spread
-		if (lastReportedSpreadIdx >= 0 && lastReportedSpreadIdx < layout.items.length) {
-			camera.snapToSpread(lastReportedSpreadIdx, false);
+		if (!isInitial) {
+			// Find which spread contains the page we were on
+			const pageIdx = lastReportedSpreadIdx >= 0
+				? Math.max(...(spreads[Math.min(lastReportedSpreadIdx, spreads.length - 1)]?.pageIndices ?? [0]))
+				: currentPage - 1;
+			const newIdx = findSpreadForPage(spreads, pageIdx);
+			if (newIdx >= 0) {
+				lastReportedSpreadIdx = newIdx;
+				camera.snapToSpread(newIdx, false);
+			}
 		}
+
+		// Reload visible spreads with new layout
 		updateVisibility();
 	});
 
@@ -331,7 +384,7 @@
 
 			// Check we're still relevant (might have scrolled away during decode)
 			if (renderer && scroller?.getLoaded().has(spreadIndex)) {
-				renderer.addSpread(spreadIndex, item, pageResults);
+				renderer.addSpread(spreadIndex, item, pageResults, layout.maxWidth);
 			}
 		} catch (err) {
 			console.error(`Failed to load spread ${spreadIndex}:`, err);
@@ -426,6 +479,11 @@
 				e.preventDefault();
 				cycleZoom(-1);
 				break;
+			case 'o':
+			case 'O':
+				e.preventDefault();
+				offsetSpreads();
+				break;
 		}
 	}
 
@@ -438,6 +496,11 @@
 			return;
 		}
 		camera.snapToSpread(next, true);
+	}
+
+	function offsetSpreads() {
+		spreadOffsetCount += 1;
+		// Layout will re-derive, triggering the layout change effect
 	}
 
 	function navigateToPrevSpread() {
@@ -474,7 +537,20 @@
 		const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 		zoomTarget = ZOOM_LEVELS[nextIdx];
 		const effectiveScale = baseScale() * zoomTarget;
-		camera.zoomTo(effectiveScale, clientX, clientY, true);
+
+		// Zoom so the clicked area moves toward viewport center.
+		// Blend between "anchor at click" and "center on click":
+		//   bias=0: clicked point stays fixed on screen (pure anchor)
+		//   bias=1: clicked point moves to viewport center (Google Maps style)
+		const bias = 0.7;
+		const centerX = viewportWidth / 2;
+		const centerY = viewportHeight / 2;
+		// Screen position where the world point should end up:
+		// blend from click position toward viewport center
+		const toX = clientX + (centerX - clientX) * bias;
+		const toY = clientY + (centerY - clientY) * bias;
+
+		camera.zoomToWithTarget(effectiveScale, clientX, clientY, toX, toY, true);
 	}
 
 	function findClosestZoomIndex(zoom: number): number {
@@ -493,12 +569,10 @@
 	function handleWheel(e: WheelEvent) {
 		if (!camera) return;
 		if (e.ctrlKey || e.metaKey) {
-			e.preventDefault();
 			if (e.deltaY < 0) cycleZoom(1);
 			else if (e.deltaY > 0) cycleZoom(-1);
 		} else {
 			// Normal wheel: scroll vertically
-			e.preventDefault();
 			camera.panByScreen(0, -e.deltaY);
 		}
 	}
@@ -587,17 +661,22 @@
 
 <svelte:window onkeydown={handleKeydown} onresize={handleResize} />
 
-<div class="fixed inset-0" style:background-color={$settings.backgroundColor}>
+<div
+	bind:this={wrapperDiv}
+	class="fixed inset-0"
+	style:background-color={$settings.backgroundColor}
+	style:touch-action="none"
+	onpointerdown={handlePointerDown}
+	onpointermove={handlePointerMove}
+	onpointerup={handlePointerUp}
+	onpointercancel={handlePointerUp}
+	onclick={handleClick}
+	role="none"
+>
 	<!-- Single PixiJS canvas for all page rendering -->
 	<canvas
 		bind:this={canvas}
 		class="absolute inset-0 h-full w-full"
-		onwheel={handleWheel}
-		onpointerdown={handlePointerDown}
-		onpointermove={handlePointerMove}
-		onpointerup={handlePointerUp}
-		onpointercancel={handlePointerUp}
-		onclick={handleClick}
 	></canvas>
 
 	<!-- HTML text overlay: CSS-transformed to match PixiJS camera -->
@@ -613,7 +692,7 @@
 			{#if item && spread}
 				<div
 					class="pointer-events-auto absolute"
-					style:left="0px"
+					style:left={`${(layout.maxWidth - item.width) / 2}px`}
 					style:top={`${item.y}px`}
 					style:width={`${item.width}px`}
 					style:height={`${item.height}px`}
