@@ -12,12 +12,8 @@
 	import { isPortraitOrientation } from '$lib/reader/page-mode-detection';
 	import { getCharCount } from '$lib/util/count-chars';
 	import { activityTracker } from '$lib/util/activity-tracker';
-	import {
-		detectTileConfig,
-		applyUrlParamOverrides,
-		TileDecoder,
-		type TileConfig
-	} from '$lib/reader/tile';
+	import { TileDecoder, type DecodeResult } from '$lib/reader/tile/tile-decoder';
+	import { detectTileConfig, applyUrlParamOverrides } from '$lib/reader/tile/tile-config';
 	import {
 		computeSpreadLayout,
 		VirtualScroller,
@@ -73,7 +69,7 @@
 	let camera: CameraController | null = null;
 	let scroller: VirtualScroller | null = null;
 	let decoder: TileDecoder | null = null;
-	let tileConfig: TileConfig | null = null;
+	let tileSize = 512;
 
 	// Zoom
 	const ZOOM_LEVELS = [1, 1.5, 2, 3];
@@ -82,6 +78,7 @@
 	// Progress tracking
 	let lastReportedSpreadIdx = -1;
 	let lastReportedPage = currentPage;
+	let lastAnchorPageIdx = currentPage - 1; // First page of current spread, for layout anchoring
 
 	// Pointer interaction
 	let pointerDownX = 0;
@@ -113,23 +110,10 @@
 
 	// Ephemeral offset: each press of O adds one more breakpoint,
 	// shifting pairings by 1 each time. Resets on layout settings change.
-	let spreadOffsetCount = $state(0);
-
-	let effectiveBreakpoints = $derived.by(() => {
-		if (spreadOffsetCount === 0) return breakpoints;
-		const bp = [...breakpoints];
-		const bpSet = new Set(bp);
-		// Add N breakpoints at the first N pairable pages
-		let added = 0;
-		for (let i = 0; i < pages.length && added < spreadOffsetCount; i++) {
-			if (!bpSet.has(i)) {
-				bp.push(i);
-				bpSet.add(i);
-				added++;
-			}
-		}
-		return bp.sort((a, b) => a - b);
-	});
+	// Spread pairing anchor: the page index that MUST be the first
+	// in its spread. Pairing radiates outward from here.
+	// null = no anchor (default hasCover/breakpoint behavior).
+	let pairingAnchor = $state<number | null>(null);
 
 	// Reactive: re-derives when viewportWidth/viewportHeight change (on resize/rotation)
 	let isPortrait = $derived(viewportWidth <= viewportHeight);
@@ -140,7 +124,8 @@
 			volumeSettings.singlePageView ?? 'auto',
 			volumeSettings.rightToLeft ?? true,
 			isPortrait,
-			effectiveBreakpoints
+			breakpoints,
+			pairingAnchor ?? undefined
 		)
 	);
 
@@ -174,15 +159,14 @@
 	onMount(async () => {
 		if (!canvas) return;
 
-		// Initialize tile config
+		// Detect tile size for this device
 		const detected = await detectTileConfig();
-		tileConfig = applyUrlParamOverrides(detected);
+		const config = applyUrlParamOverrides(detected);
+		tileSize = config.tileSize;
 
-		// Initialize decoder
+		// Initialize decoder and renderer
 		decoder = new TileDecoder();
-
-		// Initialize renderer
-		renderer = new ViewportRenderer(tileConfig);
+		renderer = new ViewportRenderer(tileSize);
 		await renderer.init(canvas, viewportWidth, viewportHeight);
 
 		// Initialize camera
@@ -249,7 +233,8 @@
 		const isInitial = prevLayout === null;
 		prevLayout = layout;
 
-		// Clear all rendered spreads — positions and groupings have changed
+		// Clear rendered spreads — positions and groupings may have changed.
+		// Tiles need re-uploading since spread containers hold position data.
 		renderer.clear();
 		scroller.clear();
 
@@ -258,13 +243,14 @@
 		scroller.setLayout(layout);
 
 		if (!isInitial) {
-			// Find which spread contains the page we were on
-			const pageIdx = lastReportedSpreadIdx >= 0
-				? Math.max(...(spreads[Math.min(lastReportedSpreadIdx, spreads.length - 1)]?.pageIndices ?? [0]))
-				: currentPage - 1;
-			const newIdx = findSpreadForPage(spreads, pageIdx);
+			// Use the FIRST page of the current spread (stable anchor).
+			// Don't use lastReportedPage (max page) — that shifts the
+			// anchor forward by 1 on dual spreads.
+			const newIdx = findSpreadForPage(spreads, lastAnchorPageIdx);
 			if (newIdx >= 0) {
 				lastReportedSpreadIdx = newIdx;
+				const newScale = baseScale() * zoomTarget;
+				camera.zoomTo(newScale, viewportWidth / 2, viewportHeight / 2, false);
 				camera.snapToSpread(newIdx, false);
 			}
 		}
@@ -307,8 +293,8 @@
 				`translate(${-state.x * state.scale}px, ${-state.y * state.scale}px) scale(${state.scale})`;
 		}
 
-		// Update visibility (throttled — check every few frames)
-		updateVisibility();
+		// Throttle visibility checks — no need to run every frame
+		throttledUpdateVisibility();
 
 		// Debounced progress reporting + snap
 		if (settleTimer) clearTimeout(settleTimer);
@@ -350,20 +336,36 @@
 	// Visibility & tile loading
 	// ============================================================
 
+	let lastVisibilityCheck = 0;
+	const VISIBILITY_THROTTLE_MS = 100; // Check at most every 100ms
+
+	function throttledUpdateVisibility() {
+		const now = performance.now();
+		if (now - lastVisibilityCheck < VISIBILITY_THROTTLE_MS) return;
+		lastVisibilityCheck = now;
+		updateVisibility();
+	}
+
 	function updateVisibility() {
-		if (!camera || !scroller || !renderer || !decoder || !tileConfig) return;
+		if (!camera || !scroller || !renderer || !decoder) return;
 
 		const { top, bottom } = camera.getWorldRect();
 		const { toLoad, toUnload } = scroller.update(top, bottom);
 
-		// Unload
+		// Unload spreads and evict their pages from decode cache
 		for (const idx of toUnload) {
 			renderer.removeSpread(idx);
+			const item = layout.items[idx];
+			if (item) {
+				for (const entry of item.pageEntries) {
+					pageDecodeCache.delete(entry.pageIndex);
+				}
+			}
 		}
 
-		// Load
+		// Queue loads (processed one at a time)
 		for (const idx of toLoad) {
-			loadSpread(idx);
+			queueLoadSpread(idx);
 		}
 
 		// Update visible indices for text overlay (only spreads actually on screen)
@@ -382,27 +384,106 @@
 		}
 	}
 
+	// Page-level decode cache: stores decoded tile results per page index.
+	// Survives layout changes (rotation, mode switch) so pages don't
+	// need to be re-decoded from the worker when only spread groupings change.
+	let pageDecodeCache = new Map<number, DecodeResult>();
+
+	// Load queue: process one spread at a time to avoid competing decodes
+	let loadQueue: number[] = [];
+	let isLoading = false;
+
+	function queueLoadSpread(spreadIndex: number) {
+		if (!renderer?.hasSpread(spreadIndex) && !loadQueue.includes(spreadIndex)) {
+			loadQueue.push(spreadIndex);
+			processLoadQueue();
+		}
+	}
+
+	async function processLoadQueue() {
+		if (isLoading) return;
+		isLoading = true;
+
+		while (loadQueue.length > 0) {
+			const spreadIndex = loadQueue.shift()!;
+
+			// Skip if already loaded or no longer needed
+			if (renderer?.hasSpread(spreadIndex)) continue;
+			if (!scroller?.getLoaded().has(spreadIndex)) continue;
+
+			await loadSpread(spreadIndex);
+		}
+
+		isLoading = false;
+	}
+
+	// Tile upload queue: tiles arrive from worker via onTile callback,
+	// rAF loop drains one per frame. No async generator overhead.
+	import type { TileBitmap } from '$lib/reader/tile/tile-decoder';
+	import type { Container } from 'pixi.js';
+	let tileUploadQueue: Array<{
+		container: Container;
+		tile: TileBitmap;
+		xOffset: number;
+	}> = [];
+	let draining = false;
+
+	function drainTileQueue() {
+		if (draining || tileUploadQueue.length === 0 || !renderer) return;
+		draining = true;
+
+		function step() {
+			if (tileUploadQueue.length === 0 || !renderer) {
+				draining = false;
+				return;
+			}
+
+			const { container, tile, xOffset } = tileUploadQueue.shift()!;
+			renderer.uploadTile(container, tile, xOffset);
+
+			if (tileUploadQueue.length > 0) {
+				requestAnimationFrame(step);
+			} else {
+				draining = false;
+			}
+		}
+
+		requestAnimationFrame(step);
+	}
+
 	async function loadSpread(spreadIndex: number) {
-		if (!renderer || !decoder || !tileConfig) return;
-		if (renderer.hasSpread(spreadIndex)) return;
+		if (!renderer || !decoder) return;
 
 		const item = layout.items[spreadIndex];
 		if (!item) return;
 
 		try {
-			const pageResults: Array<{ decodeResult: any; xOffset: number }> = [];
+			const container = renderer.createSpread(spreadIndex, item, layout.maxWidth);
 
 			for (const entry of item.pageEntries) {
+				// Check cache first
+				const cached = pageDecodeCache.get(entry.pageIndex);
+				if (cached) {
+					for (const tile of cached.tiles) {
+						tileUploadQueue.push({ container, tile, xOffset: entry.xOffset });
+					}
+					drainTileQueue();
+					continue;
+				}
+
 				const file = indexedFiles[entry.pageIndex];
 				if (!file) continue;
 
-				const result = await decoder.decodePage(file, tileConfig);
-				pageResults.push({ decodeResult: result, xOffset: entry.xOffset });
-			}
+				// Decode page — tiles arrive via onTile callback as they're sliced.
+				// Each tile is pushed to the upload queue, drained one per frame.
+				const result = await decoder.decodePage(file, tileSize, (tile) => {
+					if (!scroller?.getLoaded().has(spreadIndex)) return;
+					tileUploadQueue.push({ container, tile, xOffset: entry.xOffset });
+					drainTileQueue();
+				});
 
-			// Check we're still relevant (might have scrolled away during decode)
-			if (renderer && scroller?.getLoaded().has(spreadIndex)) {
-				renderer.addSpread(spreadIndex, item, pageResults, layout.maxWidth);
+				// Cache for reuse on layout changes
+				pageDecodeCache.set(entry.pageIndex, result);
 			}
 		} catch (err) {
 			console.error(`Failed to load spread ${spreadIndex}:`, err);
@@ -422,11 +503,13 @@
 		lastReportedSpreadIdx = dominant;
 		const spread = spreads[dominant];
 		const maxPageIndex = Math.max(...spread.pageIndices);
+		const minPageIndex = Math.min(...spread.pageIndices);
 		const pageNum = maxPageIndex + 1;
 		const { charCount } = getCharCount(pages, pageNum);
 		const isComplete = pageNum >= pages.length;
 
 		lastReportedPage = pageNum;
+		lastAnchorPageIdx = minPageIndex; // First page — stable anchor for layout changes
 		onPageChange(pageNum, charCount, isComplete);
 
 		// Auto-advance at end
@@ -512,8 +595,20 @@
 	}
 
 	function offsetSpreads() {
-		spreadOffsetCount += 1;
-		// Layout will re-derive, triggering the layout change effect
+		// Find the current spread
+		const spreadIdx = camera?.getDominantSpread() ?? lastReportedSpreadIdx;
+		if (spreadIdx < 0 || spreadIdx >= spreads.length) return;
+
+		const spread = spreads[spreadIdx];
+
+		if (spread.type === 'single') {
+			// Already single — anchor at this page to start pairing from here
+			pairingAnchor = spread.pageIndices[0];
+		} else {
+			// Dual spread — anchor at the second page to flip the pairing.
+			// [A,B] becomes [A], [B,C] — B becomes first of next pair.
+			pairingAnchor = spread.pageIndices[1];
+		}
 	}
 
 	function navigateToPrevSpread() {

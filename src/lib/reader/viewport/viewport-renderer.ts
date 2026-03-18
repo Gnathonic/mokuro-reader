@@ -1,26 +1,24 @@
 /**
  * Single PixiJS Application that renders all visible manga spreads.
  *
- * One Container per spread, each containing tile Sprites for its pages.
- * The stage acts as the camera: stage.position = pan, stage.scale = zoom.
- * Only loaded spreads have Containers on stage — VirtualScroller controls lifecycle.
+ * Tiles are independent ImageBitmaps, each uploaded as its own small
+ * GPU texture via Texture.from(bitmap). One tile per frame to avoid stalls.
  */
 
-import { Application, Container, Sprite, Texture, Rectangle } from 'pixi.js';
-import type { TileConfig } from '$lib/reader/tile/tile-config';
-import type { TileBitmap, DecodeResult } from '$lib/reader/tile/tile-decoder';
+import { Application, Container, Sprite, Texture } from 'pixi.js';
+import type { TileBitmap } from '$lib/reader/tile/tile-decoder';
 import type { SpreadLayoutItem } from './spread-layout';
 
 export class ViewportRenderer {
 	app: Application;
 	private spreadContainers = new Map<number, Container>();
-	private config: TileConfig;
 	private _initialized = false;
 	private _destroyed = false;
+	tileSize: number;
 
-	constructor(config: TileConfig) {
+	constructor(tileSize: number = 512) {
 		this.app = new Application();
-		this.config = config;
+		this.tileSize = tileSize;
 	}
 
 	get initialized(): boolean {
@@ -31,9 +29,6 @@ export class ViewportRenderer {
 		return this.app.stage;
 	}
 
-	/**
-	 * Initialize the PixiJS application on a canvas element.
-	 */
 	async init(canvas: HTMLCanvasElement, width: number, height: number): Promise<void> {
 		if (this._destroyed) return;
 
@@ -46,7 +41,6 @@ export class ViewportRenderer {
 			preference: 'webgl',
 			autoDensity: true,
 			resolution: window.devicePixelRatio || 1,
-			// Disable PixiJS event system — we handle all input ourselves
 			eventMode: 'none',
 			eventFeatures: {
 				move: false,
@@ -59,69 +53,48 @@ export class ViewportRenderer {
 		this._initialized = true;
 	}
 
-	/**
-	 * Resize the renderer (e.g., on viewport change).
-	 */
 	resize(width: number, height: number): void {
 		if (!this._initialized || this._destroyed) return;
 		this.app.renderer.resize(width, height);
 	}
 
-	/**
-	 * Add a spread to the stage with decoded tile data.
-	 *
-	 * @param spreadIndex Index for tracking
-	 * @param layoutItem World-space layout for positioning
-	 * @param pageResults Decoded tiles per page, in pageEntry order
-	 */
-	addSpread(
+	createSpread(
 		spreadIndex: number,
 		layoutItem: SpreadLayoutItem,
-		pageResults: Array<{ decodeResult: DecodeResult; xOffset: number }>,
 		maxWidth: number = 0
-	): void {
-		if (this._destroyed) return;
-
-		// Remove existing if any
+	): Container {
+		if (this._destroyed) throw new Error('Renderer destroyed');
 		this.removeSpread(spreadIndex);
 
 		const container = new Container();
-		// Center the spread horizontally within the content area
 		container.x = maxWidth > 0 ? (maxWidth - layoutItem.width) / 2 : 0;
 		container.y = layoutItem.y;
 
-		for (const { decodeResult, xOffset } of pageResults) {
-			for (const tile of decodeResult.tiles) {
-				const { col, row, bitmap } = tile;
-				const { contentSize, borderPx } = this.config;
-
-				const baseTexture = Texture.from(bitmap);
-				const frame = new Rectangle(borderPx, borderPx, contentSize, contentSize);
-				const texture = new Texture({ source: baseTexture.source, frame });
-
-				const sprite = new Sprite(texture);
-				sprite.x = xOffset + col * contentSize;
-				sprite.y = row * contentSize;
-
-				container.addChild(sprite);
-			}
-		}
-
 		this.spreadContainers.set(spreadIndex, container);
 		this.app.stage.addChild(container);
+		return container;
 	}
 
 	/**
-	 * Remove a spread from the stage and free its textures.
+	 * Upload a single tile ImageBitmap to the GPU as its own texture.
 	 */
+	uploadTile(container: Container, tile: TileBitmap, xOffset: number): void {
+		if (this._destroyed) return;
+
+		const texture = Texture.from(tile.bitmap);
+		const sprite = new Sprite(texture);
+		sprite.x = xOffset + tile.col * this.tileSize;
+		sprite.y = tile.row * this.tileSize;
+		container.addChild(sprite);
+	}
+
 	removeSpread(spreadIndex: number): void {
 		const container = this.spreadContainers.get(spreadIndex);
 		if (!container) return;
 
-		// Destroy all sprites and their textures
 		for (const child of container.children) {
 			if (child instanceof Sprite) {
-				child.destroy({ texture: true, textureSource: true });
+				child.destroy({ texture: true, textureSource: false });
 			}
 		}
 
@@ -130,36 +103,20 @@ export class ViewportRenderer {
 		this.spreadContainers.delete(spreadIndex);
 	}
 
-	/**
-	 * Check if a spread is currently on stage.
-	 */
 	hasSpread(spreadIndex: number): boolean {
 		return this.spreadContainers.has(spreadIndex);
 	}
 
-	/**
-	 * Update tile config. Existing spreads must be reloaded.
-	 */
-	updateConfig(config: TileConfig): void {
-		this.config = config;
-	}
-
-	/**
-	 * Remove all spreads from stage.
-	 */
 	clear(): void {
 		for (const [idx] of this.spreadContainers) {
 			this.removeSpread(idx);
 		}
 	}
 
-	/**
-	 * Destroy the application and free all resources.
-	 */
 	destroy(): void {
 		if (this._destroyed) return;
 		this._destroyed = true;
 		this.clear();
-		this.app.destroy(false); // Don't remove canvas from DOM
+		this.app.destroy(false);
 	}
 }

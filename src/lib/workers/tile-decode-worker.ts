@@ -1,117 +1,100 @@
 /**
  * Web Worker for off-main-thread image decoding and tile slicing.
  *
- * Receives a File/Blob, decodes it via createImageBitmap, then slices
- * into a grid of tiles with border padding for filter kernel sampling.
- * Returns ImageBitmap tiles via transferable objects (zero-copy).
+ * Sends tiles individually via postMessage with transferable ImageBitmaps
+ * (zero-copy). No batching — each tile is its own message, sent as soon
+ * as it's sliced. The main thread queues them and uploads one per frame.
  */
 
 export interface TileDecodeRequest {
+	type: 'decode';
 	id: number;
-	file: File;
+	buffer: ArrayBuffer; // Pre-read file bytes — avoids blob storage IPC in worker
 	tileSize: number;
-	borderPx: number;
-	contentSize: number;
 }
 
-export interface TileDecodeResult {
+export interface TileMessage {
+	type: 'tile';
 	id: number;
-	tiles: Array<{
-		col: number;
-		row: number;
-		bitmap: ImageBitmap;
-	}>;
+	col: number;
+	row: number;
+	bitmap: ImageBitmap;
+}
+
+export interface DecodeStartMessage {
+	type: 'decode-start';
+	id: number;
 	imageWidth: number;
 	imageHeight: number;
 	cols: number;
 	rows: number;
 }
 
-export interface TileDecodeError {
+export interface DecodeEndMessage {
+	type: 'decode-end';
+	id: number;
+}
+
+export interface DecodeErrorMessage {
+	type: 'decode-error';
 	id: number;
 	error: string;
 }
 
+export type WorkerMessage = TileMessage | DecodeStartMessage | DecodeEndMessage | DecodeErrorMessage;
+
 self.onmessage = async (e: MessageEvent<TileDecodeRequest>) => {
-	const { id, file, tileSize, borderPx, contentSize } = e.data;
+	const { id, buffer, tileSize } = e.data;
 
 	try {
-		// Decode the full image off the main thread
-		const fullBitmap = await createImageBitmap(file);
+		const blob = new Blob([buffer]);
+		const fullBitmap = await createImageBitmap(blob, {
+			colorSpaceConversion: 'none', // Skip color profile conversion
+			premultiplyAlpha: 'none' // Skip alpha premultiplication
+		});
 		const { width: imgW, height: imgH } = fullBitmap;
+		const cols = Math.ceil(imgW / tileSize);
+		const rows = Math.ceil(imgH / tileSize);
 
-		// Calculate grid dimensions
-		const cols = Math.ceil(imgW / contentSize);
-		const rows = Math.ceil(imgH / contentSize);
+		// Signal start with dimensions
+		self.postMessage({
+			type: 'decode-start', id,
+			imageWidth: imgW, imageHeight: imgH, cols, rows
+		} satisfies DecodeStartMessage);
 
-		const tiles: TileDecodeResult['tiles'] = [];
-		const transferables: ImageBitmap[] = [];
-
-		// Create an OffscreenCanvas for edge tile handling
-		const canvas = new OffscreenCanvas(tileSize, tileSize);
-		const ctx = canvas.getContext('2d')!;
+		const edgeCanvas = new OffscreenCanvas(tileSize, tileSize);
+		const edgeCtx = edgeCanvas.getContext('2d')!;
 
 		for (let row = 0; row < rows; row++) {
 			for (let col = 0; col < cols; col++) {
-				// Source coordinates with border offset
-				const sx = col * contentSize - borderPx;
-				const sy = row * contentSize - borderPx;
-
-				// Check if this tile needs edge clamping
-				const needsCanvas =
-					sx < 0 || sy < 0 || sx + tileSize > imgW || sy + tileSize > imgH;
+				const sx = col * tileSize;
+				const sy = row * tileSize;
+				const tw = Math.min(tileSize, imgW - sx);
+				const th = Math.min(tileSize, imgH - sy);
+				const isFullTile = tw === tileSize && th === tileSize;
 
 				let bitmap: ImageBitmap;
 
-				if (!needsCanvas) {
-					// Fast path: tile is fully within image bounds
+				if (isFullTile) {
 					bitmap = await createImageBitmap(fullBitmap, sx, sy, tileSize, tileSize);
 				} else {
-					// Slow path: tile overlaps image edge, need to clamp
-					ctx.clearRect(0, 0, tileSize, tileSize);
-
-					// Compute clamped source and destination rects
-					const clampedSx = Math.max(0, sx);
-					const clampedSy = Math.max(0, sy);
-					const clampedEx = Math.min(imgW, sx + tileSize);
-					const clampedEy = Math.min(imgH, sy + tileSize);
-
-					const srcW = clampedEx - clampedSx;
-					const srcH = clampedEy - clampedSy;
-
-					if (srcW > 0 && srcH > 0) {
-						const dstX = clampedSx - sx;
-						const dstY = clampedSy - sy;
-
-						ctx.drawImage(fullBitmap, clampedSx, clampedSy, srcW, srcH, dstX, dstY, srcW, srcH);
-					}
-
-					bitmap = await createImageBitmap(canvas);
+					edgeCtx.clearRect(0, 0, tileSize, tileSize);
+					edgeCtx.drawImage(fullBitmap, sx, sy, tw, th, 0, 0, tw, th);
+					bitmap = await createImageBitmap(edgeCanvas, 0, 0, tw, th);
 				}
 
-				tiles.push({ col, row, bitmap });
-				transferables.push(bitmap);
+				// Send tile immediately as transferable — zero-copy
+				const msg: TileMessage = { type: 'tile', id, col, row, bitmap };
+				self.postMessage(msg, [bitmap] as any);
 			}
 		}
 
-		// Close the source bitmap to free memory
 		fullBitmap.close();
-
-		const result: TileDecodeResult = {
-			id,
-			tiles,
-			imageWidth: imgW,
-			imageHeight: imgH,
-			cols,
-			rows
-		};
-
-		self.postMessage(result, transferables as any);
+		self.postMessage({ type: 'decode-end', id } satisfies DecodeEndMessage);
 	} catch (err) {
-		const error: TileDecodeError = {
-			id,
+		self.postMessage({
+			type: 'decode-error', id,
 			error: err instanceof Error ? err.message : String(err)
-		};
-		self.postMessage(error);
+		} satisfies DecodeErrorMessage);
 	}
 };

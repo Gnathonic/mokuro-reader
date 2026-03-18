@@ -180,18 +180,23 @@ export function toggleBreakpoint(pageIndex: number, currentBreakpoints: number[]
 }
 
 /**
- * Groups pages into spreads using breakpoints.
+ * Groups pages into spreads.
  *
- * Algorithm:
- * - Breakpoints are always shown single and reset pairing
- * - Pages pair with their neighbor unless one is a breakpoint
- * - Wide spreads are always breakpoints (even if not in list)
+ * When an anchor is provided, pairing is determined relative to the anchor:
+ * the anchor page is always the first in its spread, and pairing radiates
+ * outward (forward and backward) from there. This means the user's current
+ * page determines the pairing, not page 0.
+ *
+ * Without an anchor, pairing is sequential from page 0 using breakpoints.
+ *
+ * Wide spreads are always shown single regardless of anchor or breakpoints.
  *
  * @param pages - Array of all pages in the volume
  * @param pageViewMode - 'single', 'dual', or 'auto'
- * @param rtl - Right-to-left reading direction (affects order within dual spreads)
+ * @param rtl - Right-to-left reading direction
  * @param isPortrait - Whether screen is in portrait orientation
  * @param breakpoints - Array of page indices that are breakpoints
+ * @param anchor - Page index that must be the first in its spread
  * @returns Array of PageSpread objects
  */
 export function groupPagesIntoSpreads(
@@ -199,7 +204,8 @@ export function groupPagesIntoSpreads(
 	pageViewMode: PageViewMode,
 	rtl: boolean,
 	isPortrait: boolean,
-	breakpoints: number[] = []
+	breakpoints: number[] = [],
+	anchor?: number
 ): PageSpread[] {
 	if (!pages || pages.length === 0) {
 		return [];
@@ -214,16 +220,25 @@ export function groupPagesIntoSpreads(
 		}));
 	}
 
-	// Build set of breakpoints (includes explicit + wide spreads)
-	const breakpointSet = new Set(breakpoints);
-
-	// Wide spreads are always breakpoints even if not explicitly listed
+	// Build set of pages that must be shown single
+	const singleSet = new Set(breakpoints);
 	for (let i = 0; i < pages.length; i++) {
 		if (isWideSpread(pages[i])) {
-			breakpointSet.add(i);
+			singleSet.add(i);
 		}
 	}
 
+	if (anchor !== undefined) {
+		return groupFromAnchor(pages, singleSet, anchor);
+	}
+
+	return groupSequential(pages, singleSet);
+}
+
+/**
+ * Group pages sequentially from page 0 (default behavior).
+ */
+function groupSequential(pages: Page[], singleSet: Set<number>): PageSpread[] {
 	const spreads: PageSpread[] = [];
 	let i = 0;
 
@@ -231,28 +246,12 @@ export function groupPagesIntoSpreads(
 		const currentPage = pages[i];
 		const nextPage = pages[i + 1];
 
-		// Current is a breakpoint -> single
-		if (breakpointSet.has(i)) {
+		if (singleSet.has(i) || !nextPage || singleSet.has(i + 1)) {
 			spreads.push({ type: 'single', pages: [currentPage], pageIndices: [i] });
 			i += 1;
 			continue;
 		}
 
-		// No next page -> single
-		if (!nextPage) {
-			spreads.push({ type: 'single', pages: [currentPage], pageIndices: [i] });
-			i += 1;
-			continue;
-		}
-
-		// Next is a breakpoint -> current is single (don't pair across breaks)
-		if (breakpointSet.has(i + 1)) {
-			spreads.push({ type: 'single', pages: [currentPage], pageIndices: [i] });
-			i += 1;
-			continue;
-		}
-
-		// Both normal -> pair
 		spreads.push({
 			type: 'dual',
 			pages: [currentPage, nextPage],
@@ -262,6 +261,63 @@ export function groupPagesIntoSpreads(
 	}
 
 	return spreads;
+}
+
+/**
+ * Group pages outward from an anchor page.
+ * The anchor is always the first page of its spread.
+ * Pairing radiates forward and backward from the anchor.
+ */
+function groupFromAnchor(pages: Page[], singleSet: Set<number>, anchor: number): PageSpread[] {
+	// Clamp anchor to valid range
+	anchor = Math.max(0, Math.min(anchor, pages.length - 1));
+
+	// Forward from anchor: pair [anchor, anchor+1], [anchor+2, anchor+3]...
+	const forward: PageSpread[] = [];
+	let i = anchor;
+	while (i < pages.length) {
+		const currentPage = pages[i];
+		const nextPage = pages[i + 1];
+
+		if (singleSet.has(i) || !nextPage || singleSet.has(i + 1)) {
+			forward.push({ type: 'single', pages: [currentPage], pageIndices: [i] });
+			i += 1;
+			continue;
+		}
+
+		forward.push({
+			type: 'dual',
+			pages: [currentPage, nextPage],
+			pageIndices: [i, i + 1]
+		});
+		i += 2;
+	}
+
+	// Backward from anchor: pair [anchor-2, anchor-1], [anchor-4, anchor-3]...
+	const backward: PageSpread[] = [];
+	i = anchor - 1;
+	while (i >= 0) {
+		const currentPage = pages[i];
+		const prevPage = pages[i - 1];
+
+		if (singleSet.has(i) || !prevPage || singleSet.has(i - 1)) {
+			backward.push({ type: 'single', pages: [currentPage], pageIndices: [i] });
+			i -= 1;
+			continue;
+		}
+
+		// Pair with previous page: [i-1, i]
+		backward.push({
+			type: 'dual',
+			pages: [prevPage, currentPage],
+			pageIndices: [i - 1, i]
+		});
+		i -= 2;
+	}
+
+	// Combine: backward (reversed to maintain page order) + forward
+	backward.reverse();
+	return [...backward, ...forward];
 }
 
 /**

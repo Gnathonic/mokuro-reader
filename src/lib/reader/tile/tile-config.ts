@@ -49,26 +49,42 @@ export async function detectTileConfig(): Promise<TileConfig> {
 		ext?.loseContext();
 	}
 
-	// iOS: tighter GPU memory, smaller texture cache
-	if (isIOS || memory <= 2) {
+	// Probe GPU renderer for targeted detection
+	const debugExt = gl?.getExtension('WEBGL_debug_renderer_info');
+	const gpuRenderer = debugExt ? String(gl!.getParameter(debugExt.UNMASKED_RENDERER_WEBGL)) : '';
+
+	// Old mobile GPUs with small texture caches — 256px required
+	const isLowEndGPU = /Mali-T|Mali-4|Adreno\s*[34]\d\d|PowerVR\s*G[56]/i.test(gpuRenderer);
+
+	// Tier 1: iOS, very low memory, or known low-end GPU
+	if (isIOS || memory <= 2 || isLowEndGPU) {
 		return buildTileConfig({
-			tileSize: 256,
+			tileSize: 512,
 			scalingMode: 'bilinear',
 			maxConcurrentUploads: 1
 		});
 	}
 
-	// High-end desktop
+	// Tier 2: Low memory (<=4GB) with few cores — likely older device
+	if (memory <= 4 && concurrency <= 4) {
+		return buildTileConfig({
+			tileSize: 512,
+			scalingMode: 'bilinear',
+			maxConcurrentUploads: 2
+		});
+	}
+
+	// Tier 3: High-end (8GB+, 8+ cores)
 	if (memory >= 8 && concurrency >= 8) {
 		return buildTileConfig({
 			tileSize: 512,
 			scalingMode: 'bilinear',
-			maxConcurrentUploads: 3
+			maxConcurrentUploads: 4
 		});
 	}
 
-	// Mid-range default
-	return buildTileConfig({ tileSize: 512, scalingMode: 'bilinear' });
+	// Tier 4: Mid-range default (includes modern phones with good GPUs)
+	return buildTileConfig({ tileSize: 512, scalingMode: 'bilinear', maxConcurrentUploads: 2 });
 }
 
 /**
