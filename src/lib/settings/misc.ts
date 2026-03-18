@@ -8,12 +8,14 @@ export type ProgressTrackerSorting =
   | 'fewest-pages'
   | 'deadline';
 export type ProgressTargetMode = 'daily' | 'weekly';
+export type CompletedVolumesViewMode = 'volumes' | 'series';
 
 export type MiscSettings = {
   galleryLayout: 'grid' | 'list';
   gallerySorting: 'ASC' | 'DESC' | 'SMART';
   progressTrackerSorting: ProgressTrackerSorting;
   progressTargetMode: ProgressTargetMode;
+  completedVolumesViewMode: CompletedVolumesViewMode;
   progressResetHour: number; // 0-23, hour when daily/weekly targets reset
   progressResetDay: number; // 0-6 (Sunday-Saturday), day when weekly targets reset
   deviceRamGB: 4 | 8 | 16 | 32;
@@ -42,6 +44,7 @@ const defaultSettings: MiscSettings = {
   gallerySorting: 'SMART',
   progressTrackerSorting: 'last-read',
   progressTargetMode: 'daily',
+  completedVolumesViewMode: 'volumes',
   progressResetHour: 0, // Midnight
   progressResetDay: 1, // Monday
   deviceRamGB: getDefaultRamSetting(),
