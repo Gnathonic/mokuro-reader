@@ -19,6 +19,7 @@
     pagesReadInPeriod?: number | null;
     targetPagesPerPeriod?: number | null;
     targetMode?: ProgressTargetMode;
+    subtitle?: string | null;
   }
 
   let {
@@ -34,7 +35,8 @@
     showDeadline = true,
     pagesReadInPeriod = null,
     targetPagesPerPeriod = null,
-    targetMode = 'daily'
+    targetMode = 'daily',
+    subtitle = null
   }: Props = $props();
 </script>
 
@@ -74,6 +76,10 @@
       {targetPagesPerPeriod}
       {targetMode}
     />
+  {/if}
+
+  {#if subtitle}
+    <div class="mt-1 text-center text-xs text-gray-500">{subtitle}</div>
   {/if}
 </div>
 

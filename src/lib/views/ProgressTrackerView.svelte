@@ -12,7 +12,8 @@
     miscSettings,
     updateMiscSetting,
     type ProgressTrackerSorting,
-    type ProgressTargetMode
+    type ProgressTargetMode,
+    type CompletedVolumesViewMode
   } from '$lib/settings';
   import {
     volumeDeadlines,
@@ -26,10 +27,15 @@
     completedAtMap,
     isDateWithinRange
   } from '$lib/goals';
-  import { nav } from '$lib/util/hash-router';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
   import ProgressTargetSettingsModal from '$lib/components/ProgressTargetSettingsModal.svelte';
+  import {
+    groupCompletedEntriesBySeries,
+    sortByAddedDate,
+    sortByCompletionDate,
+    type TrackerEntryWithSortData
+  } from '$lib/views/progress-tracker-helpers';
 
   // Check if volumes is empty
   let hasVolumes = $derived($volumes && Object.keys($volumes).length > 0);
@@ -127,7 +133,7 @@
       }
     >();
 
-    for (const [volume_uuid, volumeData] of volumeEntries) {
+    for (const [volume_uuid, _volumeData] of volumeEntries) {
       const totalPages = $catalogVolumes[volume_uuid]?.page_count ?? 0;
       let currentPage = $progress[volume_uuid] ?? 0;
       // Typically a user won't stop reading on the first page, so count this as 0% progress
@@ -178,6 +184,11 @@
     deadline: 'Sorted by soonest deadline'
   };
 
+  const completedViewLabels: Record<CompletedVolumesViewMode, string> = {
+    volumes: 'Volumes',
+    series: 'Series'
+  };
+
   function cycleSorting() {
     const currentIndex = sortOrder.indexOf($miscSettings.progressTrackerSorting);
     const nextIndex = (currentIndex + 1) % sortOrder.length;
@@ -187,6 +198,12 @@
   function cycleTargetMode() {
     const newMode = ($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'weekly' : 'daily';
     updateMiscSetting('progressTargetMode', newMode);
+  }
+
+  function cycleCompletedVolumesViewMode() {
+    const newMode: CompletedVolumesViewMode =
+      ($miscSettings.completedVolumesViewMode ?? 'volumes') === 'volumes' ? 'series' : 'volumes';
+    updateMiscSetting('completedVolumesViewMode', newMode);
   }
 
   function openSettings() {
@@ -199,7 +216,7 @@
     deadlines: Record<string, string>,
     mode: ProgressTargetMode,
     periodStart: number
-  ) {
+  ): TrackerEntryWithSortData[] {
     return entries.map(([volumeId, volumeData]) => {
       const stats = volumeStats.get(volumeId);
       const remainingPages = stats?.remainingPages ?? 0;
@@ -237,77 +254,8 @@
   }
 
   // Helper function to sort Future Reads by added date (newest first)
-  function sortByAddedDate(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
-    return [...entriesWithSortData].sort((a, b) => {
-      const aAddedOn = a.volumeData.addedOn ? new Date(a.volumeData.addedOn).getTime() : null;
-      const bAddedOn = b.volumeData.addedOn ? new Date(b.volumeData.addedOn).getTime() : null;
-
-      // If both have addedOn, sort by it (newest first)
-      if (aAddedOn !== null && bAddedOn !== null) {
-        return bAddedOn - aAddedOn;
-      }
-
-      // If one has addedOn and the other doesn't, prioritize the one with addedOn
-      if (aAddedOn !== null && bAddedOn === null) {
-        return -1;
-      }
-      if (aAddedOn === null && bAddedOn !== null) {
-        return 1;
-      }
-
-      // If neither has addedOn, fall back to lastProgressUpdate
-      const aLastUpdate = a.lastProgressUpdate;
-      const bLastUpdate = b.lastProgressUpdate;
-
-      if (aLastUpdate !== 0 && bLastUpdate !== 0) {
-        return bLastUpdate - aLastUpdate;
-      }
-
-      // If one has lastProgressUpdate and the other doesn't, prioritize the one with it
-      if (aLastUpdate !== 0 && bLastUpdate === 0) {
-        return -1;
-      }
-      if (aLastUpdate === 0 && bLastUpdate !== 0) {
-        return 1;
-      }
-
-      // Both have no timestamps, maintain current order
-      return 0;
-    });
-  }
-
-  // Helper function to sort Completed Volumes by completion date (oldest first)
-  function sortByCompletionDate(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
-    const completedMap = $completedAtMap;
-
-    return [...entriesWithSortData].sort((a, b) => {
-      const aCompletedAt = completedMap[a.volumeId]
-        ? new Date(completedMap[a.volumeId]).getTime()
-        : null;
-      const bCompletedAt = completedMap[b.volumeId]
-        ? new Date(completedMap[b.volumeId]).getTime()
-        : null;
-
-      // If both have completedAt, sort by it (oldest first)
-      if (aCompletedAt !== null && bCompletedAt !== null) {
-        return aCompletedAt - bCompletedAt;
-      }
-
-      // If one has completedAt and the other doesn't, prioritize the one with completedAt
-      if (aCompletedAt !== null && bCompletedAt === null) {
-        return -1;
-      }
-      if (aCompletedAt === null && bCompletedAt !== null) {
-        return 1;
-      }
-
-      // If neither has completedAt, fall back to lastProgressUpdate (oldest first)
-      return a.lastProgressUpdate - b.lastProgressUpdate;
-    });
-  }
-
   // Helper function to sort entries
-  function sortEntries(entriesWithSortData: ReturnType<typeof createEntriesWithSortData>) {
+  function sortEntries(entriesWithSortData: TrackerEntryWithSortData[]) {
     const sorting = $miscSettings.progressTrackerSorting;
 
     return [...entriesWithSortData].sort((a, b) => {
@@ -445,10 +393,15 @@
         createEntriesWithSortData(filteredFutureReads, deadlines, mode, periodStart)
       ),
       completedVolumes: sortByCompletionDate(
-        createEntriesWithSortData(completedVolumes, deadlines, mode, periodStart)
+        createEntriesWithSortData(completedVolumes, deadlines, mode, periodStart),
+        completedMap
       )
     };
   });
+
+  let completedSeries = $derived.by(() =>
+    groupCompletedEntriesBySeries(volumeSections.completedVolumes, $completedAtMap)
+  );
 
   let isGoalClosed = $derived.by(() => {
     const period = $activeGoalPeriod;
@@ -576,28 +529,64 @@
     {#if volumeSections.completedVolumes.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 class="mb-2 text-xl font-semibold">Completed Volumes</h2>
+          <h2 class="text-xl font-semibold">Completed Volumes</h2>
+          <div class="flex items-center gap-2">
+            <Button
+              size="xs"
+              color="alternative"
+              onclick={cycleCompletedVolumesViewMode}
+              title={`Switch to ${($miscSettings.completedVolumesViewMode ?? 'volumes') === 'volumes' ? 'series' : 'volume'} view`}
+              class="flex h-8 items-center justify-center"
+            >
+              <span class="text-xs">
+                {completedViewLabels[$miscSettings.completedVolumesViewMode ?? 'volumes']} View
+              </span>
+            </Button>
+          </div>
+        </div>
+        {#key $miscSettings.completedVolumesViewMode ?? 'volumes'}
           <div
             class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
           >
-            {#each volumeSections.completedVolumes as { volumeId, volumeData }}
-              {@const stats = volumeStats.get(volumeId)!}
-              <VolumeCard
-                {volumeId}
-                seriesId={volumeData.series_uuid}
-                volumeTitle={volumeData.volume_title}
-                thumbnailUrl={thumbnailUrls.get(volumeId)}
-                progressPercent={stats.progressPercent}
-                progressPercentString={stats.progressPercentString}
-                remainingPages={stats.remainingPages}
-                isHovered={hoveredVolume === volumeId}
-                onHover={(id) => (hoveredVolume = id)}
-                showProgressBar={false}
-                showDeadline={false}
-              />
-            {/each}
+            {#if ($miscSettings.completedVolumesViewMode ?? 'volumes') === 'volumes'}
+              {#each volumeSections.completedVolumes as { volumeId, volumeData }}
+                {@const stats = volumeStats.get(volumeId)!}
+                <VolumeCard
+                  {volumeId}
+                  seriesId={volumeData.series_uuid}
+                  volumeTitle={volumeData.volume_title}
+                  thumbnailUrl={thumbnailUrls.get(volumeId)}
+                  progressPercent={stats.progressPercent}
+                  progressPercentString={stats.progressPercentString}
+                  remainingPages={stats.remainingPages}
+                  isHovered={hoveredVolume === volumeId}
+                  onHover={(id) => (hoveredVolume = id)}
+                  showProgressBar={false}
+                  showDeadline={false}
+                />
+              {/each}
+            {:else}
+              {#each completedSeries as { representativeEntry, completedLabel }}
+                {@const { volumeId, volumeData } = representativeEntry}
+                {@const stats = volumeStats.get(volumeId)!}
+                <VolumeCard
+                  {volumeId}
+                  seriesId={volumeData.series_uuid}
+                  volumeTitle={volumeData.volume_title}
+                  thumbnailUrl={thumbnailUrls.get(volumeId)}
+                  progressPercent={stats.progressPercent}
+                  progressPercentString={stats.progressPercentString}
+                  remainingPages={stats.remainingPages}
+                  isHovered={hoveredVolume === volumeId}
+                  onHover={(id) => (hoveredVolume = id)}
+                  showProgressBar={false}
+                  showDeadline={false}
+                  subtitle={completedLabel}
+                />
+              {/each}
+            {/if}
           </div>
-        </div>
+        {/key}
       </Card>
     {/if}
   {/if}
