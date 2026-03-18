@@ -16,5 +16,7 @@
       "fileCount": 2
     }
   ],
-  "warnings": ["Orphaned mokuro file: series/volume1-ocr.mokuro (no matching images or archive)"]
+  "warnings": [
+    "Orphaned mokuro file: series/volume1-ocr.mokuro (no matching images or archive)"
+  ]
 }

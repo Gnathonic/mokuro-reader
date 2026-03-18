@@ -9,5 +9,7 @@
       "fileCount": 2
     }
   ],
-  "warnings": ["Orphaned mokuro file: manga/vol2.mokuro (no matching images or archive)"]
+  "warnings": [
+    "Orphaned mokuro file: manga/vol2.mokuro (no matching images or archive)"
+  ]
 }
