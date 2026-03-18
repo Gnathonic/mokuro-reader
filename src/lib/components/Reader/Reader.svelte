@@ -364,8 +364,7 @@
         'PageDown',
         'Space',
         'Home',
-        'End',
-        'KeyO'
+        'End'
       ];
       if (continuousModeKeys.includes(action)) {
         return;
@@ -429,6 +428,9 @@
         return;
       case 'KeyP':
         rotatePageMode();
+        return;
+      case 'KeyO':
+        offsetSpreads();
         return;
       case 'KeyZ':
         rotateZoomMode();
@@ -1085,6 +1087,17 @@
     // Show notification with the new mode
     const labels = { single: 'Single Page', dual: 'Dual Page', auto: 'Auto Page' };
     showNotification(labels[nextMode], `pagemode-${nextMode}`);
+  }
+
+  function offsetSpreads() {
+    if ($settings.continuousScroll) {
+      // In continuous mode, ContinuousScrollReader handles it via custom event
+      window.dispatchEvent(new CustomEvent('offset-spreads'));
+    } else if (volume) {
+      // In paged mode, toggle hasCover to shift spread pairing
+      toggleHasCover(volume.volume_uuid);
+    }
+    showNotification('Spreads Offset', 'offset-spreads');
   }
 
   function toggleContinuousScroll() {

@@ -131,7 +131,8 @@
 		return bp.sort((a, b) => a - b);
 	});
 
-	let isPortrait = $derived(isPortraitOrientation());
+	// Reactive: re-derives when viewportWidth/viewportHeight change (on resize/rotation)
+	let isPortrait = $derived(viewportWidth <= viewportHeight);
 
 	let spreads: PageSpread[] = $derived(
 		groupPagesIntoSpreads(
@@ -238,6 +239,7 @@
 		decoder?.destroy();
 		scroller?.clear();
 		if (settleTimer) clearTimeout(settleTimer);
+		if (snapTimer) clearTimeout(snapTimer);
 	});
 
 	// React to layout changes (settings, orientation, page mode)
@@ -308,24 +310,40 @@
 		// Update visibility (throttled — check every few frames)
 		updateVisibility();
 
-		// Debounced progress reporting
+		// Debounced progress reporting + snap
 		if (settleTimer) clearTimeout(settleTimer);
 		settleTimer = setTimeout(() => {
 			reportProgress();
 			activityTracker.recordActivity();
-		}, 150);
+			trySnap();
+		}, 200);
 	}
 
 	function handleCameraSettle(_state: CameraState) {
 		reportProgress();
+	}
 
-		// Snap to nearest spread if enabled
-		if ($settings.scrollSnap && camera && zoomTarget === 1) {
+	/**
+	 * Snap to nearest spread boundary if snap is enabled.
+	 * Called after user stops interacting (drag end, wheel idle).
+	 */
+	let snapTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function trySnap() {
+		// TODO: Snap disabled until polished
+		return;
+		if (!$settings.scrollSnap || !camera) return;
+
+		// Debounce to avoid snapping during rapid interactions
+		if (snapTimer) clearTimeout(snapTimer);
+		snapTimer = setTimeout(() => {
+			if (!camera || camera.isAnimating) return;
+
 			const dominant = camera.getDominantSpread();
-			if (dominant >= 0 && dominant !== lastReportedSpreadIdx) {
+			if (dominant >= 0) {
 				camera.snapToSpread(dominant, true);
 			}
-		}
+		}, 100);
 	}
 
 	// ============================================================
@@ -479,11 +497,6 @@
 				e.preventDefault();
 				cycleZoom(-1);
 				break;
-			case 'o':
-			case 'O':
-				e.preventDefault();
-				offsetSpreads();
-				break;
 		}
 	}
 
@@ -568,36 +581,125 @@
 
 	function handleWheel(e: WheelEvent) {
 		if (!camera) return;
-		if (e.ctrlKey || e.metaKey) {
+		const swap = $settings.swapWheelBehavior;
+		const isZoom = swap ? !(e.ctrlKey || e.metaKey) : (e.ctrlKey || e.metaKey);
+
+		if (isZoom) {
 			if (e.deltaY < 0) cycleZoom(1);
 			else if (e.deltaY > 0) cycleZoom(-1);
 		} else {
-			// Normal wheel: scroll vertically
 			camera.panByScreen(0, -e.deltaY);
 		}
 	}
 
 	// ============================================================
-	// Pointer interaction: drag pan + tap/double-tap
+	// Pointer interaction: drag pan, pinch zoom, inertial fling, tap/double-tap
 	// ============================================================
 
+	// Track all active pointers for multi-touch
+	let activePointers = new Map<number, { x: number; y: number }>();
+
+	// Pinch state
+	let isPinching = false;
+	let pinchStartDist = 0;
+	let pinchStartScale = 1;
+	let pinchLastMidX = 0;
+	let pinchLastMidY = 0;
+
+	// Velocity tracking: ring buffer of recent pointer samples
+	const VELOCITY_SAMPLES = 5;
+	const FLING_THRESHOLD = 0.15; // px/ms — minimum velocity to trigger fling
+	let pointerSamples: Array<{ x: number; y: number; t: number }> = [];
+
+	function recordPointerSample(x: number, y: number) {
+		pointerSamples.push({ x, y, t: performance.now() });
+		if (pointerSamples.length > VELOCITY_SAMPLES) {
+			pointerSamples.shift();
+		}
+	}
+
+	function computeVelocity(): { vx: number; vy: number } {
+		if (pointerSamples.length < 2) return { vx: 0, vy: 0 };
+		const oldest = pointerSamples[0];
+		const newest = pointerSamples[pointerSamples.length - 1];
+		const dt = newest.t - oldest.t;
+		if (dt < 1) return { vx: 0, vy: 0 };
+		return {
+			vx: (newest.x - oldest.x) / dt,
+			vy: (newest.y - oldest.y) / dt
+		};
+	}
+
+	function pinchDistance(): number {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return 0;
+		const dx = pts[1].x - pts[0].x;
+		const dy = pts[1].y - pts[0].y;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+
+	function pinchMidpoint(): { x: number; y: number } {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return { x: 0, y: 0 };
+		return {
+			x: (pts[0].x + pts[1].x) / 2,
+			y: (pts[0].y + pts[1].y) / 2
+		};
+	}
+
 	function handlePointerDown(e: PointerEvent) {
-		pointerDownX = e.clientX;
-		pointerDownY = e.clientY;
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
 		if ((e.target as HTMLElement).closest('.textBox')) {
 			textBoxWasActive = true;
 			return;
 		}
 
+		if (activePointers.size === 2 && camera) {
+			// Second finger — start pinch, cancel drag
+			isDragging = false;
+			wasDrag = true; // Suppress click
+			isPinching = true;
+			pinchStartDist = pinchDistance();
+			pinchStartScale = camera.scale;
+			const mid = pinchMidpoint();
+			pinchLastMidX = mid.x;
+			pinchLastMidY = mid.y;
+			return;
+		}
+
 		if (e.button !== 0) return;
 
+		pointerDownX = e.clientX;
+		pointerDownY = e.clientY;
 		isDragging = true;
 		wasDrag = false;
+		pointerSamples = [];
+		recordPointerSample(e.clientX, e.clientY);
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
 	function handlePointerMove(e: PointerEvent) {
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		if (isPinching && camera && activePointers.size >= 2) {
+			// Pinch zoom: scale proportional to finger distance change
+			const dist = pinchDistance();
+			if (pinchStartDist > 0) {
+				const newScale = pinchStartScale * (dist / pinchStartDist);
+				const mid = pinchMidpoint();
+
+				// Pan by midpoint movement
+				camera.panByScreen(mid.x - pinchLastMidX, mid.y - pinchLastMidY);
+				// Zoom anchored at midpoint
+				camera.zoomTo(newScale, mid.x, mid.y, false);
+
+				pinchLastMidX = mid.x;
+				pinchLastMidY = mid.y;
+			}
+			return;
+		}
+
 		if (!isDragging || !camera) return;
 
 		const dx = e.clientX - pointerDownX;
@@ -608,20 +710,54 @@
 		}
 
 		if (wasDrag) {
-			// Move camera by the delta since last frame
 			camera.panByScreen(dx, dy);
 			pointerDownX = e.clientX;
 			pointerDownY = e.clientY;
+			recordPointerSample(e.clientX, e.clientY);
 		}
 	}
 
 	function handlePointerUp(e: PointerEvent) {
+		activePointers.delete(e.pointerId);
+
+		if (isPinching) {
+			if (activePointers.size < 2) {
+				// Pinch ended — update zoomTarget to nearest level
+				isPinching = false;
+				if (camera) {
+					const currentScale = camera.scale;
+					const base = baseScale();
+					const currentZoomMultiplier = currentScale / base;
+					zoomTarget = ZOOM_LEVELS.reduce((prev, curr) =>
+						Math.abs(curr - currentZoomMultiplier) < Math.abs(prev - currentZoomMultiplier)
+							? curr
+							: prev
+					);
+				}
+				trySnap();
+			}
+			return;
+		}
+
+		const wasDragging = isDragging && wasDrag;
 		if (isDragging) {
 			try {
 				(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 			} catch {}
 		}
 		isDragging = false;
+
+		if (wasDragging && camera) {
+			recordPointerSample(e.clientX, e.clientY);
+			const { vx, vy } = computeVelocity();
+			const speed = Math.sqrt(vx * vx + vy * vy);
+
+			if (speed > FLING_THRESHOLD) {
+				camera.fling(vx, vy);
+			}
+
+			trySnap();
+		}
 	}
 
 	function handleClick(e: MouseEvent) {
@@ -656,6 +792,13 @@
 		renderer?.resize(viewportWidth, viewportHeight);
 		camera?.setViewport(viewportWidth, viewportHeight);
 		scroller?.setViewportHeight(viewportHeight);
+
+		// Recalculate camera scale for new viewport dimensions
+		// (fit-to-width/fit-to-screen depend on viewport size)
+		if (camera) {
+			const newScale = baseScale() * zoomTarget;
+			camera.zoomTo(newScale, viewportWidth / 2, viewportHeight / 2, false);
+		}
 	}
 </script>
 

@@ -1,13 +1,23 @@
 /**
- * Frame-based value animator with exponential interpolation.
+ * Clock-based value animator with exponential interpolation.
  *
  * Android-style: set a target, the animator converges toward it each frame.
  * Setting a new target mid-animation smoothly redirects — no stacking issues.
- * The render loop reads `current` on each frame to drive CSS/scroll updates.
+ * The render loop reads `current` on each frame to drive transforms.
  *
- * Uses exponential lerp: current += (target - current) * factor
- * This never overshoots and handles rapid target changes gracefully.
+ * Uses time-corrected exponential lerp so animation speed is consistent
+ * regardless of frame rate:
+ *   alpha = 1 - (1 - factor)^(dt / 16.67)
+ *   current += (target - current) * alpha
+ *
+ * At 60fps (dt=16.67ms), alpha equals factor exactly.
+ * At 30fps (dt=33.33ms), alpha is larger — covers more distance per frame
+ * to arrive at the same visual speed.
  */
+
+/** Reference frame time: 60fps */
+const REF_DT = 1000 / 60;
+
 export class Animator {
 	current: number;
 	target: number;
@@ -15,13 +25,20 @@ export class Animator {
 	private epsilon: number;
 	private rafId: number | null = null;
 	private running = false;
+	private lastTime: number = 0;
 	private onFrame: (current: number) => void;
 	private onSettle: (() => void) | null;
+
+	// Velocity-based fling state (iOS-style exponential decay)
+	// v(t) = v0 × e^(-k×t), position integrated analytically
+	private velocity: number = 0;
+	private flinging = false;
+	private flingK: number = 3.0; // Deceleration constant (1/sec). iOS ≈ 2.0, ours slightly faster
 
 	/**
 	 * @param initial Starting value
 	 * @param onFrame Called each animation frame with the current interpolated value
-	 * @param options.factor Convergence speed per frame (0-1). Higher = faster. Default 0.2 (~250ms to settle at 60fps)
+	 * @param options.factor Convergence speed at 60fps (0-1). Higher = faster. Default 0.2 (~250ms to settle)
 	 * @param options.epsilon Threshold for "close enough". Default 0.001
 	 * @param options.onSettle Called once when animation reaches target
 	 */
@@ -48,8 +65,51 @@ export class Animator {
 	 */
 	setTarget(target: number): void {
 		this.target = target;
+		this.flinging = false; // Cancel any active fling
+		this.velocity = 0;
 		if (!this.running) {
 			this.running = true;
+			this.lastTime = performance.now();
+			this.rafId = requestAnimationFrame(this.step);
+		}
+	}
+
+	/**
+	 * Change the convergence factor (e.g., for fling deceleration).
+	 */
+	setFactor(factor: number): void {
+		this.factor = factor;
+	}
+
+	/**
+	 * Register a one-shot settle callback (fires once then clears).
+	 */
+	onSettleOnce(fn: () => void): void {
+		const original = this.onSettle;
+		this.onSettle = () => {
+			this.onSettle = original;
+			fn();
+			original?.();
+		};
+	}
+
+	/**
+	 * Start a velocity-based fling using iOS-style exponential decay.
+	 * v(t) = v0 × e^(-k×t), position integrated analytically.
+	 * Starts at exactly the given speed — never faster.
+	 *
+	 * @param velocity Initial velocity in value-units per millisecond
+	 * @param k Deceleration constant in 1/second. Higher = stops faster.
+	 *          iOS ≈ 2.0, default 3.0 (slightly snappier).
+	 */
+	flingWithVelocity(velocity: number, k?: number): void {
+		this.velocity = velocity;
+		this.flinging = true;
+		if (k !== undefined) this.flingK = k;
+		this.target = this.current;
+		if (!this.running) {
+			this.running = true;
+			this.lastTime = performance.now();
 			this.rafId = requestAnimationFrame(this.step);
 		}
 	}
@@ -59,9 +119,19 @@ export class Animator {
 	 */
 	snapTo(value: number): void {
 		this.stop();
+		this.flinging = false;
+		this.velocity = 0;
 		this.current = value;
 		this.target = value;
 		this.onFrame(value);
+	}
+
+	/**
+	 * Stop any active fling (kill velocity) without stopping the animation loop.
+	 */
+	stopFling(): void {
+		this.velocity = 0;
+		this.flinging = false;
 	}
 
 	/**
@@ -86,13 +156,44 @@ export class Animator {
 		return this.running;
 	}
 
-	private step = (): void => {
+	private step = (now: number): void => {
 		if (!this.running) return;
 
+		const dt = Math.min(now - this.lastTime, 100); // Cap at 100ms
+		this.lastTime = now;
+
+		if (this.flinging) {
+			// iOS-style exponential decay with analytical integration.
+			// v(t) = v0 × e^(-k×t)
+			// Δx = (v0/k_ms) × (1 - e^(-k_ms×dt))  — exact integral, no Euler error
+			const k_ms = this.flingK / 1000; // Convert 1/sec to 1/ms
+			const decay = Math.exp(-k_ms * dt);
+			const dx = (this.velocity / k_ms) * (1 - decay);
+			this.current += dx;
+			this.velocity *= decay;
+			this.target = this.current;
+
+			if (Math.abs(this.velocity * 1000) < 3) {
+				// Velocity negligible (< 3 units/sec) — stop
+				this.velocity = 0;
+				this.flinging = false;
+				this.running = false;
+				this.rafId = null;
+				this.onFrame(this.current);
+				this.onSettle?.();
+				return;
+			}
+
+			this.onFrame(this.current);
+			this.rafId = requestAnimationFrame(this.step);
+			return;
+		}
+
+		// Target-based lerp: time-corrected exponential interpolation
+		const alpha = 1 - Math.pow(1 - this.factor, dt / REF_DT);
 		const diff = this.target - this.current;
 
 		if (Math.abs(diff) < this.epsilon) {
-			// Close enough — snap to target and stop
 			this.current = this.target;
 			this.running = false;
 			this.rafId = null;
@@ -101,7 +202,7 @@ export class Animator {
 			return;
 		}
 
-		this.current += diff * this.factor;
+		this.current += diff * alpha;
 		this.onFrame(this.current);
 		this.rafId = requestAnimationFrame(this.step);
 	};
@@ -125,10 +226,7 @@ export class MultiAnimator {
 		this.frameCallback = onFrame;
 
 		for (const [key, value] of Object.entries(initial)) {
-			this.animators.set(
-				key,
-				new Animator(value, () => this.scheduleFrame(), options)
-			);
+			this.animators.set(key, new Animator(value, () => this.scheduleFrame(), options));
 		}
 	}
 

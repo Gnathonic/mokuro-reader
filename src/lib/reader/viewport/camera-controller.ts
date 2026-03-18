@@ -55,10 +55,10 @@ export class CameraController {
 
 		const frameHandler = () => this.applyToStage();
 
-		this.xAnimator = new Animator(0, frameHandler, { factor: 0.2 });
-		this.yAnimator = new Animator(0, frameHandler, { factor: 0.2 });
+		this.xAnimator = new Animator(0, frameHandler, { factor: 0.28 });
+		this.yAnimator = new Animator(0, frameHandler, { factor: 0.28 });
 		this.scaleAnimator = new Animator(1, frameHandler, {
-			factor: 0.18,
+			factor: 0.25,
 			onSettle: () => {
 				this.callbacks.onSettle(this.getState());
 			}
@@ -115,6 +115,36 @@ export class CameraController {
 		const newY = this.clamp(this.y - dy / s, bounds.minY, bounds.maxY);
 		this.xAnimator.snapTo(newX);
 		this.yAnimator.snapTo(newY);
+	}
+
+	/**
+	 * Fling the camera with a screen-space velocity.
+	 * The camera glides in the fling direction and decelerates via the Animator.
+	 *
+	 * @param vx Screen-space velocity in px/ms (positive = rightward content movement)
+	 * @param vy Screen-space velocity in px/ms (positive = downward content movement)
+	 */
+	/**
+	 * Fling the camera with a screen-space velocity.
+	 * Uses velocity-based animation — starts at exactly the pointer speed
+	 * and decelerates via friction. Never faster than the input velocity.
+	 *
+	 * @param vx Screen-space velocity in px/ms
+	 * @param vy Screen-space velocity in px/ms
+	 */
+	fling(vx: number, vy: number): void {
+		const s = this.scale || 1;
+
+		// Convert screen velocity to world-space velocity (units/ms)
+		// Negative because camera moves opposite to drag direction
+		const worldVx = -vx / s;
+		const worldVy = -vy / s;
+
+		// Deceleration constant k (1/sec). iOS ≈ 2.0, Android ≈ 2.4.
+		// Higher = stops faster. 3.0 gives a snappy but natural feel.
+		const k = 3.0;
+		this.xAnimator.flingWithVelocity(worldVx, k);
+		this.yAnimator.flingWithVelocity(worldVy, k);
 	}
 
 	/**
@@ -334,8 +364,15 @@ export class CameraController {
 		// Only hard-clamp when NOT in a zoom animation
 		if (!this.scaleAnimator.isAnimating) {
 			const bounds = this.getBounds(this.scale);
-			this.x = this.clamp(this.x, bounds.minX, bounds.maxX);
-			this.y = this.clamp(this.y, bounds.minY, bounds.maxY);
+			const clampedX = this.clamp(this.x, bounds.minX, bounds.maxX);
+			const clampedY = this.clamp(this.y, bounds.minY, bounds.maxY);
+
+			// If clamping changed the value, kill any fling velocity on that axis
+			if (clampedX !== this.x) this.xAnimator.stopFling();
+			if (clampedY !== this.y) this.yAnimator.stopFling();
+
+			this.x = clampedX;
+			this.y = clampedY;
 			this.xAnimator.current = this.x;
 			this.yAnimator.current = this.y;
 		}

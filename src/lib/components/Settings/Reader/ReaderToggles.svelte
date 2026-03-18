@@ -10,34 +10,42 @@
   import { Toggle, Range, Label } from 'flowbite-svelte';
   import TimePicker from '../TimePicker.svelte';
 
-  let toggles = $derived([
-    {
-      key: 'defaultFullscreen',
-      text: 'Open reader in fullscreen',
-      value: $settings.defaultFullscreen
-    },
-    { key: 'textEditable', text: 'Editable text', value: $settings.textEditable },
-    { key: 'textBoxBorders', text: 'Text box borders', value: $settings.textBoxBorders },
-    { key: 'displayOCR', text: 'OCR enabled', value: $settings.displayOCR },
-    { key: 'boldFont', text: 'Bold font', value: $settings.boldFont },
-    { key: 'pageNum', text: 'Show page number', value: $settings.pageNum },
-    { key: 'charCount', text: 'Show character count', value: $settings.charCount },
-    { key: 'bounds', text: 'Bounds', value: $settings.bounds },
-    { key: 'mobile', text: 'Mobile', value: $settings.mobile },
-    { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
-    { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
-    {
-      key: 'swapWheelBehavior',
-      text: 'Swap mouse wheel scroll/zoom',
-      value: $settings.swapWheelBehavior
-    },
-    {
-      key: 'textBoxContextMenu',
-      text: 'Custom text box menu',
-      value: $settings.textBoxContextMenu,
-      description: 'Quick copy and Anki card creation on right-click/long-press'
-    }
-  ] as { key: SettingsKey; text: string; value: any; shortcut?: string; description?: string }[]);
+  let isContinuous = $derived($settings.continuousScroll);
+
+  // Keys hidden in continuous scroll mode (not applicable)
+  const continuousHidden = new Set<SettingsKey>(['bounds', 'mobile']);
+
+  let toggles = $derived(
+    ([
+      {
+        key: 'defaultFullscreen',
+        text: 'Open reader in fullscreen',
+        value: $settings.defaultFullscreen
+      },
+      { key: 'textEditable', text: 'Editable text', value: $settings.textEditable },
+      { key: 'textBoxBorders', text: 'Text box borders', value: $settings.textBoxBorders },
+      { key: 'displayOCR', text: 'OCR enabled', value: $settings.displayOCR },
+      { key: 'boldFont', text: 'Bold font', value: $settings.boldFont },
+      { key: 'pageNum', text: 'Show page number', value: $settings.pageNum },
+      { key: 'charCount', text: 'Show character count', value: $settings.charCount },
+      { key: 'bounds', text: 'Bounds', value: $settings.bounds },
+      { key: 'mobile', text: 'Mobile', value: $settings.mobile },
+      { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
+      { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
+      {
+        key: 'swapWheelBehavior',
+        text: 'Swap mouse wheel scroll/zoom',
+        value: $settings.swapWheelBehavior
+      },
+      {
+        key: 'textBoxContextMenu',
+        text: 'Custom text box menu',
+        value: $settings.textBoxContextMenu,
+        description: 'Quick copy and Anki card creation on right-click/long-press'
+      }
+    ] as { key: SettingsKey; text: string; value: any; shortcut?: string; description?: string }[])
+      .filter((t) => !isContinuous || !continuousHidden.has(t.key))
+  );
 
   // Mode selection: 'manual' or 'scheduled'
   let nightModeMode = $derived($settings.nightModeSchedule.enabled ? 'scheduled' : 'manual');
