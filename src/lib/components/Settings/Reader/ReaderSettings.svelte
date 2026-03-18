@@ -9,8 +9,7 @@
 
   const scrollModes: { value: ScrollMode; name: string }[] = [
     { value: 'vertical', name: 'Vertical scroll' },
-    { value: 'horizontal', name: 'Horizontal scroll' },
-    { value: 'continuous', name: 'Canvas (advanced)' }
+    { value: 'horizontal', name: 'Horizontal scroll' }
   ];
 
   let swipeThresholdValue = $state($settings.swipeThreshold);

@@ -50,7 +50,6 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
-  import ContinuousScrollReader from './ContinuousScrollReader.svelte';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
@@ -1298,19 +1297,8 @@
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
       />
-    {:else if $settings.scrollMode === 'horizontal'}
-      <HorizontalScrollReader
-        {pages}
-        files={volumeData.files}
-        {volume}
-        {volumeSettings}
-        currentPage={page}
-        onPageChange={handleContinuousPageChange}
-        onVolumeNav={handleContinuousVolumeNav}
-        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
-      />
     {:else}
-      <ContinuousScrollReader
+      <HorizontalScrollReader
         {pages}
         files={volumeData.files}
         {volume}
