@@ -480,6 +480,79 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  private normalizeListedPath(filename: string): string | null {
+    if (!filename) {
+      return null;
+    }
+
+    let pathname = filename;
+    try {
+      pathname = new URL(filename).pathname;
+    } catch {
+      // Not a full URL - treat as a path-like value.
+    }
+
+    const decodedSegments = pathname
+      .split('/')
+      .filter((segment) => segment.length > 0)
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          return segment;
+        }
+      });
+
+    if (decodedSegments.length === 0) {
+      return MOKURO_FOLDER;
+    }
+
+    const rootSegment = MOKURO_FOLDER.slice(1);
+    const rootIndex = decodedSegments.indexOf(rootSegment);
+    const normalizedSegments =
+      rootIndex >= 0 ? decodedSegments.slice(rootIndex) : [rootSegment, ...decodedSegments];
+
+    return `/${normalizedSegments.join('/')}`;
+  }
+
+  private toRelativeCloudPath(filename: string): string | null {
+    const normalizedPath = this.normalizeListedPath(filename);
+    if (!normalizedPath) {
+      return null;
+    }
+
+    if (normalizedPath === MOKURO_FOLDER) {
+      return '';
+    }
+
+    if (!normalizedPath.startsWith(`${MOKURO_FOLDER}/`)) {
+      return null;
+    }
+
+    return normalizedPath.slice(MOKURO_FOLDER.length + 1);
+  }
+
+  private getTrackedRelativePath(filename: string): string | null {
+    const relativePath = this.toRelativeCloudPath(filename);
+    if (!relativePath) {
+      return null;
+    }
+
+    const lowerName = relativePath.split('/').pop()?.toLowerCase() || '';
+    if (
+      lowerName.endsWith('.cbz') ||
+      lowerName.endsWith('.mokuro') ||
+      lowerName.endsWith('.mokuro.gz') ||
+      lowerName.endsWith('.webp') ||
+      lowerName === 'volume-data.json' ||
+      lowerName === 'profiles.json'
+    ) {
+      return relativePath;
+    }
+
+    return null;
+  }
+
   // GENERIC FILE OPERATIONS
 
   async listCloudVolumes(): Promise<import('../../provider-interface').CloudFileMetadata[]> {
@@ -547,26 +620,20 @@ export class WebDAVProvider implements SyncProvider {
         }>;
 
         for (const item of contents) {
+          const normalizedPath = this.normalizeListedPath(item.filename);
+          if (!normalizedPath) {
+            continue;
+          }
+
           if (item.type === 'directory') {
             // Recurse into subdirectories
-            await processFolder(item.filename);
+            await processFolder(normalizedPath);
           } else {
-            const name = item.basename.toLowerCase();
-            // Include CBZ files, sidecars, and JSON config files
-            if (
-              name.endsWith('.cbz') ||
-              name.endsWith('.mokuro') ||
-              name.endsWith('.mokuro.gz') ||
-              name.endsWith('.webp') ||
-              item.basename === 'volume-data.json' ||
-              item.basename === 'profiles.json'
-            ) {
-              // Build relative path from mokuro folder
-              const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+            const relativePath = this.getTrackedRelativePath(item.filename);
+            if (relativePath) {
               allFiles.push({
                 provider: 'webdav',
-                fileId: item.filename, // Full WebDAV path as fileId
+                fileId: `${MOKURO_FOLDER}/${relativePath}`,
                 path: relativePath,
                 modifiedTime: item.lastmod || new Date().toISOString(),
                 size: item.size || 0
@@ -613,22 +680,11 @@ export class WebDAVProvider implements SyncProvider {
 
     for (const item of contents) {
       if (item.type === 'file') {
-        const name = item.basename.toLowerCase();
-        // Include CBZ files, sidecars, and JSON config files
-        if (
-          name.endsWith('.cbz') ||
-          name.endsWith('.mokuro') ||
-          name.endsWith('.mokuro.gz') ||
-          name.endsWith('.webp') ||
-          item.basename === 'volume-data.json' ||
-          item.basename === 'profiles.json'
-        ) {
-          // Build relative path from mokuro folder
-          const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+        const relativePath = this.getTrackedRelativePath(item.filename);
+        if (relativePath) {
           allFiles.push({
             provider: 'webdav',
-            fileId: item.filename, // Full WebDAV path as fileId
+            fileId: `${MOKURO_FOLDER}/${relativePath}`,
             path: relativePath,
             modifiedTime: item.lastmod || new Date().toISOString(),
             size: item.size || 0
