@@ -51,6 +51,8 @@
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
   import ContinuousScrollReader from './ContinuousScrollReader.svelte';
+  import VerticalScrollReader from './VerticalScrollReader.svelte';
+  import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -1285,17 +1287,40 @@
     {/key}
   {/if}
   {#if $settings.continuousScroll && volumeData?.files}
-    <!-- Continuous scroll mode -->
-    <ContinuousScrollReader
-      {pages}
-      files={volumeData.files}
-      {volume}
-      {volumeSettings}
-      currentPage={page}
-      onPageChange={handleContinuousPageChange}
-      onVolumeNav={handleContinuousVolumeNav}
-      onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
-    />
+    {#if $settings.scrollMode === 'vertical'}
+      <VerticalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+      />
+    {:else if $settings.scrollMode === 'horizontal'}
+      <HorizontalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+      />
+    {:else}
+      <ContinuousScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+      />
+    {/if}
   {:else}
   <!-- Page-based mode -->
   <div class="flex" style:background-color={$settings.backgroundColor}>

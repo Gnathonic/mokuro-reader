@@ -24,6 +24,8 @@ export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
 export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
 
+export type ScrollMode = 'vertical' | 'horizontal' | 'continuous';
+
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
 // AnkiConnect field mapping - template is freeform text with variables
@@ -143,6 +145,7 @@ export type Settings = {
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
+  scrollMode: ScrollMode;
   continuousZoomDefault: ContinuousZoomMode;
   scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
@@ -263,6 +266,7 @@ const defaultSettings: Settings = {
   swapWheelBehavior: false,
   textBoxContextMenu: true,
   continuousScroll: false,
+  scrollMode: 'vertical',
   continuousZoomDefault: 'zoomFitToWidth',
   scrollSnap: true,
   volumeDefaults: {
