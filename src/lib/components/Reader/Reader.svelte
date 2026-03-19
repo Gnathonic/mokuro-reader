@@ -1141,21 +1141,10 @@
     activityTracker.recordActivity();
   }
 
-  // Callback for ContinuousReader volume navigation
-  function handleContinuousVolumeNav(direction: 'prev' | 'next') {
+  // Callback for scroll reader completion — navigate back to series page
+  function handleContinuousVolumeNav(_direction: 'prev' | 'next') {
     if (!volume) return;
-    let seriesVolumes = $currentSeries;
-    const currentVolumeIndex = seriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid);
-
-    if (direction === 'prev') {
-      const previousVolume = seriesVolumes[currentVolumeIndex - 1];
-      if (previousVolume) nav.toReader(volume.series_uuid, previousVolume.volume_uuid);
-      else nav.toSeries(volume.series_uuid);
-    } else {
-      const nextVolume = seriesVolumes[currentVolumeIndex + 1];
-      if (nextVolume) nav.toReader(volume.series_uuid, nextVolume.volume_uuid);
-      else nav.toSeries(volume.series_uuid);
-    }
+    nav.toSeries(volume.series_uuid);
   }
 
   function rotateZoomMode() {
