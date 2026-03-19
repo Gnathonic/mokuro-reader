@@ -101,6 +101,7 @@ export type PageViewMode = 'single' | 'dual' | 'auto';
 
 export type VolumeDefaults = {
   rightToLeft: boolean;
+  /** @deprecated Moved to top-level Settings.singlePageView. Kept for migration/sync compat. */
   singlePageView: PageViewMode;
   hasCover: boolean;
 };
