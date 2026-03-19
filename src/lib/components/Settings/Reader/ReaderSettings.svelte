@@ -86,7 +86,7 @@
       onchange={() => updateSetting('continuousScroll', !isContinuous)}
     >
       Continuous scroll
-      <span class="ml-1 text-xs font-medium text-amber-600 dark:text-amber-400">Beta</span>
+      <span class="ml-1 text-xs font-medium text-amber-600 dark:text-amber-400">Alpha</span>
       <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(V)</span>
     </Toggle>
 

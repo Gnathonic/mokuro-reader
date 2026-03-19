@@ -8,6 +8,7 @@
 	import MangaPage from './MangaPage.svelte';
 	import { ScrollAnimator } from '$lib/reader/scroll-animator';
 	import { Animator } from '$lib/reader/animator';
+	import { computeScrollPosition } from '$lib/reader/zoom-math';
 	import { onMount, onDestroy, tick } from 'svelte';
 
 	interface Props {
@@ -75,28 +76,59 @@
 	let zoomWrapperEl: HTMLDivElement | undefined = $state();
 	let zoomSpacerEl: HTMLDivElement | undefined = $state();
 
+	// Wrapper offset is 0,0 — centering spacers are INSIDE the wrapper
+	const WRAPPER_OFFSET_X = 0;
+	const WRAPPER_OFFSET_Y = 0;
+
 	const zoomAnimator = new Animator(1, (currentZoom) => {
-		if (zoomWrapperEl) {
-			zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
-		}
-		if (zoomSpacerEl) {
-			zoomSpacerEl.style.height = currentZoom > 1 ? `${viewportHeight * currentZoom}px` : '';
-		}
-		if (scrollContainer) {
-			scrollContainer.scrollLeft = zoomAnchorContentX * currentZoom - zoomAnchorScreenX;
-			scrollContainer.scrollTop = zoomAnchorContentY * currentZoom - zoomAnchorScreenY;
-		}
+		if (!zoomWrapperEl || !scrollContainer || !zoomSpacerEl) return;
+
+		// Set spacer dimensions (use viewportHeight as base, not offsetHeight which feeds back)
+		zoomSpacerEl.style.height = currentZoom > 1 ? `${viewportHeight * currentZoom}px` : '';
+		zoomSpacerEl.style.width = currentZoom > 1 ? `${viewportWidth * currentZoom}px` : '';
+
+		// Apply transform
+		zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
+
+		// Force layout
+		void scrollContainer.scrollWidth;
+
+		// Set scroll using tested math
+		const { scrollLeft, scrollTop } = computeScrollPosition(
+			zoomAnchorContentX, zoomAnchorContentY,
+			zoomAnchorScreenX, zoomAnchorScreenY,
+			currentZoom,
+			WRAPPER_OFFSET_X, WRAPPER_OFFSET_Y
+		);
+		scrollContainer.scrollLeft = scrollLeft;
+		scrollContainer.scrollTop = scrollTop;
 	}, { factor: 0.25, epsilon: 0.005, onSettle: () => {
 		userZoom = zoomTarget;
+		if (zoomTarget <= 1 && scrollContainer && zoomSpacerEl) {
+			zoomSpacerEl.style.width = '';
+			zoomSpacerEl.style.height = '';
+			scrollContainer.scrollTop = 0;
+		}
 	}});
 
-	function animateZoomTo(newZoom: number, anchorX: number, anchorY: number) {
-		if (!scrollContainer) return;
+	/**
+	 * Animate zoom: sample content at fromScreen, place at toScreen.
+	 */
+	function animateZoom(
+		newZoom: number,
+		fromScreenX: number, fromScreenY: number,
+		toScreenX: number, toScreenY: number
+	) {
+		if (!scrollContainer || !zoomWrapperEl) return;
 		const currentZoom = zoomAnimator.current || 1;
-		zoomAnchorScreenX = anchorX;
-		zoomAnchorScreenY = anchorY;
-		zoomAnchorContentX = (scrollContainer.scrollLeft + anchorX) / currentZoom;
-		zoomAnchorContentY = (scrollContainer.scrollTop + anchorY) / currentZoom;
+
+		const wrapperRect = zoomWrapperEl.getBoundingClientRect();
+
+		zoomAnchorContentX = (fromScreenX - wrapperRect.left) / currentZoom;
+		zoomAnchorContentY = (fromScreenY - wrapperRect.top) / currentZoom;
+		zoomAnchorScreenX = toScreenX;
+		zoomAnchorScreenY = toScreenY;
+
 		zoomTarget = newZoom;
 		zoomAnimator.setTarget(newZoom);
 	}
@@ -107,7 +139,10 @@
 		nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
 		const newZoom = ZOOM_LEVELS[nextIdx];
 		if (newZoom === zoomTarget) return;
-		animateZoomTo(newZoom, anchorX ?? viewportWidth / 2, anchorY ?? viewportHeight / 2);
+
+		const ax = anchorX ?? viewportWidth / 2;
+		const ay = anchorY ?? viewportHeight / 2;
+		animateZoom(newZoom, ax, ay, ax, ay);
 	}
 
 	// When zoom mode changes (Z key), stay on the current page
@@ -372,7 +407,7 @@
 				const newZoom = pinchStartZoom * (dist / pinchStartDist);
 				const mid = pinchMidpoint();
 				const clamped = Math.max(ZOOM_LEVELS[0], Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], newZoom));
-				animateZoomTo(clamped, mid.x, mid.y);
+				animateZoom(clamped, mid.x, mid.y, mid.x, mid.y);
 			}
 			return;
 		}
@@ -435,9 +470,7 @@
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 			const newZoom = ZOOM_LEVELS[nextIdx];
 			if (newZoom !== zoomTarget) {
-				const biasX = e.clientX + (viewportWidth / 2 - e.clientX) * 0.7;
-				const biasY = e.clientY + (viewportHeight / 2 - e.clientY) * 0.7;
-				animateZoomTo(newZoom, biasX, biasY);
+				animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
 			}
 			return;
 		}
@@ -514,7 +547,7 @@
 		class="flex h-full scrollbar-hide"
 		style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
 		style:overflow-x="auto"
-		style:overflow-y={userZoom > 1 ? 'auto' : 'hidden'}
+		style:overflow-y="auto"
 		style:overscroll-behavior="none"
 		style:direction={rtl ? 'rtl' : 'ltr'}
 		onscroll={handleScroll}

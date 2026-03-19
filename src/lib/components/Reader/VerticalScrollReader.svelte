@@ -8,6 +8,7 @@
 	import MangaPage from './MangaPage.svelte';
 	import { ScrollAnimator } from '$lib/reader/scroll-animator';
 	import { Animator } from '$lib/reader/animator';
+	import { screenToContent, computeScrollPosition } from '$lib/reader/zoom-math';
 	import { onMount, onDestroy, tick } from 'svelte';
 
 	interface Props {
@@ -87,31 +88,69 @@
 
 	// Zoom animator — GPU-composited via transform: scale()
 	// Updates transform + spacer dimensions + scroll position directly (no Svelte re-render)
+	// Wrapper offset is 0,0 — centering spacers are INSIDE the wrapper,
+	// so contentY from getBoundingClientRect already includes the spacer offset.
+	const WRAPPER_OFFSET_X = 0;
+	const WRAPPER_OFFSET_Y = 0;
+
 	const zoomAnimator = new Animator(1, (currentZoom) => {
-		// Direct DOM writes — bypass Svelte reactivity for 60fps
-		if (zoomWrapperEl) {
-			zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
-		}
-		if (zoomSpacerEl) {
-			zoomSpacerEl.style.width = currentZoom > 1 ? `${viewportWidth * currentZoom}px` : '';
-		}
-		if (scrollContainer) {
-			scrollContainer.scrollLeft = zoomAnchorContentX * currentZoom - zoomAnchorScreenX;
-			scrollContainer.scrollTop = zoomAnchorContentY * currentZoom - zoomAnchorScreenY;
-		}
+		if (!zoomWrapperEl || !scrollContainer || !zoomSpacerEl) return;
+
+		// 1. Set spacer dimensions for scroll bounds.
+		// Use viewportWidth as base (not wrapper.offsetWidth which stretches to fill spacer
+		// and creates an exponential feedback loop).
+		// Height uses wrapper.offsetHeight which is stable (determined by stacked content, not parent).
+		zoomSpacerEl.style.width = currentZoom > 1 ? `${viewportWidth * currentZoom}px` : '';
+		zoomSpacerEl.style.minHeight = `${zoomWrapperEl.offsetHeight * currentZoom + viewportHeight}px`;
+
+		// 2. Apply transform
+		zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
+
+		// 3. Force layout
+		void scrollContainer.scrollWidth;
+
+		// 4. Set scroll using tested math
+		const { scrollLeft, scrollTop } = computeScrollPosition(
+			zoomAnchorContentX, zoomAnchorContentY,
+			zoomAnchorScreenX, zoomAnchorScreenY,
+			currentZoom,
+			WRAPPER_OFFSET_X, WRAPPER_OFFSET_Y
+		);
+		scrollContainer.scrollLeft = scrollLeft;
+		scrollContainer.scrollTop = scrollTop;
+
 	}, { factor: 0.25, epsilon: 0.005, onSettle: () => {
-		// Sync $state only when settled
 		userZoom = zoomTarget;
+		// At zoom 1, clear spacer dimensions and reset horizontal scroll
+		if (zoomTarget <= 1 && scrollContainer && zoomSpacerEl) {
+			zoomSpacerEl.style.width = '';
+			zoomSpacerEl.style.minHeight = '';
+			scrollContainer.scrollLeft = 0;
+		}
 	}});
 
-	function animateZoomTo(newZoom: number, anchorX: number, anchorY: number) {
-		if (!scrollContainer) return;
-		// Use the live animated zoom value, not the settled $state
+	/**
+	 * Animate zoom, sampling content at fromScreen and placing it at toScreen.
+	 * - Wheel zoom: from=cursor, to=cursor (keep cursor point fixed)
+	 * - Double-tap: from=click, to=center (zoom clicked area to center)
+	 */
+	function animateZoom(
+		newZoom: number,
+		fromScreenX: number, fromScreenY: number,
+		toScreenX: number, toScreenY: number
+	) {
+		if (!scrollContainer || !zoomWrapperEl) return;
 		const currentZoom = zoomAnimator.current || 1;
-		zoomAnchorScreenX = anchorX;
-		zoomAnchorScreenY = anchorY;
-		zoomAnchorContentX = (scrollContainer.scrollLeft + anchorX) / currentZoom;
-		zoomAnchorContentY = (scrollContainer.scrollTop + anchorY) / currentZoom;
+
+		const wrapperRect = zoomWrapperEl.getBoundingClientRect();
+
+		// Content-space point under the "from" screen position
+		zoomAnchorContentX = (fromScreenX - wrapperRect.left) / currentZoom;
+		zoomAnchorContentY = (fromScreenY - wrapperRect.top) / currentZoom;
+
+		// Where that content should end up on screen
+		zoomAnchorScreenX = toScreenX;
+		zoomAnchorScreenY = toScreenY;
 
 		zoomTarget = newZoom;
 		zoomAnimator.setTarget(newZoom);
@@ -124,7 +163,10 @@
 		const newZoom = ZOOM_LEVELS[nextIdx];
 		if (newZoom === zoomTarget) return;
 
-		animateZoomTo(newZoom, anchorX ?? viewportWidth / 2, anchorY ?? viewportHeight / 2);
+		// Wheel: keep the cursor point fixed on screen
+		const ax = anchorX ?? viewportWidth / 2;
+		const ay = anchorY ?? viewportHeight / 2;
+		animateZoom(newZoom, ax, ay, ax, ay);
 	}
 
 	// When zoom mode changes (Z key), stay on the current page.
@@ -378,7 +420,7 @@
 				const mid = pinchMidpoint();
 				// Clamp to zoom level range
 				const clamped = Math.max(ZOOM_LEVELS[0], Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], newZoom));
-				animateZoomTo(clamped, mid.x, mid.y);
+				animateZoom(clamped, mid.x, mid.y, mid.x, mid.y);
 			}
 			return;
 		}
@@ -438,15 +480,12 @@
 		const now = Date.now();
 		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
-			// Double-tap zoom — cycle levels, animate zoom + pan to clicked area
+			// Double-tap zoom — sample at click, place at viewport center
 			const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 			const newZoom = ZOOM_LEVELS[nextIdx];
 			if (newZoom !== zoomTarget) {
-				// Bias anchor toward viewport center so clicked area drifts to middle
-				const biasX = e.clientX + (viewportWidth / 2 - e.clientX) * 0.7;
-				const biasY = e.clientY + (viewportHeight / 2 - e.clientY) * 0.7;
-				animateZoomTo(newZoom, biasX, biasY);
+				animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
 			}
 			return;
 		}
@@ -508,7 +547,7 @@
 		bind:this={scrollContainer}
 		class="h-full w-full scrollbar-hide"
 		style:overflow-y="auto"
-		style:overflow-x={userZoom > 1 ? 'auto' : 'hidden'}
+		style:overflow-x="auto"
 		style:overscroll-behavior="none"
 		onscroll={handleScroll}
 	>
