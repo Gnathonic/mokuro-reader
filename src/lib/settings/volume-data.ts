@@ -5,12 +5,10 @@ import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 
-import type { PageViewMode } from './settings';
-
 // Deep equality check for settings objects
 function settingsEqual(
-  a: Record<string, { rightToLeft: boolean; singlePageView: PageViewMode; hasCover: boolean }>,
-  b: Record<string, { rightToLeft: boolean; singlePageView: PageViewMode; hasCover: boolean }>
+  a: Record<string, { rightToLeft: boolean; hasCover: boolean }>,
+  b: Record<string, { rightToLeft: boolean; hasCover: boolean }>
 ): boolean {
   const aKeys = Object.keys(a);
   const bKeys = Object.keys(b);
@@ -19,11 +17,7 @@ function settingsEqual(
 
   for (const key of aKeys) {
     if (!b[key]) return false;
-    if (
-      a[key].rightToLeft !== b[key].rightToLeft ||
-      a[key].singlePageView !== b[key].singlePageView ||
-      a[key].hasCover !== b[key].hasCover
-    ) {
+    if (a[key].rightToLeft !== b[key].rightToLeft || a[key].hasCover !== b[key].hasCover) {
       return false;
     }
   }
@@ -33,7 +27,6 @@ function settingsEqual(
 
 export type VolumeSettings = {
   rightToLeft?: boolean;
-  singlePageView?: PageViewMode;
   hasCover?: boolean;
   spreadBreakpoints?: number[];
 };
@@ -109,15 +102,7 @@ export class VolumeData implements VolumeDataJSON {
     // Only store explicitly set values, leave others undefined to fall back to global defaults
     this.settings = {};
 
-    // Migrate old boolean values to new PageViewMode
-    if (data.settings?.singlePageView !== undefined) {
-      if (typeof data.settings.singlePageView === 'boolean') {
-        // Old boolean value -> migrate to 'auto'
-        this.settings.singlePageView = 'auto';
-      } else {
-        this.settings.singlePageView = data.settings.singlePageView;
-      }
-    }
+    // singlePageView is now a global setting, not per-volume. Ignore any legacy per-volume values.
 
     // Only store if explicitly provided
     if (typeof data.settings?.rightToLeft === 'boolean') {
@@ -565,26 +550,18 @@ export const volumeSettings = derived(volumes, ($volumes) => {
 // Uses custom readable with deep equality check to prevent re-renders when timer updates
 // (which modifies volumes but not settings)
 export const effectiveVolumeSettings = readable(
-  {} as Record<string, { rightToLeft: boolean; singlePageView: PageViewMode; hasCover: boolean }>,
+  {} as Record<string, { rightToLeft: boolean; hasCover: boolean }>,
   (set) => {
-    let previousEffective: Record<
-      string,
-      { rightToLeft: boolean; singlePageView: PageViewMode; hasCover: boolean }
-    > = {};
+    let previousEffective: Record<string, { rightToLeft: boolean; hasCover: boolean }> = {};
 
     const unsubscribe = derived([volumes, globalSettings], ([$volumes, $globalSettings]) => {
-      const effective: Record<
-        string,
-        { rightToLeft: boolean; singlePageView: PageViewMode; hasCover: boolean }
-      > = {};
+      const effective: Record<string, { rightToLeft: boolean; hasCover: boolean }> = {};
 
       if ($volumes) {
         Object.keys($volumes).forEach((key) => {
           const volumeSettings = $volumes[key].settings;
           effective[key] = {
             rightToLeft: volumeSettings.rightToLeft ?? $globalSettings.volumeDefaults.rightToLeft,
-            singlePageView:
-              volumeSettings.singlePageView ?? $globalSettings.volumeDefaults.singlePageView,
             hasCover: volumeSettings.hasCover ?? $globalSettings.volumeDefaults.hasCover
           };
         });

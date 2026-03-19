@@ -5,9 +5,10 @@
 	import { matchFilesToPages } from '$lib/reader/image-cache';
 	import { getCharCount } from '$lib/util/count-chars';
 	import { activityTracker } from '$lib/util/activity-tracker';
-	import TextBoxes from './TextBoxes.svelte';
+	import MangaPage from './MangaPage.svelte';
 	import { ScrollAnimator } from '$lib/reader/scroll-animator';
-	import { onMount, onDestroy } from 'svelte';
+	import { Animator } from '$lib/reader/animator';
+	import { onMount, onDestroy, tick } from 'svelte';
 
 	interface Props {
 		pages: Page[];
@@ -38,51 +39,109 @@
 	let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
 	let indexedFiles = $derived.by(() => matchFilesToPages(files, pages));
 	let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
+	let zoomMode = $derived($settings.continuousZoomDefault);
+
+	// Base scale for each page based on zoom mode
+	function pageStyle(page: Page): { width: string; maxWidth: string; height: string } {
+		if (zoomMode === 'zoomOriginal') {
+			return {
+				width: `${page.img_width}px`,
+				maxWidth: `${page.img_width}px`,
+				height: `${page.img_height}px`
+			};
+		}
+		if (zoomMode === 'zoomFitToScreen') {
+			// Scale so the entire page fits in the viewport
+			const scaleW = viewportWidth / page.img_width;
+			const scaleH = viewportHeight / page.img_height;
+			const scale = Math.min(scaleW, scaleH);
+			return {
+				width: `${page.img_width * scale}px`,
+				maxWidth: `${page.img_width * scale}px`,
+				height: `${page.img_height * scale}px`
+			};
+		}
+		// zoomFitToWidth (default) — always fill viewport width, upscale if needed
+		return {
+			width: '100%',
+			maxWidth: '',
+			height: 'auto'
+		};
+	}
 
 	// ============================================================
 	// Zoom — CSS zoom on the scroll content
 	// ============================================================
 
 	let userZoom = $state(1);
+	let zoomTarget = 1;
 	const ZOOM_LEVELS = [1, 1.5, 2, 3];
 
-	function cycleZoom(direction: number, anchorX?: number, anchorY?: number) {
+	// Zoom anchor — content-space point to keep fixed on screen during zoom
+	let zoomAnchorContentX = 0;
+	let zoomAnchorContentY = 0;
+	let zoomAnchorScreenX = 0;
+	let zoomAnchorScreenY = 0;
+	let zoomWrapperEl: HTMLDivElement | undefined = $state();
+	let zoomSpacerEl: HTMLDivElement | undefined = $state();
+
+	// Zoom animator — GPU-composited via transform: scale()
+	// Updates transform + spacer dimensions + scroll position directly (no Svelte re-render)
+	const zoomAnimator = new Animator(1, (currentZoom) => {
+		// Direct DOM writes — bypass Svelte reactivity for 60fps
+		if (zoomWrapperEl) {
+			zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
+		}
+		if (zoomSpacerEl) {
+			zoomSpacerEl.style.width = currentZoom > 1 ? `${viewportWidth * currentZoom}px` : '';
+		}
+		if (scrollContainer) {
+			scrollContainer.scrollLeft = zoomAnchorContentX * currentZoom - zoomAnchorScreenX;
+			scrollContainer.scrollTop = zoomAnchorContentY * currentZoom - zoomAnchorScreenY;
+		}
+	}, { factor: 0.25, epsilon: 0.005, onSettle: () => {
+		// Sync $state only when settled
+		userZoom = zoomTarget;
+	}});
+
+	function animateZoomTo(newZoom: number, anchorX: number, anchorY: number) {
 		if (!scrollContainer) return;
-		const curIdx = ZOOM_LEVELS.indexOf(userZoom);
+		// Use the live animated zoom value, not the settled $state
+		const currentZoom = zoomAnimator.current || 1;
+		zoomAnchorScreenX = anchorX;
+		zoomAnchorScreenY = anchorY;
+		zoomAnchorContentX = (scrollContainer.scrollLeft + anchorX) / currentZoom;
+		zoomAnchorContentY = (scrollContainer.scrollTop + anchorY) / currentZoom;
+
+		zoomTarget = newZoom;
+		zoomAnimator.setTarget(newZoom);
+	}
+
+	function cycleZoom(direction: number, anchorX?: number, anchorY?: number) {
+		const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 		let nextIdx = curIdx < 0 ? (direction > 0 ? 1 : 0) : curIdx + direction;
 		nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
 		const newZoom = ZOOM_LEVELS[nextIdx];
-		if (newZoom === userZoom) return;
+		if (newZoom === zoomTarget) return;
 
-		// Preserve the point under the anchor
-		const ax = anchorX ?? viewportWidth / 2;
-		const ay = anchorY ?? viewportHeight / 2;
-		const contentX = (scrollContainer.scrollLeft + ax) / userZoom;
-		const contentY = (scrollContainer.scrollTop + ay) / userZoom;
-
-		userZoom = newZoom;
-
-		// After zoom changes layout, restore anchor point
-		requestAnimationFrame(() => {
-			if (!scrollContainer) return;
-			scrollContainer.scrollLeft = contentX * newZoom - ax;
-			scrollContainer.scrollTop = contentY * newZoom - ay;
-		});
+		animateZoomTo(newZoom, anchorX ?? viewportWidth / 2, anchorY ?? viewportHeight / 2);
 	}
 
-	// ============================================================
-	// Blob URLs
-	// ============================================================
-
-	let blobUrls = $state<string[]>([]);
-
+	// When zoom mode changes (Z key), stay on the current page.
+	// Use lastReportedPage (set by scroll progress tracking) since
+	// detectCurrentPage() would see the already-shifted layout.
+	let prevZoomMode = $settings.continuousZoomDefault;
 	$effect(() => {
-		const urls = indexedFiles.map((file) => (file ? URL.createObjectURL(file) : ''));
-		blobUrls = urls;
-		return () => {
-			urls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
-		};
+		if (zoomMode === prevZoomMode) return;
+		prevZoomMode = zoomMode;
+
+		const pageIdx = lastReportedPage - 1;
+		tick().then(() => {
+			const el = pageElements[pageIdx];
+			if (el) el.scrollIntoView({ behavior: 'instant', block: pageFitsVertically(pageIdx) ? 'center' : 'start' });
+		});
 	});
+
 
 	// ============================================================
 	// Progress tracking
@@ -112,31 +171,13 @@
 	}
 
 	function reportProgress() {
-		// Use highest visible page for progress (furthest read)
-		const highestVisible = detectHighestVisiblePage();
-		const pageNum = highestVisible + 1;
+		const pageIdx = detectCurrentPage();
+		const pageNum = pageIdx + 1;
 		if (pageNum !== lastReportedPage) {
 			lastReportedPage = pageNum;
 			const { charCount } = getCharCount(pages, pageNum);
 			onPageChange(pageNum, charCount, pageNum >= pages.length);
 		}
-	}
-
-	function detectHighestVisiblePage(): number {
-		if (!scrollContainer) return 0;
-		const containerRect = scrollContainer.getBoundingClientRect();
-		let highest = 0;
-
-		for (let i = 0; i < pageElements.length; i++) {
-			const el = pageElements[i];
-			if (!el) continue;
-			const rect = el.getBoundingClientRect();
-			if (rect.top >= containerRect.top - 2 && rect.bottom <= containerRect.bottom + 2) {
-				highest = i;
-			}
-		}
-
-		return highest || detectCurrentPage();
 	}
 
 	function handleScroll() {
@@ -172,29 +213,22 @@
 
 	let lastNavPage = currentPage - 1;
 
-	function scrollToPageVertical(pageIdx: number, clamp = false) {
+	function scrollToPageVertical(pageIdx: number) {
 		if (!scroller) return;
 
+		// Past the end — mark complete and exit
 		if (pageIdx >= pages.length) {
-			if (clamp || lastNavPage < pages.length - 1) {
-				pageIdx = pages.length - 1;
-				const { charCount } = getCharCount(pages, pages.length);
-				onPageChange(pages.length, charCount, true);
-			} else {
-				onVolumeNav('next');
-				return;
-			}
+			const { charCount } = getCharCount(pages, pages.length);
+			onPageChange(pages.length, charCount, true);
+			onVolumeNav('next');
+			return;
 		}
+		// Before the start — exit
 		if (pageIdx < 0) {
-			if (clamp || lastNavPage > 0) {
-				pageIdx = 0;
-			} else {
-				onVolumeNav('prev');
-				return;
-			}
+			onVolumeNav('prev');
+			return;
 		}
 
-		pageIdx = Math.max(0, Math.min(pages.length - 1, pageIdx));
 		lastNavPage = pageIdx;
 		const el = pageElements[pageIdx];
 		if (!el) return;
@@ -211,14 +245,26 @@
 		if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) return;
 		if (!scrollContainer) return;
 
+		// In fit-to-screen, pages fit viewport — arrows page.
+		// In fit-to-width/original, pages can be taller — arrows pan.
+		const shouldPanVertically = zoomMode !== 'zoomFitToScreen';
+
 		switch (e.key) {
 			case 'ArrowDown':
 				e.preventDefault();
-				scrollToPageVertical(detectCurrentPage() + 1);
+				if (shouldPanVertically) {
+					scroller?.scrollBy(0, viewportHeight * 0.5);
+				} else {
+					scrollToPageVertical(detectCurrentPage() + 1);
+				}
 				break;
 			case 'ArrowUp':
 				e.preventDefault();
-				scrollToPageVertical(detectCurrentPage() - 1);
+				if (shouldPanVertically) {
+					scroller?.scrollBy(0, -viewportHeight * 0.5);
+				} else {
+					scrollToPageVertical(detectCurrentPage() - 1);
+				}
 				break;
 			case 'ArrowLeft':
 				e.preventDefault();
@@ -239,20 +285,11 @@
 				break;
 			case 'Home':
 				e.preventDefault();
-				scrollToPageVertical(0, true);
+				scrollToPageVertical(0);
 				break;
 			case 'End':
 				e.preventDefault();
-				scrollToPageVertical(pages.length - 1, true);
-				break;
-			case '+':
-			case '=':
-				e.preventDefault();
-				cycleZoom(1);
-				break;
-			case '-':
-				e.preventDefault();
-				cycleZoom(-1);
+				scrollToPageVertical(pages.length - 1);
 				break;
 		}
 	}
@@ -285,8 +322,41 @@
 	let dragScrollTop = 0;
 	const DRAG_THRESHOLD = 5;
 
+	// Pinch zoom state
+	let activePointers = new Map<number, { x: number; y: number }>();
+	let isPinching = false;
+	let pinchStartDist = 0;
+	let pinchStartZoom = 1;
+
+	function pinchDistance(): number {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return 0;
+		const dx = pts[1].x - pts[0].x;
+		const dy = pts[1].y - pts[0].y;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+
+	function pinchMidpoint(): { x: number; y: number } {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return { x: 0, y: 0 };
+		return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+	}
+
 	function handlePointerDown(e: PointerEvent) {
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
 		if ((e.target as HTMLElement).closest('.textBox')) return;
+
+		if (activePointers.size === 2) {
+			// Second finger — start pinch, cancel drag
+			isDragging = false;
+			wasDrag = true;
+			isPinching = true;
+			pinchStartDist = pinchDistance();
+			pinchStartZoom = zoomAnimator.current || 1;
+			return;
+		}
+
 		if (e.button !== 0) return;
 
 		isDragging = true;
@@ -299,6 +369,20 @@
 	}
 
 	function handlePointerMove(e: PointerEvent) {
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		if (isPinching && activePointers.size >= 2) {
+			const dist = pinchDistance();
+			if (pinchStartDist > 0) {
+				const newZoom = pinchStartZoom * (dist / pinchStartDist);
+				const mid = pinchMidpoint();
+				// Clamp to zoom level range
+				const clamped = Math.max(ZOOM_LEVELS[0], Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], newZoom));
+				animateZoomTo(clamped, mid.x, mid.y);
+			}
+			return;
+		}
+
 		if (!isDragging || !scrollContainer) return;
 		const dx = e.clientX - dragStartX;
 		const dy = e.clientY - dragStartY;
@@ -311,12 +395,28 @@
 
 		if (wasDrag) {
 			e.preventDefault();
-			scrollContainer.scrollLeft = dragScrollLeft - dx;
 			scrollContainer.scrollTop = dragScrollTop - dy;
+			if (userZoom > 1) {
+				scrollContainer.scrollLeft = dragScrollLeft - dx;
+			}
 		}
 	}
 
 	function handlePointerUp(e: PointerEvent) {
+		activePointers.delete(e.pointerId);
+
+		if (isPinching) {
+			if (activePointers.size < 2) {
+				isPinching = false;
+				// Snap zoomTarget to nearest level for keyboard zoom to work from
+				const currentZoom = zoomAnimator.current || 1;
+				zoomTarget = ZOOM_LEVELS.reduce((prev, curr) =>
+					Math.abs(curr - currentZoom) < Math.abs(prev - currentZoom) ? curr : prev
+				);
+			}
+			return;
+		}
+
 		if (isDragging) {
 			try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
 			document.body.style.userSelect = '';
@@ -338,22 +438,15 @@
 		const now = Date.now();
 		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
-			// Double-tap zoom to point
-			const curIdx = ZOOM_LEVELS.indexOf(userZoom);
+			// Double-tap zoom — cycle levels, animate zoom + pan to clicked area
+			const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 			const newZoom = ZOOM_LEVELS[nextIdx];
-			if (newZoom !== userZoom && scrollContainer) {
-				const contentX = (scrollContainer.scrollLeft + e.clientX) / userZoom;
-				const contentY = (scrollContainer.scrollTop + e.clientY) / userZoom;
-				// Bias toward center
+			if (newZoom !== zoomTarget) {
+				// Bias anchor toward viewport center so clicked area drifts to middle
 				const biasX = e.clientX + (viewportWidth / 2 - e.clientX) * 0.7;
 				const biasY = e.clientY + (viewportHeight / 2 - e.clientY) * 0.7;
-				userZoom = newZoom;
-				requestAnimationFrame(() => {
-					if (!scrollContainer) return;
-					scrollContainer.scrollLeft = contentX * newZoom - biasX;
-					scrollContainer.scrollTop = contentY * newZoom - biasY;
-				});
+				animateZoomTo(newZoom, biasX, biasY);
 			}
 			return;
 		}
@@ -369,8 +462,13 @@
 	// ============================================================
 
 	function handleResize() {
+		const pageIdx = lastReportedPage - 1;
 		viewportWidth = window.innerWidth;
 		viewportHeight = window.innerHeight;
+		tick().then(() => {
+			const el = pageElements[pageIdx];
+			if (el) el.scrollIntoView({ behavior: 'instant', block: pageFitsVertically(pageIdx) ? 'center' : 'start' });
+		});
 	}
 
 	onMount(() => {
@@ -386,6 +484,7 @@
 
 	onDestroy(() => {
 		scroller?.destroy();
+		zoomAnimator.destroy();
 		outerDiv?.removeEventListener('wheel', handleWheel);
 		if (settleTimer) clearTimeout(settleTimer);
 	});
@@ -397,7 +496,6 @@
 	bind:this={outerDiv}
 	class="fixed inset-0"
 	style:background-color={$settings.backgroundColor}
-	style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
 	style:touch-action="none"
 	onpointerdown={handlePointerDown}
 	onpointermove={handlePointerMove}
@@ -408,30 +506,41 @@
 >
 	<div
 		bind:this={scrollContainer}
-		class="h-full w-full overflow-auto scrollbar-hide"
+		class="h-full w-full scrollbar-hide"
+		style:overflow-y="auto"
+		style:overflow-x={userZoom > 1 ? 'auto' : 'hidden'}
 		style:overscroll-behavior="none"
 		onscroll={handleScroll}
 	>
-		<div style:zoom={userZoom !== 1 ? userZoom : undefined}>
+		<div
+			bind:this={zoomSpacerEl}
+			style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+		>
+			<div
+				bind:this={zoomWrapperEl}
+				style:transform-origin="top left"
+			>
+			<!-- Centering spacer -->
+			<div style:height="50vh"></div>
 			{#each pages as page, i (i)}
+				{@const ps = pageStyle(page)}
+				{@const displayWidth = ps.height === 'auto' ? viewportWidth : parseFloat(ps.width)}
+				{@const scale = displayWidth / page.img_width}
 				<div
 					bind:this={pageElements[i]}
-					class="relative mx-auto"
-					style:width="100%"
-					style:max-width={`${page.img_width}px`}
-					style:aspect-ratio={`${page.img_width} / ${page.img_height}`}
+					class="relative mx-auto overflow-hidden"
+					style:width={ps.width}
+					style:max-width={ps.maxWidth}
+					style:aspect-ratio={ps.height === 'auto' ? `${page.img_width} / ${page.img_height}` : undefined}
+					style:height={ps.height !== 'auto' ? ps.height : undefined}
 				>
-					{#if blobUrls[i]}
-						<img
-							src={blobUrls[i]}
-							alt="Page {i + 1}"
-							class="block w-full"
-							loading="lazy"
-							draggable="false"
-						/>
-					{/if}
-					<div class="absolute inset-0">
-						<TextBoxes
+					<div
+						class="origin-top-left"
+						style:transform={scale !== 1 ? `scale(${scale})` : undefined}
+						style:width={`${page.img_width}px`}
+						style:height={`${page.img_height}px`}
+					>
+						<MangaPage
 							{page}
 							src={indexedFiles[i]}
 							volumeUuid={volume.volume_uuid}
@@ -441,6 +550,9 @@
 					</div>
 				</div>
 			{/each}
+			<!-- Centering spacer -->
+			<div style:height="50vh"></div>
+			</div>
 		</div>
 	</div>
 </div>

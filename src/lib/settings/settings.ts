@@ -24,7 +24,7 @@ export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
 export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
 
-export type ScrollMode = 'vertical' | 'horizontal' | 'continuous';
+export type ScrollMode = 'vertical' | 'horizontal' | 'auto' | 'continuous';
 
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
@@ -145,6 +145,7 @@ export type Settings = {
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
+  singlePageView: PageViewMode;
   scrollMode: ScrollMode;
   continuousZoomDefault: ContinuousZoomMode;
   scrollSnap: boolean;
@@ -266,8 +267,9 @@ const defaultSettings: Settings = {
   swapWheelBehavior: false,
   textBoxContextMenu: true,
   continuousScroll: false,
-  scrollMode: 'vertical',
-  continuousZoomDefault: 'zoomFitToWidth',
+  singlePageView: 'auto',
+  scrollMode: 'auto',
+  continuousZoomDefault: 'zoomFitToScreen',
   scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',
@@ -357,8 +359,21 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.volumeDefaults || {})
     };
 
-    // Validate singlePageView: convert legacy boolean to 'auto', or use default for any invalid value
+    // Validate singlePageView at top level: convert legacy boolean to 'auto', or use default for any invalid value
     const validPageViewModes = ['single', 'dual', 'auto'];
+    if (!validPageViewModes.includes(migratedProfile.singlePageView as string)) {
+      // Migrate from volumeDefaults if present
+      if (
+        migratedProfile.volumeDefaults?.singlePageView &&
+        validPageViewModes.includes(migratedProfile.volumeDefaults.singlePageView)
+      ) {
+        migratedProfile.singlePageView = migratedProfile.volumeDefaults.singlePageView;
+      } else {
+        migratedProfile.singlePageView = 'auto';
+      }
+    }
+
+    // Keep volumeDefaults.singlePageView for backward compat during migration
     if (!validPageViewModes.includes(migratedProfile.volumeDefaults.singlePageView)) {
       migratedProfile.volumeDefaults.singlePageView = 'auto';
     }

@@ -5,9 +5,10 @@
 	import { matchFilesToPages } from '$lib/reader/image-cache';
 	import { getCharCount } from '$lib/util/count-chars';
 	import { activityTracker } from '$lib/util/activity-tracker';
-	import TextBoxes from './TextBoxes.svelte';
+	import MangaPage from './MangaPage.svelte';
 	import { ScrollAnimator } from '$lib/reader/scroll-animator';
-	import { onMount, onDestroy } from 'svelte';
+	import { Animator } from '$lib/reader/animator';
+	import { onMount, onDestroy, tick } from 'svelte';
 
 	interface Props {
 		pages: Page[];
@@ -39,9 +40,24 @@
 	let indexedFiles = $derived.by(() => matchFilesToPages(files, pages));
 	let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
 	let rtl = $derived(volumeSettings.rightToLeft ?? true);
+	let zoomMode = $derived($settings.continuousZoomDefault);
+
+	// Page dimensions based on zoom mode
+	function pageSize(page: Page): { width: number; height: number } {
+		if (zoomMode === 'zoomOriginal') {
+			return { width: page.img_width, height: page.img_height };
+		}
+		if (zoomMode === 'zoomFitToWidth') {
+			const scale = viewportWidth / page.img_width;
+			return { width: viewportWidth, height: page.img_height * scale };
+		}
+		// zoomFitToScreen / default: fit to height
+		const scale = viewportHeight / page.img_height;
+		return { width: page.img_width * scale, height: viewportHeight };
+	}
 
 	function scaledWidth(page: Page): number {
-		return (page.img_width / page.img_height) * viewportHeight;
+		return pageSize(page).width;
 	}
 
 	// ============================================================
@@ -49,43 +65,64 @@
 	// ============================================================
 
 	let userZoom = $state(1);
+	let zoomTarget = 1;
 	const ZOOM_LEVELS = [1, 1.5, 2, 3];
 
-	function cycleZoom(direction: number, anchorX?: number, anchorY?: number) {
+	let zoomAnchorContentX = 0;
+	let zoomAnchorContentY = 0;
+	let zoomAnchorScreenX = 0;
+	let zoomAnchorScreenY = 0;
+	let zoomWrapperEl: HTMLDivElement | undefined = $state();
+	let zoomSpacerEl: HTMLDivElement | undefined = $state();
+
+	const zoomAnimator = new Animator(1, (currentZoom) => {
+		if (zoomWrapperEl) {
+			zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
+		}
+		if (zoomSpacerEl) {
+			zoomSpacerEl.style.height = currentZoom > 1 ? `${viewportHeight * currentZoom}px` : '';
+		}
+		if (scrollContainer) {
+			scrollContainer.scrollLeft = zoomAnchorContentX * currentZoom - zoomAnchorScreenX;
+			scrollContainer.scrollTop = zoomAnchorContentY * currentZoom - zoomAnchorScreenY;
+		}
+	}, { factor: 0.25, epsilon: 0.005, onSettle: () => {
+		userZoom = zoomTarget;
+	}});
+
+	function animateZoomTo(newZoom: number, anchorX: number, anchorY: number) {
 		if (!scrollContainer) return;
-		const curIdx = ZOOM_LEVELS.indexOf(userZoom);
+		const currentZoom = zoomAnimator.current || 1;
+		zoomAnchorScreenX = anchorX;
+		zoomAnchorScreenY = anchorY;
+		zoomAnchorContentX = (scrollContainer.scrollLeft + anchorX) / currentZoom;
+		zoomAnchorContentY = (scrollContainer.scrollTop + anchorY) / currentZoom;
+		zoomTarget = newZoom;
+		zoomAnimator.setTarget(newZoom);
+	}
+
+	function cycleZoom(direction: number, anchorX?: number, anchorY?: number) {
+		const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 		let nextIdx = curIdx < 0 ? (direction > 0 ? 1 : 0) : curIdx + direction;
 		nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
 		const newZoom = ZOOM_LEVELS[nextIdx];
-		if (newZoom === userZoom) return;
-
-		const ax = anchorX ?? viewportWidth / 2;
-		const ay = anchorY ?? viewportHeight / 2;
-		const contentX = (scrollContainer.scrollLeft + ax) / userZoom;
-		const contentY = (scrollContainer.scrollTop + ay) / userZoom;
-
-		userZoom = newZoom;
-
-		requestAnimationFrame(() => {
-			if (!scrollContainer) return;
-			scrollContainer.scrollLeft = contentX * newZoom - ax;
-			scrollContainer.scrollTop = contentY * newZoom - ay;
-		});
+		if (newZoom === zoomTarget) return;
+		animateZoomTo(newZoom, anchorX ?? viewportWidth / 2, anchorY ?? viewportHeight / 2);
 	}
 
-	// ============================================================
-	// Blob URLs
-	// ============================================================
-
-	let blobUrls = $state<string[]>([]);
-
+	// When zoom mode changes (Z key), stay on the current page
+	let prevZoomMode = $settings.continuousZoomDefault;
 	$effect(() => {
-		const urls = indexedFiles.map((file) => (file ? URL.createObjectURL(file) : ''));
-		blobUrls = urls;
-		return () => {
-			urls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
-		};
+		if (zoomMode === prevZoomMode) return;
+		prevZoomMode = zoomMode;
+
+		const pageIdx = lastReportedPage - 1;
+		tick().then(() => {
+			const el = pageElements[pageIdx];
+			if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
+		});
 	});
+
 
 	// ============================================================
 	// Progress tracking
@@ -93,29 +130,18 @@
 
 	let lastReportedPage = currentPage;
 	let navTarget = currentPage - 1;
+	let navIsKeyboard = false; // true when navTarget was set by keyboard, not scroll
 	let settleTimer: ReturnType<typeof setTimeout> | undefined;
 	let pageElements: HTMLDivElement[] = [];
 
 	function detectCurrentPage(): number {
-		if (!scrollContainer) return 0;
-		// Find the lowest-index page that is fully visible in the viewport.
-		// Always anchoring to the lower page prevents flip-flopping between
-		// the two pages of a visible pair.
+		if (!scrollContainer) return navTarget;
+		// Find the page closest to the viewport center
 		const containerRect = scrollContainer.getBoundingClientRect();
-
-		for (let i = 0; i < pageElements.length; i++) {
-			const el = pageElements[i];
-			if (!el) continue;
-			const rect = el.getBoundingClientRect();
-			if (rect.left >= containerRect.left - 2 && rect.right <= containerRect.right + 2) {
-				return i; // First (lowest index) fully visible page
-			}
-		}
-
-		// Fallback: closest to center
 		const viewCenterX = containerRect.left + containerRect.width / 2;
-		let closest = 0;
+		let closest = navTarget;
 		let closestDist = Infinity;
+
 		for (let i = 0; i < pageElements.length; i++) {
 			const el = pageElements[i];
 			if (!el) continue;
@@ -130,9 +156,9 @@
 	}
 
 	function reportProgress() {
-		// Use highest visible page for progress (furthest read)
-		const highestVisible = detectHighestVisiblePage();
-		const pageNum = highestVisible + 1;
+		// navTarget is authoritative — it's the page we navigated to.
+		// In pair mode, the next page is also visible, so report the higher.
+		const pageNum = Math.min(navTarget + 1, pages.length);
 		if (pageNum !== lastReportedPage) {
 			lastReportedPage = pageNum;
 			const { charCount } = getCharCount(pages, pageNum);
@@ -140,37 +166,20 @@
 		}
 	}
 
-	function detectHighestVisiblePage(): number {
-		if (!scrollContainer) return 0;
-		const containerRect = scrollContainer.getBoundingClientRect();
-		let highest = 0;
-
-		for (let i = 0; i < pageElements.length; i++) {
-			const el = pageElements[i];
-			if (!el) continue;
-			const rect = el.getBoundingClientRect();
-			// Fully visible
-			if (rect.left >= containerRect.left - 2 && rect.right <= containerRect.right + 2) {
-				highest = i;
-			}
-		}
-
-		// Fallback to detectCurrentPage if nothing fully visible
-		return highest || detectCurrentPage();
-	}
-
 	function handleScroll() {
 		if (!scrollContainer) return;
 		scroller?.onScroll();
-		// Sync navTarget from manual scroll (drag/wheel), not from keyboard animation
-		if (!scroller?.isAnimating) {
-			navTarget = detectCurrentPage();
-		}
 		activityTracker.recordActivity();
 
 		if (settleTimer) clearTimeout(settleTimer);
-		settleTimer = setTimeout(reportProgress, 150);
-
+		settleTimer = setTimeout(() => {
+			// On settle, sync navTarget from DOM only if it wasn't set by keyboard
+			if (!navIsKeyboard) {
+				navTarget = detectCurrentPage();
+			}
+			navIsKeyboard = false;
+			reportProgress();
+		}, 150);
 	}
 
 	// External page change
@@ -194,31 +203,23 @@
 	 * exit to the series page instead. Home/End use clamp=true
 	 * to stay at the boundary without exiting.
 	 */
-	function navigateToPage(pageIdx: number, clamp = false) {
+	function navigateToPage(pageIdx: number) {
 		if (!scroller || !scrollContainer) return;
 
-		// Past the end: clamp first, exit on second press
+		// Past the end — mark complete and exit
 		if (pageIdx >= pages.length) {
-			if (clamp || navTarget < pages.length - 1) {
-				pageIdx = pages.length - 1;
-				// Mark as complete
-				const { charCount } = getCharCount(pages, pages.length);
-				onPageChange(pages.length, charCount, true);
-			} else {
-				onVolumeNav('next');
-				return;
-			}
+			const { charCount } = getCharCount(pages, pages.length);
+			onPageChange(pages.length, charCount, true);
+			onVolumeNav('next');
+			return;
 		}
-		// Before the start: clamp first, exit on second press
+		// Before the start — exit
 		if (pageIdx < 0) {
-			if (clamp || navTarget > 0) {
-				pageIdx = 0;
-			} else {
-				onVolumeNav('prev');
-				return;
-			}
+			onVolumeNav('prev');
+			return;
 		}
 		navTarget = pageIdx;
+		navIsKeyboard = true;
 		const el = pageElements[pageIdx];
 		if (!el) return;
 
@@ -276,20 +277,11 @@
 				break;
 			case 'Home':
 				e.preventDefault();
-				navigateToPage(0, true);
+				navigateToPage(0);
 				break;
 			case 'End':
 				e.preventDefault();
-				navigateToPage(pages.length - 1, true);
-				break;
-			case '+':
-			case '=':
-				e.preventDefault();
-				cycleZoom(1);
-				break;
-			case '-':
-				e.preventDefault();
-				cycleZoom(-1);
+				navigateToPage(pages.length - 1);
 				break;
 		}
 	}
@@ -326,8 +318,40 @@
 	let dragScrollTop = 0;
 	const DRAG_THRESHOLD = 5;
 
+	// Pinch zoom state
+	let activePointers = new Map<number, { x: number; y: number }>();
+	let isPinching = false;
+	let pinchStartDist = 0;
+	let pinchStartZoom = 1;
+
+	function pinchDistance(): number {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return 0;
+		const dx = pts[1].x - pts[0].x;
+		const dy = pts[1].y - pts[0].y;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+
+	function pinchMidpoint(): { x: number; y: number } {
+		const pts = [...activePointers.values()];
+		if (pts.length < 2) return { x: 0, y: 0 };
+		return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+	}
+
 	function handlePointerDown(e: PointerEvent) {
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
 		if ((e.target as HTMLElement).closest('.textBox')) return;
+
+		if (activePointers.size === 2) {
+			isDragging = false;
+			wasDrag = true;
+			isPinching = true;
+			pinchStartDist = pinchDistance();
+			pinchStartZoom = zoomAnimator.current || 1;
+			return;
+		}
+
 		if (e.button !== 0) return;
 
 		isDragging = true;
@@ -340,6 +364,19 @@
 	}
 
 	function handlePointerMove(e: PointerEvent) {
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		if (isPinching && activePointers.size >= 2) {
+			const dist = pinchDistance();
+			if (pinchStartDist > 0) {
+				const newZoom = pinchStartZoom * (dist / pinchStartDist);
+				const mid = pinchMidpoint();
+				const clamped = Math.max(ZOOM_LEVELS[0], Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], newZoom));
+				animateZoomTo(clamped, mid.x, mid.y);
+			}
+			return;
+		}
+
 		if (!isDragging || !scrollContainer) return;
 		const dx = e.clientX - dragStartX;
 		const dy = e.clientY - dragStartY;
@@ -353,11 +390,26 @@
 		if (wasDrag) {
 			e.preventDefault();
 			scrollContainer.scrollLeft = dragScrollLeft - dx;
-			scrollContainer.scrollTop = dragScrollTop - dy;
+			if (userZoom > 1) {
+				scrollContainer.scrollTop = dragScrollTop - dy;
+			}
 		}
 	}
 
 	function handlePointerUp(e: PointerEvent) {
+		activePointers.delete(e.pointerId);
+
+		if (isPinching) {
+			if (activePointers.size < 2) {
+				isPinching = false;
+				const currentZoom = zoomAnimator.current || 1;
+				zoomTarget = ZOOM_LEVELS.reduce((prev, curr) =>
+					Math.abs(curr - currentZoom) < Math.abs(prev - currentZoom) ? curr : prev
+				);
+			}
+			return;
+		}
+
 		if (isDragging) {
 			try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
 			document.body.style.userSelect = '';
@@ -379,20 +431,13 @@
 		const now = Date.now();
 		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
-			const curIdx = ZOOM_LEVELS.indexOf(userZoom);
+			const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 			const newZoom = ZOOM_LEVELS[nextIdx];
-			if (newZoom !== userZoom && scrollContainer) {
-				const contentX = (scrollContainer.scrollLeft + e.clientX) / userZoom;
-				const contentY = (scrollContainer.scrollTop + e.clientY) / userZoom;
+			if (newZoom !== zoomTarget) {
 				const biasX = e.clientX + (viewportWidth / 2 - e.clientX) * 0.7;
 				const biasY = e.clientY + (viewportHeight / 2 - e.clientY) * 0.7;
-				userZoom = newZoom;
-				requestAnimationFrame(() => {
-					if (!scrollContainer) return;
-					scrollContainer.scrollLeft = contentX * newZoom - biasX;
-					scrollContainer.scrollTop = contentY * newZoom - biasY;
-				});
+				animateZoomTo(newZoom, biasX, biasY);
 			}
 			return;
 		}
@@ -408,8 +453,22 @@
 	// ============================================================
 
 	function handleResize() {
+		const wasLandscape = viewportWidth > viewportHeight;
+		const pageIdx = lastReportedPage - 1;
 		viewportWidth = window.innerWidth;
 		viewportHeight = window.innerHeight;
+		const isLandscape = viewportWidth > viewportHeight;
+
+		tick().then(() => {
+			if (isLandscape && !wasLandscape) {
+				// Rotated to landscape — center pair if both fit
+				navigateToPage(pageIdx);
+			} else {
+				// Rotated to portrait or just resized — use current page
+				const el = pageElements[pageIdx];
+				if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
+			}
+		});
 	}
 
 	onMount(() => {
@@ -418,13 +477,19 @@
 		}
 		outerDiv?.addEventListener('wheel', handleWheel, { passive: false });
 		requestAnimationFrame(() => {
-			const el = pageElements[currentPage - 1];
-			if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
+			// Use navigateToPage for pair centering on landscape mount
+			if (scroller) {
+				navigateToPage(currentPage - 1);
+			} else {
+				const el = pageElements[currentPage - 1];
+				if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
+			}
 		});
 	});
 
 	onDestroy(() => {
 		scroller?.destroy();
+		zoomAnimator.destroy();
 		outerDiv?.removeEventListener('wheel', handleWheel);
 		if (settleTimer) clearTimeout(settleTimer);
 	});
@@ -436,7 +501,6 @@
 	bind:this={outerDiv}
 	class="fixed inset-0"
 	style:background-color={$settings.backgroundColor}
-	style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
 	style:touch-action="none"
 	onpointerdown={handlePointerDown}
 	onpointermove={handlePointerMove}
@@ -447,37 +511,47 @@
 >
 	<div
 		bind:this={scrollContainer}
-		class="flex h-full items-center overflow-auto scrollbar-hide"
+		class="flex h-full scrollbar-hide"
+		style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+		style:overflow-x="auto"
+		style:overflow-y={userZoom > 1 ? 'auto' : 'hidden'}
 		style:overscroll-behavior="none"
 		style:direction={rtl ? 'rtl' : 'ltr'}
 		onscroll={handleScroll}
 	>
-		<div class="flex items-center" style:direction={rtl ? 'rtl' : 'ltr'} style:zoom={userZoom !== 1 ? userZoom : undefined}>
+		<div
+			bind:this={zoomSpacerEl}
+			class="flex"
+			style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+			style:direction={rtl ? 'rtl' : 'ltr'}
+			style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+		>
+			<div
+				bind:this={zoomWrapperEl}
+				class="flex"
+				style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+				style:direction={rtl ? 'rtl' : 'ltr'}
+				style:transform-origin="top left"
+			>
+			<!-- Centering spacer: allows first page to be centered -->
+			<div class="flex-shrink-0" style:width="50vw"></div>
 			{#each pages as page, i (i)}
+				{@const size = pageSize(page)}
+				{@const scale = size.height / page.img_height}
 				<div
 					bind:this={pageElements[i]}
-					class="relative flex-shrink-0"
-					style:width={`${scaledWidth(page)}px`}
-					style:height={`${viewportHeight}px`}
+					class="relative flex-shrink-0 overflow-hidden"
+					style:width={`${size.width}px`}
+					style:height={`${size.height}px`}
 					style:direction="ltr"
 				>
-					{#if blobUrls[i]}
-						<img
-							src={blobUrls[i]}
-							alt="Page {i + 1}"
-							class="block h-full w-auto"
-							loading="lazy"
-							draggable="false"
-						/>
-					{/if}
 					<div
-						class="absolute inset-0"
+						class="origin-top-left"
+						style:transform={`scale(${scale})`}
 						style:width={`${page.img_width}px`}
 						style:height={`${page.img_height}px`}
-						style:transform={`scale(${viewportHeight / page.img_height})`}
-						style:transform-origin="top left"
 					>
-						<TextBoxes
+						<MangaPage
 							{page}
 							src={indexedFiles[i]}
 							volumeUuid={volume.volume_uuid}
@@ -487,6 +561,9 @@
 					</div>
 				</div>
 			{/each}
+			<!-- Centering spacer: allows last page to be centered -->
+			<div class="flex-shrink-0" style:width="50vw"></div>
+			</div>
 		</div>
 	</div>
 </div>

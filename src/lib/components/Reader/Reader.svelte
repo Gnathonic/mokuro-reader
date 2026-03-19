@@ -156,7 +156,7 @@
     const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
 
     const currentIsSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPageData,
       nextPageData,
       previousPageData,
@@ -192,7 +192,7 @@
     const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
 
     const currentShouldBeSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPageData,
       currentNextPageData,
       currentPreviousPageData,
@@ -220,7 +220,7 @@
     const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
 
     const targetShouldBeSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       targetPage,
       targetNextPage,
       targetPreviousPage,
@@ -428,7 +428,11 @@
         }
         return;
       case 'KeyP':
-        rotatePageMode();
+        if ($settings.continuousScroll) {
+          rotateScrollMode();
+        } else {
+          rotatePageMode();
+        }
         return;
       case 'KeyO':
         offsetSpreads();
@@ -571,7 +575,7 @@
 
     // Add dependencies on settings that affect layout and zoom
     const zoomMode = $settings.zoomDefault;
-    const pageMode = volumeSettings.singlePageView;
+    const pageMode = $settings.singlePageView;
     const hasCover = volumeSettings.hasCover;
     const rtl = volumeSettings.rightToLeft;
 
@@ -829,7 +833,7 @@
 
     // Use auto-detection function with width consistency checking
     return shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPage,
       nextPage,
       previousPage,
@@ -1068,10 +1072,20 @@
     }, 2000);
   }
 
+  function rotateScrollMode() {
+    const current = $settings.scrollMode;
+    const order = ['auto', 'vertical', 'horizontal'] as const;
+    const curIdx = order.indexOf(current as any);
+    const next = order[(curIdx + 1) % order.length];
+    updateSetting('scrollMode', next);
+    const labels = { auto: 'Match Orientation', vertical: 'Vertical Scroll', horizontal: 'Horizontal Scroll' };
+    showNotification(labels[next], `scrollmode-${next}`);
+  }
+
   function rotatePageMode() {
     if (!volume) return;
 
-    const currentMode = volumeSettings.singlePageView ?? 'auto';
+    const currentMode = $settings.singlePageView;
     let nextMode: 'single' | 'dual' | 'auto';
 
     // Rotate through: single -> dual -> auto -> single
@@ -1083,7 +1097,7 @@
       nextMode = 'single';
     }
 
-    updateVolumeSetting(volume.volume_uuid, 'singlePageView', nextMode);
+    updateSetting('singlePageView', nextMode);
 
     // Show notification with the new mode
     const labels = { single: 'Single Page', dual: 'Dual Page', auto: 'Auto Page' };
@@ -1275,7 +1289,10 @@
     {/key}
   {/if}
   {#if $settings.continuousScroll && volumeData?.files}
-    {#if $settings.scrollMode === 'vertical'}
+    {@const effectiveScrollMode = $settings.scrollMode === 'auto'
+      ? (windowWidth > windowHeight ? 'horizontal' : 'vertical')
+      : $settings.scrollMode}
+    {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
         {pages}
         files={volumeData.files}
