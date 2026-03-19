@@ -166,15 +166,38 @@ class ProviderManager {
    * Logout the current provider
    */
   async logout(): Promise<void> {
+    // Try the current provider first
     if (this.currentProvider) {
       await this.currentProvider.logout();
       this.currentProvider = null;
-      cacheManager.clearAll();
-      // Safety net: clear active provider key (providers should do this in their logout,
-      // but ensure it's cleared even if provider's logout doesn't)
-      clearActiveProviderKey();
-      this.updateStatus();
+    } else {
+      // currentProvider is null (e.g., connection failed on startup).
+      // Call logout on all registered providers to clear any stored credentials.
+      for (const provider of this.providerRegistry.values()) {
+        try {
+          await provider.logout();
+        } catch {}
+      }
     }
+
+    // Always clear state — belt and suspenders
+    cacheManager.clearAll();
+    clearActiveProviderKey();
+
+    // Force-clear all provider credential keys from localStorage
+    // in case provider.logout() missed something
+    if (typeof localStorage !== 'undefined') {
+      // WebDAV
+      localStorage.removeItem('webdav_server_url');
+      localStorage.removeItem('webdav_username');
+      localStorage.removeItem('webdav_password');
+      // MEGA
+      localStorage.removeItem('mega_email');
+      localStorage.removeItem('mega_password');
+      localStorage.removeItem('mega_folder_path');
+    }
+
+    this.updateStatus();
   }
 
   /**

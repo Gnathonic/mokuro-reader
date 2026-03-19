@@ -12,7 +12,7 @@
 
   interface Props {
     page: Page;
-    src: File;
+    src?: File | null;
     cachedUrl?: string | null;
     volumeUuid: string;
     /** 0-based page index within the volume */
@@ -70,5 +70,5 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} {src} {volumeUuid} {pageIndex} {forceVisible} {onContextMenu} />
+  <TextBoxes {page} src={src ?? undefined} {volumeUuid} {pageIndex} {forceVisible} {onContextMenu} />
 </div>

@@ -22,7 +22,8 @@
     updateSetting,
     updateVolumeSetting,
     volumes,
-    type VolumeSettings
+    type VolumeSettings,
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
@@ -49,6 +50,8 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import VerticalScrollReader from './VerticalScrollReader.svelte';
+  import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -153,7 +156,7 @@
     const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
 
     const currentIsSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPageData,
       nextPageData,
       previousPageData,
@@ -189,7 +192,7 @@
     const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
 
     const currentShouldBeSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPageData,
       currentNextPageData,
       currentPreviousPageData,
@@ -217,7 +220,7 @@
     const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
 
     const targetShouldBeSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       targetPage,
       targetNextPage,
       targetPreviousPage,
@@ -351,6 +354,24 @@
       event.preventDefault();
     }
 
+    // In continuous scroll mode, let ContinuousScrollReader handle navigation keys
+    if ($settings.continuousScroll) {
+      const continuousModeKeys = [
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'PageUp',
+        'PageDown',
+        'Space',
+        'Home',
+        'End'
+      ];
+      if (continuousModeKeys.includes(action)) {
+        return;
+      }
+    }
+
     switch (action) {
       case 'ArrowLeft':
         left(event, true);
@@ -407,10 +428,20 @@
         }
         return;
       case 'KeyP':
-        rotatePageMode();
+        if ($settings.continuousScroll) {
+          rotateScrollMode();
+        } else {
+          rotatePageMode();
+        }
+        return;
+      case 'KeyO':
+        offsetSpreads();
         return;
       case 'KeyZ':
         rotateZoomMode();
+        return;
+      case 'KeyV':
+        toggleContinuousScroll();
         return;
       case 'Escape':
         navigateBack();
@@ -427,6 +458,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
     // Capture start position for single-finger gesture
@@ -438,6 +470,7 @@
 
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
@@ -485,6 +518,9 @@
 
   // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
+    // In continuous scroll mode, let ContinuousScrollReader handle wheel events
+    if ($settings.continuousScroll) return;
+
     const target = e.target as HTMLElement;
     // Don't capture wheel events from settings drawer, popovers, or modals
     if (
@@ -539,7 +575,7 @@
 
     // Add dependencies on settings that affect layout and zoom
     const zoomMode = $settings.zoomDefault;
-    const pageMode = volumeSettings.singlePageView;
+    const pageMode = $settings.singlePageView;
     const hasCover = volumeSettings.hasCover;
     const rtl = volumeSettings.rightToLeft;
 
@@ -797,7 +833,7 @@
 
     // Use auto-detection function with width consistency checking
     return shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPage,
       nextPage,
       previousPage,
@@ -1036,10 +1072,20 @@
     }, 2000);
   }
 
+  function rotateScrollMode() {
+    const current = $settings.scrollMode;
+    const order = ['auto', 'vertical', 'horizontal'] as const;
+    const curIdx = order.indexOf(current as any);
+    const next = order[(curIdx + 1) % order.length];
+    updateSetting('scrollMode', next);
+    const labels = { auto: 'Match Orientation', vertical: 'Vertical Scroll', horizontal: 'Horizontal Scroll' };
+    showNotification(labels[next], `scrollmode-${next}`);
+  }
+
   function rotatePageMode() {
     if (!volume) return;
 
-    const currentMode = volumeSettings.singlePageView ?? 'auto';
+    const currentMode = $settings.singlePageView;
     let nextMode: 'single' | 'dual' | 'auto';
 
     // Rotate through: single -> dual -> auto -> single
@@ -1051,14 +1097,77 @@
       nextMode = 'single';
     }
 
-    updateVolumeSetting(volume.volume_uuid, 'singlePageView', nextMode);
+    updateSetting('singlePageView', nextMode);
 
     // Show notification with the new mode
     const labels = { single: 'Single Page', dual: 'Dual Page', auto: 'Auto Page' };
     showNotification(labels[nextMode], `pagemode-${nextMode}`);
   }
 
+  function offsetSpreads() {
+    if ($settings.continuousScroll) {
+      // In continuous mode, ContinuousScrollReader handles it via custom event
+      window.dispatchEvent(new CustomEvent('offset-spreads'));
+    } else if (volume) {
+      // In paged mode, toggle hasCover to shift spread pairing
+      toggleHasCover(volume.volume_uuid);
+    }
+    showNotification('Spreads Offset', 'offset-spreads');
+  }
+
+  function toggleContinuousScroll() {
+    const newValue = !$settings.continuousScroll;
+    updateSetting('continuousScroll', newValue);
+    showNotification(
+      newValue ? 'Continuous Scroll On' : 'Continuous Scroll Off',
+      'continuous-scroll-toggle'
+    );
+  }
+
+
+  function rotateContinuousZoomMode() {
+    const currentMode = $settings.continuousZoomDefault;
+    let nextMode: ContinuousZoomMode;
+
+    // Rotate through: fitToWidth -> fitToScreen -> original -> fitToWidth
+    if (currentMode === 'zoomFitToWidth') {
+      nextMode = 'zoomFitToScreen';
+    } else if (currentMode === 'zoomFitToScreen') {
+      nextMode = 'zoomOriginal';
+    } else {
+      nextMode = 'zoomFitToWidth';
+    }
+
+    updateSetting('continuousZoomDefault', nextMode);
+
+    const labels: Record<ContinuousZoomMode, string> = {
+      zoomFitToWidth: 'Fit to Width',
+      zoomFitToScreen: 'Fit to Screen',
+      zoomOriginal: 'Original Size'
+    };
+    showNotification(labels[nextMode], `zoommode-${nextMode}`);
+  }
+
+  // Callback for ContinuousReader page changes
+  function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
+    if (!volume) return;
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    activityTracker.recordActivity();
+  }
+
+  // Callback for scroll reader completion — navigate back to series page
+  function handleContinuousVolumeNav(_direction: 'prev' | 'next') {
+    if (!volume) return;
+    nav.toSeries(volume.series_uuid);
+  }
+
   function rotateZoomMode() {
+    // Continuous mode has its own zoom settings
+    if ($settings.continuousScroll) {
+      rotateContinuousZoomMode();
+      return;
+    }
+
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
@@ -1179,6 +1288,35 @@
       </div>
     {/key}
   {/if}
+  {#if $settings.continuousScroll && volumeData?.files}
+    {@const effectiveScrollMode = $settings.scrollMode === 'auto'
+      ? (windowWidth > windowHeight ? 'horizontal' : 'vertical')
+      : $settings.scrollMode}
+    {#if effectiveScrollMode === 'vertical'}
+      <VerticalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+      />
+    {:else}
+      <HorizontalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+      />
+    {/if}
+  {:else}
+  <!-- Page-based mode -->
   <div class="flex" style:background-color={$settings.backgroundColor}>
     <Panzoom>
       <button
@@ -1284,6 +1422,7 @@
       class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
       style:width={`${$settings.edgeButtonWidth}px`}
     ></button>
+  {/if}
   {/if}
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->
