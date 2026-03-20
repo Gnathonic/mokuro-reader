@@ -399,6 +399,24 @@ async function processArchiveContents(
   const fileEntries: FileEntry[] = [];
   const nestedArchivePaths: string[] = [];
 
+  // Collect source stems from mokuro files and top-level folders for sidecar detection.
+  // The exporter places thumbnail sidecars at the archive root as {VolumeTitle}.webp,
+  // matching the mokuro filename stem or the image folder name.
+  const archiveSourceStems = new Set<string>();
+  for (const entry of scanResult.entries) {
+    if (isSystemFile(entry.filename)) continue;
+    const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
+    const name = entry.filename.split('/').pop() || entry.filename;
+    if (isMokuroExtension(ext)) {
+      archiveSourceStems.add(name.replace(/\.mokuro$/i, '').toLowerCase());
+    }
+    // Top-level folders (e.g., "VolumeTitle/page.jpg" → "volumetitle")
+    if (entry.filename.includes('/')) {
+      const topFolder = entry.filename.split('/')[0].toLowerCase();
+      if (topFolder) archiveSourceStems.add(topFolder);
+    }
+  }
+
   for (const entry of scanResult.entries) {
     // Skip system files and directories
     if (isSystemFile(entry.filename)) continue;
@@ -411,7 +429,7 @@ async function processArchiveContents(
       const file = new File([entry.data], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
     } else if (isImageExtension(ext)) {
-      if (isThumbnailSidecarPath(entry.filename)) continue;
+      if (isThumbnailSidecarPath(entry.filename, archiveSourceStems)) continue;
       // Image file - placeholder only (empty data)
       const file = new File([], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });

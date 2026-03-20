@@ -631,7 +631,11 @@
       >
         <DotsVerticalOutline class="h-4 w-4 text-white" />
       </button>
-      <Dropdown triggeredBy="#volume-menu-{volume_uuid}" placement="bottom-end" bind:isOpen={menuOpen}>
+      <Dropdown
+        triggeredBy="#volume-menu-{volume_uuid}"
+        placement="bottom-end"
+        bind:isOpen={menuOpen}
+      >
         <DropdownItem
           onclick={onEditClicked}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"

@@ -1194,7 +1194,146 @@ async function createAsyncFixtures(): Promise<void> {
     ])
   );
 
+  // ============================================
+  // EXPORTED FORMAT FIXTURES
+  // ============================================
+  // These simulate the archive format produced by the mokuro-reader exporter:
+  // - Images inside a subfolder named after the volume
+  // - Mokuro JSON at ZIP root (sibling to folder)
+  // - Optional thumbnail sidecar (.webp) at ZIP root
+
+  // Minimal 1x1 WebP image
+  const TINY_WEBP = Buffer.from(
+    'UklGRhoAAABXRUJQVlA4IA4AAACwAQCdASoBAAEAAQAcJYgCdAEO/hepgAAAAA==',
+    'base64'
+  );
+
+  // Helper: create exported-format CBZ with folder structure
+  async function createExportedCbz(options: {
+    folderName: string;
+    pageCount: number;
+    mokuro?: string; // mokuro JSON content, omit for image-only
+    thumbnail?: Buffer; // thumbnail sidecar, omit for no thumbnail
+  }): Promise<Buffer> {
+    const blobWriter = new BlobWriter('application/zip');
+    const zipWriter = new ZipWriter(blobWriter);
+
+    // Add images inside subfolder
+    for (let i = 1; i <= options.pageCount; i++) {
+      const filename = `${options.folderName}/page${String(i).padStart(3, '0')}.jpg`;
+      await zipWriter.add(filename, new Uint8ArrayReader(new Uint8Array(TINY_PNG)));
+    }
+
+    // Add mokuro JSON at root if provided
+    if (options.mokuro) {
+      await zipWriter.add(`${options.folderName}.mokuro`, new TextReader(options.mokuro));
+    }
+
+    // Add thumbnail sidecar at root if provided
+    if (options.thumbnail) {
+      await zipWriter.add(
+        `${options.folderName}.webp`,
+        new Uint8ArrayReader(new Uint8Array(options.thumbnail))
+      );
+    }
+
+    await zipWriter.close();
+    const blob = await blobWriter.getData();
+    const arrayBuffer = await blob.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  const exportedMokuroJson = JSON.stringify(
+    {
+      version: '0.1.0',
+      title: 'Test Series',
+      title_uuid: 'test-series-uuid',
+      volume: 'manga',
+      volume_uuid: 'test-volume-uuid',
+      pages: [
+        {
+          img_path: 'page001.jpg',
+          img_width: 100,
+          img_height: 100,
+          blocks: [{ lines: ['テスト'] }]
+        },
+        { img_path: 'page002.jpg', img_width: 100, img_height: 100, blocks: [] }
+      ],
+      chars: 3
+    },
+    null,
+    2
+  );
+
+  // 1. cbz-with-mokuro: exported archive with mokuro JSON at root
+  const exportedCbzWithMokuro = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    mokuro: exportedMokuroJson
+  });
+  createFixture(
+    'exported-format',
+    'cbz-with-mokuro',
+    {
+      'manga.cbz': exportedCbzWithMokuro
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 2. cbz-with-mokuro-and-thumbnail: exported archive with mokuro + thumbnail sidecar
+  const exportedCbzWithMokuroAndThumb = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    mokuro: exportedMokuroJson,
+    thumbnail: TINY_WEBP
+  });
+  createFixture(
+    'exported-format',
+    'cbz-with-mokuro-and-thumbnail',
+    {
+      'manga.cbz': exportedCbzWithMokuroAndThumb
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 3. cbz-image-only-with-thumbnail: exported image-only archive with thumbnail sidecar
+  const exportedCbzImageOnlyThumb = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    thumbnail: TINY_WEBP
+  });
+  createFixture(
+    'exported-format',
+    'cbz-image-only-with-thumbnail',
+    {
+      'manga.cbz': exportedCbzImageOnlyThumb
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
   console.log('Created async fixtures (CBZ with internal mokuro)');
+  console.log('Created exported-format fixtures');
 }
 
 // Run async fixtures
