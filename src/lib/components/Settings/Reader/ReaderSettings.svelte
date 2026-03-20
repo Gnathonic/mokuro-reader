@@ -120,33 +120,25 @@
       </div>
       <Toggle
         size="small"
-        checked={$settings.pageGaps}
-        onchange={() => updateSetting('pageGaps', !$settings.pageGaps)}
+        checked={$settings.pageDividers}
+        onchange={() => updateSetting('pageDividers', !$settings.pageDividers)}
       >
-        Page gaps
+        Page dividers
         <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(M)</span>
       </Toggle>
-      {#if $settings.pageGaps}
+      {#if $settings.pageDividers}
         <div>
           <Label class="text-gray-900 dark:text-white">
-            Page gap: {$settings.scrollGap}px
+            Divider size: {$settings.scrollGap}px
           </Label>
           <Range
             min={0}
             max={100}
             value={$settings.scrollGap}
-            onchange={(e) => updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
+            onchange={(e) =>
+              updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
           />
         </div>
-        {#if !isVertical}
-          <Toggle
-            size="small"
-            checked={$settings.seamlessSpreads}
-            onchange={() => updateSetting('seamlessSpreads', !$settings.seamlessSpreads)}
-          >
-            Seamless spreads
-          </Toggle>
-        {/if}
       {/if}
     {/if}
 

@@ -596,7 +596,7 @@
               ? `${page.img_width} / ${page.img_height}`
               : undefined}
             style:height={ps.height !== 'auto' ? ps.height : undefined}
-            style:margin-bottom={$settings.pageGaps ? `${$settings.scrollGap - 1}px` : '-1px'}
+            style:margin-bottom={$settings.pageDividers ? `${$settings.scrollGap - 1}px` : '-1px'}
           >
             <div
               class="origin-top-left"

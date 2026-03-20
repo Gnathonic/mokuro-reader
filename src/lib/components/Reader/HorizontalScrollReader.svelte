@@ -662,15 +662,7 @@
         {#each pages as page, i (i)}
           {@const size = pageSize(page)}
           {@const scale = size.height / page.img_height}
-          {@const isSpreadPartner =
-            $settings.pageGaps &&
-            $settings.seamlessSpreads &&
-            i === (rtl ? navTarget + 1 : navTarget)}
-          {@const gap = !$settings.pageGaps
-            ? '-1px'
-            : isSpreadPartner
-              ? '-1px'
-              : `${$settings.scrollGap - 1}px`}
+          {@const gap = $settings.pageDividers ? `${$settings.scrollGap - 1}px` : '-1px'}
           <div
             bind:this={pageElements[i]}
             class="relative flex-shrink-0 overflow-hidden"

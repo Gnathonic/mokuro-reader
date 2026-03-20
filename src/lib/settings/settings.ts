@@ -149,9 +149,10 @@ export type Settings = {
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
   continuousZoomDefault: ContinuousZoomMode;
-  pageGaps: boolean; // Enable gaps between pages in continuous scroll modes
+  pageDividers: boolean; // Enable dividers between pages in continuous scroll modes
   scrollGap: number; // Pixels of padding between pages in scroll modes
-  seamlessSpreads: boolean; // Remove gap between the centered pair in horizontal mode
+  /** @deprecated Removed — kept for settings migration compatibility */
+  seamlessSpreads?: boolean;
   scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
@@ -274,9 +275,9 @@ const defaultSettings: Settings = {
   singlePageView: 'auto',
   scrollMode: 'auto',
   continuousZoomDefault: 'zoomFitToScreen',
-  pageGaps: false,
+  pageDividers: false,
   scrollGap: 0,
-  seamlessSpreads: true,
+  seamlessSpreads: undefined,
   scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',

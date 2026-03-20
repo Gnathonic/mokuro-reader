@@ -442,9 +442,9 @@
         return;
       case 'KeyM':
         if ($settings.continuousScroll) {
-          const newPageGaps = !$settings.pageGaps;
-          updateSetting('pageGaps', newPageGaps);
-          showNotification(newPageGaps ? 'Page Gaps On' : 'Page Gaps Off', 'page-gaps');
+          const newVal = !$settings.pageDividers;
+          updateSetting('pageDividers', newVal);
+          showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
         }
         return;
       case 'KeyV':
