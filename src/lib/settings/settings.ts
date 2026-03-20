@@ -149,6 +149,7 @@ export type Settings = {
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
   continuousZoomDefault: ContinuousZoomMode;
+  scrollGap: number; // Pixels of padding between pages in scroll modes
   scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
@@ -271,6 +272,7 @@ const defaultSettings: Settings = {
   singlePageView: 'auto',
   scrollMode: 'auto',
   continuousZoomDefault: 'zoomFitToScreen',
+  scrollGap: 0,
   scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',

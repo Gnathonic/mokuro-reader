@@ -107,7 +107,7 @@
       </div>
     {/if}
 
-    <!-- 3. If continuous: Scroll mode dropdown -->
+    <!-- 3. If continuous: Scroll mode dropdown + gap slider -->
     {#if isContinuous}
       <div>
         <Label class="text-gray-900 dark:text-white">Scroll mode:</Label>
@@ -116,6 +116,17 @@
           items={scrollModes}
           value={$settings.scrollMode}
           onchange={(e) => updateSetting('scrollMode', (e.target as HTMLSelectElement).value)}
+        />
+      </div>
+      <div>
+        <Label class="text-gray-900 dark:text-white">
+          Page gap: {$settings.scrollGap}px
+        </Label>
+        <Range
+          min={0}
+          max={100}
+          value={$settings.scrollGap}
+          onchange={(e) => updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
         />
       </div>
     {/if}

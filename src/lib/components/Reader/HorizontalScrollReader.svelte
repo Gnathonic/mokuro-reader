@@ -602,6 +602,7 @@
             style:width={`${size.width}px`}
             style:height={`${size.height}px`}
             style:direction="ltr"
+            style:margin-right={$settings.scrollGap > 0 ? `${$settings.scrollGap}px` : undefined}
           >
             <div
               class="origin-top-left"

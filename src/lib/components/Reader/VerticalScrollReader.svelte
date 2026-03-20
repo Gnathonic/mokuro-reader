@@ -592,6 +592,7 @@
               ? `${page.img_width} / ${page.img_height}`
               : undefined}
             style:height={ps.height !== 'auto' ? ps.height : undefined}
+            style:margin-bottom={$settings.scrollGap > 0 ? `${$settings.scrollGap}px` : undefined}
           >
             <div
               class="origin-top-left"
