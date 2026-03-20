@@ -176,7 +176,9 @@ class ProviderManager {
       for (const provider of this.providerRegistry.values()) {
         try {
           await provider.logout();
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     }
 
