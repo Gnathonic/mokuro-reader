@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.5] - 2026-03-20
+
+### Added
+
+- **Page dividers** - Toggle gaps between pages in continuous scroll modes (M hotkey) with adjustable size
+- **Text box context menu in continuous scroll** - Right-click context menu on OCR text boxes now works in both vertical and horizontal scroll modes
+
+### Fixed
+
+- **Horizontal scroll page tracking** - Improved page detection and progress reporting in horizontal continuous mode
+- **Yomitan context menu race condition** - Right-click menu no longer shifts items when Yomitan dismisses and deselects text
+
 ## [1.5.4] - 2026-03-19
 
 ### Added

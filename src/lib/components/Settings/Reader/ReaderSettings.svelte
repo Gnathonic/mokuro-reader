@@ -107,7 +107,7 @@
       </div>
     {/if}
 
-    <!-- 3. If continuous: Scroll mode dropdown -->
+    <!-- 3. If continuous: Scroll mode dropdown + gap slider -->
     {#if isContinuous}
       <div>
         <Label class="text-gray-900 dark:text-white">Scroll mode:</Label>
@@ -118,6 +118,28 @@
           onchange={(e) => updateSetting('scrollMode', (e.target as HTMLSelectElement).value)}
         />
       </div>
+      <Toggle
+        size="small"
+        checked={$settings.pageDividers}
+        onchange={() => updateSetting('pageDividers', !$settings.pageDividers)}
+      >
+        Page dividers
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(M)</span>
+      </Toggle>
+      {#if $settings.pageDividers}
+        <div>
+          <Label class="text-gray-900 dark:text-white">
+            Divider size: {$settings.scrollGap}px
+          </Label>
+          <Range
+            min={0}
+            max={100}
+            value={$settings.scrollGap}
+            onchange={(e) =>
+              updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
+          />
+        </div>
+      {/if}
     {/if}
 
     <!-- 4. Zoom dropdown (handles continuous vs paged internally) -->

@@ -20,6 +20,7 @@
     onPageChange: (newPage: number, charCount: number, isComplete: boolean) => void;
     onVolumeNav: (direction: 'prev' | 'next') => void;
     onOverlayToggle?: () => void;
+    onContextMenu?: (data: any) => void;
   }
 
   let {
@@ -30,7 +31,8 @@
     currentPage,
     onPageChange,
     onVolumeNav,
-    onOverlayToggle
+    onOverlayToggle,
+    onContextMenu
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -358,10 +360,9 @@
 
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
-    const swap = $settings.swapWheelBehavior;
-    const isZoom = swap ? !(e.ctrlKey || e.metaKey) : e.ctrlKey || e.metaKey;
-
     // TODO: Wheel zoom disabled — targeting causes position loss
+    // const swap = $settings.swapWheelBehavior;
+    // const isZoom = swap ? !(e.ctrlKey || e.metaKey) : e.ctrlKey || e.metaKey;
     // if (isZoom) {
     // 	e.preventDefault();
     // 	cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
@@ -481,7 +482,9 @@
     if (isDragging) {
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {}
+      } catch {
+        /* ignore */
+      }
       document.body.style.userSelect = '';
     }
     isDragging = false;
@@ -500,16 +503,16 @@
 
     const now = Date.now();
     // TODO: Double-tap zoom disabled — targeting causes position loss
-    if (false && now - lastTapTime < DOUBLE_TAP_DELAY) {
-      lastTapTime = 0;
-      const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
-      const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
-      const newZoom = ZOOM_LEVELS[nextIdx];
-      if (newZoom !== zoomTarget) {
-        animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
-      }
-      return;
-    }
+    // if (now - lastTapTime < DOUBLE_TAP_DELAY) {
+    //   lastTapTime = 0;
+    //   const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
+    //   const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
+    //   const newZoom = ZOOM_LEVELS[nextIdx];
+    //   if (newZoom !== zoomTarget) {
+    //     animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
+    //   }
+    //   return;
+    // }
     lastTapTime = now;
     const tapTime = now;
     setTimeout(() => {
@@ -593,6 +596,7 @@
               ? `${page.img_width} / ${page.img_height}`
               : undefined}
             style:height={ps.height !== 'auto' ? ps.height : undefined}
+            style:margin-bottom={$settings.pageDividers ? `${$settings.scrollGap - 1}px` : '-1px'}
           >
             <div
               class="origin-top-left"
@@ -606,6 +610,7 @@
                 volumeUuid={volume.volume_uuid}
                 pageIndex={i}
                 forceVisible={missingPagePaths.has(page.img_path)}
+                {onContextMenu}
               />
             </div>
           </div>
