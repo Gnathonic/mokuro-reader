@@ -1078,7 +1078,11 @@
     const curIdx = order.indexOf(current as any);
     const next = order[(curIdx + 1) % order.length];
     updateSetting('scrollMode', next);
-    const labels = { auto: 'Match Orientation', vertical: 'Vertical Scroll', horizontal: 'Horizontal Scroll' };
+    const labels = {
+      auto: 'Match Orientation',
+      vertical: 'Vertical Scroll',
+      horizontal: 'Horizontal Scroll'
+    };
     showNotification(labels[next], `scrollmode-${next}`);
   }
 
@@ -1123,7 +1127,6 @@
       'continuous-scroll-toggle'
     );
   }
-
 
   function rotateContinuousZoomMode() {
     const currentMode = $settings.continuousZoomDefault;
@@ -1289,9 +1292,12 @@
     {/key}
   {/if}
   {#if $settings.continuousScroll && volumeData?.files}
-    {@const effectiveScrollMode = $settings.scrollMode === 'auto'
-      ? (windowWidth > windowHeight ? 'horizontal' : 'vertical')
-      : $settings.scrollMode}
+    {@const effectiveScrollMode =
+      $settings.scrollMode === 'auto'
+        ? windowWidth > windowHeight
+          ? 'horizontal'
+          : 'vertical'
+        : $settings.scrollMode}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
         {pages}
@@ -1316,113 +1322,113 @@
       />
     {/if}
   {:else}
-  <!-- Page-based mode -->
-  <div class="flex" style:background-color={$settings.backgroundColor}>
-    <Panzoom>
+    <!-- Page-based mode -->
+    <div class="flex" style:background-color={$settings.backgroundColor}>
+      <Panzoom>
+        <button
+          aria-label="Previous page (left edge)"
+          class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-left={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (right edge)"
+          class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-right={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <button
+          aria-label="Previous page (bottom left)"
+          class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (bottom right)"
+          class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <div
+          class="grid"
+          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+          ondblclick={onDoubleTap}
+          onpointerdown={handleOverlayPointerDown}
+          onclick={handleOverlayToggle}
+          role="none"
+          id="manga-panel"
+        >
+          {#key page}
+            <div
+              class="col-start-1 row-start-1 flex flex-row"
+              class:flex-row-reverse={!volumeSettings.rightToLeft}
+              in:pageIn={{ direction: pageDirection }}
+              out:pageOut={{ direction: pageDirection }}
+            >
+              {#if volumeData?.files}
+                {#if showSecondPage()}
+                  <MangaPage
+                    page={pages[index + 1]}
+                    src={imageCache.getFile(index + 1)!}
+                    cachedUrl={cachedImageUrl2}
+                    volumeUuid={volume.volume_uuid}
+                    pageIndex={index + 1}
+                    forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
+                    onContextMenu={handleTextBoxContextMenu}
+                  />
+                {/if}
+                <MangaPage
+                  page={pages[index]}
+                  src={imageCache.getFile(index)!}
+                  cachedUrl={cachedImageUrl1}
+                  volumeUuid={volume.volume_uuid}
+                  pageIndex={index}
+                  forceVisible={missingPagePaths.has(pages[index]?.img_path)}
+                  onContextMenu={handleTextBoxContextMenu}
+                />
+              {:else}
+                <div class="flex h-screen w-screen items-center justify-center">
+                  <Spinner size="12" />
+                </div>
+              {/if}
+            </div>
+          {/key}
+        </div>
+      </Panzoom>
+    </div>
+
+    {#if showContextMenu && contextMenuData}
+      <TextBoxContextMenu
+        x={contextMenuData.x}
+        y={contextMenuData.y}
+        lines={contextMenuData.lines}
+        ankiEnabled={$settings.ankiConnectSettings.enabled}
+        textBoxElement={contextMenuData.imgElement}
+        onCopy={() => {}}
+        onCopyRaw={() => {}}
+        onAddToAnki={handleContextMenuAddToAnki}
+        onClose={() => (showContextMenu = false)}
+      />
+    {/if}
+
+    {#if !$settings.mobile}
       <button
         aria-label="Previous page (left edge)"
-        class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-left={`${$settings.edgeButtonWidth}px`}
         onmousedown={mouseDown}
         onmouseup={left}
+        class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
       <button
         aria-label="Next page (right edge)"
-        class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-right={`${$settings.edgeButtonWidth}px`}
         onmousedown={mouseDown}
         onmouseup={right}
+        class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
-      <button
-        aria-label="Previous page (bottom left)"
-        class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (bottom right)"
-        class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <div
-        class="grid"
-        style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-        ondblclick={onDoubleTap}
-        onpointerdown={handleOverlayPointerDown}
-        onclick={handleOverlayToggle}
-        role="none"
-        id="manga-panel"
-      >
-        {#key page}
-          <div
-            class="col-start-1 row-start-1 flex flex-row"
-            class:flex-row-reverse={!volumeSettings.rightToLeft}
-            in:pageIn={{ direction: pageDirection }}
-            out:pageOut={{ direction: pageDirection }}
-          >
-            {#if volumeData?.files}
-              {#if showSecondPage()}
-                <MangaPage
-                  page={pages[index + 1]}
-                  src={imageCache.getFile(index + 1)!}
-                  cachedUrl={cachedImageUrl2}
-                  volumeUuid={volume.volume_uuid}
-                  pageIndex={index + 1}
-                  forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
-                  onContextMenu={handleTextBoxContextMenu}
-                />
-              {/if}
-              <MangaPage
-                page={pages[index]}
-                src={imageCache.getFile(index)!}
-                cachedUrl={cachedImageUrl1}
-                volumeUuid={volume.volume_uuid}
-                pageIndex={index}
-                forceVisible={missingPagePaths.has(pages[index]?.img_path)}
-                onContextMenu={handleTextBoxContextMenu}
-              />
-            {:else}
-              <div class="flex h-screen w-screen items-center justify-center">
-                <Spinner size="12" />
-              </div>
-            {/if}
-          </div>
-        {/key}
-      </div>
-    </Panzoom>
-  </div>
-
-  {#if showContextMenu && contextMenuData}
-    <TextBoxContextMenu
-      x={contextMenuData.x}
-      y={contextMenuData.y}
-      lines={contextMenuData.lines}
-      ankiEnabled={$settings.ankiConnectSettings.enabled}
-      textBoxElement={contextMenuData.imgElement}
-      onCopy={() => {}}
-      onCopyRaw={() => {}}
-      onAddToAnki={handleContextMenuAddToAnki}
-      onClose={() => (showContextMenu = false)}
-    />
-  {/if}
-
-  {#if !$settings.mobile}
-    <button
-      aria-label="Previous page (left edge)"
-      onmousedown={mouseDown}
-      onmouseup={left}
-      class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
-    <button
-      aria-label="Next page (right edge)"
-      onmousedown={mouseDown}
-      onmouseup={right}
-      class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
-  {/if}
+    {/if}
   {/if}
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->

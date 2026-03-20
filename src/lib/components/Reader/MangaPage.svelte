@@ -70,5 +70,12 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} src={src ?? undefined} {volumeUuid} {pageIndex} {forceVisible} {onContextMenu} />
+  <TextBoxes
+    {page}
+    src={src ?? undefined}
+    {volumeUuid}
+    {pageIndex}
+    {forceVisible}
+    {onContextMenu}
+  />
 </div>

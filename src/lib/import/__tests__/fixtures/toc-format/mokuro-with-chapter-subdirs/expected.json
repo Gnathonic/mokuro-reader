@@ -6,10 +6,7 @@
       "hasMokuro": true,
       "basePathContains": "series",
       "imageOnly": false,
-      "chapterNames": [
-        "chapter01",
-        "chapter02"
-      ]
+      "chapterNames": ["chapter01", "chapter02"]
     }
   ]
 }

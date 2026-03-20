@@ -11,14 +11,14 @@
  */
 
 export interface ZoomState {
-	/** Current content-space X of the anchor point */
-	contentX: number;
-	/** Current content-space Y of the anchor point */
-	contentY: number;
-	/** Screen position where the anchor should appear */
-	screenX: number;
-	/** Screen position where the anchor should appear */
-	screenY: number;
+  /** Current content-space X of the anchor point */
+  contentX: number;
+  /** Current content-space Y of the anchor point */
+  contentY: number;
+  /** Screen position where the anchor should appear */
+  screenX: number;
+  /** Screen position where the anchor should appear */
+  screenY: number;
 }
 
 /**
@@ -31,16 +31,16 @@ export interface ZoomState {
  * @param currentZoom Current zoom level
  */
 export function screenToContent(
-	screenX: number,
-	screenY: number,
-	wrapperVisualLeft: number,
-	wrapperVisualTop: number,
-	currentZoom: number
+  screenX: number,
+  screenY: number,
+  wrapperVisualLeft: number,
+  wrapperVisualTop: number,
+  currentZoom: number
 ): { contentX: number; contentY: number } {
-	return {
-		contentX: (screenX - wrapperVisualLeft) / currentZoom,
-		contentY: (screenY - wrapperVisualTop) / currentZoom
-	};
+  return {
+    contentX: (screenX - wrapperVisualLeft) / currentZoom,
+    contentY: (screenY - wrapperVisualTop) / currentZoom
+  };
 }
 
 /**
@@ -63,18 +63,18 @@ export function screenToContent(
  * @param wrapperOffsetY Wrapper's fixed offset in scroll flow (Y)
  */
 export function computeScrollPosition(
-	contentX: number,
-	contentY: number,
-	targetScreenX: number,
-	targetScreenY: number,
-	zoom: number,
-	wrapperOffsetX: number,
-	wrapperOffsetY: number
+  contentX: number,
+  contentY: number,
+  targetScreenX: number,
+  targetScreenY: number,
+  zoom: number,
+  wrapperOffsetX: number,
+  wrapperOffsetY: number
 ): { scrollLeft: number; scrollTop: number } {
-	return {
-		scrollLeft: wrapperOffsetX + contentX * zoom - targetScreenX,
-		scrollTop: wrapperOffsetY + contentY * zoom - targetScreenY
-	};
+  return {
+    scrollLeft: wrapperOffsetX + contentX * zoom - targetScreenX,
+    scrollTop: wrapperOffsetY + contentY * zoom - targetScreenY
+  };
 }
 
 /**
@@ -82,16 +82,16 @@ export function computeScrollPosition(
  * This is the inverse of computeScrollPosition — used for test validation.
  */
 export function contentToScreen(
-	contentX: number,
-	contentY: number,
-	scrollLeft: number,
-	scrollTop: number,
-	zoom: number,
-	wrapperOffsetX: number,
-	wrapperOffsetY: number
+  contentX: number,
+  contentY: number,
+  scrollLeft: number,
+  scrollTop: number,
+  zoom: number,
+  wrapperOffsetX: number,
+  wrapperOffsetY: number
 ): { screenX: number; screenY: number } {
-	return {
-		screenX: wrapperOffsetX + contentX * zoom - scrollLeft,
-		screenY: wrapperOffsetY + contentY * zoom - scrollTop
-	};
+  return {
+    screenX: wrapperOffsetX + contentX * zoom - scrollLeft,
+    screenY: wrapperOffsetY + contentY * zoom - scrollTop
+  };
 }

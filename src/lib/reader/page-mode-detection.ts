@@ -15,30 +15,30 @@ export function isWideSpread(page: Page): boolean {
  * This represents the "normal" page width for the volume.
  */
 export function calculateMedianPageWidth(pages: Page[]): number {
-	// Only consider portrait-oriented pages (typical manga pages)
-	const portraitWidths = pages.filter((p) => p.img_height > p.img_width).map((p) => p.img_width);
+  // Only consider portrait-oriented pages (typical manga pages)
+  const portraitWidths = pages.filter((p) => p.img_height > p.img_width).map((p) => p.img_width);
 
-	if (portraitWidths.length === 0) {
-		// Fallback: use all pages if no portrait pages
-		const allWidths = pages.map((p) => p.img_width);
-		if (allWidths.length === 0) return 0;
-		const sorted = [...allWidths].sort((a, b) => a - b);
-		const mid = Math.floor(sorted.length / 2);
-		return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-	}
+  if (portraitWidths.length === 0) {
+    // Fallback: use all pages if no portrait pages
+    const allWidths = pages.map((p) => p.img_width);
+    if (allWidths.length === 0) return 0;
+    const sorted = [...allWidths].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
 
-	const sorted = [...portraitWidths].sort((a, b) => a - b);
-	const mid = Math.floor(sorted.length / 2);
-	return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const sorted = [...portraitWidths].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 /**
  * Checks if a page width is close to the median (within 15% tolerance)
  */
 export function isNormalWidth(page: Page, medianWidth: number): boolean {
-	if (medianWidth === 0) return true;
-	const deviation = Math.abs(page.img_width - medianWidth) / medianWidth;
-	return deviation <= 0.15;
+  if (medianWidth === 0) return true;
+  const deviation = Math.abs(page.img_width - medianWidth) / medianWidth;
+  return deviation <= 0.15;
 }
 
 /**
