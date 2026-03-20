@@ -345,19 +345,18 @@
 
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
-    const swap = $settings.swapWheelBehavior;
-    const isZoom = swap ? !(e.ctrlKey || e.metaKey) : e.ctrlKey || e.metaKey;
-
     // TODO: Wheel zoom disabled — targeting causes position loss
-    if (false && isZoom) {
-      e.preventDefault();
-      cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
-    } else {
-      // Convert vertical wheel to horizontal scroll
-      e.preventDefault();
-      const delta = rtl ? -e.deltaY : e.deltaY;
-      scrollContainer.scrollLeft += delta;
-    }
+    // const swap = $settings.swapWheelBehavior;
+    // const isZoom = swap ? !(e.ctrlKey || e.metaKey) : e.ctrlKey || e.metaKey;
+    // if (isZoom) {
+    //   e.preventDefault();
+    //   cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
+    // } else {
+    // Convert vertical wheel to horizontal scroll
+    e.preventDefault();
+    const delta = rtl ? -e.deltaY : e.deltaY;
+    scrollContainer.scrollLeft += delta;
+    // }
   }
 
   // ============================================================
@@ -471,7 +470,7 @@
     if (isDragging) {
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {}
+      } catch { /* ignore */ }
       document.body.style.userSelect = '';
     }
     isDragging = false;
@@ -490,16 +489,16 @@
 
     const now = Date.now();
     // TODO: Double-tap zoom disabled — targeting causes position loss
-    if (false && now - lastTapTime < DOUBLE_TAP_DELAY) {
-      lastTapTime = 0;
-      const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
-      const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
-      const newZoom = ZOOM_LEVELS[nextIdx];
-      if (newZoom !== zoomTarget) {
-        animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
-      }
-      return;
-    }
+    // if (now - lastTapTime < DOUBLE_TAP_DELAY) {
+    //   lastTapTime = 0;
+    //   const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
+    //   const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
+    //   const newZoom = ZOOM_LEVELS[nextIdx];
+    //   if (newZoom !== zoomTarget) {
+    //     animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
+    //   }
+    //   return;
+    // }
     lastTapTime = now;
     const tapTime = now;
     setTimeout(() => {
