@@ -440,6 +440,13 @@
       case 'KeyZ':
         rotateZoomMode();
         return;
+      case 'KeyM':
+        if ($settings.continuousScroll) {
+          const newPageGaps = !$settings.pageGaps;
+          updateSetting('pageGaps', newPageGaps);
+          showNotification(newPageGaps ? 'Page Gaps On' : 'Page Gaps Off', 'page-gaps');
+        }
+        return;
       case 'KeyV':
         toggleContinuousScroll();
         return;
@@ -865,9 +872,18 @@
   run(() => {
     manualPage = page;
   });
-  let pageDisplay = $derived(
-    showSecondPage() ? `${page},${page + 1} / ${pages?.length}` : `${page} / ${pages?.length}`
-  );
+  let continuousVisibleCount = $state(1);
+  let pageDisplay = $derived.by(() => {
+    if ($settings.continuousScroll) {
+      // Continuous mode: use actual visible count from the scroll reader
+      if (continuousVisibleCount > 1 && page + 1 <= (pages?.length ?? 0)) {
+        return `${page},${page + 1} / ${pages?.length}`;
+      }
+      return `${page} / ${pages?.length}`;
+    }
+    // Paged mode: use spread detection
+    return showSecondPage() ? `${page},${page + 1} / ${pages?.length}` : `${page} / ${pages?.length}`;
+  });
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
   let charDisplay = $derived(`${charCount} / ${maxCharCount}`);
@@ -1318,6 +1334,7 @@
         currentPage={page}
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
+        onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
       />
     {/if}

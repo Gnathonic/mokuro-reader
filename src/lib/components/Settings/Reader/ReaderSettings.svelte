@@ -118,17 +118,36 @@
           onchange={(e) => updateSetting('scrollMode', (e.target as HTMLSelectElement).value)}
         />
       </div>
-      <div>
-        <Label class="text-gray-900 dark:text-white">
-          Page gap: {$settings.scrollGap}px
-        </Label>
-        <Range
-          min={0}
-          max={100}
-          value={$settings.scrollGap}
-          onchange={(e) => updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
-        />
-      </div>
+      <Toggle
+        size="small"
+        checked={$settings.pageGaps}
+        onchange={() => updateSetting('pageGaps', !$settings.pageGaps)}
+      >
+        Page gaps
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(M)</span>
+      </Toggle>
+      {#if $settings.pageGaps}
+        <div>
+          <Label class="text-gray-900 dark:text-white">
+            Page gap: {$settings.scrollGap}px
+          </Label>
+          <Range
+            min={0}
+            max={100}
+            value={$settings.scrollGap}
+            onchange={(e) => updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
+          />
+        </div>
+        {#if !isVertical}
+          <Toggle
+            size="small"
+            checked={$settings.seamlessSpreads}
+            onchange={() => updateSetting('seamlessSpreads', !$settings.seamlessSpreads)}
+          >
+            Seamless spreads
+          </Toggle>
+        {/if}
+      {/if}
     {/if}
 
     <!-- 4. Zoom dropdown (handles continuous vs paged internally) -->

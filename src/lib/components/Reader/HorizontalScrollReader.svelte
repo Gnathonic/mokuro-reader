@@ -20,6 +20,7 @@
     onPageChange: (newPage: number, charCount: number, isComplete: boolean) => void;
     onVolumeNav: (direction: 'prev' | 'next') => void;
     onOverlayToggle?: () => void;
+    onVisibleCountChange?: (count: number) => void;
   }
 
   let {
@@ -30,7 +31,8 @@
     currentPage,
     onPageChange,
     onVolumeNav,
-    onOverlayToggle
+    onOverlayToggle,
+    onVisibleCountChange
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -176,40 +178,87 @@
   // ============================================================
 
   let lastReportedPage = currentPage;
-  let navTarget = currentPage - 1;
+  let navTarget = $state(currentPage - 1);
   let navIsKeyboard = false; // true when navTarget was set by keyboard, not scroll
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let pageElements: HTMLDivElement[] = [];
 
+  /**
+   * Check how much of a page is visible in the viewport (0-1 ratio).
+   */
+  function visibilityRatio(el: HTMLElement, containerRect: DOMRect): number {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    const visibleLeft = Math.max(rect.left, containerRect.left);
+    const visibleRight = Math.min(rect.right, containerRect.right);
+    return Math.max(0, visibleRight - visibleLeft) / rect.width;
+  }
+
+  /**
+   * Detect current page: the >95% visible page whose center is closest
+   * to the viewport center. Falls back to any page with center in viewport.
+   */
   function detectCurrentPage(): number {
     if (!scrollContainer) return navTarget;
-    // Find the page closest to the viewport center
     const containerRect = scrollContainer.getBoundingClientRect();
-    const viewCenterX = containerRect.left + containerRect.width / 2;
-    let closest = navTarget;
-    let closestDist = Infinity;
+    const viewportCenter = containerRect.left + containerRect.width / 2;
 
+    // Primary: among >95% visible pages, pick the one closest to viewport center
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < pageElements.length; i++) {
+      const el = pageElements[i];
+      if (!el) continue;
+      if (visibilityRatio(el, containerRect) > 0.95) {
+        const rect = el.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const dist = Math.abs(centerX - viewportCenter);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
+      }
+    }
+    if (bestIdx >= 0) return bestIdx;
+
+    // Fallback: page with center closest to viewport center
     for (let i = 0; i < pageElements.length; i++) {
       const el = pageElements[i];
       if (!el) continue;
       const rect = el.getBoundingClientRect();
-      const dist = Math.abs(rect.left + rect.width / 2 - viewCenterX);
-      if (dist < closestDist) {
-        closestDist = dist;
-        closest = i;
+      const centerX = rect.left + rect.width / 2;
+      if (centerX >= containerRect.left && centerX <= containerRect.right) {
+        const dist = Math.abs(centerX - viewportCenter);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
       }
     }
-    return closest;
+
+    return bestIdx >= 0 ? bestIdx : navTarget;
   }
 
   function reportProgress() {
-    // navTarget is authoritative — it's the page we navigated to.
-    // In pair mode, the next page is also visible, so report the higher.
+    // Use navTarget directly — it's set by detectCurrentPage (center-most visible)
+    // on manual scroll settle, or by navigateToPage on keyboard nav.
     const pageNum = Math.min(navTarget + 1, pages.length);
     if (pageNum !== lastReportedPage) {
       lastReportedPage = pageNum;
       const { charCount } = getCharCount(pages, pageNum);
       onPageChange(pageNum, charCount, pageNum >= pages.length);
+    }
+
+    // Report how many pages are visible for the page counter display
+    if (onVisibleCountChange && scrollContainer) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      let count = 0;
+      for (let i = 0; i < pageElements.length; i++) {
+        const el = pageElements[i];
+        if (!el) continue;
+        if (visibilityRatio(el, containerRect) > 0.95) count++;
+      }
+      onVisibleCountChange(Math.max(count, 1));
     }
   }
 
@@ -270,16 +319,23 @@
     const el = pageElements[pageIdx];
     if (!el) return;
 
-    // If a neighbor fits, center the pair
-    const neighbor = pageIdx + 1 < pages.length ? pageIdx + 1 : pageIdx - 1;
-    const neighborEl = neighbor >= 0 ? pageElements[neighbor] : null;
+    // Cover page is always displayed alone
+    const isCoverAlone = volumeSettings.hasCover && pageIdx === 0;
 
-    if (neighborEl) {
-      const elRect = el.getBoundingClientRect();
-      const neighborRect = neighborEl.getBoundingClientRect();
-      if (elRect.width + neighborRect.width <= scrollContainer.clientWidth + 2) {
-        scroller.scrollToPairCenter(el, neighborEl);
-        return;
+    // If a neighbor fits and it's not the cover page, center the pair
+    if (!isCoverAlone) {
+      const neighbor = pageIdx + 1 < pages.length ? pageIdx + 1 : pageIdx - 1;
+      // Don't pair with the cover page either
+      const neighborIsCover = volumeSettings.hasCover && neighbor === 0;
+      const neighborEl = neighbor >= 0 && !neighborIsCover ? pageElements[neighbor] : null;
+
+      if (neighborEl) {
+        const elRect = el.getBoundingClientRect();
+        const neighborRect = neighborEl.getBoundingClientRect();
+        if (elRect.width + neighborRect.width <= scrollContainer.clientWidth + 2) {
+          scroller.scrollToPairCenter(el, neighborEl);
+          return;
+        }
       }
     }
 
@@ -320,14 +376,20 @@
         scroller?.scrollBy(0, viewportHeight * 0.5);
         break;
       case 'PageDown':
-      case ' ':
+      case ' ': {
         e.preventDefault();
-        navigateToPage(current + 2);
+        // Jump 1 from cover page, 2 otherwise
+        const fwd = volumeSettings.hasCover && current === 0 ? 1 : 2;
+        navigateToPage(current + fwd);
         break;
-      case 'PageUp':
+      }
+      case 'PageUp': {
         e.preventDefault();
-        navigateToPage(current - 2);
+        // Jump 1 when landing on cover page, 2 otherwise
+        const back = volumeSettings.hasCover && current <= 2 ? 1 : 2;
+        navigateToPage(current - back);
         break;
+      }
       case 'Home':
         e.preventDefault();
         navigateToPage(0);
@@ -596,13 +658,15 @@
         {#each pages as page, i (i)}
           {@const size = pageSize(page)}
           {@const scale = size.height / page.img_height}
+          {@const isSpreadPartner = $settings.pageGaps && $settings.seamlessSpreads && i === (rtl ? navTarget + 1 : navTarget)}
+          {@const gap = !$settings.pageGaps ? '-1px' : isSpreadPartner ? '-1px' : `${$settings.scrollGap - 1}px`}
           <div
             bind:this={pageElements[i]}
             class="relative flex-shrink-0 overflow-hidden"
             style:width={`${size.width}px`}
             style:height={`${size.height}px`}
             style:direction="ltr"
-            style:margin-right={$settings.scrollGap > 0 ? `${$settings.scrollGap}px` : undefined}
+            style:margin-right={gap}
           >
             <div
               class="origin-top-left"
