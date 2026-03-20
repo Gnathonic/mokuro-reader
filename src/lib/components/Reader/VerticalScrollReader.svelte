@@ -345,11 +345,11 @@
 		const swap = $settings.swapWheelBehavior;
 		const isZoom = swap ? !(e.ctrlKey || e.metaKey) : (e.ctrlKey || e.metaKey);
 
-		if (isZoom) {
-			e.preventDefault();
-			cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
-		}
-		// Normal wheel: native scroll handles it
+		// TODO: Wheel zoom disabled — targeting causes position loss
+		// if (isZoom) {
+		// 	e.preventDefault();
+		// 	cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
+		// }
 	}
 
 	// ============================================================
@@ -389,15 +389,15 @@
 
 		if ((e.target as HTMLElement).closest('.textBox')) return;
 
-		if (activePointers.size === 2) {
-			// Second finger — start pinch, cancel drag
-			isDragging = false;
-			wasDrag = true;
-			isPinching = true;
-			pinchStartDist = pinchDistance();
-			pinchStartZoom = zoomAnimator.current || 1;
-			return;
-		}
+		// TODO: Pinch zoom disabled — targeting causes position loss
+		// if (activePointers.size === 2) {
+		// 	isDragging = false;
+		// 	wasDrag = true;
+		// 	isPinching = true;
+		// 	pinchStartDist = pinchDistance();
+		// 	pinchStartZoom = zoomAnimator.current || 1;
+		// 	return;
+		// }
 
 		if (e.button !== 0) return;
 
@@ -478,9 +478,9 @@
 		if (wasDrag) return;
 
 		const now = Date.now();
-		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
+		// TODO: Double-tap zoom disabled — targeting causes position loss
+		if (false && now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
-			// Double-tap zoom — sample at click, place at viewport center
 			const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
 			const newZoom = ZOOM_LEVELS[nextIdx];

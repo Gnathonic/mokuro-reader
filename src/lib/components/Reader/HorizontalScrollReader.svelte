@@ -330,7 +330,8 @@
 		const swap = $settings.swapWheelBehavior;
 		const isZoom = swap ? !(e.ctrlKey || e.metaKey) : (e.ctrlKey || e.metaKey);
 
-		if (isZoom) {
+		// TODO: Wheel zoom disabled — targeting causes position loss
+		if (false && isZoom) {
 			e.preventDefault();
 			cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
 		} else {
@@ -378,14 +379,15 @@
 
 		if ((e.target as HTMLElement).closest('.textBox')) return;
 
-		if (activePointers.size === 2) {
-			isDragging = false;
-			wasDrag = true;
-			isPinching = true;
-			pinchStartDist = pinchDistance();
-			pinchStartZoom = zoomAnimator.current || 1;
-			return;
-		}
+		// TODO: Pinch zoom disabled — targeting causes position loss
+		// if (activePointers.size === 2) {
+		// 	isDragging = false;
+		// 	wasDrag = true;
+		// 	isPinching = true;
+		// 	pinchStartDist = pinchDistance();
+		// 	pinchStartZoom = zoomAnimator.current || 1;
+		// 	return;
+		// }
 
 		if (e.button !== 0) return;
 
@@ -464,7 +466,8 @@
 		if (wasDrag) return;
 
 		const now = Date.now();
-		if (now - lastTapTime < DOUBLE_TAP_DELAY) {
+		// TODO: Double-tap zoom disabled — targeting causes position loss
+		if (false && now - lastTapTime < DOUBLE_TAP_DELAY) {
 			lastTapTime = 0;
 			const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
 			const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
