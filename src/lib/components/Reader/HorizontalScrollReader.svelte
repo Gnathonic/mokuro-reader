@@ -21,6 +21,7 @@
     onVolumeNav: (direction: 'prev' | 'next') => void;
     onOverlayToggle?: () => void;
     onVisibleCountChange?: (count: number) => void;
+    onContextMenu?: (data: any) => void;
   }
 
   let {
@@ -32,7 +33,8 @@
     onPageChange,
     onVolumeNav,
     onOverlayToggle,
-    onVisibleCountChange
+    onVisibleCountChange,
+    onContextMenu
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -532,7 +534,9 @@
     if (isDragging) {
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       document.body.style.userSelect = '';
     }
     isDragging = false;
@@ -658,8 +662,15 @@
         {#each pages as page, i (i)}
           {@const size = pageSize(page)}
           {@const scale = size.height / page.img_height}
-          {@const isSpreadPartner = $settings.pageGaps && $settings.seamlessSpreads && i === (rtl ? navTarget + 1 : navTarget)}
-          {@const gap = !$settings.pageGaps ? '-1px' : isSpreadPartner ? '-1px' : `${$settings.scrollGap - 1}px`}
+          {@const isSpreadPartner =
+            $settings.pageGaps &&
+            $settings.seamlessSpreads &&
+            i === (rtl ? navTarget + 1 : navTarget)}
+          {@const gap = !$settings.pageGaps
+            ? '-1px'
+            : isSpreadPartner
+              ? '-1px'
+              : `${$settings.scrollGap - 1}px`}
           <div
             bind:this={pageElements[i]}
             class="relative flex-shrink-0 overflow-hidden"
@@ -680,6 +691,7 @@
                 volumeUuid={volume.volume_uuid}
                 pageIndex={i}
                 forceVisible={missingPagePaths.has(page.img_path)}
+                {onContextMenu}
               />
             </div>
           </div>

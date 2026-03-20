@@ -20,6 +20,7 @@
     onPageChange: (newPage: number, charCount: number, isComplete: boolean) => void;
     onVolumeNav: (direction: 'prev' | 'next') => void;
     onOverlayToggle?: () => void;
+    onContextMenu?: (data: any) => void;
   }
 
   let {
@@ -30,7 +31,8 @@
     currentPage,
     onPageChange,
     onVolumeNav,
-    onOverlayToggle
+    onOverlayToggle,
+    onContextMenu
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -480,7 +482,9 @@
     if (isDragging) {
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       document.body.style.userSelect = '';
     }
     isDragging = false;
@@ -606,6 +610,7 @@
                 volumeUuid={volume.volume_uuid}
                 pageIndex={i}
                 forceVisible={missingPagePaths.has(page.img_path)}
+                {onContextMenu}
               />
             </div>
           </div>

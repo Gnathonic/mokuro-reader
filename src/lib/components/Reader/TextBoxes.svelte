@@ -21,6 +21,7 @@
     lines: string[];
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+    pageIndex?: number;
   }
 
   interface Props {
@@ -484,7 +485,8 @@
       y: event.clientY,
       lines,
       imgElement: event.target as HTMLElement,
-      textBox
+      textBox,
+      pageIndex
     });
   }
 

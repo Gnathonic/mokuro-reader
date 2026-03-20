@@ -882,7 +882,9 @@
       return `${page} / ${pages?.length}`;
     }
     // Paged mode: use spread detection
-    return showSecondPage() ? `${page},${page + 1} / ${pages?.length}` : `${page} / ${pages?.length}`;
+    return showSecondPage()
+      ? `${page},${page + 1} / ${pages?.length}`
+      : `${page} / ${pages?.length}`;
   });
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
@@ -942,9 +944,12 @@
     // Capture the image URL immediately while the DOM is in a known good state
     // This prevents issues when Yomitan or other extensions modify the DOM
     const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
-    const pageIndex = $volumes[volume!.volume_uuid]?.progress
-      ? ($volumes[volume!.volume_uuid].progress || 1) - 1
-      : index;
+    // Prefer pageIndex from the data (set by TextBoxes), fall back to progress store
+    const pageIndex =
+      data.pageIndex ??
+      ($volumes[volume!.volume_uuid]?.progress
+        ? ($volumes[volume!.volume_uuid].progress || 1) - 1
+        : index);
 
     contextMenuData = {
       ...data,
@@ -1324,6 +1329,7 @@
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onContextMenu={handleTextBoxContextMenu}
       />
     {:else}
       <HorizontalScrollReader
@@ -1336,6 +1342,7 @@
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onContextMenu={handleTextBoxContextMenu}
       />
     {/if}
   {:else}
@@ -1416,20 +1423,6 @@
       </Panzoom>
     </div>
 
-    {#if showContextMenu && contextMenuData}
-      <TextBoxContextMenu
-        x={contextMenuData.x}
-        y={contextMenuData.y}
-        lines={contextMenuData.lines}
-        ankiEnabled={$settings.ankiConnectSettings.enabled}
-        textBoxElement={contextMenuData.imgElement}
-        onCopy={() => {}}
-        onCopyRaw={() => {}}
-        onAddToAnki={handleContextMenuAddToAnki}
-        onClose={() => (showContextMenu = false)}
-      />
-    {/if}
-
     {#if !$settings.mobile}
       <button
         aria-label="Previous page (left edge)"
@@ -1446,6 +1439,20 @@
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
     {/if}
+  {/if}
+
+  {#if showContextMenu && contextMenuData}
+    <TextBoxContextMenu
+      x={contextMenuData.x}
+      y={contextMenuData.y}
+      lines={contextMenuData.lines}
+      ankiEnabled={$settings.ankiConnectSettings.enabled}
+      textBoxElement={contextMenuData.imgElement}
+      onCopy={() => {}}
+      onCopyRaw={() => {}}
+      onAddToAnki={handleContextMenuAddToAnki}
+      onClose={() => (showContextMenu = false)}
+    />
   {/if}
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->
