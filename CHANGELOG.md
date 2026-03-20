@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.4] - 2026-03-19
+
+### Added
+
+- **Continuous scroll reader (Alpha)** - Vertical and horizontal scroll modes with auto orientation matching. Zoom is in development
+- **Simplified settings panel** - Volume and Reader settings merged into one section with context-aware visibility
+- **Improved archive import support**
+
+### Fixed
+
+- **WebDAV logout when server unreachable** - Can now log out of WebDAV even when the server connection fails (#187)
+
+### Changed
+
+- **Page view mode is now global** - Single/dual/auto page mode is now a device-level setting rather than per-volume
+
 ## [1.5.3] - 2026-03-13
 
 ### Fixed
