@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.7] - 2026-03-20
+
+### Fixed
+
+- **Text box dismiss toggles overlay** - Tapping outside an OCR text box to dismiss it in continuous scroll modes no longer toggles the reader overlay
+- **Fullscreen leaves invisible menu** - Toggling fullscreen from settings no longer leaves an invisible drawer capturing taps
+
 ## [1.5.6] - 2026-03-20
 
 ### Fixed

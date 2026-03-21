@@ -429,6 +429,7 @@
 
   let isDragging = false;
   let wasDrag = false;
+  let textBoxWasActive = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let dragScrollLeft = 0;
@@ -458,7 +459,10 @@
   function handlePointerDown(e: PointerEvent) {
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    if ((e.target as HTMLElement).closest('.textBox')) return;
+    if ((e.target as HTMLElement).closest('.textBox')) {
+      textBoxWasActive = true;
+      return;
+    }
 
     // TODO: Pinch zoom disabled — targeting causes position loss
     // if (activePointers.size === 2) {
@@ -548,8 +552,14 @@
   const DOUBLE_TAP_DELAY = 300;
 
   function handleClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).closest('.textBox')) return;
+    if ((e.target as HTMLElement).closest('.textBox, button, [role="button"], a')) return;
     if (wasDrag) return;
+
+    // First tap outside after interacting with a text box dismisses it without toggling
+    if (textBoxWasActive) {
+      textBoxWasActive = false;
+      return;
+    }
 
     const now = Date.now();
     // TODO: Double-tap zoom disabled — targeting causes position loss
