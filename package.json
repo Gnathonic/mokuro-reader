@@ -82,7 +82,7 @@
     ]
   },
   "lint-staged": {
-    "*.{js,ts,svelte,md,json,css,html}": "prettier --write",
-    "*.{js,ts,svelte}": "eslint --fix"
+    "*.{js,ts,svelte,md,json,css,html}": "prettier --check",
+    "*.{js,ts,svelte}": "eslint"
   }
 }
