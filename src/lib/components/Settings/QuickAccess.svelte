@@ -11,6 +11,11 @@
 
   let { open = $bindable(false) }: Props = $props();
 
+  function onFullscreen() {
+    open = false;
+    toggleFullScreen();
+  }
+
   function onClose() {
     open = false;
     navigateBack();
@@ -19,7 +24,7 @@
 
 {#if isReader()}
   <div class="flex flex-col gap-2">
-    <Button color="alternative" onclick={toggleFullScreen}
+    <Button color="alternative" onclick={onFullscreen}
       >Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span
       ></Button
     >

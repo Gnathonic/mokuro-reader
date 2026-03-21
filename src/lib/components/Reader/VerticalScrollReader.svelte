@@ -500,7 +500,7 @@
   const DOUBLE_TAP_DELAY = 300;
 
   function handleClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).closest('.textBox')) return;
+    if ((e.target as HTMLElement).closest('.textBox, button, [role="button"], a')) return;
     if (wasDrag) return;
 
     // First tap outside after interacting with a text box dismisses it without toggling
