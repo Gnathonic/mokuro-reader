@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.6] - 2026-03-20
+
+### Fixed
+
+- **Continuous scroll drag stutter** - Fixed a lag spike when starting to drag in continuous scroll modes, especially noticeable on mobile devices
+
 ## [1.5.5] - 2026-03-20
 
 ### Added

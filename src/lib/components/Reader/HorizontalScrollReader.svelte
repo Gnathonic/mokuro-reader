@@ -505,7 +505,6 @@
     if (!wasDrag && dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
       wasDrag = true;
       window.getSelection()?.removeAllRanges();
-      document.body.style.userSelect = 'none';
     }
 
     if (wasDrag) {
@@ -537,7 +536,6 @@
       } catch {
         /* ignore */
       }
-      document.body.style.userSelect = '';
     }
     isDragging = false;
   }
