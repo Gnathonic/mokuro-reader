@@ -94,34 +94,9 @@
     return `Resets in ${relativeResetTime}`;
   });
 
-  // Store blob URLs for thumbnails
-  let thumbnailUrls = $state<Map<string, string>>(new Map());
-
-  // Create blob URLs for thumbnails
-  $effect(() => {
-    const newUrls = new Map<string, string>();
-    const urlsToRevoke: string[] = [];
-
-    volumeEntries.forEach(([volumeId]) => {
-      const catalogVolume = $catalogVolumes[volumeId];
-      if (catalogVolume?.thumbnail) {
-        const url = URL.createObjectURL(catalogVolume.thumbnail);
-        urlsToRevoke.push(url);
-        newUrls.set(volumeId, url);
-      }
-    });
-
-    thumbnailUrls = newUrls;
-
-    // Cleanup: revoke all blob URLs when effect is destroyed
-    return () => {
-      urlsToRevoke.forEach((url) => URL.revokeObjectURL(url));
-    };
-  });
-
   // Precompute progress stats for each volume
   let volumeStats = $derived.by(() => {
-    const stats = new Map<
+    const stats: Record<
       string,
       {
         progressPercent: number;
@@ -129,9 +104,8 @@
         remainingPages: number;
         currentPage: number;
         totalPages: number;
-        //isCompleted: boolean;
       }
-    >();
+    > = {};
 
     for (const [volume_uuid, _volumeData] of volumeEntries) {
       const totalPages = $catalogVolumes[volume_uuid]?.page_count ?? 0;
@@ -143,14 +117,13 @@
 
       const progressPercent = totalPages > 0 ? (currentPage / totalPages) * 100 : 0;
 
-      stats.set(volume_uuid, {
+      stats[volume_uuid] = {
         progressPercent,
         progressPercentString: progressPercent.toFixed(0) + '%',
         remainingPages: totalPages - currentPage,
         currentPage,
         totalPages
-        //isCompleted: currentPage >= totalPages
-      });
+      };
     }
 
     return stats;
@@ -218,7 +191,7 @@
     periodStart: number
   ): TrackerEntryWithSortData[] {
     return entries.map(([volumeId, volumeData]) => {
-      const stats = volumeStats.get(volumeId);
+      const stats = volumeStats[volumeId];
       const remainingPages = stats?.remainingPages ?? 0;
       const deadline = deadlines[volumeId] || null;
 
@@ -355,17 +328,17 @@
     }
 
     // Collect series that are currently being read
-    const currentlyReadingSeries = new Set<string>();
+    const currentlyReadingSeries: Record<string, true> = {};
     for (const [, volumeData] of currentlyReading) {
       if (volumeData.series_uuid) {
-        currentlyReadingSeries.add(volumeData.series_uuid);
+        currentlyReadingSeries[volumeData.series_uuid] = true;
       }
     }
 
     // Filter future reads to show only one volume per series, excluding series that are currently being read
     // TODO: Replace simple title sort with sortVolumes function when available on "natural sorting" branch
     const filteredFutureReads: [string, VolumeData][] = [];
-    const seenSeries = new Set<string>();
+    const seenSeries: Record<string, true> = {};
 
     // Sort all future reads by volume title to get consistent ordering within series
     const sortedFutureReads = [...futureReads].sort(([, a], [, b]) => {
@@ -376,8 +349,8 @@
 
     for (const [volumeId, volumeData] of sortedFutureReads) {
       const seriesUuid = volumeData.series_uuid;
-      if (seriesUuid && !currentlyReadingSeries.has(seriesUuid) && !seenSeries.has(seriesUuid)) {
-        seenSeries.add(seriesUuid);
+      if (seriesUuid && !currentlyReadingSeries[seriesUuid] && !seenSeries[seriesUuid]) {
+        seenSeries[seriesUuid] = true;
         filteredFutureReads.push([volumeId, volumeData]);
       } else if (!seriesUuid) {
         // Include volumes without series_uuid (shouldn't happen in normal usage)
@@ -473,13 +446,13 @@
         <div
           class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
         >
-          {#each volumeSections.currentlyReading as { volumeId, volumeData, pagesReadInPeriod, targetPagesPerPeriod }}
-            {@const stats = volumeStats.get(volumeId)!}
+          {#each volumeSections.currentlyReading as { volumeId, volumeData, pagesReadInPeriod, targetPagesPerPeriod } (volumeId)}
+            {@const stats = volumeStats[volumeId]!}
             <VolumeCard
               {volumeId}
               seriesId={volumeData.series_uuid}
               volumeTitle={volumeData.volume_title}
-              thumbnailUrl={thumbnailUrls.get(volumeId)}
+              thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
               progressPercentString={stats.progressPercentString}
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
@@ -502,13 +475,13 @@
           <div
             class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
           >
-            {#each volumeSections.futureReads as { volumeId, volumeData }}
-              {@const stats = volumeStats.get(volumeId)!}
+            {#each volumeSections.futureReads as { volumeId, volumeData } (volumeId)}
+              {@const stats = volumeStats[volumeId]!}
               <VolumeCard
                 {volumeId}
                 seriesId={volumeData.series_uuid}
                 volumeTitle={volumeData.volume_title}
-                thumbnailUrl={thumbnailUrls.get(volumeId)}
+                thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
                 progressPercentString={stats.progressPercentString}
                 remainingPages={stats.remainingPages}
                 isHovered={hoveredVolume === volumeId}
@@ -546,13 +519,14 @@
             class="flex w-full flex-col flex-wrap justify-center gap-[6px] sm:flex-row sm:justify-start"
           >
             {#if ($miscSettings.completedVolumesViewMode ?? 'volumes') === 'volumes'}
-              {#each volumeSections.completedVolumes as { volumeId, volumeData }}
-                {@const stats = volumeStats.get(volumeId)!}
+              {#each volumeSections.completedVolumes as { volumeId, volumeData } (volumeId)}
+                {@const stats = volumeStats[volumeId]!}
                 <VolumeCard
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnailUrl={thumbnailUrls.get(volumeId)}
+                  thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ??
+                    undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
@@ -562,14 +536,15 @@
                 />
               {/each}
             {:else}
-              {#each completedSeries as { representativeEntry, completedLabel }}
+              {#each completedSeries as { representativeEntry, completedLabel } (representativeEntry.volumeId)}
                 {@const { volumeId, volumeData } = representativeEntry}
-                {@const stats = volumeStats.get(volumeId)!}
+                {@const stats = volumeStats[volumeId]!}
                 <VolumeCard
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnailUrl={thumbnailUrls.get(volumeId)}
+                  thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ??
+                    undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}

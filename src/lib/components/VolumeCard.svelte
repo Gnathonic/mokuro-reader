@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Attachment } from 'svelte/attachments';
   import { nav } from '$lib/util/hash-router';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
@@ -7,7 +8,7 @@
     volumeId: string;
     seriesId: string | undefined;
     volumeTitle: string | undefined;
-    thumbnailUrl: string | undefined;
+    thumbnail: Blob | undefined;
     progressPercentString: string;
     remainingPages: number;
     isHovered: boolean;
@@ -23,7 +24,7 @@
     volumeId,
     seriesId,
     volumeTitle,
-    thumbnailUrl,
+    thumbnail,
     progressPercentString,
     remainingPages,
     isHovered,
@@ -34,6 +35,26 @@
     targetPagesPerPeriod = null,
     subtitle = null
   }: Props = $props();
+
+  function thumbnailAttachment(
+    thumbnail: Blob | undefined
+  ): Attachment<HTMLImageElement> | undefined {
+    if (!thumbnail) {
+      return undefined;
+    }
+
+    return (element) => {
+      const url = URL.createObjectURL(thumbnail);
+      element.src = url;
+
+      return () => {
+        if (element.src === url) {
+          element.removeAttribute('src');
+        }
+        URL.revokeObjectURL(url);
+      };
+    };
+  }
 </script>
 
 <div
@@ -51,13 +72,13 @@
       }}
     >
       <img
-        src={thumbnailUrl}
         alt={volumeTitle || 'Volume Cover'}
         class="mb-3 rounded"
         style="max-width: 125px; max-height: 180px; height: auto;"
+        {@attach thumbnailAttachment(thumbnail)}
       />
     </a>
-    <div class="pending" style="width: calc(100% - {progressPercentString});"></div>
+    <div class="pending" style:--progress={progressPercentString}></div>
   </div>
 
   {#if showProgressBar}
@@ -120,6 +141,7 @@
     top: 0;
     right: 0;
     bottom: 0;
+    width: calc(100% - var(--progress));
     background-color: #333;
     opacity: 0.55;
     pointer-events: none;
