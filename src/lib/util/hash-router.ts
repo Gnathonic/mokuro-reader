@@ -19,7 +19,9 @@ export type View =
   | { type: 'reading-speed' }
   | { type: 'merge-series' }
   | { type: 'libraries' }
-  | { type: 'add-library'; params?: Record<string, string> };
+  | { type: 'add-library'; params?: Record<string, string> }
+  | { type: 'progress-tracker' }
+  | { type: 'manage-goals' };
 
 function getInitialView(): View {
   if (typeof window !== 'undefined') {
@@ -48,6 +50,8 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
     if (segments[0] === 'libraries' || segments[0] === 'add-library') return { type: 'catalog' };
+    if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
+    if (segments[0] === 'manage-goals') return { type: 'manage-goals' };
 
     if (segments[0] === 'series' && segments.length >= 2) {
       const seriesId = decodeURIComponent(segments[1]);
@@ -104,6 +108,10 @@ export function viewToHash(view: View): string {
       }
       return base;
     }
+    case 'progress-tracker':
+      return '#/progress-tracker';
+    case 'manage-goals':
+      return '#/manage-goals';
   }
 }
 
@@ -170,7 +178,13 @@ export const nav = {
 
   /** Navigate to add library page */
   toAddLibrary: (params?: Record<string, string>, options?: NavigateOptions) =>
-    navigate({ type: 'add-library', params }, options)
+    navigate({ type: 'add-library', params }, options),
+
+  /** Navigate to progress tracker page */
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options),
+
+  /** Navigate to manage goals page */
+  toManageGoals: (options?: NavigateOptions) => navigate({ type: 'manage-goals' }, options)
 };
 
 /**
@@ -186,6 +200,9 @@ export const nav = {
  * - reading-speed -> catalog
  * - upload -> catalog
  * - merge-series -> catalog
+ * - add-library -> libraries
+ * - progress-tracker -> catalog
+ * - manage-goals -> progress-tracker
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -209,7 +226,11 @@ export function navigateBack(): void {
     case 'upload':
     case 'merge-series':
     case 'libraries':
+    case 'progress-tracker':
       nav.toCatalog();
+      break;
+    case 'manage-goals':
+      nav.toProgressTracker();
       break;
     case 'add-library':
       nav.toLibraries();

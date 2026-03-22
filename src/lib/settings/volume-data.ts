@@ -597,6 +597,25 @@ export function updateVolumeSetting(volume: string, key: VolumeSettingsKey, valu
   zoomDefault();
 }
 
+/**
+ * Calculate pages read within a specific time period
+ * @param pageTurns - Array of page turn data [timestamp_ms, page_number, char_count]
+ * @param periodStartTimestamp - Timestamp (ms) when the period started
+ * @returns Number of unique pages read since the period started
+ */
+export function calculatePagesReadInPeriod(
+  pageTurns: PageTurn[],
+  periodStartTimestamp: number
+): number {
+  // Filter page turns to only those since the period started
+  const recentTurns = pageTurns.filter(([timestamp]) => timestamp >= periodStartTimestamp);
+
+  // Count unique pages (use Set to deduplicate)
+  const uniquePages = new Set(recentTurns.map(([, pageNumber]) => pageNumber));
+
+  return uniquePages.size;
+}
+
 export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
   if ($volumes) {
     const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;

@@ -16,7 +16,9 @@
     'reading-speed': () => import('$lib/views/ReadingSpeedView.svelte'),
     'merge-series': () => import('$lib/views/MergeSeriesView.svelte'),
     libraries: () => import('$lib/views/LibraryManagerView.svelte'),
-    'add-library': () => import('$lib/views/AddLibraryView.svelte')
+    'add-library': () => import('$lib/views/AddLibraryView.svelte'),
+    'progress-tracker': () => import('$lib/views/ProgressTrackerView.svelte'),
+    'manage-goals': () => import('$lib/views/ManageGoalsView.svelte')
   };
 
   // Currently loaded component
