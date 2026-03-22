@@ -34,6 +34,7 @@
     width: var(--box-width);
     font-size: 12px;
     cursor: default;
+    text-align: center;
   }
 
   .progress-bar-percentage {

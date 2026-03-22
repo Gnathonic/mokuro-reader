@@ -480,7 +480,6 @@
               seriesId={volumeData.series_uuid}
               volumeTitle={volumeData.volume_title}
               thumbnailUrl={thumbnailUrls.get(volumeId)}
-              progressPercent={stats.progressPercent}
               progressPercentString={stats.progressPercentString}
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
@@ -489,7 +488,6 @@
               showDeadline={true}
               {pagesReadInPeriod}
               {targetPagesPerPeriod}
-              targetMode={$miscSettings.progressTargetMode ?? 'daily'}
             />
           {/each}
         </div>
@@ -511,7 +509,6 @@
                 seriesId={volumeData.series_uuid}
                 volumeTitle={volumeData.volume_title}
                 thumbnailUrl={thumbnailUrls.get(volumeId)}
-                progressPercent={stats.progressPercent}
                 progressPercentString={stats.progressPercentString}
                 remainingPages={stats.remainingPages}
                 isHovered={hoveredVolume === volumeId}
@@ -556,7 +553,6 @@
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
                   thumbnailUrl={thumbnailUrls.get(volumeId)}
-                  progressPercent={stats.progressPercent}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
@@ -574,7 +570,6 @@
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
                   thumbnailUrl={thumbnailUrls.get(volumeId)}
-                  progressPercent={stats.progressPercent}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}

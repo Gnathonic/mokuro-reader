@@ -1,22 +1,13 @@
 <script lang="ts">
   import { volumeDeadlines, setVolumeDeadline, removeVolumeDeadline, dateUtils } from '$lib/goals';
-  import type { ProgressTargetMode } from '$lib/settings/misc';
 
   interface Props {
     volumeId: string;
-    remainingPages: number;
     pagesReadInPeriod?: number | null;
     targetPagesPerPeriod?: number | null;
-    targetMode?: ProgressTargetMode;
   }
 
-  let {
-    volumeId,
-    remainingPages,
-    pagesReadInPeriod = null,
-    targetPagesPerPeriod = null,
-    targetMode = 'daily'
-  }: Props = $props();
+  let { volumeId, pagesReadInPeriod = null, targetPagesPerPeriod = null }: Props = $props();
 
   // Get the deadline for this volume from the store
   let deadline = $derived($volumeDeadlines[volumeId] || null);
@@ -25,25 +16,20 @@
   let isEditing = $state(false);
   let dateInputValue = $state('');
 
-  // Reference to the date input for focus management
-  let dateInputRef = $state<HTMLInputElement | null>(null);
+  function focusDateInput(node: HTMLInputElement) {
+    node.focus();
+    node.showPicker?.();
+  }
 
   function showDatePicker() {
     // Set initial value to current deadline or tomorrow
     if (deadline) {
       dateInputValue = deadline;
     } else {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
       dateInputValue = dateUtils.formatDate(tomorrow);
     }
     isEditing = true;
-
-    // Focus the input after a tick
-    setTimeout(() => {
-      dateInputRef?.focus();
-      dateInputRef?.showPicker?.();
-    }, 0);
   }
 
   function hideDatePicker() {
@@ -75,9 +61,6 @@
   // Format the deadline for display
   let deadlineDisplay = $derived.by(() => {
     if (!deadline) return null;
-
-    const deadlineDate = new Date(deadline);
-    const today = new Date();
 
     // Calculate days remaining
     const daysRemaining = dateUtils.calculateDaysRemaining(deadline) - 1;
@@ -129,8 +112,7 @@
     >
       {#if showDeadlineDisplay}
         <div class={urgencyClass}>
-          {pagesReadInPeriod}/{targetPagesPerPeriod}
-          {targetMode === 'daily' ? 'pages' : 'pages'}
+          {pagesReadInPeriod}/{targetPagesPerPeriod} pages
         </div>
         <div class="ml-1 text-gray-500">
           ({deadlineDisplay})
@@ -143,7 +125,7 @@
     <!-- Edit mode -->
     <div class="box-border rounded bg-gray-700 p-1">
       <input
-        bind:this={dateInputRef}
+        {@attach focusDateInput}
         type="date"
         value={dateInputValue}
         class="box-border w-full rounded border-none bg-gray-600 p-1 text-xs text-white"
