@@ -21,7 +21,6 @@
       onkeydown={(e) => e.key === 'Enter' && toggleExpanded()}
       role="button"
       tabindex="0"
-      aria-expanded={expanded}
     >
       <div class="font-medium">
         {#if $progressTrackerStore.processes.length === 1}
