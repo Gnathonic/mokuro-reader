@@ -182,7 +182,7 @@
               value={selection.periodKey}
               onchange={(e) => handlePeriodChange((e.target as HTMLSelectElement).value)}
             >
-              {#each availablePeriods as period}
+              {#each availablePeriods as period (period.periodKey)}
                 <option value={period.periodKey}>{period.label}</option>
               {/each}
             </select>
@@ -195,7 +195,7 @@
               {#if $customGoals.length === 0}
                 <option value="none">No custom goals</option>
               {:else}
-                {#each $customGoals as goal}
+                {#each $customGoals as goal (goal.id)}
                   <option value={goal.id}>{goal.name}</option>
                 {/each}
               {/if}
@@ -306,7 +306,6 @@
       <div class="grid gap-2 sm:grid-cols-2">
         <div>
           <Label class="text-xs text-gray-400">Name</Label>
-          <!-- TODO: Need to find out why pressing Shift blurs the input and focuses the body -->
           <Input bind:value={customName} size="sm" placeholder="My goal" />
         </div>
         <div>
@@ -329,9 +328,3 @@
     </div>
   {/if}
 </Card>
-
-<style>
-  :root {
-    text-align: center;
-  }
-</style>
