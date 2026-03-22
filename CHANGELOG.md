@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.5.7] - 2026-03-20
+
+### Fixed
+
+- **Text box dismiss toggles overlay** - Tapping outside an OCR text box to dismiss it in continuous scroll modes no longer toggles the reader overlay
+- **Fullscreen leaves invisible menu** - Toggling fullscreen from settings no longer leaves an invisible drawer capturing taps
+
+## [1.5.6] - 2026-03-20
+
+### Fixed
+
+- **Continuous scroll drag stutter** - Fixed a lag spike when starting to drag in continuous scroll modes, especially noticeable on mobile devices
+
+## [1.5.5] - 2026-03-20
+
+### Added
+
+- **Page dividers** - Toggle gaps between pages in continuous scroll modes (M hotkey) with adjustable size
+- **Text box context menu in continuous scroll** - Right-click context menu on OCR text boxes now works in both vertical and horizontal scroll modes
+
+### Fixed
+
+- **Horizontal scroll page tracking** - Improved page detection and progress reporting in horizontal continuous mode
+- **Yomitan context menu race condition** - Right-click menu no longer shifts items when Yomitan dismisses and deselects text
+
+## [1.5.4] - 2026-03-19
+
+### Added
+
+- **Continuous scroll reader (Alpha)** - Vertical and horizontal scroll modes with auto orientation matching. Zoom is in development
+- **Simplified settings panel** - Volume and Reader settings merged into one section with context-aware visibility
+- **Improved archive import support**
+
+### Fixed
+
+- **WebDAV logout when server unreachable** - Can now log out of WebDAV even when the server connection fails (#187)
+
+### Changed
+
+- **Page view mode is now global** - Single/dual/auto page mode is now a device-level setting rather than per-volume
+
 ## [1.5.3] - 2026-03-13
 
 ### Fixed

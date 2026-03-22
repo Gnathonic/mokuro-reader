@@ -527,6 +527,58 @@ describe('importFiles with image-only archives', () => {
   });
 });
 
+describe('importFiles with exported format archives', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    savedVolumes.length = 0;
+    importQueue.set([]);
+  });
+
+  afterEach(async () => {
+    clearCompletedImports();
+    await waitForImportsToComplete();
+  });
+
+  it('imports exported CBZ with internal mokuro at root', async () => {
+    const fixture = await loadFixture('exported-format', 'cbz-with-mokuro');
+    const files = fixtureToFiles(fixture);
+
+    const result = await importFiles(files);
+
+    expect(result.success).toBe(true);
+    expect(result.imported).toBe(1);
+    expect(savedVolumes).toHaveLength(1);
+    expect(savedVolumes[0].metadata.mokuro_version).not.toBe('');
+  });
+
+  it('imports exported CBZ with mokuro and thumbnail sidecar without spurious volume', async () => {
+    const fixture = await loadFixture('exported-format', 'cbz-with-mokuro-and-thumbnail');
+    const files = fixtureToFiles(fixture);
+
+    const result = await importFiles(files);
+
+    expect(result.success).toBe(true);
+    // Should import exactly 1 volume, not 2 (thumbnail sidecar must not become a volume)
+    expect(result.imported).toBe(1);
+    expect(savedVolumes).toHaveLength(1);
+    expect(savedVolumes[0].metadata.mokuro_version).not.toBe('');
+  });
+
+  it('imports exported image-only CBZ with thumbnail sidecar without spurious volume', async () => {
+    const fixture = await loadFixture('exported-format', 'cbz-image-only-with-thumbnail');
+    const files = fixtureToFiles(fixture);
+
+    const result = await importFiles(files);
+
+    expect(result.success).toBe(true);
+    // Should import exactly 1 volume, not 2
+    expect(result.imported).toBe(1);
+    await waitForImportsToComplete();
+    expect(savedVolumes).toHaveLength(1);
+    expect(savedVolumes[0].metadata.mokuro_version).toBe('');
+  });
+});
+
 describe('series name extraction consistency', () => {
   beforeEach(() => {
     vi.clearAllMocks();

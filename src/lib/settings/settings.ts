@@ -21,6 +21,11 @@ export type FontSize =
 
 export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 'keepZoom';
 
+// Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
+export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
+
+export type ScrollMode = 'vertical' | 'horizontal' | 'auto' | 'continuous';
+
 export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
 
 // AnkiConnect field mapping - template is freeform text with variables
@@ -96,6 +101,7 @@ export type PageViewMode = 'single' | 'dual' | 'auto';
 
 export type VolumeDefaults = {
   rightToLeft: boolean;
+  /** @deprecated Moved to top-level Settings.singlePageView. Kept for migration/sync compat. */
   singlePageView: PageViewMode;
   hasCover: boolean;
 };
@@ -139,6 +145,15 @@ export type Settings = {
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
+  continuousScroll: boolean;
+  singlePageView: PageViewMode;
+  scrollMode: ScrollMode;
+  continuousZoomDefault: ContinuousZoomMode;
+  pageDividers: boolean; // Enable dividers between pages in continuous scroll modes
+  scrollGap: number; // Pixels of padding between pages in scroll modes
+  /** @deprecated Removed — kept for settings migration compatibility */
+  seamlessSpreads?: boolean;
+  scrollSnap: boolean;
   volumeDefaults: VolumeDefaults;
   ankiConnectSettings: AnkiConnectSettings;
   catalogSettings: CatalogSettings;
@@ -256,6 +271,14 @@ const defaultSettings: Settings = {
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
+  continuousScroll: false,
+  singlePageView: 'auto',
+  scrollMode: 'auto',
+  continuousZoomDefault: 'zoomFitToScreen',
+  pageDividers: false,
+  scrollGap: 0,
+  seamlessSpreads: undefined,
+  scrollSnap: true,
   volumeDefaults: {
     singlePageView: 'auto',
     rightToLeft: true,
@@ -344,8 +367,21 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.volumeDefaults || {})
     };
 
-    // Validate singlePageView: convert legacy boolean to 'auto', or use default for any invalid value
+    // Validate singlePageView at top level: convert legacy boolean to 'auto', or use default for any invalid value
     const validPageViewModes = ['single', 'dual', 'auto'];
+    if (!validPageViewModes.includes(migratedProfile.singlePageView as string)) {
+      // Migrate from volumeDefaults if present
+      if (
+        migratedProfile.volumeDefaults?.singlePageView &&
+        validPageViewModes.includes(migratedProfile.volumeDefaults.singlePageView)
+      ) {
+        migratedProfile.singlePageView = migratedProfile.volumeDefaults.singlePageView;
+      } else {
+        migratedProfile.singlePageView = 'auto';
+      }
+    }
+
+    // Keep volumeDefaults.singlePageView for backward compat during migration
     if (!validPageViewModes.includes(migratedProfile.volumeDefaults.singlePageView)) {
       migratedProfile.volumeDefaults.singlePageView = 'auto';
     }

@@ -28,7 +28,7 @@ import { naturalSort } from '$lib/util/natural-sort';
  * 4. Basename without extension - handles format conversions (e.g., png->webp, jpg->avif)
  * 5. Page order fallback - sort files naturally and align by index
  */
-function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
+export function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
   const fileKeys = Object.keys(files);
   const result: File[] = new Array(pages.length);
 

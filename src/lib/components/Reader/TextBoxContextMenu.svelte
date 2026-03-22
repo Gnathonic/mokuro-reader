@@ -14,23 +14,11 @@
   let { x, y, lines, ankiEnabled, textBoxElement, onCopy, onCopyRaw, onAddToAnki, onClose }: Props =
     $props();
 
-  // Track current selection reactively (updates as user changes selection on mobile)
-  let selection = $state(window.getSelection()?.toString().trim() || '');
-  let hasSelection = $derived(selection.length > 0);
-
-  // Update selection periodically while menu is open (for mobile selection changes)
-  $effect(() => {
-    const updateSelection = () => {
-      const newSelection = window.getSelection()?.toString().trim() || '';
-      if (newSelection !== selection) {
-        selection = newSelection;
-      }
-    };
-
-    // Check for selection changes on various events
-    document.addEventListener('selectionchange', updateSelection);
-    return () => document.removeEventListener('selectionchange', updateSelection);
-  });
+  // Snapshot selection at menu open time — don't reactively track changes.
+  // Reactive tracking causes a race with Yomitan: clicking our menu dismisses
+  // Yomitan first → deselects text → menu items shift → click lands on wrong item.
+  const selection = window.getSelection()?.toString().trim() || '';
+  const hasSelection = selection.length > 0;
 
   // Full text from all lines
   const fullText = lines.join('');

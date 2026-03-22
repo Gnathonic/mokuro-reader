@@ -1,9 +1,12 @@
 <script lang="ts">
   import { Input, Label, Select } from 'flowbite-svelte';
-  import type { SettingsKey } from '$lib/settings';
+  import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
   import { settings, updateSetting } from '$lib/settings';
 
+  let isContinuous = $derived($settings.continuousScroll);
+
   let zoomModeValue = $derived($settings.zoomDefault);
+  let continuousZoomValue = $derived($settings.continuousZoomDefault);
   let fontSizeValue = $derived($settings.fontSize);
   let pageTransitionValue = $derived($settings.pageTransition);
 
@@ -12,6 +15,12 @@
     { value: 'zoomFitToWidth', name: 'Fit to width' },
     { value: 'zoomOriginal', name: 'Original size' },
     { value: 'keepZoom', name: 'Keep zoom' }
+  ];
+
+  let continuousZoomModes = [
+    { value: 'zoomFitToWidth', name: 'Fit to width' },
+    { value: 'zoomFitToScreen', name: 'Fit to screen' },
+    { value: 'zoomOriginal', name: 'Original size (1:1)' }
   ];
 
   let pageTransitions = [
@@ -54,20 +63,30 @@
     On page zoom:
     <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Z)</span>
   </Label>
-  <Select
-    items={zoomModes}
-    value={zoomModeValue}
-    onchange={(e) => onSelectChange(e, 'zoomDefault')}
-  />
+  {#if isContinuous}
+    <Select
+      items={continuousZoomModes}
+      value={continuousZoomValue}
+      onchange={(e) => onSelectChange(e, 'continuousZoomDefault')}
+    />
+  {:else}
+    <Select
+      items={zoomModes}
+      value={zoomModeValue}
+      onchange={(e) => onSelectChange(e, 'zoomDefault')}
+    />
+  {/if}
 </div>
-<div>
-  <Label class="text-gray-900 dark:text-white">Page transition:</Label>
-  <Select
-    items={pageTransitions}
-    value={pageTransitionValue}
-    onchange={(e) => onSelectChange(e, 'pageTransition')}
-  />
-</div>
+{#if !isContinuous}
+  <div>
+    <Label class="text-gray-900 dark:text-white">Page transition:</Label>
+    <Select
+      items={pageTransitions}
+      value={pageTransitionValue}
+      onchange={(e) => onSelectChange(e, 'pageTransition')}
+    />
+  </div>
+{/if}
 <div>
   <Label class="text-gray-900 dark:text-white">Fontsize:</Label>
   <Select items={fontSizes} value={fontSizeValue} onchange={(e) => onSelectChange(e, 'fontSize')} />
