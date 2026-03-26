@@ -778,15 +778,26 @@ ctx.addEventListener('message', async (event) => {
               thumbnail?: { filename: string; blob: Blob };
             }
           | undefined;
-        if (message.includeSidecars === true) {
+        if (message.includeSidecars === true && !message.embedThumbnailSidecar) {
           const generated = await generateVolumeSidecarsFromDb(volumeUuid);
           if (generated.mokuro || generated.thumbnail) {
+            // Derive sidecar base name from the archive filename so they match
+            const baseName = downloadFilename
+              ? downloadFilename.replace(/\.[^.]+$/, '')
+              : volumeTitle;
             sidecars = {};
             if (generated.mokuro) {
-              sidecars.mokuro = generated.mokuro;
+              sidecars.mokuro = {
+                ...generated.mokuro,
+                filename: `${baseName}.mokuro`
+              };
             }
             if (generated.thumbnail) {
-              sidecars.thumbnail = generated.thumbnail;
+              const ext = generated.thumbnail.filename.split('.').pop() || 'webp';
+              sidecars.thumbnail = {
+                ...generated.thumbnail,
+                filename: `${baseName}.${ext}`
+              };
             }
           }
         }

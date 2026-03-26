@@ -424,7 +424,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             link.click();
             URL.revokeObjectURL(url);
 
-            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+            if (
+              item.sidecarOptions.includeSidecars &&
+              !item.sidecarOptions.embedSidecarsInArchive &&
+              data.sidecars
+            ) {
               if (data.sidecars.mokuro) {
                 downloadFileBlob(
                   new File([data.sidecars.mokuro.blob], data.sidecars.mokuro.filename, {
