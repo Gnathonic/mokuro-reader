@@ -4,7 +4,8 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
-  StorageQuota
+  StorageQuota,
+  UploadPayload
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
@@ -25,6 +26,11 @@ const STORAGE_KEYS = {
 const MOKURO_FOLDER = 'mokuro-reader';
 const VOLUME_DATA_FILE = 'volume-data.json';
 const PROFILES_FILE = 'profiles.json';
+function getUploadPayloadSize(payload: UploadPayload): number {
+  if (payload instanceof Blob) return payload.size;
+  if (payload instanceof ArrayBuffer) return payload.byteLength;
+  return payload.byteLength;
+}
 
 /**
  * Exponential backoff with jitter for retrying MEGA API calls
@@ -136,6 +142,9 @@ export class MegaProvider implements SyncProvider {
   private storage: any = null;
   private mokuroFolder: any = null;
   private initPromise: Promise<void>;
+  private workerShareLinksToCleanup = new Set<string>();
+  private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
+  private static readonly WORKER_SHARE_LINK_THROTTLE_MS = 200;
 
   constructor() {
     if (browser) {
@@ -405,6 +414,41 @@ export class MegaProvider implements SyncProvider {
     });
   }
 
+  private getNodeById(fileId: string): any | null {
+    const files = Object.values(this.storage.files || {});
+    return files.find((f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory) || null;
+  }
+
+  private async findFolderByPath(folderPath: string, rootFolder: any): Promise<any | null> {
+    const pathParts = folderPath.split('/').filter(Boolean);
+    let currentFolder = rootFolder;
+
+    for (const folderName of pathParts) {
+      const children = await this.listFolder(currentFolder);
+      const nextFolder = children.find((f: any) => f.name === folderName && f.directory);
+      if (!nextFolder) {
+        return null;
+      }
+      currentFolder = nextFolder;
+    }
+
+    return currentFolder;
+  }
+
+  private buildRenamedCloudFile(
+    file: CloudFileMetadata,
+    nextPath: string,
+    fileId?: string,
+    modifiedTime?: string
+  ): CloudFileMetadata {
+    return {
+      ...file,
+      fileId: fileId || file.fileId,
+      path: nextPath,
+      modifiedTime: modifiedTime || new Date().toISOString()
+    };
+  }
+
   // VOLUME STORAGE METHODS
 
   async listCloudVolumes(
@@ -436,12 +480,16 @@ export class MegaProvider implements SyncProvider {
         // Skip non-files
         if ((file as any).directory) continue;
 
-        // Check if file is a CBZ or JSON
+        // Check if file is a CBZ, sidecar, or JSON
         const name = (file as any).name || '';
         const isCbz = name.toLowerCase().endsWith('.cbz');
+        const isSidecar =
+          name.toLowerCase().endsWith('.mokuro') ||
+          name.toLowerCase().endsWith('.mokuro.gz') ||
+          name.toLowerCase().endsWith('.webp');
         const isJson = name === 'volume-data.json' || name === 'profiles.json';
 
-        if (!isCbz && !isJson) continue;
+        if (!isCbz && !isSidecar && !isJson) continue;
 
         // Check if file is in ANY mokuro-reader folder or subfolder
         let parent = (file as any).parent;
@@ -516,12 +564,21 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
 
+    const payloadSize = getUploadPayloadSize(blob);
     try {
+      if (onProgress) {
+        onProgress(0, payloadSize);
+      }
       // Wrap upload in retry logic to handle stale cache
       const fileId = await retryWithCacheRefresh(
         async () => {
@@ -538,9 +595,15 @@ export class MegaProvider implements SyncProvider {
             targetFolder = await this.ensureSeriesFolder(seriesFolderName, mokuroFolder);
           }
 
-          // Convert Blob to ArrayBuffer
-          const arrayBuffer = await blob.arrayBuffer();
-          const buffer = new Uint8Array(arrayBuffer);
+          let buffer: Uint8Array;
+          if (blob instanceof Uint8Array) {
+            buffer = blob;
+          } else if (blob instanceof ArrayBuffer) {
+            buffer = new Uint8Array(blob);
+          } else {
+            const arrayBuffer = await blob.arrayBuffer();
+            buffer = new Uint8Array(arrayBuffer);
+          }
 
           // Check if file already exists
           const children = await this.listFolder(targetFolder);
@@ -563,8 +626,8 @@ export class MegaProvider implements SyncProvider {
           }
 
           // Upload new file
-          return new Promise<string>((resolve, reject) => {
-            targetFolder.upload(
+          const uploadedFileId = await new Promise<string>((resolve, reject) => {
+            const uploadStream = targetFolder.upload(
               {
                 name: fileName,
                 size: buffer.length
@@ -575,17 +638,27 @@ export class MegaProvider implements SyncProvider {
                   reject(error);
                 } else {
                   const fileId = file?.nodeId || file?.id || '';
+                  if (onProgress) {
+                    onProgress(buffer.length, buffer.length);
+                  }
                   console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
                   resolve(fileId);
                 }
               }
             );
+            if (onProgress && uploadStream && typeof uploadStream.on === 'function') {
+              uploadStream.on('progress', (progress: any) => {
+                const loaded = Number(progress?.bytesUploaded ?? progress?.bytesLoaded ?? 0);
+                const total = Number(progress?.bytesTotal ?? buffer.length);
+                onProgress(loaded, total > 0 ? total : buffer.length);
+              });
+            }
           });
+          return uploadedFileId;
         },
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
       );
-
       // Refresh cache from MEGA's internal storage.files (which auto-updates on upload)
       // Skip reinitialize since storage.files is already fresh
       await megaCache.fetch(true);
@@ -732,6 +805,171 @@ export class MegaProvider implements SyncProvider {
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'mega',
         'DELETE_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file;
+    }
+
+    try {
+      return await retryWithCacheRefresh(
+        async () => {
+          const megaFile = this.getNodeById(file.fileId);
+          if (!megaFile) {
+            throw new Error('File not found');
+          }
+
+          const pathParts = normalizedNewPath.split('/');
+          const newFileName = pathParts.pop() || normalizedNewPath;
+          const newSeriesPath = pathParts.join('/');
+          const mokuroFolder = await this.ensureMokuroFolder();
+          const targetFolder = newSeriesPath
+            ? await this.ensureSeriesFolder(newSeriesPath, mokuroFolder)
+            : mokuroFolder;
+
+          const targetChildren = await this.listFolder(targetFolder);
+          const existingTarget = targetChildren.find(
+            (child: any) =>
+              !child.directory &&
+              child.name === newFileName &&
+              child !== megaFile &&
+              child.nodeId !== megaFile.nodeId &&
+              child.id !== megaFile.id
+          );
+          if (existingTarget) {
+            throw new ProviderError(
+              `Target file already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          if (megaFile.parent !== targetFolder) {
+            await megaFile.moveTo(targetFolder);
+          }
+          if (megaFile.name !== newFileName) {
+            await megaFile.rename(newFileName);
+          }
+
+          const nextFileId = megaFile.nodeId || megaFile.id || file.fileId;
+          return this.buildRenamedCloudFile(file, normalizedNewPath, nextFileId);
+        },
+        `Rename file ${file.fileId} in MEGA`,
+        () => this.reinitialize()
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'mega',
+        'RENAME_FAILED',
+        false,
+        true
+      );
+    }
+  }
+
+  async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedOldPath = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOldPath === normalizedNewPath) {
+      return megaCache.getBySeries(normalizedOldPath);
+    }
+
+    const existingFiles = megaCache.getBySeries(normalizedOldPath);
+    if (existingFiles.length === 0) {
+      return [];
+    }
+
+    try {
+      await retryWithCacheRefresh(
+        async () => {
+          const mokuroFolder = await this.ensureMokuroFolder();
+          const sourceFolder = await this.findFolderByPath(normalizedOldPath, mokuroFolder);
+          if (!sourceFolder) {
+            throw new ProviderError(
+              `Series folder '${normalizedOldPath}' not found`,
+              'mega',
+              'FOLDER_NOT_FOUND'
+            );
+          }
+
+          const existingTargetFolder = await this.findFolderByPath(normalizedNewPath, mokuroFolder);
+          if (existingTargetFolder && existingTargetFolder !== sourceFolder) {
+            throw new ProviderError(
+              `Target series folder already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          const pathParts = normalizedNewPath.split('/');
+          const newFolderName = pathParts.pop() || normalizedNewPath;
+          const newParentPath = pathParts.join('/');
+          const targetParent = newParentPath
+            ? await this.ensureSeriesFolder(newParentPath, mokuroFolder)
+            : mokuroFolder;
+
+          const targetChildren = await this.listFolder(targetParent);
+          const conflictingFolder = targetChildren.find(
+            (child: any) =>
+              child.directory &&
+              child.name === newFolderName &&
+              child !== sourceFolder &&
+              child.nodeId !== sourceFolder.nodeId &&
+              child.id !== sourceFolder.id
+          );
+          if (conflictingFolder) {
+            throw new ProviderError(
+              `Target series folder already exists at '${normalizedNewPath}'`,
+              'mega',
+              'TARGET_EXISTS'
+            );
+          }
+
+          if (sourceFolder.parent !== targetParent) {
+            await sourceFolder.moveTo(targetParent);
+          }
+          if (sourceFolder.name !== newFolderName) {
+            await sourceFolder.rename(newFolderName);
+          }
+        },
+        `Rename series folder '${normalizedOldPath}' in MEGA`,
+        () => this.reinitialize()
+      );
+
+      return existingFiles.map((file) =>
+        this.buildRenamedCloudFile(
+          file,
+          `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
+          file.fileId,
+          file.modifiedTime
+        )
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+      throw new ProviderError(
+        `Failed to rename series folder: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'mega',
+        'RENAME_FAILED',
         false,
         true
       );
@@ -930,6 +1168,44 @@ export class MegaProvider implements SyncProvider {
         false,
         true
       );
+    }
+  }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { megaEmail: email, megaPassword: password };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    const mokuroFolder = await this.ensureMokuroFolder();
+    await this.ensureSeriesFolder(seriesTitle, mokuroFolder);
+  }
+
+  async getWorkerDownloadCredentials(fileId: string): Promise<Record<string, any>> {
+    const result = await (this.workerShareLinkMutex = this.workerShareLinkMutex.then(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, MegaProvider.WORKER_SHARE_LINK_THROTTLE_MS)
+      );
+
+      const shareUrl = await this.createShareLink(fileId);
+      this.workerShareLinksToCleanup.add(fileId);
+      return { megaShareUrl: shareUrl };
+    }));
+
+    return result || {};
+  }
+
+  async cleanupWorkerDownload(fileId: string): Promise<void> {
+    if (!this.workerShareLinksToCleanup.has(fileId)) return;
+
+    try {
+      await this.deleteShareLink(fileId);
+    } catch (error) {
+      console.warn(`Failed to cleanup MEGA share link for ${fileId}:`, error);
+    } finally {
+      this.workerShareLinksToCleanup.delete(fileId);
     }
   }
 

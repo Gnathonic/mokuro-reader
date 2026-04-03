@@ -5,7 +5,6 @@
   import { onMount } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { Spinner } from 'flowbite-svelte';
-  import type { PageViewMode } from '$lib/settings/settings';
   import { routeParams } from '$lib/util/hash-router';
 
   let volumeId = $derived($routeParams.volume || '');
@@ -18,7 +17,6 @@
   let cachedVolumeSettings = $state<
     | {
         rightToLeft: boolean;
-        singlePageView: PageViewMode;
         hasCover: boolean;
       }
     | undefined
@@ -43,7 +41,6 @@
       if (
         !cachedVolumeSettings ||
         cachedVolumeSettings.rightToLeft !== newSettings.rightToLeft ||
-        cachedVolumeSettings.singlePageView !== newSettings.singlePageView ||
         cachedVolumeSettings.hasCover !== newSettings.hasCover
       ) {
         cachedVolumeSettings = newSettings;

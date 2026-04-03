@@ -1,9 +1,9 @@
 {
   "version": "0.2.0",
   "title": "Test Manga",
-  "title_uuid": "8582002d-f627-4535-b8e8-4cef0d90faf4",
+  "title_uuid": "c44d6aad-bff3-4d73-b79f-f79302a5ac02",
   "volume": "Volume 1",
-  "volume_uuid": "7978afb8-efa4-4f33-abe8-3f4cf92d5eb2",
+  "volume_uuid": "a3607086-016a-42a2-a75c-a2f072ad096c",
   "pages": [
     {
       "version": "0.1.7",

@@ -12,7 +12,6 @@
   import YomitanSettings from './YomitanSettings.svelte';
   import Stats from './Stats.svelte';
   import VolumeDefaults from './Volume/VolumeDefaults.svelte';
-  import VolumeSettings from './Volume/VolumeSettings.svelte';
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
 
@@ -87,13 +86,11 @@
   <div class="flex flex-col gap-5">
     <Accordion flush>
       <QuickAccess bind:open />
-      {#if isReader()}
-        <VolumeSettings />
-      {:else}
+      <ReaderSettings />
+      {#if !isReader()}
         <VolumeDefaults />
       {/if}
       <Profiles {onClose} />
-      <ReaderSettings />
       <AnkiConnectSettings />
       <YomitanSettings />
       <CatalogSettings />

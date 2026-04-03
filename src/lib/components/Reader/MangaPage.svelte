@@ -12,9 +12,11 @@
 
   interface Props {
     page: Page;
-    src: File;
+    src?: File | null;
     cachedUrl?: string | null;
     volumeUuid: string;
+    /** 0-based page index within the volume */
+    pageIndex?: number;
     /** Force text visibility (for placeholder/missing pages) */
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
@@ -23,8 +25,16 @@
     onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
-  let { page, src, cachedUrl, volumeUuid, forceVisible = false, onContextMenu, onTextBoxActivate }:
-    Props = $props();
+  let {
+    page,
+    src,
+    cachedUrl,
+    volumeUuid,
+    pageIndex,
+    forceVisible = false,
+    onContextMenu,
+    onTextBoxActivate
+  }: Props = $props();
 
   let url = $state('');
 
@@ -63,5 +73,13 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} {src} {volumeUuid} {forceVisible} {onContextMenu} {onTextBoxActivate} />
+  <TextBoxes
+    {page}
+    src={src ?? undefined}
+    {volumeUuid}
+    {pageIndex}
+    {forceVisible}
+    {onContextMenu}
+    {onTextBoxActivate}
+  />
 </div>

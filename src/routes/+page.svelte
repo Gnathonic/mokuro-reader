@@ -14,7 +14,9 @@
     cloud: () => import('$lib/views/CloudView.svelte'),
     upload: () => import('$lib/views/UploadView.svelte'),
     'reading-speed': () => import('$lib/views/ReadingSpeedView.svelte'),
-    'merge-series': () => import('$lib/views/MergeSeriesView.svelte')
+    'merge-series': () => import('$lib/views/MergeSeriesView.svelte'),
+    libraries: () => import('$lib/views/LibraryManagerView.svelte'),
+    'add-library': () => import('$lib/views/AddLibraryView.svelte')
   };
 
   // Currently loaded component
@@ -39,6 +41,8 @@
 
   onMount(() => {
     // Initialize hash router and get cleanup function
+    // Note: The currentView store is initialized with the correct view from URL hash
+    // so there's no flash to catalog. initRouter handles hashchange events and legacy redirects.
     const cleanup = initRouter();
     return cleanup;
   });

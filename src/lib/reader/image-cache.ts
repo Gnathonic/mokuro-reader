@@ -15,12 +15,7 @@ export interface CachedImage {
   loading: Promise<void> | null;
 }
 
-/**
- * Natural sort comparator for filenames
- */
-function naturalSort(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-}
+import { naturalSort } from '$lib/util/natural-sort';
 
 /**
  * Match files to pages using fuzzy matching strategies
@@ -33,7 +28,7 @@ function naturalSort(a: string, b: string): number {
  * 4. Basename without extension - handles format conversions (e.g., png->webp, jpg->avif)
  * 5. Page order fallback - sort files naturally and align by index
  */
-function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
+export function matchFilesToPages(files: Record<string, File>, pages: Page[]): File[] {
   const fileKeys = Object.keys(files);
   const result: File[] = new Array(pages.length);
 

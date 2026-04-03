@@ -13,9 +13,6 @@ export const panzoomStore = writable<PanZoom | undefined>(undefined);
 // undefined = not set yet (initial load), true/false = explicit state from user or navigation
 export const sessionFullscreenState = writable<boolean | undefined>(undefined);
 
-// Store for zoom level notifications
-export const zoomNotification = writable<{ percent: number; timestamp: number } | null>(null);
-
 export function initPanzoom(node: HTMLElement) {
   container = node;
 
@@ -394,9 +391,6 @@ export function handleWheel(e: WheelEvent): void {
 
     // Zoom centered on blended position
     pz.zoomTo(zoomX, zoomY, scaleMultiplier);
-
-    // Emit zoom notification for UI feedback
-    zoomNotification.set({ percent: Math.round(newScale * 100), timestamp: Date.now() });
   } else {
     // Pan vertically based on wheel deltaY
     const { x, y } = pz.getTransform();

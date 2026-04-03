@@ -8,7 +8,7 @@ import type { DriveFileMetadata } from '../../provider-interface';
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
  *
- * This cache mirrors the state of ALL .cbz files in Google Drive, serving two purposes:
+ * This cache mirrors the state of all managed reader files in Google Drive, serving two purposes:
  * 1. Detect backup status by checking if local volume paths exist in Drive (path collision check)
  * 2. Discover remote-only files for download placeholders (future feature)
  *
@@ -54,7 +54,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   }
 
   /**
-   * Fetch metadata for ALL .cbz files in the mokuro-reader folder
+   * Fetch metadata for all managed files in the mokuro-reader folder
    * and cache them in memory for the session
    */
   async fetchAllFiles(): Promise<void> {
@@ -86,6 +86,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         // Count by file type
         const typeCounts: Record<string, number> = {};
         const cbzFiles: any[] = [];
+        const sidecarFiles: any[] = [];
         const volumeDataFiles: any[] = [];
         const profilesFiles: any[] = [];
         const folderNames = new Map<string, string>();
@@ -109,6 +110,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
+          } else if (
+            item.name.endsWith('.mokuro') ||
+            item.name.endsWith('.mokuro.gz') ||
+            item.name.endsWith('.webp')
+          ) {
+            sidecarFiles.push(item);
           } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
             volumeDataFiles.push(item);
           } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
@@ -124,15 +131,17 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         }
 
         console.log('File type counts:', typeCounts);
-        console.log(`Found ${cbzFiles.length} .cbz files and ${folderNames.size} folders`);
+        console.log(
+          `Found ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${folderNames.size} folders`
+        );
         console.log('Folder names:', foundFolderNames);
 
         // Build cache from files using the folder map
         // Group by series title (folder name) for efficient series-based operations
         const cacheMap = new Map<string, DriveFileMetadata[]>();
 
-        // Add .cbz files (group by series title)
-        for (const file of cbzFiles) {
+        // Add archives and sidecars (group by series title)
+        for (const file of [...cbzFiles, ...sidecarFiles]) {
           const parentId = file.parents?.[0];
           const parentName = parentId ? folderNames.get(parentId) : null;
 
@@ -198,7 +207,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         }
 
         console.log(
-          `Cached ${cbzFiles.length} .cbz files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
+          `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
         );
         this.cache.set(cacheMap);
         this.lastFetchTime = Date.now();
@@ -215,6 +224,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         this.fetchingFlag = false;
         this.isFetchingStore.set(false);
         this.fetchPromise = null;
+
+        // Run folder deduplication after cache load (incremental - one pair at a time)
+        this.runDeduplication();
 
         // Check if sync was requested after login (do this in finally to ensure fetch is complete)
         const shouldSync =
@@ -557,9 +569,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   add(path: string, metadata: DriveFileMetadata): void {
     // Parse path to get series and volume title
     const parts = path.split('/');
-    if (parts.length === 2) {
-      const seriesTitle = parts[0];
-      const volumeTitle = parts[1].replace('.cbz', '');
+    if (parts.length >= 2) {
+      const seriesTitle = parts.slice(0, -1).join('/');
+      const volumeTitle = parts[parts.length - 1]?.replace('.cbz', '') || '';
       this.addDriveFile(seriesTitle, volumeTitle, metadata);
     }
   }
@@ -597,6 +609,33 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
       return newCache;
     });
+  }
+
+  /**
+   * Run folder deduplication asynchronously
+   * Called after cache fetch completes
+   */
+  private runDeduplication(): void {
+    // Import dynamically to avoid circular dependencies
+    Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
+      .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
+        if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        const ops = googleDriveProvider.getFolderOperations();
+        const result = await folderDeduplicator.deduplicateAll('google-drive', ops);
+
+        if (result.groupsMerged > 0) {
+          // Refetch cache to reflect the merged state
+          // This will trigger another dedup pass for any new duplicates created
+          console.log('[DriveCache] Dedup merged folders, refetching cache...');
+          await this.fetchAllFiles();
+        }
+      })
+      .catch((err) => {
+        console.error('[DriveCache] Deduplication failed:', err);
+      });
   }
 }
 

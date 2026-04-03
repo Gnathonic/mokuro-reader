@@ -2,10 +2,23 @@ name: PR Target Guard
 
 on:
   pull_request_target:
-    types: [opened]
+    types: [opened, reopened, synchronize]
 
 jobs:
-  check-target:
+  # Block any PR to main that doesn't come from develop
+  require-develop-to-main:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop'
+    steps:
+      - name: Block non-develop PRs to main
+        run: |
+          gh pr comment ${{ github.event.number }} --repo ${{ github.repository }} --body "PRs to \`main\` must come from \`develop\`. Please target \`develop\` instead, or merge your changes into \`develop\` first."
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Redirect external contributors to develop
+  redirect-forks:
     runs-on: ubuntu-latest
     if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.fork
     steps:

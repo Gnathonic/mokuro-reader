@@ -86,6 +86,14 @@ export function matchFileToVolume(
   return null;
 }
 
+function isThumbnailSidecarPath(path: string, pathPrefix: string): boolean {
+  const filename = path.split('/').pop()?.toLowerCase() || '';
+  if (!filename.endsWith('.webp')) return false;
+  if (pathPrefix === '.' || pathPrefix === '') return false;
+  const prefixName = (pathPrefix.split('/').pop() || pathPrefix).toLowerCase();
+  return filename === `${prefixName}.webp`;
+}
+
 /**
  * Calculate relative path for a file within a volume
  *
@@ -147,10 +155,12 @@ export async function extractArchiveByVolumes(
     // Match file to volume
     const matchedVolumeId = matchFileToVolume(entry.filename, volumePrefixes);
     if (!matchedVolumeId) continue;
+    const matchedPrefix = volumes.find((v) => v.id === matchedVolumeId)?.pathPrefix || '';
 
     // Check if it's an image
     const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
     if (!isImageExtension(ext)) continue;
+    if (isThumbnailSidecarPath(entry.filename, matchedPrefix)) continue;
 
     toExtract.push({ entry, volumeId: matchedVolumeId });
   }

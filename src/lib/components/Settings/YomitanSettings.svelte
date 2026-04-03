@@ -234,7 +234,7 @@
   }
 </script>
 
-<AccordionItem>
+<AccordionItem open>
   {#snippet header()}Yomitan{/snippet}
   <div class="flex flex-col gap-4">
     <Toggle

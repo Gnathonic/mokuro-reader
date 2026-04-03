@@ -1057,6 +1057,122 @@ async function createAsyncFixtures(): Promise<void> {
     ])
   );
 
+  // ============================================
+  // IMAGE-ONLY ARCHIVE FIXTURES
+  // ============================================
+
+  // 11. image-only-archive-single
+  // A single CBZ containing only images (no mokuro)
+  // This is the bug case: flat archives don't import
+  const imageOnlyArchiveSingle = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-single',
+    {
+      'manga.cbz': imageOnlyArchiveSingle
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false // Note: imageOnly is determined after archive extraction
+      }
+    ])
+  );
+
+  // 12. image-only-archive-multiple
+  // Multiple CBZ files, each containing only images (no mokuro)
+  // Simulates dragging a folder of raw CBZ files
+  const imageOnlyArchive1 = await createCbzImagesOnly(2);
+  const imageOnlyArchive2 = await createCbzImagesOnly(2);
+  const imageOnlyArchive3 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-multiple',
+    {
+      'Series Name v01.cbz': imageOnlyArchive1,
+      'Series Name v02.cbz': imageOnlyArchive2,
+      'Series Name v03.cbz': imageOnlyArchive3
+    },
+    createExpected(3, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v02',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v03',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 13. image-only-archive-with-metadata-suffix
+  // CBZ files with metadata in filename like "(2023) (Digital) (scan-group)"
+  // Tests that series name extraction strips this metadata
+  const metadataArchive1 = await createCbzImagesOnly(2);
+  const metadataArchive2 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-with-metadata-suffix',
+    {
+      'Test Manga With Long Name v01 (2023) (Digital) (scan-group).cbz': metadataArchive1,
+      'Test Manga With Long Name v02 (2023) (Digital) (scan-group).cbz': metadataArchive2
+    },
+    createExpected(2, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Test Manga With Long Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Test Manga With Long Name v02',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 14. image-only-archive-in-folder
+  // A folder containing multiple image-only CBZ files
+  // Simulates the exact user scenario: dragging "Test Manga With Long Name" folder
+  const folderArchive1 = await createCbzImagesOnly(2);
+  const folderArchive2 = await createCbzImagesOnly(2);
+  createFixture(
+    'image-only',
+    'archive-in-folder',
+    {
+      'Series Name/Series Name v01 (2023) (Digital).cbz': folderArchive1,
+      'Series Name/Series Name v02 (2023) (Digital).cbz': folderArchive2
+    },
+    createExpected(2, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v01',
+        imageOnly: false
+      },
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'Series Name v02',
+        imageOnly: false
+      }
+    ])
+  );
+
   // 10. archive-with-external-mokuro
   // CBZ with images only + external mokuro file
   // This tests the fix for flat archives with external mokuro pairing
@@ -1078,7 +1194,146 @@ async function createAsyncFixtures(): Promise<void> {
     ])
   );
 
+  // ============================================
+  // EXPORTED FORMAT FIXTURES
+  // ============================================
+  // These simulate the archive format produced by the mokuro-reader exporter:
+  // - Images inside a subfolder named after the volume
+  // - Mokuro JSON at ZIP root (sibling to folder)
+  // - Optional thumbnail sidecar (.webp) at ZIP root
+
+  // Minimal 1x1 WebP image
+  const TINY_WEBP = Buffer.from(
+    'UklGRhoAAABXRUJQVlA4IA4AAACwAQCdASoBAAEAAQAcJYgCdAEO/hepgAAAAA==',
+    'base64'
+  );
+
+  // Helper: create exported-format CBZ with folder structure
+  async function createExportedCbz(options: {
+    folderName: string;
+    pageCount: number;
+    mokuro?: string; // mokuro JSON content, omit for image-only
+    thumbnail?: Buffer; // thumbnail sidecar, omit for no thumbnail
+  }): Promise<Buffer> {
+    const blobWriter = new BlobWriter('application/zip');
+    const zipWriter = new ZipWriter(blobWriter);
+
+    // Add images inside subfolder
+    for (let i = 1; i <= options.pageCount; i++) {
+      const filename = `${options.folderName}/page${String(i).padStart(3, '0')}.jpg`;
+      await zipWriter.add(filename, new Uint8ArrayReader(new Uint8Array(TINY_PNG)));
+    }
+
+    // Add mokuro JSON at root if provided
+    if (options.mokuro) {
+      await zipWriter.add(`${options.folderName}.mokuro`, new TextReader(options.mokuro));
+    }
+
+    // Add thumbnail sidecar at root if provided
+    if (options.thumbnail) {
+      await zipWriter.add(
+        `${options.folderName}.webp`,
+        new Uint8ArrayReader(new Uint8Array(options.thumbnail))
+      );
+    }
+
+    await zipWriter.close();
+    const blob = await blobWriter.getData();
+    const arrayBuffer = await blob.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  const exportedMokuroJson = JSON.stringify(
+    {
+      version: '0.1.0',
+      title: 'Test Series',
+      title_uuid: 'test-series-uuid',
+      volume: 'manga',
+      volume_uuid: 'test-volume-uuid',
+      pages: [
+        {
+          img_path: 'page001.jpg',
+          img_width: 100,
+          img_height: 100,
+          blocks: [{ lines: ['テスト'] }]
+        },
+        { img_path: 'page002.jpg', img_width: 100, img_height: 100, blocks: [] }
+      ],
+      chars: 3
+    },
+    null,
+    2
+  );
+
+  // 1. cbz-with-mokuro: exported archive with mokuro JSON at root
+  const exportedCbzWithMokuro = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    mokuro: exportedMokuroJson
+  });
+  createFixture(
+    'exported-format',
+    'cbz-with-mokuro',
+    {
+      'manga.cbz': exportedCbzWithMokuro
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 2. cbz-with-mokuro-and-thumbnail: exported archive with mokuro + thumbnail sidecar
+  const exportedCbzWithMokuroAndThumb = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    mokuro: exportedMokuroJson,
+    thumbnail: TINY_WEBP
+  });
+  createFixture(
+    'exported-format',
+    'cbz-with-mokuro-and-thumbnail',
+    {
+      'manga.cbz': exportedCbzWithMokuroAndThumb
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
+  // 3. cbz-image-only-with-thumbnail: exported image-only archive with thumbnail sidecar
+  const exportedCbzImageOnlyThumb = await createExportedCbz({
+    folderName: 'manga',
+    pageCount: 2,
+    thumbnail: TINY_WEBP
+  });
+  createFixture(
+    'exported-format',
+    'cbz-image-only-with-thumbnail',
+    {
+      'manga.cbz': exportedCbzImageOnlyThumb
+    },
+    createExpected(1, [
+      {
+        sourceType: 'archive',
+        hasMokuro: false,
+        basePathContains: 'manga',
+        imageOnly: false
+      }
+    ])
+  );
+
   console.log('Created async fixtures (CBZ with internal mokuro)');
+  console.log('Created exported-format fixtures');
 }
 
 // Run async fixtures

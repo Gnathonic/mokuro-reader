@@ -129,6 +129,8 @@ export interface ExpectedPairingDetail {
 export interface DecompressedVolume {
   /** The mokuro file if found (null for image-only) */
   mokuroFile: File | null;
+  /** Optional thumbnail sidecar (e.g., Volume.webp) */
+  thumbnailSidecar?: File | null;
   /** Map of relative path → File for all images */
   imageFiles: Map<string, File>;
   /** Base path for series/volume name extraction */
@@ -182,6 +184,8 @@ export interface ProcessedMetadata {
   imageOnly?: boolean;
   /** Where this volume came from */
   sourceType?: 'local' | 'cloud';
+  /** Spine width in pixels (from mokuro metadata) */
+  spineWidth?: number;
 }
 
 /**

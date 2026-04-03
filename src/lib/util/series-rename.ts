@@ -4,6 +4,7 @@
 
 import { db } from '$lib/catalog/db';
 import { volumes as volumeDataStore } from '$lib/settings/volume-data';
+import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { get } from 'svelte/store';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -160,6 +161,10 @@ export async function executeRenameSeries(
   const preview = await generateRenameSeriesPreview(oldTitle, newTitle, seriesUuid);
 
   try {
+    if (preview.indexedDbChanges.length > 0) {
+      await unifiedCloudManager.renameSeries(oldTitle, newTitle);
+    }
+
     // Execute IndexedDB updates in a transaction
     await db.transaction('rw', [db.volumes], async () => {
       for (const change of preview.indexedDbChanges) {

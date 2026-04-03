@@ -11,7 +11,6 @@
     zoomDefault,
     zoomDefaultWithLayoutWait,
     zoomFitToScreen,
-    zoomNotification,
     handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
@@ -23,30 +22,42 @@
     updateSetting,
     updateVolumeSetting,
     volumes,
-    type VolumeSettings
+    type VolumeSettings,
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
-  import YomitanDrawer from './YomitanDrawer.svelte';
-  import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
+  import {
+    openCreateModal,
+    openUpdateModal,
+    sendQuickCapture,
+    getLastCardInfo,
+    getCardAgeInMin,
+    extractFieldValues,
+    getModelConfig,
+    type VolumeMetadata
+  } from '$lib/anki-connect';
+  import { showSnackbar } from '$lib/util';
   import {
     BackwardStepSolid,
     CaretLeftSolid,
     CaretRightSolid,
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
-  import Cropper from './Cropper.svelte';
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import VerticalScrollReader from './VerticalScrollReader.svelte';
+  import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
-  import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { isWideSpread, shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
+  import YomitanDrawer from './YomitanDrawer.svelte';
   import { logYomitanDebug } from '$lib/yomitan/debug';
   import { joinTextBoxLines } from '$lib/yomitan/core';
   import '$lib/styles/page-transitions.css';
@@ -68,16 +79,41 @@
   );
 
   let start: Date;
+  let textBoxWasActive = false;
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  const DRAG_THRESHOLD = 5;
 
   function mouseDown() {
     start = new Date();
   }
 
+  function handleOverlayPointerDown(e: PointerEvent) {
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+
+    const target = e.target as HTMLElement;
+    if (target.closest('.textBox')) {
+      textBoxWasActive = true;
+    }
+  }
+
   function handleOverlayToggle(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
-    // Only toggle if clicking on blank space (not text boxes)
+    // Clicking on a text box — don't toggle
     if (target.closest('.textBox')) return;
+
+    // Ignore drags/pans — only toggle on stationary clicks
+    const dx = e.clientX - pointerDownX;
+    const dy = e.clientY - pointerDownY;
+    if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+
+    // First tap outside after interacting with a text box dismisses it without toggling
+    if (textBoxWasActive) {
+      textBoxWasActive = false;
+      return;
+    }
 
     overlaysVisible = !overlaysVisible;
   }
@@ -92,42 +128,102 @@
   function left(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: left is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     } else {
       // LTR: left is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     }
   }
 
   function right(_e: any, ingoreTimeOut?: boolean) {
     if (volumeSettings.rightToLeft) {
       // RTL: right is backward - check target page mode
-      const newPage = calculateBackwardTarget(page);
-      changePage(newPage, ingoreTimeOut);
+      navigateBackward(ingoreTimeOut);
     } else {
       // LTR: right is forward
-      const newPage = page + navAmount;
-      changePage(newPage, ingoreTimeOut);
+      navigateForward(ingoreTimeOut);
     }
+  }
+
+  // Calculate target page when navigating forward.
+  // Uses "half-step" (+1) when the next image is a spread while current view is dual.
+  function calculateForwardTarget(currentPage: number): number {
+    const currentIndex = currentPage - 1;
+
+    if (!pages || currentIndex < 0 || currentIndex >= pages.length) {
+      return currentPage + navAmount;
+    }
+
+    const currentPageData = pages[currentIndex];
+    const nextPageData = pages[currentIndex + 1];
+    const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
+
+    const currentIsSingle = shouldShowSinglePage(
+      $settings.singlePageView,
+      currentPageData,
+      nextPageData,
+      previousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    if (currentIsSingle) {
+      return currentPage + 1;
+    }
+
+    // Half-step correction for off-alignment spreads:
+    // Current dual view is [N, N+1], next spread is [N+2, N+3].
+    // The further page from current in forward direction is N+3.
+    const forwardLookaheadPage = pages[currentIndex + 3];
+    const lookaheadIsWide =
+      forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
+
+    if (currentPageData && nextPageData && !isWideSpread(currentPageData) && lookaheadIsWide) {
+      return currentPage + 1;
+    }
+
+    return currentPage + 2;
   }
 
   // Calculate target page when navigating backward, accounting for single-page exceptions
   function calculateBackwardTarget(currentPage: number): number {
-    const targetIndex = currentPage - 2; // Try going back by current navAmount (assuming dual)
+    if (currentPage <= 1) return 0;
 
+    const currentIndex = currentPage - 1;
+    const currentPageData = pages?.[currentIndex];
+    const currentNextPageData = pages?.[currentIndex + 1];
+    const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
+
+    const currentShouldBeSingle = shouldShowSinglePage(
+      $settings.singlePageView,
+      currentPageData,
+      currentNextPageData,
+      currentPreviousPageData,
+      currentIndex === 0,
+      volumeSettings.hasCover
+    );
+
+    // Mirror of forward half-step fix:
+    // when moving backward from a dual view, inspect the further page in the
+    // previous spread chunk (currentPage - 2). If that page is wide, half-step.
+    if (!currentShouldBeSingle) {
+      const previousSpreadFurtherPage = pages?.[currentIndex - 2];
+      if (previousSpreadFurtherPage && isWideSpread(previousSpreadFurtherPage)) {
+        return currentPage - 1;
+      }
+    }
+
+    const targetIndex = currentPage - 2;
     if (targetIndex < 0) {
-      return currentPage - 1; // Just go back 1 if we're near the start
+      return currentPage - 1;
     }
 
     const targetPage = pages?.[targetIndex];
     const targetNextPage = pages?.[targetIndex + 1];
     const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
 
-    // Check if the target page should be shown in single mode
     const targetShouldBeSingle = shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       targetPage,
       targetNextPage,
       targetPreviousPage,
@@ -135,13 +231,17 @@
       volumeSettings.hasCover
     );
 
-    if (targetShouldBeSingle) {
-      // Target is a single-page exception, only go back by 1
-      return currentPage - 1;
-    } else {
-      // Target is dual-page, go back by current navAmount
-      return currentPage - navAmount;
-    }
+    return targetShouldBeSingle ? currentPage - 1 : currentPage - 2;
+  }
+
+  function navigateForward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateForwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
+  }
+
+  function navigateBackward(ingoreTimeOut?: boolean): void {
+    const targetPage = calculateBackwardTarget(page);
+    changePage(targetPage, ingoreTimeOut);
   }
 
   function changePage(newPage: number, ingoreTimeOut = false) {
@@ -161,7 +261,7 @@
       // AND trying to go further in that direction
       if (newPage < 1 && page === 1) {
         // Already on first page, trying to go back - navigate to previous volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -171,7 +271,7 @@
         return;
       } else if (newPage > pages.length && page === pages.length) {
         // Already on last page, trying to go forward - navigate to next volume
-        let seriesVolumes = $currentSeries;
+        let seriesVolumes = $currentSeries || [];
         const currentVolumeIndex = seriesVolumes.findIndex(
           (v) => v.volume_uuid === volume.volume_uuid
         );
@@ -257,6 +357,24 @@
       event.preventDefault();
     }
 
+    // In continuous scroll mode, let ContinuousScrollReader handle navigation keys
+    if ($settings.continuousScroll) {
+      const continuousModeKeys = [
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'PageUp',
+        'PageDown',
+        'Space',
+        'Home',
+        'End'
+      ];
+      if (continuousModeKeys.includes(action)) {
+        return;
+      }
+    }
+
     switch (action) {
       case 'ArrowLeft':
         left(event, true);
@@ -265,7 +383,7 @@
         scrollImage('up');
         return;
       case 'PageUp':
-        changePage(page - navAmount, true);
+        navigateBackward(true);
         return;
       case 'ArrowRight':
         right(event, true);
@@ -275,7 +393,7 @@
         return;
       case 'PageDown':
       case 'Space':
-        changePage(page + navAmount, true);
+        navigateForward(true);
         return;
       case 'Home':
         changePage(1, true);
@@ -313,10 +431,27 @@
         }
         return;
       case 'KeyP':
-        rotatePageMode();
+        if ($settings.continuousScroll) {
+          rotateScrollMode();
+        } else {
+          rotatePageMode();
+        }
+        return;
+      case 'KeyO':
+        offsetSpreads();
         return;
       case 'KeyZ':
         rotateZoomMode();
+        return;
+      case 'KeyM':
+        if ($settings.continuousScroll) {
+          const newVal = !$settings.pageDividers;
+          updateSetting('pageDividers', newVal);
+          showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
+        }
+        return;
+      case 'KeyV':
+        toggleContinuousScroll();
         return;
       case 'Escape':
         navigateBack();
@@ -333,6 +468,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
     // Capture start position for single-finger gesture
@@ -344,6 +480,7 @@
 
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
@@ -389,13 +526,17 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer and popovers
+  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
   function handleWheelEvent(e: WheelEvent) {
+    // In continuous scroll mode, let ContinuousScrollReader handle wheel events
+    if ($settings.continuousScroll) return;
+
     const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer or popovers
+    // Don't capture wheel events from settings drawer, popovers, or modals
     if (
       target.closest('#settings') ||
       target.closest('[data-popover]') ||
+      target.closest('dialog') ||
       target.closest('[data-yomitan-drawer]')
     ) {
       return;
@@ -445,7 +586,7 @@
 
     // Add dependencies on settings that affect layout and zoom
     const zoomMode = $settings.zoomDefault;
-    const pageMode = volumeSettings.singlePageView;
+    const pageMode = $settings.singlePageView;
     const hasCover = volumeSettings.hasCover;
     const rtl = volumeSettings.rightToLeft;
 
@@ -703,7 +844,7 @@
 
     // Use auto-detection function with width consistency checking
     return shouldShowSinglePage(
-      volumeSettings.singlePageView ?? 'auto',
+      $settings.singlePageView,
       currentPage,
       nextPage,
       previousPage,
@@ -735,9 +876,20 @@
   run(() => {
     manualPage = page;
   });
-  let pageDisplay = $derived(
-    showSecondPage() ? `${page},${page + 1} / ${pages?.length}` : `${page} / ${pages?.length}`
-  );
+  let continuousVisibleCount = $state(1);
+  let pageDisplay = $derived.by(() => {
+    if ($settings.continuousScroll) {
+      // Continuous mode: use actual visible count from the scroll reader
+      if (continuousVisibleCount > 1 && page + 1 <= (pages?.length ?? 0)) {
+        return `${page},${page + 1} / ${pages?.length}`;
+      }
+      return `${page} / ${pages?.length}`;
+    }
+    // Paged mode: use spread detection
+    return showSecondPage()
+      ? `${page},${page + 1} / ${pages?.length}`
+      : `${page} / ${pages?.length}`;
+  });
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
   let charDisplay = $derived(`${charCount} / ${maxCharCount}`);
@@ -771,21 +923,51 @@
     lines: string[];
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+    imageUrl?: string; // Captured at right-click time for reliability
+    pageIndex?: number; // Which page the context menu was opened on
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
   let showYomitanDrawer = $state(false);
   let yomitanSourceText = $state('');
 
+  // Extract image URL from an element by traversing up to find background-image
+  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
+    if (!element) return null;
+    let current: HTMLElement | null = element;
+    while (current) {
+      const bgImage = getComputedStyle(current).backgroundImage;
+      if (bgImage && bgImage !== 'none') {
+        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
+        if (match) return match[1];
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function handleTextBoxContextMenu(data: ContextMenuData) {
-    contextMenuData = data;
+    // Capture the image URL immediately while the DOM is in a known good state
+    // This prevents issues when Yomitan or other extensions modify the DOM
+    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    // Prefer pageIndex from the data (set by TextBoxes), fall back to progress store
+    const pageIndex =
+      data.pageIndex ??
+      ($volumes[volume!.volume_uuid]?.progress
+        ? ($volumes[volume!.volume_uuid].progress || 1) - 1
+        : index);
+
+    contextMenuData = {
+      ...data,
+      imageUrl,
+      pageIndex
+    };
     showContextMenu = true;
   }
 
   function handleTextBoxActivate(data: { lines: string[]; text: string; blockIndex: number }) {
     if (!$settings.yomitanPopupOnTextBoxTap) return;
 
-    // Always normalize from raw OCR lines to avoid stale/space-injected payloads.
     const sourceText = joinTextBoxLines(data.lines);
     logYomitanDebug('reader', 'textbox:activate', {
       blockIndex: data.blockIndex,
@@ -802,7 +984,7 @@
     showYomitanDrawer = true;
   }
 
-  function handleContextMenuAddToAnki(selection: string) {
+  async function handleContextMenuAddToAnki(selection: string) {
     if (!contextMenuData || !volume) return;
 
     const volumeMetadata: VolumeMetadata = {
@@ -810,40 +992,113 @@
       volumeTitle: volume.volume_title
     };
 
-    // Get the image URL from the element or current page
-    const imgElement = contextMenuData.imgElement;
-    let url: string | null = null;
+    // Use pre-captured image URL (captured at right-click time for reliability)
+    const url = contextMenuData.imageUrl;
 
-    if (imgElement) {
-      // Traverse up to find the MangaPage div with background-image
-      let current: HTMLElement | null = imgElement;
-      while (current) {
-        const bgImage = getComputedStyle(current).backgroundImage;
-        if (bgImage && bgImage !== 'none') {
-          const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-          if (match) {
-            url = match[1];
-            break;
-          }
-        }
-        current = current.parentElement;
-      }
+    if (!url) {
+      showSnackbar('Error: Could not get page image');
+      return;
     }
 
-    if (url) {
-      const fullSentence = contextMenuData.lines.join(' ');
-      // Use selection for card front if provided, otherwise use full sentence
-      const cardFront = selection || fullSentence;
-      const ankiTags = $settings.ankiConnectSettings.tags || '';
-      showCropper(
-        url,
-        cardFront,
-        fullSentence,
-        ankiTags,
-        volumeMetadata,
-        undefined,
-        contextMenuData.textBox
-      );
+    const fullSentence = contextMenuData.lines.join(' ');
+    const cardFront = selection || fullSentence;
+    const ankiTags = $settings.ankiConnectSettings.tags || '';
+    const textBox = contextMenuData.textBox;
+    // Use captured page index for reliability (in case page changed between right-click and menu click)
+    const pageIndex =
+      contextMenuData.pageIndex ?? ($volumes[volume.volume_uuid]?.progress || 1) - 1;
+    const pageNumber = pageIndex + 1;
+    const currentPage = pages[pageIndex];
+    const pageFilename = currentPage?.img_path;
+    const cardMode = $settings.ankiConnectSettings.cardMode;
+
+    if (cardMode === 'update') {
+      // Update mode: fetch previous card values
+      const lastCard = await getLastCardInfo();
+
+      if (!lastCard || !lastCard.noteId) {
+        showSnackbar('No recent card found to update');
+        return;
+      }
+
+      const cardAge = getCardAgeInMin(lastCard.noteId);
+      if (cardAge >= 5) {
+        showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
+        return;
+      }
+
+      const previousValues = extractFieldValues(lastCard);
+
+      // Get the model config to check for quickCapture setting
+      const modelConfig = getModelConfig(lastCard.modelName, 'update');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'update',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          previousValues,
+          lastCard.noteId,
+          lastCard.tags,
+          lastCard.modelName,
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openUpdateModal(
+          url,
+          previousValues,
+          lastCard.noteId,
+          lastCard.modelName,
+          lastCard.tags, // existing tags from the card
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
+    } else {
+      // Create mode
+      const { selectedModel } = $settings.ankiConnectSettings;
+      const modelConfig = getModelConfig(selectedModel, 'create');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'create',
+          url,
+          cardFront,
+          fullSentence,
+          volumeMetadata,
+          textBox,
+          undefined, // previousValues (not used for create)
+          undefined, // previousCardId (not used for create)
+          undefined, // previousTags (not used for create)
+          undefined, // modelName (not needed for create)
+          pageFilename
+        );
+      } else {
+        // Show modal (also shown if quickCapture but no config exists)
+        openCreateModal(
+          url,
+          cardFront,
+          fullSentence,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          pageNumber,
+          pageFilename
+        );
+      }
     }
   }
 
@@ -863,18 +1118,24 @@
     }, 2000);
   }
 
-  // Subscribe to zoom notifications from panzoom
-  $effect(() => {
-    const zoom = $zoomNotification;
-    if (zoom) {
-      showNotification(`${zoom.percent}%`, `zoom-${zoom.timestamp}`);
-    }
-  });
+  function rotateScrollMode() {
+    const current = $settings.scrollMode;
+    const order = ['auto', 'vertical', 'horizontal'] as const;
+    const curIdx = order.indexOf(current as any);
+    const next = order[(curIdx + 1) % order.length];
+    updateSetting('scrollMode', next);
+    const labels = {
+      auto: 'Match Orientation',
+      vertical: 'Vertical Scroll',
+      horizontal: 'Horizontal Scroll'
+    };
+    showNotification(labels[next], `scrollmode-${next}`);
+  }
 
   function rotatePageMode() {
     if (!volume) return;
 
-    const currentMode = volumeSettings.singlePageView ?? 'auto';
+    const currentMode = $settings.singlePageView;
     let nextMode: 'single' | 'dual' | 'auto';
 
     // Rotate through: single -> dual -> auto -> single
@@ -886,14 +1147,76 @@
       nextMode = 'single';
     }
 
-    updateVolumeSetting(volume.volume_uuid, 'singlePageView', nextMode);
+    updateSetting('singlePageView', nextMode);
 
     // Show notification with the new mode
     const labels = { single: 'Single Page', dual: 'Dual Page', auto: 'Auto Page' };
     showNotification(labels[nextMode], `pagemode-${nextMode}`);
   }
 
+  function offsetSpreads() {
+    if ($settings.continuousScroll) {
+      // In continuous mode, ContinuousScrollReader handles it via custom event
+      window.dispatchEvent(new CustomEvent('offset-spreads'));
+    } else if (volume) {
+      // In paged mode, toggle hasCover to shift spread pairing
+      toggleHasCover(volume.volume_uuid);
+    }
+    showNotification('Spreads Offset', 'offset-spreads');
+  }
+
+  function toggleContinuousScroll() {
+    const newValue = !$settings.continuousScroll;
+    updateSetting('continuousScroll', newValue);
+    showNotification(
+      newValue ? 'Continuous Scroll On' : 'Continuous Scroll Off',
+      'continuous-scroll-toggle'
+    );
+  }
+
+  function rotateContinuousZoomMode() {
+    const currentMode = $settings.continuousZoomDefault;
+    let nextMode: ContinuousZoomMode;
+
+    // Rotate through: fitToWidth -> fitToScreen -> original -> fitToWidth
+    if (currentMode === 'zoomFitToWidth') {
+      nextMode = 'zoomFitToScreen';
+    } else if (currentMode === 'zoomFitToScreen') {
+      nextMode = 'zoomOriginal';
+    } else {
+      nextMode = 'zoomFitToWidth';
+    }
+
+    updateSetting('continuousZoomDefault', nextMode);
+
+    const labels: Record<ContinuousZoomMode, string> = {
+      zoomFitToWidth: 'Fit to Width',
+      zoomFitToScreen: 'Fit to Screen',
+      zoomOriginal: 'Original Size'
+    };
+    showNotification(labels[nextMode], `zoommode-${nextMode}`);
+  }
+
+  // Callback for ContinuousReader page changes
+  function handleContinuousPageChange(newPage: number, charCount: number, isComplete: boolean) {
+    if (!volume) return;
+    updateProgress(volume.volume_uuid, newPage, charCount, isComplete);
+    activityTracker.recordActivity();
+  }
+
+  // Callback for scroll reader completion — navigate back to series page
+  function handleContinuousVolumeNav(_direction: 'prev' | 'next') {
+    if (!volume) return;
+    nav.toSeries(volume.series_uuid);
+  }
+
   function rotateZoomMode() {
+    // Continuous mode has its own zoom settings
+    if ($settings.continuousScroll) {
+      rotateContinuousZoomMode();
+      return;
+    }
+
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
@@ -953,46 +1276,50 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
-  <Cropper />
   <TextBoxPicker />
-  <Popover placement="bottom" trigger="click" triggeredBy="#page-num" class="z-20 w-full max-w-xs">
-    <div class="flex flex-col gap-3">
-      <div class="z-10 flex flex-row items-center gap-5">
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
-          <BackwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={(e) => left(e, true)}>
-          <CaretLeftSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <Input
-          type="number"
-          size="sm"
-          bind:value={manualPage}
-          onclick={onInputClick}
-          onchange={onManualPageChange}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              onManualPageChange();
-              if (e.currentTarget && 'blur' in e.currentTarget) {
-                (e.currentTarget as HTMLElement).blur();
-              }
-            }
-          }}
-          onblur={onManualPageChange}
-        />
-        <button onclick={(e) => right(e, true)}>
-          <CaretRightSolid class="hover:text-primary-600" size="sm" />
-        </button>
-        <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
-          <ForwardStepSolid class="hover:text-primary-600" size="sm" />
-        </button>
-      </div>
-      <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
-        <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
-      </div>
-    </div>
-  </Popover>
   {#if overlaysVisible}
+    <Popover
+      placement="bottom"
+      trigger="click"
+      triggeredBy="#page-num"
+      class="z-20 w-full max-w-xs"
+    >
+      <div class="flex flex-col gap-3">
+        <div class="z-10 flex flex-row items-center gap-5">
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? pages.length : 1, true)}>
+            <BackwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={(e) => left(e, true)}>
+            <CaretLeftSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <Input
+            type="number"
+            size="sm"
+            bind:value={manualPage}
+            onclick={onInputClick}
+            onchange={onManualPageChange}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                onManualPageChange();
+                if (e.currentTarget && 'blur' in e.currentTarget) {
+                  (e.currentTarget as HTMLElement).blur();
+                }
+              }
+            }}
+            onblur={onManualPageChange}
+          />
+          <button onclick={(e) => right(e, true)}>
+            <CaretRightSolid class="hover:text-primary-600" size="sm" />
+          </button>
+          <button onclick={() => changePage(volumeSettings.rightToLeft ? 1 : pages.length, true)}>
+            <ForwardStepSolid class="hover:text-primary-600" size="sm" />
+          </button>
+        </div>
+        <div style:direction={volumeSettings.rightToLeft ? 'rtl' : 'ltr'}>
+          <Range min={1} max={pages.length} bind:value={manualPage} onchange={onManualPageChange} />
+        </div>
+      </div>
+    </Popover>
     <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
       {#key page}
         <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
@@ -1010,81 +1337,136 @@
       </div>
     {/key}
   {/if}
-  <div class="flex" style:background-color={$settings.backgroundColor}>
-    <Panzoom>
-      <button
-        aria-label="Previous page (left edge)"
-        class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-left={`${$settings.edgeButtonWidth}px`}
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (right edge)"
-        class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-        style:margin-right={`${$settings.edgeButtonWidth}px`}
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <button
-        aria-label="Previous page (bottom left)"
-        class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={left}
-      ></button>
-      <button
-        aria-label="Next page (bottom right)"
-        class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-        onmousedown={mouseDown}
-        onmouseup={right}
-      ></button>
-      <div
-        class="grid"
-        style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-        ondblclick={onDoubleTap}
-        onclick={handleOverlayToggle}
-        ondragstart={(event) => event.preventDefault()}
-        role="none"
-        id="manga-panel"
-      >
-        {#key page}
-          <div
-            class="col-start-1 row-start-1 flex flex-row"
-            class:flex-row-reverse={!volumeSettings.rightToLeft}
-            in:pageIn={{ direction: pageDirection }}
-            out:pageOut={{ direction: pageDirection }}
-          >
-            {#if volumeData?.files}
-              {#if showSecondPage()}
+  {#if $settings.continuousScroll && volumeData?.files}
+    {@const effectiveScrollMode =
+      $settings.scrollMode === 'auto'
+        ? windowWidth > windowHeight
+          ? 'horizontal'
+          : 'vertical'
+        : $settings.scrollMode}
+    {#if effectiveScrollMode === 'vertical'}
+      <VerticalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onContextMenu={handleTextBoxContextMenu}
+      />
+    {:else}
+      <HorizontalScrollReader
+        {pages}
+        files={volumeData.files}
+        {volume}
+        {volumeSettings}
+        currentPage={page}
+        onPageChange={handleContinuousPageChange}
+        onVolumeNav={handleContinuousVolumeNav}
+        onVisibleCountChange={(count) => (continuousVisibleCount = count)}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onContextMenu={handleTextBoxContextMenu}
+      />
+    {/if}
+  {:else}
+    <!-- Page-based mode -->
+    <div class="flex" style:background-color={$settings.backgroundColor}>
+      <Panzoom>
+        <button
+          aria-label="Previous page (left edge)"
+          class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-left={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (right edge)"
+          class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
+          style:margin-right={`${$settings.edgeButtonWidth}px`}
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <button
+          aria-label="Previous page (bottom left)"
+          class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={left}
+        ></button>
+        <button
+          aria-label="Next page (bottom right)"
+          class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
+          onmousedown={mouseDown}
+          onmouseup={right}
+        ></button>
+        <div
+          class="grid"
+          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+          ondblclick={onDoubleTap}
+          onpointerdown={handleOverlayPointerDown}
+          onclick={handleOverlayToggle}
+          role="none"
+          id="manga-panel"
+        >
+          {#key page}
+            <div
+              class="col-start-1 row-start-1 flex flex-row"
+              class:flex-row-reverse={!volumeSettings.rightToLeft}
+              in:pageIn={{ direction: pageDirection }}
+              out:pageOut={{ direction: pageDirection }}
+            >
+              {#if volumeData?.files}
+                {#if showSecondPage()}
+                  <MangaPage
+                    page={pages[index + 1]}
+                    src={imageCache.getFile(index + 1)!}
+                    cachedUrl={cachedImageUrl2}
+                    volumeUuid={volume.volume_uuid}
+                    pageIndex={index + 1}
+                    forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
+                    onContextMenu={handleTextBoxContextMenu}
+                    onTextBoxActivate={handleTextBoxActivate}
+                  />
+                {/if}
                 <MangaPage
-                  page={pages[index + 1]}
-                  src={imageCache.getFile(index + 1)!}
-                  cachedUrl={cachedImageUrl2}
+                  page={pages[index]}
+                  src={imageCache.getFile(index)!}
+                  cachedUrl={cachedImageUrl1}
                   volumeUuid={volume.volume_uuid}
-                  forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
+                  pageIndex={index}
+                  forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
                   onTextBoxActivate={handleTextBoxActivate}
                 />
+              {:else}
+                <div class="flex h-screen w-screen items-center justify-center">
+                  <Spinner size="12" />
+                </div>
               {/if}
-              <MangaPage
-                page={pages[index]}
-                src={imageCache.getFile(index)!}
-                cachedUrl={cachedImageUrl1}
-                volumeUuid={volume.volume_uuid}
-                forceVisible={missingPagePaths.has(pages[index]?.img_path)}
-                onContextMenu={handleTextBoxContextMenu}
-                onTextBoxActivate={handleTextBoxActivate}
-              />
-            {:else}
-              <div class="flex h-screen w-screen items-center justify-center">
-                <Spinner size="12" />
-              </div>
-            {/if}
-          </div>
-        {/key}
-      </div>
-    </Panzoom>
-  </div>
+            </div>
+          {/key}
+        </div>
+      </Panzoom>
+    </div>
+
+    {#if !$settings.mobile}
+      <button
+        aria-label="Previous page (left edge)"
+        onmousedown={mouseDown}
+        onmouseup={left}
+        class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
+      ></button>
+      <button
+        aria-label="Next page (right edge)"
+        onmousedown={mouseDown}
+        onmouseup={right}
+        class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
+        style:width={`${$settings.edgeButtonWidth}px`}
+      ></button>
+    {/if}
+  {/if}
 
   {#if showContextMenu && contextMenuData}
     <TextBoxContextMenu
@@ -1099,7 +1481,6 @@
       onClose={() => (showContextMenu = false)}
     />
   {/if}
-
   <YomitanDrawer
     bind:open={showYomitanDrawer}
     sourceText={yomitanSourceText}
@@ -1114,25 +1495,20 @@
       showYomitanDrawer = false;
     }}
   />
-
-  {#if !$settings.mobile}
-    <button
-      aria-label="Previous page (left edge)"
-      onmousedown={mouseDown}
-      onmouseup={left}
-      class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
-    <button
-      aria-label="Next page (right edge)"
-      onmousedown={mouseDown}
-      onmouseup={right}
-      class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-      style:width={`${$settings.edgeButtonWidth}px`}
-    ></button>
-  {/if}
-{:else}
+{:else if volume === null}
+  <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else}
+  <!-- Volume not found or no data -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">Volume not found</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {/if}

@@ -282,12 +282,12 @@ describe('extractVolumeInfo', () => {
     expect(result.volume).toBe('Volume 01');
   });
 
-  it('handles simple paths (single segment)', () => {
-    // Single segment paths use the same value for both series and volume
+  it('handles simple paths (single segment) with volume info', () => {
+    // Single segment paths with volume info now extract series and volume
     const result = extractVolumeInfo('My Manga Vol 1');
 
-    expect(result.series).toBe('My Manga Vol 1');
-    expect(result.volume).toBe('My Manga Vol 1');
+    expect(result.series).toBe('My Manga');
+    expect(result.volume).toBe('Volume 1');
   });
 
   it('handles empty path', () => {

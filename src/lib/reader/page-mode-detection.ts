@@ -11,8 +11,39 @@ export function isWideSpread(page: Page): boolean {
 }
 
 /**
+ * Calculate the median width of all portrait-oriented pages.
+ * This represents the "normal" page width for the volume.
+ */
+export function calculateMedianPageWidth(pages: Page[]): number {
+  // Only consider portrait-oriented pages (typical manga pages)
+  const portraitWidths = pages.filter((p) => p.img_height > p.img_width).map((p) => p.img_width);
+
+  if (portraitWidths.length === 0) {
+    // Fallback: use all pages if no portrait pages
+    const allWidths = pages.map((p) => p.img_width);
+    if (allWidths.length === 0) return 0;
+    const sorted = [...allWidths].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  const sorted = [...portraitWidths].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Checks if a page width is close to the median (within 15% tolerance)
+ */
+export function isNormalWidth(page: Page, medianWidth: number): boolean {
+  if (medianWidth === 0) return true;
+  const deviation = Math.abs(page.img_width - medianWidth) / medianWidth;
+  return deviation <= 0.15;
+}
+
+/**
  * Checks if two pages have similar widths (within 20% of each other)
- * This helps detect when pages should be paired together
+ * @deprecated Use isNormalWidth with median instead for more robust detection
  */
 export function haveSimilarWidths(page1: Page | undefined, page2: Page | undefined): boolean {
   if (!page1 || !page2) return false;
@@ -51,16 +82,16 @@ export function shouldShowSinglePage(
 ): boolean {
   // Explicit mode overrides
   if (mode === 'single') return true;
+
+  // Cover page is always displayed alone regardless of mode
+  if (isFirstPage && hasCover) {
+    return true;
+  }
+
   if (mode === 'dual') return false;
 
   // Auto mode logic
   if (mode === 'auto') {
-    // Special case: First page with cover should always be single
-    // This ensures covers don't get paired with spreads or other exceptions
-    if (isFirstPage && hasCover) {
-      return true;
-    }
-
     // Portrait orientation → single page
     if (isPortraitOrientation()) {
       return true;
@@ -68,10 +99,6 @@ export function shouldShowSinglePage(
 
     // Landscape orientation → check for wide spreads
     if (currentPage && isWideSpread(currentPage)) {
-      return true;
-    }
-
-    if (nextPage && isWideSpread(nextPage)) {
       return true;
     }
 
@@ -86,12 +113,6 @@ export function shouldShowSinglePage(
         // Check if current and next pages have similar widths
         if (!haveSimilarWidths(currentPage, nextPage)) {
           return true; // Don't pair pages with different widths
-        }
-
-        // Check if there's a previous page and it has dissimilar width
-        // This catches cases where we're right after a cover/oddity
-        if (previousPage && !haveSimilarWidths(previousPage, currentPage)) {
-          return true; // Current page might be a cover or oddity, show alone
         }
       }
     }

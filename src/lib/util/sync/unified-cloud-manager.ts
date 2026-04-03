@@ -1,5 +1,10 @@
 import { derived, type Readable } from 'svelte/store';
-import type { SyncProvider, CloudFileMetadata, ProviderType } from './provider-interface';
+import type {
+  SyncProvider,
+  CloudFileMetadata,
+  ProviderType,
+  UploadPayload
+} from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
@@ -9,6 +14,19 @@ import { providerManager } from './provider-manager';
  */
 export interface CloudVolumeWithProvider extends CloudFileMetadata {
   provider: ProviderType;
+}
+
+function normalizeCloudPath(path: string): string {
+  return path.replace(/^\/+|\/+$/g, '');
+}
+
+function stripManagedFileExtension(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.cbz')) return path.slice(0, -4);
+  if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
+  if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+  if (lower.endsWith('.webp')) return path.slice(0, -5);
+  return path;
 }
 
 /**
@@ -74,23 +92,23 @@ class UnifiedCloudManager {
   /**
    * Get all cloud volumes (current cached value)
    */
-  getAllCloudVolumes(): any[] {
-    return cacheManager.getAllFiles();
+  getAllCloudVolumes(): CloudFileMetadata[] {
+    return cacheManager.getAllFiles() as CloudFileMetadata[];
   }
 
   /**
    * Get cloud volume by file ID
    */
-  getCloudVolume(fileId: string): any | undefined {
+  getCloudVolume(fileId: string): CloudFileMetadata | undefined {
     const volumes = this.getAllCloudVolumes();
-    return volumes.find((v: any) => v.fileId === fileId);
+    return volumes.find((v) => v.fileId === fileId);
   }
 
   /**
    * Get cloud volumes for a specific series
    */
-  getCloudVolumesBySeries(seriesTitle: string): any[] {
-    return cacheManager.getBySeries(seriesTitle);
+  getCloudVolumesBySeries(seriesTitle: string): CloudFileMetadata[] {
+    return cacheManager.getBySeries(seriesTitle) as CloudFileMetadata[];
   }
 
   /**
@@ -103,13 +121,24 @@ class UnifiedCloudManager {
   /**
    * Upload a volume CBZ to the current provider
    */
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
     }
 
-    const fileId = await provider.uploadFile(path, blob, description);
+    const fileId = await provider.uploadFile(path, blob, description, onProgress);
+    const uploadSize =
+      blob instanceof Blob
+        ? blob.size
+        : blob instanceof ArrayBuffer
+          ? blob.byteLength
+          : blob.byteLength;
 
     // Update cache via cacheManager
     const cache = cacheManager.getCache(provider.type);
@@ -118,7 +147,7 @@ class UnifiedCloudManager {
         fileId,
         path,
         modifiedTime: new Date().toISOString(),
-        size: blob.size,
+        size: uploadSize,
         description
       });
     }
@@ -166,6 +195,101 @@ class UnifiedCloudManager {
     }
   }
 
+  private replaceCachedFile(oldFile: CloudFileMetadata, updatedFile: CloudFileMetadata): void {
+    const provider = this.getActiveProvider();
+    if (!provider) return;
+
+    const cache = cacheManager.getCache(provider.type);
+    cache?.removeById?.(oldFile.fileId);
+    cache?.add?.(updatedFile.path, updatedFile);
+  }
+
+  private getManagedCloudFilesForVolume(
+    seriesTitle: string,
+    volumeTitle: string
+  ): CloudFileMetadata[] {
+    const basePath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}`);
+    return this.getCloudVolumesBySeries(seriesTitle).filter(
+      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+  }
+
+  /**
+   * Rename or move a backed-up volume and its sidecars in the current provider.
+   * Returns the number of remote files updated.
+   */
+  async renameVolume(
+    oldSeriesTitle: string,
+    oldVolumeTitle: string,
+    newSeriesTitle: string,
+    newVolumeTitle: string
+  ): Promise<number> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return 0;
+    }
+
+    const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
+    const newBasePath = normalizeCloudPath(`${newSeriesTitle}/${newVolumeTitle}`);
+    if (oldBasePath === newBasePath) {
+      return 0;
+    }
+
+    await this.fetchAllCloudVolumes();
+
+    const filesToRename = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    if (filesToRename.length === 0) {
+      return 0;
+    }
+
+    for (const file of filesToRename) {
+      const oldPath = normalizeCloudPath(file.path);
+      const suffix = oldPath.slice(oldBasePath.length);
+      const updatedFile = await provider.renameFile(file, `${newBasePath}${suffix}`);
+      this.replaceCachedFile(file, updatedFile);
+    }
+
+    return filesToRename.length;
+  }
+
+  /**
+   * Rename or move a backed-up series folder in the current provider.
+   * Returns the number of remote files updated.
+   */
+  async renameSeries(oldSeriesTitle: string, newSeriesTitle: string): Promise<number> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return 0;
+    }
+
+    const normalizedOldTitle = normalizeCloudPath(oldSeriesTitle);
+    const normalizedNewTitle = normalizeCloudPath(newSeriesTitle);
+    if (normalizedOldTitle === normalizedNewTitle) {
+      return 0;
+    }
+
+    await this.fetchAllCloudVolumes();
+
+    const existingFiles = this.getCloudVolumesBySeries(oldSeriesTitle);
+    if (existingFiles.length === 0) {
+      return 0;
+    }
+
+    const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
+
+    const cache = cacheManager.getCache(provider.type);
+    if (cache?.removeById && cache?.add) {
+      for (const file of existingFiles) {
+        cache.removeById(file.fileId);
+      }
+      for (const file of renamedFiles) {
+        cache.add(file.path, file);
+      }
+    }
+
+    return renamedFiles.length;
+  }
+
   /**
    * Delete an entire series folder (all volumes in the series)
    */
@@ -182,30 +306,42 @@ class UnifiedCloudManager {
       return { succeeded: 0, failed: 0 };
     }
 
-    // Check if provider has a deleteSeriesFolder method
-    if ('deleteSeriesFolder' in provider && typeof provider.deleteSeriesFolder === 'function') {
-      try {
-        await (provider as any).deleteSeriesFolder(seriesTitle);
-
-        // Remove all volumes from cache
-        const cache = cacheManager.getCache(provider.type);
-        if (cache && cache.removeById) {
-          for (const volume of seriesVolumes) {
-            cache.removeById(volume.fileId);
-          }
-        }
-
-        return { succeeded: seriesVolumes.length, failed: 0 };
-      } catch (error) {
-        console.error(`Failed to delete series folder:`, error);
-        return { succeeded: 0, failed: seriesVolumes.length };
+    const archives: CloudFileMetadata[] = [];
+    const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
+    for (const file of seriesVolumes) {
+      if (file.path.toLowerCase().endsWith('.cbz')) {
+        archives.push(file);
+        continue;
       }
-    } else {
-      // Fallback: delete individual files if provider doesn't support folder deletion
+      const base = stripManagedFileExtension(file.path);
+      const existing = nonArchivesByBase.get(base);
+      if (existing) {
+        existing.push(file);
+      } else {
+        nonArchivesByBase.set(base, [file]);
+      }
+    }
+
+    const orderedSeriesVolumes: CloudFileMetadata[] = [];
+    for (const archive of archives) {
+      orderedSeriesVolumes.push(archive);
+      const base = stripManagedFileExtension(archive.path);
+      const related = nonArchivesByBase.get(base);
+      if (related && related.length > 0) {
+        orderedSeriesVolumes.push(...related);
+        nonArchivesByBase.delete(base);
+      }
+    }
+    for (const leftovers of nonArchivesByBase.values()) {
+      orderedSeriesVolumes.push(...leftovers);
+    }
+
+    // Helper to delete files individually
+    const deleteFilesIndividually = async (): Promise<{ succeeded: number; failed: number }> => {
       let successCount = 0;
       let failCount = 0;
 
-      for (const volume of seriesVolumes) {
+      for (const volume of orderedSeriesVolumes) {
         try {
           await this.deleteFile(volume);
           successCount++;
@@ -216,6 +352,40 @@ class UnifiedCloudManager {
       }
 
       return { succeeded: successCount, failed: failCount };
+    };
+
+    // Check if provider has a deleteSeriesFolder method
+    if (provider.deleteSeriesFolder) {
+      try {
+        await provider.deleteSeriesFolder(seriesTitle);
+
+        // Remove all volumes from cache
+        const cache = cacheManager.getCache(provider.type);
+        if (cache && cache.removeById) {
+          for (const volume of orderedSeriesVolumes) {
+            cache.removeById(volume.fileId);
+          }
+        }
+
+        return { succeeded: seriesVolumes.length, failed: 0 };
+      } catch (error: unknown) {
+        // Check if this is a "folder not found" error - fall back to individual deletion
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'errorType' in error &&
+          (error as { errorType?: string }).errorType === 'FOLDER_NOT_FOUND'
+        ) {
+          console.log(`Series folder not found, falling back to individual file deletion`);
+          return deleteFilesIndividually();
+        }
+
+        console.error(`Failed to delete series folder:`, error);
+        return { succeeded: 0, failed: seriesVolumes.length };
+      }
+    } else {
+      // Provider doesn't support folder deletion - delete files individually
+      return deleteFilesIndividually();
     }
   }
 
@@ -230,9 +400,9 @@ class UnifiedCloudManager {
   /**
    * Get cloud file metadata by path from the current provider
    */
-  getCloudFile(seriesTitle: string, volumeTitle: string): any | null {
+  getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.get(path);
+    return cacheManager.get(path) as CloudFileMetadata | null;
   }
 
   /**
@@ -252,7 +422,7 @@ class UnifiedCloudManager {
   /**
    * Update cache entry (e.g., after modifying description)
    */
-  updateCacheEntry(fileId: string, updates: Partial<any>): void {
+  updateCacheEntry(fileId: string, updates: Partial<CloudFileMetadata>): void {
     const provider = this.getActiveProvider();
     if (!provider) return;
 

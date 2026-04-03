@@ -3,12 +3,13 @@ import type {
   SyncProvider,
   ProviderCredentials,
   ProviderStatus,
-  StorageQuota
+  StorageQuota,
+  CloudFileMetadata
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { WebDAVClient } from 'webdav';
-import { uploadFileWithClient } from './webdav-upload';
+import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -37,6 +38,7 @@ export class WebDAVProvider implements SyncProvider {
   private initPromise: Promise<void>;
   private _isReadOnly: boolean = false;
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
+  private cloudCore = getCloudProviderCore('webdav');
 
   constructor() {
     if (browser) {
@@ -550,9 +552,12 @@ export class WebDAVProvider implements SyncProvider {
             await processFolder(item.filename);
           } else {
             const name = item.basename.toLowerCase();
-            // Include CBZ files and JSON config files
+            // Include CBZ files, sidecars, and JSON config files
             if (
               name.endsWith('.cbz') ||
+              name.endsWith('.mokuro') ||
+              name.endsWith('.mokuro.gz') ||
+              name.endsWith('.webp') ||
               item.basename === 'volume-data.json' ||
               item.basename === 'profiles.json'
             ) {
@@ -609,9 +614,12 @@ export class WebDAVProvider implements SyncProvider {
     for (const item of contents) {
       if (item.type === 'file') {
         const name = item.basename.toLowerCase();
-        // Include CBZ files and JSON config files
+        // Include CBZ files, sidecars, and JSON config files
         if (
           name.endsWith('.cbz') ||
+          name.endsWith('.mokuro') ||
+          name.endsWith('.mokuro.gz') ||
+          name.endsWith('.webp') ||
           item.basename === 'volume-data.json' ||
           item.basename === 'profiles.json'
         ) {
@@ -632,7 +640,12 @@ export class WebDAVProvider implements SyncProvider {
     return allFiles;
   }
 
-  async uploadFile(path: string, blob: Blob, description?: string): Promise<string> {
+  async uploadFile(
+    path: string,
+    blob: Blob,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
@@ -640,31 +653,21 @@ export class WebDAVProvider implements SyncProvider {
     try {
       await this.ensureMokuroFolder();
 
-      const fullPath = `${MOKURO_FOLDER}/${path}`;
-
-      // Ensure parent directory exists for nested paths (e.g., "SeriesTitle/Volume.cbz")
       const pathParts = path.split('/');
-      if (pathParts.length > 1) {
-        const seriesFolder = pathParts.slice(0, -1).join('/');
-        await this.ensureSeriesFolder(seriesFolder);
-      }
+      const filename = pathParts.pop() || path;
+      const seriesTitle = pathParts.join('/');
 
-      // Delete-before-upload pattern (Issue #206 Lesson #1 - CRITICAL)
-      // Some servers (copyparty) don't overwrite on PUT, they rename and create duplicates
-      try {
-        const exists = await this.client.exists(fullPath);
-        if (exists) {
-          await this.client.deleteFile(fullPath);
-        }
-      } catch {
-        // Ignore errors - file may not exist
-      }
-
-      // Use shared upload utility (handles large files via Blob streaming)
-      await uploadFileWithClient(this.client, fullPath, blob);
+      const credentials = await this.getWorkerUploadCredentials();
+      const fileId = await this.cloudCore.uploadFile({
+        seriesTitle,
+        filename,
+        blob,
+        credentials,
+        onProgress
+      });
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
-      return fullPath;
+      return fileId;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
@@ -723,6 +726,36 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  private buildWebDAVFileMetadata(
+    file: CloudFileMetadata,
+    path: string,
+    modifiedTime?: string
+  ): CloudFileMetadata {
+    return {
+      ...file,
+      fileId: `${MOKURO_FOLDER}/${path}`,
+      path,
+      modifiedTime: modifiedTime || new Date().toISOString()
+    };
+  }
+
+  private isWebDAVPermissionError(errorMessage: string): boolean {
+    return (
+      errorMessage.includes('401') ||
+      errorMessage.includes('403') ||
+      errorMessage.includes('405') ||
+      errorMessage.includes('Unauthorized') ||
+      errorMessage.includes('Forbidden') ||
+      errorMessage.includes('Method Not Allowed') ||
+      errorMessage.includes('Permission denied')
+    );
+  }
+
+  private throwWritePermissionError(message: string): never {
+    this.markAsReadOnly();
+    throw new ProviderError(message, 'webdav', 'PERMISSION_DENIED', false, false, 'permission');
+  }
+
   async downloadFile(
     file: import('../../provider-interface').CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void
@@ -732,25 +765,12 @@ export class WebDAVProvider implements SyncProvider {
     }
 
     try {
-      // For WebDAV, fileId is the full path
-      const content = await this.client.getFileContents(file.fileId, {
-        format: 'binary'
+      const credentials = await this.getWorkerDownloadCredentials(file.fileId);
+      const arrayBuffer = await this.cloudCore.downloadFile({
+        fileId: file.fileId,
+        credentials,
+        onProgress: onProgress || (() => {})
       });
-
-      // Handle all possible response types (ArrayBuffer, typed arrays, etc.)
-      let arrayBuffer: ArrayBuffer;
-      if (content instanceof ArrayBuffer) {
-        arrayBuffer = content;
-      } else if (ArrayBuffer.isView(content)) {
-        // Handle typed arrays (Uint8Array, etc.)
-        // Create a new ArrayBuffer copy to avoid SharedArrayBuffer issues
-        const view = content as Uint8Array;
-        arrayBuffer = new Uint8Array(view).buffer as ArrayBuffer;
-      } else {
-        arrayBuffer = content as ArrayBuffer;
-      }
-
-      // Convert to Blob
       const blob = new Blob([arrayBuffer], { type: 'application/zip' });
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
       return blob;
@@ -777,26 +797,8 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Check for permission errors - mark as read-only
-      // 401 = Unauthorized (read-only token), 403 = Forbidden, 405 = Method Not Allowed
-      if (
-        errorMessage.includes('401') ||
-        errorMessage.includes('403') ||
-        errorMessage.includes('405') ||
-        errorMessage.includes('Unauthorized') ||
-        errorMessage.includes('Forbidden') ||
-        errorMessage.includes('Method Not Allowed') ||
-        errorMessage.includes('Permission denied')
-      ) {
-        this.markAsReadOnly();
-        throw new ProviderError(
-          'Delete permission denied - server is read-only',
-          'webdav',
-          'PERMISSION_DENIED',
-          false,
-          false,
-          'permission'
-        );
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Delete permission denied - server is read-only');
       }
 
       throw new ProviderError(
@@ -808,6 +810,250 @@ export class WebDAVProvider implements SyncProvider {
         'unknown'
       );
     }
+  }
+
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file;
+    }
+
+    const newPathParts = normalizedNewPath.split('/');
+    newPathParts.pop();
+    const destinationFolder = newPathParts.join('/');
+    const destinationFullPath = `${MOKURO_FOLDER}/${normalizedNewPath}`;
+
+    try {
+      if (destinationFolder) {
+        await this.ensureSeriesFolder(destinationFolder);
+      } else {
+        await this.ensureMokuroFolder();
+      }
+
+      if (await this.client.exists(destinationFullPath)) {
+        throw new ProviderError(
+          `Target file already exists at '${normalizedNewPath}'`,
+          'webdav',
+          'TARGET_EXISTS'
+        );
+      }
+
+      await this.client.moveFile(file.fileId, destinationFullPath, { overwrite: false });
+      console.log(`✅ Renamed ${file.path} to ${normalizedNewPath} in WebDAV`);
+      return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Rename permission denied - server is read-only');
+      }
+
+      throw new ProviderError(
+        `Failed to rename file: ${errorMessage}`,
+        'webdav',
+        'RENAME_FAILED',
+        false,
+        true,
+        'unknown'
+      );
+    }
+  }
+
+  async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedOldPath = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOldPath === normalizedNewPath) {
+      const allFiles = await this.listCloudVolumes();
+      return allFiles.filter((file) => file.path.startsWith(`${normalizedOldPath}/`));
+    }
+
+    const sourceFullPath = `${MOKURO_FOLDER}/${normalizedOldPath}`;
+    const destinationFullPath = `${MOKURO_FOLDER}/${normalizedNewPath}`;
+    const renamedFiles = (await this.listCloudVolumes())
+      .filter((file) => file.path.startsWith(`${normalizedOldPath}/`))
+      .map((file) =>
+        this.buildWebDAVFileMetadata(
+          file,
+          `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
+          file.modifiedTime
+        )
+      );
+
+    try {
+      const newPathParts = normalizedNewPath.split('/');
+      newPathParts.pop();
+      const destinationParent = newPathParts.join('/');
+      if (destinationParent) {
+        await this.ensureSeriesFolder(destinationParent);
+      } else {
+        await this.ensureMokuroFolder();
+      }
+
+      if (await this.client.exists(destinationFullPath)) {
+        throw new ProviderError(
+          `Target series folder already exists at '${normalizedNewPath}'`,
+          'webdav',
+          'TARGET_EXISTS'
+        );
+      }
+
+      await this.client.moveFile(sourceFullPath, destinationFullPath, { overwrite: false });
+      console.log(
+        `✅ Renamed series folder ${normalizedOldPath} to ${normalizedNewPath} in WebDAV`
+      );
+      return renamedFiles;
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (this.isWebDAVPermissionError(errorMessage)) {
+        this.throwWritePermissionError('Rename permission denied - server is read-only');
+      }
+
+      throw new ProviderError(
+        `Failed to rename series folder: ${errorMessage}`,
+        'webdav',
+        'RENAME_FAILED',
+        false,
+        true,
+        'unknown'
+      );
+    }
+  }
+
+  async deleteSeriesFolder(seriesTitle: string): Promise<void> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+
+    const normalizedSeriesTitle = seriesTitle.replace(/^\/+|\/+$/g, '');
+    if (!normalizedSeriesTitle) return;
+
+    const folderPath = `${MOKURO_FOLDER}/${normalizedSeriesTitle}`;
+
+    try {
+      const exists = await this.client.exists(folderPath);
+      if (!exists) {
+        console.log(`Series folder '${seriesTitle}' not found in WebDAV`);
+        return;
+      }
+
+      // Prefer one collection DELETE request when supported by the server.
+      await this.client.deleteFile(folderPath);
+      console.log(`✅ Deleted series folder '${seriesTitle}' from WebDAV`);
+      return;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      const isPermissionError =
+        errorMessage.includes('401') ||
+        errorMessage.includes('403') ||
+        errorMessage.includes('Unauthorized') ||
+        errorMessage.includes('Forbidden') ||
+        errorMessage.includes('Permission denied');
+
+      if (isPermissionError) {
+        this.markAsReadOnly();
+        throw new ProviderError(
+          'Delete permission denied - server is read-only',
+          'webdav',
+          'PERMISSION_DENIED',
+          false,
+          false,
+          'permission'
+        );
+      }
+
+      const needsPerFileFallback =
+        errorMessage.includes('405') ||
+        errorMessage.includes('409') ||
+        errorMessage.includes('Method Not Allowed') ||
+        errorMessage.includes('Conflict');
+
+      if (!needsPerFileFallback) {
+        throw new ProviderError(
+          `Failed to delete series folder: ${errorMessage}`,
+          'webdav',
+          'DELETE_FAILED',
+          false,
+          true,
+          'unknown'
+        );
+      }
+    }
+
+    // Fallback path for servers that reject collection DELETE:
+    // delete each archive first, then its sidecars.
+    const allFiles = await this.listCloudVolumes();
+    const seriesPrefix = `${normalizedSeriesTitle}/`;
+    const seriesFiles = allFiles.filter((file) => file.path.startsWith(seriesPrefix));
+
+    const getBasePath = (path: string): string => {
+      const lower = path.toLowerCase();
+      if (lower.endsWith('.cbz')) return path.slice(0, -4);
+      if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
+      if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+      if (lower.endsWith('.webp')) return path.slice(0, -5);
+      return path;
+    };
+
+    const archives: CloudFileMetadata[] = [];
+    const nonArchivesByBase = new Map<string, CloudFileMetadata[]>();
+    for (const file of seriesFiles) {
+      if (file.path.toLowerCase().endsWith('.cbz')) {
+        archives.push(file);
+        continue;
+      }
+      const base = getBasePath(file.path);
+      const existing = nonArchivesByBase.get(base);
+      if (existing) {
+        existing.push(file);
+      } else {
+        nonArchivesByBase.set(base, [file]);
+      }
+    }
+
+    const orderedSeriesFiles: CloudFileMetadata[] = [];
+    for (const archive of archives) {
+      orderedSeriesFiles.push(archive);
+      const base = getBasePath(archive.path);
+      const related = nonArchivesByBase.get(base);
+      if (related && related.length > 0) {
+        orderedSeriesFiles.push(...related);
+        nonArchivesByBase.delete(base);
+      }
+    }
+    for (const leftovers of nonArchivesByBase.values()) {
+      orderedSeriesFiles.push(...leftovers);
+    }
+
+    for (const file of orderedSeriesFiles) {
+      await this.deleteFile(file);
+    }
+
+    // Best-effort cleanup of now-empty series directory.
+    try {
+      await this.client.deleteFile(folderPath);
+    } catch {
+      // Some servers auto-remove empty collections, others keep them.
+    }
+
+    console.log(
+      `✅ Deleted series '${seriesTitle}' from WebDAV (${orderedSeriesFiles.length} files via fallback)`
+    );
   }
 
   /**
@@ -854,6 +1100,27 @@ export class WebDAVProvider implements SyncProvider {
         available: null
       };
     }
+  }
+
+  async getWorkerUploadCredentials(): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+  }
+
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    await this.ensureMokuroFolder();
+    await this.ensureSeriesFolder(seriesTitle);
+  }
+
+  async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
+    if (!browser) return {};
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
   }
 }
 

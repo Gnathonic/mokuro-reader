@@ -6,6 +6,59 @@ import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
+import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
+import {
+  libraryFilesStore,
+  libraryMokuroFilesStore,
+  generateLibraryPlaceholders
+} from '$lib/util/libraries';
+import { selectedLibraryId } from '$lib/settings/libraries';
+
+async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
+  let [ocr, files] = await Promise.all([
+    db.volume_ocr.get(volume.volume_uuid),
+    db.volume_files.get(volume.volume_uuid)
+  ]);
+
+  if (!ocr || !files) {
+    const legacyUuid = getLegacyImageOnlyVolumeUuid(volume);
+    if (legacyUuid) {
+      const [legacyMetadata, legacyOcr, legacyFiles] = await Promise.all([
+        db.volumes.get(legacyUuid),
+        db.volume_ocr.get(legacyUuid),
+        db.volume_files.get(legacyUuid)
+      ]);
+
+      // Repair legacy cloud image-only downloads that stored OCR/files under the
+      // old deterministic UUID instead of the canonical placeholder UUID.
+      if (!legacyMetadata && (legacyOcr || legacyFiles)) {
+        await db.transaction('rw', [db.volume_ocr, db.volume_files], async () => {
+          if (!ocr && legacyOcr) {
+            ocr = { ...legacyOcr, volume_uuid: volume.volume_uuid };
+            await db.volume_ocr.put(ocr);
+            await db.volume_ocr.delete(legacyUuid);
+          }
+
+          if (!files && legacyFiles) {
+            files = { ...legacyFiles, volume_uuid: volume.volume_uuid };
+            await db.volume_files.put(files);
+            await db.volume_files.delete(legacyUuid);
+          }
+        });
+      }
+    }
+  }
+
+  if (!ocr) {
+    return undefined;
+  }
+
+  return {
+    volume_uuid: volume.volume_uuid,
+    pages: ocr.pages,
+    files: files?.files
+  };
+}
 
 // Single source of truth from the database
 export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
@@ -27,23 +80,40 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   return () => subscription.unsubscribe();
 });
 
-// Merge local volumes with cloud placeholders
+// Merge local volumes with cloud placeholders and library placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles],
-  ([$volumes, $cloudFiles]) => {
-    // Skip placeholder generation if no cloud files
-    if ($cloudFiles.size === 0) {
-      return $volumes;
+  [
+    volumes,
+    unifiedCloudManager.cloudFiles,
+    libraryFilesStore,
+    libraryMokuroFilesStore,
+    selectedLibraryId
+  ],
+  ([$volumes, $cloudFiles, $libraryFiles, $libraryMokuroFiles, $selectedLibraryId]) => {
+    const combined = { ...$volumes };
+    const localVolumes = Object.values($volumes);
+
+    // Generate cloud provider placeholders
+    if ($cloudFiles.size > 0) {
+      const cloudPlaceholders = generatePlaceholders($cloudFiles, localVolumes);
+      for (const placeholder of cloudPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
     }
 
-    // Generate placeholders synchronously
-    const placeholders = generatePlaceholders($cloudFiles, Object.values($volumes));
-
-    // Combine local volumes with placeholders
-    const combined = { ...$volumes };
-
-    for (const placeholder of placeholders) {
-      combined[placeholder.volume_uuid] = placeholder;
+    // Generate library placeholders
+    if ($libraryFiles.size > 0) {
+      // Pass all combined volumes so library placeholders don't duplicate cloud placeholders
+      const allVolumes = Object.values(combined);
+      const libraryPlaceholders = generateLibraryPlaceholders(
+        $libraryFiles,
+        $libraryMokuroFiles,
+        allVolumes,
+        $selectedLibraryId
+      );
+      for (const placeholder of libraryPlaceholders) {
+        combined[placeholder.volume_uuid] = placeholder;
+      }
     }
 
     return combined;
@@ -63,8 +133,9 @@ export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlacehol
 export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
   if (!$catalog || !$routeParams.manga) return [];
 
+  const routeKey = $routeParams.manga.trim().replace(/\s+/g, ' ').toLowerCase();
   // Primary: match by title (folder name) - handles placeholder→local transition
-  let series = $catalog.find((s) => s.title === $routeParams.manga);
+  let series = $catalog.find((s) => s.title.trim().replace(/\s+/g, ' ').toLowerCase() === routeKey);
 
   // Fallback: match by UUID (for legacy URLs)
   if (!series) {
@@ -97,19 +168,15 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
     }
 
     if ($currentVolume) {
-      // Assemble VolumeData from volume_ocr and volume_files tables
-      Promise.all([
-        db.volume_ocr.get($currentVolume.volume_uuid),
-        db.volume_files.get($currentVolume.volume_uuid)
-      ]).then(([ocr, files]) => {
-        if (ocr) {
-          set({
-            volume_uuid: $currentVolume.volume_uuid,
-            pages: ocr.pages,
-            files: files?.files
-          });
-        }
-      });
+      loadCurrentVolumeData($currentVolume)
+        .then((volumeData) => {
+          if (volumeData) {
+            set(volumeData);
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to load current volume data:', error);
+        });
     }
   },
   undefined // Initial value

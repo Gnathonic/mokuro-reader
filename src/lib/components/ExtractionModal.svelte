@@ -7,9 +7,12 @@
   import { extractionSettings, updateExtractionSetting } from '$lib/settings';
 
   let open = $state(false);
+  let singleVolume = $state(false);
   let asCbz = $state($extractionSettings.asCbz);
   let individualVolumes = $state($extractionSettings.individualVolumes);
   let includeSeriesTitle = $state($extractionSettings.includeSeriesTitle);
+  let includeSidecars = $state($extractionSettings.includeSidecars);
+  let embedSidecarsInArchive = $state($extractionSettings.embedSidecarsInArchive);
   let firstVolumePreview = $state('');
   let currentVolume = $state<{ series_title: string; volume_title: string } | null>(null);
 
@@ -17,6 +20,7 @@
     extractionModalStore.subscribe((value) => {
       if (value) {
         open = value.open;
+        singleVolume = value.singleVolume ?? false;
         if (value.firstVolume) {
           currentVolume = value.firstVolume;
           updateFilenamePreview(value.firstVolume);
@@ -28,10 +32,12 @@
   function updateFilenamePreview(firstVolume: { series_title: string; volume_title: string }) {
     if (firstVolume) {
       const extension = asCbz ? 'cbz' : 'zip';
-      if (includeSeriesTitle && individualVolumes) {
-        firstVolumePreview = `${firstVolume.series_title} - ${firstVolume.volume_title}.${extension}`;
-      } else if (individualVolumes) {
-        firstVolumePreview = `${firstVolume.volume_title}.${extension}`;
+      if (singleVolume || individualVolumes) {
+        if (includeSeriesTitle) {
+          firstVolumePreview = `${firstVolume.series_title} - ${firstVolume.volume_title}.${extension}`;
+        } else {
+          firstVolumePreview = `${firstVolume.volume_title}.${extension}`;
+        }
       } else {
         firstVolumePreview = `${firstVolume.series_title}.${extension}`;
       }
@@ -40,7 +46,13 @@
 
   function handleExtract() {
     if ($extractionModalStore?.onConfirm) {
-      $extractionModalStore.onConfirm(asCbz, individualVolumes, includeSeriesTitle);
+      $extractionModalStore.onConfirm(
+        asCbz,
+        individualVolumes,
+        includeSeriesTitle,
+        includeSidecars,
+        embedSidecarsInArchive
+      );
     }
     open = false;
   }
@@ -70,6 +82,16 @@
     if (currentVolume) updateFilenamePreview(currentVolume);
   }
 
+  function updateIncludeSidecars(value: boolean) {
+    includeSidecars = value;
+    updateExtractionSetting('includeSidecars', value);
+  }
+
+  function updateEmbedSidecarsInArchive(value: boolean) {
+    embedSidecarsInArchive = value;
+    updateExtractionSetting('embedSidecarsInArchive', value);
+  }
+
   run(() => {
     if ($extractionModalStore?.firstVolume) {
       updateFilenamePreview($extractionModalStore.firstVolume);
@@ -90,18 +112,20 @@
           onchange={(e) => updateAsCbz((e.target as HTMLInputElement)?.checked ?? false)}
         />
       </div>
-      <div class="flex items-center justify-between">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
-          >Extract individual volumes (recommended)</span
-        >
-        <Toggle
-          checked={individualVolumes}
-          onchange={(e) =>
-            updateIndividualVolumes((e.target as HTMLInputElement)?.checked ?? false)}
-        />
-      </div>
+      {#if !singleVolume}
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >Extract individual volumes (recommended)</span
+          >
+          <Toggle
+            checked={individualVolumes}
+            onchange={(e) =>
+              updateIndividualVolumes((e.target as HTMLInputElement)?.checked ?? false)}
+          />
+        </div>
+      {/if}
 
-      {#if individualVolumes}
+      {#if singleVolume || individualVolumes}
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
             >Include series title in filename</span
@@ -110,6 +134,29 @@
             checked={includeSeriesTitle}
             onchange={(e) =>
               updateIncludeSeriesTitle((e.target as HTMLInputElement)?.checked ?? false)}
+          />
+        </div>
+      {/if}
+
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+          >Export sidecars (.mokuro + .webp)</span
+        >
+        <Toggle
+          checked={includeSidecars}
+          onchange={(e) => updateIncludeSidecars((e.target as HTMLInputElement)?.checked ?? false)}
+        />
+      </div>
+
+      {#if includeSidecars}
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >Embed thumbnail sidecar in archive</span
+          >
+          <Toggle
+            checked={embedSidecarsInArchive}
+            onchange={(e) =>
+              updateEmbedSidecarsInArchive((e.target as HTMLInputElement)?.checked ?? false)}
           />
         </div>
       {/if}

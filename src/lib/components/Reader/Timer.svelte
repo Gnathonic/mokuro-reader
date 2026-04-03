@@ -16,7 +16,7 @@
   let { volumeId, visible = true }: Props = $props();
 
   // Internal state for the timer interval ID
-  let count: number | undefined = $state(undefined);
+  let count: ReturnType<typeof setInterval> | undefined = $state(undefined);
 
   // Local volumeStats to avoid circular dependency with currentVolume
   const volumeStats = derived(

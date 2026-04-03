@@ -3,12 +3,12 @@
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
-  import { db } from '$lib/catalog/db';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
-  import { deleteVolume, volumes, progress, settings } from '$lib/settings';
+  import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
+  import { deleteVolume as deleteStoredVolume } from '$lib/import';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -30,6 +30,7 @@
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import { onMount } from 'svelte';
+  import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
 
@@ -157,9 +158,12 @@
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
+  // Returns null while loading, undefined if series not found, array if found
   let allVolumes = $derived.by(() => {
     const seriesVolumes = $currentSeries;
-    if (!seriesVolumes || seriesVolumes.length === 0) return undefined;
+    // Propagate loading state (null = loading, [] = not found)
+    if (seriesVolumes === null) return null;
+    if (seriesVolumes.length === 0) return undefined;
 
     // Create a copy to sort
     const volumesToSort = [...seriesVolumes];
@@ -192,6 +196,16 @@
   // Separate real volumes from placeholders
   let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
+  let volumeListRenderKey = $derived.by(() =>
+    manga
+      .map((vol) => {
+        const thumbSig = vol.thumbnail
+          ? `${vol.thumbnail.name}:${vol.thumbnail.size}:${vol.thumbnail.lastModified}:${vol.thumbnail.type}`
+          : 'none';
+        return `${vol.volume_uuid}:${thumbSig}:${vol.thumbnail_width ?? 0}:${vol.thumbnail_height ?? 0}`;
+      })
+      .join('|')
+  );
 
   let loading = $state(false);
 
@@ -200,6 +214,17 @@
   let renameValue = $state('');
   let renameError = $state('');
   let renameSaving = $state(false);
+  let renameInputEl = $state<HTMLInputElement | null>(null);
+
+  // Focus rename field when entering rename mode (avoids a11y autofocus warning).
+  $effect(() => {
+    if (isRenaming) {
+      tick().then(() => {
+        renameInputEl?.focus();
+        renameInputEl?.select();
+      });
+    }
+  });
 
   // Subscribe to unified cloud cache updates
   let cloudFiles = $state<Map<string, any[]>>(new Map());
@@ -298,18 +323,23 @@
       return;
     }
 
-    // Efficient O(1) lookup: Get series files from Map by series title
-    const seriesTitle = manga[0].series_title;
-    const seriesFiles = cloudFiles.get(seriesTitle) || [];
+    // Build a path set from all cloud files to avoid lookup inconsistencies
+    // between different cache adapters and grouping keys.
+    const cloudPathSet = new Set<string>();
+    for (const files of cloudFiles.values()) {
+      for (const file of files) {
+        cloudPathSet.add(file.path);
+      }
+    }
 
     allBackedUp = manga.every((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some((f) => f.path === path);
+      return cloudPathSet.has(path);
     });
 
     anyBackedUp = manga.some((vol) => {
       const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return seriesFiles.some((f) => f.path === path);
+      return cloudPathSet.has(path);
     });
 
     console.log(
@@ -317,26 +347,23 @@
       allBackedUp,
       'anyBackedUp:',
       anyBackedUp,
-      'seriesFiles:',
-      seriesFiles.length
+      'cloudPaths:',
+      cloudPathSet.size
     );
   });
 
   async function confirmDelete(deleteStats = false, deleteCloud = false) {
     const seriesUuid = manga?.[0].series_uuid;
     if (seriesUuid) {
-      manga?.forEach((vol) => {
-        const volId = vol.volume_uuid;
-        // Delete from all 3 tables in v3 schema
-        db.volumes.where('volume_uuid').equals(vol.volume_uuid).delete();
-        db.volume_ocr.delete(vol.volume_uuid);
-        db.volume_files.delete(vol.volume_uuid);
+      await Promise.all(
+        (manga || []).map(async (vol) => {
+          await deleteStoredVolume(vol.volume_uuid);
 
-        // Only delete stats and progress if the checkbox is checked
-        if (deleteStats) {
-          deleteVolume(volId);
-        }
-      });
+          if (deleteStats) {
+            deleteVolumeStats(vol.volume_uuid);
+          }
+        })
+      );
 
       // Delete from cloud if checkbox checked
       if (deleteCloud && hasAnyProvider && manga) {
@@ -347,10 +374,8 @@
     }
   }
 
-  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
-    if (!volumes || volumes.length === 0) return;
-
-    const seriesTitle = volumes[0].series_title;
+  async function deleteSeriesFromCloudByTitle(seriesTitle: string) {
+    if (!seriesTitle) return;
 
     // Check if any volumes are backed up (efficient O(1) Map lookup)
     const backedUpVolumes = cloudFiles.get(seriesTitle) || [];
@@ -378,22 +403,28 @@
     }
   }
 
-  async function onDeleteFromCloud() {
-    if (!manga || manga.length === 0) return;
+  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
+    if (!volumes || volumes.length === 0) return;
+    await deleteSeriesFromCloudByTitle(volumes[0].series_title);
+  }
 
-    // Check if any provider is authenticated
+  async function onDeleteFromCloud() {
     if (!hasAnyProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
       return;
     }
 
-    if (!anyBackedUp) {
+    const seriesTitle = manga?.[0]?.series_title || placeholders?.[0]?.series_title;
+    if (!seriesTitle) return;
+
+    const hasBackups = (cloudFiles.get(seriesTitle) || []).length > 0;
+    if (!hasBackups) {
       showSnackbar(`No backups found in ${providerDisplayName}`);
       return;
     }
 
-    promptConfirmation(`Delete ${manga[0].series_title} from ${providerDisplayName}?`, async () => {
-      await deleteSeriesFromCloud(manga);
+    promptConfirmation(`Delete ${seriesTitle} from ${providerDisplayName}?`, async () => {
+      await deleteSeriesFromCloudByTitle(seriesTitle);
     });
   }
 
@@ -429,10 +460,22 @@
         volume_title: manga[0].volume_title
       };
 
-      promptExtraction(firstVolume, async (asCbz, individualVolumes, includeSeriesTitle) => {
-        loading = true;
-        loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle);
-      });
+      promptExtraction(
+        firstVolume,
+        async (
+          asCbz,
+          individualVolumes,
+          includeSeriesTitle,
+          includeSidecars,
+          embedSidecarsInArchive
+        ) => {
+          loading = true;
+          loading = await zipManga(manga, asCbz, individualVolumes, includeSeriesTitle, {
+            includeSidecars,
+            embedSidecarsInArchive
+          });
+        }
+      );
     }
   }
 
@@ -446,9 +489,17 @@
       return;
     }
 
-    // Filter out already backed up volumes using unified cloud manager
+    // Filter out already backed up volumes using the same cloud path set
+    // used by the current view status calculations.
+    const cloudPathSet = new Set<string>();
+    for (const files of cloudFiles.values()) {
+      for (const file of files) {
+        cloudPathSet.add(file.path);
+      }
+    }
+
     const volumesToBackup = manga.filter(
-      (vol) => !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
+      (vol) => !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
     );
 
     if (volumesToBackup.length === 0) {
@@ -600,6 +651,7 @@
       // Execute the rename for this series UUID
       await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
+      nav.toSeries(newTitle, { replaceState: true });
       showSnackbar(`Renamed to "${newTitle}"`);
       isRenaming = false;
       renameValue = '';
@@ -653,7 +705,8 @@
 <svelte:head>
   <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
 </svelte:head>
-{#if !$catalog || $catalog.length === 0}
+{#if $catalog === null || allVolumes === null}
+  <!-- Still loading from IndexedDB -->
   <div class="flex items-center justify-center p-16">
     <Spinner size="12" />
   </div>
@@ -665,11 +718,11 @@
         <div class="flex min-w-0 flex-1 items-center gap-2 px-2">
           <input
             type="text"
+            bind:this={renameInputEl}
             bind:value={renameValue}
             onkeydown={handleRenameKeydown}
             disabled={renameSaving}
             class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xl font-bold text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
-            autofocus
           />
           <button
             onclick={saveRename}
@@ -808,9 +861,11 @@
           </div>
         {/if}
 
-        {#each manga as volume (volume.volume_uuid)}
-          <VolumeItem {volume} variant="list" />
-        {/each}
+        {#key volumeListRenderKey}
+          {#each manga as volume (volume.volume_uuid)}
+            <VolumeItem {volume} variant="list" />
+          {/each}
+        {/key}
 
         {#if placeholders && placeholders.length > 0}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
@@ -833,9 +888,11 @@
       <!-- Grid view -->
       <div class="flex flex-col gap-4">
         <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
-          {#each manga as volume (volume.volume_uuid)}
-            <VolumeItem {volume} variant="grid" />
-          {/each}
+          {#key volumeListRenderKey}
+            {#each manga as volume (volume.volume_uuid)}
+              <VolumeItem {volume} variant="grid" />
+            {/each}
+          {/key}
         </div>
 
         {#if placeholders && placeholders.length > 0 && hasAnyProvider}
@@ -895,6 +952,21 @@
           <span class="break-words">List</span>
         {/if}
       </Button>
+
+      <Button id="placeholder-series-menu" color="light" class="!min-w-0 !p-2.5">
+        <DotsVerticalOutline class="h-5 w-5" />
+      </Button>
+      <Dropdown triggeredBy="#placeholder-series-menu" placement="bottom-end">
+        {#if hasAnyProvider && !isReadOnlyMode}
+          <DropdownItem
+            onclick={onDeleteFromCloud}
+            class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
+          >
+            <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Delete from {providerDisplayName}</span>
+          </DropdownItem>
+        {/if}
+      </Dropdown>
     </div>
 
     <!-- Volume List/Grid -->
@@ -913,5 +985,8 @@
     {/if}
   </div>
 {:else}
-  <div class="flex justify-center p-16">Manga not found</div>
+  <div class="flex flex-col items-center justify-center gap-4 p-16">
+    <p class="text-lg text-gray-400">Series not found</p>
+    <Button color="primary" onclick={() => nav.toCatalog()}>Go to Catalog</Button>
+  </div>
 {/if}

@@ -30,7 +30,7 @@
         <p class="text-sm font-medium">Update available</p>
         <p class="text-xs opacity-80">
           {#if $latestRelease}
-            v{READER_VERSION} → v{$latestRelease.version}
+            v{$latestRelease.version} ready to install
           {:else}
             A new version is ready to install
           {/if}

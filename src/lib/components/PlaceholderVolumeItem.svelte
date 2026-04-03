@@ -182,7 +182,7 @@
     class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 border-transparent p-3 text-center opacity-70 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
     class:cursor-not-allowed={isDownloading}
   >
-    <PlaceholderThumbnail {isDownloading} showDownloadUI={true} />
+    <PlaceholderThumbnail {isDownloading} showDownloadUI={true} {volume} />
     <p class="line-clamp-2 font-semibold sm:w-[250px]">{volName}</p>
     <div
       class="flex flex-wrap items-center justify-center gap-x-2 text-xs text-gray-500 dark:text-gray-400"

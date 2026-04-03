@@ -12,6 +12,7 @@ import { db } from '$lib/catalog/db';
 import { requestPersistentStorage } from '$lib/util/upload';
 import type { ProcessedVolume } from './types';
 import type { VolumeMetadata } from '$lib/types';
+import { naturalSort } from '$lib/util/natural-sort';
 
 /**
  * Check if a volume already exists in the database
@@ -20,7 +21,7 @@ import type { VolumeMetadata } from '$lib/types';
  * @returns True if the volume exists
  */
 export async function volumeExists(volumeUuid: string): Promise<boolean> {
-  const existing = await db.volumes.where('volume_uuid').equals(volumeUuid).first();
+  const existing = await db.volumes.get(volumeUuid);
   return existing !== undefined;
 }
 
@@ -35,20 +36,14 @@ export async function volumeExists(volumeUuid: string): Promise<boolean> {
  */
 export async function saveVolume(volume: ProcessedVolume): Promise<void> {
   const { metadata, ocrData, fileData } = volume;
-
-  // Check for duplicates
-  if (await volumeExists(metadata.volumeUuid)) {
-    throw new Error(`Volume ${metadata.volumeUuid} already exists in database`);
-  }
+  const canonicalVolumeUuid = metadata.volumeUuid;
 
   // Request persistent storage
   await requestPersistentStorage();
 
   // Sort files by name for consistent ordering
   const sortedFiles = Object.fromEntries(
-    Object.entries(fileData.files).sort(([aKey], [bKey]) =>
-      aKey.localeCompare(bKey, undefined, { numeric: true, sensitivity: 'base' })
-    )
+    Object.entries(fileData.files).sort(([aKey], [bKey]) => naturalSort(aKey, bKey))
   );
 
   // Calculate page_char_counts from pages
@@ -66,32 +61,69 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
     page_char_counts: pageCharCounts,
     thumbnail:
       metadata.thumbnail instanceof Blob
-        ? new File([metadata.thumbnail], 'thumbnail.jpg', { type: 'image/jpeg' })
+        ? metadata.thumbnail instanceof File
+          ? metadata.thumbnail
+          : new File([metadata.thumbnail], 'thumbnail', {
+              type: metadata.thumbnail.type || 'image/jpeg'
+            })
         : undefined,
     thumbnail_width: metadata.thumbnailWidth,
     thumbnail_height: metadata.thumbnailHeight,
     missing_pages: metadata.missingPages,
-    missing_page_paths: metadata.missingPagePaths
+    missing_page_paths: metadata.missingPagePaths,
+    spine_width: metadata.spineWidth
   };
 
   // Write to all 3 tables atomically
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
+    const [existingVolume, existingOcr, existingFiles] = await Promise.all([
+      db.volumes.get(canonicalVolumeUuid),
+      db.volume_ocr.get(canonicalVolumeUuid),
+      db.volume_files.get(canonicalVolumeUuid)
+    ]);
+
+    if (existingVolume) {
+      throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
+    }
+
+    // Clean up stale rows left behind by an interrupted delete before re-importing.
+    if (existingOcr) {
+      await db.volume_ocr.delete(canonicalVolumeUuid);
+    }
+
+    if (existingFiles) {
+      await db.volume_files.delete(canonicalVolumeUuid);
+    }
+
     // Write metadata
     await db.volumes.add(volumeMetadata);
 
     // Write OCR data (strip cumulativeChars as it's stored in page_char_counts)
     const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
     await db.volume_ocr.add({
-      volume_uuid: ocrData.volume_uuid,
+      volume_uuid: canonicalVolumeUuid,
       pages: pagesForDb as any // Cast to any since Page type is stricter
     });
 
     // Write files
     await db.volume_files.add({
-      volume_uuid: fileData.volume_uuid,
+      volume_uuid: canonicalVolumeUuid,
       files: sortedFiles
     });
   });
+
+  // Import-time thumbnail generation can fail for some files.
+  // Trigger best-effort background recovery so UI placeholders resolve
+  // without requiring navigation or refresh.
+  if (
+    !volumeMetadata.thumbnail ||
+    !volumeMetadata.thumbnail_width ||
+    !volumeMetadata.thumbnail_height
+  ) {
+    db.processThumbnails(1).catch((error) => {
+      console.error('Failed to recover missing thumbnail after import:', error);
+    });
+  }
 }
 
 /**
