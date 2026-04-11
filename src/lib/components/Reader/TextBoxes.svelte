@@ -12,8 +12,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
+    blobToBase64,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { db } from '$lib/catalog/db';
 
   interface ContextMenuData {
     x: number;
@@ -140,6 +142,22 @@
     seriesTitle: $volumes[volumeUuid]?.series_title,
     volumeTitle: $volumes[volumeUuid]?.volume_title
   });
+
+  // Load volume cover image from DB and add to metadata
+  async function getMetadataWithCover(): Promise<VolumeMetadata> {
+    try {
+      const dbVolume = await db.volumes.get(volumeUuid);
+      if (dbVolume?.thumbnail) {
+        const coverImage = await blobToBase64(dbVolume.thumbnail);
+        if (coverImage) {
+          return { ...volumeMetadata, coverImage };
+        }
+      }
+    } catch {
+      // Fall through to return metadata without cover
+    }
+    return volumeMetadata;
+  }
 
   // Track adjusted font sizes for each textbox
   let adjustedFontSizes = $state<Map<number, string>>(new Map());
@@ -346,6 +364,9 @@
     // Use the explicit pageIndex prop (0-based) when available, otherwise fall back to progress
     const pageNumber = pageIndex != null ? pageIndex + 1 : $volumes[volumeUuid]?.progress || 1;
 
+    // Load cover image for {cover} template support
+    const metadataWithCover = await getMetadataWithCover();
+
     if (cardMode === 'update') {
       // Update mode: fetch previous card values with retry
       const maxRetries = 3;
@@ -406,7 +427,7 @@
           url,
           selectedText || fullSentence,
           fullSentence,
-          volumeMetadata,
+          metadataWithCover,
           textBox,
           previousValues,
           lastCard.noteId,
@@ -426,7 +447,7 @@
           selectedText || fullSentence,
           fullSentence,
           ankiTags,
-          volumeMetadata,
+          metadataWithCover,
           undefined,
           textBox,
           pageNumber,
@@ -445,7 +466,7 @@
           url,
           selectedText || fullSentence,
           fullSentence,
-          volumeMetadata,
+          metadataWithCover,
           textBox,
           undefined, // previousValues
           undefined, // previousCardId
@@ -460,7 +481,7 @@
           selectedText || fullSentence,
           fullSentence,
           ankiTags,
-          volumeMetadata,
+          metadataWithCover,
           undefined,
           textBox,
           pageNumber,
