@@ -283,6 +283,47 @@ export function keepInBounds() {
   }
 }
 
+/**
+ * Reports whether there is additional content hidden to the left or right
+ * of the current viewport at the current zoom/pan position.
+ *
+ * - `canRevealLeft`  - there is content further left that is not currently
+ *   visible (the user could drag the image rightward to reveal more).
+ * - `canRevealRight` - there is content further right that is not currently
+ *   visible.
+ *
+ * Used by the mobile swipe handler to distinguish "pan across the page" from
+ * "swipe to flip to the next/previous page" (see issue #186).
+ */
+export function getHorizontalPanEdgeState(): {
+  canRevealLeft: boolean;
+  canRevealRight: boolean;
+} {
+  if (!pz || !container) {
+    return { canRevealLeft: false, canRevealRight: false };
+  }
+  const { x, scale } = pz.getTransform();
+  const width = container.offsetWidth * scale;
+  const { innerWidth } = window;
+
+  // Image fits horizontally - there is nothing to pan to in either direction.
+  if (width <= innerWidth) {
+    return { canRevealLeft: false, canRevealRight: false };
+  }
+
+  // Mirrors keepInBounds()'s x-axis bounds when content overflows the viewport.
+  const minX = innerWidth - width;
+  const maxX = 0;
+  // Small tolerance for sub-pixel pan values so that "within a pixel of the
+  // edge" still counts as at-the-edge.
+  const epsilon = 1;
+
+  return {
+    canRevealLeft: x < maxX - epsilon,
+    canRevealRight: x > minX + epsilon
+  };
+}
+
 export function scrollImage(direction: 'up' | 'down') {
   if (!pz) return;
 

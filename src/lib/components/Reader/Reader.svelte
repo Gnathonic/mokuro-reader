@@ -11,6 +11,7 @@
     zoomDefault,
     zoomDefaultWithLayoutWait,
     zoomFitToScreen,
+    getHorizontalPanEdgeState,
     handleWheel as panzoomHandleWheel
   } from '$lib/panzoom';
   import {
@@ -462,6 +463,12 @@
   let startY = 0;
   let touchStart: Date;
   let lastMultiTouchTime = 0; // Timestamp of last multi-touch event
+  // Pan-edge state captured at the start of a single-finger gesture.
+  // When the user begins a gesture while more content is hidden in a given
+  // direction, we treat any horizontal motion in that direction as a pan
+  // rather than a page-flip swipe (issue #186).
+  let canRevealLeftAtStart = false;
+  let canRevealRightAtStart = false;
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
@@ -473,6 +480,13 @@
     touchStart = new Date();
     startX = clientX;
     startY = clientY;
+
+    // Snapshot how much pannable content exists in each horizontal direction
+    // right now, so that a subsequent swipe can be classified as either a
+    // page-flip (only when already at the relevant edge) or an intra-page pan.
+    const edgeState = getHorizontalPanEdgeState();
+    canRevealLeftAtStart = edgeState.canRevealLeft;
+    canRevealRightAtStart = edgeState.canRevealRight;
   }
 
   function handlePointerUp(event: TouchEvent) {
@@ -502,9 +516,12 @@
     if (isSwipe && touchDuration < 500) {
       const swipeThreshold = ($settings.swipeThreshold / 100) * window.innerWidth;
 
-      if (distanceX > swipeThreshold) {
+      // Only flip if the user was already at the relevant pan edge when the
+      // gesture began. Otherwise the gesture is an intra-page pan and we
+      // leave page navigation alone (issue #186).
+      if (distanceX > swipeThreshold && !canRevealLeftAtStart) {
         left(event, true);
-      } else if (distanceX < -swipeThreshold) {
+      } else if (distanceX < -swipeThreshold && !canRevealRightAtStart) {
         right(event, true);
       }
     }
