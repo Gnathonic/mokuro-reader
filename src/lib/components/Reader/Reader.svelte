@@ -37,8 +37,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
+    blobToBase64,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { db } from '$lib/catalog/db';
   import { showSnackbar } from '$lib/util';
   import {
     BackwardStepSolid,
@@ -966,6 +968,19 @@
       seriesTitle: volume.series_title,
       volumeTitle: volume.volume_title
     };
+
+    // Load cover image for {cover} template support
+    try {
+      const dbVolume = await db.volumes.get(volume.volume_uuid);
+      if (dbVolume?.thumbnail) {
+        const coverImage = await blobToBase64(dbVolume.thumbnail);
+        if (coverImage) {
+          volumeMetadata.coverImage = coverImage;
+        }
+      }
+    } catch {
+      // Continue without cover image
+    }
 
     // Use pre-captured image URL (captured at right-click time for reliability)
     const url = contextMenuData.imageUrl;

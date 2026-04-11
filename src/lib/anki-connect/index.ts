@@ -26,6 +26,7 @@ export const FIELD_TEMPLATES = [
   { template: '{selection}', description: 'Selected/highlighted text' },
   { template: '{sentence}', description: 'Full sentence/textbox content' },
   { template: '{image}', description: 'Screenshot image' },
+  { template: '{cover}', description: 'Volume cover image' },
   { template: '{series}', description: 'Series title' },
   { template: '{volume}', description: 'Volume title' },
   { template: '{page_num}', description: 'Current page number' },
@@ -41,6 +42,7 @@ export const DYNAMIC_TAGS = [
 export type VolumeMetadata = {
   seriesTitle?: string;
   volumeTitle?: string;
+  coverImage?: string; // Base64 data URL of the volume cover/thumbnail
 };
 
 /**
@@ -59,7 +61,11 @@ function sanitizeForFilename(str: string): string {
  * Generates a descriptive image filename from metadata.
  * Format: mokuro_{series}_{volume}_{page}.jpg
  */
-export function generateImageFilename(metadata?: VolumeMetadata, pageFilename?: string): string {
+export function generateImageFilename(
+  metadata?: VolumeMetadata,
+  pageFilename?: string,
+  isCover?: boolean
+): string {
   const parts = ['mokuro'];
 
   if (metadata?.seriesTitle) {
@@ -68,7 +74,9 @@ export function generateImageFilename(metadata?: VolumeMetadata, pageFilename?: 
   if (metadata?.volumeTitle) {
     parts.push(sanitizeForFilename(metadata.volumeTitle));
   }
-  if (pageFilename) {
+  if (isCover) {
+    parts.push('cover');
+  } else if (pageFilename) {
     parts.push(sanitizeForFilename(pageFilename));
   }
 
@@ -132,8 +140,8 @@ export function resolveTemplate(
   sentence?: string,
   options?: ResolveTemplateOptions
 ): string | null {
-  if (!template || template === '{image}') {
-    return null; // {image} is handled specially, not as text
+  if (!template || template === '{image}' || template === '{cover}') {
+    return null; // {image} and {cover} are handled specially as picture parameters, not as text
   }
 
   let resolved = template;
@@ -713,11 +721,15 @@ export async function createCard(
   // Use provided field mappings (from modal) or fall back to saved config
   const fieldMappings = options?.fieldMappings || config.fieldMappings;
 
-  // Find fields that use {image} - these will receive the picture via AnkiConnect's picture parameter
+  // Find fields that use {image} or {cover} - these will receive pictures via AnkiConnect's picture parameter
   const imageFields: string[] = [];
+  const coverFields: string[] = [];
   for (const mapping of fieldMappings) {
     if (mapping.template?.includes('{image}')) {
       imageFields.push(mapping.fieldName);
+    }
+    if (mapping.template?.includes('{cover}')) {
+      coverFields.push(mapping.fieldName);
     }
   }
 
@@ -732,28 +744,39 @@ export async function createCard(
   }
 
   // Build fields object from field mappings
-  // For fields with {image}, we resolve without the image (AnkiConnect will insert it)
+  // For fields with {image}/{cover}, we resolve without them (AnkiConnect will insert the pictures)
   const fields: Record<string, string> = {};
 
   for (const mapping of fieldMappings) {
     if (!mapping.template) continue;
 
-    // Remove {image} from template - AnkiConnect's picture parameter handles image insertion
-    const templateWithoutImage = mapping.template.replace(/\{image\}/g, '');
+    // Remove {image} and {cover} from template - AnkiConnect's picture parameter handles image insertion
+    const templateWithoutImages = mapping.template
+      .replace(/\{image\}/g, '')
+      .replace(/\{cover\}/g, '');
 
-    const resolved = resolveTemplate(templateWithoutImage, metadata || {}, selectedText, sentence, {
-      pageNumber: options?.pageNumber,
-      previousValues: options?.previousValues,
-      fieldName: mapping.fieldName
-    });
+    const resolved = resolveTemplate(
+      templateWithoutImages,
+      metadata || {},
+      selectedText,
+      sentence,
+      {
+        pageNumber: options?.pageNumber,
+        previousValues: options?.previousValues,
+        fieldName: mapping.fieldName
+      }
+    );
     if (resolved) {
       fields[mapping.fieldName] = resolved;
     }
   }
 
   // Ensure we have at least one non-empty field (excluding image-only fields)
-  const nonImageFields = Object.keys(fields).filter((f) => !imageFields.includes(f) || fields[f]);
-  if (nonImageFields.length === 0 && imageFields.length === 0) {
+  const allPictureFields = [...new Set([...imageFields, ...coverFields])];
+  const nonImageFields = Object.keys(fields).filter(
+    (f) => !allPictureFields.includes(f) || fields[f]
+  );
+  if (nonImageFields.length === 0 && allPictureFields.length === 0) {
     showSnackbar('Error: No fields would be populated. Check your field mappings.');
     return;
   }
@@ -767,15 +790,30 @@ export async function createCard(
     }
   };
 
-  // Add picture using AnkiConnect's built-in picture parameter (works on desktop and Android)
+  // Add pictures using AnkiConnect's built-in picture parameter (works on desktop and Android)
+  const pictures: Array<{ filename: string; data: string; fields: string[] }> = [];
+
   if (imageFields.length > 0) {
-    notePayload.picture = [
-      {
-        filename: imageFilename,
-        data: base64Data,
-        fields: imageFields
-      }
-    ];
+    pictures.push({
+      filename: imageFilename,
+      data: base64Data,
+      fields: imageFields
+    });
+  }
+
+  if (coverFields.length > 0 && metadata?.coverImage) {
+    const coverBase64 = metadata.coverImage.split(';base64,')[1];
+    if (coverBase64) {
+      pictures.push({
+        filename: generateImageFilename(metadata, undefined, true),
+        data: coverBase64,
+        fields: coverFields
+      });
+    }
+  }
+
+  if (pictures.length > 0) {
+    notePayload.picture = pictures;
   }
 
   // Only add tags if non-empty
@@ -924,11 +962,15 @@ export async function updateLastCard(
     return;
   }
 
-  // Find fields that use {image} - these will receive the picture via AnkiConnect's picture parameter
+  // Find fields that use {image} or {cover} - these will receive pictures via AnkiConnect's picture parameter
   const imageFields: string[] = [];
+  const coverFields: string[] = [];
   for (const mapping of fieldMappings) {
     if (mapping.template?.includes('{image}')) {
       imageFields.push(mapping.fieldName);
+    }
+    if (mapping.template?.includes('{cover}')) {
+      coverFields.push(mapping.fieldName);
     }
   }
 
@@ -943,18 +985,21 @@ export async function updateLastCard(
   }
 
   // Build fields object from field mappings
-  // For fields with {image}, we resolve without the image (AnkiConnect will insert it)
+  // For fields with {image}/{cover}, we resolve without them (AnkiConnect will insert the pictures)
   const fields: Record<string, any> = {};
+  const allPictureFields = [...new Set([...imageFields, ...coverFields])];
 
   for (const mapping of fieldMappings) {
     if (!mapping.template) continue;
 
-    // Remove {image} from template - AnkiConnect's picture parameter handles image insertion
-    const templateWithoutImage = mapping.template.replace(/\{image\}/g, '');
+    // Remove {image} and {cover} from template - AnkiConnect's picture parameter handles image insertion
+    const templateWithoutImages = mapping.template
+      .replace(/\{image\}/g, '')
+      .replace(/\{cover\}/g, '');
 
     // Resolve text content
     const resolved = resolveTemplate(
-      templateWithoutImage,
+      templateWithoutImages,
       metadata || {},
       options?.selectedText,
       sentence,
@@ -965,9 +1010,9 @@ export async function updateLastCard(
       }
     );
 
-    // For image fields: if template resolves to empty (e.g., just "{image}"),
+    // For picture fields: if template resolves to empty (e.g., just "{image}" or "{cover}"),
     // we must explicitly clear the field first so the new image replaces rather than appends
-    if (imageFields.includes(mapping.fieldName)) {
+    if (allPictureFields.includes(mapping.fieldName)) {
       fields[mapping.fieldName] = resolved || '';
     } else if (resolved) {
       fields[mapping.fieldName] = resolved;
@@ -980,13 +1025,30 @@ export async function updateLastCard(
       fields
     };
 
-    // Add picture using AnkiConnect's built-in picture parameter (works on desktop and Android)
+    // Add pictures using AnkiConnect's built-in picture parameter (works on desktop and Android)
+    const pictures: Array<{ filename: string; data: string; fields: string[] }> = [];
+
     if (imageFields.length > 0) {
-      noteUpdate.picture = {
+      pictures.push({
         filename: imageFilename,
         data: base64Data,
         fields: imageFields
-      };
+      });
+    }
+
+    if (coverFields.length > 0 && metadata?.coverImage) {
+      const coverBase64 = metadata.coverImage.split(';base64,')[1];
+      if (coverBase64) {
+        pictures.push({
+          filename: generateImageFilename(metadata, undefined, true),
+          data: coverBase64,
+          fields: coverFields
+        });
+      }
+    }
+
+    if (pictures.length > 0) {
+      noteUpdate.picture = pictures;
     }
 
     const updateResult = await ankiConnect('updateNoteFields', { note: noteUpdate });

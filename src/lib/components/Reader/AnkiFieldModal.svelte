@@ -100,8 +100,11 @@
       vars.push({ template: '{page_filename}', value: store.pageFilename });
     }
 
-    // Image variable
+    // Image variables
     vars.push({ template: '{image}', value: '[current capture]', isImage: true });
+    if (metadata.coverImage) {
+      vars.push({ template: '{cover}', value: '[volume cover]', isImage: true });
+    }
 
     return vars;
   });
@@ -242,6 +245,9 @@
 
     if (template === '{image}') {
       return '[Image]';
+    }
+    if (template === '{cover}') {
+      return '[Cover]';
     }
 
     const resolved = resolveTemplate(
