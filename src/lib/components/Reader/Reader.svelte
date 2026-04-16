@@ -31,6 +31,7 @@
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
   import {
+    cropperStore,
     openCreateModal,
     openUpdateModal,
     sendQuickCapture,
@@ -474,6 +475,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($cropperStore?.open) return;
     if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
@@ -494,6 +496,7 @@
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
     if ($settings.continuousScroll) return; // Continuous mode handles its own touch
+    if ($cropperStore?.open) return; // Don't process swipes when Anki modal is open
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
