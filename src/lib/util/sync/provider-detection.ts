@@ -29,7 +29,12 @@ export function clearActiveProviderKey(): void {
 export function getActiveProviderKey(): ProviderType | null {
   if (!browser) return null;
   const value = localStorage.getItem(ACTIVE_PROVIDER_KEY);
-  if (value === 'google-drive' || value === 'mega' || value === 'webdav') {
+  if (
+    value === 'google-drive' ||
+    value === 'mega' ||
+    value === 'webdav' ||
+    value === 'filesystem'
+  ) {
     return value;
   }
   return null;
