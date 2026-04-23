@@ -1,3 +1,5 @@
+import type { ProviderType } from '$lib/util/sync/provider-interface';
+
 export type Block = {
   box: number[];
   vertical: boolean;
@@ -38,7 +40,7 @@ export interface VolumeMetadata {
   isPlaceholder?: boolean;
 
   // Generic cloud storage fields (new multi-provider format)
-  cloudProvider?: 'google-drive' | 'mega' | 'webdav';
+  cloudProvider?: ProviderType;
   cloudFileId?: string;
   cloudModifiedTime?: string;
   cloudSize?: number;
