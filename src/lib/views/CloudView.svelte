@@ -21,6 +21,7 @@
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
+  import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -39,6 +40,16 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
   let webdavIsReadOnly = $derived($providerStatusStore.providers['webdav']?.isReadOnly || false);
+  let filesystemAuth = $derived(
+    $providerStatusStore.providers['filesystem']?.isAuthenticated || false
+  );
+  let filesystemNeedsReconnect = $derived(
+    ($providerStatusStore.providers['filesystem']?.hasStoredCredentials ?? false) &&
+      !($providerStatusStore.providers['filesystem']?.isAuthenticated ?? false)
+  );
+
+  let filesystemLoading = $state(false);
+  let filesystemSupported = $state(false);
 
   // Use active_cloud_provider key (via currentProviderType) for UI state
   // This properly clears on logout unlike hasStoredCredentials
@@ -51,7 +62,8 @@
   const providerNames: Record<ProviderType, string> = {
     'google-drive': 'Google Drive',
     mega: 'MEGA Cloud Storage',
-    webdav: 'WebDAV Server'
+    webdav: 'WebDAV Server',
+    filesystem: 'Local Folder'
   };
 
   // Provider info
@@ -76,6 +88,14 @@
         'Compatible with Nextcloud, ownCloud, and NAS devices',
         'Persistent login (no re-authentication needed)',
         'Self-hosted and private'
+      ]
+    },
+    filesystem: {
+      items: [
+        'Uses a folder on this device',
+        'Works offline — no account needed',
+        'Browser-quota limited (not your disk free space)',
+        'Chromium browsers only (Chrome, Edge, etc.)'
       ]
     }
   };
@@ -130,7 +150,7 @@
   // Reactively fetch storage quota when provider auth state changes
   $effect(() => {
     // Track auth state for any provider
-    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth;
+    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth || filesystemAuth;
 
     if (isAuthenticated) {
       fetchStorageQuota();
@@ -288,6 +308,7 @@
   }
 
   onMount(async () => {
+    filesystemSupported = isFilesystemProviderSupported();
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
@@ -379,6 +400,46 @@
     }
   }
 
+  async function handleFilesystemLogin() {
+    filesystemLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('filesystem');
+      await provider.login();
+      await providerManager.setCurrentProvider(provider);
+      showSnackbar('Connected to local folder - loading data...');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      providerManager.updateStatus();
+      showSnackbar('Local folder connected');
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      showSnackbar(message);
+    } finally {
+      filesystemLoading = false;
+    }
+  }
+
+  async function handleFilesystemReconnect() {
+    filesystemLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('filesystem');
+      if (!provider.reauthenticate) {
+        throw new Error('Provider does not support reconnect');
+      }
+      await provider.reauthenticate();
+      await providerManager.setCurrentProvider(provider);
+      providerManager.updateStatus();
+      showSnackbar('Local folder reconnected');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Reconnect failed';
+      showSnackbar(message);
+    } finally {
+      filesystemLoading = false;
+    }
+  }
+
   // Unified logout handler - all providers use providerManager.logout()
   // (Storage quota is cleared reactively via $effect when auth state changes)
   async function handleLogout() {
@@ -398,6 +459,8 @@
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
       showSnackbar('Logged out of Google Drive');
+    } else if (provider === 'filesystem') {
+      showSnackbar('Local folder disconnected');
     }
   }
 
@@ -698,6 +761,25 @@
               </Button>
             </form>
           </div>
+
+          <!-- Local Folder Option (Chromium-only) -->
+          {#if filesystemSupported}
+            <button
+              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={handleFilesystemLogin}
+              disabled={filesystemLoading}
+            >
+              <div class="flex items-center gap-4">
+                <div class="flex h-8 w-8 items-center justify-center text-2xl">📁</div>
+                <div class="flex-1 text-left">
+                  <div class="text-lg font-semibold">Local Folder</div>
+                  <div class="text-sm text-gray-400">
+                    Any folder on this device • Offline • No account
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -722,6 +804,28 @@
             </div>
             <Button color="red" onclick={handleLogout}>Log out</Button>
           </div>
+
+          {#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
+            <Alert color="yellow" class="mb-4">
+              {#snippet icon()}
+                <InfoCircleSolid class="h-5 w-5" />
+              {/snippet}
+              <div class="flex flex-col gap-2">
+                <span>
+                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser
+                  access to the folder you chose previously.
+                </span>
+                <Button
+                  size="xs"
+                  color="yellow"
+                  onclick={handleFilesystemReconnect}
+                  disabled={filesystemLoading}
+                >
+                  {filesystemLoading ? 'Reconnecting...' : 'Reconnect folder'}
+                </Button>
+              </div>
+            </Alert>
+          {/if}
 
           {#if currentProvider === 'webdav' && webdavIsReadOnly}
             <Alert color="yellow" class="mb-4">
