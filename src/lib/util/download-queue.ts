@@ -740,6 +740,76 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
     };
 
     pool.addTask(task);
+    return;
+  }
+
+  // Strategy 2: Main-thread download + decompress (e.g. filesystem provider)
+  // Workers are skipped when a provider opts out of worker downloads — typically
+  // because the source can't be reached from a worker context (File System Access
+  // API handles are bound to the window). Decompression stays on the main thread
+  // because local I/O is fast enough that the worker-pool's memory accounting is
+  // more cost than benefit.
+  try {
+    const metadata = unifiedCloudManager.getCloudVolume(item.cloudFileId);
+    if (!metadata) {
+      handleDownloadError(item, processId, 'Cloud file not found in cache');
+      return;
+    }
+
+    progressTrackerStore.updateProcess(processId, {
+      progress: 0,
+      status: 'Downloading...'
+    });
+
+    const blob = await provider!.downloadFile(metadata, (loaded, total) => {
+      if (total > 0) {
+        const percent = Math.round((loaded / total) * 90); // 0-90% for download
+        progressTrackerStore.updateProcess(processId, {
+          progress: percent,
+          status: `Downloading... ${percent}%`
+        });
+      }
+    });
+
+    progressTrackerStore.updateProcess(processId, {
+      progress: 90,
+      status: 'Extracting files...'
+    });
+
+    const { ZipReader, BlobReader, Uint8ArrayWriter } = await import('@zip.js/zip.js');
+    const zipReader = new ZipReader(new BlobReader(blob));
+    const zipEntries = await zipReader.getEntries();
+    const entries: DecompressedEntry[] = [];
+    for (const entry of zipEntries) {
+      if (entry.directory) continue;
+      if (isSystemFile(entry.filename)) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const uint8 = await (entry as any).getData(new Uint8ArrayWriter());
+      entries.push({ filename: entry.filename, data: uint8.buffer as ArrayBuffer });
+    }
+    await zipReader.close();
+
+    progressTrackerStore.updateProcess(processId, {
+      progress: 95,
+      status: 'Processing files...'
+    });
+
+    const sidecarEntries = await downloadSidecarEntries(item.volumeMetadata);
+    const allEntries = sidecarEntries.length > 0 ? [...entries, ...sidecarEntries] : entries;
+    await processVolumeData(allEntries, item.volumeMetadata);
+
+    progressTrackerStore.updateProcess(processId, {
+      progress: 100,
+      status: 'Download complete'
+    });
+
+    queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
+    setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+    processQueue();
+  } catch (error) {
+    console.error(`Failed to download ${item.volumeTitle} on main thread:`, error);
+    handleDownloadError(item, processId, error instanceof Error ? error.message : 'Unknown error');
+    processQueue();
   }
 }
 
