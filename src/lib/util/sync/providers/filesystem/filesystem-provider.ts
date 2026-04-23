@@ -144,41 +144,217 @@ export class FilesystemProvider implements SyncProvider {
     }
   }
 
-  // Placeholder bodies — filled in by Task 9
+  private requireRoot(): FileSystemDirectoryHandle {
+    if (!this.rootHandle) {
+      throw new ProviderError(
+        'Filesystem provider is not connected',
+        'filesystem',
+        'NOT_AUTHENTICATED',
+        true
+      );
+    }
+    return this.rootHandle;
+  }
+
+  private async resolveDirectoryHandle(
+    relativePath: string,
+    options: { create: boolean }
+  ): Promise<FileSystemDirectoryHandle> {
+    const segments = splitPathSegments(relativePath);
+    let handle: FileSystemDirectoryHandle = this.requireRoot();
+    for (const segment of segments) {
+      handle = await handle.getDirectoryHandle(segment, { create: options.create });
+    }
+    return handle;
+  }
+
+  private async resolveFileHandle(
+    relativePath: string,
+    options: { create: boolean }
+  ): Promise<FileSystemFileHandle> {
+    const parentPath = getParentPath(relativePath);
+    const filename = getBasename(relativePath);
+    if (!filename) {
+      throw new ProviderError(`Invalid file path '${relativePath}'`, 'filesystem', 'INVALID_PATH');
+    }
+    const parent = parentPath
+      ? await this.resolveDirectoryHandle(parentPath, { create: options.create })
+      : this.requireRoot();
+    return parent.getFileHandle(filename, { create: options.create });
+  }
+
+  private async *walkDirectory(
+    dir: FileSystemDirectoryHandle,
+    prefix: string
+  ): AsyncGenerator<{ path: string; fileHandle: FileSystemFileHandle }> {
+    // @ts-expect-error — values() is defined on FileSystemDirectoryHandle at runtime; TS lib may not have it
+    for await (const entry of dir.values()) {
+      const entryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.kind === 'directory') {
+        yield* this.walkDirectory(entry as FileSystemDirectoryHandle, entryPath);
+      } else if (entry.kind === 'file') {
+        yield { path: entryPath, fileHandle: entry as FileSystemFileHandle };
+      }
+    }
+  }
+
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {
-    throw new Error('not implemented yet');
+    const root = this.requireRoot();
+    const results: CloudFileMetadata[] = [];
+    for await (const { path, fileHandle } of this.walkDirectory(root, '')) {
+      if (!isSyncableFile(path)) continue;
+      const file = await fileHandle.getFile();
+      results.push({
+        provider: 'filesystem',
+        fileId: path,
+        path,
+        modifiedTime: new Date(file.lastModified).toISOString(),
+        size: file.size
+      });
+    }
+    console.log(`✅ Listed ${results.length} files from filesystem provider`);
+    return results;
   }
 
   async uploadFile(
-    _path: string,
-    _blob: UploadPayload,
+    path: string,
+    blob: UploadPayload,
     _description?: string,
-    _onProgress?: (loaded: number, total: number) => void
+    onProgress?: (loaded: number, total: number) => void
   ): Promise<string> {
-    throw new Error('not implemented yet');
+    this.requireRoot();
+    const fileHandle = await this.resolveFileHandle(path, { create: true });
+    const writable = await fileHandle.createWritable();
+    try {
+      const payload =
+        blob instanceof Blob
+          ? blob
+          : blob instanceof ArrayBuffer
+            ? new Blob([blob])
+            : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
+      await writable.write(payload);
+      onProgress?.(payload.size, payload.size);
+    } finally {
+      await writable.close();
+    }
+    console.log(`✅ Uploaded ${path} to filesystem`);
+    return path;
   }
 
   async downloadFile(
-    _file: CloudFileMetadata,
-    _onProgress?: (loaded: number, total: number) => void
+    file: CloudFileMetadata,
+    onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    throw new Error('not implemented yet');
+    this.requireRoot();
+    const fileHandle = await this.resolveFileHandle(file.fileId, { create: false });
+    const data = await fileHandle.getFile();
+    onProgress?.(data.size, data.size);
+    console.log(`✅ Downloaded ${file.path} from filesystem`);
+    return data;
   }
 
-  async deleteFile(_file: CloudFileMetadata): Promise<void> {
-    throw new Error('not implemented yet');
+  async deleteFile(file: CloudFileMetadata): Promise<void> {
+    this.requireRoot();
+    const parentPath = getParentPath(file.fileId);
+    const filename = getBasename(file.fileId);
+    const parent = parentPath
+      ? await this.resolveDirectoryHandle(parentPath, { create: false })
+      : this.requireRoot();
+    await parent.removeEntry(filename);
+    console.log(`✅ Deleted ${file.path} from filesystem`);
   }
 
-  async renameFile(_file: CloudFileMetadata, _newPath: string): Promise<CloudFileMetadata> {
-    throw new Error('not implemented yet');
+  async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
+    this.requireRoot();
+    const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
+    if (file.path === normalizedNewPath) {
+      return file;
+    }
+
+    // Read source
+    const sourceHandle = await this.resolveFileHandle(file.fileId, { create: false });
+    const sourceFile = await sourceHandle.getFile();
+
+    // Write to destination
+    const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: true });
+    const writable = await destHandle.createWritable();
+    try {
+      await writable.write(sourceFile);
+    } finally {
+      await writable.close();
+    }
+
+    // Delete source
+    const sourceParentPath = getParentPath(file.fileId);
+    const sourceParent = sourceParentPath
+      ? await this.resolveDirectoryHandle(sourceParentPath, { create: false })
+      : this.requireRoot();
+    await sourceParent.removeEntry(getBasename(file.fileId));
+
+    console.log(`✅ Renamed ${file.path} → ${normalizedNewPath} in filesystem`);
+    const destFile = await destHandle.getFile();
+    return {
+      provider: 'filesystem',
+      fileId: normalizedNewPath,
+      path: normalizedNewPath,
+      modifiedTime: new Date(destFile.lastModified).toISOString(),
+      size: destFile.size
+    };
   }
 
-  async renameFolder(_oldPath: string, _newPath: string): Promise<CloudFileMetadata[]> {
-    throw new Error('not implemented yet');
+  async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    this.requireRoot();
+    const normalizedOld = oldPath.replace(/^\/+|\/+$/g, '');
+    const normalizedNew = newPath.replace(/^\/+|\/+$/g, '');
+    if (normalizedOld === normalizedNew) {
+      const all = await this.listCloudVolumes();
+      return all.filter((f) => f.path.startsWith(`${normalizedOld}/`));
+    }
+
+    // List all files currently under the old folder and rename each one
+    const all = await this.listCloudVolumes();
+    const affected = all.filter((f) => f.path.startsWith(`${normalizedOld}/`));
+    const renamed: CloudFileMetadata[] = [];
+    for (const file of affected) {
+      const suffix = file.path.slice(normalizedOld.length);
+      const target = `${normalizedNew}${suffix}`;
+      renamed.push(await this.renameFile(file, target));
+    }
+
+    // Best-effort cleanup of the now-empty old folder
+    try {
+      const parentPath = getParentPath(normalizedOld);
+      const parent = parentPath
+        ? await this.resolveDirectoryHandle(parentPath, { create: false })
+        : this.requireRoot();
+      await parent.removeEntry(getBasename(normalizedOld), { recursive: true });
+    } catch {
+      // Already gone or never existed — fine
+    }
+
+    console.log(`✅ Renamed folder ${normalizedOld} → ${normalizedNew} in filesystem`);
+    return renamed;
   }
 
-  async deleteSeriesFolder(_seriesTitle: string): Promise<void> {
-    throw new Error('not implemented yet');
+  async deleteSeriesFolder(seriesTitle: string): Promise<void> {
+    const root = this.requireRoot();
+    const normalized = seriesTitle.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+    try {
+      await root.removeEntry(normalized, { recursive: true });
+      console.log(`✅ Deleted series folder '${seriesTitle}' from filesystem`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      if (/NotFoundError/.test(message)) {
+        console.log(`Series folder '${seriesTitle}' not found in filesystem`);
+        return;
+      }
+      throw new ProviderError(
+        `Failed to delete series folder: ${message}`,
+        'filesystem',
+        'DELETE_FAILED'
+      );
+    }
   }
 
   async getStorageQuota(): Promise<StorageQuota> {
