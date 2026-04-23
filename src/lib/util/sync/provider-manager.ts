@@ -28,7 +28,8 @@ class ProviderManager {
     providers: {
       'google-drive': null,
       mega: null,
-      webdav: null
+      webdav: null,
+      filesystem: null
     },
     hasAnyAuthenticated: false,
     needsAttention: false,
@@ -214,7 +215,8 @@ class ProviderManager {
       providers: {
         'google-drive': null,
         mega: null,
-        webdav: null
+        webdav: null,
+        filesystem: null
       },
       hasAnyAuthenticated: false,
       needsAttention: false,
