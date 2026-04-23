@@ -16,7 +16,6 @@ describe('handle-store', () => {
   beforeEach(async () => {
     // Reset the fake IDB for each test
     const { IDBFactory } = await import('fake-indexeddb');
-    // @ts-expect-error — replace globally for isolation
     globalThis.indexedDB = new IDBFactory();
   });
 
