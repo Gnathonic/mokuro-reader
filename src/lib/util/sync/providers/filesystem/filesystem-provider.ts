@@ -344,11 +344,11 @@ export class FilesystemProvider implements SyncProvider {
       await root.removeEntry(normalized, { recursive: true });
       console.log(`✅ Deleted series folder '${seriesTitle}' from filesystem`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      if (/NotFoundError/.test(message)) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
         console.log(`Series folder '${seriesTitle}' not found in filesystem`);
         return;
       }
+      const message = error instanceof Error ? error.message : 'Unknown error';
       throw new ProviderError(
         `Failed to delete series folder: ${message}`,
         'filesystem',
