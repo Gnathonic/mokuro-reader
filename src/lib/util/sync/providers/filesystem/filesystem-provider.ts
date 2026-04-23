@@ -17,6 +17,7 @@ export class FilesystemProvider implements SyncProvider {
   readonly type = 'filesystem' as const;
   readonly name = 'Local Folder';
   readonly supportsWorkerDownload = false;
+  readonly supportsWorkerUpload = false;
   readonly uploadConcurrencyLimit = 4;
   readonly downloadConcurrencyLimit = 4;
 

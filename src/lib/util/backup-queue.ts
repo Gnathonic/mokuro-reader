@@ -303,6 +303,94 @@ async function checkAndTerminatePool(): Promise<void> {
 }
 
 /**
+ * Main-thread backup path for providers that opt out of worker uploads.
+ * Compresses the volume from IndexedDB, then uploads the archive and sidecars
+ * via the provider's main-thread API. The worker pool is not engaged.
+ */
+async function processBackupMainThread(
+  item: BackupQueueItem,
+  processId: string,
+  provider: SyncProvider
+): Promise<void> {
+  try {
+    getBackupUiBridge().updateProgress(processId, 'Preparing...', 5);
+
+    if (provider.prepareUploadTarget) {
+      await prepareSeriesUploadTarget(provider, item.seriesTitle);
+    }
+
+    const { compressVolumeFromDb, generateVolumeSidecarsFromDb } = await import(
+      './compress-volume'
+    );
+
+    const cbzBlob = await compressVolumeFromDb(
+      item.volumeUuid,
+      (completed, total) => {
+        const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+        getBackupUiBridge().updateProgress(processId, 'Compressing...', percent);
+      },
+      {
+        embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
+        embedMokuroInArchive: false
+      }
+    );
+
+    const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
+
+    if (item.sidecarOptions.includeSidecars) {
+      const sidecars = await generateVolumeSidecarsFromDb(item.volumeUuid);
+      const toUpload: Array<{ filename: string; blob: Blob }> = [];
+      if (sidecars.mokuro) toUpload.push(sidecars.mokuro);
+      if (sidecars.thumbnail) toUpload.push(sidecars.thumbnail);
+      for (const sidecar of toUpload) {
+        getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
+        const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
+        await provider.uploadFile(sidecarPath, sidecar.blob);
+      }
+    }
+
+    getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
+    const uploadedFileId = await provider.uploadFile(
+      archivePath,
+      cbzBlob,
+      undefined,
+      (loaded, total) => {
+        if (total > 0) {
+          getBackupUiBridge().updateProgress(
+            processId,
+            'Uploading archive...',
+            Math.round((loaded / total) * 100)
+          );
+        }
+      }
+    );
+
+    const { cacheManager } = await import('./sync/cache-manager');
+    const cache = cacheManager.getCache(provider.type);
+    if (cache?.add) {
+      cache.add(archivePath, {
+        fileId: uploadedFileId,
+        path: archivePath,
+        modifiedTime: new Date().toISOString(),
+        size: cbzBlob.size
+      });
+    }
+
+    getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+    getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
+    queueStore.update((q) =>
+      q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+    );
+    setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
+  } catch (error) {
+    console.error(`Failed to back up ${item.volumeTitle} on main thread:`, error);
+    handleBackupError(item, processId, error instanceof Error ? error.message : 'Unknown error');
+  } finally {
+    await checkAndTerminatePool();
+  }
+}
+
+/**
  * Process backup/export using workers for all providers (including pseudo-providers)
  * Data loading is deferred until worker is ready to prevent memory pressure
  */
@@ -315,6 +403,14 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
   if (!isExport && !provider) {
     handleBackupError(item, processId, 'No cloud provider authenticated');
+    return;
+  }
+
+  // Main-thread upload path for providers whose credentials/handles cannot be
+  // used from a worker (e.g., filesystem — FileSystemDirectoryHandle is bound
+  // to the window that created it).
+  if (!isExport && provider && provider.supportsWorkerUpload === false) {
+    await processBackupMainThread(item, processId, provider);
     return;
   }
 

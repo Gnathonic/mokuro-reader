@@ -13,6 +13,7 @@
 ## File Structure
 
 ### Create
+
 - `src/lib/util/sync/providers/filesystem/feature-detect.ts` — tiny pure function `isFilesystemProviderSupported()`
 - `src/lib/util/sync/providers/filesystem/handle-store.ts` — dedicated IDB (`mokuro-filesystem-provider`, store `handles`, row key `'root'`), exposes `saveRootHandle` / `loadRootHandle` / `clearRootHandle`
 - `src/lib/util/sync/providers/filesystem/filesystem-paths.ts` — pure path helpers (split path into segments, file-pattern matching for `.cbz` / `.mokuro` / `.mokuro.gz` / `.webp` / `volume-data.json` / `profiles.json`)
@@ -23,6 +24,7 @@
 - `src/lib/util/sync/providers/filesystem/__tests__/handle-store.test.ts` — integration tests using `fake-indexeddb`
 
 ### Modify
+
 - `src/lib/util/sync/provider-interface.ts` — extend `ProviderType`, add `FilesystemFileMetadata`, add `AnyCloudFileMetadata` union entry, extend `isRealProvider`
 - `src/lib/util/sync/provider-detection.ts` — extend `'filesystem'` into `getActiveProviderKey`'s type guard
 - `src/lib/util/sync/provider-manager.ts` — add `'filesystem': null` to status-store provider records (2 spots)
@@ -35,6 +37,7 @@
 ## Task 1: Add `'filesystem'` to `ProviderType` union and related types
 
 **Files:**
+
 - Modify: `src/lib/util/sync/provider-interface.ts`
 
 - [ ] **Step 1: Extend `ProviderType` and `isRealProvider`**
@@ -105,6 +108,7 @@ git commit -m "feat(sync): add 'filesystem' to ProviderType union"
 ## Task 2: Extend provider-detection for 'filesystem'
 
 **Files:**
+
 - Modify: `src/lib/util/sync/provider-detection.ts`
 
 - [ ] **Step 1: Extend the type guard in `getActiveProviderKey`**
@@ -112,22 +116,17 @@ git commit -m "feat(sync): add 'filesystem' to ProviderType union"
 Open `src/lib/util/sync/provider-detection.ts`. Replace the `if` block on line 32:
 
 ```typescript
-  if (value === 'google-drive' || value === 'mega' || value === 'webdav') {
-    return value;
-  }
+if (value === 'google-drive' || value === 'mega' || value === 'webdav') {
+  return value;
+}
 ```
 
 with:
 
 ```typescript
-  if (
-    value === 'google-drive' ||
-    value === 'mega' ||
-    value === 'webdav' ||
-    value === 'filesystem'
-  ) {
-    return value;
-  }
+if (value === 'google-drive' || value === 'mega' || value === 'webdav' || value === 'filesystem') {
+  return value;
+}
 ```
 
 Do not add a legacy-detection branch inside `detectProviderFromCredentials()` — filesystem has no pre-existing localStorage credentials to migrate from.
@@ -149,6 +148,7 @@ git commit -m "feat(sync): recognize filesystem provider in active-provider dete
 ## Task 3: Add `'filesystem': null` to provider-manager status records
 
 **Files:**
+
 - Modify: `src/lib/util/sync/provider-manager.ts`
 
 - [ ] **Step 1: Extend initial status-store record (constructor)**
@@ -195,6 +195,7 @@ git commit -m "feat(sync): add filesystem slot to provider-manager status record
 ## Task 4: Feature detection module + tests
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/filesystem/feature-detect.ts`
 - Create: `src/lib/util/sync/providers/filesystem/__tests__/feature-detect.test.ts`
 
@@ -270,6 +271,7 @@ git commit -m "feat(filesystem-provider): add feature-detect helper"
 ## Task 5: Path helpers + tests
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/filesystem/filesystem-paths.ts`
 - Create: `src/lib/util/sync/providers/filesystem/__tests__/filesystem-paths.test.ts`
 
@@ -281,12 +283,7 @@ Create `src/lib/util/sync/providers/filesystem/__tests__/filesystem-paths.test.t
 
 ```typescript
 import { describe, it, expect } from 'vitest';
-import {
-  splitPathSegments,
-  isSyncableFile,
-  getParentPath,
-  getBasename
-} from '../filesystem-paths';
+import { splitPathSegments, isSyncableFile, getParentPath, getBasename } from '../filesystem-paths';
 
 describe('splitPathSegments', () => {
   it('splits a typical volume path', () => {
@@ -403,6 +400,7 @@ git commit -m "feat(filesystem-provider): add path helpers"
 ## Task 6: Dedicated IDB handle store + tests
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/filesystem/handle-store.ts`
 - Create: `src/lib/util/sync/providers/filesystem/__tests__/handle-store.test.ts`
 
@@ -426,7 +424,7 @@ import { saveRootHandle, loadRootHandle, clearRootHandle } from '../handle-store
 function makeFakeHandle(name: string): FileSystemDirectoryHandle {
   return {
     kind: 'directory' as const,
-    name,
+    name
     // structured-clonable no-op methods not required for the test;
     // fake-indexeddb only needs the object to be structured-clonable
   } as unknown as FileSystemDirectoryHandle;
@@ -549,6 +547,7 @@ git commit -m "feat(filesystem-provider): add dedicated IDB handle store"
 ## Task 7: FilesystemCacheManager (cache wrapper)
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/filesystem/filesystem-cache.ts`
 
 This is a structural copy of `mega-cache.ts` / `webdav-cache.ts`. It has no provider-specific logic — it just groups metadata by series and exposes reactive stores. No new tests: it is covered by the existing cache-manager test suite once the filesystem provider is registered.
@@ -762,6 +761,7 @@ git commit -m "feat(filesystem-provider): add cache wrapper"
 ## Task 8: FilesystemProvider — class skeleton + login/logout/auth
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/filesystem/filesystem-provider.ts`
 
 - [ ] **Step 1: Create the provider file with auth-only methods first**
@@ -874,29 +874,17 @@ export class FilesystemProvider implements SyncProvider {
    */
   async reauthenticate(): Promise<void> {
     if (!this.hasStoredHandle) {
-      throw new ProviderError(
-        'No stored folder to reconnect',
-        'filesystem',
-        'NOT_CONFIGURED'
-      );
+      throw new ProviderError('No stored folder to reconnect', 'filesystem', 'NOT_CONFIGURED');
     }
     const stored = await loadRootHandle();
     if (!stored) {
       this.hasStoredHandle = false;
-      throw new ProviderError(
-        'Stored folder reference is missing',
-        'filesystem',
-        'NOT_CONFIGURED'
-      );
+      throw new ProviderError('Stored folder reference is missing', 'filesystem', 'NOT_CONFIGURED');
     }
     const permission = await stored.requestPermission({ mode: 'readwrite' });
     if (permission !== 'granted') {
       // Keep the stored handle — user may grant on a later attempt
-      throw new ProviderError(
-        'Permission was not granted',
-        'filesystem',
-        'PERMISSION_DENIED'
-      );
+      throw new ProviderError('Permission was not granted', 'filesystem', 'PERMISSION_DENIED');
     }
     this.rootHandle = stored;
     setActiveProviderKey('filesystem');
@@ -1003,6 +991,7 @@ git commit -m "feat(filesystem-provider): scaffold provider with auth/restore/lo
 ## Task 9: Implement file operations on FilesystemProvider
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/filesystem/filesystem-provider.ts`
 
 All of these methods share two private helpers: `resolveDirectoryHandle(path, { create })` and `resolveFileHandle(path, { create })`. Add those first, then replace each placeholder method body.
@@ -1284,6 +1273,7 @@ git commit -m "feat(filesystem-provider): implement list/upload/download/delete/
 ## Task 10: Wire filesystem provider into `init-providers.ts`
 
 **Files:**
+
 - Modify: `src/lib/util/sync/init-providers.ts`
 
 - [ ] **Step 1: Add the dynamic-import case to `loadProvider`**
@@ -1306,16 +1296,16 @@ Place it alphabetically — after the `'webdav'` case is fine, or rearrange if y
 Find the block starting `} else if (activeProviderType === 'mega' || activeProviderType === 'webdav') {` (around line 100). Replace it with:
 
 ```typescript
-  } else if (
-    activeProviderType === 'mega' ||
-    activeProviderType === 'webdav' ||
-    activeProviderType === 'filesystem'
-  ) {
-    // MEGA, WebDAV, and filesystem restore credentials in their constructors via whenReady()
-    console.log(`⏳ Waiting for ${activeProviderType} to restore credentials...`);
-    await (activeProvider as any).whenReady();
-    console.log(`✅ ${activeProviderType} credentials restored`);
-  }
+if (
+  activeProviderType === 'mega' ||
+  activeProviderType === 'webdav' ||
+  activeProviderType === 'filesystem'
+) {
+  // MEGA, WebDAV, and filesystem restore credentials in their constructors via whenReady()
+  console.log(`⏳ Waiting for ${activeProviderType} to restore credentials...`);
+  await (activeProvider as any).whenReady();
+  console.log(`✅ ${activeProviderType} credentials restored`);
+}
 ```
 
 - [ ] **Step 3: Type-check**
@@ -1335,6 +1325,7 @@ git commit -m "feat(sync): lazy-load filesystem provider on startup"
 ## Task 11: Audit other files for literal provider-type matching
 
 **Files (read-only audit first; may be modified):**
+
 - `src/lib/components/Catalog.svelte`
 - `src/lib/components/NavBar.svelte`
 - `src/lib/components/PlaceholderVolumeItem.svelte`
@@ -1408,9 +1399,11 @@ If no file was modified, skip this commit.
 ## Task 12: Wire filesystem into CloudView UI
 
 **Files:**
+
 - Modify: `src/lib/views/CloudView.svelte`
 
 This is the main UX entry point. It needs:
+
 1. A feature-detection import
 2. A new provider button, hidden when unsupported
 3. `providerNames` and `providerInfo` entries
@@ -1423,7 +1416,7 @@ This is the main UX entry point. It needs:
 Near the top of the `<script>` block, add:
 
 ```typescript
-  import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
+import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
 ```
 
 - [ ] **Step 2: Extend `providerNames`**
@@ -1431,22 +1424,22 @@ Near the top of the `<script>` block, add:
 Replace:
 
 ```typescript
-  const providerNames: Record<ProviderType, string> = {
-    'google-drive': 'Google Drive',
-    mega: 'MEGA Cloud Storage',
-    webdav: 'WebDAV Server'
-  };
+const providerNames: Record<ProviderType, string> = {
+  'google-drive': 'Google Drive',
+  mega: 'MEGA Cloud Storage',
+  webdav: 'WebDAV Server'
+};
 ```
 
 with:
 
 ```typescript
-  const providerNames: Record<ProviderType, string> = {
-    'google-drive': 'Google Drive',
-    mega: 'MEGA Cloud Storage',
-    webdav: 'WebDAV Server',
-    filesystem: 'Local Folder'
-  };
+const providerNames: Record<ProviderType, string> = {
+  'google-drive': 'Google Drive',
+  mega: 'MEGA Cloud Storage',
+  webdav: 'WebDAV Server',
+  filesystem: 'Local Folder'
+};
 ```
 
 - [ ] **Step 3: Extend `providerInfo`**
@@ -1454,38 +1447,38 @@ with:
 Replace the `providerInfo` object with:
 
 ```typescript
-  const providerInfo = {
-    'google-drive': {
-      items: [
-        '15GB free storage',
-        'Seamless Google account integration',
-        'Back up from app, download on any device',
-        'Auto re-authentication support'
-      ]
-    },
-    mega: {
-      items: [
-        '20GB free storage',
-        'End-to-end encryption',
-        'Persistent login (no re-authentication needed)'
-      ]
-    },
-    webdav: {
-      items: [
-        'Compatible with Nextcloud, ownCloud, and NAS devices',
-        'Persistent login (no re-authentication needed)',
-        'Self-hosted and private'
-      ]
-    },
-    filesystem: {
-      items: [
-        'Uses a folder on this device',
-        'Works offline — no account needed',
-        'Browser-quota limited (not your disk free space)',
-        'Chromium browsers only (Chrome, Edge, etc.)'
-      ]
-    }
-  };
+const providerInfo = {
+  'google-drive': {
+    items: [
+      '15GB free storage',
+      'Seamless Google account integration',
+      'Back up from app, download on any device',
+      'Auto re-authentication support'
+    ]
+  },
+  mega: {
+    items: [
+      '20GB free storage',
+      'End-to-end encryption',
+      'Persistent login (no re-authentication needed)'
+    ]
+  },
+  webdav: {
+    items: [
+      'Compatible with Nextcloud, ownCloud, and NAS devices',
+      'Persistent login (no re-authentication needed)',
+      'Self-hosted and private'
+    ]
+  },
+  filesystem: {
+    items: [
+      'Uses a folder on this device',
+      'Works offline — no account needed',
+      'Browser-quota limited (not your disk free space)',
+      'Chromium browsers only (Chrome, Edge, etc.)'
+    ]
+  }
+};
 ```
 
 - [ ] **Step 4: Add derived auth state and loading state**
@@ -1493,22 +1486,22 @@ Replace the `providerInfo` object with:
 After the existing `webdavAuth` / `webdavIsReadOnly` lines:
 
 ```typescript
-  let filesystemAuth = $derived(
-    $providerStatusStore.providers['filesystem']?.isAuthenticated || false
-  );
-  let filesystemNeedsReconnect = $derived(
-    ($providerStatusStore.providers['filesystem']?.hasStoredCredentials ?? false) &&
-      !($providerStatusStore.providers['filesystem']?.isAuthenticated ?? false)
-  );
+let filesystemAuth = $derived(
+  $providerStatusStore.providers['filesystem']?.isAuthenticated || false
+);
+let filesystemNeedsReconnect = $derived(
+  ($providerStatusStore.providers['filesystem']?.hasStoredCredentials ?? false) &&
+    !($providerStatusStore.providers['filesystem']?.isAuthenticated ?? false)
+);
 
-  let filesystemLoading = $state(false);
-  let filesystemSupported = $state(false);
+let filesystemLoading = $state(false);
+let filesystemSupported = $state(false);
 ```
 
 Inside `onMount`, after the existing setup, add:
 
 ```typescript
-    filesystemSupported = isFilesystemProviderSupported();
+filesystemSupported = isFilesystemProviderSupported();
 ```
 
 - [ ] **Step 5: Include filesystemAuth in the quota-fetch $effect**
@@ -1516,13 +1509,13 @@ Inside `onMount`, after the existing setup, add:
 Find the `$effect` that fetches storage quota (around line 131). Replace:
 
 ```typescript
-    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth;
+const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth;
 ```
 
 with:
 
 ```typescript
-    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth || filesystemAuth;
+const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth || filesystemAuth;
 ```
 
 - [ ] **Step 6: Add login / reconnect / logout wiring**
@@ -1530,45 +1523,45 @@ with:
 Below the existing `handleWebDAVLogin`, add:
 
 ```typescript
-  async function handleFilesystemLogin() {
-    filesystemLoading = true;
-    try {
-      const provider = await providerManager.getOrLoadProvider('filesystem');
-      await provider.login();
-      await providerManager.setCurrentProvider(provider);
-      showSnackbar('Connected to local folder - loading data...');
-      await unifiedCloudManager.fetchAllCloudVolumes();
-      providerManager.updateStatus();
-      showSnackbar('Local folder connected');
-      await handlePostLogin();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      showSnackbar(message);
-    } finally {
-      filesystemLoading = false;
-    }
+async function handleFilesystemLogin() {
+  filesystemLoading = true;
+  try {
+    const provider = await providerManager.getOrLoadProvider('filesystem');
+    await provider.login();
+    await providerManager.setCurrentProvider(provider);
+    showSnackbar('Connected to local folder - loading data...');
+    await unifiedCloudManager.fetchAllCloudVolumes();
+    providerManager.updateStatus();
+    showSnackbar('Local folder connected');
+    await handlePostLogin();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    showSnackbar(message);
+  } finally {
+    filesystemLoading = false;
   }
+}
 
-  async function handleFilesystemReconnect() {
-    filesystemLoading = true;
-    try {
-      const provider = await providerManager.getOrLoadProvider('filesystem');
-      if (!provider.reauthenticate) {
-        throw new Error('Provider does not support reconnect');
-      }
-      await provider.reauthenticate();
-      await providerManager.setCurrentProvider(provider);
-      providerManager.updateStatus();
-      showSnackbar('Local folder reconnected');
-      await unifiedCloudManager.fetchAllCloudVolumes();
-      await handlePostLogin();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Reconnect failed';
-      showSnackbar(message);
-    } finally {
-      filesystemLoading = false;
+async function handleFilesystemReconnect() {
+  filesystemLoading = true;
+  try {
+    const provider = await providerManager.getOrLoadProvider('filesystem');
+    if (!provider.reauthenticate) {
+      throw new Error('Provider does not support reconnect');
     }
+    await provider.reauthenticate();
+    await providerManager.setCurrentProvider(provider);
+    providerManager.updateStatus();
+    showSnackbar('Local folder reconnected');
+    await unifiedCloudManager.fetchAllCloudVolumes();
+    await handlePostLogin();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Reconnect failed';
+    showSnackbar(message);
+  } finally {
+    filesystemLoading = false;
   }
+}
 ```
 
 Extend the `handleLogout` provider-specific cleanup:
@@ -1586,24 +1579,22 @@ Extend the `handleLogout` provider-specific cleanup:
 Inside the `{#if !hasAnyProvider}` branch of the template, after the WebDAV button+form block (approximately line 700), add:
 
 ```svelte
-          <!-- Local Folder Option (Chromium-only) -->
-          {#if filesystemSupported}
-            <button
-              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-              onclick={handleFilesystemLogin}
-              disabled={filesystemLoading}
-            >
-              <div class="flex items-center gap-4">
-                <div class="flex h-8 w-8 items-center justify-center text-2xl">📁</div>
-                <div class="flex-1 text-left">
-                  <div class="text-lg font-semibold">Local Folder</div>
-                  <div class="text-sm text-gray-400">
-                    Any folder on this device • Offline • No account
-                  </div>
-                </div>
-              </div>
-            </button>
-          {/if}
+<!-- Local Folder Option (Chromium-only) -->
+{#if filesystemSupported}
+  <button
+    class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+    onclick={handleFilesystemLogin}
+    disabled={filesystemLoading}
+  >
+    <div class="flex items-center gap-4">
+      <div class="flex h-8 w-8 items-center justify-center text-2xl">📁</div>
+      <div class="flex-1 text-left">
+        <div class="text-lg font-semibold">Local Folder</div>
+        <div class="text-sm text-gray-400">Any folder on this device • Offline • No account</div>
+      </div>
+    </div>
+  </button>
+{/if}
 ```
 
 The emoji is acceptable here because it's already the pattern used for the MEGA ("M") and WebDAV ("W") buttons' icon-equivalent positions — do not add emojis elsewhere.
@@ -1622,22 +1613,27 @@ Find the block around line 726 that begins:
 Immediately before that `{#if}`, add:
 
 ```svelte
-          {#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
-            <Alert color="yellow" class="mb-4">
-              {#snippet icon()}
-                <InfoCircleSolid class="h-5 w-5" />
-              {/snippet}
-              <div class="flex flex-col gap-2">
-                <span>
-                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser
-                  access to the folder you chose previously.
-                </span>
-                <Button size="xs" color="yellow" onclick={handleFilesystemReconnect} disabled={filesystemLoading}>
-                  {filesystemLoading ? 'Reconnecting...' : 'Reconnect folder'}
-                </Button>
-              </div>
-            </Alert>
-          {/if}
+{#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
+  <Alert color="yellow" class="mb-4">
+    {#snippet icon()}
+      <InfoCircleSolid class="h-5 w-5" />
+    {/snippet}
+    <div class="flex flex-col gap-2">
+      <span>
+        <span class="font-medium">Permission needed:</span> Reconnect to grant the browser access to
+        the folder you chose previously.
+      </span>
+      <Button
+        size="xs"
+        color="yellow"
+        onclick={handleFilesystemReconnect}
+        disabled={filesystemLoading}
+      >
+        {filesystemLoading ? 'Reconnecting...' : 'Reconnect folder'}
+      </Button>
+    </div>
+  </Alert>
+{/if}
 ```
 
 - [ ] **Step 9: Type-check**
@@ -1650,6 +1646,7 @@ Expected: passes.
 Run: `npm run dev`
 
 Manually verify in a Chromium browser:
+
 1. Visit the Cloud tab. The "Local Folder" button is present.
 2. Click it. Pick a folder. Grant read/write.
 3. Observe the "Local folder connected" snackbar; UI switches to connected state.
@@ -1680,6 +1677,7 @@ git commit -m "feat(filesystem-provider): surface Local Folder option in CloudVi
 Run: `npm run dev`
 
 In a Chromium browser:
+
 1. Import a small volume (zip or cbz) into the library from the normal upload flow.
 2. On Cloud tab, connect a fresh empty folder as Local Folder.
 3. Click **Backup all series to cloud**. Confirm.

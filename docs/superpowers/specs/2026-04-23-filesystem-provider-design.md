@@ -24,6 +24,7 @@ The File System Access API ships in Chromium-based browsers (Chrome, Edge, Opera
 Feature detection: `typeof window !== 'undefined' && 'showDirectoryPicker' in window`.
 
 When unsupported:
+
 - `CloudView.svelte` does not render the "Local Folder" option
 - `loadProvider('filesystem')` throws with a clear message (defensive — should be unreachable when UI is gated)
 - `provider-detection.ts` does not return `'filesystem'` from legacy detection (unsupported browsers can't have previously registered a handle)
@@ -33,6 +34,7 @@ When unsupported:
 There is no credential string. "Login" = hold a valid `FileSystemDirectoryHandle` with `'granted'` readwrite permission.
 
 ### Login flow
+
 1. User clicks "Connect Local Folder" in `CloudView`
 2. Provider calls `window.showDirectoryPicker({ mode: 'readwrite' })`
 3. On success, provider calls `handle.requestPermission({ mode: 'readwrite' })` to confirm readwrite — browsers sometimes grant the handle but not yet the permission
@@ -40,7 +42,9 @@ There is no credential string. "Login" = hold a valid `FileSystemDirectoryHandle
 5. If permission is anything else, or the picker is cancelled: throw — no partial/read-only state is stored
 
 ### Session restore
+
 On app startup with `active_cloud_provider === 'filesystem'`:
+
 1. Open provider's IDB database, read the stored handle
 2. Call `handle.queryPermission({ mode: 'readwrite' })`
 3. If `'granted'`: mark authenticated, done
@@ -48,6 +52,7 @@ On app startup with `active_cloud_provider === 'filesystem'`:
 5. If `'denied'` or handle is missing/invalid: clear stored handle and `active_cloud_provider`, surface as logged-out
 
 ### Logout
+
 - Delete handle from IDB
 - Clear `active_cloud_provider`
 - Null out in-memory state
@@ -69,26 +74,26 @@ On app startup with `active_cloud_provider === 'filesystem'`:
 
 ## `SyncProvider` contract
 
-| Field / method | Value |
-|---|---|
-| `type` | `'filesystem'` |
-| `name` | `'Local Folder'` |
-| `supportsWorkerDownload` | `false` |
-| `uploadConcurrencyLimit` | `4` (main-thread bound; same order as MEGA) |
-| `downloadConcurrencyLimit` | `4` |
-| `isAuthenticated()` | `rootHandle !== null` |
-| `getStatus()` | reports `isAuthenticated`, `hasStoredCredentials` (handle present in IDB), `isReadOnly` omitted |
-| `login(credentials?)` | ignores credentials; triggers picker (credentials param exists for interface conformance) |
-| `logout()` | delete IDB handle, null state |
-| `listCloudVolumes()` | recursive walk via `directoryHandle.values()` |
-| `uploadFile(path, blob)` | traverse / create subdirs, `getFileHandle(name, { create: true })`, write via writable stream |
-| `downloadFile(file)` | resolve stored file handle (or re-resolve from path), `handle.getFile()` → Blob |
-| `deleteFile(file)` | parent `.removeEntry(name)` |
-| `renameFile` | copy + delete (no native rename in API) |
-| `renameFolder` | recursive copy + recursive remove |
-| `deleteSeriesFolder` | `rootHandle.removeEntry(seriesTitle, { recursive: true })` |
-| `getStorageQuota()` | `navigator.storage.estimate()` — origin quota, not disk free |
-| `getWorkerUploadCredentials` / `getWorkerDownloadCredentials` | not implemented (worker download disabled) |
+| Field / method                                                | Value                                                                                           |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `type`                                                        | `'filesystem'`                                                                                  |
+| `name`                                                        | `'Local Folder'`                                                                                |
+| `supportsWorkerDownload`                                      | `false`                                                                                         |
+| `uploadConcurrencyLimit`                                      | `4` (main-thread bound; same order as MEGA)                                                     |
+| `downloadConcurrencyLimit`                                    | `4`                                                                                             |
+| `isAuthenticated()`                                           | `rootHandle !== null`                                                                           |
+| `getStatus()`                                                 | reports `isAuthenticated`, `hasStoredCredentials` (handle present in IDB), `isReadOnly` omitted |
+| `login(credentials?)`                                         | ignores credentials; triggers picker (credentials param exists for interface conformance)       |
+| `logout()`                                                    | delete IDB handle, null state                                                                   |
+| `listCloudVolumes()`                                          | recursive walk via `directoryHandle.values()`                                                   |
+| `uploadFile(path, blob)`                                      | traverse / create subdirs, `getFileHandle(name, { create: true })`, write via writable stream   |
+| `downloadFile(file)`                                          | resolve stored file handle (or re-resolve from path), `handle.getFile()` → Blob                 |
+| `deleteFile(file)`                                            | parent `.removeEntry(name)`                                                                     |
+| `renameFile`                                                  | copy + delete (no native rename in API)                                                         |
+| `renameFolder`                                                | recursive copy + recursive remove                                                               |
+| `deleteSeriesFolder`                                          | `rootHandle.removeEntry(seriesTitle, { recursive: true })`                                      |
+| `getStorageQuota()`                                           | `navigator.storage.estimate()` — origin quota, not disk free                                    |
+| `getWorkerUploadCredentials` / `getWorkerDownloadCredentials` | not implemented (worker download disabled)                                                      |
 
 `CloudFileMetadata.fileId` for this provider: the POSIX-style path relative to the picked root (e.g. `"SeriesTitle/Volume.cbz"`). The path is used to re-resolve file handles on demand; we don't cache live `FileSystemFileHandle`s in the metadata because they can become invalid if the user swaps the handle.
 
@@ -107,19 +112,20 @@ src/lib/util/sync/providers/filesystem/
 ```
 
 All IDB interaction for this provider lives in `handle-store.ts`. The main Dexie database is untouched. The file exposes:
+
 - `saveRootHandle(handle: FileSystemDirectoryHandle): Promise<void>`
 - `loadRootHandle(): Promise<FileSystemDirectoryHandle | null>`
 - `clearRootHandle(): Promise<void>`
 
 ## Files to modify
 
-| File | Change |
-|---|---|
-| `src/lib/util/sync/provider-interface.ts` | Add `'filesystem'` to `ProviderType` union; add `isRealProvider` branch; add `FilesystemFileMetadata extends CloudFileMetadata` (no extra fields needed beyond base, but declared for discriminated-union completeness) |
-| `src/lib/util/sync/provider-detection.ts` | Add `'filesystem'` to union guard in `getActiveProviderKey()`; no legacy detection branch (new provider, no migration path) |
-| `src/lib/util/sync/provider-manager.ts` | Add `'filesystem': null` to status store's `providers` record in constructor and `updateStatus()` |
-| `src/lib/util/sync/init-providers.ts` | New case in `loadProvider()` (dynamic import, feature-gated at call site); restore-credentials behavior matches MEGA/WebDAV (`await provider.whenReady()`) |
-| `src/lib/views/CloudView.svelte` | New "Local Folder" button, gated on `isFilesystemProviderSupported()`; entries in `providerNames` and `providerInfo`; derived `filesystemAuth`; connected-state messaging; reconnect button when status is "configured but not connected" |
+| File                                      | Change                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/util/sync/provider-interface.ts` | Add `'filesystem'` to `ProviderType` union; add `isRealProvider` branch; add `FilesystemFileMetadata extends CloudFileMetadata` (no extra fields needed beyond base, but declared for discriminated-union completeness)                   |
+| `src/lib/util/sync/provider-detection.ts` | Add `'filesystem'` to union guard in `getActiveProviderKey()`; no legacy detection branch (new provider, no migration path)                                                                                                               |
+| `src/lib/util/sync/provider-manager.ts`   | Add `'filesystem': null` to status store's `providers` record in constructor and `updateStatus()`                                                                                                                                         |
+| `src/lib/util/sync/init-providers.ts`     | New case in `loadProvider()` (dynamic import, feature-gated at call site); restore-credentials behavior matches MEGA/WebDAV (`await provider.whenReady()`)                                                                                |
+| `src/lib/views/CloudView.svelte`          | New "Local Folder" button, gated on `isFilesystemProviderSupported()`; entries in `providerNames` and `providerInfo`; derived `filesystemAuth`; connected-state messaging; reconnect button when status is "configured but not connected" |
 
 ## Implementation detail: recursive listing
 

@@ -224,6 +224,13 @@ export interface SyncProvider {
   readonly supportsWorkerDownload: boolean;
 
   /**
+   * Indicates if this provider supports uploads in web workers.
+   * - true: Workers compress + upload (Google Drive, MEGA, WebDAV)
+   * - false: Main thread must compress + upload (filesystem: handle is window-bound)
+   */
+  readonly supportsWorkerUpload: boolean;
+
+  /**
    * Maximum concurrent upload operations for this provider
    * Controls how many simultaneous uploads can run for this provider
    * Worker pool size is based on hardware (CPU cores), this is provider-specific
