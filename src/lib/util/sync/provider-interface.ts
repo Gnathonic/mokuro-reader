@@ -5,7 +5,7 @@
  * This allows for a unified sync experience across different cloud storage backends.
  */
 
-export type ProviderType = 'google-drive' | 'mega' | 'webdav';
+export type ProviderType = 'google-drive' | 'mega' | 'webdav' | 'filesystem';
 
 /**
  * Pseudo-provider for local browser downloads (not a real sync provider)
@@ -25,7 +25,12 @@ export type BackupProviderType = ProviderType | PseudoProviderType;
  * Type guard to check if a provider is a real sync provider
  */
 export function isRealProvider(provider: BackupProviderType): provider is ProviderType {
-  return provider === 'google-drive' || provider === 'mega' || provider === 'webdav';
+  return (
+    provider === 'google-drive' ||
+    provider === 'mega' ||
+    provider === 'webdav' ||
+    provider === 'filesystem'
+  );
 }
 
 /**
@@ -187,10 +192,22 @@ export interface WebDAVFileMetadata extends CloudFileMetadata {
 }
 
 /**
+ * Filesystem (File System Access API) specific metadata
+ * Extends base with no additional fields — path acts as the identifier.
+ */
+export interface FilesystemFileMetadata extends CloudFileMetadata {
+  provider: 'filesystem';
+}
+
+/**
  * Discriminated union of all cloud file metadata types
  * Use this when you need to handle any provider's metadata
  */
-export type AnyCloudFileMetadata = DriveFileMetadata | MegaFileMetadata | WebDAVFileMetadata;
+export type AnyCloudFileMetadata =
+  | DriveFileMetadata
+  | MegaFileMetadata
+  | WebDAVFileMetadata
+  | FilesystemFileMetadata;
 
 export interface SyncProvider {
   /** Provider type identifier */
