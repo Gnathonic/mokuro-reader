@@ -63,6 +63,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@azure/msal-browser": "^5.8.0",
     "@types/gapi": "^0.0.47",
     "@vercel/analytics": "^1.5.0",
     "@zip.js/zip.js": "^2.7.57",
