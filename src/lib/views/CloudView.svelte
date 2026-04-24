@@ -51,6 +51,12 @@
   let filesystemLoading = $state(false);
   let filesystemSupported = $state(false);
 
+  let onedriveAuth = $derived($providerStatusStore.providers['onedrive']?.isAuthenticated || false);
+  let onedriveNeedsAttention = $derived(
+    $providerStatusStore.providers['onedrive']?.needsAttention || false
+  );
+  let onedriveLoading = $state(false);
+
   // Use active_cloud_provider key (via currentProviderType) for UI state
   // This properly clears on logout unlike hasStoredCredentials
   let currentProvider = $derived<ProviderType | null>($providerStatusStore.currentProviderType);
@@ -63,7 +69,8 @@
     'google-drive': 'Google Drive',
     mega: 'MEGA Cloud Storage',
     webdav: 'WebDAV Server',
-    filesystem: 'Local Folder'
+    filesystem: 'Local Folder',
+    onedrive: 'OneDrive'
   };
 
   // Provider info
@@ -96,6 +103,14 @@
         'Works offline — no account needed',
         'Browser-quota limited (not your disk free space)',
         'Chromium browsers only (Chrome, Edge, etc.)'
+      ]
+    },
+    onedrive: {
+      items: [
+        'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
+        'Works with personal accounts (outlook.com) and work/school accounts',
+        'Silent token refresh — no hourly re-authentication popups',
+        'Encrypted in transit and at rest'
       ]
     }
   };
@@ -150,7 +165,8 @@
   // Reactively fetch storage quota when provider auth state changes
   $effect(() => {
     // Track auth state for any provider
-    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth || filesystemAuth;
+    const isAuthenticated =
+      googleDriveAuth || megaAuth || webdavAuth || filesystemAuth || onedriveAuth;
 
     if (isAuthenticated) {
       fetchStorageQuota();
@@ -419,6 +435,45 @@
     }
   }
 
+  async function handleOneDriveLogin() {
+    onedriveLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('onedrive');
+      await provider.login();
+      await providerManager.setCurrentProvider(provider);
+      showSnackbar('Connected to OneDrive - loading data...');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      providerManager.updateStatus();
+      showSnackbar('OneDrive connected');
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      showSnackbar(message);
+    } finally {
+      onedriveLoading = false;
+    }
+  }
+
+  async function handleOneDriveReconnect() {
+    onedriveLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('onedrive');
+      if (!provider.reauthenticate) {
+        throw new Error('Provider does not support reconnect');
+      }
+      await provider.reauthenticate();
+      providerManager.updateStatus();
+      showSnackbar('OneDrive reconnected');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Reconnect failed';
+      showSnackbar(message);
+    } finally {
+      onedriveLoading = false;
+    }
+  }
+
   async function handleFilesystemReconnect() {
     filesystemLoading = true;
     try {
@@ -461,6 +516,8 @@
       showSnackbar('Logged out of Google Drive');
     } else if (provider === 'filesystem') {
       showSnackbar('Local folder disconnected');
+    } else if (provider === 'onedrive') {
+      showSnackbar('Logged out of OneDrive');
     }
   }
 
@@ -780,6 +837,23 @@
               </div>
             </button>
           {/if}
+
+          <!-- OneDrive Option -->
+          <button
+            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            onclick={handleOneDriveLogin}
+            disabled={onedriveLoading}
+          >
+            <div class="flex items-center gap-4">
+              <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
+              <div class="flex-1 text-left">
+                <div class="text-lg font-semibold">OneDrive</div>
+                <div class="text-sm text-gray-400">
+                  5GB free • Personal or work/school • Silent refresh
+                </div>
+              </div>
+            </div>
+          </button>
         </div>
       </div>
     </div>
@@ -822,6 +896,28 @@
                   disabled={filesystemLoading}
                 >
                   {filesystemLoading ? 'Reconnecting...' : 'Reconnect folder'}
+                </Button>
+              </div>
+            </Alert>
+          {/if}
+
+          {#if currentProvider === 'onedrive' && onedriveNeedsAttention}
+            <Alert color="yellow" class="mb-4">
+              {#snippet icon()}
+                <InfoCircleSolid class="h-5 w-5" />
+              {/snippet}
+              <div class="flex flex-col gap-2">
+                <span>
+                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect
+                  to continue syncing.
+                </span>
+                <Button
+                  size="xs"
+                  color="yellow"
+                  onclick={handleOneDriveReconnect}
+                  disabled={onedriveLoading}
+                >
+                  {onedriveLoading ? 'Reconnecting...' : 'Reconnect OneDrive'}
                 </Button>
               </div>
             </Alert>
