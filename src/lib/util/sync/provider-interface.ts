@@ -5,7 +5,7 @@
  * This allows for a unified sync experience across different cloud storage backends.
  */
 
-export type ProviderType = 'google-drive' | 'mega' | 'webdav' | 'filesystem';
+export type ProviderType = 'google-drive' | 'mega' | 'webdav' | 'filesystem' | 'onedrive';
 
 /**
  * Pseudo-provider for local browser downloads (not a real sync provider)
@@ -29,7 +29,8 @@ export function isRealProvider(provider: BackupProviderType): provider is Provid
     provider === 'google-drive' ||
     provider === 'mega' ||
     provider === 'webdav' ||
-    provider === 'filesystem'
+    provider === 'filesystem' ||
+    provider === 'onedrive'
   );
 }
 
@@ -200,6 +201,18 @@ export interface FilesystemFileMetadata extends CloudFileMetadata {
 }
 
 /**
+ * OneDrive (Microsoft Graph) specific metadata.
+ * `fileId` holds the opaque Graph driveItem.id.
+ */
+export interface OneDriveFileMetadata extends CloudFileMetadata {
+  provider: 'onedrive';
+  /** Parent folder driveItem id (useful for move/rename) */
+  parentId?: string;
+  /** Entity tag for conditional updates */
+  etag?: string;
+}
+
+/**
  * Discriminated union of all cloud file metadata types
  * Use this when you need to handle any provider's metadata
  */
@@ -207,7 +220,8 @@ export type AnyCloudFileMetadata =
   | DriveFileMetadata
   | MegaFileMetadata
   | WebDAVFileMetadata
-  | FilesystemFileMetadata;
+  | FilesystemFileMetadata
+  | OneDriveFileMetadata;
 
 export interface SyncProvider {
   /** Provider type identifier */
