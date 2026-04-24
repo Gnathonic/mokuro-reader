@@ -195,7 +195,7 @@ export class OneDriveProvider implements SyncProvider {
         ? blob
         : blob instanceof ArrayBuffer
           ? new Blob([blob])
-          : new Blob([blob.buffer as ArrayBuffer]);
+          : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
     const fileId = await this.cloudCore.uploadFile({
       seriesTitle: `${ONEDRIVE_CONFIG.MOKURO_FOLDER}${seriesTitle ? `/${seriesTitle}` : ''}`,
       filename,
