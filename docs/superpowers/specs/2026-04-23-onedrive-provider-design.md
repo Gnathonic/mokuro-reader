@@ -77,22 +77,23 @@ Matches Google Drive and WebDAV. Root `/mokuro-reader` folder is created on firs
 
 Base URL: `https://graph.microsoft.com/v1.0`
 
-| Operation | Endpoint |
-|---|---|
-| Whoami | `GET /me` (for display name during status) |
-| List folder children | `GET /me/drive/root:/mokuro-reader:/children` |
-| Recursive listing | `GET /me/drive/root:/mokuro-reader:/search(q='')?$select=id,name,size,lastModifiedDateTime,file,parentReference` — returns all descendants with a path prefix filter applied client-side |
-| Download | `GET /me/drive/items/{id}/content` (returns 302 to a short-lived `download.microsoft.com` URL) |
-| Small upload (< 4 MB) | `PUT /me/drive/root:/{path}:/content` |
-| Upload session (all sizes in practice) | `POST /me/drive/root:/{path}:/createUploadSession` → `PUT` chunks to `uploadUrl` |
-| Delete | `DELETE /me/drive/items/{id}` |
-| Move/rename | `PATCH /me/drive/items/{id}` with `{ name, parentReference: {id} }` |
-| Create folder | `POST /me/drive/root:/{parent}:/children` with `{ name, folder: {}, @microsoft.graph.conflictBehavior: 'fail' }` |
-| Storage quota | `GET /me/drive` → `quota.{used, total, remaining}` |
+| Operation                              | Endpoint                                                                                                                                                                                 |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Whoami                                 | `GET /me` (for display name during status)                                                                                                                                               |
+| List folder children                   | `GET /me/drive/root:/mokuro-reader:/children`                                                                                                                                            |
+| Recursive listing                      | `GET /me/drive/root:/mokuro-reader:/search(q='')?$select=id,name,size,lastModifiedDateTime,file,parentReference` — returns all descendants with a path prefix filter applied client-side |
+| Download                               | `GET /me/drive/items/{id}/content` (returns 302 to a short-lived `download.microsoft.com` URL)                                                                                           |
+| Small upload (< 4 MB)                  | `PUT /me/drive/root:/{path}:/content`                                                                                                                                                    |
+| Upload session (all sizes in practice) | `POST /me/drive/root:/{path}:/createUploadSession` → `PUT` chunks to `uploadUrl`                                                                                                         |
+| Delete                                 | `DELETE /me/drive/items/{id}`                                                                                                                                                            |
+| Move/rename                            | `PATCH /me/drive/items/{id}` with `{ name, parentReference: {id} }`                                                                                                                      |
+| Create folder                          | `POST /me/drive/root:/{parent}:/children` with `{ name, folder: {}, @microsoft.graph.conflictBehavior: 'fail' }`                                                                         |
+| Storage quota                          | `GET /me/drive` → `quota.{used, total, remaining}`                                                                                                                                       |
 
 ### Upload strategy
 
 Use **resumable upload sessions for all files** (we never hit Graph with a simple PUT for CBZs). Reasons:
+
 - Files under 4 MB are rare (mokuro sidecars only); using upload session is a small overhead
 - Upload sessions recover from network drops and allow chunked progress reporting
 - Chunk size 10 MiB is Graph's recommended size for SPA uploads
@@ -104,28 +105,28 @@ Graph doesn't have a cheap "list all files under a folder recursively" primitive
 
 ## `SyncProvider` contract
 
-| Field / method | Value |
-|---|---|
-| `type` | `'onedrive'` |
-| `name` | `'OneDrive'` |
-| `supportsWorkerDownload` | `true` (Graph supports Bearer-token downloads from any context) |
-| `supportsWorkerUpload` | `true` (Bearer-token upload-session URLs are origin-agnostic) |
-| `uploadConcurrencyLimit` | `4` (Graph throttles at sustained >4 parallel writes per user) |
-| `downloadConcurrencyLimit` | `4` |
-| `isAuthenticated()` | `msalInstance.getActiveAccount() !== null` and last token acquisition succeeded |
-| `getStatus()` | mirrors Drive — `isAuthenticated`, `hasStoredCredentials`, `needsAttention` if silent refresh is permanently failing |
-| `login()` | MSAL `loginPopup`, then fetch quota to validate |
-| `logout()` | MSAL `logoutPopup` without navigation, clear active-provider key |
-| `listCloudVolumes()` | recursive walk under `/mokuro-reader` via `children` + `isSyncableFile` filter |
-| `uploadFile(path, blob)` | upload session with 10 MiB chunks + progress |
-| `downloadFile(file)` | `GET /items/{id}/content` with XHR progress (identical shape to Drive) |
-| `deleteFile(file)` | `DELETE /items/{id}` |
-| `renameFile` | `PATCH /items/{id}` (native move/rename — no copy-then-delete) |
-| `renameFolder` | `PATCH /items/{id}` on the folder node |
-| `deleteSeriesFolder` | `DELETE /items/{id}` on the folder node (cascades) |
-| `getStorageQuota()` | `GET /me/drive` → quota object |
-| `getWorkerUploadCredentials()` | `{ accessToken }` acquired silently, plus optional `uploadSessionUrl` if pre-created in `prepareUploadTarget` |
-| `getWorkerDownloadCredentials(fileId)` | `{ accessToken }` |
+| Field / method                         | Value                                                                                                                |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `type`                                 | `'onedrive'`                                                                                                         |
+| `name`                                 | `'OneDrive'`                                                                                                         |
+| `supportsWorkerDownload`               | `true` (Graph supports Bearer-token downloads from any context)                                                      |
+| `supportsWorkerUpload`                 | `true` (Bearer-token upload-session URLs are origin-agnostic)                                                        |
+| `uploadConcurrencyLimit`               | `4` (Graph throttles at sustained >4 parallel writes per user)                                                       |
+| `downloadConcurrencyLimit`             | `4`                                                                                                                  |
+| `isAuthenticated()`                    | `msalInstance.getActiveAccount() !== null` and last token acquisition succeeded                                      |
+| `getStatus()`                          | mirrors Drive — `isAuthenticated`, `hasStoredCredentials`, `needsAttention` if silent refresh is permanently failing |
+| `login()`                              | MSAL `loginPopup`, then fetch quota to validate                                                                      |
+| `logout()`                             | MSAL `logoutPopup` without navigation, clear active-provider key                                                     |
+| `listCloudVolumes()`                   | recursive walk under `/mokuro-reader` via `children` + `isSyncableFile` filter                                       |
+| `uploadFile(path, blob)`               | upload session with 10 MiB chunks + progress                                                                         |
+| `downloadFile(file)`                   | `GET /items/{id}/content` with XHR progress (identical shape to Drive)                                               |
+| `deleteFile(file)`                     | `DELETE /items/{id}`                                                                                                 |
+| `renameFile`                           | `PATCH /items/{id}` (native move/rename — no copy-then-delete)                                                       |
+| `renameFolder`                         | `PATCH /items/{id}` on the folder node                                                                               |
+| `deleteSeriesFolder`                   | `DELETE /items/{id}` on the folder node (cascades)                                                                   |
+| `getStorageQuota()`                    | `GET /me/drive` → quota object                                                                                       |
+| `getWorkerUploadCredentials()`         | `{ accessToken }` acquired silently, plus optional `uploadSessionUrl` if pre-created in `prepareUploadTarget`        |
+| `getWorkerDownloadCredentials(fileId)` | `{ accessToken }`                                                                                                    |
 
 ### `CloudFileMetadata.fileId`
 
@@ -156,29 +157,29 @@ src/lib/util/sync/core/providers/
 
 ## Files to modify
 
-| File | Change |
-|---|---|
-| `package.json` | Add `@azure/msal-browser` to dependencies |
-| `src/lib/util/sync/provider-interface.ts` | Add `'onedrive'` to `ProviderType`, add `OneDriveFileMetadata`, add to `AnyCloudFileMetadata`, extend `isRealProvider` |
-| `src/lib/util/sync/provider-detection.ts` | Add `'onedrive'` to `getActiveProviderKey` type guard. No legacy-credentials branch — the provider is new, nothing to migrate from |
-| `src/lib/util/sync/provider-manager.ts` | Add `onedrive: null` to status store provider records (two spots) |
-| `src/lib/util/sync/init-providers.ts` | Dynamic-import case in `loadProvider`; no `whenReady` entry (MSAL reads state synchronously from its cache during provider construction) |
-| `src/lib/util/sync/core/cloud-provider-core-registry.ts` | Register `onedriveCore` |
-| `src/lib/types/index.ts` | No change — `cloudProvider` field is already `ProviderType` after the filesystem-provider work |
-| `src/lib/views/CloudView.svelte` | New "OneDrive" provider button; `providerNames` + `providerInfo` entries; derived `onedriveAuth`; login/logout handlers |
-| `src/lib/util/backup-queue.ts` and `src/lib/util/download-queue.ts` | No change — OneDrive sets both worker flags to `true`, so it takes the existing worker-driven code paths used by Drive/MEGA/WebDAV |
+| File                                                                | Change                                                                                                                                   |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `package.json`                                                      | Add `@azure/msal-browser` to dependencies                                                                                                |
+| `src/lib/util/sync/provider-interface.ts`                           | Add `'onedrive'` to `ProviderType`, add `OneDriveFileMetadata`, add to `AnyCloudFileMetadata`, extend `isRealProvider`                   |
+| `src/lib/util/sync/provider-detection.ts`                           | Add `'onedrive'` to `getActiveProviderKey` type guard. No legacy-credentials branch — the provider is new, nothing to migrate from       |
+| `src/lib/util/sync/provider-manager.ts`                             | Add `onedrive: null` to status store provider records (two spots)                                                                        |
+| `src/lib/util/sync/init-providers.ts`                               | Dynamic-import case in `loadProvider`; no `whenReady` entry (MSAL reads state synchronously from its cache during provider construction) |
+| `src/lib/util/sync/core/cloud-provider-core-registry.ts`            | Register `onedriveCore`                                                                                                                  |
+| `src/lib/types/index.ts`                                            | No change — `cloudProvider` field is already `ProviderType` after the filesystem-provider work                                           |
+| `src/lib/views/CloudView.svelte`                                    | New "OneDrive" provider button; `providerNames` + `providerInfo` entries; derived `onedriveAuth`; login/logout handlers                  |
+| `src/lib/util/backup-queue.ts` and `src/lib/util/download-queue.ts` | No change — OneDrive sets both worker flags to `true`, so it takes the existing worker-driven code paths used by Drive/MEGA/WebDAV       |
 
 ## Error handling
 
-| Graph status | Handling |
-|---|---|
-| 401 | Acquire token silently; if that also fails, mark `needsAttention`, trigger MSAL popup |
-| 403 (quota exceeded or permission denied) | Bubble as `ProviderError` with `PERMISSION_DENIED` or `QUOTA_EXCEEDED` |
-| 404 (file not found) | For `deleteFile`/`deleteSeriesFolder`: treat as idempotent success. For others: bubble as `NOT_FOUND` |
-| 423 (resource locked — folder being modified) | Retry once after 1s; then bubble |
-| 429 (throttled) | Honor `Retry-After` header, retry up to 3 times with exponential backoff |
-| 5xx | Same retry policy as 429 |
-| Network failure during upload session | Use Graph's `GET {uploadUrl}` to query progress, resume from last acknowledged range |
+| Graph status                                  | Handling                                                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 401                                           | Acquire token silently; if that also fails, mark `needsAttention`, trigger MSAL popup                 |
+| 403 (quota exceeded or permission denied)     | Bubble as `ProviderError` with `PERMISSION_DENIED` or `QUOTA_EXCEEDED`                                |
+| 404 (file not found)                          | For `deleteFile`/`deleteSeriesFolder`: treat as idempotent success. For others: bubble as `NOT_FOUND` |
+| 423 (resource locked — folder being modified) | Retry once after 1s; then bubble                                                                      |
+| 429 (throttled)                               | Honor `Retry-After` header, retry up to 3 times with exponential backoff                              |
+| 5xx                                           | Same retry policy as 429                                                                              |
+| Network failure during upload session         | Use Graph's `GET {uploadUrl}` to query progress, resume from last acknowledged range                  |
 
 Reuse the existing MEGA/WebDAV `ProviderError` patterns.
 
