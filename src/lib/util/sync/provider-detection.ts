@@ -33,7 +33,8 @@ export function getActiveProviderKey(): ProviderType | null {
     value === 'google-drive' ||
     value === 'mega' ||
     value === 'webdav' ||
-    value === 'filesystem'
+    value === 'filesystem' ||
+    value === 'onedrive'
   ) {
     return value;
   }
