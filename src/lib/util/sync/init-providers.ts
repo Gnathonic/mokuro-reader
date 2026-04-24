@@ -32,6 +32,10 @@ export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
       const { filesystemProvider } = await import('./providers/filesystem/filesystem-provider');
       return filesystemProvider;
     }
+    case 'onedrive': {
+      const { onedriveProvider } = await import('./providers/onedrive/onedrive-provider');
+      return onedriveProvider;
+    }
   }
 }
 
@@ -104,7 +108,8 @@ export async function initializeProviders(): Promise<void> {
   } else if (
     activeProviderType === 'mega' ||
     activeProviderType === 'webdav' ||
-    activeProviderType === 'filesystem'
+    activeProviderType === 'filesystem' ||
+    activeProviderType === 'onedrive'
   ) {
     // MEGA, WebDAV, and filesystem restore credentials in their constructors via whenReady()
     console.log(`⏳ Waiting for ${activeProviderType} to restore credentials...`);
