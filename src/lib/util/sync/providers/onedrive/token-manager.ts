@@ -46,11 +46,22 @@ class OneDriveTokenManager {
       }
 
       this.msal = await import('@azure/msal-browser');
+
+      // Use a dedicated static HTML callback page that bypasses SvelteKit's
+      // hash-based router. Our app would otherwise try to interpret MSAL's
+      // fragment-mode auth response as a route, dropping the auth code before
+      // MSAL can read it. The static page is served from /static/ directly.
+      const redirectUri = `${window.location.origin}/onedrive-callback.html`;
+
+      // Stash the client ID where the static callback page can find it.
+      // Same-origin sessionStorage is shared between opener and popup.
+      sessionStorage.setItem('onedrive_client_id', clientId);
+
       const config: Configuration = {
         auth: {
           clientId,
           authority: ONEDRIVE_CONFIG.AUTHORITY,
-          redirectUri: window.location.origin
+          redirectUri
         },
         cache: {
           cacheLocation: 'localStorage'

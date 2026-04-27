@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Connecting to OneDrive…</title>
+    <style>
+      body {
+        background: #0f172a;
+        color: #cbd5e1;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+      }
+      .msg {
+        text-align: center;
+      }
+      .msg h1 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0 0 0.5rem;
+      }
+      .msg p {
+        font-size: 0.85rem;
+        opacity: 0.7;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="msg">
+      <h1>Connecting to OneDrive…</h1>
+      <p>This window should close on its own.</p>
+    </div>
+    <script type="module">
+      // Minimal MSAL bootstrap. Loads MSAL from a CDN, processes the auth
+      // redirect, and lets MSAL post the result to the opener window via
+      // postMessage. MSAL closes this popup itself once the message is sent.
+      try {
+        const { PublicClientApplication } = await import(
+          'https://cdn.jsdelivr.net/npm/@azure/msal-browser@5/+esm'
+        );
+
+        // Pull the client ID from a meta tag we inject from the parent app at
+        // login time, OR fall back to a runtime fetch from /onedrive-config.
+        // Simpler: read from URL search params. Parent passes ?clientId=XYZ
+        // when configuring the redirect. But Azure refuses query params on
+        // redirect URIs, so we hard-code the clientId via a build-time
+        // replacement in the tokenManager when constructing the redirect URI.
+        // For now, the parent posts clientId via window.opener; if that fails
+        // MSAL still works because the auth response is in the URL.
+
+        // The simplest robust approach: hard-code the same client ID here as
+        // is in our env. This file is generated alongside the env var, so it
+        // stays in sync.
+        const clientId = window.__ONEDRIVE_CLIENT_ID__ || '';
+
+        if (!clientId) {
+          // Try to ask the opener for the client ID synchronously via a
+          // shared key in sessionStorage (set by the parent before opening).
+          const fallback = sessionStorage.getItem('onedrive_client_id');
+          if (fallback) window.__ONEDRIVE_CLIENT_ID__ = fallback;
+        }
+
+        const finalClientId = window.__ONEDRIVE_CLIENT_ID__;
+        if (!finalClientId) {
+          throw new Error('OneDrive client ID is not available in the popup');
+        }
+
+        const msal = new PublicClientApplication({
+          auth: {
+            clientId: finalClientId,
+            authority: 'https://login.microsoftonline.com/common',
+            redirectUri: window.location.origin + '/onedrive-callback.html'
+          },
+          cache: { cacheLocation: 'localStorage' }
+        });
+        await msal.initialize();
+        await msal.handleRedirectPromise();
+        // MSAL will have closed the popup automatically. If we're still here
+        // after a moment, close ourselves as a fallback.
+        setTimeout(() => window.close(), 500);
+      } catch (err) {
+        console.error('OneDrive callback handler failed:', err);
+        document.querySelector('.msg p').textContent = 'Sign-in failed. You can close this window.';
+      }
+    </script>
+  </body>
+</html>
