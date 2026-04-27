@@ -11,6 +11,7 @@ import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
+import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 
 interface MegaCredentials {
   email: string;
@@ -145,6 +146,11 @@ export class MegaProvider implements SyncProvider {
   private workerShareLinksToCleanup = new Set<string>();
   private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
   private static readonly WORKER_SHARE_LINK_THROTTLE_MS = 200;
+
+  // Mutexes preventing concurrent uploads from racing to create the same folder.
+  // Without these, N parallel uploads each find no folder and call mkdir N times.
+  private mokuroFolderPromise: Promise<any> | null = null;
+  private seriesFolderPromises = new Map<string, Promise<any>>();
 
   constructor() {
     if (browser) {
@@ -362,33 +368,49 @@ export class MegaProvider implements SyncProvider {
   }
 
   private async ensureMokuroFolder(): Promise<any> {
-    try {
-      // Always get fresh reference from storage.files to avoid stale references
-      const files = Object.values(this.storage.files || {});
-
-      // Find mokuro-reader folder anywhere, regardless of parent
-      // Note: We don't check parent because MEGA's root folder location varies by account/locale
-      let mokuroFolder = files.find((f: any) => f.name === MOKURO_FOLDER && f.directory);
-
-      if (!mokuroFolder) {
-        // Create folder using storage.mkdir
-        mokuroFolder = await this.createFolder(MOKURO_FOLDER);
-        console.log('Created mokuro-reader folder in MEGA');
-      }
-
-      // Cache for cleanup on logout, but don't use for operations
-      this.mokuroFolder = mokuroFolder;
-
-      // Return fresh reference for immediate use
-      return mokuroFolder;
-    } catch (error) {
-      console.error('ensureMokuroFolder error:', error);
-      throw new ProviderError(
-        `Failed to ensure mokuro folder exists: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'mega',
-        'FOLDER_ERROR'
-      );
+    // Fast path: folder already exists in storage cache.
+    const existing = this.findMokuroFolder();
+    if (existing) {
+      this.mokuroFolder = existing;
+      return existing;
     }
+
+    // Coalesce concurrent calls so only one mkdir runs.
+    if (this.mokuroFolderPromise) {
+      return this.mokuroFolderPromise;
+    }
+
+    this.mokuroFolderPromise = (async () => {
+      try {
+        // Re-check after acquiring the mutex; another caller may have created it.
+        const recheck = this.findMokuroFolder();
+        if (recheck) {
+          this.mokuroFolder = recheck;
+          return recheck;
+        }
+
+        const folder = await this.createFolder(MOKURO_FOLDER);
+        console.log('Created mokuro-reader folder in MEGA');
+        this.mokuroFolder = folder;
+        return folder;
+      } catch (error) {
+        console.error('ensureMokuroFolder error:', error);
+        throw new ProviderError(
+          `Failed to ensure mokuro folder exists: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          'mega',
+          'FOLDER_ERROR'
+        );
+      } finally {
+        this.mokuroFolderPromise = null;
+      }
+    })();
+
+    return this.mokuroFolderPromise;
+  }
+
+  private findMokuroFolder(): any | null {
+    const files = Object.values(this.storage.files || {});
+    return files.find((f: any) => f.name === MOKURO_FOLDER && f.directory) || null;
   }
 
   private listFolder(folder: any): Promise<any[]> {
@@ -483,10 +505,11 @@ export class MegaProvider implements SyncProvider {
         // Check if file is a CBZ, sidecar, or JSON
         const name = (file as any).name || '';
         const isCbz = name.toLowerCase().endsWith('.cbz');
+        const lowerName = name.toLowerCase();
         const isSidecar =
-          name.toLowerCase().endsWith('.mokuro') ||
-          name.toLowerCase().endsWith('.mokuro.gz') ||
-          name.toLowerCase().endsWith('.webp');
+          lowerName.endsWith('.mokuro') ||
+          lowerName.endsWith('.mokuro.gz') ||
+          /\.(webp|jpe?g)$/i.test(lowerName);
         const isJson = name === 'volume-data.json' || name === 'profiles.json';
 
         if (!isCbz && !isSidecar && !isJson) continue;
@@ -1213,29 +1236,183 @@ export class MegaProvider implements SyncProvider {
    * Ensure a series folder exists (may be nested path like "Series/Subseries")
    */
   private async ensureSeriesFolder(folderPath: string, mokuroFolder: any): Promise<any> {
-    const pathParts = folderPath.split('/').filter(Boolean);
-    let currentFolder = mokuroFolder;
-
-    for (const folderName of pathParts) {
-      // Check if subfolder exists
-      const children = await this.listFolder(currentFolder);
-      let subfolder = children.find((f: any) => f.name === folderName && f.directory);
-
-      if (!subfolder) {
-        // Create subfolder under current folder
-        subfolder = await new Promise((resolve, reject) => {
-          currentFolder.mkdir(folderName, (error: Error | null, folder: any) => {
-            if (error) reject(error);
-            else resolve(folder);
-          });
-        });
-        console.log(`Created folder: ${folderName}`);
-      }
-
-      currentFolder = subfolder;
+    // Coalesce concurrent ensureSeriesFolder calls for the same path so parallel
+    // uploads to one series don't each mkdir the same intermediate folders.
+    const key = folderPath;
+    const inFlight = this.seriesFolderPromises.get(key);
+    if (inFlight) {
+      return inFlight;
     }
 
-    return currentFolder;
+    const promise = (async () => {
+      try {
+        const pathParts = folderPath.split('/').filter(Boolean);
+        let currentFolder = mokuroFolder;
+
+        for (const folderName of pathParts) {
+          const children = await this.listFolder(currentFolder);
+          let subfolder = children.find((f: any) => f.name === folderName && f.directory);
+
+          if (!subfolder) {
+            subfolder = await new Promise((resolve, reject) => {
+              currentFolder.mkdir(folderName, (error: Error | null, folder: any) => {
+                if (error) reject(error);
+                else resolve(folder);
+              });
+            });
+            console.log(`Created folder: ${folderName}`);
+          }
+
+          currentFolder = subfolder;
+        }
+
+        return currentFolder;
+      } finally {
+        this.seriesFolderPromises.delete(key);
+      }
+    })();
+
+    this.seriesFolderPromises.set(key, promise);
+    return promise;
+  }
+
+  private getFileNodeId(file: any): string | null {
+    return file?.nodeId || file?.id || null;
+  }
+
+  /**
+   * MEGA.js mutates node.parent only when the server's 'sc' (state-change) action
+   * stream arrives — the API callback for moveTo/delete fires earlier. Without
+   * waiting for the event, subsequent listFolders() reads stale parent refs and
+   * dedup pass 2 fails to group the now-sibling duplicates.
+   */
+  private waitForNodeEvent(node: any, eventName: string, timeoutMs = 5000): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const handler = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        if (typeof node.off === 'function') node.off(eventName, handler);
+        else if (typeof node.removeListener === 'function') node.removeListener(eventName, handler);
+        console.warn(`[MEGA] '${eventName}' event timeout after ${timeoutMs}ms`);
+        resolve();
+      }, timeoutMs);
+      node.once(eventName, handler);
+    });
+  }
+
+  private isInTrash(file: any): boolean {
+    let parent = file?.parent;
+    while (parent) {
+      if (parent.name === 'Rubbish Bin') return true;
+      parent = parent.parent;
+    }
+    return false;
+  }
+
+  private findNodeById(id: string): any | null {
+    const files = Object.values(this.storage?.files || {}) as any[];
+    return files.find((f: any) => this.getFileNodeId(f) === id) || null;
+  }
+
+  /**
+   * FolderOperations interface used by FolderDeduplicator to merge duplicate folders.
+   */
+  getFolderOperations(): FolderOperations {
+    return {
+      rootFolderName: MOKURO_FOLDER,
+
+      listFolders: async (): Promise<FolderInfo[]> => {
+        await this.initPromise;
+        if (!this.storage) return [];
+        const files = Object.values(this.storage.files || {}) as any[];
+
+        const folders: FolderInfo[] = [];
+        for (const f of files) {
+          if (!f.directory) continue;
+          if (this.isInTrash(f)) continue;
+          const id = this.getFileNodeId(f);
+          if (!id) continue;
+          const parentId = f.parent ? this.getFileNodeId(f.parent) : null;
+          folders.push({
+            id,
+            name: f.name,
+            parentId,
+            createdTime: f.timestamp ? new Date(f.timestamp * 1000).toISOString() : undefined
+          });
+        }
+        return folders;
+      },
+
+      listFolderContents: async (folderId: string): Promise<FolderItem[]> => {
+        await this.initPromise;
+        if (!this.storage) return [];
+        const target = this.findNodeById(folderId);
+        if (!target) return [];
+
+        const files = Object.values(this.storage.files || {}) as any[];
+        const items: FolderItem[] = [];
+        for (const f of files) {
+          if (f.parent !== target) continue;
+          const id = this.getFileNodeId(f);
+          if (!id) continue;
+          items.push({ id, name: f.name, isFolder: !!f.directory });
+        }
+        return items;
+      },
+
+      moveItem: async (itemId, newParentId, _oldParentId): Promise<void> => {
+        const item = this.findNodeById(itemId);
+        const newParent = this.findNodeById(newParentId);
+        if (!item) throw new Error(`MEGA dedup: item ${itemId} not found`);
+        if (!newParent) throw new Error(`MEGA dedup: parent ${newParentId} not found`);
+        const stateSynced = this.waitForNodeEvent(item, 'move');
+        await item.moveTo(newParent);
+        await stateSynced;
+      },
+
+      deleteFolder: async (folderId): Promise<void> => {
+        const folder = this.findNodeById(folderId);
+        if (!folder) return;
+        const stateSynced = this.waitForNodeEvent(folder, 'delete');
+        await new Promise<void>((resolve, reject) => {
+          folder.delete(true, (error: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+        await stateSynced;
+        // MEGA.js doesn't always remove from storage.files; clean up manually.
+        delete this.storage.files[folderId];
+      },
+
+      deleteFile: async (fileId): Promise<void> => {
+        const file = this.findNodeById(fileId);
+        if (!file) return;
+        const stateSynced = this.waitForNodeEvent(file, 'delete');
+        await new Promise<void>((resolve, reject) => {
+          file.delete(true, (error: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+        await stateSynced;
+        delete this.storage.files[fileId];
+      },
+
+      onRootFolderConfirmed: (folderId): void => {
+        const canonical = this.findNodeById(folderId);
+        if (canonical) {
+          this.mokuroFolder = canonical;
+        }
+      }
+    };
   }
 }
 

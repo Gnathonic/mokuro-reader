@@ -43,7 +43,8 @@ export interface VolumeMetadata {
   cloudModifiedTime?: string;
   cloudSize?: number;
   cloudPath?: string; // Full path for series extraction during download
-  cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail (.webp)
+  cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail sidecar
+  cloudThumbnailPath?: string; // Full path to the thumbnail sidecar (e.g. "Series/Volume.webp" or "Series/Volume.jpg")
 
   // Legacy Drive-specific fields (kept for backward compatibility)
   // When present without cloudProvider, assumed to be google-drive

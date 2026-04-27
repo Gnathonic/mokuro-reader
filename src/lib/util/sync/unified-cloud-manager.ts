@@ -25,7 +25,9 @@ function stripManagedFileExtension(path: string): string {
   if (lower.endsWith('.cbz')) return path.slice(0, -4);
   if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
   if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+  if (lower.endsWith('.jpeg')) return path.slice(0, -5);
   if (lower.endsWith('.webp')) return path.slice(0, -5);
+  if (lower.endsWith('.jpg')) return path.slice(0, -4);
   return path;
 }
 

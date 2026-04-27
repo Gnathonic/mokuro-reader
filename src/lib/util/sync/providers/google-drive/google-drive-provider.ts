@@ -214,7 +214,7 @@ class GoogleDriveProvider implements SyncProvider {
         } else if (
           item.name.endsWith('.mokuro') ||
           item.name.endsWith('.mokuro.gz') ||
-          item.name.endsWith('.webp')
+          /\.(webp|jpe?g)$/i.test(item.name)
         ) {
           sidecarFiles.push(item);
         } else if (
@@ -321,11 +321,14 @@ class GoogleDriveProvider implements SyncProvider {
       const seriesTitle = pathParts.join('/');
 
       // Determine MIME type from extension
-      const mimeType = fileName.endsWith('.json')
+      const lowerFileName = fileName.toLowerCase();
+      const mimeType = lowerFileName.endsWith('.json')
         ? 'application/json'
-        : fileName.endsWith('.webp')
+        : lowerFileName.endsWith('.webp')
           ? 'image/webp'
-          : 'application/x-cbz';
+          : lowerFileName.endsWith('.jpg') || lowerFileName.endsWith('.jpeg')
+            ? 'image/jpeg'
+            : 'application/x-cbz';
 
       // Ensure folder structure exists
       const rootFolderId = await this.ensureReaderFolder();

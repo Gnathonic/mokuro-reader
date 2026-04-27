@@ -167,7 +167,7 @@ export async function generateThumbnail(
   destCanvas.width = targetWidth;
   destCanvas.height = targetHeight;
 
-  const mimeType = file.type || 'image/jpeg';
+  const mimeType = 'image/webp';
   const sourcePixels = img.width * img.height;
 
   // On mobile with large images, skip straight to prescale strategy
@@ -228,8 +228,9 @@ export async function generateThumbnail(
     throw new Error('All thumbnail generation strategies failed');
   }
 
+  const baseName = file.name.replace(/\.[^.]+$/, '');
   return {
-    file: new File([blob], `thumbnail_${file.name}`, { type: mimeType }),
+    file: new File([blob], `thumbnail_${baseName}.webp`, { type: mimeType }),
     width: targetWidth,
     height: targetHeight
   };

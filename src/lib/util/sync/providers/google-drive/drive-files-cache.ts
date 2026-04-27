@@ -113,7 +113,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           } else if (
             item.name.endsWith('.mokuro') ||
             item.name.endsWith('.mokuro.gz') ||
-            item.name.endsWith('.webp')
+            /\.(webp|jpe?g)$/i.test(item.name)
           ) {
             sidecarFiles.push(item);
           } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {

@@ -99,38 +99,47 @@ class FolderDeduplicator {
 
     this.runningProviders.add(provider);
 
+    // Cap pass count to prevent runaway loops if a provider keeps reporting duplicates
+    // (e.g., move/delete silently failing). Real-world depth is small.
+    const MAX_PASSES = 20;
+
     try {
-      // Fetch all folders with their parent relationships
-      const folders = await ops.listFolders();
+      for (let pass = 1; pass <= MAX_PASSES; pass++) {
+        const folders = await ops.listFolders();
+        if (folders.length === 0) break;
 
-      if (folders.length === 0) {
-        return result;
+        const duplicateGroups = this.findAllDuplicateGroups(folders);
+        if (duplicateGroups.length === 0) {
+          if (pass === 1) {
+            console.log(`[Dedup:${provider}] No duplicate folders found`);
+          }
+          break;
+        }
+
+        console.log(
+          `[Dedup:${provider}] Pass ${pass}: merging ${duplicateGroups.length} duplicate group(s)`
+        );
+
+        for (const group of duplicateGroups) {
+          const mergeResult = await this.mergeGroup(provider, ops, group);
+          result.groupsMerged++;
+          result.foldersDeleted += mergeResult.foldersDeleted;
+          result.itemsMoved += mergeResult.itemsMoved;
+        }
+
+        if (pass === MAX_PASSES) {
+          console.warn(
+            `[Dedup:${provider}] Hit MAX_PASSES (${MAX_PASSES}); stopping. Duplicates may remain.`
+          );
+        }
       }
 
-      // Find all duplicate groups (same name + same parent)
-      const duplicateGroups = this.findAllDuplicateGroups(folders);
-
-      if (duplicateGroups.length === 0) {
-        console.log(`[Dedup:${provider}] No duplicate folders found`);
-        return result;
+      if (result.groupsMerged > 0) {
+        console.log(
+          `[Dedup:${provider}] Merged ${result.groupsMerged} groups, ` +
+            `deleted ${result.foldersDeleted} folders, moved ${result.itemsMoved} items`
+        );
       }
-
-      console.log(
-        `[Dedup:${provider}] Found ${duplicateGroups.length} duplicate group(s) to merge`
-      );
-
-      // Merge each group
-      for (const group of duplicateGroups) {
-        const mergeResult = await this.mergeGroup(provider, ops, group);
-        result.groupsMerged++;
-        result.foldersDeleted += mergeResult.foldersDeleted;
-        result.itemsMoved += mergeResult.itemsMoved;
-      }
-
-      console.log(
-        `[Dedup:${provider}] Merged ${result.groupsMerged} groups, ` +
-          `deleted ${result.foldersDeleted} folders, moved ${result.itemsMoved} items`
-      );
 
       return result;
     } catch (error) {

@@ -35,11 +35,19 @@ function releaseFetchSlot(): void {
   if (next) next();
 }
 
+function getThumbnailMime(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  return 'image/webp';
+}
+
 async function downloadThumbnailWithTimeout(volume: VolumeMetadata): Promise<Blob> {
+  const thumbnailPath =
+    volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
   const downloadPromise = unifiedCloudManager.downloadFile({
     provider: volume.cloudProvider!,
     fileId: volume.cloudThumbnailFileId!,
-    path: `${volume.series_title}/${volume.volume_title}.webp`,
+    path: thumbnailPath,
     modifiedTime: '',
     size: 0
   });
@@ -95,7 +103,11 @@ export async function fetchCloudThumbnail(
     try {
       const blob = await downloadThumbnailWithTimeout(volume);
 
-      const file = new File([blob], `${volume.volume_title}.webp`, { type: 'image/webp' });
+      const thumbnailPath =
+        volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
+      const ext = thumbnailPath.split('.').pop()!.toLowerCase();
+      const mime = getThumbnailMime(thumbnailPath);
+      const file = new File([blob], `${volume.volume_title}.${ext}`, { type: mime });
 
       // Measure dimensions using createImageBitmap (most reliable for pixel dimensions)
       const bitmap = await createImageBitmap(file);
