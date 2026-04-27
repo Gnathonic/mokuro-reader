@@ -59,11 +59,27 @@ class OneDriveTokenManager {
       this.instance = new this.msal.PublicClientApplication(config);
       await this.instance.initialize();
 
+      // Drain any pending interaction state from a previous (possibly
+      // abandoned) popup, and process popup-flow redirects when this code
+      // runs inside a popup window.
+      try {
+        const result = await this.instance.handleRedirectPromise();
+        if (result?.account) {
+          this.account = result.account;
+          this.instance.setActiveAccount(result.account);
+          this.tokenStore.set(result.accessToken);
+        }
+      } catch (error) {
+        console.warn('OneDrive handleRedirectPromise failed:', error);
+      }
+
       // Restore account from MSAL cache (if a previous session exists)
-      const accounts = this.instance.getAllAccounts();
-      if (accounts.length > 0) {
-        this.account = accounts[0];
-        this.instance.setActiveAccount(this.account);
+      if (!this.account) {
+        const accounts = this.instance.getAllAccounts();
+        if (accounts.length > 0) {
+          this.account = accounts[0];
+          this.instance.setActiveAccount(this.account);
+        }
       }
     })();
 
@@ -90,7 +106,34 @@ class OneDriveTokenManager {
     }
 
     const request: PopupRequest = { scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[] };
-    const result: AuthenticationResult = await this.instance.loginPopup(request);
+
+    let result: AuthenticationResult;
+    try {
+      result = await this.instance.loginPopup(request);
+    } catch (error) {
+      // Stale interaction state from a previous popup that didn't complete.
+      // Clear it and retry once.
+      const code = (error as { errorCode?: string })?.errorCode;
+      if (code === 'interaction_in_progress') {
+        try {
+          await this.instance.handleRedirectPromise();
+        } catch {
+          /* ignore */
+        }
+        // MSAL stores the interaction status under a key in localStorage.
+        // Clearing it lets the next loginPopup() proceed.
+        if (browser) {
+          for (const key of Object.keys(localStorage)) {
+            if (key.startsWith('msal.interaction.status') || key.endsWith('.interaction.status')) {
+              localStorage.removeItem(key);
+            }
+          }
+        }
+        result = await this.instance.loginPopup(request);
+      } else {
+        throw error;
+      }
+    }
 
     this.account = result.account;
     this.instance.setActiveAccount(result.account);
