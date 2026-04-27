@@ -48,26 +48,6 @@ export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
  * - Provider modules self-register their caches when loaded
  */
 export async function initializeProviders(): Promise<void> {
-  // OneDrive popup-flow callback: when MSAL.loginPopup() opens a popup, the
-  // popup is redirected back to our app's origin (the registered SPA redirect
-  // URI). The popup loads this same app, but no provider is active yet, so
-  // OneDrive's MSAL would never initialize and the popup would hang. When we
-  // detect we're running inside a popup window, eagerly load the OneDrive
-  // provider so MSAL processes the redirect and posts the result back to the
-  // opener window via window.opener.postMessage. MSAL closes the popup itself
-  // once it's finished.
-  if (typeof window !== 'undefined' && window.opener && window.opener !== window) {
-    console.log('🪟 Detected popup window — loading MSAL to handle OneDrive auth redirect');
-    try {
-      const { onedriveProvider } = await import('./providers/onedrive/onedrive-provider');
-      await onedriveProvider.whenReady();
-      console.log('✅ MSAL initialized in popup; waiting for it to close itself');
-    } catch (error) {
-      console.error('Failed to handle OneDrive popup redirect:', error);
-    }
-    return;
-  }
-
   // Check which provider (if any) is active
   const activeProviderType = getConfiguredProviderType();
 

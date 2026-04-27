@@ -3,14 +3,15 @@ import { writable, type Readable } from 'svelte/store';
 import type {
   PublicClientApplication,
   AccountInfo,
-  AuthenticationResult,
   Configuration,
-  PopupRequest,
+  RedirectRequest,
   SilentRequest
 } from '@azure/msal-browser';
 import { ONEDRIVE_CONFIG } from './constants';
 
 type Msal = typeof import('@azure/msal-browser');
+
+const PENDING_LOGIN_KEY = 'onedrive_login_pending';
 
 class OneDriveTokenManager {
   private instance: PublicClientApplication | null = null;
@@ -32,6 +33,8 @@ class OneDriveTokenManager {
 
   /**
    * Initialize MSAL. Safe to call multiple times — returns the same promise.
+   * Uses redirect-based auth (not popup): cleaner cross-window state, no
+   * popup blockers, and avoids the need for a separate callback page.
    */
   async initialize(): Promise<void> {
     if (!browser) return;
@@ -47,45 +50,37 @@ class OneDriveTokenManager {
 
       this.msal = await import('@azure/msal-browser');
 
-      // Use a dedicated static HTML callback page that bypasses SvelteKit's
-      // hash-based router. Our app would otherwise try to interpret MSAL's
-      // fragment-mode auth response as a route, dropping the auth code before
-      // MSAL can read it. The static page is served from /static/ directly.
-      const redirectUri = `${window.location.origin}/onedrive-callback.html`;
-
-      // Stash the client ID where the static callback page can find it.
-      // Same-origin sessionStorage is shared between opener and popup.
-      sessionStorage.setItem('onedrive_client_id', clientId);
-
       const config: Configuration = {
         auth: {
           clientId,
           authority: ONEDRIVE_CONFIG.AUTHORITY,
-          redirectUri
+          redirectUri: window.location.origin
         },
         cache: {
-          cacheLocation: 'localStorage',
-          // Default is sessionStorage which is per-window and unreachable
-          // from the popup callback. We need both opener and popup to share
-          // the PKCE verifier and pending-request entries.
-          temporaryCacheLocation: 'localStorage'
+          cacheLocation: 'localStorage'
         }
       };
       this.instance = new this.msal.PublicClientApplication(config);
       await this.instance.initialize();
 
-      // Drain any pending interaction state from a previous (possibly
-      // abandoned) popup, and process popup-flow redirects when this code
-      // runs inside a popup window.
+      // If we just returned from a redirect-flow login, this completes it.
       try {
         const result = await this.instance.handleRedirectPromise();
         if (result?.account) {
           this.account = result.account;
           this.instance.setActiveAccount(result.account);
           this.tokenStore.set(result.accessToken);
+          localStorage.setItem(ONEDRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED, 'true');
+          localStorage.removeItem(PENDING_LOGIN_KEY);
+        } else if (localStorage.getItem(PENDING_LOGIN_KEY) === 'true') {
+          // We were waiting for a redirect that never produced a result —
+          // either the user navigated away or auth failed silently. Clear
+          // the flag so the user can retry.
+          localStorage.removeItem(PENDING_LOGIN_KEY);
         }
       } catch (error) {
         console.warn('OneDrive handleRedirectPromise failed:', error);
+        localStorage.removeItem(PENDING_LOGIN_KEY);
       }
 
       // Restore account from MSAL cache (if a previous session exists)
@@ -101,6 +96,18 @@ class OneDriveTokenManager {
     return this.initPromise;
   }
 
+  /**
+   * Returns true when the app booted from a OneDrive redirect callback that
+   * the user is currently waiting on. Init-providers uses this to skip
+   * unrelated bootstrap work and let the UI surface "connected" instead.
+   */
+  hasPendingRedirect(): boolean {
+    if (!browser) return false;
+    if (localStorage.getItem(PENDING_LOGIN_KEY) !== 'true') return false;
+    const url = new URL(window.location.href);
+    return url.searchParams.has('code') || url.searchParams.has('error');
+  }
+
   isAuthenticated(): boolean {
     return this.account !== null && !!this.instance;
   }
@@ -114,55 +121,34 @@ class OneDriveTokenManager {
     return this.account?.name ?? this.account?.username ?? null;
   }
 
+  /**
+   * Start the redirect-based login flow. The whole window navigates to
+   * Microsoft's login page; after auth the user lands back on the app's
+   * origin and `initialize()` calls `handleRedirectPromise()` to complete
+   * the sign-in. Because this navigates the window, this method does not
+   * resolve in the normal sense — the caller's await never returns from
+   * the user's perspective; the next page load is the post-auth state.
+   */
   async login(): Promise<void> {
     await this.initialize();
     if (!this.instance || !this.msal) {
       throw new Error('MSAL instance not initialized');
     }
+    // Mark the redirect as in-flight so init-providers can detect the
+    // callback path on the next page load.
+    localStorage.setItem(PENDING_LOGIN_KEY, 'true');
 
-    const request: PopupRequest = { scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[] };
-
-    let result: AuthenticationResult;
-    try {
-      result = await this.instance.loginPopup(request);
-    } catch (error) {
-      // Stale interaction state from a previous popup that didn't complete.
-      // Clear it and retry once.
-      const code = (error as { errorCode?: string })?.errorCode;
-      if (code === 'interaction_in_progress') {
-        try {
-          await this.instance.handleRedirectPromise();
-        } catch {
-          /* ignore */
-        }
-        // MSAL stores the interaction status under a key in localStorage.
-        // Clearing it lets the next loginPopup() proceed.
-        if (browser) {
-          for (const key of Object.keys(localStorage)) {
-            if (key.startsWith('msal.interaction.status') || key.endsWith('.interaction.status')) {
-              localStorage.removeItem(key);
-            }
-          }
-        }
-        result = await this.instance.loginPopup(request);
-      } else {
-        throw error;
-      }
-    }
-
-    this.account = result.account;
-    this.instance.setActiveAccount(result.account);
-    this.tokenStore.set(result.accessToken);
-    this.needsAttentionStore.set(false);
-
-    localStorage.setItem(ONEDRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED, 'true');
+    const request: RedirectRequest = {
+      scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[]
+    };
+    await this.instance.loginRedirect(request);
   }
 
   async logout(): Promise<void> {
     if (this.instance && this.account) {
-      await this.instance.logoutPopup({
+      await this.instance.logoutRedirect({
         account: this.account,
-        mainWindowRedirectUri: window.location.origin
+        postLogoutRedirectUri: window.location.origin
       });
     }
     this.account = null;
@@ -170,13 +156,13 @@ class OneDriveTokenManager {
     this.needsAttentionStore.set(false);
     if (browser) {
       localStorage.removeItem(ONEDRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED);
+      localStorage.removeItem(PENDING_LOGIN_KEY);
     }
   }
 
   /**
-   * Acquire an access token. Uses the silent cache first, throws if MSAL
-   * signals interaction required (the caller should prompt the user via
-   * reauthenticate()).
+   * Acquire an access token silently. Throws if MSAL signals interaction
+   * required (the caller should prompt the user via reauthenticate()).
    */
   async getAccessToken(): Promise<string> {
     await this.initialize();
@@ -201,23 +187,20 @@ class OneDriveTokenManager {
   }
 
   /**
-   * Popup-based re-authentication. Used by the UI when silent refresh fails
-   * and the user clicks a "reconnect" action.
+   * Redirect-based re-authentication. Used by the UI when silent refresh
+   * fails and the user clicks a "reconnect" action.
    */
   async reauthenticate(): Promise<void> {
     await this.initialize();
     if (!this.instance) {
       throw new Error('MSAL not initialized');
     }
-    const request: PopupRequest = {
+    localStorage.setItem(PENDING_LOGIN_KEY, 'true');
+    const request: RedirectRequest = {
       scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[],
       account: this.account ?? undefined
     };
-    const result = await this.instance.acquireTokenPopup(request);
-    this.account = result.account;
-    this.instance.setActiveAccount(result.account);
-    this.tokenStore.set(result.accessToken);
-    this.needsAttentionStore.set(false);
+    await this.instance.acquireTokenRedirect(request);
   }
 }
 

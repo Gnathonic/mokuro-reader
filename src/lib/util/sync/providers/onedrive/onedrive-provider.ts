@@ -92,12 +92,34 @@ export class OneDriveProvider implements SyncProvider {
     if (!browser) {
       throw new ProviderError('OneDrive only works in browser', 'onedrive', 'BROWSER_ONLY');
     }
+    // If the user just returned from a redirect-flow login, MSAL has already
+    // populated the account during initialize(). Skip the redirect dance and
+    // finalize the connection.
+    await onedriveTokenManager.initialize();
+    if (onedriveTokenManager.isAuthenticated()) {
+      try {
+        await this.ensureMokuroFolder();
+        setActiveProviderKey('onedrive');
+        console.log('✅ OneDrive login completed (post-redirect)');
+        return;
+      } catch (error) {
+        throw new ProviderError(
+          `OneDrive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          'onedrive',
+          'LOGIN_FAILED',
+          true
+        );
+      }
+    }
+    // Set the active provider key BEFORE the redirect so on return the
+    // provider lazy-loads via the active_cloud_provider key path and
+    // initialize() (which calls handleRedirectPromise) runs to complete auth.
+    setActiveProviderKey('onedrive');
     try {
-      await onedriveTokenManager.login();
-      await this.ensureMokuroFolder();
-      setActiveProviderKey('onedrive');
-      console.log('✅ OneDrive login successful');
+      await onedriveTokenManager.login(); // Navigates the window away
     } catch (error) {
+      // Roll back the active key if the redirect itself failed
+      clearActiveProviderKey();
       throw new ProviderError(
         `OneDrive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'onedrive',
