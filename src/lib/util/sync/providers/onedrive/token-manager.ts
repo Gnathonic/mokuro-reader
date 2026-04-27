@@ -64,7 +64,11 @@ class OneDriveTokenManager {
           redirectUri
         },
         cache: {
-          cacheLocation: 'localStorage'
+          cacheLocation: 'localStorage',
+          // Default is sessionStorage which is per-window and unreachable
+          // from the popup callback. We need both opener and popup to share
+          // the PKCE verifier and pending-request entries.
+          temporaryCacheLocation: 'localStorage'
         }
       };
       this.instance = new this.msal.PublicClientApplication(config);

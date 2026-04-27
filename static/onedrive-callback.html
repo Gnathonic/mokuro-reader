@@ -45,7 +45,7 @@
       // postMessage. MSAL closes this popup itself once the message is sent.
       try {
         const { PublicClientApplication } = await import(
-          'https://cdn.jsdelivr.net/npm/@azure/msal-browser@5/+esm'
+          'https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.8.0/+esm'
         );
 
         // Pull the client ID from a meta tag we inject from the parent app at
@@ -80,7 +80,12 @@
             authority: 'https://login.microsoftonline.com/common',
             redirectUri: window.location.origin + '/onedrive-callback.html'
           },
-          cache: { cacheLocation: 'localStorage' }
+          cache: {
+            cacheLocation: 'localStorage',
+            // Must match the opener's config so the PKCE verifier (stored
+            // when loginPopup() was called) is reachable from this window.
+            temporaryCacheLocation: 'localStorage'
+          }
         });
         await msal.initialize();
         await msal.handleRedirectPromise();
