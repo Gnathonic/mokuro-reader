@@ -7,10 +7,7 @@ describe('onedriveCore', () => {
   });
 
   describe('uploadFile', () => {
-    it('creates an upload session and PUTs the full payload in one chunk', async () => {
-      const seriesFolderPath = 'mokuro-reader/Series';
-      const filename = 'v1.cbz';
-
+    it('creates an upload session under mokuro-reader/{series} and PUTs full payload in one chunk', async () => {
       // 1st call: createUploadSession
       vi.mocked(fetch).mockResolvedValueOnce({
         ok: true,
@@ -21,20 +18,22 @@ describe('onedriveCore', () => {
       vi.mocked(fetch).mockResolvedValueOnce({
         ok: true,
         status: 201,
-        json: async () => ({ id: 'new-item-id', name: filename })
+        json: async () => ({ id: 'new-item-id', name: 'v1.cbz' })
       } as Response);
 
       const blob = new Blob([new Uint8Array(1000)]);
       const id = await onedriveCore.uploadFile({
-        seriesTitle: seriesFolderPath,
-        filename,
+        seriesTitle: 'Series', // bare title — core anchors it under mokuro-reader
+        filename: 'v1.cbz',
         blob,
         credentials: { accessToken: 'TOKEN' }
       });
 
       expect(id).toBe('new-item-id');
       const initCall = vi.mocked(fetch).mock.calls[0];
-      expect(initCall[0]).toContain(':/createUploadSession');
+      expect(initCall[0]).toBe(
+        'https://graph.microsoft.com/v1.0/me/drive/root:/mokuro-reader/Series/v1.cbz:/createUploadSession'
+      );
       const putCall = vi.mocked(fetch).mock.calls[1];
       expect(putCall[0]).toBe('https://upload.example/xyz');
       expect((putCall[1] as RequestInit).method).toBe('PUT');
@@ -42,6 +41,30 @@ describe('onedriveCore', () => {
         'Content-Range': 'bytes 0-999/1000',
         'Content-Length': '1000'
       });
+    });
+
+    it('places root-level files (no series) directly under mokuro-reader', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+      } as Response);
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'config-id' })
+      } as Response);
+
+      await onedriveCore.uploadFile({
+        seriesTitle: '', // no series — like volume-data.json or profiles.json
+        filename: 'volume-data.json',
+        blob: new Blob([new Uint8Array(10)]),
+        credentials: { accessToken: 'TOKEN' }
+      });
+
+      const initCall = vi.mocked(fetch).mock.calls[0];
+      expect(initCall[0]).toBe(
+        'https://graph.microsoft.com/v1.0/me/drive/root:/mokuro-reader/volume-data.json:/createUploadSession'
+      );
     });
 
     it('splits payload into multiple chunks when larger than chunk size', async () => {

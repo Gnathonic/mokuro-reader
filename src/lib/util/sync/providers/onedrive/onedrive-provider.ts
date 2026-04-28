@@ -219,7 +219,9 @@ export class OneDriveProvider implements SyncProvider {
           ? new Blob([blob])
           : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
     const fileId = await this.cloudCore.uploadFile({
-      seriesTitle: `${ONEDRIVE_CONFIG.MOKURO_FOLDER}${seriesTitle ? `/${seriesTitle}` : ''}`,
+      // onedrive-core prefixes its own mokuro-reader root, so pass just the
+      // bare series title here.
+      seriesTitle,
       filename,
       blob: blobToUpload,
       credentials,
@@ -367,6 +369,20 @@ export class OneDriveProvider implements SyncProvider {
       total: quota.total || null,
       available: quota.remaining ?? null
     };
+  }
+
+  /**
+   * Called by backup-queue before worker upload starts. We ensure the
+   * destination series folder exists so the worker's createUploadSession
+   * call doesn't 404 on a missing parent.
+   */
+  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    if (seriesTitle) {
+      await this.ensureSeriesFolder(seriesTitle);
+    } else {
+      await this.ensureMokuroFolder();
+    }
   }
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {

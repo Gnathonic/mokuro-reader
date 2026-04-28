@@ -46,7 +46,15 @@ export const onedriveCore: CloudProviderCore = {
       'OneDrive access token'
     );
 
-    const targetPath = seriesTitle ? `${seriesTitle}/${filename}` : filename;
+    // The worker calls in with the bare series title (e.g. "Cowboy Bebop").
+    // Anchor the upload under our app's mokuro-reader folder, matching the
+    // layout used by Drive and WebDAV. The provider's main-thread uploadFile
+    // ensures the parent folder exists ahead of time via prepareUploadTarget;
+    // worker uploads ride on that same precondition.
+    const folderPath = seriesTitle
+      ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`
+      : ONEDRIVE_CONFIG.MOKURO_FOLDER;
+    const targetPath = `${folderPath}/${filename}`;
 
     const sessionResponse = await fetch(
       `${BASE}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
