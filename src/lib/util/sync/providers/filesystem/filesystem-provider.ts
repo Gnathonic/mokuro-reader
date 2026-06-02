@@ -322,15 +322,21 @@ export class FilesystemProvider implements SyncProvider {
       renamed.push(await this.renameFile(file, target));
     }
 
-    // Best-effort cleanup of the now-empty old folder
-    try {
-      const parentPath = getParentPath(normalizedOld);
-      const parent = parentPath
-        ? await this.resolveDirectoryHandle(parentPath, { create: false })
-        : this.requireRoot();
-      await parent.removeEntry(getBasename(normalizedOld), { recursive: true });
-    } catch {
-      // Already gone or never existed — fine
+    // Best-effort cleanup of the now-empty old folder.
+    // Skip when the new path nests inside the old folder (e.g. "Series" -> "Series/Archive"):
+    // the renamed files now live under the old folder, so a recursive delete would destroy
+    // the very files we just wrote.
+    const newNestsUnderOld = normalizedNew.startsWith(`${normalizedOld}/`);
+    if (!newNestsUnderOld) {
+      try {
+        const parentPath = getParentPath(normalizedOld);
+        const parent = parentPath
+          ? await this.resolveDirectoryHandle(parentPath, { create: false })
+          : this.requireRoot();
+        await parent.removeEntry(getBasename(normalizedOld), { recursive: true });
+      } catch {
+        // Already gone or never existed — fine
+      }
     }
 
     console.log(`✅ Renamed folder ${normalizedOld} → ${normalizedNew} in filesystem`);
