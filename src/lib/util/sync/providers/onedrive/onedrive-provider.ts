@@ -17,8 +17,7 @@ import {
   getDriveQuota,
   getItemByPath,
   listChildren,
-  patchItem,
-  type DriveItem
+  patchItem
 } from './graph-client';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 
@@ -166,14 +165,19 @@ export class OneDriveProvider implements SyncProvider {
 
     const results: CloudFileMetadata[] = [];
 
+    // If the root mokuro folder doesn't exist yet, there's nothing to list.
+    // Probe it once here (getItemByPath cleanly returns null on 404) rather than
+    // swallowing 404s inside the recursive walk — a 404 raised while listing a
+    // deep subfolder means missing data, not "empty library", and must surface
+    // so a later progress sync can't overwrite good data with a truncated set.
+    const root = await getItemByPath(token, ONEDRIVE_CONFIG.MOKURO_FOLDER);
+    if (!root) {
+      console.log('OneDrive mokuro folder does not exist yet; nothing to list');
+      return results;
+    }
+
     const walk = async (path: string): Promise<void> => {
-      const children = await listChildren(token, path).catch((error) => {
-        // If the root mokuro folder doesn't exist, treat as empty
-        if (error instanceof Error && error.message.includes('404')) {
-          return [] as DriveItem[];
-        }
-        throw error;
-      });
+      const children = await listChildren(token, path);
       for (const item of children) {
         const childPath = path ? `${path}/${item.name}` : item.name;
         if (item.folder) {
