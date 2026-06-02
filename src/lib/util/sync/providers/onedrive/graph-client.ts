@@ -40,13 +40,21 @@ export async function getDriveQuota(accessToken: string): Promise<DriveQuota> {
 }
 
 export async function listChildren(accessToken: string, path: string): Promise<DriveItem[]> {
-  const url = path
+  // Graph pages children (default ~200 per response); follow @odata.nextLink so
+  // large folders (a library with hundreds of series, or a series with many
+  // files) are not silently truncated.
+  let url: string = path
     ? `${BASE}/me/drive/root:/${encodePath(path)}:/children`
     : `${BASE}/me/drive/root/children`;
-  const response = await fetch(url, { headers: authHeaders(accessToken) });
-  if (!response.ok) await parseError(response);
-  const data = (await response.json()) as { value: DriveItem[] };
-  return data.value;
+  const items: DriveItem[] = [];
+  while (url) {
+    const response = await fetch(url, { headers: authHeaders(accessToken) });
+    if (!response.ok) await parseError(response);
+    const data = (await response.json()) as { value: DriveItem[]; '@odata.nextLink'?: string };
+    items.push(...data.value);
+    url = data['@odata.nextLink'] ?? '';
+  }
+  return items;
 }
 
 export async function getItemByPath(accessToken: string, path: string): Promise<DriveItem | null> {

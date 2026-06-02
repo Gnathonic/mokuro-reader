@@ -81,6 +81,35 @@ describe('graph-client', () => {
       const call = vi.mocked(fetch).mock.calls[0];
       expect(call[0]).toContain('Test%20Series');
     });
+
+    it('follows @odata.nextLink to page through large folders', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            value: [{ id: '1', name: 'a.cbz', file: {} }],
+            '@odata.nextLink': `${BASE}/me/drive/root:/x:/children?$skiptoken=PAGE2`
+          })
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ value: [{ id: '2', name: 'b.cbz', file: {} }] })
+        } as Response);
+
+      const items = await listChildren('TOKEN', 'mokuro-reader');
+
+      // All children across both pages are returned, in order.
+      expect(items.map((i) => i.id)).toEqual(['1', '2']);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+      // The second request goes to the nextLink URL verbatim...
+      expect(vi.mocked(fetch).mock.calls[1][0]).toBe(
+        `${BASE}/me/drive/root:/x:/children?$skiptoken=PAGE2`
+      );
+      // ...and still carries the auth header.
+      expect((vi.mocked(fetch).mock.calls[1][1] as RequestInit).headers).toMatchObject({
+        Authorization: 'Bearer TOKEN'
+      });
+    });
   });
 
   describe('getItemByPath', () => {
