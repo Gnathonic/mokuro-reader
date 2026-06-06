@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Page, VolumeMetadata } from '$lib/types';
   import type { VolumeSettings } from '$lib/settings/volume-data';
-  import { settings, invertColorsActive } from '$lib/settings';
+  import { settings, imageFilter } from '$lib/settings';
   import { matchFilesToPages } from '$lib/reader/image-cache';
   import { getCharCount } from '$lib/util/count-chars';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -656,7 +656,7 @@
       class="flex"
       style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
       style:direction={rtl ? 'rtl' : 'ltr'}
-      style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+      style:filter={$imageFilter}
     >
       <div
         bind:this={zoomWrapperEl}
