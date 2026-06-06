@@ -635,6 +635,17 @@ export const grayscaleActive = derived([settings, currentMinute], ([$settings, _
 });
 
 /**
+ * Combined CSS filter string for the manga image layer. invert() and
+ * grayscale() commute, so order is irrelevant. Night mode is applied
+ * separately via NightModeFilter.svelte and is intentionally not included.
+ */
+export const imageFilter = derived(
+  [invertColorsActive, grayscaleActive],
+  ([$invertColorsActive, $grayscaleActive]) =>
+    `invert(${$invertColorsActive ? 1 : 0}) grayscale(${$grayscaleActive ? 1 : 0})`
+);
+
+/**
  * Helper function to update a profile's timestamp
  */
 function touchProfile(profile: Settings): Settings {

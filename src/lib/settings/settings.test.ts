@@ -1,7 +1,13 @@
 // src/lib/settings/settings.test.ts
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { migrateProfiles, grayscaleActive, updateSetting, updateScheduleSetting } from './settings';
+import {
+  migrateProfiles,
+  grayscaleActive,
+  imageFilter,
+  updateSetting,
+  updateScheduleSetting
+} from './settings';
 
 describe('theme migration', () => {
   it('defaults a profile with no theme to the Dark preset', () => {
@@ -72,5 +78,35 @@ describe('grayscaleActive', () => {
       updateScheduleSetting('grayscaleSchedule', 'enabled', true);
       expect(get(grayscaleActive)).toBe(false);
     });
+  });
+});
+
+describe('imageFilter', () => {
+  beforeEach(() => {
+    // Manual mode for both filters, both off
+    updateScheduleSetting('invertColorsSchedule', 'enabled', false);
+    updateScheduleSetting('grayscaleSchedule', 'enabled', false);
+    updateSetting('invertColors', false);
+    updateSetting('grayscale', false);
+  });
+
+  it('is both-off by default', () => {
+    expect(get(imageFilter)).toBe('invert(0) grayscale(0)');
+  });
+
+  it('reflects invert only', () => {
+    updateSetting('invertColors', true);
+    expect(get(imageFilter)).toBe('invert(1) grayscale(0)');
+  });
+
+  it('reflects grayscale only', () => {
+    updateSetting('grayscale', true);
+    expect(get(imageFilter)).toBe('invert(0) grayscale(1)');
+  });
+
+  it('reflects both on', () => {
+    updateSetting('invertColors', true);
+    updateSetting('grayscale', true);
+    expect(get(imageFilter)).toBe('invert(1) grayscale(1)');
   });
 });
