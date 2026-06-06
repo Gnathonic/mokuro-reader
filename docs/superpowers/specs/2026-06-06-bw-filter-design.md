@@ -30,9 +30,9 @@ in as a third member of that family.
 
 ## Non-Goals
 
-- Changing how **night mode** is *applied*. Night mode uses a separate global
+- Changing how **night mode** is _applied_. Night mode uses a separate global
   mechanism (`NightModeFilter.svelte`, the `<dialog>` filter trick). Only its
-  *settings card* is unified with invert/B&W; its application is untouched.
+  _settings card_ is unified with invert/B&W; its application is untouched.
 - Adjustable filter intensity (e.g. partial grayscale). The filter is on/off,
   matching invert.
 - Per-volume B&W overrides beyond what the existing profile/volume settings
@@ -83,14 +83,14 @@ pickers (scheduled).
 
 Props:
 
-| Prop          | Type                | Example                                   |
-| ------------- | ------------------- | ----------------------------------------- |
-| `title`       | `string`            | `'Black & white'`                         |
-| `enableLabel` | `string`            | `'Enable black & white'`                  |
-| `hotkeyHint`  | `string`            | `'G'`                                      |
-| `settingKey`  | `SettingsKey`       | `'grayscale'`                             |
-| `scheduleKey` | `ScheduleSettingKey`| `'grayscaleSchedule'`                     |
-| `active`      | `boolean`           | `$grayscaleActive`                        |
+| Prop          | Type                 | Example                  |
+| ------------- | -------------------- | ------------------------ |
+| `title`       | `string`             | `'Black & white'`        |
+| `enableLabel` | `string`             | `'Enable black & white'` |
+| `hotkeyHint`  | `string`             | `'G'`                    |
+| `settingKey`  | `SettingsKey`        | `'grayscale'`            |
+| `scheduleKey` | `ScheduleSettingKey` | `'grayscaleSchedule'`    |
+| `active`      | `boolean`            | `$grayscaleActive`       |
 
 Internally it owns the `mode` derivation (`$settings[scheduleKey].enabled ?
 'scheduled' : 'manual'`) and the `setMode` logic that currently lives in
