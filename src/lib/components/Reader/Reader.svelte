@@ -16,7 +16,7 @@
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
-    invertColorsActive,
+    imageFilter,
     progress,
     settings,
     updateProgress,
@@ -24,7 +24,8 @@
     updateVolumeSetting,
     volumes,
     type VolumeSettings,
-    type ContinuousZoomMode
+    type ContinuousZoomMode,
+    type ScheduleSettingKey
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
@@ -408,23 +409,13 @@
         toggleFullScreen();
         return;
       case 'KeyI':
-        if ($settings.invertColorsSchedule.enabled) {
-          showNotification('Invert is on automatic schedule', 'invert-scheduled');
-        } else {
-          updateSetting('invertColors', !$settings.invertColors);
-          showNotification($settings.invertColors ? 'Invert Off' : 'Invert On', 'invert-toggle');
-        }
+        toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert');
         return;
       case 'KeyN':
-        if ($settings.nightModeSchedule.enabled) {
-          showNotification('Night mode is on automatic schedule', 'nightmode-scheduled');
-        } else {
-          updateSetting('nightMode', !$settings.nightMode);
-          showNotification(
-            $settings.nightMode ? 'Night Mode Off' : 'Night Mode On',
-            'nightmode-toggle'
-          );
-        }
+        toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode');
+        return;
+      case 'KeyG':
+        toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
         return;
       case 'KeyC':
         if (volume) {
@@ -1127,6 +1118,28 @@
     }, 2000);
   }
 
+  // Shared toggle for the Manual/Scheduled display filters (night, invert, B&W).
+  // When the schedule owns the filter we only notify; otherwise we flip the
+  // manual boolean. This reproduces the original inline KeyI/KeyN handlers
+  // exactly, including reading $settings right after updateSetting for the
+  // On/Off label — keep this order and pattern; do not "simplify" it.
+  function toggleScheduledFilter(
+    settingKey: 'nightMode' | 'invertColors' | 'grayscale',
+    scheduleKey: ScheduleSettingKey,
+    label: string,
+    notifPrefix: string
+  ) {
+    if ($settings[scheduleKey].enabled) {
+      showNotification(`${label} is on automatic schedule`, `${notifPrefix}-scheduled`);
+    } else {
+      updateSetting(settingKey, !$settings[settingKey]);
+      showNotification(
+        $settings[settingKey] ? `${label} Off` : `${label} On`,
+        `${notifPrefix}-toggle`
+      );
+    }
+  }
+
   function rotateScrollMode() {
     const current = $settings.scrollMode;
     const order = ['auto', 'vertical', 'horizontal'] as const;
@@ -1413,7 +1426,7 @@
         ></button>
         <div
           class="grid"
-          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+          style:filter={$imageFilter}
           ondblclick={onDoubleTap}
           onpointerdown={handleOverlayPointerDown}
           onclick={handleOverlayToggle}
