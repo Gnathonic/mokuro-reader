@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.6.1] - 2026-06-08
+
+### Added
+
+- Black & white (grayscale) filter with G hotkey (#221)
+- "Always show OCR" toggle with T shortcut (#220, @jakobnator)
+
+### Fixed
+
+- Firefox now requests storage upfront so imports succeed (#223)
+- Achievement badges stay consistent across themes
+
+## [1.6.0] - 2026-05-29
+
+### Added
+
+- **Theme system** - A new Appearance setting with nine built-in themes — Dark (default, unchanged), E-ink (high-contrast black-on-white for e-readers), Ice, Sepia, Nord, Sakura, Pastel, Crimson, and Godzilla — plus a Custom editor. Each theme is previewed in its own swatch. Themes are defined by nine colours (background, surface, text, muted, border, accent, and "tone" colours for downloads, mark-as-read, and delete) and re-colour the whole app, including the reader background, the in-reader HUD, manga cover frames, and download/sync/delete buttons. Themes are stored per-profile, so they sync across devices. Builds on the light-mode idea from @oscarwong67 (#86)
+
+## [1.5.10] - 2026-05-22
+
+### Fixed
+
+- **QuickActions "+" ignored Anki card mode** - The QuickActions "+" → image → text-box picker flow always opened the "Create new card" modal, ignoring the `cardMode` setting. It now uses the same update/create dispatch logic as the double-click and context-menu flows, including the 5-minute window check for updates. The `{page_num}` template variable also resolves correctly in this flow (#216)
+- **Page swipes during Anki modal** - The reader no longer flips pages while the Anki Update/Create Card modal is open, preventing accidental flips when dragging the crop box on touchscreens (#189)
+
+## [1.5.9] - 2026-05-17
+
+### Fixed
+
+- **Migaku popup scroll eaten by reader** - The reader's window-level wheel listener intercepted every wheel and blocked scrolling inside Migaku/Yomitan popup overlays. Wheel events are now only intercepted inside the reader content (#214)
+- **Migaku sentence capture stopped at line breaks** - "Capture sentence" / "read sentence" only saw the hovered OCR line because `<br/>` separators were treated as sentence boundaries. OCR lines now use a CSS-generated newline so DOM walkers see one continuous text node per speech bubble. Yomitan behaviour unchanged (#214)
+
+## [1.5.8] - 2026-05-16
+
+### Added
+
+- **`{cover}` Anki template variable** - Include the volume cover image in Anki cards alongside `{image}`, targeting a separate field (#205)
+- **Reverse alphabetical volume sort** - Sort volumes Z–A in addition to A–Z
+- **Page index DOM attribute** - The reader exposes `data-page-index` on each page so extensions (e.g. GSM stats) can read the current page without traversing styles (#207)
+
+### Fixed
+
+- **Swipe-to-flip while panning a zoomed page** - A vigorous pan past the edge of a zoomed page could silently flip the page. The swipe now only flips when the relevant edge was already visible at touch start (#186)
+- **WebP thumbnails for archive-extracted pages** - Thumbnails from CBZ/ZIP imports were silently falling back to JPEG because extracted `File` objects had no mime type. Generation is now always WebP regardless of source
+- **MEGA duplicate series/root folders under parallel uploads** - Folder creation is now serialized per path, preventing duplicates when multiple uploads race
+- **MEGA folder deduplication** - The deduplicator now runs for MEGA (previously Drive-only) and loops to convergence so late-pass leftovers no longer remain
+
 ## [1.5.7] - 2026-03-20
 
 ### Fixed

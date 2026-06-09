@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { derived, get, readable, writable } from 'svelte/store';
 import { isMobilePlatform } from '$lib/util/platform';
+import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
 
 export type FontSize =
   | 'auto'
@@ -125,12 +126,15 @@ export type Settings = {
   textEditable: boolean;
   textBoxBorders: boolean;
   displayOCR: boolean;
+  alwaysShowOCR: boolean;
   boldFont: boolean;
   pageNum: boolean;
   charCount: boolean;
   bounds: boolean;
   mobile: boolean;
   backgroundColor: string;
+  theme: string; // preset id ('dark' | 'eink' | 'paper' | 'sepia' | 'nord' | 'custom')
+  customTheme: import('./theme').CustomTheme; // edited by the Custom theme mode
   swipeThreshold: number;
   edgeButtonWidth: number;
   showTimer: boolean;
@@ -142,6 +146,8 @@ export type Settings = {
   nightModeSchedule: TimeSchedule;
   invertColors: boolean;
   invertColorsSchedule: TimeSchedule;
+  grayscale: boolean;
+  grayscaleSchedule: TimeSchedule;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
@@ -171,7 +177,7 @@ export type CatalogSettingsKey = keyof CatalogSettings;
 
 export type TimeScheduleKey = keyof TimeSchedule;
 
-export type ScheduleSettingKey = 'nightModeSchedule' | 'invertColorsSchedule';
+export type ScheduleSettingKey = 'nightModeSchedule' | 'invertColorsSchedule' | 'grayscaleSchedule';
 
 // Helper to migrate old AnkiConnect settings to new modelConfigs format
 function migrateOldAnkiModelConfig(oldSettings: Record<string, any>): Record<string, ModelConfig> {
@@ -241,6 +247,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, Omit<ModelConfig, 'modelName'
 const defaultSettings: Settings = {
   defaultFullscreen: false,
   displayOCR: true,
+  alwaysShowOCR: false,
   textEditable: false,
   textBoxBorders: false,
   boldFont: false,
@@ -249,6 +256,19 @@ const defaultSettings: Settings = {
   mobile: false,
   bounds: true,
   backgroundColor: '#030712',
+  theme: 'dark',
+  customTheme: {
+    base: 'light',
+    background: '#ffffff',
+    surface: '#ffffff',
+    text: '#000000',
+    muted: '#3f3f3f',
+    border: '#000000',
+    accent: '#000000',
+    secondary: '#3f4756',
+    success: '#15803d',
+    danger: '#b91c1c'
+  },
   swipeThreshold: 50,
   edgeButtonWidth: 40,
   showTimer: false,
@@ -264,6 +284,12 @@ const defaultSettings: Settings = {
   },
   invertColors: false,
   invertColorsSchedule: {
+    enabled: false,
+    startTime: '21:00',
+    endTime: '06:00'
+  },
+  grayscale: false,
+  grayscaleSchedule: {
     enabled: false,
     startTime: '21:00',
     endTime: '06:00'
@@ -427,10 +453,40 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.invertColorsSchedule || {})
     };
 
+    migratedProfile.grayscaleSchedule = {
+      ...defaultSettings.grayscaleSchedule,
+      ...(profile.grayscaleSchedule || {})
+    };
+
     migratedProfile.catalogSettings = {
       ...defaultSettings.catalogSettings,
       ...(profile.catalogSettings || {})
     };
+
+    // Theme migration. The `...defaultSettings, ...profile` spread above already
+    // applies `theme`/`customTheme` defaults or carries existing values forward.
+    migratedProfile.customTheme = {
+      ...defaultSettings.customTheme,
+      ...(profile.customTheme || {})
+    };
+    // Legacy: a profile predating themes that deliberately changed the reader
+    // background keeps its look via a seeded Custom theme.
+    if (
+      profile.theme === undefined &&
+      typeof profile.backgroundColor === 'string' &&
+      profile.backgroundColor !== defaultSettings.backgroundColor
+    ) {
+      // Seed from the Dark preset's (dark-appropriate) tokens and override only
+      // the canvas/reader background, so the UI chrome stays light-on-dark.
+      // Using the default light customTheme here would map --color-white to the
+      // dark text color and make all `text-white` chrome invisible.
+      migratedProfile.theme = 'custom';
+      migratedProfile.customTheme = {
+        ...PRESETS.dark.tokens,
+        base: 'dark',
+        background: profile.backgroundColor
+      };
+    }
 
     // Add timestamp if missing
     if (!migratedProfile.lastUpdated) {
@@ -509,6 +565,17 @@ export const settings = derived(
   }
 );
 
+/** Resolve the active profile's theme into applied CSS variables. */
+export const activeTheme = derived(settings, ($settings): ResolvedTheme => {
+  if (!$settings) return resolveTheme(PRESETS.dark);
+  const id = $settings.theme ?? 'dark';
+  if (id === 'custom' && $settings.customTheme) {
+    const { base, ...tokens } = $settings.customTheme;
+    return resolveTheme({ id: 'custom', name: 'Custom', base, tokens });
+  }
+  return resolveTheme(PRESETS[id] ?? PRESETS.dark);
+});
+
 // Derived store for easy access to catalog settings
 export const catalogSettings = derived(settings, ($settings) => $settings?.catalogSettings);
 
@@ -560,6 +627,25 @@ export const invertColorsActive = derived([settings, currentMinute], ([$settings
   }
   return $settings.invertColors ?? false;
 });
+
+export const grayscaleActive = derived([settings, currentMinute], ([$settings, _]) => {
+  if (!$settings) return false;
+  if ($settings.grayscaleSchedule?.enabled) {
+    return isWithinSchedule($settings.grayscaleSchedule);
+  }
+  return $settings.grayscale ?? false;
+});
+
+/**
+ * Combined CSS filter string for the manga image layer. invert() and
+ * grayscale() commute, so order is irrelevant. Night mode is applied
+ * separately via NightModeFilter.svelte and is intentionally not included.
+ */
+export const imageFilter = derived(
+  [invertColorsActive, grayscaleActive],
+  ([$invertColorsActive, $grayscaleActive]) =>
+    `invert(${$invertColorsActive ? 1 : 0}) grayscale(${$grayscaleActive ? 1 : 0})`
+);
 
 /**
  * Helper function to update a profile's timestamp
@@ -748,3 +834,5 @@ export function copyProfile(profileToCopy: string, newName: string) {
 export function changeProfile(profileId: string) {
   currentProfile.set(profileId);
 }
+
+export * from './theme';

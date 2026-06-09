@@ -9,6 +9,7 @@
   import { db } from '$lib/catalog/db';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
+  import { requestPersistentStorage } from '$lib/util/upload';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { onMount } from 'svelte';
@@ -92,6 +93,11 @@
 
   async function onImport() {
     if (!request) return;
+
+    // Request persistent storage now, within the confirmation click. The actual
+    // import below runs only after an async network download, by which point the
+    // user activation Firefox needs for its prompt is gone.
+    void requestPersistentStorage();
 
     const normalizedVolume = normalizeFilename(request.volume);
     const processId = `cross-site-import-${Date.now()}`;

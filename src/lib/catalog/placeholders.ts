@@ -130,16 +130,23 @@ export function generatePlaceholders(
     }
   }
 
-  // Flatten Map values into a single array and split out .webp sidecars
+  // Flatten Map values into a single array and split out cover sidecars
   const cloudFiles: CloudVolumeWithProvider[] = [];
-  const thumbnailMap = new Map<string, string>(); // basePath -> fileId
+  const thumbnailMap = new Map<string, { fileId: string; path: string }>(); // basePath -> sidecar info
   const mokuroMap = new Map<string, CloudVolumeWithProvider>(); // basePath -> sidecar metadata
+  const coverExtRegex = /\.(webp|jpe?g)$/i;
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
       const lowerPath = file.path.toLowerCase();
-      if (lowerPath.endsWith('.webp')) {
-        const basePath = file.path.replace(/\.webp$/i, '');
-        thumbnailMap.set(basePath, file.fileId);
+      const coverMatch = file.path.match(coverExtRegex);
+      if (coverMatch) {
+        const basePath = file.path.slice(0, -coverMatch[0].length);
+        // Prefer .webp over .jpg/.jpeg when both exist for the same base.
+        const existing = thumbnailMap.get(basePath);
+        const isWebp = coverMatch[1].toLowerCase() === 'webp';
+        if (!existing || isWebp) {
+          thumbnailMap.set(basePath, { fileId: file.fileId, path: file.path });
+        }
       } else if (lowerPath.endsWith('.mokuro.gz')) {
         const basePath = file.path.replace(/\.mokuro\.gz$/i, '');
         // Prefer plain .mokuro over .mokuro.gz when both exist.
@@ -173,9 +180,10 @@ export function generatePlaceholders(
     const placeholder = createPlaceholder(cloudFile, seriesUuid);
     if (placeholder) {
       const basePath = cloudFile.path.replace(/\.cbz$/i, '');
-      const thumbnailFileId = thumbnailMap.get(basePath);
-      if (thumbnailFileId) {
-        placeholder.cloudThumbnailFileId = thumbnailFileId;
+      const thumbnailInfo = thumbnailMap.get(basePath);
+      if (thumbnailInfo) {
+        placeholder.cloudThumbnailFileId = thumbnailInfo.fileId;
+        placeholder.cloudThumbnailPath = thumbnailInfo.path;
       }
       placeholders.push(placeholder);
     }

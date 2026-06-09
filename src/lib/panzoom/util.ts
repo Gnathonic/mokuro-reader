@@ -22,6 +22,13 @@ export function initPanzoom(node: HTMLElement) {
     minZoom: 0.1,
     zoomDoubleClickSpeed: 1,
     enableTextSelection: true,
+    // We handle all keyboard shortcuts at the window level in Reader.svelte, so
+    // we don't need panzoom's built-in keyboard handling. Disabling it also
+    // prevents the library from adding `tabindex="0"` to the panzoom parent
+    // (see node_modules/panzoom/lib/domController.js), which otherwise turned
+    // the reader wrapper into a focus target and caused a stray focus-visible
+    // outline to appear as thin white lines around the content (issue #65).
+    disableKeyboardInteraction: true,
     onDoubleClick: () => false, // Allow dblclick events to propagate to Reader's onDoubleTap handler
     beforeMouseDown: (e) => {
       const target = e.target as HTMLElement;
@@ -33,39 +40,7 @@ export function initPanzoom(node: HTMLElement) {
     },
     // Disable library's wheel zoom - we handle it ourselves for symmetric zoom
     beforeWheel: () => true,
-    onTouch: (e) => e.touches.length > 1,
-    // Panzoom typing is wrong here
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error
-    filterKey: (e: KeyboardEvent) => {
-      // Filter (ignore) keys that shouldn't be handled by panzoom
-      const target = e.target as HTMLElement;
-
-      // Always filter left/right arrows (page navigation)
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        return true;
-      }
-
-      // Filter all keys when in text inputs, settings, popovers, or textboxes
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable ||
-        target.closest('#settings') ||
-        target.closest('[data-popover]') ||
-        target.closest('.textBox')
-      ) {
-        return true;
-      }
-
-      // Filter nav keys when modifier keys are pressed (for text selection, etc.)
-      const isNavKey = ['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key);
-      if (isNavKey && (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey)) {
-        return true;
-      }
-
-      return false;
-    }
+    onTouch: (e) => e.touches.length > 1
   });
 
   panzoomStore.set(pz);
@@ -256,7 +231,10 @@ export function keepInBounds() {
   let newY = y;
 
   if (forceCenterX) {
-    newX = (innerWidth - width) / 2;
+    // Round to integer to avoid sub-pixel CSS transforms, which can produce
+    // a 1-px white compositor seam along the content edge in Chrome when the
+    // image is smaller than the viewport (issue #65).
+    newX = Math.round((innerWidth - width) / 2);
   } else {
     if (x < minX) {
       newX = minX;
@@ -267,7 +245,7 @@ export function keepInBounds() {
   }
 
   if (forceCenterY) {
-    newY = (innerHeight - height) / 2;
+    newY = Math.round((innerHeight - height) / 2);
   } else {
     if (y < minY) {
       newY = minY;

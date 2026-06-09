@@ -128,6 +128,7 @@
 
   let fontWeight = $derived($settings.boldFont ? 'bold' : '400');
   let display = $derived($settings.displayOCR ? 'block' : 'none');
+  let alwaysShowOCR = $derived($settings.alwaysShowOCR);
   let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
   let contenteditable = $derived($settings.textEditable);
 
@@ -535,6 +536,7 @@
     class="textBox"
     class:originalMode={isOriginalMode}
     class:forceVisible
+    class:alwaysVisible={alwaysShowOCR}
     style:width={isOriginalMode ? undefined : useMinDimensions ? undefined : width}
     style:height={isOriginalMode ? undefined : useMinDimensions ? undefined : height}
     style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
@@ -553,7 +555,7 @@
     {contenteditable}
   >
     <p>
-      {#each lines as line, i}{line}{#if i < lines.length - 1}<br />{/if}{/each}
+      {#each lines as line}<span class="ocr-line">{line}</span>{/each}
     </p>
   </div>
 {/each}
@@ -606,12 +608,14 @@
     visibility: visible;
   }
 
-  /* Force visibility for placeholder/missing pages */
-  .textBox.forceVisible {
+  /* Force visibility for placeholder/missing pages, or when always-show OCR is enabled */
+  .textBox.forceVisible,
+  .textBox.alwaysVisible {
     background: rgb(255, 255, 255);
   }
 
-  .textBox.forceVisible p {
+  .textBox.forceVisible p,
+  .textBox.alwaysVisible p {
     visibility: visible;
   }
 
@@ -623,5 +627,13 @@
 
   .textBox.originalMode p {
     white-space: nowrap;
+  }
+
+  /* Use CSS-generated newline instead of <br/> so DOM walkers
+     (Migaku/Yomitan) see one continuous text node per textbox
+     and don't treat line breaks as sentence boundaries. */
+  .textBox .ocr-line:not(:last-child)::after {
+    content: '\A';
+    white-space: pre;
   }
 </style>

@@ -16,6 +16,7 @@
   import ImportPreparingModal from '$lib/components/ImportPreparingModal.svelte';
   import ProgressTracker from '$lib/components/ProgressTracker.svelte';
   import NightModeFilter from '$lib/components/NightModeFilter.svelte';
+  import ThemeController from '$lib/components/ThemeController.svelte';
   import GlobalDropZone from '$lib/components/GlobalDropZone.svelte';
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
@@ -106,7 +107,7 @@
     <p>Loading...</p>
   </div>
 {:else}
-  <div class="h-full min-h-[100svh] text-white">
+  <div class="h-full min-h-[100svh] text-gray-900 dark:text-white">
     <NavBar />
     {@render children?.()}
     <Snackbar />
@@ -121,6 +122,7 @@
     <ImportPreparingModal />
     <ProgressTracker />
     <NightModeFilter />
+    <ThemeController />
     <GlobalDropZone />
     <SwUpdateBanner />
   </div>

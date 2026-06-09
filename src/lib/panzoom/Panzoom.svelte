@@ -8,6 +8,6 @@
   let { children }: Props = $props();
 </script>
 
-<div use:initPanzoom>
+<div use:initPanzoom data-mokuro-reader>
   {@render children?.()}
 </div>

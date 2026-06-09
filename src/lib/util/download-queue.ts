@@ -20,6 +20,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { normalizeFilename } from './misc';
+import { requestPersistentStorage } from './upload';
 import {
   getImageMimeType,
   isImageExtension,
@@ -107,6 +108,14 @@ queueStore.subscribe((queue) => {
  * Add a single volume to the download queue
  */
 export function queueVolume(volume: VolumeMetadata): void {
+  // Request persistent storage from within the click that queued this download.
+  // Cloud volumes are saved off the main gesture in the background worker, so
+  // this synchronous enqueue is the only point in the cloud path that still
+  // holds user activation — which Firefox needs to show its prompt. All cloud
+  // entry points (queueSeriesVolumes, queueVolumesFromCloudFiles) funnel here.
+  // Idempotent, so the per-volume repeat during a series queue is harmless.
+  void requestPersistentStorage();
+
   const cloudFileId = getCloudFileId(volume);
   const cloudProvider = getCloudProvider(volume);
 

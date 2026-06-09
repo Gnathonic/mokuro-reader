@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Input, Label, Select } from 'flowbite-svelte';
+  import { Label, Select } from 'flowbite-svelte';
   import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
   import { settings, updateSetting } from '$lib/settings';
 
@@ -49,10 +49,6 @@
     { value: '60', name: '60' }
   ];
 
-  function onBackgroundColor(event: Event) {
-    updateSetting('backgroundColor', (event.target as HTMLInputElement).value);
-  }
-
   function onSelectChange(event: Event, setting: SettingsKey) {
     updateSetting(setting, (event.target as HTMLInputElement).value);
   }
@@ -90,8 +86,4 @@
 <div>
   <Label class="text-gray-900 dark:text-white">Fontsize:</Label>
   <Select items={fontSizes} value={fontSizeValue} onchange={(e) => onSelectChange(e, 'fontSize')} />
-</div>
-<div>
-  <Label class="text-gray-900 dark:text-white">Background color:</Label>
-  <Input type="color" onchange={onBackgroundColor} value={$settings.backgroundColor} />
 </div>

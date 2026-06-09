@@ -21,10 +21,23 @@
     volumeUuid: string;
     page1?: Page; // First page data for Anki card creation
     page2?: Page; // Second page data (when in dual mode)
+    page1Number?: number; // 1-indexed page number for src1/page1
+    page2Number?: number; // 1-indexed page number for src2/page2
     visible?: boolean;
   }
 
-  let { left, right, src1, src2, volumeUuid, page1, page2, visible = true }: Props = $props();
+  let {
+    left,
+    right,
+    src1,
+    src2,
+    volumeUuid,
+    page1,
+    page2,
+    page1Number,
+    page2Number,
+    visible = true
+  }: Props = $props();
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
   let volumeMetadata = $derived<VolumeMetadata>({
@@ -49,10 +62,10 @@
     open = false;
   }
 
-  async function onUpdateCard(src: File | undefined, page?: Page) {
+  async function onUpdateCard(src: File | undefined, page?: Page, pageNumber?: number) {
     if ($settings.ankiConnectSettings.enabled && src && page) {
-      // Show text box picker first, then cropper
-      showTextBoxPicker(URL.createObjectURL(src), page, ankiTags, volumeMetadata);
+      // Show text box picker first, then dispatch to create/update based on cardMode
+      showTextBoxPicker(URL.createObjectURL(src), page, ankiTags, volumeMetadata, pageNumber);
     }
     open = false;
   }
@@ -69,7 +82,7 @@
       <div class="mb-2 flex flex-col items-center gap-2">
         {#if $settings.ankiConnectSettings.enabled}
           <button
-            onclick={() => onUpdateCard(src1, page1)}
+            onclick={() => onUpdateCard(src1, page1, page1Number)}
             class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             aria-label="Add image to Anki"
           >
@@ -84,7 +97,7 @@
         {/if}
         {#if $settings.ankiConnectSettings.enabled && src2}
           <button
-            onclick={() => onUpdateCard(src2, page2)}
+            onclick={() => onUpdateCard(src2, page2, page2Number)}
             class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             aria-label="Add image 2 to Anki"
           >
@@ -132,7 +145,7 @@
     <!-- Main toggle button -->
     <button
       onclick={toggleMenu}
-      class="flex h-12 w-12 items-center justify-center rounded-full text-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+      class="flex h-12 w-12 items-center justify-center rounded-full text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none dark:text-white"
       aria-label="Quick actions menu"
       style="transition: transform 0.3s ease; transform: rotate({open ? 45 : 0}deg);"
     >

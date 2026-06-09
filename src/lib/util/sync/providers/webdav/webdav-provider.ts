@@ -558,7 +558,7 @@ export class WebDAVProvider implements SyncProvider {
               name.endsWith('.cbz') ||
               name.endsWith('.mokuro') ||
               name.endsWith('.mokuro.gz') ||
-              name.endsWith('.webp') ||
+              /\.(webp|jpe?g)$/i.test(name) ||
               item.basename === 'volume-data.json' ||
               item.basename === 'profiles.json'
             ) {
@@ -620,7 +620,7 @@ export class WebDAVProvider implements SyncProvider {
           name.endsWith('.cbz') ||
           name.endsWith('.mokuro') ||
           name.endsWith('.mokuro.gz') ||
-          name.endsWith('.webp') ||
+          /\.(webp|jpe?g)$/i.test(name) ||
           item.basename === 'volume-data.json' ||
           item.basename === 'profiles.json'
         ) {
@@ -1007,7 +1007,9 @@ export class WebDAVProvider implements SyncProvider {
       if (lower.endsWith('.cbz')) return path.slice(0, -4);
       if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
       if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+      if (lower.endsWith('.jpeg')) return path.slice(0, -5);
       if (lower.endsWith('.webp')) return path.slice(0, -5);
+      if (lower.endsWith('.jpg')) return path.slice(0, -4);
       return path;
     };
 

@@ -39,7 +39,7 @@
         > or later which can be installed via:
       </p>
       <div role="none" onclick={toClipboard}>
-        <code class="bg-slate-900 text-primary-600">pip install mokuro</code>
+        <code class="bg-gray-900 text-primary-600">pip install mokuro</code>
       </div>
     </div>
     <p class="text-gray-900 dark:text-white">

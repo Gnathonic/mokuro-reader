@@ -16,7 +16,7 @@
   } from '$lib/panzoom';
   import {
     effectiveVolumeSettings,
-    invertColorsActive,
+    imageFilter,
     progress,
     settings,
     updateProgress,
@@ -24,13 +24,15 @@
     updateVolumeSetting,
     volumes,
     type VolumeSettings,
-    type ContinuousZoomMode
+    type ContinuousZoomMode,
+    type ScheduleSettingKey
   } from '$lib/settings';
   import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
   import {
+    cropperStore,
     openCreateModal,
     openUpdateModal,
     sendQuickCapture,
@@ -407,23 +409,13 @@
         toggleFullScreen();
         return;
       case 'KeyI':
-        if ($settings.invertColorsSchedule.enabled) {
-          showNotification('Invert is on automatic schedule', 'invert-scheduled');
-        } else {
-          updateSetting('invertColors', !$settings.invertColors);
-          showNotification($settings.invertColors ? 'Invert Off' : 'Invert On', 'invert-toggle');
-        }
+        toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert');
         return;
       case 'KeyN':
-        if ($settings.nightModeSchedule.enabled) {
-          showNotification('Night mode is on automatic schedule', 'nightmode-scheduled');
-        } else {
-          updateSetting('nightMode', !$settings.nightMode);
-          showNotification(
-            $settings.nightMode ? 'Night Mode Off' : 'Night Mode On',
-            'nightmode-toggle'
-          );
-        }
+        toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode');
+        return;
+      case 'KeyG':
+        toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
         return;
       case 'KeyC':
         if (volume) {
@@ -450,6 +442,13 @@
           showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
         }
         return;
+      case 'KeyT':
+        updateSetting('alwaysShowOCR', !$settings.alwaysShowOCR);
+        showNotification(
+          $settings.alwaysShowOCR ? 'Always Show OCR: Off' : 'Always Show OCR: On',
+          'always-show-ocr-toggle'
+        );
+        return;
       case 'KeyV':
         toggleContinuousScroll();
         return;
@@ -474,6 +473,7 @@
 
   function handleTouchStart(event: TouchEvent) {
     if (!$settings.mobile) return;
+    if ($cropperStore?.open) return;
     if ($settings.continuousScroll) return; // Continuous mode handles its own touch
     if (event.touches.length > 1) return; // Ignore multi-touch starts
 
@@ -494,6 +494,7 @@
   function handlePointerUp(event: TouchEvent) {
     if (!$settings.mobile) return;
     if ($settings.continuousScroll) return; // Continuous mode handles its own touch
+    if ($cropperStore?.open) return; // Don't process swipes when Anki modal is open
 
     // If fingers remain, this was a multi-touch gesture - mark it and wait
     if (event.touches.length !== 0) {
@@ -542,20 +543,19 @@
     }
   }
 
-  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
+  // Wheel handler wrapper.
+  // We only intercept wheel events that originate inside our reader content
+  // (the Panzoom wrapper marked with data-mokuro-reader). Anything else —
+  // settings drawer, popovers, dialogs, and extension overlays like Migaku
+  // and Yomitan popups (which inject into <body>, often inside shadow DOM) —
+  // is left alone so the browser's default scroll handling can apply.
   function handleWheelEvent(e: WheelEvent) {
     // In continuous scroll mode, let ContinuousScrollReader handle wheel events
     if ($settings.continuousScroll) return;
 
     const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer, popovers, or modals
-    if (
-      target.closest('#settings') ||
-      target.closest('[data-popover]') ||
-      target.closest('dialog')
-    ) {
-      return;
-    }
+    if (!target.closest('[data-mokuro-reader]')) return;
+
     panzoomHandleWheel(e);
   }
 
@@ -1125,6 +1125,28 @@
     }, 2000);
   }
 
+  // Shared toggle for the Manual/Scheduled display filters (night, invert, B&W).
+  // When the schedule owns the filter we only notify; otherwise we flip the
+  // manual boolean. This reproduces the original inline KeyI/KeyN handlers
+  // exactly, including reading $settings right after updateSetting for the
+  // On/Off label — keep this order and pattern; do not "simplify" it.
+  function toggleScheduledFilter(
+    settingKey: 'nightMode' | 'invertColors' | 'grayscale',
+    scheduleKey: ScheduleSettingKey,
+    label: string,
+    notifPrefix: string
+  ) {
+    if ($settings[scheduleKey].enabled) {
+      showNotification(`${label} is on automatic schedule`, `${notifPrefix}-scheduled`);
+    } else {
+      updateSetting(settingKey, !$settings[settingKey]);
+      showNotification(
+        $settings[settingKey] ? `${label} Off` : `${label} On`,
+        `${notifPrefix}-toggle`
+      );
+    }
+  }
+
   function rotateScrollMode() {
     const current = $settings.scrollMode;
     const order = ['auto', 'vertical', 'horizontal'] as const;
@@ -1280,6 +1302,8 @@
     volumeUuid={volume.volume_uuid}
     page1={pages[index]}
     page2={!useSinglePage ? pages[index + 1] : undefined}
+    page1Number={index + 1}
+    page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
@@ -1327,7 +1351,7 @@
         </div>
       </div>
     </Popover>
-    <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+    <button class="reader-hud fixed top-5 left-5 z-10 opacity-80" id="page-num">
       {#key page}
         <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
@@ -1379,7 +1403,7 @@
     {/if}
   {:else}
     <!-- Page-based mode -->
-    <div class="flex" style:background-color={$settings.backgroundColor}>
+    <div class="flex" style:background-color="var(--reader-bg)">
       <Panzoom>
         <button
           aria-label="Previous page (left edge)"
@@ -1409,7 +1433,7 @@
         ></button>
         <div
           class="grid"
-          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
+          style:filter={$imageFilter}
           ondblclick={onDoubleTap}
           onpointerdown={handleOverlayPointerDown}
           onclick={handleOverlayToggle}

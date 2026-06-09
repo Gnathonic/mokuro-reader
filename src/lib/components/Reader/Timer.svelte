@@ -116,7 +116,7 @@
 {#if visible}
   <button
     class:text-primary-700={!active}
-    class="fixed top-5 right-14 z-10 opacity-50 mix-blend-difference"
+    class="reader-hud fixed top-5 right-14 z-10 opacity-80"
     onclick={onClick}
   >
     {#key `${active}-${$volumeStats?.timeReadInMinutes}`}

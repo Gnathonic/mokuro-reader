@@ -706,7 +706,7 @@
         <div class="flex flex-col gap-3">
           <!-- Google Drive Option -->
           <button
-            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
             onclick={handleGoogleDriveLogin}
             disabled={googleDriveLoading}
           >
@@ -725,7 +725,7 @@
 
           <!-- MEGA Option -->
           <button
-            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800"
+            class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800"
             onclick={() => {
               // Show MEGA login form
               const megaForm = document.getElementById('mega-login-form');
@@ -771,7 +771,7 @@
 
           <!-- WebDAV Option -->
           <button
-            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800"
+            class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800"
             onclick={() => {
               const webdavForm = document.getElementById('webdav-login-form');
               if (webdavForm) webdavForm.classList.toggle('hidden');

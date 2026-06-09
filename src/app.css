@@ -32,6 +32,57 @@
   --color-body: #6b7280;
 }
 
+/* Theme system: canvas background + e-ink shadow suppression.
+   Default matches the Dark preset so there is no flash before ThemeController mounts. */
+:root {
+  --app-bg: #030712;
+}
+
+body {
+  background-color: var(--app-bg);
+}
+
+/* Strong coloured buttons/badges keep a legible label regardless of the theme's
+   text colour. Because `.dark` is always on and themes remap `--color-white` to the
+   theme text colour, a bare `text-white` on an accent fill would otherwise follow
+   the (possibly dark) text colour. Scoped to strong stops only (>=500/600) via
+   `~=` token matching so light tints like `bg-blue-50` are untouched. */
+:where(.dark)
+  :is(
+    [class~='bg-primary-500'],
+    [class~='bg-primary-600'],
+    [class~='bg-primary-700'],
+    [class~='bg-primary-800'],
+    [class~='bg-primary-900'],
+    [class~='bg-blue-600'],
+    [class~='bg-blue-700'],
+    [class~='bg-blue-800'],
+    [class~='bg-green-600'],
+    [class~='bg-green-700'],
+    [class~='bg-red-600'],
+    [class~='bg-red-700'],
+    [class~='bg-indigo-600'],
+    [class~='bg-indigo-700']
+  ) {
+  color: var(--color-on-accent, #ffffff);
+}
+
+/* Reader HUD overlays (page counter, reading timer, settings button).
+   They inherit the theme text colour (so they follow the theme and contrast the
+   reader background directly) and add a halo in the reader background colour so
+   they also stay legible floating over arbitrary manga art. This replaces a
+   mix-blend-difference trick that vanished whenever the theme's text colour was
+   close to the page behind it. */
+.reader-hud {
+  text-shadow:
+    0 0 4px var(--reader-bg),
+    0 0 4px var(--reader-bg),
+    0 0 2px var(--reader-bg);
+}
+.reader-hud svg {
+  filter: drop-shadow(0 0 3px var(--reader-bg)) drop-shadow(0 0 2px var(--reader-bg));
+}
+
 @layer base {
   button:not(:disabled),
   [role='button']:not(:disabled) {

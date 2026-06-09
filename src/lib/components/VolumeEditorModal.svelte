@@ -423,7 +423,7 @@
           <!-- Cover Image -->
           <div class="flex flex-col items-center gap-2">
             <div
-              class="flex h-[175px] w-[125px] items-center justify-center overflow-hidden rounded-lg border border-gray-900 bg-black"
+              class="flex h-[175px] w-[125px] items-center justify-center overflow-hidden rounded-lg border border-gray-300 bg-gray-100 dark:border-gray-900 dark:bg-black"
             >
               {#if thumbnailUrl}
                 <img
