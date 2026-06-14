@@ -82,6 +82,7 @@ describe('Series rename cloud propagation', () => {
       toArray: vi.fn().mockResolvedValue([
         {
           volume_uuid: 'vol-1',
+          volume_title: 'Volume 1',
           series_uuid: 'series-1',
           series_title: 'Old Series'
         }
@@ -96,7 +97,10 @@ describe('Series rename cloud propagation', () => {
 
     await executeRenameSeries('Old Series', 'New Series', 'series-1');
 
-    expect(unifiedCloudManager.renameSeries).toHaveBeenCalledWith('Old Series', 'New Series');
+    // Passes the volume list so each .mokuro's series title can be regenerated.
+    expect(unifiedCloudManager.renameSeries).toHaveBeenCalledWith('Old Series', 'New Series', [
+      { volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }
+    ]);
     expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'New Series' });
     expect(updateVolumeSeriesTitle).toHaveBeenCalledWith('vol-1', 'New Series');
   });

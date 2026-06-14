@@ -160,11 +160,32 @@ export async function executeRenameSeries(
   // Generate preview of changes
   const preview = await generateRenameSeriesPreview(oldTitle, newTitle, seriesUuid);
 
-  try {
-    if (preview.indexedDbChanges.length > 0) {
-      await unifiedCloudManager.renameSeries(oldTitle, newTitle);
+  // The cloud rename runs FIRST and GATES the local commit: if it throws, the
+  // IndexedDB/localStorage updates below never run, so local never diverges
+  // from the cloud. Pass the volume list so each .mokuro sidecar's embedded
+  // series title is regenerated (a folder move alone leaves it stale).
+  if (preview.indexedDbChanges.length > 0) {
+    try {
+      const renameVolumes = seriesUuid
+        ? await db.volumes.where({ series_title: oldTitle, series_uuid: seriesUuid }).toArray()
+        : await db.volumes.where({ series_title: oldTitle }).toArray();
+      await unifiedCloudManager.renameSeries(
+        oldTitle,
+        newTitle,
+        renameVolumes.map((v) => ({ volumeUuid: v.volume_uuid, volumeTitle: v.volume_title }))
+      );
+    } catch (error) {
+      // The cloud rename gates the local commit. Explain that the local rename
+      // was aborted because the cloud couldn't be updated (offline, read-only,
+      // …) — without surfacing the low-level cause.
+      console.error('Error renaming series in cloud:', error);
+      throw new Error(
+        "Series not renamed: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+      );
     }
+  }
 
+  try {
     // Execute IndexedDB updates in a transaction
     await db.transaction('rw', [db.volumes], async () => {
       for (const change of preview.indexedDbChanges) {

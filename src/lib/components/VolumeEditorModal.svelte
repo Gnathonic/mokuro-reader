@@ -224,7 +224,20 @@
         finalSeriesTitle !== originalMetadata.series_title ||
         volumeTitle !== originalMetadata.volume_title
       ) {
-        await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
+        // The cloud rename GATES the local update: it must succeed first so the
+        // remote .mokuro/cbz/cover are renamed (and the sidecar content
+        // regenerated) before we change local metadata. If it fails — offline,
+        // read-only, etc. — we abort the local rename so the library and cloud
+        // stay in sync, and tell the user why nothing changed.
+        try {
+          await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
+        } catch (renameErr) {
+          console.error('Cloud rename failed; local rename aborted:', renameErr);
+          showSnackbar(
+            "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+          );
+          return;
+        }
       }
 
       if (Object.keys(metadataUpdates).length > 0) {

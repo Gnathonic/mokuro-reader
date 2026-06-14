@@ -261,13 +261,38 @@ class UnifiedCloudManager {
       );
     }
 
+    await this.fetchAllCloudVolumes();
+    return this.renameVolumeFiles(
+      provider,
+      oldSeriesTitle,
+      oldVolumeTitle,
+      newSeriesTitle,
+      newVolumeTitle,
+      volumeUuid
+    );
+  }
+
+  /**
+   * Move/regenerate ONE volume's managed cloud files into a new series/volume
+   * name. Assumes the caller already checked write access and refreshed the
+   * cache, so a series rename can fan this out over many volumes on a single
+   * fetch. Idempotent + destructive-last → converges on retry. Returns the
+   * number of remote files changed. Provider-agnostic: only the SyncProvider
+   * interface (uploadFile/renameFile/deleteFile + optional removeDirectoryIfEmpty).
+   */
+  private async renameVolumeFiles(
+    provider: SyncProvider,
+    oldSeriesTitle: string,
+    oldVolumeTitle: string,
+    newSeriesTitle: string,
+    newVolumeTitle: string,
+    volumeUuid?: string
+  ): Promise<number> {
     const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
     const newBasePath = normalizeCloudPath(`${newSeriesTitle}/${newVolumeTitle}`);
     if (oldBasePath === newBasePath) {
       return 0;
     }
-
-    await this.fetchAllCloudVolumes();
 
     const managedFiles = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
     if (managedFiles.length === 0) {
@@ -377,10 +402,23 @@ class UnifiedCloudManager {
    * Rename or move a backed-up series folder in the current provider.
    * Returns the number of remote files updated.
    */
-  async renameSeries(oldSeriesTitle: string, newSeriesTitle: string): Promise<number> {
+  async renameSeries(
+    oldSeriesTitle: string,
+    newSeriesTitle: string,
+    volumes?: Array<{ volumeUuid: string; volumeTitle: string }>
+  ): Promise<number> {
     const provider = this.getActiveProvider();
     if (!provider) {
       return 0;
+    }
+
+    // Remote gates the local commit; a read-only provider can't rename.
+    if (provider.getStatus().isReadOnly) {
+      throw new ProviderError(
+        'Cannot rename: the cloud provider is read-only',
+        provider.type,
+        'READ_ONLY'
+      );
     }
 
     const normalizedOldTitle = normalizeCloudPath(oldSeriesTitle);
@@ -396,6 +434,31 @@ class UnifiedCloudManager {
       return 0;
     }
 
+    // Each volume's .mokuro embeds the SERIES title, so a bulk folder move would
+    // leave every sidecar stale — silently reverting the rename on re-download.
+    // With the volume list, fan out the per-volume rename instead: it
+    // regenerates each .mokuro with the new series title, moves cbz/cover, then
+    // drops the stale sidecar — idempotent + destructive-last, so a partial
+    // failure converges on retry. The single fetch above feeds the whole loop
+    // (the in-memory cache updates as each volume moves). More requests than a
+    // bulk folder rename, but series renames are rare and recovery matters.
+    if (volumes && volumes.length > 0) {
+      let changed = 0;
+      for (const { volumeUuid, volumeTitle } of volumes) {
+        changed += await this.renameVolumeFiles(
+          provider,
+          oldSeriesTitle,
+          volumeTitle,
+          newSeriesTitle,
+          volumeTitle,
+          volumeUuid
+        );
+      }
+      return changed;
+    }
+
+    // Legacy path (no volume list, e.g. an image-only series): no .mokuro to
+    // regenerate, so a provider-optimized bulk folder move is correct.
     const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
 
     const cache = cacheManager.getCache(provider.type);
