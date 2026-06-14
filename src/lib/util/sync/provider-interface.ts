@@ -293,6 +293,16 @@ export interface SyncProvider {
   deleteSeriesFolder?(seriesTitle: string): Promise<void>;
 
   /**
+   * Optionally remove a directory ONLY if the provider confirms (server-side)
+   * that it is empty. Used for best-effort cleanup after a rename moves a
+   * volume out of its old series folder. Implementations MUST verify emptiness
+   * against the backend before deleting — never a blind recursive delete — and
+   * may no-op if they can't guarantee that. Providers without real directories
+   * (or that auto-prune) can omit this.
+   */
+  removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
+
+  /**
    * Get storage quota information from the provider
    * @returns Storage quota with used, total, and available bytes
    */

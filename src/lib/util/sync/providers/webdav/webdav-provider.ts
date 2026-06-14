@@ -977,6 +977,15 @@ export class WebDAVProvider implements SyncProvider {
       }
 
       if (await this.client.exists(destinationFullPath)) {
+        // Idempotent retry: if our source is already gone, a prior attempt
+        // moved it here — treat as success, not a fatal conflict. (Matches the
+        // same-file handling Google Drive / MEGA already do.) A genuine
+        // collision — source still present, different file at the destination —
+        // still throws.
+        if (!(await this.client.exists(file.fileId))) {
+          console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
+          return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+        }
         throw new ProviderError(
           `Target file already exists at '${normalizedNewPath}'`,
           'webdav',
@@ -1188,6 +1197,31 @@ export class WebDAVProvider implements SyncProvider {
     console.log(
       `✅ Deleted series '${seriesTitle}' from WebDAV (${orderedSeriesFiles.length} files via fallback)`
     );
+  }
+
+  /**
+   * Remove a directory only if the SERVER confirms it is empty — never a blind
+   * recursive delete. Used to prune a series folder left empty after a rename.
+   */
+  async removeDirectoryIfEmpty(relativePath: string): Promise<void> {
+    if (!this.isAuthenticated() || !this.client) return;
+
+    const normalized = relativePath.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+
+    const folderPath = `${MOKURO_FOLDER}/${normalized}`;
+    try {
+      // getDirectoryContents returns the folder's CHILDREN; empty = prunable.
+      const contents = await this.client.getDirectoryContents(folderPath);
+      const children = Array.isArray(contents)
+        ? contents
+        : ((contents as { data?: unknown[] })?.data ?? []);
+      if (children.length === 0) {
+        await this.client.deleteFile(folderPath);
+      }
+    } catch {
+      // Folder gone already, listing unsupported, or server refused — harmless.
+    }
   }
 
   /**

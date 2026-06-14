@@ -151,7 +151,11 @@ export async function updateVolumeInDb(
 }
 
 /**
- * Propagate a volume title/series rename to the active cloud provider before local metadata changes.
+ * Propagate a volume title/series rename to the active cloud provider. Runs
+ * BEFORE the local DB update and GATES it (the caller commits locally only if
+ * this resolves). The fresh .mokuro is regenerated with the new names via
+ * overrides — the DB still holds the old ones here — so the remote sidecar
+ * content is correct without first mutating local state.
  */
 export async function renameVolumeInCloud(
   originalMetadata: VolumeMetadata,
@@ -169,7 +173,8 @@ export async function renameVolumeInCloud(
     originalMetadata.series_title,
     originalMetadata.volume_title,
     nextSeriesTitle,
-    nextVolumeTitle
+    nextVolumeTitle,
+    originalMetadata.volume_uuid
   );
 }
 

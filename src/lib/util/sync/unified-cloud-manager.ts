@@ -1,13 +1,30 @@
 import { derived, type Readable } from 'svelte/store';
-import type {
-  SyncProvider,
-  CloudFileMetadata,
-  ProviderType,
-  UploadPayload
+import {
+  ProviderError,
+  type SyncProvider,
+  type CloudFileMetadata,
+  type ProviderType,
+  type UploadPayload
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
+import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
+
+/** A managed sidecar whose CONTENT embeds the volume's title/series. */
+function isMokuroSidecarPath(path: string): boolean {
+  const lower = normalizeCloudPath(path).toLowerCase();
+  return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+}
+
+/** Did a provider op fail because the resource was already gone (idempotent re-run)? */
+function isNotFoundError(error: unknown): boolean {
+  if (error instanceof ProviderError) {
+    if (error.code === 'NOT_FOUND' || error.code === 'FILE_NOT_FOUND') return true;
+  }
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return msg.includes('404') || msg.includes('not found');
+}
 
 /**
  * CloudFileMetadata with provider information for placeholder generation
@@ -224,11 +241,24 @@ class UnifiedCloudManager {
     oldSeriesTitle: string,
     oldVolumeTitle: string,
     newSeriesTitle: string,
-    newVolumeTitle: string
+    newVolumeTitle: string,
+    volumeUuid?: string
   ): Promise<number> {
     const provider = this.getActiveProvider();
     if (!provider) {
       return 0;
+    }
+
+    // The remote rename GATES the local commit (caller updates the DB only if
+    // this resolves). A read-only provider cannot perform it, so fail loudly
+    // rather than let the caller commit a local rename that diverges from the
+    // unchanged remote.
+    if (provider.getStatus().isReadOnly) {
+      throw new ProviderError(
+        'Cannot rename: the cloud provider is read-only',
+        provider.type,
+        'READ_ONLY'
+      );
     }
 
     const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
@@ -239,19 +269,108 @@ class UnifiedCloudManager {
 
     await this.fetchAllCloudVolumes();
 
-    const filesToRename = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
-    if (filesToRename.length === 0) {
+    const managedFiles = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    if (managedFiles.length === 0) {
       return 0;
     }
 
-    for (const file of filesToRename) {
-      const oldPath = normalizeCloudPath(file.path);
-      const suffix = oldPath.slice(oldBasePath.length);
-      const updatedFile = await provider.renameFile(file, `${newBasePath}${suffix}`);
-      this.replaceCachedFile(file, updatedFile);
+    // Regenerate the fresh .mokuro FIRST (no remote mutation yet), built with
+    // the new names (overrides — the DB still holds the old ones until this
+    // gate clears). Only the .mokuro embeds the title, so it's the one file we
+    // regenerate rather than move.
+    const hasCloudMokuro = managedFiles.some((file) => isMokuroSidecarPath(file.path));
+    let freshMokuroBlob: Blob | null = null;
+    if (volumeUuid) {
+      const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, {
+        seriesTitle: newSeriesTitle,
+        volumeTitle: newVolumeTitle
+      });
+      freshMokuroBlob = sidecars.mokuro?.blob ?? null;
     }
 
-    return filesToRename.length;
+    // GATE (before any remote write): an OCR volume that already has a .mokuro
+    // in the cloud but whose sidecar we COULDN'T regenerate (e.g. volume_ocr
+    // row missing — a DB inconsistency) must not be renamed. Moving its stale
+    // sidecar would silently revert the rename on re-download — the exact bug
+    // this fixes — so fail loudly while nothing has changed.
+    if (volumeUuid && hasCloudMokuro && !freshMokuroBlob) {
+      throw new ProviderError(
+        'Cannot rename: the OCR sidecar could not be regenerated (volume_ocr data missing)',
+        provider.type,
+        'SIDECAR_REGEN_FAILED'
+      );
+    }
+
+    let changed = 0;
+
+    // 1. Upload the fresh .mokuro at the new path. Idempotent (overwrite) on retry.
+    if (freshMokuroBlob) {
+      await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
+      changed++;
+    }
+
+    // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
+    //    Idempotent: a source already moved by a prior partial run 404s → skip.
+    for (const file of managedFiles) {
+      if (isMokuroSidecarPath(file.path)) continue;
+      const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
+      if (await this.moveFileIdempotent(provider, file, `${newBasePath}${suffix}`)) changed++;
+    }
+
+    // 3. DESTRUCTIVE, LAST: drop the stale .mokuro now that the fresh one is up.
+    //    When we have no fresh mokuro (legacy callers that pass no volumeUuid),
+    //    MOVE it instead so OCR is never lost — the gate above already rejected
+    //    the dangerous "had a UUID but couldn't regenerate" case.
+    for (const file of managedFiles) {
+      if (!isMokuroSidecarPath(file.path)) continue;
+      if (freshMokuroBlob) {
+        if (await this.deleteFileIdempotent(file)) changed++;
+      } else {
+        const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
+        if (await this.moveFileIdempotent(provider, file, `${newBasePath}${suffix}`)) changed++;
+      }
+    }
+
+    // 4. Best-effort prune of the now-empty old series directory (server-checked
+    //    emptiness inside the provider — never a blind recursive delete).
+    if (oldSeriesTitle !== newSeriesTitle && provider.removeDirectoryIfEmpty) {
+      if (this.getCloudVolumesBySeries(oldSeriesTitle).length === 0) {
+        try {
+          await provider.removeDirectoryIfEmpty(oldSeriesTitle);
+        } catch {
+          // Non-fatal: an orphaned empty directory is harmless.
+        }
+      }
+    }
+
+    return changed;
+  }
+
+  /** renameFile, treating an already-moved source (404) as success. Updates cache. */
+  private async moveFileIdempotent(
+    provider: SyncProvider,
+    file: CloudFileMetadata,
+    newPath: string
+  ): Promise<boolean> {
+    try {
+      const updated = await provider.renameFile(file, newPath);
+      this.replaceCachedFile(file, updated);
+      return true;
+    } catch (error) {
+      if (isNotFoundError(error)) return false; // already moved by a prior attempt
+      throw error;
+    }
+  }
+
+  /** deleteFile, treating an already-gone target (404) as success. Returns whether it actually deleted. */
+  private async deleteFileIdempotent(file: CloudFileMetadata): Promise<boolean> {
+    try {
+      await this.deleteFile(file);
+      return true;
+    } catch (error) {
+      if (isNotFoundError(error)) return false; // already deleted by a prior attempt
+      throw error;
+    }
   }
 
   /**
