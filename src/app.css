@@ -140,3 +140,12 @@ input[type='radio']:checked::after {
   display: none !important;
   content: none !important;
 }
+
+/* Scrollable reader strips hide their scrollbars (used by both scroll readers). */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

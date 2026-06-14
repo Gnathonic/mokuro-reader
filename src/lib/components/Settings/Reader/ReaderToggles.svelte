@@ -45,6 +45,11 @@
           value: $settings.swapWheelBehavior
         },
         {
+          key: 'disableAnimations',
+          text: 'Disable animations (e-ink)',
+          value: $settings.disableAnimations
+        },
+        {
           key: 'textBoxContextMenu',
           text: 'Custom text box menu',
           value: $settings.textBoxContextMenu,

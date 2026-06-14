@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.7.3] - 2026-06-14
+
+### Fixed
+
+- Inertial panning (fling) restored in paged mode (#232)
+
+### Changed
+
+- Default page-flip swipe threshold lowered to 35%
+
+## [1.7.2] - 2026-06-13
+
+### Added
+
+- "Fill screen" zoom mode: fills one axis, overflows the other (#231)
+
+### Fixed
+
+- Keep Zoom and Original Size no longer pin pages to the top (#231)
+- Offset spreads button works again (#231)
+- "Zoom to fit" now works in continuous scroll mode (#231)
+- Night mode, invert, B&W, and OCR toggles show the correct state (#231)
+- WebDAV logins no longer silently fall back to anonymous (#229)
+
+### Changed
+
+- Continuous "Fit to width" is now "Fill screen" (#231)
+
+## [1.7.1] - 2026-06-10
+
+### Fixed
+
+- Restore single-finger touch panning in paged mode (#227)
+
+## [1.7.0] - 2026-06-10
+
+### Added
+
+- Targeted zoom in continuous modes: wheel, double-tap, pinch (#195, #225)
+- Paged zoom rebuilt on the same engine — panzoom removed (#226)
+- "Disable animations (e-ink)" toggle (#226)
+
+### Changed
+
+- Paged wheel zoom animates through fit-relative steps (#226)
+- Double-tap cycles zoom in / fit contextually (#226)
+- Keep zoom preserves apparent size across pages (#226)
+- Continuous scroll no longer labeled Alpha
+
+### Removed
+
+- Vertical page transition (#226)
+
 ## [1.6.1] - 2026-06-08
 
 ### Added

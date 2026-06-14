@@ -5,6 +5,7 @@
 
 import type { LibraryConfig } from '$lib/settings/libraries';
 import type { WebDAVClient } from 'webdav';
+import { webdavAuthOptions } from '$lib/util/sync/core/providers/webdav-auth';
 
 export interface LibraryFileMetadata {
   libraryId: string;
@@ -60,15 +61,12 @@ export class LibraryWebDAVClient {
     try {
       const { createClient } = await import('webdav');
 
-      // Create client with optional credentials
-      const clientOptions: { username?: string; password?: string } = {};
-      if (this.config.username || this.config.password) {
-        clientOptions.username = this.config.username || '';
-        clientOptions.password = this.config.password || '';
-      }
-
+      // Create client with optional credentials (UTF-8-safe Authorization header)
       const normalizedUrl = this.config.serverUrl.replace(/\/$/, '');
-      const client = createClient(normalizedUrl, clientOptions);
+      const client = createClient(
+        normalizedUrl,
+        webdavAuthOptions(this.config.username, this.config.password)
+      );
 
       // Test with timeout
       const controller = new AbortController();
@@ -96,14 +94,11 @@ export class LibraryWebDAVClient {
 
     const { createClient } = await import('webdav');
 
-    const clientOptions: { username?: string; password?: string } = {};
-    if (this.config.username || this.config.password) {
-      clientOptions.username = this.config.username || '';
-      clientOptions.password = this.config.password || '';
-    }
-
     const normalizedUrl = this.config.serverUrl.replace(/\/$/, '');
-    this.client = createClient(normalizedUrl, clientOptions);
+    this.client = createClient(
+      normalizedUrl,
+      webdavAuthOptions(this.config.username, this.config.password)
+    );
   }
 
   /**

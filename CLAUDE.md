@@ -15,6 +15,7 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 - `npm run preview` - Preview production build
 - `npm test` - Run tests with Vitest
 - `npm run test:coverage` - Run tests with coverage
+- `npm run test:e2e` - Run Playwright e2e tests (see Testing for port caveats)
 - `npm run check` - Type-check with svelte-check
 - `npm run check:watch` - Type-check in watch mode
 - `npm run lint` - Lint code (Prettier + ESLint)
@@ -37,7 +38,7 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 - **SvelteKit 5**: Framework (uses new Svelte 5 runes: `$state`, `$derived`, `$effect`)
 - **Dexie**: IndexedDB wrapper for storing volumes and files
 - **@zip.js/zip.js**: ZIP file extraction
-- **Panzoom**: Pan/zoom functionality for manga pages
+- **Zoom architecture**: Shared ZoomController + measurement-based correction drives zoom in all reader modes (`src/lib/reader/zoom-*.ts`, `paged-*.ts`)
 - **Flowbite Svelte**: UI component library
 - **Tailwind CSS**: Styling
 - **Vitest**: Testing framework
@@ -53,7 +54,6 @@ src/
 │   ├── components/      # Svelte components
 │   ├── consts/          # Application constants
 │   ├── import/          # File import pipeline and processing
-│   ├── panzoom/         # Custom pan/zoom implementation
 │   ├── reader/          # Core reader logic
 │   ├── settings/        # Settings stores and profiles
 │   ├── styles/          # Shared CSS styles
@@ -215,13 +215,16 @@ Tracked per volume in the `volumes` store:
 - Time spent reading (tracked by Timer component)
 - Last read date and current page
 
-### Text Selection Handling
+### Reader Input Handling
 
-The reader has complex text selection logic to prevent interference with panzoom drag:
+All reader gesture handling (pan, pinch, tap, swipe, wheel, keyboard) goes
+through the shared modules in `src/lib/reader/input/` — see
+**`docs/INPUT-CONTRACTS.md`** for the architecture and the contracts that
+must not break. Highlights:
 
-- `beforeMouseDown` handler in MangaPage.svelte checks if click is on text
-- Text selection is only allowed within text boxes, not on background
-- See `src/routes/[manga]/[volume]/+page.svelte` for implementation
+- `.textBox` is an input-routing protocol: double-tap there is the AnkiConnect capture gesture, mouse/pen drags are text selection (Yomitan/Migaku) — never pans, never zoom
+- Each surface owns its gestures via `PointerGestureTracker` config; Reader owns only keyboard + intent callbacks
+- Before starting any motion, handlers call their surface's `MotionGate` intent method instead of ad-hoc `finishNow()`/`stop()` combinations
 
 ### Modal Button Z-Index
 
@@ -262,6 +265,13 @@ These are only required for Google Drive sync. MEGA and WebDAV don't require env
 - Component tests use @testing-library/svelte
 - Run tests with `npm test`
 - Example test files: `src/lib/util/count-chars.test.ts`, `src/lib/components/Settings/__tests__/QuickAccess.test.ts`
+
+### E2E (Playwright)
+
+- `npm run test:e2e` runs `e2e/*.spec.ts`. The config starts (or **silently reuses**) a dev server on port 5173.
+- **Multi-worktree caveat**: if another worktree's dev server already owns 5173, the suite would run against that worktree's code. Set `E2E_PORT=<free port>` to start a dedicated server for the current worktree.
+- `E2E_CHROMIUM=/path/to/chrome` points Playwright at an existing browser binary instead of downloading one (e.g. a build under `~/.cache/ms-playwright/`).
+- The zoom specs import production modules (`zoom-controller.ts`, `zoom-layout.ts`, `page-detection.ts`) through the Vite dev server and drive them against synthetic page strips.
 
 ## Common Development Tasks
 
@@ -397,5 +407,5 @@ git worktree add ../mokuro-reader-worktrees/<branch-name> <branch-name>
 
 - Cloud provider auth tokens may expire (Google Drive ~1 hour, others vary)
 - Large volume imports may cause memory pressure on low-end devices
-- Text selection in reader requires special handling to not conflict with panzoom
+- Text selection in reader requires special handling to not conflict with drag panning
 - Migaku extension aggressively mutates DOM and can interfere with UI controls

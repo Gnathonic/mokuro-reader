@@ -20,14 +20,19 @@ export type FontSize =
   | '48'
   | '60';
 
-export type ZoomModes = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal' | 'keepZoom';
+export type ZoomModes =
+  | 'zoomFitToScreen'
+  | 'zoomFitToWidth'
+  | 'zoomFillScreen'
+  | 'zoomOriginal'
+  | 'keepZoom';
 
 // Continuous scroll mode only supports the basic zoom modes (no keep zoom variants)
-export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFitToWidth' | 'zoomOriginal';
+export type ContinuousZoomMode = 'zoomFitToScreen' | 'zoomFillScreen' | 'zoomOriginal';
 
 export type ScrollMode = 'vertical' | 'horizontal' | 'auto' | 'continuous';
 
-export type PageTransition = 'none' | 'crossfade' | 'vertical' | 'pageTurn' | 'swipe';
+export type PageTransition = 'none' | 'crossfade' | 'pageTurn' | 'swipe';
 
 // AnkiConnect field mapping - template is freeform text with variables
 export type FieldMapping = {
@@ -144,6 +149,8 @@ export type Settings = {
   pageTransition: PageTransition;
   nightMode: boolean;
   nightModeSchedule: TimeSchedule;
+  /** Skip zoom/pan/page-turn animations entirely (e-ink devices). */
+  disableAnimations: boolean;
   invertColors: boolean;
   invertColorsSchedule: TimeSchedule;
   grayscale: boolean;
@@ -269,7 +276,7 @@ const defaultSettings: Settings = {
     success: '#15803d',
     danger: '#b91c1c'
   },
-  swipeThreshold: 50,
+  swipeThreshold: 35,
   edgeButtonWidth: 40,
   showTimer: false,
   quickActions: true,
@@ -282,6 +289,7 @@ const defaultSettings: Settings = {
     startTime: '21:00',
     endTime: '06:00'
   },
+  disableAnimations: false,
   invertColors: false,
   invertColorsSchedule: {
     enabled: false,
@@ -347,7 +355,7 @@ const mobileDefaultSettings: Settings = {
   defaultFullscreen: true,
   edgeButtonWidth: 60,
   showTimer: false,
-  swipeThreshold: 50
+  swipeThreshold: 35
 };
 
 // Desktop-optimized default settings
@@ -357,7 +365,7 @@ const desktopDefaultSettings: Settings = {
   defaultFullscreen: false,
   edgeButtonWidth: 40,
   showTimer: true,
-  swipeThreshold: 50
+  swipeThreshold: 35
 };
 
 type Profiles = Record<string, Settings>;
@@ -486,6 +494,13 @@ export function migrateProfiles(profiles: Profiles): Profiles {
         base: 'dark',
         background: profile.backgroundColor
       };
+    }
+
+    // Legacy: continuous fit-to-width was replaced by fill-screen, which
+    // fills the cross axis of the scroll direction — identical in vertical
+    // mode, but correct (height-fill) when rotation lands in horizontal.
+    if ((migratedProfile.continuousZoomDefault as string) === 'zoomFitToWidth') {
+      migratedProfile.continuousZoomDefault = 'zoomFillScreen';
     }
 
     // Add timestamp if missing

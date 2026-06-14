@@ -1,283 +1,229 @@
 import { describe, it, expect } from 'vitest';
-import { screenToContent, computeScrollPosition, contentToScreen } from './zoom-math';
+import {
+  anchorFraction,
+  anchorScreenPosition,
+  zoomProgress,
+  lerp2,
+  nearestZoomLevel,
+  nextZoomLevel,
+  wheelIntentIsZoom,
+  normalizeWheelDelta,
+  WheelAccumulator,
+  pinchDistance,
+  pinchMidpoint
+} from './zoom-math';
 
-/**
- * Test setup: vertical scroll mode
- * - Viewport: 1920x1080
- * - Page: 1500x2000 (narrower than viewport)
- * - Pages centered with mx-auto inside wrapper
- * - Wrapper fills scroll container width (1920px layout)
- * - Wrapper offset: X=0, Y=540 (50vh centering spacer = 1080/2)
- * - Page is centered at X=210 to X=1710 inside the wrapper
- */
-const VIEWPORT_W = 1920;
-const VIEWPORT_H = 1080;
-const PAGE_W = 1500;
-const PAGE_H = 2000;
-const WRAPPER_OFFSET_X = 0; // Wrapper starts at left edge
-const WRAPPER_OFFSET_Y = VIEWPORT_H / 2; // 50vh centering spacer
+describe('anchorFraction', () => {
+  const rect = { left: 100, top: 200, width: 400, height: 600 };
 
-// Page center X in the wrapper's content space
-const PAGE_LEFT_IN_WRAPPER = (VIEWPORT_W - PAGE_W) / 2; // 210px (mx-auto centering)
-
-describe('screenToContent', () => {
-  it('converts screen center to content space at zoom 1', () => {
-    // Wrapper visual left = -scrollLeft + wrapperOffset = 0
-    const { contentX, contentY } = screenToContent(
-      VIEWPORT_W / 2,
-      VIEWPORT_H / 2, // screen center
-      0,
-      -500 + WRAPPER_OFFSET_Y, // wrapper rect (scrolled down 500px)
-      1
-    );
-    // Content X should be 960 (center of 1920px wrapper)
-    expect(contentX).toBe(960);
-    // Content Y = (540 - (-500 + 540)) / 1 = (540 - 40) / 1 = 500
-    expect(contentY).toBe(500);
+  it('returns 0.5/0.5 for the rect center', () => {
+    expect(anchorFraction(rect, 300, 500)).toEqual({ fx: 0.5, fy: 0.5 });
   });
 
-  it('converts click on page center at zoom 1', () => {
-    // Click at center of the visible page
-    // Page is at x=210 to x=1710 in wrapper. Center = 960.
-    // Wrapper visual left = 0 (no horizontal scroll at zoom 1)
-    const { contentX } = screenToContent(960, 500, 0, 0, 1);
-    expect(contentX).toBe(960);
+  it('returns 0/0 for the top-left corner', () => {
+    expect(anchorFraction(rect, 100, 200)).toEqual({ fx: 0, fy: 0 });
   });
 
-  it('converts screen position at zoom 2', () => {
-    // At zoom 2, wrapper visual left might be offset by scroll
-    // If scrollLeft=960, wrapperRect.left = wrapperOffset - scrollLeft = 0 - 960 = -960
-    const { contentX, contentY } = screenToContent(
-      960,
-      540, // screen center
-      -960,
-      -500, // wrapper rect position
-      2
-    );
-    // contentX = (960 - (-960)) / 2 = 1920 / 2 = 960
-    expect(contentX).toBe(960);
-    // contentY = (540 - (-500)) / 2 = 1040 / 2 = 520
-    expect(contentY).toBe(520);
+  it('extrapolates outside the rect', () => {
+    const { fx, fy } = anchorFraction(rect, 0, 1100);
+    expect(fx).toBe(-0.25);
+    expect(fy).toBe(1.5);
+  });
+
+  it('guards against zero-size rects', () => {
+    const { fx, fy } = anchorFraction({ left: 100, top: 200, width: 0, height: 0 }, 300, 500);
+    expect(fx).toBe(0);
+    expect(fy).toBe(0);
   });
 });
 
-describe('computeScrollPosition', () => {
-  it('centers content point at viewport center when zooming from 1 to 2', () => {
-    // Content point at (960, 300) should end up at viewport center
-    const { scrollLeft, scrollTop } = computeScrollPosition(
-      960,
-      300, // content point
-      VIEWPORT_W / 2,
-      VIEWPORT_H / 2, // target screen position (center)
-      2, // zoom
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    // scrollLeft = 0 + 960*2 - 960 = 960
-    expect(scrollLeft).toBe(960);
-    // scrollTop = 540 + 300*2 - 540 = 600
-    expect(scrollTop).toBe(600);
+describe('anchorScreenPosition', () => {
+  it('is the inverse of anchorFraction', () => {
+    const rect = { left: 100, top: 200, width: 400, height: 600 };
+    const { fx, fy } = anchorFraction(rect, 250, 380);
+    expect(anchorScreenPosition(rect, fx, fy)).toEqual({ x: 250, y: 380 });
   });
 
-  it('keeps content point at cursor position for wheel zoom', () => {
-    // Cursor at (400, 300), content under cursor, keep it there
-    const contentX = 400; // At zoom 1, content at x=400 in wrapper
-    const { scrollLeft, scrollTop } = computeScrollPosition(
-      contentX,
-      200,
-      400,
-      300, // target = same as cursor (keep fixed)
-      2,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    // scrollLeft = 0 + 400*2 - 400 = 400
-    expect(scrollLeft).toBe(400);
-    // scrollTop = 540 + 200*2 - 300 = 640
-    expect(scrollTop).toBe(640);
-  });
-
-  it('at zoom 1 with no offset, scroll is 0 when content center is at screen center', () => {
-    const { scrollLeft, scrollTop } = computeScrollPosition(
-      960,
-      0,
-      960,
-      WRAPPER_OFFSET_Y,
-      1,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-    expect(scrollLeft).toBe(0);
-    expect(scrollTop).toBe(0);
+  it('tracks the anchor on a scaled rect (zoomed measurement)', () => {
+    // Same content point measured after the rect doubled (transform: scale(2))
+    const zoomedRect = { left: -50, top: 0, width: 800, height: 1200 };
+    expect(anchorScreenPosition(zoomedRect, 0.5, 0.25)).toEqual({ x: 350, y: 300 });
   });
 });
 
-describe('contentToScreen (validation inverse)', () => {
-  it('round-trips: screen->content->scroll->screen gives original position', () => {
-    const clickX = 700;
-    const clickY = 400;
-    const currentZoom = 1;
-    const wrapperVisualLeft = 0;
-    const wrapperVisualTop = WRAPPER_OFFSET_Y - 200; // scrolled down 200px
-
-    // Step 1: screen to content
-    const { contentX, contentY } = screenToContent(
-      clickX,
-      clickY,
-      wrapperVisualLeft,
-      wrapperVisualTop,
-      currentZoom
-    );
-
-    // Step 2: compute scroll for new zoom, target = screen center
-    const targetZoom = 2;
-    const { scrollLeft, scrollTop } = computeScrollPosition(
-      contentX,
-      contentY,
-      VIEWPORT_W / 2,
-      VIEWPORT_H / 2,
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    // Step 3: verify the content point appears at viewport center
-    const result = contentToScreen(
-      contentX,
-      contentY,
-      scrollLeft,
-      scrollTop,
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    expect(result.screenX).toBeCloseTo(VIEWPORT_W / 2, 5);
-    expect(result.screenY).toBeCloseTo(VIEWPORT_H / 2, 5);
+describe('zoomProgress', () => {
+  it('is 0 at the start zoom', () => {
+    expect(zoomProgress(1, 1, 2)).toBe(0);
   });
 
-  it('round-trips for wheel zoom: content stays at cursor', () => {
-    const cursorX = 1200;
-    const cursorY = 600;
-    const currentZoom = 1.5;
-    // At zoom 1.5, wrapper rect depends on scroll
-    const scrollLeft = 400;
-    const scrollTop = 300;
-    const wrapperVisualLeft = WRAPPER_OFFSET_X - scrollLeft; // 0 - 400 = -400
-    const wrapperVisualTop = WRAPPER_OFFSET_Y - scrollTop; // 540 - 300 = 240
-
-    // Step 1: screen to content
-    const { contentX, contentY } = screenToContent(
-      cursorX,
-      cursorY,
-      wrapperVisualLeft,
-      wrapperVisualTop,
-      currentZoom
-    );
-
-    // Step 2: compute scroll for new zoom, target = SAME screen position (cursor stays fixed)
-    const targetZoom = 2;
-    const { scrollLeft: newScrollLeft, scrollTop: newScrollTop } = computeScrollPosition(
-      contentX,
-      contentY,
-      cursorX,
-      cursorY, // target = cursor position (keep fixed)
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    // Step 3: verify the content point appears at cursor position
-    const result = contentToScreen(
-      contentX,
-      contentY,
-      newScrollLeft,
-      newScrollTop,
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    expect(result.screenX).toBeCloseTo(cursorX, 5);
-    expect(result.screenY).toBeCloseTo(cursorY, 5);
+  it('is 0.5 halfway', () => {
+    expect(zoomProgress(1.5, 1, 2)).toBe(0.5);
   });
 
-  it('double-tap on right side of page zooms it to center', () => {
-    // Click at x=1500 (right side of page which goes from 210 to 1710)
-    const clickX = 1500;
-    const clickY = 540;
-    const currentZoom = 1;
-    const wrapperVisualLeft = 0;
-    const wrapperVisualTop = WRAPPER_OFFSET_Y; // At top of volume, scrollTop=0
-
-    const { contentX, contentY } = screenToContent(
-      clickX,
-      clickY,
-      wrapperVisualLeft,
-      wrapperVisualTop,
-      currentZoom
-    );
-
-    // contentX should be 1500 (in wrapper coordinates)
-    expect(contentX).toBe(1500);
-
-    const targetZoom = 2;
-    const { scrollLeft, scrollTop } = computeScrollPosition(
-      contentX,
-      contentY,
-      VIEWPORT_W / 2,
-      VIEWPORT_H / 2,
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    // Verify: content point at center
-    const result = contentToScreen(
-      contentX,
-      contentY,
-      scrollLeft,
-      scrollTop,
-      targetZoom,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
-
-    expect(result.screenX).toBeCloseTo(VIEWPORT_W / 2, 5);
-    expect(result.screenY).toBeCloseTo(VIEWPORT_H / 2, 5);
-
-    // scrollLeft should be positive (scrolled right to show right side of page)
-    expect(scrollLeft).toBe(0 + 1500 * 2 - 960); // = 2040
-    expect(scrollLeft).toBeGreaterThan(0);
+  it('is 1 at the target', () => {
+    expect(zoomProgress(2, 1, 2)).toBe(1);
   });
 
-  it('double-tap on left side of page zooms it to center', () => {
-    const clickX = 300;
-    const clickY = 540;
+  it('works zooming out', () => {
+    expect(zoomProgress(1.5, 2, 1)).toBe(0.5);
+  });
 
-    const { contentX } = screenToContent(clickX, 540, 0, WRAPPER_OFFSET_Y, 1);
-    expect(contentX).toBe(300);
+  it('clamps overshoot', () => {
+    expect(zoomProgress(2.5, 1, 2)).toBe(1);
+    expect(zoomProgress(0.5, 1, 2)).toBe(0);
+  });
 
-    const { scrollLeft } = computeScrollPosition(
-      contentX,
-      0,
-      VIEWPORT_W / 2,
-      VIEWPORT_H / 2,
-      2,
-      WRAPPER_OFFSET_X,
-      WRAPPER_OFFSET_Y
-    );
+  it('returns 1 when target equals start (snapTo/pinch degenerate case, never NaN)', () => {
+    expect(zoomProgress(1.7, 1.7, 1.7)).toBe(1);
+    expect(zoomProgress(1, 1, 1)).toBe(1);
+  });
+});
 
-    // scrollLeft = 0 + 300*2 - 960 = -360
-    // Negative = scroll container clamps to 0, page appears right of center
-    // This is correct — the left edge of content IS to the left of where we can scroll
-    expect(scrollLeft).toBe(-360);
+describe('lerp2', () => {
+  it('interpolates between two points', () => {
+    expect(lerp2({ x: 0, y: 100 }, { x: 200, y: 0 }, 0.25)).toEqual({ x: 50, y: 75 });
+  });
 
-    const result = contentToScreen(300, 0, Math.max(0, scrollLeft), 0, 2, 0, WRAPPER_OFFSET_Y);
-    // With clamped scrollLeft=0, content at 300*2=600, screen position = 600
-    // Not centered (960), but as close as scroll bounds allow
-    expect(result.screenX).toBe(600);
+  it('returns endpoints at t=0 and t=1', () => {
+    const a = { x: 3, y: 4 };
+    const b = { x: 7, y: 8 };
+    expect(lerp2(a, b, 0)).toEqual(a);
+    expect(lerp2(a, b, 1)).toEqual(b);
+  });
+
+  it('returns the point when both endpoints coincide, even for non-finite t', () => {
+    const a = { x: 5, y: 6 };
+    expect(lerp2(a, { x: 5, y: 6 }, NaN)).toEqual(a);
+  });
+});
+
+describe('nearestZoomLevel', () => {
+  const levels = [1, 1.5, 2, 3];
+
+  it('snaps to the closest level', () => {
+    expect(nearestZoomLevel(levels, 1.7)).toBe(1.5);
+    expect(nearestZoomLevel(levels, 1.8)).toBe(2);
+    expect(nearestZoomLevel(levels, 5)).toBe(3);
+    expect(nearestZoomLevel(levels, 0.2)).toBe(1);
+  });
+
+  it('keeps the lower level on an exact tie', () => {
+    expect(nearestZoomLevel(levels, 1.75)).toBe(1.5);
+  });
+});
+
+describe('nextZoomLevel', () => {
+  const levels = [1, 1.5, 2, 3];
+
+  it('steps up and down from a level', () => {
+    expect(nextZoomLevel(levels, 1.5, 1)).toBe(2);
+    expect(nextZoomLevel(levels, 1.5, -1)).toBe(1);
+  });
+
+  it('clamps at the ends', () => {
+    expect(nextZoomLevel(levels, 3, 1)).toBe(3);
+    expect(nextZoomLevel(levels, 1, -1)).toBe(1);
+  });
+
+  it('resolves an off-level zoom (e.g. after a pinch) to the adjacent level', () => {
+    expect(nextZoomLevel(levels, 1.7, 1)).toBe(2);
+    expect(nextZoomLevel(levels, 1.7, -1)).toBe(1.5);
+  });
+
+  it('handles off-level zoom beyond the ends', () => {
+    expect(nextZoomLevel(levels, 0.5, 1)).toBe(1);
+    expect(nextZoomLevel(levels, 0.5, -1)).toBe(1);
+    expect(nextZoomLevel(levels, 4, 1)).toBe(3);
+    expect(nextZoomLevel(levels, 4, -1)).toBe(3);
+  });
+});
+
+describe('wheelIntentIsZoom', () => {
+  it('requires ctrl/meta by default', () => {
+    expect(wheelIntentIsZoom(true, false)).toBe(true);
+    expect(wheelIntentIsZoom(false, false)).toBe(false);
+  });
+
+  it('inverts with swapWheelBehavior', () => {
+    expect(wheelIntentIsZoom(false, true)).toBe(true);
+    expect(wheelIntentIsZoom(true, true)).toBe(false);
+  });
+});
+
+describe('normalizeWheelDelta', () => {
+  it('passes pixel deltas through (deltaMode 0)', () => {
+    expect(normalizeWheelDelta(-100, 0)).toBe(-100);
+  });
+
+  it('converts line deltas (deltaMode 1, Firefox)', () => {
+    expect(normalizeWheelDelta(-3, 1)).toBe(-120);
+  });
+
+  it('converts page deltas (deltaMode 2)', () => {
+    expect(normalizeWheelDelta(1, 2)).toBe(800);
+  });
+});
+
+describe('WheelAccumulator', () => {
+  it('emits one zoom-in step for a single mouse-wheel notch up', () => {
+    const acc = new WheelAccumulator();
+    expect(acc.add(-120, 1000)).toBe(1);
+  });
+
+  it('emits one zoom-out step for a notch down', () => {
+    const acc = new WheelAccumulator();
+    expect(acc.add(120, 1000)).toBe(-1);
+  });
+
+  it('emits multiple steps for a large delta', () => {
+    const acc = new WheelAccumulator();
+    expect(acc.add(-240, 1000)).toBe(2);
+  });
+
+  it('accumulates small trackpad deltas until the step size', () => {
+    const acc = new WheelAccumulator();
+    let steps = 0;
+    let t = 1000;
+    for (let i = 0; i < 12; i++) {
+      steps += acc.add(-10, t);
+      t += 16;
+    }
+    expect(steps).toBe(1);
+  });
+
+  it('resets after an idle gap', () => {
+    const acc = new WheelAccumulator();
+    acc.add(-90, 1000);
+    // 90 accumulated, but 500ms later the remnant is stale
+    expect(acc.add(-30, 1500)).toBe(0);
+  });
+
+  it('resets when the direction flips', () => {
+    const acc = new WheelAccumulator();
+    acc.add(-90, 1000);
+    expect(acc.add(60, 1016)).toBe(0);
+    expect(acc.add(60, 1032)).toBe(-1);
+  });
+
+  it('keeps the remainder after emitting steps', () => {
+    const acc = new WheelAccumulator();
+    expect(acc.add(-150, 1000)).toBe(1);
+    expect(acc.add(-50, 1016)).toBe(1);
+  });
+});
+
+describe('pinchDistance / pinchMidpoint', () => {
+  it('computes distance and midpoint of two points', () => {
+    const pts = [
+      { x: 0, y: 0 },
+      { x: 30, y: 40 }
+    ];
+    expect(pinchDistance(pts)).toBe(50);
+    expect(pinchMidpoint(pts)).toEqual({ x: 15, y: 20 });
+  });
+
+  it('returns safe values with fewer than two points', () => {
+    expect(pinchDistance([{ x: 5, y: 5 }])).toBe(0);
+    expect(pinchMidpoint([])).toEqual({ x: 0, y: 0 });
   });
 });

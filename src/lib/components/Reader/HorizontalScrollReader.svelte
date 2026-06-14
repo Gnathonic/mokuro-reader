@@ -7,8 +7,15 @@
   import { activityTracker } from '$lib/util/activity-tracker';
   import MangaPage from './MangaPage.svelte';
   import { ScrollAnimator } from '$lib/reader/scroll-animator';
-  import { Animator } from '$lib/reader/animator';
-  import { computeScrollPosition } from '$lib/reader/zoom-math';
+  import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
+  import { applyHorizontalAlignment, applyHorizontalZoomLayout } from '$lib/reader/zoom-layout';
+  import { detectHorizontalPage, horizontalVisibilityRatio } from '$lib/reader/page-detection';
+  import { normalizeWheelDelta, wheelIntentIsZoom } from '$lib/reader/zoom-math';
+  import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { volumeEdgeNav } from '$lib/reader/page-nav';
+  import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
+  import { TapDiscriminator } from '$lib/reader/input/tap';
+  import type { MotionGate } from '$lib/reader/input/motion-gate';
   import { onMount, onDestroy, tick } from 'svelte';
 
   interface Props {
@@ -52,124 +59,113 @@
     if (zoomMode === 'zoomOriginal') {
       return { width: page.img_width, height: page.img_height };
     }
-    if (zoomMode === 'zoomFitToWidth') {
-      const scale = viewportWidth / page.img_width;
-      return { width: viewportWidth, height: page.img_height * scale };
-    }
-    // zoomFitToScreen / default: fit to height
+    // zoomFitToScreen, zoomFillScreen, and legacy zoomFitToWidth all fill the
+    // height here: the strip axis (width) always overflows in horizontal
+    // mode, so filling the screen means filling the CROSS axis. This is
+    // exactly the layout legacy fit-to-width users were missing when
+    // "match orientation" rotated them into horizontal mode.
     const scale = viewportHeight / page.img_height;
     return { width: page.img_width * scale, height: viewportHeight };
   }
 
-  function scaledWidth(page: Page): number {
-    return pageSize(page).width;
-  }
-
   // ============================================================
-  // Zoom — CSS zoom on scroll content
+  // Zoom — transform scale + measurement-based scroll correction
   // ============================================================
 
-  let userZoom = $state(1);
-  let zoomTarget = 1;
-  const ZOOM_LEVELS = [1, 1.5, 2, 3];
-
-  let zoomAnchorContentX = 0;
-  let zoomAnchorContentY = 0;
-  let zoomAnchorScreenX = 0;
-  let zoomAnchorScreenY = 0;
   let zoomWrapperEl: HTMLDivElement | undefined = $state();
   let zoomSpacerEl: HTMLDivElement | undefined = $state();
+  let isZoomed = $state(false);
 
-  // Wrapper offset is 0,0 — centering spacers are INSIDE the wrapper
-  const WRAPPER_OFFSET_X = 0;
-  const WRAPPER_OFFSET_Y = 0;
+  // Reader-specific zoomed layout (transform origin per direction, spacer
+  // dims, measured cross-axis alignment) — shared with the e2e suite, see
+  // zoom-layout.ts
+  function applyZoomLayout(zoom: number) {
+    if (!zoomWrapperEl || !zoomSpacerEl || !scrollContainer) return;
+    applyHorizontalZoomLayout(
+      { wrapper: zoomWrapperEl, spacer: zoomSpacerEl, container: scrollContainer },
+      rtl,
+      zoom
+    );
+  }
 
-  const zoomAnimator = new Animator(
-    1,
-    (currentZoom) => {
-      if (!zoomWrapperEl || !scrollContainer || !zoomSpacerEl) return;
+  function applyAlignment(zoom: number) {
+    if (!zoomWrapperEl || !zoomSpacerEl || !scrollContainer) return;
+    applyHorizontalAlignment(
+      { wrapper: zoomWrapperEl, spacer: zoomSpacerEl, container: scrollContainer },
+      zoom
+    );
+  }
 
-      // Set spacer dimensions (use viewportHeight as base, not offsetHeight which feeds back)
-      zoomSpacerEl.style.height = currentZoom > 1 ? `${viewportHeight * currentZoom}px` : '';
-      zoomSpacerEl.style.width = currentZoom > 1 ? `${viewportWidth * currentZoom}px` : '';
-
-      // Apply transform
-      zoomWrapperEl.style.transform = currentZoom !== 1 ? `scale(${currentZoom})` : '';
-
-      // Force layout
-      void scrollContainer.scrollWidth;
-
-      // Set scroll using tested math
-      const { scrollLeft, scrollTop } = computeScrollPosition(
-        zoomAnchorContentX,
-        zoomAnchorContentY,
-        zoomAnchorScreenX,
-        zoomAnchorScreenY,
-        currentZoom,
-        WRAPPER_OFFSET_X,
-        WRAPPER_OFFSET_Y
-      );
-      scrollContainer.scrollLeft = scrollLeft;
-      scrollContainer.scrollTop = scrollTop;
-    },
-    {
-      factor: 0.25,
-      epsilon: 0.005,
-      onSettle: () => {
-        userZoom = zoomTarget;
-        if (zoomTarget <= 1 && scrollContainer && zoomSpacerEl) {
-          zoomSpacerEl.style.width = '';
-          zoomSpacerEl.style.height = '';
-          scrollContainer.scrollTop = 0;
-        }
+  function handleZoomSettled(zoom: number, reason: SettleReason) {
+    if (zoom <= 1 && scrollContainer) {
+      // Reset the cross axis only when no scroll range legitimately remains
+      // at 1× (fit-to-width/original pages taller than the viewport keep it).
+      if (scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) {
+        scrollContainer.scrollTop = 0;
       }
     }
-  );
+    // 'nav' settles are followed by the navigation's own navTarget update,
+    // and 'reset' settles have stale scroll geometry the caller re-anchors
+    // next — detection on either would land on a garbage page.
+    if (reason === 'gesture' || reason === 'interrupt') {
+      navTarget = detectCurrentPage();
+      navIsKeyboard = false;
+      reportProgress();
+    }
+  }
+
+  const zoomController = new ContinuousZoomController({
+    getScrollContainer: () => scrollContainer,
+    getPageElements: () => pageElements,
+    getViewport: () => ({ width: viewportWidth, height: viewportHeight }),
+    applyZoomLayout,
+    onZoomedChange: (zoomed) => {
+      isZoomed = zoomed;
+    },
+    onSettled: handleZoomSettled
+  });
 
   /**
-   * Animate zoom: sample content at fromScreen, place at toScreen.
+   * Interrupt choke points — see MotionGate for the contract. Notable here:
+   * beforeNav resyncs the scroller because its state only updates via async
+   * scroll events; without sync() the next scrollBy would animate from a
+   * stale position and undo the zoom's final correction. It also clears
+   * navIsKeyboard: a nav that interrupted a zoom realigns, so the next
+   * scroll event must not be misread as keyboard-driven.
    */
-  function animateZoom(
-    newZoom: number,
-    fromScreenX: number,
-    fromScreenY: number,
-    toScreenX: number,
-    toScreenY: number
-  ) {
-    if (!scrollContainer || !zoomWrapperEl) return;
-    const currentZoom = zoomAnimator.current || 1;
+  const motion: MotionGate = {
+    beforeZoom() {
+      scroller?.stop();
+      tracker.cancelPan();
+    },
+    beforeManualPan() {
+      if (zoomController.isActive) zoomController.finishNow();
+      scroller?.stop();
+    },
+    beforeAnimatedScroll() {
+      if (zoomController.isActive) zoomController.finishNow();
+    },
+    beforeNav() {
+      if (!zoomController.isActive) return;
+      zoomController.finishNow('nav');
+      scroller?.sync();
+      navIsKeyboard = false;
+    }
+  };
 
-    const wrapperRect = zoomWrapperEl.getBoundingClientRect();
-
-    zoomAnchorContentX = (fromScreenX - wrapperRect.left) / currentZoom;
-    zoomAnchorContentY = (fromScreenY - wrapperRect.top) / currentZoom;
-    zoomAnchorScreenX = toScreenX;
-    zoomAnchorScreenY = toScreenY;
-
-    zoomTarget = newZoom;
-    zoomAnimator.setTarget(newZoom);
-  }
-
-  function cycleZoom(direction: number, anchorX?: number, anchorY?: number) {
-    const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
-    let nextIdx = curIdx < 0 ? (direction > 0 ? 1 : 0) : curIdx + direction;
-    nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, nextIdx));
-    const newZoom = ZOOM_LEVELS[nextIdx];
-    if (newZoom === zoomTarget) return;
-
-    const ax = anchorX ?? viewportWidth / 2;
-    const ay = anchorY ?? viewportHeight / 2;
-    animateZoom(newZoom, ax, ay, ax, ay);
-  }
-
-  // When zoom mode changes (Z key), stay on the current page
-  let prevZoomMode = $settings.continuousZoomDefault;
+  // When the zoom mode (Z key) or a layout-affecting setting changes, reset
+  // any user zoom (its measured spacer/transform are stale against the new
+  // layout) and stay on the current page.
+  let prevLayoutKey = `${$settings.continuousZoomDefault}|${$settings.pageDividers}|${$settings.scrollGap}|${volumeSettings.rightToLeft ?? true}`;
   $effect(() => {
-    if (zoomMode === prevZoomMode) return;
-    prevZoomMode = zoomMode;
+    const layoutKey = `${zoomMode}|${$settings.pageDividers}|${$settings.scrollGap}|${rtl}`;
+    if (layoutKey === prevLayoutKey) return;
+    prevLayoutKey = layoutKey;
 
     const pageIdx = lastReportedPage - 1;
+    zoomController.reset();
     tick().then(() => {
+      applyAlignment(1);
       const el = pageElements[pageIdx];
       if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
     });
@@ -186,59 +182,17 @@
   let pageElements: HTMLDivElement[] = [];
 
   /**
-   * Check how much of a page is visible in the viewport (0-1 ratio).
-   */
-  function visibilityRatio(el: HTMLElement, containerRect: DOMRect): number {
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0) return 0;
-    const visibleLeft = Math.max(rect.left, containerRect.left);
-    const visibleRight = Math.min(rect.right, containerRect.right);
-    return Math.max(0, visibleRight - visibleLeft) / rect.width;
-  }
-
-  /**
    * Detect current page: the >95% visible page whose center is closest
    * to the viewport center. Falls back to any page with center in viewport.
+   * Pure rect math in visual space — correct at any zoom (page-detection.ts).
    */
   function detectCurrentPage(): number {
     if (!scrollContainer) return navTarget;
-    const containerRect = scrollContainer.getBoundingClientRect();
-    const viewportCenter = containerRect.left + containerRect.width / 2;
-
-    // Primary: among >95% visible pages, pick the one closest to viewport center
-    let bestIdx = -1;
-    let bestDist = Infinity;
-    for (let i = 0; i < pageElements.length; i++) {
-      const el = pageElements[i];
-      if (!el) continue;
-      if (visibilityRatio(el, containerRect) > 0.95) {
-        const rect = el.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const dist = Math.abs(centerX - viewportCenter);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestIdx = i;
-        }
-      }
-    }
-    if (bestIdx >= 0) return bestIdx;
-
-    // Fallback: page with center closest to viewport center
-    for (let i = 0; i < pageElements.length; i++) {
-      const el = pageElements[i];
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      const centerX = rect.left + rect.width / 2;
-      if (centerX >= containerRect.left && centerX <= containerRect.right) {
-        const dist = Math.abs(centerX - viewportCenter);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestIdx = i;
-        }
-      }
-    }
-
-    return bestIdx >= 0 ? bestIdx : navTarget;
+    return detectHorizontalPage(
+      scrollContainer.getBoundingClientRect(),
+      pageElements.map((el) => el?.getBoundingClientRect()),
+      navTarget
+    );
   }
 
   function reportProgress() {
@@ -258,7 +212,7 @@
       for (let i = 0; i < pageElements.length; i++) {
         const el = pageElements[i];
         if (!el) continue;
-        if (visibilityRatio(el, containerRect) > 0.95) count++;
+        if (horizontalVisibilityRatio(el.getBoundingClientRect(), containerRect) > 0.95) count++;
       }
       onVisibleCountChange(Math.max(count, 1));
     }
@@ -271,6 +225,8 @@
 
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
+      // Mid-zoom layout is in flux; the zoom settle hook reports instead.
+      if (zoomController.isActive) return;
       // On settle, sync navTarget from DOM only if it wasn't set by keyboard
       if (!navIsKeyboard) {
         navTarget = detectCurrentPage();
@@ -293,29 +249,14 @@
   // ============================================================
 
   /**
-   * Count how many pages are currently fully visible in the viewport.
-   */
-
-  /**
    * Navigate to a page. If the target is past the boundaries,
-   * exit to the series page instead. Home/End use clamp=true
-   * to stay at the boundary without exiting.
+   * exit to the series page instead.
    */
   function navigateToPage(pageIdx: number) {
     if (!scroller || !scrollContainer) return;
 
-    // Past the end — mark complete and exit
-    if (pageIdx >= pages.length) {
-      const { charCount } = getCharCount(pages, pages.length);
-      onPageChange(pages.length, charCount, true);
-      onVolumeNav('next');
-      return;
-    }
-    // Before the start — exit
-    if (pageIdx < 0) {
-      onVolumeNav('prev');
-      return;
-    }
+    if (volumeEdgeNav(pageIdx, pages, onPageChange, onVolumeNav)) return;
+    motion.beforeNav?.();
     navTarget = pageIdx;
     navIsKeyboard = true;
     const el = pageElements[pageIdx];
@@ -345,14 +286,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    const target = e.target as HTMLElement;
-    if (
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.tagName === 'SELECT' ||
-      target.isContentEditable
-    )
-      return;
+    if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
 
     // Always use navTarget — it's authoritative.
@@ -371,10 +305,12 @@
         break;
       case 'ArrowUp':
         e.preventDefault();
+        motion.beforeNav?.();
         scroller?.scrollBy(0, -viewportHeight * 0.5);
         break;
       case 'ArrowDown':
         e.preventDefault();
+        motion.beforeNav?.();
         scroller?.scrollBy(0, viewportHeight * 0.5);
         break;
       case 'PageDown':
@@ -409,175 +345,85 @@
 
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
-    // TODO: Wheel zoom disabled — targeting causes position loss
-    // const swap = $settings.swapWheelBehavior;
-    // const isZoom = swap ? !(e.ctrlKey || e.metaKey) : e.ctrlKey || e.metaKey;
-    // if (isZoom) {
-    //   e.preventDefault();
-    //   cycleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
-    // } else {
-    // Convert vertical wheel to horizontal scroll
+    const modifier = e.ctrlKey || e.metaKey;
+
+    if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior)) {
+      e.preventDefault();
+      motion.beforeZoom();
+      zoomController.wheelZoom(e);
+      return;
+    }
+
+    // Scroll intent: convert vertical wheel to horizontal strip scroll.
     e.preventDefault();
-    const delta = rtl ? -e.deltaY : e.deltaY;
-    scrollContainer.scrollLeft += delta;
-    // }
+    motion.beforeAnimatedScroll();
+    const delta = normalizeWheelDelta(e.deltaY, e.deltaMode);
+    scrollContainer.scrollLeft += rtl ? -delta : delta;
   }
 
   // ============================================================
-  // Click-drag panning
+  // Click-drag panning — classification lives in PointerGestureTracker
+  // (src/lib/reader/input/pointer-tracker.ts); this config holds only the
+  // scroll surface's policy:
+  //
+  // - capture 'immediate': the whole surface is one big drag target, so
+  //   capture on press (the old behavior) — clicks still fire normally
+  // - a press on a text box never pans, for ANY pointer type: drag there is
+  //   text selection (Yomitan/Migaku scanning)
+  // - pan writes absolute scroll positions from press-time baselines
+  //   (totals), with vertical gated on actual overflow
+  // - no pinch-survivor pan: an absolute-baseline pan starting mid-settle
+  //   would fight the post-pinch snap animation
   // ============================================================
 
-  let isDragging = false;
-  let wasDrag = false;
-  let textBoxWasActive = false;
-  let dragStartX = 0;
-  let dragStartY = 0;
   let dragScrollLeft = 0;
   let dragScrollTop = 0;
-  const DRAG_THRESHOLD = 5;
 
-  // Pinch zoom state
-  let activePointers = new Map<number, { x: number; y: number }>();
-  let isPinching = false;
-  let pinchStartDist = 0;
-  let pinchStartZoom = 1;
-
-  function pinchDistance(): number {
-    const pts = [...activePointers.values()];
-    if (pts.length < 2) return 0;
-    const dx = pts[1].x - pts[0].x;
-    const dy = pts[1].y - pts[0].y;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
-
-  function pinchMidpoint(): { x: number; y: number } {
-    const pts = [...activePointers.values()];
-    if (pts.length < 2) return { x: 0, y: 0 };
-    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
-  }
-
-  function handlePointerDown(e: PointerEvent) {
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if ((e.target as HTMLElement).closest('.textBox')) {
-      textBoxWasActive = true;
-      return;
-    }
-
-    // TODO: Pinch zoom disabled — targeting causes position loss
-    // if (activePointers.size === 2) {
-    // 	isDragging = false;
-    // 	wasDrag = true;
-    // 	isPinching = true;
-    // 	pinchStartDist = pinchDistance();
-    // 	pinchStartZoom = zoomAnimator.current || 1;
-    // 	return;
-    // }
-
-    if (e.button !== 0) return;
-
-    isDragging = true;
-    wasDrag = false;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    dragScrollLeft = scrollContainer?.scrollLeft ?? 0;
-    dragScrollTop = scrollContainer?.scrollTop ?? 0;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }
-
-  function handlePointerMove(e: PointerEvent) {
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (isPinching && activePointers.size >= 2) {
-      const dist = pinchDistance();
-      if (pinchStartDist > 0) {
-        const newZoom = pinchStartZoom * (dist / pinchStartDist);
-        const mid = pinchMidpoint();
-        const clamped = Math.max(
-          ZOOM_LEVELS[0],
-          Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], newZoom)
-        );
-        animateZoom(clamped, mid.x, mid.y, mid.x, mid.y);
+  const tracker = new PointerGestureTracker({
+    getElement: () => outerDiv,
+    capturePolicy: 'immediate',
+    suppressPan: (e) => {
+      if (gestureTargetRole(e.target) === 'textbox') {
+        taps.noteTextBoxInteraction();
+        return true;
       }
-      return;
-    }
-
-    if (!isDragging || !scrollContainer) return;
-    const dx = e.clientX - dragStartX;
-    const dy = e.clientY - dragStartY;
-
-    if (!wasDrag && dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
-      wasDrag = true;
-      window.getSelection()?.removeAllRanges();
-    }
-
-    if (wasDrag) {
-      e.preventDefault();
-      scrollContainer.scrollLeft = dragScrollLeft - dx;
-      if (userZoom > 1) {
-        scrollContainer.scrollTop = dragScrollTop - dy;
+      return false;
+    },
+    onPress: () => {
+      motion.beforeManualPan();
+      dragScrollLeft = scrollContainer?.scrollLeft ?? 0;
+      dragScrollTop = scrollContainer?.scrollTop ?? 0;
+    },
+    onPanMove: (_p, d) => {
+      if (!scrollContainer) return;
+      scrollContainer.scrollLeft = dragScrollLeft - d.totalDx;
+      if (isZoomed || scrollContainer.scrollHeight > scrollContainer.clientHeight + 1) {
+        scrollContainer.scrollTop = dragScrollTop - d.totalDy;
       }
-    }
-  }
-
-  function handlePointerUp(e: PointerEvent) {
-    activePointers.delete(e.pointerId);
-
-    if (isPinching) {
-      if (activePointers.size < 2) {
-        isPinching = false;
-        const currentZoom = zoomAnimator.current || 1;
-        zoomTarget = ZOOM_LEVELS.reduce((prev, curr) =>
-          Math.abs(curr - currentZoom) < Math.abs(prev - currentZoom) ? curr : prev
-        );
-      }
-      return;
-    }
-
-    if (isDragging) {
-      try {
-        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-    }
-    isDragging = false;
-  }
+    },
+    ...zoomGestureConfig({
+      beforeZoom: () => motion.beforeZoom(),
+      controller: zoomController,
+      getViewport: () => ({ width: viewportWidth, height: viewportHeight })
+    })
+  });
 
   // ============================================================
   // Overlay toggle + double-tap zoom
   // ============================================================
 
-  let lastTapTime = 0;
-  const DOUBLE_TAP_DELAY = 300;
+  const taps = new TapDiscriminator({
+    onTap: () => onOverlayToggle?.(),
+    onDoubleTap: (x, y) => {
+      motion.beforeZoom();
+      zoomController.toggleZoom(x, y);
+    }
+  });
 
   function handleClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).closest('.textBox, button, [role="button"], a')) return;
-    if (wasDrag) return;
-
-    // First tap outside after interacting with a text box dismisses it without toggling
-    if (textBoxWasActive) {
-      textBoxWasActive = false;
-      return;
-    }
-
-    const now = Date.now();
-    // TODO: Double-tap zoom disabled — targeting causes position loss
-    // if (now - lastTapTime < DOUBLE_TAP_DELAY) {
-    //   lastTapTime = 0;
-    //   const curIdx = ZOOM_LEVELS.indexOf(zoomTarget);
-    //   const nextIdx = (curIdx + 1) % ZOOM_LEVELS.length;
-    //   const newZoom = ZOOM_LEVELS[nextIdx];
-    //   if (newZoom !== zoomTarget) {
-    //     animateZoom(newZoom, e.clientX, e.clientY, viewportWidth / 2, viewportHeight / 2);
-    //   }
-    //   return;
-    // }
-    lastTapTime = now;
-    const tapTime = now;
-    setTimeout(() => {
-      if (lastTapTime === tapTime) onOverlayToggle?.();
-    }, DOUBLE_TAP_DELAY);
+    if (gestureTargetRole(e.target) !== 'page') return;
+    if (tracker.wasDrag) return;
+    taps.tap(e.clientX, e.clientY);
   }
 
   // ============================================================
@@ -587,11 +433,13 @@
   function handleResize() {
     const wasLandscape = viewportWidth > viewportHeight;
     const pageIdx = lastReportedPage - 1;
+    zoomController.reset();
     viewportWidth = window.innerWidth;
     viewportHeight = window.innerHeight;
     const isLandscape = viewportWidth > viewportHeight;
 
     tick().then(() => {
+      applyAlignment(1);
       if (isLandscape && !wasLandscape) {
         // Rotated to landscape — center pair if both fit
         navigateToPage(pageIdx);
@@ -608,7 +456,9 @@
       scroller = new ScrollAnimator(scrollContainer);
     }
     outerDiv?.addEventListener('wheel', handleWheel, { passive: false });
+    tracker.attach();
     requestAnimationFrame(() => {
+      applyAlignment(1);
       // Use navigateToPage for pair centering on landscape mount
       if (scroller) {
         navigateToPage(currentPage - 1);
@@ -621,8 +471,10 @@
 
   onDestroy(() => {
     scroller?.destroy();
-    zoomAnimator.destroy();
+    zoomController.destroy();
     outerDiv?.removeEventListener('wheel', handleWheel);
+    tracker.detach();
+    taps.cancel();
     if (settleTimer) clearTimeout(settleTimer);
   });
 </script>
@@ -634,36 +486,33 @@
   class="fixed inset-0"
   style:background-color="var(--reader-bg)"
   style:touch-action="none"
-  onpointerdown={handlePointerDown}
-  onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointercancel={handlePointerUp}
   onclick={handleClick}
   role="none"
 >
   <div
     bind:this={scrollContainer}
     class="scrollbar-hide flex h-full"
-    style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+    style:align-items="center"
     style:overflow-x="auto"
     style:overflow-y="auto"
     style:overscroll-behavior="none"
+    style:overflow-anchor="none"
     style:direction={rtl ? 'rtl' : 'ltr'}
     onscroll={handleScroll}
   >
     <div
       bind:this={zoomSpacerEl}
       class="flex"
-      style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+      style:align-items="center"
       style:direction={rtl ? 'rtl' : 'ltr'}
       style:filter={$imageFilter}
     >
+      <!-- transform-origin is set by applyHorizontalZoomLayout (top right in RTL) -->
       <div
         bind:this={zoomWrapperEl}
         class="flex"
-        style:align-items={userZoom > 1 ? 'flex-start' : 'center'}
+        style:align-items="center"
         style:direction={rtl ? 'rtl' : 'ltr'}
-        style:transform-origin="top left"
       >
         <!-- Centering spacer: allows first page to be centered -->
         <div class="flex-shrink-0" style:width="50vw"></div>
@@ -702,13 +551,3 @@
     </div>
   </div>
 </div>
-
-<style>
-  .scrollbar-hide {
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-  }
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
-  }
-</style>

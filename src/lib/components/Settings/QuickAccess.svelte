@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { toggleFullScreen } from '$lib/panzoom';
+  import { toggleFullScreen } from '$lib/util/fullscreen';
   import { isReader } from '$lib/util';
   import { navigateBack } from '$lib/util/hash-router';
 

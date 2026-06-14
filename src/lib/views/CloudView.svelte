@@ -40,6 +40,9 @@
   let megaAuth = $derived($providerStatusStore.providers['mega']?.isAuthenticated || false);
   let webdavAuth = $derived($providerStatusStore.providers['webdav']?.isAuthenticated || false);
   let webdavIsReadOnly = $derived($providerStatusStore.providers['webdav']?.isReadOnly || false);
+  let webdavNeedsAttention = $derived(
+    $providerStatusStore.providers['webdav']?.needsAttention || false
+  );
   let filesystemAuth = $derived(
     $providerStatusStore.providers['filesystem']?.isAuthenticated || false
   );
@@ -61,8 +64,17 @@
   // This properly clears on logout unlike hasStoredCredentials
   let currentProvider = $derived<ProviderType | null>($providerStatusStore.currentProviderType);
 
-  // Show provider UI if there's an active provider
-  let hasAnyProvider = $derived(currentProvider !== null);
+  // A WebDAV session flagged for attention but NOT authenticated has no usable
+  // connection (its password was rejected or cleared, and we no longer fall
+  // back to an anonymous read-only session). Route it to the selection screen
+  // so the pre-filled login form is reachable, instead of a connected UI whose
+  // only WebDAV action would be "Log out".
+  let webdavNeedsReLogin = $derived(
+    currentProvider === 'webdav' && webdavNeedsAttention && !webdavAuth
+  );
+
+  // Show the connected provider UI only for a usable session.
+  let hasAnyProvider = $derived(currentProvider !== null && !webdavNeedsReLogin);
 
   // Provider display names
   const providerNames: Record<ProviderType, string> = {
@@ -128,6 +140,14 @@
   let webdavUsername = $state('');
   let webdavPassword = $state('');
   let webdavLoading = $state(false);
+  // Whether the WebDAV login form is expanded on the selection screen.
+  let webdavFormOpen = $state(false);
+
+  // Auto-open the (pre-filled) form when a session needs re-login, so the
+  // password field is right there instead of behind a collapsed row.
+  $effect(() => {
+    if (webdavNeedsReLogin) webdavFormOpen = true;
+  });
 
   // Storage quota state
   let storageQuota = $state<StorageQuota | null>(null);
@@ -524,7 +544,11 @@
   async function handleProviderSync() {
     // Use unified sync service - handles merge logic, deletion tracking, and tombstone purging
     const result = await unifiedCloudManager.syncProgress();
-    if (result.failed > 0) {
+    if (result.totalProviders === 0) {
+      // No authenticated provider (e.g. a WebDAV session whose password was
+      // rejected). Don't report a phantom success — prompt re-login.
+      showSnackbar('Not connected — please sign in again');
+    } else if (result.failed > 0) {
       const message = result.results[0]?.error || 'Unknown error';
       showSnackbar(`Sync failed: ${message}`);
     } else {
@@ -773,8 +797,7 @@
           <button
             class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800"
             onclick={() => {
-              const webdavForm = document.getElementById('webdav-login-form');
-              if (webdavForm) webdavForm.classList.toggle('hidden');
+              webdavFormOpen = !webdavFormOpen;
             }}
           >
             <div class="flex items-center gap-4">
@@ -786,7 +809,12 @@
             </div>
           </button>
 
-          <div id="webdav-login-form" class="hidden pr-4 pb-4 pl-12">
+          <div id="webdav-login-form" class:hidden={!webdavFormOpen} class="pr-4 pb-4 pl-12">
+            {#if webdavNeedsReLogin}
+              <p class="mb-3 text-sm text-amber-400">
+                Your WebDAV session needs attention — re-enter your password to sign in again.
+              </p>
+            {/if}
             <form
               onsubmit={(e) => {
                 e.preventDefault();
