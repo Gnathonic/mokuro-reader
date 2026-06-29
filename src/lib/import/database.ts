@@ -10,6 +10,7 @@
 
 import { db } from '$lib/catalog/db';
 import { requestPersistentStorage } from '$lib/util/upload';
+import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { ProcessedVolume } from './types';
 import type { VolumeMetadata } from '$lib/types';
 import { naturalSort } from '$lib/util/natural-sort';
@@ -52,9 +53,9 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
   // Convert ProcessedMetadata to VolumeMetadata format
   const volumeMetadata: VolumeMetadata = {
     mokuro_version: metadata.mokuroVersion || '',
-    series_title: metadata.series,
+    series_title: sanitizeTitleSegment(metadata.series) || 'Untitled',
     series_uuid: metadata.seriesUuid,
-    volume_title: metadata.volume,
+    volume_title: sanitizeTitleSegment(metadata.volume) || 'Untitled',
     volume_uuid: metadata.volumeUuid,
     page_count: metadata.pageCount,
     character_count: metadata.chars,

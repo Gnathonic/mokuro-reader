@@ -131,6 +131,30 @@ describe('saveVolume', () => {
     expect(addCall.character_count).toBe(500);
   });
 
+  it('sanitizes filesystem-illegal characters in series and volume titles', async () => {
+    const volume = createProcessedVolume({
+      metadata: { series: 'A/B: C', volume: 'Vol?1' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume);
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('A／B： C');
+    expect(addCall.volume_title).toBe('Vol？1');
+  });
+
+  it('falls back to Untitled when a title sanitizes to empty', async () => {
+    const volume = createProcessedVolume({
+      metadata: { series: '   ', volume: '' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume);
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('Untitled');
+    expect(addCall.volume_title).toBe('Untitled');
+  });
+
   it('writes OCR data with pages (strips cumulativeChars)', async () => {
     const pages: ProcessedPage[] = [
       { img_path: 'p1.jpg', blocks: [{ lines: ['test'] }], cumulativeChars: 10 }
