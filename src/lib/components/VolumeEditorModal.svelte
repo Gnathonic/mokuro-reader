@@ -15,6 +15,7 @@
     getNextVolumeUuidInSeries
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
+  import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
@@ -198,14 +199,32 @@
       let finalSeriesTitle = seriesTitle;
 
       if (isNewSeries) {
-        if (!newSeriesName.trim()) {
+        const safeNewSeries = sanitizeRenameTitle(newSeriesName);
+        if (safeNewSeries.empty) {
           showSnackbar('Please enter a series name');
           saving = false;
           return;
         }
+        if (safeNewSeries.changed) {
+          showSnackbar(`Series saved as “${safeNewSeries.value}” to keep the name file-safe.`);
+        }
         finalSeriesUuid = generateNewSeriesUuid();
-        finalSeriesTitle = newSeriesName.trim();
+        finalSeriesTitle = safeNewSeries.value;
       }
+
+      // Sanitize the volume title so the stored title is a legal name on every sink
+      // (cloud + filesystem + OneDrive + export); title === path going forward. The series
+      // title is sanitized only when a NEW series is created (above) or via the series-rename
+      // flow — sanitizing an existing series here would split it across two cloud folders.
+      const safeVolume = sanitizeRenameTitle(volumeTitle);
+      if (safeVolume.empty) {
+        showSnackbar("Volume name can't be empty or only unusable characters.");
+        return;
+      }
+      if (safeVolume.changed) {
+        showSnackbar(`Volume saved as “${safeVolume.value}” to keep the name file-safe.`);
+      }
+      volumeTitle = safeVolume.value;
 
       // Update IndexedDB metadata
       const metadataUpdates: Partial<VolumeMetadata> = {};
