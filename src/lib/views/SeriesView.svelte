@@ -26,6 +26,7 @@
     CheckOutline
   } from 'flowbite-svelte-icons';
   import { executeRenameSeries } from '$lib/util/series-rename';
+  import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
@@ -661,8 +662,9 @@
       // Execute the rename for this series UUID
       await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
-      nav.toSeries(newTitle, { replaceState: true });
-      showSnackbar(`Renamed to "${newTitle}"`);
+      const finalTitle = sanitizeTitleSegment(newTitle);
+      nav.toSeries(finalTitle, { replaceState: true });
+      showSnackbar(`Renamed to "${finalTitle}"`);
       isRenaming = false;
       renameValue = '';
     } catch (err) {

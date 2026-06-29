@@ -104,4 +104,40 @@ describe('Series rename cloud propagation', () => {
     expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'New Series' });
     expect(updateVolumeSeriesTitle).toHaveBeenCalledWith('vol-1', 'New Series');
   });
+
+  it('sanitizes the new series title before cloud rename and DB write', async () => {
+    const { db } = await import('$lib/catalog/db');
+    const { get } = await import('svelte/store');
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    vi.mocked(db.volumes.where).mockReturnValue({
+      toArray: vi.fn().mockResolvedValue([
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Volume 1',
+          series_uuid: 'series-1',
+          series_title: 'Old Series'
+        }
+      ])
+    } as any);
+    vi.mocked(get).mockReturnValue({
+      'vol-1': { series_uuid: 'series-1', series_title: 'Old Series' }
+    });
+
+    await executeRenameSeries('Old Series', 'New/Series', 'series-1');
+
+    expect(unifiedCloudManager.renameSeries).toHaveBeenCalledWith('Old Series', 'New／Series', [
+      { volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }
+    ]);
+    expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'New／Series' });
+  });
+
+  it('throws when the new title sanitizes to empty', async () => {
+    const { db } = await import('$lib/catalog/db');
+    vi.mocked(db.volumes.where).mockReturnValue({
+      toArray: vi.fn().mockResolvedValue([])
+    } as any);
+
+    await expect(executeRenameSeries('Old Series', '', 'series-1')).rejects.toThrow();
+  });
 });

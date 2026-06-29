@@ -5,6 +5,7 @@
 import { db } from '$lib/catalog/db';
 import { volumes as volumeDataStore } from '$lib/settings/volume-data';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import { get } from 'svelte/store';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -157,6 +158,13 @@ export async function executeRenameSeries(
   newTitle: string,
   seriesUuid?: string
 ): Promise<RenameSeriesPreview> {
+  // Sanitize the user-supplied title so the stored title is a legal name on every
+  // sink (cloud + filesystem + OneDrive + export). title === path going forward.
+  newTitle = sanitizeTitleSegment(newTitle);
+  if (!newTitle) {
+    throw new Error('Series not renamed: the name has no usable characters.');
+  }
+
   // Generate preview of changes
   const preview = await generateRenameSeriesPreview(oldTitle, newTitle, seriesUuid);
 
