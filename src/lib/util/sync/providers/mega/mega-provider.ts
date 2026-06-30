@@ -310,14 +310,16 @@ export class MegaProvider implements SyncProvider {
   async logout(): Promise<void> {
     this.storage = null;
     this.mokuroFolder = null;
+    this.needsReconnect = false;
+    this.reconnectEmail = null;
 
     if (browser) {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
       localStorage.removeItem(STORAGE_KEYS.EMAIL);
       localStorage.removeItem(STORAGE_KEYS.PASSWORD);
       localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
     }
 
-    // Clear the active provider key
     clearActiveProviderKey();
     console.log('MEGA logged out');
   }
