@@ -387,43 +387,29 @@ export class MegaProvider implements SyncProvider {
   private async reinitialize(): Promise<void> {
     if (!browser) return;
 
-    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
-    if (!sessionRaw) {
-      console.warn('Cannot reinitialize MEGA: no stored session');
+    // No live session to refresh — fall back to restoring from the stored token.
+    if (!this.storage) {
+      await this.restorePersistedSession();
       return;
     }
 
-    const oldStorage = this.storage;
     try {
-      const { Storage } = await import('megajs');
-      const storage: any = Storage.fromJSON(JSON.parse(sessionRaw));
-      await storage.reload(true);
-      this.storage = storage;
+      // Refresh the file tree on the EXISTING session, in place.
+      //
+      // We must NOT rebuild the storage and close the old one: megajs
+      // `storage.close()` issues `{a:'sml'}`, which TERMINATES the session sid
+      // server-side. Every storage (login, restore, reinitialize, upload worker)
+      // reuses the one persisted sid, so closing any of them invalidates the
+      // stored token and makes every later request fail with ESID (-15).
+      await this.storage.reload(true);
       this.mokuroFolder = null;
-      // Release the previous session's keepalive/sc listeners.
-      if (oldStorage && typeof oldStorage.close === 'function') {
-        try {
-          await oldStorage.close();
-        } catch {
-          /* best effort */
-        }
-      }
-      console.log('✅ MEGA cache reinitialized from session token');
+      console.log('✅ MEGA cache reinitialized (in-place reload)');
     } catch (error) {
       if (isSessionExpiredError(error)) {
-        // Release the dead session's keepalive/sc listeners before clearing state.
-        if (oldStorage && typeof oldStorage.close === 'function') {
-          try {
-            await oldStorage.close();
-          } catch {
-            /* best effort */
-          }
-        }
         this.markSessionExpired();
         return;
       }
-      // Transient error: keep the existing (stale) storage so we don't appear logged out.
-      this.storage = oldStorage;
+      // Transient error: keep the existing storage so we don't appear logged out.
       console.warn('Continuing with potentially stale MEGA cache:', error);
     }
   }

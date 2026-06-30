@@ -243,3 +243,55 @@ describe('MegaProvider.getWorkerDownloadCredentials() (Phase 2)', () => {
     });
   });
 });
+
+describe('MegaProvider.reinitialize() — session-safe refresh', () => {
+  // Regression: megajs storage.close() sends {a:'sml'}, which TERMINATES the shared
+  // session sid server-side. Because every storage (login, restore, reinitialize) reuses
+  // the one persisted sid, closing any of them invalidates the persisted token and every
+  // subsequent request fails with ESID (-15). reinitialize must refresh the file tree in
+  // place via reload(true) and NEVER call storage.close().
+  it('reloads the existing session in place and never calls storage.close()', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    const reload = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    (provider as any).storage = {
+      sid: 'SID123',
+      files: { f1: { name: 'mokuro-reader', directory: true } },
+      reload,
+      close
+    };
+
+    await (provider as any).reinitialize();
+
+    expect(reload).toHaveBeenCalledWith(true);
+    expect(close).not.toHaveBeenCalled();
+    expect(provider.isAuthenticated()).toBe(true);
+  });
+
+  it('marks the session expired (without closing) when in-place reload throws ESID', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    localStorage.setItem(
+      'mega_session',
+      JSON.stringify({ key: 'K', sid: 'SID', options: { email: 'a@b.c' } })
+    );
+
+    const close = vi.fn(async () => {});
+    (provider as any).storage = {
+      sid: 'SID',
+      files: {},
+      close,
+      reload: vi.fn(async () => {
+        throw new Error('ESID (-15): Invalid or expired user session, please relogin');
+      })
+    };
+
+    await (provider as any).reinitialize();
+
+    expect(close).not.toHaveBeenCalled();
+    expect(provider.getStatus().needsAttention).toBe(true);
+    expect(localStorage.getItem('mega_session')).toBeNull();
+  });
+});

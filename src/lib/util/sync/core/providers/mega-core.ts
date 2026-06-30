@@ -12,10 +12,13 @@ async function resetUploadStorage(): Promise<void> {
   if (!storagePromise) return;
 
   try {
-    const storage = await storagePromise;
-    await storage.close();
+    const storage = (await storagePromise) as any;
+    // Release the keepalive/server-change poll WITHOUT terminating the session:
+    // storage.close() issues {a:'sml'}, which kills the shared session sid (used by
+    // the persisted token and every other storage). api.close() only aborts the poll.
+    storage?.api?.close?.();
   } catch (error) {
-    console.warn('Worker: Failed to close MEGA upload storage:', error);
+    console.warn('Worker: Failed to release MEGA upload storage:', error);
   }
 }
 
