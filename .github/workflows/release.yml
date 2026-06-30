@@ -10,6 +10,10 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    # The repo's default workflow token is read-only, so without this the job 403s
+    # when pushing the tag / creating the release (releases had to be made by hand).
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
