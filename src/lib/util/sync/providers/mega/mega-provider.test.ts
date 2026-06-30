@@ -56,6 +56,9 @@ describe('MegaProvider.login()', () => {
     const provider = new MegaProvider();
     await provider.whenReady();
 
+    localStorage.setItem('mega_email', 'a@b.c');
+    localStorage.setItem('mega_password', 'secret');
+
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
     expect(provider.isAuthenticated()).toBe(true);
@@ -66,6 +69,7 @@ describe('MegaProvider.login()', () => {
     expect(blob.key).toBe('MASTERKEY');
     expect(blob.options).not.toHaveProperty('password');
     expect(blob.options).not.toHaveProperty('secondFactorCode');
+    expect(localStorage.getItem('mega_email')).toBeNull();
     expect(localStorage.getItem('mega_password')).toBeNull();
     expect(localStorage.getItem('active_cloud_provider')).toBe('mega');
   });
