@@ -20,12 +20,12 @@ The MEGA cloud-sync provider has three coupled issues, all rooted in how it auth
    or UI anywhere today.
 
 3. **Hacky worker file access.**
-   - *Downloads* use a **public share-link workaround**: the main thread mints a `file.link()` URL
+   - _Downloads_ use a **public share-link workaround**: the main thread mints a `file.link()` URL
      (decryption key embedded), ships `megaShareUrl` to the worker, the worker downloads anonymously
      via `MegaFile.fromURL`, then the main thread tears the link down with `unshare()`
      (`mega-provider.ts:1011-1088`, `mega-core.ts:53-67`). A mutex + 200 ms throttle gates link
      creation. This briefly exposes every downloaded file as a public URL.
-   - *Uploads* hand the **plaintext password** to the worker (`getWorkerUploadCredentials()` →
+   - _Uploads_ hand the **plaintext password** to the worker (`getWorkerUploadCredentials()` →
      `{ megaEmail, megaPassword }`, `mega-provider.ts:1197-1202`), which spins up its own full
      `Storage`.
 
@@ -115,7 +115,7 @@ These facts, verified against `node_modules/megajs/dist/*` and `types/cjs.d.ts`,
   remove `mega_session`, set an internal `needsAttention` flag, retain the email (parsed from the old
   blob before clearing, or held in memory) for reconnect pre-fill.
 - `getStatus()` returns `{ isAuthenticated:false, needsAttention:true, statusMessage:'MEGA session
-  expired — please reconnect' }`.
+expired — please reconnect' }`.
 - `CloudView.svelte` renders a reconnect prompt (pre-filled email) when MEGA needs attention,
   reusing the WebDAV needs-attention UI scaffolding (`CloudView.svelte:55-60`, `:113-115`,
   `:693-697`) extended to MEGA. MEGA has no needs-attention UI today, so this is net-new wiring.
@@ -141,8 +141,8 @@ In the restore path (`loadPersistedCredentials` → renamed/reworked `restorePer
 
 ### F. Worker downloads — remove share links (Phase 2)
 
-*Verified: `createShareLink`/`deleteShareLink` have no callers outside the worker-download path, so
-the entire share-link mechanism can be removed.*
+_Verified: `createShareLink`/`deleteShareLink` have no callers outside the worker-download path, so
+the entire share-link mechanism can be removed._
 
 - `getWorkerDownloadCredentials(fileId)`: from the already-loaded tree, locate the node and return
   **`{ sid, nodeId, fileKey }`** — the session id, node id, and the node's already-decrypted per-file
@@ -158,10 +158,10 @@ the entire share-link mechanism can be removed.*
 
 ### G. Worker uploads — remove password (Phase 1 — forced by §A)
 
-*This lands in Phase 1, not Phase 2: §A deletes the stored password, but the upload worker currently
+_This lands in Phase 1, not Phase 2: §A deletes the stored password, but the upload worker currently
 reads `mega_email`/`mega_password`. Once the password is gone, the upload path must already use the
 session blob. (Download share links, §F, are unaffected — they use the main-thread session, which
-keeps working post-migration — so only §F is deferrable to Phase 2.)*
+keeps working post-migration — so only §F is deferrable to Phase 2.)_
 
 - `getWorkerUploadCredentials()`: return **`{ megaSession: <sanitized toJSON blob> }`** instead of
   `{ megaEmail, megaPassword }`.
@@ -206,7 +206,7 @@ keeps working post-migration — so only §F is deferrable to Phase 2.)*
    on a `fromJSON`'d session (drives §B restore + §C `reinitialize`).
 2. **Linchpin:** Option-B owned-node download (`new File({ downloadId: nodeId, key, api })` +
    `file.nodeId = nodeId` + `api.sid`) actually downloads an owned file. Source analysis says yes;
-   confirm live in Phase 2. *Fallback if it fails:* download worker uses `fromJSON(session)` +
+   confirm live in Phase 2. _Fallback if it fails:_ download worker uses `fromJSON(session)` +
    `reload()` and `storage.files[nodeId].downloadBuffer()` (accepts the master key in the download
    worker — still no share link).
 3. Upload via `fromJSON + reload` reaches the target folder correctly (§G).

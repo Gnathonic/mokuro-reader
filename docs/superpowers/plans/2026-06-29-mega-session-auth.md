@@ -32,10 +32,12 @@
 ### Task 1: Pure session helpers (`mega-session.ts`)
 
 **Files:**
+
 - Create: `src/lib/util/sync/providers/mega/mega-session.ts`
 - Test: `src/lib/util/sync/providers/mega/mega-session.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `interface MegaSessionBlob { key: string; sid: string; name?: string; user?: string; options?: Record<string, any> }`
   - `isMfaRequiredError(error: unknown): boolean`
@@ -202,10 +204,12 @@ git commit -m "feat(mega): add pure session-token helpers (error classifiers, bl
 ### Task 2: Session-aware `login()` with 2FA + `persistSession()`
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`MegaCredentials` 16-19; `STORAGE_KEYS` 21-25; imports 10-14; class fields 143-153; `login()` 195-249; `waitForReady()` 302-326 — remove)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts` (new)
 
 **Interfaces:**
+
 - Consumes (Task 1): `sanitizeSessionBlob`, `isMfaRequiredError`.
 - Produces: `login({ email, password, secondFactorCode? })` persists `mega_session` and removes legacy keys on success; throws `ProviderError` with `code === 'MFA_REQUIRED'` when 2FA is needed. New private fields `needsReconnect: boolean`, `reconnectEmail: string | null`. New `STORAGE_KEYS.SESSION = 'mega_session'`. New `private persistSession(): void`.
 
@@ -296,9 +300,7 @@ describe('MegaProvider.login()', () => {
   });
 
   it('maps EMFAREQUIRED to a MFA_REQUIRED ProviderError', async () => {
-    storageState.loginError = new Error(
-      'EMFAREQUIRED (-26): Multi-Factor Authentication Required'
-    );
+    storageState.loginError = new Error('EMFAREQUIRED (-26): Multi-Factor Authentication Required');
     const provider = new MegaProvider();
     await provider.whenReady();
 
@@ -447,10 +449,12 @@ git commit -m "feat(mega): session-token login with 2FA support and password-fre
 ### Task 3: `restoreSession()`, migration, and `reinitialize()` via session
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`loadPersistedCredentials()` 266-300 → rewrite as `restorePersistedSession()`; constructor 155-161; `reinitialize()` 332-368)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes (Task 1): `isSessionExpiredError`, `isAuthRejectionError`, `isMfaRequiredError`. (Task 2): `login()`, `persistSession`.
 - Produces: `private restoreSession(blob: MegaSessionBlob): Promise<void>` (fromJSON + reload); `restorePersistedSession(): Promise<void>` (session-first, legacy migration fallback); `reinitialize()` refreshes via a fresh `fromJSON` of the stored session (no password, no re-login). Constructor calls `restorePersistedSession()`.
 
@@ -509,7 +513,13 @@ describe('MegaProvider session restore + migration', () => {
     );
     localStorage.setItem(
       'mega_session',
-      JSON.stringify({ key: 'MASTERKEY', sid: 'DEAD', name: 'n', user: 'u', options: { email: 'a@b.c' } })
+      JSON.stringify({
+        key: 'MASTERKEY',
+        sid: 'DEAD',
+        name: 'n',
+        user: 'u',
+        options: { email: 'a@b.c' }
+      })
     );
 
     const provider = new MegaProvider();
@@ -666,10 +676,12 @@ git commit -m "feat(mega): restore + migrate via session token; refresh cache wi
 ### Task 4: `markSessionExpired()`, needs-attention `getStatus()`, `getLastUsername()`
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`getStatus()` 175-193; add `markSessionExpired()`, `getLastUsername()`)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts` (the ESID test from Task 3 now asserts this)
 
 **Interfaces:**
+
 - Produces: `private markSessionExpired(): void` (clears `mega_session`, captures email for prefill, sets `needsReconnect`); `getStatus()` returns `needsAttention: this.needsReconnect`; `getLastUsername(): string | null` returns the reconnect email.
 
 - [ ] **Step 1: Tests already written in Task 3 (ESID → needsAttention). Add a getLastUsername test.**
@@ -786,12 +798,14 @@ git commit -m "feat(mega): needs-attention state on session expiry with reconnec
 ### Task 5: `logout()` + detection + manager key hygiene for `mega_session`
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`logout()` 251-264)
 - Modify: `src/lib/util/sync/provider-detection.ts` (`detectProviderFromCredentials()` 53-58)
 - Modify: `src/lib/util/sync/provider-manager.ts` (logout key removal 197-199)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts`; `src/lib/util/sync/provider-detection.test.ts` (new)
 
 **Interfaces:**
+
 - Produces: `logout()` clears `mega_session` + legacy keys + reconnect flags; `detectProviderFromCredentials()` recognizes `mega_session` OR legacy pair.
 
 - [ ] **Step 1: Write failing tests**
@@ -885,13 +899,13 @@ Replace `logout()` (251-264):
 Replace the MEGA block:
 
 ```ts
-  // Check MEGA credentials (new session token or legacy email/password)
-  const megaSession = localStorage.getItem('mega_session');
-  const megaEmail = localStorage.getItem('mega_email');
-  const megaPassword = localStorage.getItem('mega_password');
-  if (megaSession || (megaEmail && megaPassword)) {
-    return 'mega';
-  }
+// Check MEGA credentials (new session token or legacy email/password)
+const megaSession = localStorage.getItem('mega_session');
+const megaEmail = localStorage.getItem('mega_email');
+const megaPassword = localStorage.getItem('mega_password');
+if (megaSession || (megaEmail && megaPassword)) {
+  return 'mega';
+}
 ```
 
 - [ ] **Step 5: Update `provider-manager.ts` logout key removal (197-199)**
@@ -899,10 +913,10 @@ Replace the MEGA block:
 Add `mega_session` removal alongside the existing MEGA keys:
 
 ```ts
-      localStorage.removeItem('mega_session');
-      localStorage.removeItem('mega_email');
-      localStorage.removeItem('mega_password');
-      localStorage.removeItem('mega_folder_path');
+localStorage.removeItem('mega_session');
+localStorage.removeItem('mega_email');
+localStorage.removeItem('mega_password');
+localStorage.removeItem('mega_folder_path');
 ```
 
 - [ ] **Step 6: Run tests + commit**
@@ -920,11 +934,13 @@ git commit -m "feat(mega): clear mega_session on logout and detect it for provid
 ### Task 6: Upload worker uses the session blob (no password)
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`getWorkerUploadCredentials()` 1197-1202)
 - Modify: `src/lib/util/sync/core/providers/mega-core.ts` (`getUploadStorage` 22-50; `uploadFile` 98-101)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts`
 
 **Interfaces:**
+
 - Consumes: `localStorage['mega_session']`.
 - Produces: `getWorkerUploadCredentials()` returns `{ megaSession: string }`; worker `getUploadStorage(session)` builds via `Storage.fromJSON(JSON.parse(session))` + `reload(true)`, cached by `sid`.
 
@@ -1031,9 +1047,11 @@ git commit -m "feat(mega): upload worker authenticates via session blob instead 
 ### Task 7: 2FA two-step UI + needs-attention reconnect (`CloudView.svelte`)
 
 **Files:**
+
 - Modify: `src/lib/views/CloudView.svelte` (MEGA state 99-101; `handleMegaLogin` 370-400; `handleLogout` 412-415; `onMount` prefill 326-337; MEGA form 648-674)
 
 **Interfaces:**
+
 - Consumes (Task 2/4): `megaProvider.login({ email, password, secondFactorCode })` throws `ProviderError` with `code === 'MFA_REQUIRED'`; `megaProvider.getLastUsername?.()`.
 
 This task is UI; verify by manual run (no Vitest component test required — keep parity with the existing untested CloudView handlers). Steps below are edits, then a manual verification step.
@@ -1041,9 +1059,8 @@ This task is UI; verify by manual run (no Vitest component test required — kee
 - [ ] **Step 1: Add MEGA 2FA/reconnect state (after line 101)**
 
 ```svelte
-  let megaTwoFactorCode = $state('');
-  let megaNeeds2fa = $state(false);
-  let megaNeedsReLogin = $state(false);
+let megaTwoFactorCode = $state(''); let megaNeeds2fa = $state(false); let megaNeedsReLogin =
+$state(false);
 ```
 
 - [ ] **Step 2: Update `handleMegaLogin()` (370-400) for the two-step flow**
@@ -1128,58 +1145,55 @@ After the WebDAV prefill block, add MEGA prefill:
 Replace the `<div id="mega-login-form" ...>` block contents:
 
 ```svelte
-          <div id="mega-login-form" class="hidden pr-4 pb-4 pl-12">
-            {#if megaNeedsReLogin}
-              <p class="mb-3 text-sm text-amber-400">
-                Your MEGA session expired — sign in again to reconnect.
-              </p>
-            {/if}
-            <form
-              onsubmit={(e) => {
-                e.preventDefault();
-                handleMegaLogin();
-              }}
-              class="flex flex-col gap-3"
-            >
-              <input
-                type="email"
-                bind:value={megaEmail}
-                placeholder="Email"
-                required
-                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
-              />
-              <input
-                type="password"
-                bind:value={megaPassword}
-                placeholder="Password"
-                required
-                class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
-              />
-              {#if megaNeeds2fa}
-                <input
-                  type="text"
-                  inputmode="numeric"
-                  autocomplete="one-time-code"
-                  bind:value={megaTwoFactorCode}
-                  placeholder="6-digit 2FA code"
-                  class="rounded-lg border border-amber-600 bg-gray-700 p-2.5 text-sm text-white"
-                />
-              {/if}
-              <Button type="submit" disabled={megaLoading} color="blue" size="sm">
-                {megaLoading
-                  ? 'Connecting...'
-                  : megaNeeds2fa
-                    ? 'Verify & Connect'
-                    : 'Connect to MEGA'}
-              </Button>
-            </form>
-          </div>
+<div id="mega-login-form" class="hidden pr-4 pb-4 pl-12">
+  {#if megaNeedsReLogin}
+    <p class="mb-3 text-sm text-amber-400">
+      Your MEGA session expired — sign in again to reconnect.
+    </p>
+  {/if}
+  <form
+    onsubmit={(e) => {
+      e.preventDefault();
+      handleMegaLogin();
+    }}
+    class="flex flex-col gap-3"
+  >
+    <input
+      type="email"
+      bind:value={megaEmail}
+      placeholder="Email"
+      required
+      class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
+    />
+    <input
+      type="password"
+      bind:value={megaPassword}
+      placeholder="Password"
+      required
+      class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
+    />
+    {#if megaNeeds2fa}
+      <input
+        type="text"
+        inputmode="numeric"
+        autocomplete="one-time-code"
+        bind:value={megaTwoFactorCode}
+        placeholder="6-digit 2FA code"
+        class="rounded-lg border border-amber-600 bg-gray-700 p-2.5 text-sm text-white"
+      />
+    {/if}
+    <Button type="submit" disabled={megaLoading} color="blue" size="sm">
+      {megaLoading ? 'Connecting...' : megaNeeds2fa ? 'Verify & Connect' : 'Connect to MEGA'}
+    </Button>
+  </form>
+</div>
 ```
 
 - [ ] **Step 6: Type-check, lint, manual verify**
 
 Run: `npm run check` and `npm run lint` — expect no new errors.
 Run: `npm run dev`, open the cloud view:
+
 - Non-2FA account: email+password connects; reload the page → still connected with **no** `mega_password` in `localStorage` and a `mega_session` present (DevTools → Application → Local Storage).
 - 2FA account: email+password → "Enter your 2FA code" → field appears → code → connects.
 
@@ -1202,10 +1216,12 @@ Expected: all pass; no regressions in other providers.
 ### Task 8: `getWorkerDownloadCredentials()` → `{ sid, nodeId, fileKey }`; remove share-link machinery
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (`supportsWorkerDownload` comment 139; remove fields 146-148; remove `createShareLink` 1011-1061, `deleteShareLink` 1067-1110, `cleanupWorkerDownload` 1223-1233; rewrite `getWorkerDownloadCredentials` 1209-1221)
 - Test: `src/lib/util/sync/providers/mega/mega-provider.test.ts`
 
 **Interfaces:**
+
 - Consumes (Task 1): `encodeMegaKey`. Existing `getNodeById()` (439-442).
 - Produces: `getWorkerDownloadCredentials(fileId)` returns `{ sid: string, nodeId: string, fileKey: string }`. `createShareLink`/`deleteShareLink`/`cleanupWorkerDownload` removed (download-queue guards on their presence).
 
@@ -1297,10 +1313,12 @@ git commit -m "feat(mega): worker download credentials use sid + per-file key; d
 ### Task 9: Worker download via owned-node `File` (`mega-core.ts`)
 
 **Files:**
+
 - Modify: `src/lib/util/sync/core/providers/mega-core.ts` (`downloadFile` 53-96; add `getDownloadApi` helper)
 - Test: `src/lib/util/sync/core/providers/mega-core.test.ts` (new)
 
 **Interfaces:**
+
 - Consumes: credentials `{ sid, nodeId, fileKey }` from Task 8.
 - Produces: `downloadFile` builds `new File({ downloadId: nodeId, key: fileKey, api })` with `file.nodeId = nodeId` and streams `downloadBuffer`/`download`.
 
@@ -1392,7 +1410,11 @@ const downloadApiBySid = new Map<string, any>();
 function getDownloadApi(sid: string): any {
   let api = downloadApiBySid.get(sid);
   if (!api) {
-    const storage: any = new Storage({ autologin: false, autoload: false, keepalive: false } as any);
+    const storage: any = new Storage({
+      autologin: false,
+      autoload: false,
+      keepalive: false
+    } as any);
     storage.api.sid = sid;
     api = storage.api;
     downloadApiBySid.set(sid, api);
@@ -1467,6 +1489,7 @@ git commit -m "feat(mega): download owned nodes in workers via sid + per-file ke
 ### Task 10: Integration cleanup + live verification
 
 **Files:**
+
 - Verify: `src/lib/util/download-queue.ts` (cleanup call sites 622-623, 732, 741), `src/lib/util/backup-queue.ts` (268-269)
 - Test: whole suite + manual live MEGA verification
 
@@ -1475,9 +1498,11 @@ git commit -m "feat(mega): download owned nodes in workers via sid + per-file ke
 - [ ] **Step 1: Confirm no dangling references to removed symbols / old credential keys**
 
 Run:
+
 ```bash
 grep -rn "megaShareUrl\|createShareLink\|deleteShareLink\|cleanupWorkerDownload\|megaEmail\|megaPassword" src --include="*.ts" --include="*.svelte"
 ```
+
 Expected: no matches in `src/lib/util/sync/**` or `src/lib/workers/**` or `src/lib/util/*queue*.ts`. (`download-queue.ts:622` guards `if (activeProvider.cleanupWorkerDownload)`, which is now always false for MEGA — that's correct and needs no change.)
 
 - [ ] **Step 2: Full automated regression**
@@ -1488,6 +1513,7 @@ Expected: all green; no regressions.
 - [ ] **Step 3: Live verification against a real MEGA account (not CI)**
 
 Run `npm run dev` (or a Playwright session with a test account) and confirm in DevTools → Network/Application:
+
 - **Download a volume from MEGA via the worker:** no `link`/`unshare` API calls are issued (search Network for `cs?` requests with `"a":"l"` / `"a":"l2"`); the file downloads and imports correctly.
 - **Upload a volume:** the worker `postMessage` payload contains `megaSession` and **no** `megaPassword`/`megaEmail` (inspect via a temporary `console.log` of credential keys — never log the value — then remove it).
 - **Reconnect on expiry:** in MEGA web → Settings → Session history, close this app's session; back in the app trigger a sync → the UI shows the needs-attention reconnect prompt with the email pre-filled; re-login restores sync.
