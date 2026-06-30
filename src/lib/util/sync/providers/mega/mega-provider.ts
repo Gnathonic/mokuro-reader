@@ -12,7 +12,13 @@ import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
-import { isMfaRequiredError, sanitizeSessionBlob, type MegaSessionBlob } from './mega-session';
+import {
+  isMfaRequiredError,
+  isSessionExpiredError,
+  isAuthRejectionError,
+  sanitizeSessionBlob,
+  type MegaSessionBlob
+} from './mega-session';
 
 interface MegaCredentials {
   email: string;
@@ -162,7 +168,7 @@ export class MegaProvider implements SyncProvider {
 
   constructor() {
     if (browser) {
-      this.initPromise = this.loadPersistedCredentials();
+      this.initPromise = this.restorePersistedSession();
     } else {
       this.initPromise = Promise.resolve();
     }
@@ -181,7 +187,8 @@ export class MegaProvider implements SyncProvider {
   }
 
   getStatus(): ProviderStatus {
-    const hasCredentials = !!(
+    const hasSession = !!(browser && localStorage.getItem(STORAGE_KEYS.SESSION));
+    const hasLegacy = !!(
       browser &&
       localStorage.getItem(STORAGE_KEYS.EMAIL) &&
       localStorage.getItem(STORAGE_KEYS.PASSWORD)
@@ -190,14 +197,56 @@ export class MegaProvider implements SyncProvider {
 
     return {
       isAuthenticated: isConnected,
-      hasStoredCredentials: hasCredentials,
-      needsAttention: false,
+      hasStoredCredentials: hasSession || hasLegacy,
+      needsAttention: this.needsReconnect,
       statusMessage: isConnected
         ? 'Connected to MEGA'
-        : hasCredentials
-          ? 'Configured (not connected)'
-          : 'Not configured'
+        : this.needsReconnect
+          ? 'MEGA session expired — please reconnect'
+          : hasSession || hasLegacy
+            ? 'Configured (not connected)'
+            : 'Not configured'
     };
+  }
+
+  /** Drop the stored session and flag the UI to prompt for reconnect (password never stored). */
+  private markSessionExpired(): void {
+    // Capture email for reconnect pre-fill before clearing.
+    if (browser && !this.reconnectEmail) {
+      const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+      if (sessionRaw) {
+        try {
+          this.reconnectEmail = JSON.parse(sessionRaw)?.options?.email ?? null;
+        } catch {
+          /* ignore */
+        }
+      }
+      this.reconnectEmail = this.reconnectEmail ?? localStorage.getItem(STORAGE_KEYS.EMAIL);
+    }
+
+    this.storage = null;
+    this.mokuroFolder = null;
+    this.needsReconnect = true;
+
+    if (browser) {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
+      // Keep active_cloud_provider so the UI still shows MEGA in a needs-attention state.
+    }
+  }
+
+  /** Email captured for reconnect pre-fill (mirrors WebDAV's getLastUsername). */
+  getLastUsername(): string | null {
+    if (this.reconnectEmail) return this.reconnectEmail;
+    if (!browser) return null;
+    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (sessionRaw) {
+      try {
+        return JSON.parse(sessionRaw)?.options?.email ?? null;
+      } catch {
+        return null;
+      }
+    }
+    return localStorage.getItem(STORAGE_KEYS.EMAIL);
   }
 
   async login(credentials?: ProviderCredentials): Promise<void> {
@@ -273,81 +322,101 @@ export class MegaProvider implements SyncProvider {
     console.log('MEGA logged out');
   }
 
-  async loadPersistedCredentials(): Promise<void> {
+  /** Rebuild an authenticated Storage from a saved session blob (no password, no login round-trip). */
+  private async restoreSession(blob: MegaSessionBlob): Promise<void> {
+    const { Storage } = await import('megajs');
+    const storage: any = Storage.fromJSON(blob as any);
+    // fromJSON does no network and loads no tree; reload populates root + files.
+    // A dead session throws ESID here.
+    await storage.reload(true);
+    this.storage = storage;
+    this.mokuroFolder = null;
+    await this.ensureMokuroFolder();
+    this.needsReconnect = false;
+    this.reconnectEmail = (blob.options && (blob.options as any).email) || this.reconnectEmail;
+    setActiveProviderKey('mega');
+  }
+
+  /** Restore on app load: session blob first, then one-time legacy email/password migration. */
+  async restorePersistedSession(): Promise<void> {
     if (!browser) return;
 
+    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (sessionRaw) {
+      try {
+        await this.restoreSession(JSON.parse(sessionRaw) as MegaSessionBlob);
+        console.log('Restored MEGA session from stored token');
+      } catch (error) {
+        if (isSessionExpiredError(error) || isAuthRejectionError(error)) {
+          console.error('Stored MEGA session invalid; reconnect required');
+          this.markSessionExpired();
+        } else {
+          console.warn('Failed to restore MEGA session (temporary error), will retry:', error);
+        }
+      }
+      return;
+    }
+
+    // Legacy migration: log in with stored email/password, which persists a session blob
+    // and removes the password (see login()/persistSession()).
     const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
     const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-
     if (email && password) {
       try {
         await this.login({ email, password });
-        console.log('Restored MEGA session from stored credentials');
+        console.log('Migrated MEGA legacy credentials to session token');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-
-        // Only clear credentials if they're actually invalid (wrong password/email)
-        // Don't clear on network errors, rate limiting, or temporary server issues
-        const isAuthError =
-          errorMessage.includes('ENOENT') ||
-          errorMessage.includes('incorrect') ||
-          errorMessage.includes('invalid') ||
-          errorMessage.includes('authentication failed') ||
-          errorMessage.includes('wrong password');
-
-        if (isAuthError) {
-          console.error('MEGA credentials invalid, clearing stored credentials');
-          this.logout();
+        if (isMfaRequiredError(error)) {
+          // Account enabled 2FA after the password was stored — cannot migrate silently.
+          this.reconnectEmail = email;
+          this.markSessionExpired();
+        } else if (isAuthRejectionError(error)) {
+          this.reconnectEmail = email;
+          this.markSessionExpired();
         } else {
-          // Temporary error - keep credentials for retry later
-          console.warn(
-            'Failed to restore MEGA session (temporary error), will retry on next sync:',
-            errorMessage
-          );
+          console.warn('MEGA migration deferred (temporary error), keeping legacy creds:', error);
         }
       }
     }
   }
 
   /**
-   * Reinitialize the MEGA connection to get a fresh storage cache
-   * This is needed when files change on other devices and the cache becomes stale
+   * Refresh the file-tree cache by rebuilding the session from the stored token.
+   * No password and no re-login round-trip — fromJSON + reload only.
    */
   private async reinitialize(): Promise<void> {
     if (!browser) return;
 
-    // Save current credentials
-    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-
-    if (!email || !password) {
-      console.warn('Cannot reinitialize MEGA: no stored credentials');
+    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (!sessionRaw) {
+      console.warn('Cannot reinitialize MEGA: no stored session');
       return;
     }
 
-    console.log('🔄 Reinitializing MEGA connection to refresh cache...');
-
-    // Save current storage in case reconnection fails
     const oldStorage = this.storage;
-    const oldMokuroFolder = this.mokuroFolder;
-
-    // Clear current storage
-    this.storage = null;
-    this.mokuroFolder = null;
-
-    // Reconnect with fresh credentials
     try {
-      await this.login({ email, password });
-      console.log('✅ MEGA connection reinitialized successfully');
+      const { Storage } = await import('megajs');
+      const storage: any = Storage.fromJSON(JSON.parse(sessionRaw));
+      await storage.reload(true);
+      this.storage = storage;
+      this.mokuroFolder = null;
+      // Release the previous session's keepalive/sc listeners.
+      if (oldStorage && typeof oldStorage.close === 'function') {
+        try {
+          await oldStorage.close();
+        } catch {
+          /* best effort */
+        }
+      }
+      console.log('✅ MEGA cache reinitialized from session token');
     } catch (error) {
-      // Restore previous connection on failure so user doesn't get logged out
-      console.error('Failed to reinitialize MEGA, restoring previous connection:', error);
+      if (isSessionExpiredError(error)) {
+        this.markSessionExpired();
+        return;
+      }
+      // Transient error: keep the existing (stale) storage so we don't appear logged out.
       this.storage = oldStorage;
-      this.mokuroFolder = oldMokuroFolder;
-
-      // Don't throw - allow operations to continue with stale cache
-      // This prevents temporary network issues from appearing as logouts
-      console.warn('Continuing with potentially stale MEGA cache');
+      console.warn('Continuing with potentially stale MEGA cache:', error);
     }
   }
 
