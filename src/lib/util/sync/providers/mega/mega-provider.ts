@@ -12,13 +12,26 @@ import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import {
+  isMfaRequiredError,
+  isSessionExpiredError,
+  isAuthRejectionError,
+  sanitizeSessionBlob,
+  encodeMegaKey,
+  type MegaSessionBlob
+} from './mega-session';
 
 interface MegaCredentials {
   email: string;
   password: string;
+  /** One-time TOTP code for 2FA-enabled accounts. Never persisted. */
+  secondFactorCode?: string;
 }
 
 const STORAGE_KEYS = {
+  /** Sanitized Storage.toJSON() blob (sid + master key). The only persisted secret. */
+  SESSION: 'mega_session',
+  // Legacy keys — read for migration, removed on first successful login.
   EMAIL: 'mega_email',
   PASSWORD: 'mega_password',
   FOLDER_PATH: 'mega_folder_path'
@@ -136,16 +149,15 @@ async function retryWithCacheRefresh<T>(
 export class MegaProvider implements SyncProvider {
   readonly type = 'mega' as const;
   readonly name = 'MEGA';
-  readonly supportsWorkerDownload = true; // Workers can download via MEGA API from share links
+  readonly supportsWorkerDownload = true; // Workers download owned nodes via sid + per-file key
   readonly uploadConcurrencyLimit = 6;
   readonly downloadConcurrencyLimit = 6;
 
   private storage: any = null;
   private mokuroFolder: any = null;
+  private needsReconnect = false;
+  private reconnectEmail: string | null = null;
   private initPromise: Promise<void>;
-  private workerShareLinksToCleanup = new Set<string>();
-  private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
-  private static readonly WORKER_SHARE_LINK_THROTTLE_MS = 200;
 
   // Mutexes preventing concurrent uploads from racing to create the same folder.
   // Without these, N parallel uploads each find no folder and call mkdir N times.
@@ -154,7 +166,7 @@ export class MegaProvider implements SyncProvider {
 
   constructor() {
     if (browser) {
-      this.initPromise = this.loadPersistedCredentials();
+      this.initPromise = this.restorePersistedSession();
     } else {
       this.initPromise = Promise.resolve();
     }
@@ -173,7 +185,8 @@ export class MegaProvider implements SyncProvider {
   }
 
   getStatus(): ProviderStatus {
-    const hasCredentials = !!(
+    const hasSession = !!(browser && localStorage.getItem(STORAGE_KEYS.SESSION));
+    const hasLegacy = !!(
       browser &&
       localStorage.getItem(STORAGE_KEYS.EMAIL) &&
       localStorage.getItem(STORAGE_KEYS.PASSWORD)
@@ -182,14 +195,56 @@ export class MegaProvider implements SyncProvider {
 
     return {
       isAuthenticated: isConnected,
-      hasStoredCredentials: hasCredentials,
-      needsAttention: false,
+      hasStoredCredentials: hasSession || hasLegacy,
+      needsAttention: this.needsReconnect,
       statusMessage: isConnected
         ? 'Connected to MEGA'
-        : hasCredentials
-          ? 'Configured (not connected)'
-          : 'Not configured'
+        : this.needsReconnect
+          ? 'MEGA session expired — please reconnect'
+          : hasSession || hasLegacy
+            ? 'Configured (not connected)'
+            : 'Not configured'
     };
+  }
+
+  /** Drop the stored session and flag the UI to prompt for reconnect (password never stored). */
+  private markSessionExpired(): void {
+    // Capture email for reconnect pre-fill before clearing.
+    if (browser && !this.reconnectEmail) {
+      const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+      if (sessionRaw) {
+        try {
+          this.reconnectEmail = JSON.parse(sessionRaw)?.options?.email ?? null;
+        } catch {
+          /* ignore */
+        }
+      }
+      this.reconnectEmail = this.reconnectEmail ?? localStorage.getItem(STORAGE_KEYS.EMAIL);
+    }
+
+    this.storage = null;
+    this.mokuroFolder = null;
+    this.needsReconnect = true;
+
+    if (browser) {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
+      // Keep active_cloud_provider so the UI still shows MEGA in a needs-attention state.
+    }
+  }
+
+  /** Email captured for reconnect pre-fill (mirrors WebDAV's getLastUsername). */
+  getLastUsername(): string | null {
+    if (this.reconnectEmail) return this.reconnectEmail;
+    if (!browser) return null;
+    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (sessionRaw) {
+      try {
+        return JSON.parse(sessionRaw)?.options?.email ?? null;
+      } catch {
+        return null;
+      }
+    }
+    return localStorage.getItem(STORAGE_KEYS.EMAIL);
   }
 
   async login(credentials?: ProviderCredentials): Promise<void> {
@@ -197,47 +252,43 @@ export class MegaProvider implements SyncProvider {
       throw new ProviderError('Email and password are required', 'mega', 'INVALID_CREDENTIALS');
     }
 
-    const { email, password } = credentials as MegaCredentials;
+    const { email, password, secondFactorCode } = credentials as MegaCredentials;
 
     try {
       // Dynamically import megajs to reduce initial bundle size
       const { Storage } = await import('megajs');
 
-      // Initialize MEGA storage
-      this.storage = await new Promise((resolve, reject) => {
-        const storage = new Storage(
-          {
-            email,
-            password
-          },
-          (error: Error | null) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve(storage);
-            }
-          }
+      // Fresh interactive login. The constructor cb fires after the tree loads
+      // (autoload:true), so the Storage is ready once this promise resolves.
+      // keepalive:false disables megajs's server-change (sc) long-poll. We never use
+      // push notifications (we reload explicitly), and that poll's handler crashes on
+      // delete events ("Cannot read properties of undefined (reading 'parent')").
+      const storage: any = await new Promise((resolve, reject) => {
+        const s = new Storage(
+          { email, password, secondFactorCode, autoload: true, keepalive: false } as any,
+          (error: Error | null) => (error ? reject(error) : resolve(s))
         );
       });
 
-      // Wait for storage to be ready
-      await this.waitForReady();
-
-      // Ensure mokuro folder exists
+      this.storage = storage;
       await this.ensureMokuroFolder();
-
-      // Store credentials in localStorage
-      if (browser) {
-        localStorage.setItem(STORAGE_KEYS.EMAIL, email);
-        localStorage.setItem(STORAGE_KEYS.PASSWORD, password);
-      }
-
-      // Set the active provider key for lazy loading on next startup
+      this.persistSession();
+      this.needsReconnect = false;
+      this.reconnectEmail = email;
       setActiveProviderKey('mega');
       console.log('✅ MEGA login successful');
     } catch (error) {
       this.storage = null;
       this.mokuroFolder = null;
+
+      if (isMfaRequiredError(error)) {
+        throw new ProviderError(
+          'MEGA requires a two-factor authentication code',
+          'mega',
+          'MFA_REQUIRED',
+          false
+        );
+      }
 
       throw new ProviderError(
         `MEGA login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -248,122 +299,126 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
+  /** Persist the current session as a sanitized toJSON() blob; drop legacy keys. */
+  private persistSession(): void {
+    if (!browser || !this.storage) return;
+    const blob: MegaSessionBlob = sanitizeSessionBlob(this.storage.toJSON());
+    localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(blob));
+    localStorage.removeItem(STORAGE_KEYS.EMAIL);
+    localStorage.removeItem(STORAGE_KEYS.PASSWORD);
+  }
+
   async logout(): Promise<void> {
     this.storage = null;
     this.mokuroFolder = null;
+    this.needsReconnect = false;
+    this.reconnectEmail = null;
 
     if (browser) {
+      localStorage.removeItem(STORAGE_KEYS.SESSION);
       localStorage.removeItem(STORAGE_KEYS.EMAIL);
       localStorage.removeItem(STORAGE_KEYS.PASSWORD);
       localStorage.removeItem(STORAGE_KEYS.FOLDER_PATH);
     }
 
-    // Clear the active provider key
     clearActiveProviderKey();
     console.log('MEGA logged out');
   }
 
-  async loadPersistedCredentials(): Promise<void> {
+  /** Rebuild an authenticated Storage from a saved session blob (no password, no login round-trip). */
+  private async restoreSession(blob: MegaSessionBlob): Promise<void> {
+    const { Storage } = await import('megajs');
+    // Force keepalive:false so the restored session never starts the crashing sc poll,
+    // even for blobs persisted before that default changed.
+    const storage: any = Storage.fromJSON({
+      ...(blob as any),
+      options: { ...((blob as any).options ?? {}), keepalive: false }
+    });
+    // fromJSON does no network and loads no tree; reload populates root + files.
+    // A dead session throws ESID here.
+    await storage.reload(true);
+    this.storage = storage;
+    this.mokuroFolder = null;
+    await this.ensureMokuroFolder();
+    this.needsReconnect = false;
+    this.reconnectEmail = (blob.options && (blob.options as any).email) || this.reconnectEmail;
+    setActiveProviderKey('mega');
+  }
+
+  /** Restore on app load: session blob first, then one-time legacy email/password migration. */
+  async restorePersistedSession(): Promise<void> {
     if (!browser) return;
 
+    const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (sessionRaw) {
+      try {
+        await this.restoreSession(JSON.parse(sessionRaw) as MegaSessionBlob);
+        console.log('Restored MEGA session from stored token');
+      } catch (error) {
+        if (isSessionExpiredError(error) || isAuthRejectionError(error)) {
+          console.error('Stored MEGA session invalid; reconnect required');
+          this.markSessionExpired();
+        } else {
+          console.warn('Failed to restore MEGA session (temporary error), will retry:', error);
+        }
+      }
+      return;
+    }
+
+    // Legacy migration: log in with stored email/password, which persists a session blob
+    // and removes the password (see login()/persistSession()).
     const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
     const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-
     if (email && password) {
       try {
         await this.login({ email, password });
-        console.log('Restored MEGA session from stored credentials');
+        console.log('Migrated MEGA legacy credentials to session token');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-
-        // Only clear credentials if they're actually invalid (wrong password/email)
-        // Don't clear on network errors, rate limiting, or temporary server issues
-        const isAuthError =
-          errorMessage.includes('ENOENT') ||
-          errorMessage.includes('incorrect') ||
-          errorMessage.includes('invalid') ||
-          errorMessage.includes('authentication failed') ||
-          errorMessage.includes('wrong password');
-
-        if (isAuthError) {
-          console.error('MEGA credentials invalid, clearing stored credentials');
-          this.logout();
+        if (isMfaRequiredError(error)) {
+          // Account enabled 2FA after the password was stored — cannot migrate silently.
+          this.reconnectEmail = email;
+          this.markSessionExpired();
+        } else if (isAuthRejectionError(error)) {
+          this.reconnectEmail = email;
+          this.markSessionExpired();
         } else {
-          // Temporary error - keep credentials for retry later
-          console.warn(
-            'Failed to restore MEGA session (temporary error), will retry on next sync:',
-            errorMessage
-          );
+          console.warn('MEGA migration deferred (temporary error), keeping legacy creds:', error);
         }
       }
     }
   }
 
-  private waitForReady(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // If storage is already ready, resolve immediately
-      if (this.storage.ready) {
-        resolve();
-        return;
-      }
-
-      // Wait for ready event
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout waiting for MEGA storage to be ready'));
-      }, 30000); // 30 second timeout
-
-      this.storage.once('ready', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      // Also listen for error events
-      this.storage.once('error', (error: Error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-    });
-  }
-
   /**
-   * Reinitialize the MEGA connection to get a fresh storage cache
-   * This is needed when files change on other devices and the cache becomes stale
+   * Refresh the file-tree cache by rebuilding the session from the stored token.
+   * No password and no re-login round-trip — fromJSON + reload only.
    */
   private async reinitialize(): Promise<void> {
     if (!browser) return;
 
-    // Save current credentials
-    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-
-    if (!email || !password) {
-      console.warn('Cannot reinitialize MEGA: no stored credentials');
+    // No live session to refresh — fall back to restoring from the stored token.
+    if (!this.storage) {
+      await this.restorePersistedSession();
       return;
     }
 
-    console.log('🔄 Reinitializing MEGA connection to refresh cache...');
-
-    // Save current storage in case reconnection fails
-    const oldStorage = this.storage;
-    const oldMokuroFolder = this.mokuroFolder;
-
-    // Clear current storage
-    this.storage = null;
-    this.mokuroFolder = null;
-
-    // Reconnect with fresh credentials
     try {
-      await this.login({ email, password });
-      console.log('✅ MEGA connection reinitialized successfully');
+      // Refresh the file tree on the EXISTING session, in place.
+      //
+      // We must NOT rebuild the storage and close the old one: megajs
+      // `storage.close()` issues `{a:'sml'}`, which TERMINATES the session sid
+      // server-side. Every storage (login, restore, reinitialize, upload worker)
+      // reuses the one persisted sid, so closing any of them invalidates the
+      // stored token and makes every later request fail with ESID (-15).
+      await this.storage.reload(true);
+      this.mokuroFolder = null;
+      console.log('✅ MEGA cache reinitialized (in-place reload)');
     } catch (error) {
-      // Restore previous connection on failure so user doesn't get logged out
-      console.error('Failed to reinitialize MEGA, restoring previous connection:', error);
-      this.storage = oldStorage;
-      this.mokuroFolder = oldMokuroFolder;
-
-      // Don't throw - allow operations to continue with stale cache
-      // This prevents temporary network issues from appearing as logouts
-      console.warn('Continuing with potentially stale MEGA cache');
+      if (isSessionExpiredError(error)) {
+        this.markSessionExpired();
+        return;
+      }
+      // Transient error: keep the existing storage so we don't appear logged out.
+      console.warn('Continuing with potentially stale MEGA cache:', error);
     }
   }
 
@@ -1000,116 +1055,6 @@ export class MegaProvider implements SyncProvider {
   }
 
   /**
-   * Create a temporary share link for a file
-   * Returns a public download URL that includes the decryption key
-   * Uses exponential backoff to handle MEGA rate limiting
-   *
-   * IMPORTANT: MEGA likely reuses existing share links, so calling this multiple
-   * times on the same file returns the same URL. This means orphaned links from
-   * previous failed cleanup attempts are automatically reused - a self-healing behavior.
-   */
-  async createShareLink(fileId: string): Promise<string> {
-    if (!this.isAuthenticated()) {
-      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
-    }
-
-    try {
-      // Wrap with cache refresh retry for stale cache, then backoff for rate limiting
-      return await retryWithCacheRefresh(
-        async () => {
-          return await retryWithBackoff(
-            async () => {
-              // Find the file by ID
-              const files = Object.values(this.storage.files || {});
-              const file = files.find(
-                (f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-              );
-
-              if (!file) {
-                throw new Error('File not found');
-              }
-
-              return new Promise<string>((resolve, reject) => {
-                // Create/get share link with decryption key (noKey: false is default)
-                // NOTE: If file already has a share link, MEGA API likely returns the existing one
-                (file as any).link((error: Error | null, url: string) => {
-                  if (error) {
-                    reject(error);
-                  } else {
-                    resolve(url);
-                  }
-                });
-              });
-            },
-            8, // maxRetries
-            500, // baseDelay (ms)
-            `Create MEGA share link (${fileId})`
-          );
-        },
-        `Create MEGA share link (${fileId})`,
-        () => this.reinitialize()
-      );
-    } catch (error) {
-      throw new ProviderError(
-        `Failed to create share link: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'mega',
-        'LINK_FAILED',
-        false,
-        true
-      );
-    }
-  }
-
-  /**
-   * Delete a share link for a file
-   * This removes the public share link to prevent clutter
-   */
-  async deleteShareLink(fileId: string): Promise<void> {
-    if (!this.isAuthenticated()) {
-      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
-    }
-
-    try {
-      // Wrap delete in retry logic to handle stale cache
-      await retryWithCacheRefresh(
-        async () => {
-          // Find the file by ID
-          const files = Object.values(this.storage.files || {});
-          const file = files.find(
-            (f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-          );
-
-          if (!file) {
-            throw new Error('File not found');
-          }
-
-          return new Promise<void>((resolve, reject) => {
-            // Unshare the file (removes the share link)
-            (file as any).unshare((error: Error | null) => {
-              if (error) {
-                reject(error);
-              } else {
-                console.log(`✅ Deleted MEGA share link for file ${fileId}`);
-                resolve();
-              }
-            });
-          });
-        },
-        `Delete MEGA share link for file ${fileId}`,
-        () => this.reinitialize()
-      );
-    } catch (error) {
-      throw new ProviderError(
-        `Failed to delete share link: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'mega',
-        'UNSHARE_FAILED',
-        false,
-        true
-      );
-    }
-  }
-
-  /**
    * Delete an entire series folder
    */
   async deleteSeriesFolder(seriesTitle: string): Promise<void> {
@@ -1196,9 +1141,9 @@ export class MegaProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     if (!browser) return {};
-    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-    return { megaEmail: email, megaPassword: password };
+    const session = localStorage.getItem(STORAGE_KEYS.SESSION);
+    if (!session) return {};
+    return { megaSession: session };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<void> {
@@ -1207,29 +1152,26 @@ export class MegaProvider implements SyncProvider {
   }
 
   async getWorkerDownloadCredentials(fileId: string): Promise<Record<string, any>> {
-    const result = await (this.workerShareLinkMutex = this.workerShareLinkMutex.then(async () => {
-      await new Promise((resolve) =>
-        setTimeout(resolve, MegaProvider.WORKER_SHARE_LINK_THROTTLE_MS)
-      );
-
-      const shareUrl = await this.createShareLink(fileId);
-      this.workerShareLinksToCleanup.add(fileId);
-      return { megaShareUrl: shareUrl };
-    }));
-
-    return result || {};
-  }
-
-  async cleanupWorkerDownload(fileId: string): Promise<void> {
-    if (!this.workerShareLinksToCleanup.has(fileId)) return;
-
-    try {
-      await this.deleteShareLink(fileId);
-    } catch (error) {
-      console.warn(`Failed to cleanup MEGA share link for ${fileId}:`, error);
-    } finally {
-      this.workerShareLinksToCleanup.delete(fileId);
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
+    const node = this.getNodeById(fileId);
+    if (!node || !node.key) {
+      throw new ProviderError(
+        `MEGA node not found or missing key: ${fileId}`,
+        'mega',
+        'NODE_NOT_FOUND',
+        false,
+        true
+      );
+    }
+    // sid authorizes the owned-node download; the per-file key decrypts it.
+    // The download worker never receives the account master key.
+    return {
+      sid: this.storage.sid,
+      nodeId: node.nodeId,
+      fileKey: encodeMegaKey(node.key as Uint8Array)
+    };
   }
 
   /**

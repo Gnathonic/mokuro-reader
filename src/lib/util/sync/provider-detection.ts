@@ -50,10 +50,11 @@ function detectProviderFromCredentials(): ProviderType | null {
     return 'google-drive';
   }
 
-  // Check MEGA credentials
+  // Check MEGA credentials (new session token or legacy email/password)
+  const megaSession = localStorage.getItem('mega_session');
   const megaEmail = localStorage.getItem('mega_email');
   const megaPassword = localStorage.getItem('mega_password');
-  if (megaEmail && megaPassword) {
+  if (megaSession || (megaEmail && megaPassword)) {
     return 'mega';
   }
 
