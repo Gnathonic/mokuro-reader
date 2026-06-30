@@ -23,17 +23,19 @@ function messageOf(error: unknown): string {
 
 /** MEGA signals "2FA code required" only via the EMFAREQUIRED (-26) error message. */
 export function isMfaRequiredError(error: unknown): boolean {
-  return /EMFAREQUIRED|Multi-Factor|-26/i.test(messageOf(error));
+  return /EMFAREQUIRED|Multi-Factor|\(-26\)/i.test(messageOf(error));
 }
 
 /** MEGA signals an invalid/expired session via ESID (-15). */
 export function isSessionExpiredError(error: unknown): boolean {
-  return /ESID|-15|expired user session|please relogin/i.test(messageOf(error));
+  return /ESID|\(-15\)|expired user session|please relogin/i.test(messageOf(error));
 }
 
 /** Genuine credential rejection (wrong email/password) vs transient/network errors. */
 export function isAuthRejectionError(error: unknown): boolean {
-  return /ENOENT|incorrect|invalid|authentication failed|wrong password/i.test(messageOf(error));
+  return /ENOENT|incorrect|invalid credentials|authentication failed|wrong password/i.test(
+    messageOf(error)
+  );
 }
 
 /** Strip single-use / sensitive fields from a `toJSON()` blob before persisting. */
