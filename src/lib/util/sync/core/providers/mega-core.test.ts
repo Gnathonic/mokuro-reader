@@ -54,7 +54,23 @@ vi.mock('megajs', () => {
   return { Storage: MockStorage, File: MockFile };
 });
 
-import { megaCore } from './mega-core';
+import { megaCore, isImageUpload } from './mega-core';
+
+describe('isImageUpload (MEGA thumbnail eligibility)', () => {
+  it('detects images by mime type', () => {
+    expect(isImageUpload('image/webp', 'cover.bin')).toBe(true);
+    expect(isImageUpload('image/jpeg', 'x')).toBe(true);
+  });
+  it('detects images by filename extension when mime is missing/generic', () => {
+    expect(isImageUpload(undefined, 'thumb.webp')).toBe(true);
+    expect(isImageUpload('application/octet-stream', 'thumb.PNG')).toBe(true);
+  });
+  it('rejects non-images (cbz, json)', () => {
+    expect(isImageUpload('application/x-cbz', 'Vol 1.cbz')).toBe(false);
+    expect(isImageUpload('application/json', 'volume-data.json')).toBe(false);
+    expect(isImageUpload(undefined, 'series.mokuro')).toBe(false);
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

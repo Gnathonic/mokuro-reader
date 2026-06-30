@@ -74,6 +74,83 @@ function getDownloadApi(sid: string): any {
   return api;
 }
 
+const IMAGE_MIME_RE = /^image\//;
+const IMAGE_EXT_RE = /\.(webp|jpe?g|png|gif|bmp|avif)$/i;
+
+/** Whether an upload is an image MEGA's browser could show a thumbnail for. */
+export function isImageUpload(mimeType: string | undefined, filename: string): boolean {
+  if (mimeType && IMAGE_MIME_RE.test(mimeType)) return true;
+  return IMAGE_EXT_RE.test(filename);
+}
+
+/**
+ * Render a MEGA-style thumbnail (120x120 JPEG, the type-0 convention) from an image
+ * blob, in the worker. Returns null if the worker lacks OffscreenCanvas/createImageBitmap
+ * or decoding fails — callers treat thumbnails as best-effort.
+ */
+async function renderMegaThumbnail(blob: Blob): Promise<Uint8Array | null> {
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
+    return null;
+  }
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    const SIZE = 120;
+    const canvas = new OffscreenCanvas(SIZE, SIZE);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    // Cover-fit: scale to fill the square, then center-crop.
+    const scale = Math.max(SIZE / bitmap.width, SIZE / bitmap.height);
+    const dw = bitmap.width * scale;
+    const dh = bitmap.height * scale;
+    ctx.drawImage(bitmap, (SIZE - dw) / 2, (SIZE - dh) / 2, dw, dh);
+    const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+    return new Uint8Array(await jpeg.arrayBuffer());
+  } catch {
+    return null;
+  } finally {
+    bitmap?.close?.();
+  }
+}
+
+/**
+ * Wrap bytes as a minimal readable source for megajs's streamToCb, which only uses
+ * .on('data'|'end'|'error') and Buffer.concat. This avoids needing megajs's internal
+ * (non-exported) Buffer class. The emit is deferred so streamToCb registers its handlers
+ * synchronously first.
+ */
+function megaSourceFromBytes(bytes: Uint8Array): any {
+  const handlers: Record<string, ((arg?: any) => void) | undefined> = {};
+  queueMicrotask(() => {
+    handlers['data']?.(bytes);
+    handlers['end']?.();
+  });
+  return {
+    on(event: string, cb: (arg?: any) => void) {
+      handlers[event] = cb;
+      return this;
+    }
+  };
+}
+
+/** Attach a MEGA thumbnail file-attribute to an uploaded image node. Best-effort; never throws. */
+async function attachMegaThumbnail(fileNode: any, blob: Blob): Promise<void> {
+  if (!fileNode || typeof fileNode.uploadAttribute !== 'function') return;
+  const thumb = await renderMegaThumbnail(blob);
+  if (!thumb) return;
+  await new Promise<void>((resolve) => {
+    try {
+      fileNode.uploadAttribute('thumbnail', megaSourceFromBytes(thumb), (error: unknown) => {
+        if (error) console.warn('Worker: MEGA thumbnail attach failed (non-fatal):', error);
+        resolve();
+      });
+    } catch (error) {
+      console.warn('Worker: MEGA thumbnail attach threw (non-fatal):', error);
+      resolve();
+    }
+  });
+}
+
 export const megaCore: CloudProviderCore = {
   async downloadFile({ credentials, onProgress }): Promise<ArrayBuffer> {
     const sid = requireCredentialString(credentials, 'sid', 'MEGA session id');
@@ -120,7 +197,14 @@ export const megaCore: CloudProviderCore = {
     });
   },
 
-  async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
+  async uploadFile({
+    seriesTitle,
+    filename,
+    blob,
+    credentials,
+    onProgress,
+    mimeType
+  }): Promise<string> {
     const session = requireCredentialString(credentials, 'megaSession', 'MEGA session');
     const storage = await getUploadStorage(session);
 
@@ -145,6 +229,7 @@ export const megaCore: CloudProviderCore = {
 
       const uploadStream: any = seriesFolder.upload({ name: filename, size: blob.size });
       let uploadedFileId: string | undefined;
+      let uploadedFile: any;
 
       await new Promise<void>((resolve, reject) => {
         let offset = 0;
@@ -158,6 +243,7 @@ export const megaCore: CloudProviderCore = {
         });
 
         uploadStream.on('complete', (file: any) => {
+          uploadedFile = file;
           uploadedFileId = file?.nodeId || file?.id || uploadedFileId;
           resolve();
         });
@@ -184,6 +270,12 @@ export const megaCore: CloudProviderCore = {
 
       if (!uploadedFileId) {
         throw new Error('MEGA upload succeeded but did not return file ID');
+      }
+
+      // Give image files a thumbnail so MEGA's file browser previews them without opening.
+      // Best-effort: a failure here never fails the upload.
+      if (isImageUpload(mimeType, filename)) {
+        await attachMegaThumbnail(uploadedFile, blob);
       }
 
       return uploadedFileId;
