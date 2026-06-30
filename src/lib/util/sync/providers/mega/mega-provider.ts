@@ -17,6 +17,7 @@ import {
   isSessionExpiredError,
   isAuthRejectionError,
   sanitizeSessionBlob,
+  encodeMegaKey,
   type MegaSessionBlob
 } from './mega-session';
 
@@ -148,7 +149,7 @@ async function retryWithCacheRefresh<T>(
 export class MegaProvider implements SyncProvider {
   readonly type = 'mega' as const;
   readonly name = 'MEGA';
-  readonly supportsWorkerDownload = true; // Workers can download via MEGA API from share links
+  readonly supportsWorkerDownload = true; // Workers download owned nodes via sid + per-file key
   readonly uploadConcurrencyLimit = 6;
   readonly downloadConcurrencyLimit = 6;
 
@@ -157,9 +158,6 @@ export class MegaProvider implements SyncProvider {
   private needsReconnect = false;
   private reconnectEmail: string | null = null;
   private initPromise: Promise<void>;
-  private workerShareLinksToCleanup = new Set<string>();
-  private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
-  private static readonly WORKER_SHARE_LINK_THROTTLE_MS = 200;
 
   // Mutexes preventing concurrent uploads from racing to create the same folder.
   // Without these, N parallel uploads each find no folder and call mkdir N times.
@@ -1063,116 +1061,6 @@ export class MegaProvider implements SyncProvider {
   }
 
   /**
-   * Create a temporary share link for a file
-   * Returns a public download URL that includes the decryption key
-   * Uses exponential backoff to handle MEGA rate limiting
-   *
-   * IMPORTANT: MEGA likely reuses existing share links, so calling this multiple
-   * times on the same file returns the same URL. This means orphaned links from
-   * previous failed cleanup attempts are automatically reused - a self-healing behavior.
-   */
-  async createShareLink(fileId: string): Promise<string> {
-    if (!this.isAuthenticated()) {
-      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
-    }
-
-    try {
-      // Wrap with cache refresh retry for stale cache, then backoff for rate limiting
-      return await retryWithCacheRefresh(
-        async () => {
-          return await retryWithBackoff(
-            async () => {
-              // Find the file by ID
-              const files = Object.values(this.storage.files || {});
-              const file = files.find(
-                (f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-              );
-
-              if (!file) {
-                throw new Error('File not found');
-              }
-
-              return new Promise<string>((resolve, reject) => {
-                // Create/get share link with decryption key (noKey: false is default)
-                // NOTE: If file already has a share link, MEGA API likely returns the existing one
-                (file as any).link((error: Error | null, url: string) => {
-                  if (error) {
-                    reject(error);
-                  } else {
-                    resolve(url);
-                  }
-                });
-              });
-            },
-            8, // maxRetries
-            500, // baseDelay (ms)
-            `Create MEGA share link (${fileId})`
-          );
-        },
-        `Create MEGA share link (${fileId})`,
-        () => this.reinitialize()
-      );
-    } catch (error) {
-      throw new ProviderError(
-        `Failed to create share link: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'mega',
-        'LINK_FAILED',
-        false,
-        true
-      );
-    }
-  }
-
-  /**
-   * Delete a share link for a file
-   * This removes the public share link to prevent clutter
-   */
-  async deleteShareLink(fileId: string): Promise<void> {
-    if (!this.isAuthenticated()) {
-      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
-    }
-
-    try {
-      // Wrap delete in retry logic to handle stale cache
-      await retryWithCacheRefresh(
-        async () => {
-          // Find the file by ID
-          const files = Object.values(this.storage.files || {});
-          const file = files.find(
-            (f: any) => (f.nodeId === fileId || f.id === fileId) && !f.directory
-          );
-
-          if (!file) {
-            throw new Error('File not found');
-          }
-
-          return new Promise<void>((resolve, reject) => {
-            // Unshare the file (removes the share link)
-            (file as any).unshare((error: Error | null) => {
-              if (error) {
-                reject(error);
-              } else {
-                console.log(`✅ Deleted MEGA share link for file ${fileId}`);
-                resolve();
-              }
-            });
-          });
-        },
-        `Delete MEGA share link for file ${fileId}`,
-        () => this.reinitialize()
-      );
-    } catch (error) {
-      throw new ProviderError(
-        `Failed to delete share link: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'mega',
-        'UNSHARE_FAILED',
-        false,
-        true
-      );
-    }
-  }
-
-  /**
    * Delete an entire series folder
    */
   async deleteSeriesFolder(seriesTitle: string): Promise<void> {
@@ -1269,29 +1157,26 @@ export class MegaProvider implements SyncProvider {
   }
 
   async getWorkerDownloadCredentials(fileId: string): Promise<Record<string, any>> {
-    const result = await (this.workerShareLinkMutex = this.workerShareLinkMutex.then(async () => {
-      await new Promise((resolve) =>
-        setTimeout(resolve, MegaProvider.WORKER_SHARE_LINK_THROTTLE_MS)
-      );
-
-      const shareUrl = await this.createShareLink(fileId);
-      this.workerShareLinksToCleanup.add(fileId);
-      return { megaShareUrl: shareUrl };
-    }));
-
-    return result || {};
-  }
-
-  async cleanupWorkerDownload(fileId: string): Promise<void> {
-    if (!this.workerShareLinksToCleanup.has(fileId)) return;
-
-    try {
-      await this.deleteShareLink(fileId);
-    } catch (error) {
-      console.warn(`Failed to cleanup MEGA share link for ${fileId}:`, error);
-    } finally {
-      this.workerShareLinksToCleanup.delete(fileId);
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
+    const node = this.getNodeById(fileId);
+    if (!node || !node.key) {
+      throw new ProviderError(
+        `MEGA node not found or missing key: ${fileId}`,
+        'mega',
+        'NODE_NOT_FOUND',
+        false,
+        true
+      );
+    }
+    // sid authorizes the owned-node download; the per-file key decrypts it.
+    // The download worker never receives the account master key.
+    return {
+      sid: this.storage.sid,
+      nodeId: node.nodeId,
+      fileKey: encodeMegaKey(node.key as Uint8Array)
+    };
   }
 
   /**

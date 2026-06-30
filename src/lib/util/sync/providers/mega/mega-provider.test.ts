@@ -204,3 +204,23 @@ describe('MegaProvider.getWorkerUploadCredentials()', () => {
     expect(creds).not.toHaveProperty('megaEmail');
   });
 });
+
+describe('MegaProvider.getWorkerDownloadCredentials() (Phase 2)', () => {
+  it('returns sid + nodeId + encoded per-file key, never a share link or master key', async () => {
+    localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'SID123', options: {} }));
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    // Seed the restored storage's tree with a target node.
+    (provider as any).storage = {
+      sid: 'SID123',
+      files: {
+        node1: { nodeId: 'node1', directory: false, key: new Uint8Array([255, 255, 255]) }
+      }
+    };
+
+    const creds = await provider.getWorkerDownloadCredentials('node1');
+    expect(creds).toEqual({ sid: 'SID123', nodeId: 'node1', fileKey: '____' });
+    expect(creds).not.toHaveProperty('megaShareUrl');
+  });
+});
