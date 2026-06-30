@@ -93,6 +93,15 @@ describe('MegaProvider.login()', () => {
     expect(storageState.lastOptions.secondFactorCode).toBe('654321');
   });
 
+  it('logs in with keepalive disabled (no crashing server-change poll)', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    expect(storageState.lastOptions.keepalive).toBe(false);
+  });
+
   it('maps EMFAREQUIRED to a MFA_REQUIRED ProviderError', async () => {
     storageState.loginError = new Error('EMFAREQUIRED (-26): Multi-Factor Authentication Required');
     const provider = new MegaProvider();

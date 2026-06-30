@@ -36,7 +36,12 @@ async function getUploadStorage(session: string): Promise<Storage> {
 
   uploadSessionKey = sessionKey;
   const pendingSession = (async () => {
-    const storage = Storage.fromJSON(parsed) as any;
+    // keepalive:false: no server-change poll in the worker session (we don't need it,
+    // and its handler crashes on delete events).
+    const storage = Storage.fromJSON({
+      ...parsed,
+      options: { ...(parsed.options ?? {}), keepalive: false }
+    }) as any;
     // fromJSON loads no tree; reload populates storage.root for folder navigation/upload.
     await storage.reload(true);
     return storage as Storage;

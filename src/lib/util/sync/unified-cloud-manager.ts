@@ -197,6 +197,46 @@ class UnifiedCloudManager {
     }
   }
 
+  /**
+   * Delete a backed-up volume and ALL its managed cloud files (archive + sidecars).
+   * deleteFile() removes only a single node, which leaves the .mokuro and thumbnail
+   * sidecars orphaned. Sidecars are deleted first and the .cbz archive last, so a
+   * sidecar failure leaves the volume still marked backed-up (and retryable) rather
+   * than half-deleted.
+   */
+  async deleteManagedVolume(seriesTitle: string, volumeTitle: string): Promise<void> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
+
+    const files = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    if (files.length === 0) return;
+
+    const ordered = [...files].sort(
+      (a, b) =>
+        Number(normalizeCloudPath(a.path).endsWith('.cbz')) -
+        Number(normalizeCloudPath(b.path).endsWith('.cbz'))
+    );
+
+    const cache = cacheManager.getCache(provider.type);
+    const failures: string[] = [];
+    for (const file of ordered) {
+      try {
+        await provider.deleteFile(file);
+        cache?.removeById?.(file.fileId);
+      } catch (error) {
+        failures.push(`${file.path}: ${error instanceof Error ? error.message : 'error'}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(
+        `Failed to delete ${failures.length} of ${files.length} file(s): ${failures.join('; ')}`
+      );
+    }
+  }
+
   private replaceCachedFile(oldFile: CloudFileMetadata, updatedFile: CloudFileMetadata): void {
     const provider = this.getActiveProvider();
     if (!provider) return;

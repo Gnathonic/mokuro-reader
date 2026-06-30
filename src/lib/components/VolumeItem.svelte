@@ -345,10 +345,10 @@
           deleteVolumeStats(volume.volume_uuid);
         }
 
-        // Delete from cloud if checkbox checked
+        // Delete from cloud if checkbox checked (archive + sidecars)
         if (deleteCloud && hasCloudBackup && cloudFile) {
           try {
-            await unifiedCloudManager.deleteFile(cloudFile);
+            await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
             showSnackbar(`Deleted from ${providerDisplayName}`);
           } catch (error) {
             console.error('Failed to delete from cloud:', error);
@@ -468,9 +468,12 @@
 
     // If already backed up, delete from cloud
     if (isBackedUp && cloudFile) {
+      // Capture provider before the await: cloudFile is a $derived that becomes
+      // undefined once the delete refreshes the cache.
+      const providerType = cloudFile.provider;
       try {
-        await unifiedCloudManager.deleteFile(cloudFile);
-        const providerName = cloudFile.provider === 'google-drive' ? 'Drive' : cloudFile.provider;
+        await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
+        const providerName = providerType === 'google-drive' ? 'Drive' : providerType;
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Delete failed:', error);

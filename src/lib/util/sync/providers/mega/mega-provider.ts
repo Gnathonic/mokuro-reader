@@ -260,9 +260,12 @@ export class MegaProvider implements SyncProvider {
 
       // Fresh interactive login. The constructor cb fires after the tree loads
       // (autoload:true), so the Storage is ready once this promise resolves.
+      // keepalive:false disables megajs's server-change (sc) long-poll. We never use
+      // push notifications (we reload explicitly), and that poll's handler crashes on
+      // delete events ("Cannot read properties of undefined (reading 'parent')").
       const storage: any = await new Promise((resolve, reject) => {
         const s = new Storage(
-          { email, password, secondFactorCode, autoload: true } as any,
+          { email, password, secondFactorCode, autoload: true, keepalive: false } as any,
           (error: Error | null) => (error ? reject(error) : resolve(s))
         );
       });
@@ -325,7 +328,12 @@ export class MegaProvider implements SyncProvider {
   /** Rebuild an authenticated Storage from a saved session blob (no password, no login round-trip). */
   private async restoreSession(blob: MegaSessionBlob): Promise<void> {
     const { Storage } = await import('megajs');
-    const storage: any = Storage.fromJSON(blob as any);
+    // Force keepalive:false so the restored session never starts the crashing sc poll,
+    // even for blobs persisted before that default changed.
+    const storage: any = Storage.fromJSON({
+      ...(blob as any),
+      options: { ...((blob as any).options ?? {}), keepalive: false }
+    });
     // fromJSON does no network and loads no tree; reload populates root + files.
     // A dead session throws ESID here.
     await storage.reload(true);
