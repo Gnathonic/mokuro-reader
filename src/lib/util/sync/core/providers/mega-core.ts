@@ -102,8 +102,8 @@ async function renderMegaThumbnail(blob: Blob): Promise<Uint8Array | null> {
     const canvas = new OffscreenCanvas(SIZE, SIZE);
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    // White background so the letterbox bars aren't black after JPEG flattens the alpha.
-    ctx.fillStyle = '#ffffff';
+    // Dark letterbox fill (JPEG has no alpha, so the bars need an explicit colour).
+    ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, SIZE, SIZE);
     // Contain-fit: scale to fit inside the square (no stretch), then center.
     const scale = Math.min(SIZE / bitmap.width, SIZE / bitmap.height);
