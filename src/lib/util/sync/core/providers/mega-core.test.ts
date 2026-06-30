@@ -54,7 +54,61 @@ vi.mock('megajs', () => {
   return { Storage: MockStorage, File: MockFile };
 });
 
-import { megaCore, isImageUpload } from './mega-core';
+import { megaCore, isImageUpload, resolveSeriesUploadFolder } from './mega-core';
+
+describe('resolveSeriesUploadFolder (no duplicate series folders)', () => {
+  function makeStorage(opts: { files?: any; rootChildren?: any[]; reloadAdds?: any } = {}) {
+    const storage: any = {
+      files: { ...(opts.files ?? {}) },
+      root: {
+        children: opts.rootChildren ?? [],
+        mkdir: vi.fn(async (name: string) => ({
+          name,
+          directory: true,
+          children: [],
+          mkdir: vi.fn(async (n: string) => ({ name: n, directory: true, children: [] }))
+        }))
+      },
+      reload: vi.fn(async () => {
+        Object.assign(storage.files, opts.reloadAdds ?? {});
+      })
+    };
+    return storage;
+  }
+
+  it('returns the folder by id without reload or mkdir when already in the tree', async () => {
+    const folder = { nodeId: 'F1', name: 'S', directory: true };
+    const storage = makeStorage({ files: { F1: folder } });
+    const result = await resolveSeriesUploadFolder(storage, 'F1', 'S');
+    expect(result).toBe(folder);
+    expect(storage.reload).not.toHaveBeenCalled();
+    expect(storage.root.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('reloads once to find a folder created after the cached tree, never mkdir', async () => {
+    const folder = { nodeId: 'F1', name: 'S', directory: true };
+    const storage = makeStorage({ files: {}, reloadAdds: { F1: folder } });
+    const result = await resolveSeriesUploadFolder(storage, 'F1', 'S');
+    expect(storage.reload).toHaveBeenCalledWith(true);
+    expect(result).toBe(folder);
+    expect(storage.root.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('falls back to finding an existing folder by name when no id is provided', async () => {
+    const seriesFolder = { name: 'S', directory: true };
+    const mokuro = { name: 'mokuro-reader', directory: true, children: [seriesFolder] };
+    const storage = makeStorage({ rootChildren: [mokuro] });
+    const result = await resolveSeriesUploadFolder(storage, undefined, 'S');
+    expect(result).toBe(seriesFolder);
+    expect(storage.root.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('only creates folders by name in the legacy no-id path', async () => {
+    const storage = makeStorage({ rootChildren: [] });
+    await resolveSeriesUploadFolder(storage, undefined, 'New Series');
+    expect(storage.root.mkdir).toHaveBeenCalledWith('mokuro-reader');
+  });
+});
 
 describe('isImageUpload (MEGA thumbnail eligibility)', () => {
   it('detects images by mime type', () => {

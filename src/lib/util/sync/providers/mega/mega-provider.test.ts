@@ -304,3 +304,17 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     expect(localStorage.getItem('mega_session')).toBeNull();
   });
 });
+
+describe('MegaProvider.prepareUploadTarget()', () => {
+  it('returns the series folder node id so workers reuse it instead of mkdir-ing', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    (provider as any).storage = { files: {} };
+    (provider as any).ensureMokuroFolder = vi.fn(async () => ({ nodeId: 'MOKURO' }));
+    (provider as any).ensureSeriesFolder = vi.fn(async () => ({ nodeId: 'SERIES1' }));
+
+    const result = await provider.prepareUploadTarget('My Series');
+
+    expect(result).toEqual({ megaSeriesFolderNodeId: 'SERIES1' });
+  });
+});
