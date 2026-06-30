@@ -175,6 +175,7 @@ describe('MegaProvider.logout()', () => {
     localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'S', options: {} }));
     localStorage.setItem('mega_email', 'a@b.c');
     localStorage.setItem('mega_password', 'p');
+    localStorage.setItem('mega_folder_path', '/Mokuro');
     localStorage.setItem('active_cloud_provider', 'mega');
 
     const provider = new MegaProvider();
@@ -184,6 +185,7 @@ describe('MegaProvider.logout()', () => {
     expect(localStorage.getItem('mega_session')).toBeNull();
     expect(localStorage.getItem('mega_email')).toBeNull();
     expect(localStorage.getItem('mega_password')).toBeNull();
+    expect(localStorage.getItem('mega_folder_path')).toBeNull();
     expect(localStorage.getItem('active_cloud_provider')).toBeNull();
     expect(provider.getStatus().needsAttention).toBe(false);
     expect(provider.isAuthenticated()).toBe(false);
@@ -222,5 +224,22 @@ describe('MegaProvider.getWorkerDownloadCredentials() (Phase 2)', () => {
     const creds = await provider.getWorkerDownloadCredentials('node1');
     expect(creds).toEqual({ sid: 'SID123', nodeId: 'node1', fileKey: '____' });
     expect(creds).not.toHaveProperty('megaShareUrl');
+  });
+
+  it('throws NOT_AUTHENTICATED when not authenticated', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await expect(provider.getWorkerDownloadCredentials('node1')).rejects.toMatchObject({
+      code: 'NOT_AUTHENTICATED'
+    });
+  });
+
+  it('throws NODE_NOT_FOUND when the node is missing', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    (provider as any).storage = { sid: 'SID123', files: {} };
+    await expect(provider.getWorkerDownloadCredentials('missing')).rejects.toMatchObject({
+      code: 'NODE_NOT_FOUND'
+    });
   });
 });

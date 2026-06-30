@@ -705,6 +705,8 @@
                   type="text"
                   inputmode="numeric"
                   autocomplete="one-time-code"
+                  required
+                  maxlength="6"
                   bind:value={megaTwoFactorCode}
                   placeholder="6-digit 2FA code"
                   class="rounded-lg border border-amber-600 bg-gray-700 p-2.5 text-sm text-white"
