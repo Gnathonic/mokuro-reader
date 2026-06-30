@@ -95,10 +95,14 @@ export const megaCore: CloudProviderCore = {
           onProgress(p.bytesLoaded, p.bytesTotal);
         });
         stream.on('end', async () => {
-          const blob = new Blob(chunks as BlobPart[]);
-          const buffer = await blob.arrayBuffer();
-          chunks.length = 0;
-          resolve(buffer);
+          try {
+            const blob = new Blob(chunks as BlobPart[]);
+            const buffer = await blob.arrayBuffer();
+            chunks.length = 0;
+            resolve(buffer);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
         });
         stream.on('error', (streamError: Error) => {
           reject(new Error(`MEGA download failed: ${streamError.message}`));

@@ -60,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.lastFileOpts = null;
   state.fileNodeIdAfterConstruct = null;
+  state.chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
 });
 
 describe('megaCore.downloadFile() (Phase 2)', () => {
