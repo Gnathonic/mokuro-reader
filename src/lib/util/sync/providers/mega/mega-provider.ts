@@ -411,6 +411,14 @@ export class MegaProvider implements SyncProvider {
       console.log('✅ MEGA cache reinitialized from session token');
     } catch (error) {
       if (isSessionExpiredError(error)) {
+        // Release the dead session's keepalive/sc listeners before clearing state.
+        if (oldStorage && typeof oldStorage.close === 'function') {
+          try {
+            await oldStorage.close();
+          } catch {
+            /* best effort */
+          }
+        }
         this.markSessionExpired();
         return;
       }
