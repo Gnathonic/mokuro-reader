@@ -12,13 +12,19 @@ import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import { isMfaRequiredError, sanitizeSessionBlob, type MegaSessionBlob } from './mega-session';
 
 interface MegaCredentials {
   email: string;
   password: string;
+  /** One-time TOTP code for 2FA-enabled accounts. Never persisted. */
+  secondFactorCode?: string;
 }
 
 const STORAGE_KEYS = {
+  /** Sanitized Storage.toJSON() blob (sid + master key). The only persisted secret. */
+  SESSION: 'mega_session',
+  // Legacy keys — read for migration, removed on first successful login.
   EMAIL: 'mega_email',
   PASSWORD: 'mega_password',
   FOLDER_PATH: 'mega_folder_path'
@@ -142,6 +148,8 @@ export class MegaProvider implements SyncProvider {
 
   private storage: any = null;
   private mokuroFolder: any = null;
+  private needsReconnect = false;
+  private reconnectEmail: string | null = null;
   private initPromise: Promise<void>;
   private workerShareLinksToCleanup = new Set<string>();
   private workerShareLinkMutex: Promise<void | { megaShareUrl: string }> = Promise.resolve();
@@ -197,47 +205,40 @@ export class MegaProvider implements SyncProvider {
       throw new ProviderError('Email and password are required', 'mega', 'INVALID_CREDENTIALS');
     }
 
-    const { email, password } = credentials as MegaCredentials;
+    const { email, password, secondFactorCode } = credentials as MegaCredentials;
 
     try {
       // Dynamically import megajs to reduce initial bundle size
       const { Storage } = await import('megajs');
 
-      // Initialize MEGA storage
-      this.storage = await new Promise((resolve, reject) => {
-        const storage = new Storage(
-          {
-            email,
-            password
-          },
-          (error: Error | null) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve(storage);
-            }
-          }
+      // Fresh interactive login. The constructor cb fires after the tree loads
+      // (autoload:true), so the Storage is ready once this promise resolves.
+      const storage: any = await new Promise((resolve, reject) => {
+        const s = new Storage(
+          { email, password, secondFactorCode, autoload: true } as any,
+          (error: Error | null) => (error ? reject(error) : resolve(s))
         );
       });
 
-      // Wait for storage to be ready
-      await this.waitForReady();
-
-      // Ensure mokuro folder exists
+      this.storage = storage;
       await this.ensureMokuroFolder();
-
-      // Store credentials in localStorage
-      if (browser) {
-        localStorage.setItem(STORAGE_KEYS.EMAIL, email);
-        localStorage.setItem(STORAGE_KEYS.PASSWORD, password);
-      }
-
-      // Set the active provider key for lazy loading on next startup
+      this.persistSession();
+      this.needsReconnect = false;
+      this.reconnectEmail = email;
       setActiveProviderKey('mega');
       console.log('✅ MEGA login successful');
     } catch (error) {
       this.storage = null;
       this.mokuroFolder = null;
+
+      if (isMfaRequiredError(error)) {
+        throw new ProviderError(
+          'MEGA requires a two-factor authentication code',
+          'mega',
+          'MFA_REQUIRED',
+          false
+        );
+      }
 
       throw new ProviderError(
         `MEGA login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -246,6 +247,15 @@ export class MegaProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /** Persist the current session as a sanitized toJSON() blob; drop legacy keys. */
+  private persistSession(): void {
+    if (!browser || !this.storage) return;
+    const blob: MegaSessionBlob = sanitizeSessionBlob(this.storage.toJSON());
+    localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(blob));
+    localStorage.removeItem(STORAGE_KEYS.EMAIL);
+    localStorage.removeItem(STORAGE_KEYS.PASSWORD);
   }
 
   async logout(): Promise<void> {
@@ -297,32 +307,6 @@ export class MegaProvider implements SyncProvider {
         }
       }
     }
-  }
-
-  private waitForReady(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // If storage is already ready, resolve immediately
-      if (this.storage.ready) {
-        resolve();
-        return;
-      }
-
-      // Wait for ready event
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout waiting for MEGA storage to be ready'));
-      }, 30000); // 30 second timeout
-
-      this.storage.once('ready', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      // Also listen for error events
-      this.storage.once('error', (error: Error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-    });
   }
 
   /**
