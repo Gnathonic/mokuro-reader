@@ -51,46 +51,62 @@ async function getUploadStorage(session: string): Promise<Storage> {
   }
 }
 
+// Lightweight, per-sid API instances for owned-node downloads. A Storage built with
+// autologin/autoload false makes no network call and loads no tree; we only need its
+// `api` (with the session id) to authorize `a:"g", n:<nodeId>` requests.
+const downloadApiBySid = new Map<string, any>();
+
+function getDownloadApi(sid: string): any {
+  let api = downloadApiBySid.get(sid);
+  if (!api) {
+    const storage: any = new Storage({
+      autologin: false,
+      autoload: false,
+      keepalive: false
+    } as any);
+    storage.api.sid = sid;
+    api = storage.api;
+    downloadApiBySid.set(sid, api);
+  }
+  return api;
+}
+
 export const megaCore: CloudProviderCore = {
   async downloadFile({ credentials, onProgress }): Promise<ArrayBuffer> {
-    const shareUrl = requireCredentialString(credentials, 'megaShareUrl', 'MEGA share URL');
+    const sid = requireCredentialString(credentials, 'sid', 'MEGA session id');
+    const nodeId = requireCredentialString(credentials, 'nodeId', 'MEGA node id');
+    const fileKey = requireCredentialString(credentials, 'fileKey', 'MEGA file key');
+    const api = getDownloadApi(sid);
 
-    return await new Promise((resolve, reject) => {
+    return await new Promise<ArrayBuffer>((resolve, reject) => {
       try {
-        const file = MegaFile.fromURL(shareUrl);
+        // formatKey(fileKey) base64url-decodes into a real megajs Buffer.
+        const file: any = new MegaFile({ downloadId: nodeId, key: fileKey, api });
+        // Force the owned-node download path (req.n = nodeId, authorized by api.sid).
+        file.nodeId = nodeId;
 
-        file.loadAttributes((error) => {
-          if (error) {
-            reject(new Error(`MEGA metadata failed: ${error.message}`));
-            return;
-          }
+        const stream = file.download({});
+        const chunks: Uint8Array[] = [];
 
-          const totalSize = file.size || 0;
-          const stream = file.download({});
-          const chunks: Uint8Array[] = [];
-          let loaded = 0;
-
-          stream.on('data', (chunk: Uint8Array) => {
-            chunks.push(chunk);
-            loaded += chunk.length;
-            onProgress(loaded, totalSize);
-          });
-
-          stream.on('end', async () => {
-            const blob = new Blob(chunks as BlobPart[]);
-            const buffer = await blob.arrayBuffer();
-            chunks.length = 0;
-            resolve(buffer);
-          });
-
-          stream.on('error', (streamError: Error) => {
-            reject(new Error(`MEGA download failed: ${streamError.message}`));
-          });
+        stream.on('data', (chunk: Uint8Array) => {
+          chunks.push(chunk);
+        });
+        stream.on('progress', (p: { bytesLoaded: number; bytesTotal: number }) => {
+          onProgress(p.bytesLoaded, p.bytesTotal);
+        });
+        stream.on('end', async () => {
+          const blob = new Blob(chunks as BlobPart[]);
+          const buffer = await blob.arrayBuffer();
+          chunks.length = 0;
+          resolve(buffer);
+        });
+        stream.on('error', (streamError: Error) => {
+          reject(new Error(`MEGA download failed: ${streamError.message}`));
         });
       } catch (error) {
         reject(
           new Error(
-            `MEGA initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+            `MEGA download init failed: ${error instanceof Error ? error.message : 'Unknown error'}`
           )
         );
       }
