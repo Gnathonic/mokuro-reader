@@ -189,3 +189,18 @@ describe('MegaProvider.logout()', () => {
     expect(provider.isAuthenticated()).toBe(false);
   });
 });
+
+describe('MegaProvider.getWorkerUploadCredentials()', () => {
+  it('returns the session blob, never a password', async () => {
+    const sessionRaw = JSON.stringify({ key: 'K', sid: 'S', options: { email: 'a@b.c' } });
+    localStorage.setItem('mega_session', sessionRaw);
+
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    const creds = await provider.getWorkerUploadCredentials();
+
+    expect(creds).toEqual({ megaSession: sessionRaw });
+    expect(creds).not.toHaveProperty('megaPassword');
+    expect(creds).not.toHaveProperty('megaEmail');
+  });
+});

@@ -1259,9 +1259,8 @@ export class MegaProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     if (!browser) return {};
-    const email = localStorage.getItem(STORAGE_KEYS.EMAIL);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-    return { megaEmail: email, megaPassword: password };
+    const session = localStorage.getItem(STORAGE_KEYS.SESSION);
+    return { megaSession: session };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<void> {

@@ -19,8 +19,9 @@ async function resetUploadStorage(): Promise<void> {
   }
 }
 
-async function getUploadStorage(email: string, password: string): Promise<Storage> {
-  const sessionKey = `${email}\u0000${password}`;
+async function getUploadStorage(session: string): Promise<Storage> {
+  const parsed = JSON.parse(session);
+  const sessionKey: string = parsed.sid;
 
   if (uploadStoragePromise && uploadSessionKey === sessionKey) {
     return await uploadStoragePromise;
@@ -32,9 +33,10 @@ async function getUploadStorage(email: string, password: string): Promise<Storag
 
   uploadSessionKey = sessionKey;
   const pendingSession = (async () => {
-    const storage = new Storage({ email, password });
-    await storage.ready;
-    return storage;
+    const storage = Storage.fromJSON(parsed) as any;
+    // fromJSON loads no tree; reload populates storage.root for folder navigation/upload.
+    await storage.reload(true);
+    return storage as Storage;
   })();
   uploadStoragePromise = pendingSession;
 
@@ -96,9 +98,8 @@ export const megaCore: CloudProviderCore = {
   },
 
   async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
-    const email = requireCredentialString(credentials, 'megaEmail', 'MEGA credentials');
-    const password = requireCredentialString(credentials, 'megaPassword', 'MEGA credentials');
-    const storage = await getUploadStorage(email, password);
+    const session = requireCredentialString(credentials, 'megaSession', 'MEGA session');
+    const storage = await getUploadStorage(session);
 
     try {
       const CHUNK_SIZE = 1024 * 1024;
