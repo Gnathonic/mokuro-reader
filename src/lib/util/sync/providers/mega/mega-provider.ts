@@ -1146,9 +1146,14 @@ export class MegaProvider implements SyncProvider {
     return { megaSession: session };
   }
 
-  async prepareUploadTarget(seriesTitle: string): Promise<void> {
+  async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
+    // Create the series folder once here (coalesced by ensureSeriesFolder's mutex) and pass
+    // its node id to the upload workers. Workers must NOT mkdir — each worker has its own
+    // Storage tree, so parallel mkdir would create duplicate series folders.
     const mokuroFolder = await this.ensureMokuroFolder();
-    await this.ensureSeriesFolder(seriesTitle, mokuroFolder);
+    const seriesFolder = await this.ensureSeriesFolder(seriesTitle, mokuroFolder);
+    const nodeId = seriesFolder?.nodeId ?? seriesFolder?.id;
+    return nodeId ? { megaSeriesFolderNodeId: nodeId } : {};
   }
 
   async getWorkerDownloadCredentials(fileId: string): Promise<Record<string, any>> {

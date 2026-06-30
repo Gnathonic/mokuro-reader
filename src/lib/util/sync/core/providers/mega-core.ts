@@ -79,6 +79,47 @@ function getDownloadApi(sid: string): any {
   return api;
 }
 
+/**
+ * Resolve the series folder to upload into.
+ *
+ * The main thread's prepareUploadTarget() creates the folder once (coalesced by a mutex)
+ * and passes its node id here. Parallel upload workers must NEVER mkdir the series folder:
+ * each worker has its own Storage tree, so concurrent mkdir creates duplicate series
+ * folders. We resolve the folder by id, reloading once if our cached tree predates its
+ * creation, and only fall back to name-based creation when no id was supplied.
+ */
+export async function resolveSeriesUploadFolder(
+  storage: any,
+  seriesFolderNodeId: string | undefined,
+  seriesTitle: string
+): Promise<any> {
+  if (seriesFolderNodeId) {
+    let folder = storage.files?.[seriesFolderNodeId];
+    if (!folder) {
+      await storage.reload(true);
+      folder = storage.files?.[seriesFolderNodeId];
+    }
+    if (folder) return folder;
+    // Id was provided but didn't resolve even after a reload — fall through rather than
+    // failing the upload outright.
+  }
+
+  // Legacy fallback (only when no id was provided): find by name, create if missing.
+  let mokuroFolder = storage.root?.children?.find(
+    (child: any) => child.name === 'mokuro-reader' && child.directory
+  );
+  if (!mokuroFolder) {
+    mokuroFolder = await storage.root.mkdir('mokuro-reader');
+  }
+  let seriesFolder = mokuroFolder.children?.find(
+    (child: any) => child.name === seriesTitle && child.directory
+  );
+  if (!seriesFolder) {
+    seriesFolder = await mokuroFolder.mkdir(seriesTitle);
+  }
+  return seriesFolder;
+}
+
 const IMAGE_MIME_RE = /^image\//;
 const IMAGE_EXT_RE = /\.(webp|jpe?g|png|gif|bmp|avif)$/i;
 
@@ -222,21 +263,17 @@ export const megaCore: CloudProviderCore = {
     try {
       const CHUNK_SIZE = 1024 * 1024;
 
-      let mokuroFolder = storage.root.children?.find(
-        (child: any) => child.name === 'mokuro-reader' && child.directory
+      // Upload into the folder the main thread already created (passed as a node id).
+      // Never mkdir here — parallel workers would each create a duplicate series folder.
+      const seriesFolderNodeId =
+        typeof credentials?.megaSeriesFolderNodeId === 'string'
+          ? credentials.megaSeriesFolderNodeId
+          : undefined;
+      const seriesFolder = await resolveSeriesUploadFolder(
+        storage,
+        seriesFolderNodeId,
+        seriesTitle
       );
-
-      if (!mokuroFolder) {
-        mokuroFolder = await storage.root.mkdir('mokuro-reader');
-      }
-
-      let seriesFolder = mokuroFolder.children?.find(
-        (child: any) => child.name === seriesTitle && child.directory
-      );
-
-      if (!seriesFolder) {
-        seriesFolder = await mokuroFolder.mkdir(seriesTitle);
-      }
 
       const uploadStream: any = seriesFolder.upload({ name: filename, size: blob.size });
       let uploadedFileId: string | undefined;
