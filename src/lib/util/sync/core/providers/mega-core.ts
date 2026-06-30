@@ -95,16 +95,22 @@ async function renderMegaThumbnail(blob: Blob): Promise<Uint8Array | null> {
   let bitmap: ImageBitmap | null = null;
   try {
     bitmap = await createImageBitmap(blob);
+    // MEGA type-0 thumbnails are square 120x120 (the official clients crop to a square,
+    // and the browser's grid assumes square cells). We keep 120x120 but CONTAIN-fit so
+    // nothing is cropped or stretched — important for portrait manga covers.
     const SIZE = 120;
     const canvas = new OffscreenCanvas(SIZE, SIZE);
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    // Cover-fit: scale to fill the square, then center-crop.
-    const scale = Math.max(SIZE / bitmap.width, SIZE / bitmap.height);
+    // White background so the letterbox bars aren't black after JPEG flattens the alpha.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Contain-fit: scale to fit inside the square (no stretch), then center.
+    const scale = Math.min(SIZE / bitmap.width, SIZE / bitmap.height);
     const dw = bitmap.width * scale;
     const dh = bitmap.height * scale;
     ctx.drawImage(bitmap, (SIZE - dw) / 2, (SIZE - dh) / 2, dw, dh);
-    const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+    const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
     return new Uint8Array(await jpeg.arrayBuffer());
   } catch {
     return null;
