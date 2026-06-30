@@ -55,8 +55,15 @@ jobs:
         id: release_notes
         run: |
           VERSION="${{ steps.version_check.outputs.current_version }}"
-          # Extract content between this version header and the next version header
-          NOTES=$(awk "/^## $VERSION/,/^## \[?[0-9]/" CHANGELOG.md | head -n -1 | tail -n +2)
+          # Print the body between this version's header and the next version header,
+          # excluding both headers. Handles both "## 1.2.3" and "## [1.2.3]" styles.
+          # (The old awk range failed because its end pattern also matched the start
+          # header, collapsing the range to a single line — release notes were empty.)
+          NOTES=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[?" ver "([^0-9]|$)" { collecting = 1; next }
+            collecting && /^## \[?[0-9]/ { exit }
+            collecting { print }
+          ' CHANGELOG.md)
           # Use a delimiter for multiline output
           echo "notes<<EOF" >> $GITHUB_OUTPUT
           echo "$NOTES" >> $GITHUB_OUTPUT

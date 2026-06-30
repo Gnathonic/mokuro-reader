@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.4] - 2026-06-30
+
+### Added
+
+- Horizontal panning with wheel and touchpad (thanks @binaryBrandon)
+- MEGA two-factor authentication (2FA) login
+- Uploaded covers now show thumbnails in MEGA
+
+### Changed
+
+- MEGA support no longer held together with hope and duct tape
+- Faster MEGA downloads
+
 ## [1.7.3] - 2026-06-14
 
 ### Fixed
