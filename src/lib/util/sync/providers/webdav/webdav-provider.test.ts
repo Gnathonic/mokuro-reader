@@ -9,6 +9,7 @@ const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
     createDirectory: vi.fn(),
     deleteFile: vi.fn(),
     moveFile: vi.fn(),
+    stat: vi.fn(),
     getQuota: vi.fn()
   };
   const mockCore = {
@@ -382,5 +383,88 @@ describe('WebDAVProvider write-failure policy', () => {
     await expect(provider.uploadFile('Series/v1.cbz', new Blob(['x']))).rejects.toBeInstanceOf(
       ProviderError
     );
+  });
+});
+
+describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
+  async function loggedInProvider(): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'authenticated',
+      username: 'alice',
+      role: 'registered',
+      permissions: { ...REGISTERED_PERMS }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    return provider;
+  }
+
+  const sourceFile = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/Old Series/Volume 1.cbz',
+    path: 'Old Series/Volume 1.cbz',
+    modifiedTime: 't',
+    size: 100
+  };
+  const DEST = '/mokuro-reader/New Series/Volume 1.cbz';
+
+  it('treats an occupied destination as OUR prior move only when the source is gone AND sizes match', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(
+      async (path: string) => path !== sourceFile.fileId // dest + folders exist, source gone
+    );
+    mockClient.stat.mockResolvedValue({ size: 100 });
+
+    const result = await provider.renameFile(sourceFile, 'New Series/Volume 1.cbz');
+
+    expect(result.path).toBe('New Series/Volume 1.cbz');
+    expect(mockClient.moveFile).not.toHaveBeenCalled();
+    expect(mockClient.stat).toHaveBeenCalledWith(DEST);
+  });
+
+  it('throws TARGET_EXISTS when the source is gone but the occupant has a different size', async () => {
+    // A different file at the destination (another volume's backup) must not
+    // be silently adopted — the pre-PR loud conflict is the safe behavior.
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(async (path: string) => path !== sourceFile.fileId);
+    mockClient.stat.mockResolvedValue({ size: 999 });
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'TARGET_EXISTS'
+    });
+  });
+
+  it('throws TARGET_EXISTS on a genuine collision (source still present)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(true); // source AND destination exist
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'TARGET_EXISTS'
+    });
+    expect(mockClient.moveFile).not.toHaveBeenCalled();
+  });
+
+  it('maps a 404 from the MOVE to typed NOT_FOUND (source vanished)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(
+      async (path: string) => path.startsWith('/mokuro-reader') && !path.endsWith('.cbz')
+    );
+    mockClient.moveFile.mockRejectedValue(
+      Object.assign(new Error('Request failed with status 404 Not Found'), { status: 404 })
+    );
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    });
+  });
+
+  it('maps a 404 delete to typed NOT_FOUND so the shared layer can treat it as converged', async () => {
+    const provider = await loggedInProvider();
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Request failed with status 404 Not Found'), { status: 404 })
+    );
+
+    await expect(provider.deleteFile(sourceFile)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(provider.isReadOnly).toBe(false); // 404 is not a permission signal
   });
 });

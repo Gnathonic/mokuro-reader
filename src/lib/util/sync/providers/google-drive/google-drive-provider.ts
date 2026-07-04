@@ -441,6 +441,12 @@ class GoogleDriveProvider implements SyncProvider {
 
       console.log(`✅ Deleted file from Google Drive (${fileId})`);
     } catch (error) {
+      // Typed NOT_FOUND: DriveApiError carries the HTTP status; a 404 on a
+      // fileId-based delete means the file is already gone. The shared layer
+      // treats that as converged — by code only, never message text.
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'google-drive', 'NOT_FOUND');
+      }
       throw new ProviderError(
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -510,6 +516,12 @@ class GoogleDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
+      }
+      // Typed NOT_FOUND: a 404 on the fileId-based move means the source is
+      // gone (deleted elsewhere / stale cached id). The shared rename layer
+      // treats this as a GENUINE failure — never "already moved".
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'google-drive', 'NOT_FOUND');
       }
       throw new ProviderError(
         `Failed to rename file: ${error instanceof Error ? error.message : 'Unknown error'}`,
