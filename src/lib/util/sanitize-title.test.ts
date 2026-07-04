@@ -52,7 +52,11 @@ describe('sanitizeTitleSegment', () => {
 describe('sanitizeRenameTitle', () => {
   it('reports value, changed, and empty', () => {
     expect(sanitizeRenameTitle('a/b')).toEqual({ value: 'a／b', changed: true, empty: false });
-    expect(sanitizeRenameTitle('Naruto')).toEqual({ value: 'Naruto', changed: false, empty: false });
+    expect(sanitizeRenameTitle('Naruto')).toEqual({
+      value: 'Naruto',
+      changed: false,
+      empty: false
+    });
     expect(sanitizeRenameTitle('   ')).toEqual({ value: '', changed: true, empty: true });
   });
 });

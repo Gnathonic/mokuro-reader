@@ -4,7 +4,7 @@
 
 **Goal:** Sanitize series/volume titles at their three source points so the stored title is a legal file/folder name on every sink (MEGA, Drive, WebDAV, OneDrive, the File System Access API, and local export).
 
-**Architecture:** A single pure helper substitutes the Windows/OneDrive-illegal character set with fullwidth look-alikes (plus dot-leader, control-strip, reserved-name, and trim rules), then it is applied at the only three places a stored title is written: import (`database.ts`), series rename (`executeRenameSeries`), and volume rename (`VolumeEditorModal.handleSave`). Because the cloud/disk path is built *from* the stored title, sanitizing the title makes every downstream path safe with **zero changes to `unified-cloud-manager` or any provider**.
+**Architecture:** A single pure helper substitutes the Windows/OneDrive-illegal character set with fullwidth look-alikes (plus dot-leader, control-strip, reserved-name, and trim rules), then it is applied at the only three places a stored title is written: import (`database.ts`), series rename (`executeRenameSeries`), and volume rename (`VolumeEditorModal.handleSave`). Because the cloud/disk path is built _from_ the stored title, sanitizing the title makes every downstream path safe with **zero changes to `unified-cloud-manager` or any provider**.
 
 **Tech Stack:** SvelteKit 5 / Svelte 5 runes, TypeScript, Vitest, Dexie.
 
@@ -22,10 +22,12 @@
 ### Task 1: Pure `sanitizeTitleSegment` helper
 
 **Files:**
+
 - Create: `src/lib/util/sanitize-title.ts`
 - Test: `src/lib/util/sanitize-title.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `sanitizeTitleSegment(raw: string): string` — sanitized segment; `''` if nothing usable remains.
   - `sanitizeRenameTitle(raw: string): { value: string; changed: boolean; empty: boolean }` — UI convenience wrapper.
@@ -88,7 +90,11 @@ describe('sanitizeTitleSegment', () => {
 describe('sanitizeRenameTitle', () => {
   it('reports value, changed, and empty', () => {
     expect(sanitizeRenameTitle('a/b')).toEqual({ value: 'a／b', changed: true, empty: false });
-    expect(sanitizeRenameTitle('Naruto')).toEqual({ value: 'Naruto', changed: false, empty: false });
+    expect(sanitizeRenameTitle('Naruto')).toEqual({
+      value: 'Naruto',
+      changed: false,
+      empty: false
+    });
     expect(sanitizeRenameTitle('   ')).toEqual({ value: '', changed: true, empty: true });
   });
 });
@@ -175,39 +181,41 @@ git commit -m "feat(util): add filesystem-safe title sanitizer"
 ### Task 2: Apply at import (`database.ts`)
 
 **Files:**
+
 - Modify: `src/lib/import/database.ts:53-57`
 - Test: `src/lib/import/__tests__/database.test.ts`
 
 **Interfaces:**
+
 - Consumes: `sanitizeTitleSegment` (Task 1).
 - The DB write at `database.ts:53` maps `ProcessedMetadata.series`/`.volume` -> `VolumeMetadata.series_title`/`.volume_title`. This is the single import/re-download chokepoint (both OCR-content and path-derived titles pass through it).
 
 - [ ] **Step 1: Write the failing test** (append inside the existing `describe` in `src/lib/import/__tests__/database.test.ts`)
 
 ```typescript
-  it('sanitizes filesystem-illegal characters in series and volume titles', async () => {
-    const volume = createProcessedVolume({
-      metadata: { series: 'A/B: C', volume: 'Vol?1' }
-    });
-
-    await saveVolume(volume);
-
-    const addCall = (db.volumes.add as any).mock.calls[0][0];
-    expect(addCall.series_title).toBe('A／B： C');
-    expect(addCall.volume_title).toBe('Vol？1');
+it('sanitizes filesystem-illegal characters in series and volume titles', async () => {
+  const volume = createProcessedVolume({
+    metadata: { series: 'A/B: C', volume: 'Vol?1' }
   });
 
-  it('falls back to Untitled when a title sanitizes to empty', async () => {
-    const volume = createProcessedVolume({
-      metadata: { series: '   ', volume: '' }
-    });
+  await saveVolume(volume);
 
-    await saveVolume(volume);
+  const addCall = (db.volumes.add as any).mock.calls[0][0];
+  expect(addCall.series_title).toBe('A／B： C');
+  expect(addCall.volume_title).toBe('Vol？1');
+});
 
-    const addCall = (db.volumes.add as any).mock.calls[0][0];
-    expect(addCall.series_title).toBe('Untitled');
-    expect(addCall.volume_title).toBe('Untitled');
+it('falls back to Untitled when a title sanitizes to empty', async () => {
+  const volume = createProcessedVolume({
+    metadata: { series: '   ', volume: '' }
   });
+
+  await saveVolume(volume);
+
+  const addCall = (db.volumes.add as any).mock.calls[0][0];
+  expect(addCall.series_title).toBe('Untitled');
+  expect(addCall.volume_title).toBe('Untitled');
+});
 ```
 
 - [ ] **Step 2: Run the test, verify it fails**
@@ -248,52 +256,54 @@ git commit -m "feat(import): sanitize titles on write to the volumes table"
 ### Task 3: Apply at series rename (`executeRenameSeries` + SeriesView display)
 
 **Files:**
+
 - Modify: `src/lib/util/series-rename.ts` (`executeRenameSeries`, ~line 159)
 - Modify: `src/lib/views/SeriesView.svelte` (`saveRename`, ~line 645 and ~line 665)
 - Test: `src/lib/util/series-rename.test.ts`
 
 **Interfaces:**
+
 - Consumes: `sanitizeTitleSegment` (Task 1).
 - `executeRenameSeries(oldTitle, newTitle, seriesUuid?)` sanitizes `newTitle` before building the preview / cloud rename / DB write, and throws a user-facing `Error` if it sanitizes to empty. SeriesView already surfaces a thrown `Error.message` via its `renameError` slot (line 669/759).
 
 - [ ] **Step 1: Write the failing test** (append inside the existing `describe` in `src/lib/util/series-rename.test.ts`)
 
 ```typescript
-  it('sanitizes the new series title before cloud rename and DB write', async () => {
-    const { db } = await import('$lib/catalog/db');
-    const { get } = await import('svelte/store');
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+it('sanitizes the new series title before cloud rename and DB write', async () => {
+  const { db } = await import('$lib/catalog/db');
+  const { get } = await import('svelte/store');
+  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
 
-    vi.mocked(db.volumes.where).mockReturnValue({
-      toArray: vi.fn().mockResolvedValue([
-        {
-          volume_uuid: 'vol-1',
-          volume_title: 'Volume 1',
-          series_uuid: 'series-1',
-          series_title: 'Old Series'
-        }
-      ])
-    } as any);
-    vi.mocked(get).mockReturnValue({
-      'vol-1': { series_uuid: 'series-1', series_title: 'Old Series' }
-    });
-
-    await executeRenameSeries('Old Series', 'New/Series', 'series-1');
-
-    expect(unifiedCloudManager.renameSeries).toHaveBeenCalledWith('Old Series', 'New／Series', [
-      { volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }
-    ]);
-    expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'New／Series' });
+  vi.mocked(db.volumes.where).mockReturnValue({
+    toArray: vi.fn().mockResolvedValue([
+      {
+        volume_uuid: 'vol-1',
+        volume_title: 'Volume 1',
+        series_uuid: 'series-1',
+        series_title: 'Old Series'
+      }
+    ])
+  } as any);
+  vi.mocked(get).mockReturnValue({
+    'vol-1': { series_uuid: 'series-1', series_title: 'Old Series' }
   });
 
-  it('throws when the new title sanitizes to empty', async () => {
-    const { db } = await import('$lib/catalog/db');
-    vi.mocked(db.volumes.where).mockReturnValue({
-      toArray: vi.fn().mockResolvedValue([])
-    } as any);
+  await executeRenameSeries('Old Series', 'New/Series', 'series-1');
 
-    await expect(executeRenameSeries('Old Series', '', 'series-1')).rejects.toThrow();
-  });
+  expect(unifiedCloudManager.renameSeries).toHaveBeenCalledWith('Old Series', 'New／Series', [
+    { volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }
+  ]);
+  expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'New／Series' });
+});
+
+it('throws when the new title sanitizes to empty', async () => {
+  const { db } = await import('$lib/catalog/db');
+  vi.mocked(db.volumes.where).mockReturnValue({
+    toArray: vi.fn().mockResolvedValue([])
+  } as any);
+
+  await expect(executeRenameSeries('Old Series', '', 'series-1')).rejects.toThrow();
+});
 ```
 
 - [ ] **Step 2: Run the test, verify it fails**
@@ -312,13 +322,12 @@ import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 At the very start of the `executeRenameSeries` body (just before `// Generate preview of changes`), insert:
 
 ```typescript
-  // Sanitize the user-supplied title so the stored title is a legal name on every
-  // sink (cloud + filesystem + OneDrive + export). title === path going forward.
-  newTitle = sanitizeTitleSegment(newTitle);
-  if (!newTitle) {
-    throw new Error('Series not renamed: the name has no usable characters.');
-  }
-
+// Sanitize the user-supplied title so the stored title is a legal name on every
+// sink (cloud + filesystem + OneDrive + export). title === path going forward.
+newTitle = sanitizeTitleSegment(newTitle);
+if (!newTitle) {
+  throw new Error('Series not renamed: the name has no usable characters.');
+}
 ```
 
 (`newTitle` is a function parameter, so reassigning it flows into the preview, the cloud rename, and the DB writes below.)
@@ -339,16 +348,16 @@ import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 In `saveRename`, replace the success lines (currently lines 664-665):
 
 ```typescript
-      nav.toSeries(newTitle, { replaceState: true });
-      showSnackbar(`Renamed to "${newTitle}"`);
+nav.toSeries(newTitle, { replaceState: true });
+showSnackbar(`Renamed to "${newTitle}"`);
 ```
 
 with:
 
 ```typescript
-      const finalTitle = sanitizeTitleSegment(newTitle);
-      nav.toSeries(finalTitle, { replaceState: true });
-      showSnackbar(`Renamed to "${finalTitle}"`);
+const finalTitle = sanitizeTitleSegment(newTitle);
+nav.toSeries(finalTitle, { replaceState: true });
+showSnackbar(`Renamed to "${finalTitle}"`);
 ```
 
 (The empty/whitespace case is still caught by the existing `if (!newTitle)` guard at line 647 and, for sanitize-to-empty input, by the `Error` thrown from `executeRenameSeries` which lands in `renameError` at line 669.)
@@ -370,9 +379,11 @@ git commit -m "feat(series): sanitize new series title on rename"
 ### Task 4: Apply at volume rename (`VolumeEditorModal.handleSave`)
 
 **Files:**
+
 - Modify: `src/lib/components/VolumeEditorModal.svelte` (`handleSave`, lines 196-221; imports line 17)
 
 **Interfaces:**
+
 - Consumes: `sanitizeRenameTitle` (Task 1).
 - The sanitize/empty/changed decision is fully unit-tested in Task 1 (`sanitizeRenameTitle`). This task is thin wiring: it sanitizes `finalSeriesTitle` and `volumeTitle` before they feed `metadataUpdates`, `renameVolumeInCloud`, and `updateVolumeStats`, so all three writes (DB, cloud, localStorage) use the same safe values. **No mount test is added** — the heavyweight modal has no existing test harness, and a full mount would require mocking the entire sync/store surface to re-verify logic already covered by `sanitizeRenameTitle`. Coverage = the Task 1 unit tests + review of this diff + the manual smoke in Step 4.
 
@@ -381,7 +392,7 @@ git commit -m "feat(series): sanitize new series title on rename"
 In `src/lib/components/VolumeEditorModal.svelte`, immediately after `import { showSnackbar } from '$lib/util';` (line 17), add:
 
 ```typescript
-  import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
 ```
 
 - [ ] **Step 2: Sanitize both titles before any write**
@@ -389,22 +400,20 @@ In `src/lib/components/VolumeEditorModal.svelte`, immediately after `import { sh
 In `handleSave`, immediately after the `isNewSeries` block (after line 208, where `finalSeriesTitle` is finalized) and before the `// Update IndexedDB metadata` comment (line 210), insert:
 
 ```typescript
-      // Sanitize so the stored title is a legal name on every sink (cloud + filesystem +
-      // OneDrive + export); title === path going forward. Notify the user of any change;
-      // block only when a field has no usable characters.
-      const safeSeries = sanitizeRenameTitle(finalSeriesTitle);
-      const safeVolume = sanitizeRenameTitle(volumeTitle);
-      if (safeSeries.empty || safeVolume.empty) {
-        showSnackbar("Name can't be empty or only unusable characters.");
-        return;
-      }
-      if (safeSeries.changed || safeVolume.changed) {
-        showSnackbar(
-          `Saved as “${safeSeries.value} / ${safeVolume.value}” to keep the name file-safe.`
-        );
-      }
-      finalSeriesTitle = safeSeries.value;
-      volumeTitle = safeVolume.value;
+// Sanitize so the stored title is a legal name on every sink (cloud + filesystem +
+// OneDrive + export); title === path going forward. Notify the user of any change;
+// block only when a field has no usable characters.
+const safeSeries = sanitizeRenameTitle(finalSeriesTitle);
+const safeVolume = sanitizeRenameTitle(volumeTitle);
+if (safeSeries.empty || safeVolume.empty) {
+  showSnackbar("Name can't be empty or only unusable characters.");
+  return;
+}
+if (safeSeries.changed || safeVolume.changed) {
+  showSnackbar(`Saved as “${safeSeries.value} / ${safeVolume.value}” to keep the name file-safe.`);
+}
+finalSeriesTitle = safeSeries.value;
+volumeTitle = safeVolume.value;
 ```
 
 The existing code from line 210 onward (`metadataUpdates`, the cloud-rename gate at 223-241, `updateVolumeStats` at 248-255) then reads the sanitized `finalSeriesTitle` / `volumeTitle` unchanged. The `return` lands in the existing `finally { saving = false; }`.
