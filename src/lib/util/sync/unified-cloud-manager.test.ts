@@ -674,3 +674,63 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(existing[3]); // mok-2 only
   });
 });
+
+describe('UnifiedCloudManager.deleteManagedVolume', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const baseFiles = (): CloudFileMetadata[] => [
+    { provider: 'mega', fileId: 'cbz-1', path: 'S/Vol 1.cbz', modifiedTime: '', size: 100 },
+    { provider: 'mega', fileId: 'mokuro-1', path: 'S/Vol 1.mokuro', modifiedTime: '', size: 10 },
+    { provider: 'mega', fileId: 'thumb-1', path: 'S/Vol 1.webp', modifiedTime: '', size: 5 },
+    { provider: 'mega', fileId: 'other-1', path: 'S/Vol 2.cbz', modifiedTime: '', size: 100 }
+  ];
+
+  it('deletes the archive and all sidecars (archive last) and clears the cache', async () => {
+    const cache = { removeById: vi.fn() };
+    const deleted: string[] = [];
+    const provider = {
+      type: 'mega',
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        deleted.push(file.path);
+      })
+    };
+    const files = baseFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('S', 'Vol 1');
+
+    // Only Vol 1's three files (not Vol 2), and the .cbz archive is deleted LAST.
+    expect(provider.deleteFile).toHaveBeenCalledTimes(3);
+    expect(deleted).not.toContain('S/Vol 2.cbz');
+    expect(deleted[deleted.length - 1]).toBe('S/Vol 1.cbz');
+    expect(cache.removeById).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports a summary on partial failure but still clears the successes', async () => {
+    const cache = { removeById: vi.fn() };
+    const provider = {
+      type: 'mega',
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        if (file.path.endsWith('.mokuro')) throw new Error('boom');
+      })
+    };
+    const files = baseFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.deleteManagedVolume('S', 'Vol 1')).rejects.toThrow(
+      /Failed to delete 1 of 3/
+    );
+    // The .cbz and .webp still got removed from cache; only the .mokuro failed.
+    expect(cache.removeById).toHaveBeenCalledWith('cbz-1');
+    expect(cache.removeById).toHaveBeenCalledWith('thumb-1');
+    expect(cache.removeById).not.toHaveBeenCalledWith('mokuro-1');
+  });
+});

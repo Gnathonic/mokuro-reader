@@ -194,6 +194,7 @@ class ProviderManager {
       localStorage.removeItem('webdav_username');
       localStorage.removeItem('webdav_password');
       // MEGA
+      localStorage.removeItem('mega_session');
       localStorage.removeItem('mega_email');
       localStorage.removeItem('mega_password');
       localStorage.removeItem('mega_folder_path');

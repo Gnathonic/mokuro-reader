@@ -4,11 +4,16 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize]
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
-  # Block any PR to main that doesn't come from develop
+  # Block any PR to main that doesn't come from develop (non-fork branches only;
+  # forks are handled by redirect-forks below to avoid a duplicate message).
   require-develop-to-main:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop'
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop' && !github.event.pull_request.head.repo.fork
     steps:
       - name: Block non-develop PRs to main
         run: |
