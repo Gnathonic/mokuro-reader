@@ -26,7 +26,6 @@
     CheckOutline
   } from 'flowbite-svelte-icons';
   import { executeRenameSeries } from '$lib/util/series-rename';
-  import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
@@ -659,14 +658,26 @@
       renameSaving = true;
       renameError = '';
 
-      // Execute the rename for this series UUID
-      await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
+      // Execute the rename for this series UUID — one volume at a time; each
+      // volume commits locally only after its cloud rename succeeds.
+      const result = await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
-      const finalTitle = sanitizeTitleSegment(newTitle);
-      nav.toSeries(finalTitle, { replaceState: true });
-      showSnackbar(`Renamed to "${finalTitle}"`);
-      isRenaming = false;
-      renameValue = '';
+      if (result.failures.length === 0) {
+        nav.toSeries(result.finalTitle, { replaceState: true });
+        showSnackbar(`Renamed to "${result.finalTitle}"`);
+        isRenaming = false;
+        renameValue = '';
+      } else {
+        // Partial: the failed volumes keep the old title everywhere (cloud and
+        // local stay consistent per volume). Retrying the same rename finishes
+        // just the stragglers.
+        const failedNames = result.failures.map((f) => f.volumeTitle);
+        const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ', …' : '');
+        renameError =
+          `Renamed ${result.renamedCount} volume(s), but ${result.failures.length} failed (${shown}). ` +
+          `Failed volumes keep the old name in both your library and the cloud — ` +
+          `rename again to retry just those.`;
+      }
     } catch (err) {
       renameError = err instanceof Error ? err.message : 'Failed to rename';
       console.error('Error renaming series:', err);

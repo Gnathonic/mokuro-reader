@@ -4,7 +4,8 @@
 
 import { db } from '$lib/catalog/db';
 import { volumes as volumeDataStore } from '$lib/settings/volume-data';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { unifiedCloudManager, type SeriesRenameResult } from '$lib/util/sync/unified-cloud-manager';
+import { ProviderError } from '$lib/util/sync/provider-interface';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import { get } from 'svelte/store';
 import type { VolumeMetadata } from '$lib/types';
@@ -20,6 +21,7 @@ export interface RenameSeriesPreview {
   indexedDbChanges: Array<{
     table: 'volumes';
     volumeUuid: string;
+    volumeTitle: string;
     field: 'series_title';
     oldValue: string;
     newValue: string;
@@ -30,6 +32,16 @@ export interface RenameSeriesPreview {
     oldValue: string;
     newValue: string;
   }>;
+}
+
+export interface RenameSeriesResult {
+  /** The sanitized title that was actually committed. */
+  finalTitle: string;
+  /** Volumes fully renamed (cloud + local). */
+  renamedCount: number;
+  /** Volumes that keep the old title everywhere because their cloud rename
+   * failed. Retrying the same rename converges: it picks up just these. */
+  failures: Array<{ volumeUuid: string; volumeTitle: string }>;
 }
 
 /**
@@ -109,6 +121,7 @@ export async function generateRenameSeriesPreview(
       preview.indexedDbChanges.push({
         table: 'volumes',
         volumeUuid: volume.volume_uuid,
+        volumeTitle: volume.volume_title,
         field: 'series_title',
         oldValue: oldTitle,
         newValue: newTitle
@@ -157,7 +170,7 @@ export async function executeRenameSeries(
   oldTitle: string,
   newTitle: string,
   seriesUuid?: string
-): Promise<RenameSeriesPreview> {
+): Promise<RenameSeriesResult> {
   // Sanitize the user-supplied title so the stored title is a legal name on every
   // sink (cloud + filesystem + OneDrive + export). title === path going forward.
   newTitle = sanitizeTitleSegment(newTitle);
@@ -167,52 +180,69 @@ export async function executeRenameSeries(
 
   // Generate preview of changes
   const preview = await generateRenameSeriesPreview(oldTitle, newTitle, seriesUuid);
-
-  // The cloud rename runs FIRST and GATES the local commit: if it throws, the
-  // IndexedDB/localStorage updates below never run, so local never diverges
-  // from the cloud. Pass the volume list so each .mokuro sidecar's embedded
-  // series title is regenerated (a folder move alone leaves it stale).
-  if (preview.indexedDbChanges.length > 0) {
-    try {
-      const renameVolumes = seriesUuid
-        ? await db.volumes.where({ series_title: oldTitle, series_uuid: seriesUuid }).toArray()
-        : await db.volumes.where({ series_title: oldTitle }).toArray();
-      await unifiedCloudManager.renameSeries(
-        oldTitle,
-        newTitle,
-        renameVolumes.map((v) => ({ volumeUuid: v.volume_uuid, volumeTitle: v.volume_title }))
-      );
-    } catch (error) {
-      // The cloud rename gates the local commit. Explain that the local rename
-      // was aborted because the cloud couldn't be updated (offline, read-only,
-      // …) — without surfacing the low-level cause.
-      console.error('Error renaming series in cloud:', error);
-      throw new Error(
-        "Series not renamed: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
-      );
-    }
+  if (preview.indexedDbChanges.length === 0 && preview.localStorageChanges.length === 0) {
+    return { finalTitle: newTitle, renamedCount: 0, failures: [] };
   }
 
+  // The cloud rename runs FIRST, one volume at a time, and each volume's cloud
+  // rename gates THAT volume's local commit — cloud and local stay consistent
+  // per volume even when some volumes fail. A throw here is pre-flight
+  // (read-only provider, cloud-only volumes): nothing changed anywhere.
+  let cloud: SeriesRenameResult;
   try {
-    // Execute IndexedDB updates in a transaction
+    cloud = await unifiedCloudManager.renameSeries(
+      oldTitle,
+      newTitle,
+      preview.indexedDbChanges.map((c) => ({
+        volumeUuid: c.volumeUuid,
+        volumeTitle: c.volumeTitle
+      }))
+    );
+  } catch (error) {
+    console.error('Error renaming series in cloud:', error);
+    if (
+      error instanceof ProviderError &&
+      (error.code === 'CLOUD_ONLY_VOLUMES' || error.code === 'READ_ONLY')
+    ) {
+      // Pre-flight gates carry a user-facing explanation already.
+      throw new Error(error.message);
+    }
+    throw new Error(
+      "Series not renamed: the cloud couldn't be checked before making changes, so nothing was renamed. Check your connection and try again."
+    );
+  }
+
+  const renamedSet = new Set(cloud.renamedVolumeUuids);
+  const dbUuids = new Set(preview.indexedDbChanges.map((c) => c.volumeUuid));
+
+  try {
+    // Commit ONLY the volumes whose cloud files are fully at the new path.
     await db.transaction('rw', [db.volumes], async () => {
       for (const change of preview.indexedDbChanges) {
+        if (!renamedSet.has(change.volumeUuid)) continue;
         await db.volumes.update(change.volumeUuid, {
           series_title: change.newValue
         });
       }
     });
 
-    // Execute LocalStorage updates
+    // LocalStorage stats: commit for renamed volumes, and for stats-only
+    // entries with no DB row (volumes deleted locally AND absent from the
+    // cloud — the cloud-only gate already rejected everything else).
     if (preview.localStorageChanges.length > 0) {
       const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
 
       for (const change of preview.localStorageChanges) {
+        if (!renamedSet.has(change.volumeUuid) && dbUuids.has(change.volumeUuid)) continue;
         updateVolumeSeriesTitle(change.volumeUuid, change.newValue);
       }
     }
 
-    return preview;
+    return {
+      finalTitle: newTitle,
+      renamedCount: cloud.renamedVolumeUuids.length,
+      failures: cloud.failures.map(({ volumeUuid, volumeTitle }) => ({ volumeUuid, volumeTitle }))
+    };
   } catch (error) {
     console.error('Error executing series rename:', error);
     throw new Error('Failed to execute series rename');

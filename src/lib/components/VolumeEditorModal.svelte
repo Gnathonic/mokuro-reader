@@ -16,6 +16,7 @@
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
   import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+  import { ProviderError } from '$lib/util/sync/provider-interface';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
@@ -251,11 +252,35 @@
         try {
           await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
         } catch (renameErr) {
-          console.error('Cloud rename failed; local rename aborted:', renameErr);
-          showSnackbar(
-            "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
-          );
-          return;
+          // Another volume's backup already occupies the new name. Nothing was
+          // written yet — offer to overwrite it or keep everything unchanged.
+          if (renameErr instanceof ProviderError && renameErr.code === 'TARGET_EXISTS') {
+            const overwrite = confirm(
+              `A backup named "${finalSeriesTitle} / ${volumeTitle}" already exists in your cloud. ` +
+                `Overwrite it with this volume? The existing backup will be deleted.`
+            );
+            if (!overwrite) {
+              showSnackbar('Rename cancelled — nothing was changed.');
+              return;
+            }
+            try {
+              await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle, {
+                overwrite: true
+              });
+            } catch (overwriteErr) {
+              console.error('Cloud rename (overwrite) failed; local rename aborted:', overwriteErr);
+              showSnackbar(
+                "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+              );
+              return;
+            }
+          } else {
+            console.error('Cloud rename failed; local rename aborted:', renameErr);
+            showSnackbar(
+              "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+            );
+            return;
+          }
         }
       }
 

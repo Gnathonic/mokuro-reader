@@ -160,7 +160,8 @@ export async function updateVolumeInDb(
 export async function renameVolumeInCloud(
   originalMetadata: VolumeMetadata,
   nextSeriesTitle: string,
-  nextVolumeTitle: string
+  nextVolumeTitle: string,
+  options?: { overwrite?: boolean }
 ): Promise<void> {
   if (
     originalMetadata.series_title === nextSeriesTitle &&
@@ -174,7 +175,8 @@ export async function renameVolumeInCloud(
     originalMetadata.volume_title,
     nextSeriesTitle,
     nextVolumeTitle,
-    originalMetadata.volume_uuid
+    originalMetadata.volume_uuid,
+    options
   );
 }
 
