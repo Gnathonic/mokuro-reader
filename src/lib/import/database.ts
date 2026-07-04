@@ -33,9 +33,19 @@ export async function volumeExists(volumeUuid: string): Promise<boolean> {
  * Will fail if the volume already exists (duplicate prevention).
  *
  * @param volume - The processed volume to save
+ * @param options.preserveTitles - Keep the titles EXACTLY as provided instead
+ *   of sanitizing them. Set by cloud downloads: their titles come from the
+ *   remote path / legacy .mokuro, and rewriting them here would break the
+ *   stored-title === cloud-path identity every cloud lookup relies on (the
+ *   volume would read as un-backed-up and renames would miss its files).
+ *   Legacy titles get sanitized later, at rename time, where the rename
+ *   machinery moves the cloud files along with the title.
  * @throws If the volume already exists or if the transaction fails
  */
-export async function saveVolume(volume: ProcessedVolume): Promise<void> {
+export async function saveVolume(
+  volume: ProcessedVolume,
+  options?: { preserveTitles?: boolean }
+): Promise<void> {
   const { metadata, ocrData, fileData } = volume;
   const canonicalVolumeUuid = metadata.volumeUuid;
 
@@ -53,9 +63,13 @@ export async function saveVolume(volume: ProcessedVolume): Promise<void> {
   // Convert ProcessedMetadata to VolumeMetadata format
   const volumeMetadata: VolumeMetadata = {
     mokuro_version: metadata.mokuroVersion || '',
-    series_title: sanitizeTitleSegment(metadata.series) || 'Untitled',
+    series_title:
+      (options?.preserveTitles ? metadata.series : sanitizeTitleSegment(metadata.series)) ||
+      'Untitled',
     series_uuid: metadata.seriesUuid,
-    volume_title: sanitizeTitleSegment(metadata.volume) || 'Untitled',
+    volume_title:
+      (options?.preserveTitles ? metadata.volume : sanitizeTitleSegment(metadata.volume)) ||
+      'Untitled',
     volume_uuid: metadata.volumeUuid,
     page_count: metadata.pageCount,
     character_count: metadata.chars,

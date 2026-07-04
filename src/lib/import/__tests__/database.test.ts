@@ -155,6 +155,21 @@ describe('saveVolume', () => {
     expect(addCall.volume_title).toBe('Untitled');
   });
 
+  it('preserveTitles keeps cloud-sourced titles exactly as stored in the remote', async () => {
+    // Cloud downloads must NOT sanitize: the stored title has to keep matching
+    // the remote path for legacy backups whose names contain now-illegal
+    // characters, or every cloud lookup (existsInCloud, rename) misses them.
+    const volume = createProcessedVolume({
+      metadata: { series: 'Steins;Gate: 0', volume: 'Vol?1' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume, { preserveTitles: true });
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('Steins;Gate: 0');
+    expect(addCall.volume_title).toBe('Vol?1');
+  });
+
   it('writes OCR data with pages (strips cumulativeChars)', async () => {
     const pages: ProcessedPage[] = [
       { img_path: 'p1.jpg', blocks: [{ lines: ['test'] }], cumulativeChars: 10 }
