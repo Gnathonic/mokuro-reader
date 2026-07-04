@@ -378,14 +378,16 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.renameFile).toHaveBeenCalledTimes(2);
   });
 
-  it('prunes the old series directory only when it is left empty', async () => {
+  it('asks the provider to prune the old series directory after a cross-series rename', async () => {
+    // The prune decision is the PROVIDER's (server-checked emptiness) — the
+    // local cache is never consulted, because a debounced provider-event
+    // rebuild can transiently repopulate old-path entries mid-rename and a
+    // cache gate then skips real prunes.
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider();
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
-    // calls 1+2 (zero-files check, managed-files lookup) see the files; the
-    // destination-collision lookup and the prune check then see empty
-    getBySeries.mockReturnValueOnce(files).mockReturnValueOnce(files).mockReturnValue([]);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
@@ -401,6 +403,29 @@ describe('UnifiedCloudManager rename operations', () => {
     );
 
     expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('Old Series');
+  });
+
+  it('does not prune when only the volume title changed (same series)', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'Old Series',
+      'Volume X',
+      'uuid-1'
+    );
+
+    expect(provider.removeDirectoryIfEmpty).not.toHaveBeenCalled();
   });
 
   it('renames a series folder and replaces cache entries with returned metadata', async () => {
@@ -672,6 +697,10 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(result.failures[0]).toMatchObject({ volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' });
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(existing[3]); // mok-2 only
+    // One prune attempt after the fan-out — the provider's server check makes
+    // it safe even though volume 1's files still occupy the old directory.
+    expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledTimes(1);
+    expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('Old Series');
   });
 });
 

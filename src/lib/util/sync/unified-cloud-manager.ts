@@ -325,7 +325,7 @@ class UnifiedCloudManager {
     // unchanged remote.
     this.assertWritable(provider);
 
-    return this.renameVolumeFiles(
+    const changed = await this.renameVolumeFiles(
       provider,
       oldSeriesTitle,
       oldVolumeTitle,
@@ -334,6 +334,12 @@ class UnifiedCloudManager {
       volumeUuid,
       options
     );
+
+    if (changed > 0 && oldSeriesTitle !== newSeriesTitle) {
+      await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+    }
+
+    return changed;
   }
 
   private assertWritable(provider: SyncProvider): void {
@@ -343,6 +349,26 @@ class UnifiedCloudManager {
         provider.type,
         'READ_ONLY'
       );
+    }
+  }
+
+  /**
+   * Best-effort prune of a series directory a rename may have emptied.
+   * The provider verifies emptiness against the SERVER; the local cache is
+   * deliberately NOT consulted — a debounced provider-event rebuild can
+   * transiently repopulate old-path entries mid-rename (e.g. MEGA's tree
+   * lags a deletion until the sc packet lands), and gating on the cache made
+   * real prunes get skipped.
+   */
+  private async pruneSeriesDirectoryIfEmpty(
+    provider: SyncProvider,
+    seriesTitle: string
+  ): Promise<void> {
+    if (!provider.removeDirectoryIfEmpty) return;
+    try {
+      await provider.removeDirectoryIfEmpty(seriesTitle);
+    } catch {
+      // Non-fatal: an orphaned empty directory is harmless.
     }
   }
 
@@ -465,17 +491,8 @@ class UnifiedCloudManager {
       }
     }
 
-    // 4. Best-effort prune of the now-empty old series directory (server-checked
-    //    emptiness inside the provider — never a blind recursive delete).
-    if (oldSeriesTitle !== newSeriesTitle && provider.removeDirectoryIfEmpty) {
-      if (this.getCloudVolumesBySeries(oldSeriesTitle).length === 0) {
-        try {
-          await provider.removeDirectoryIfEmpty(oldSeriesTitle);
-        } catch {
-          // Non-fatal: an orphaned empty directory is harmless.
-        }
-      }
-    }
+    // (Old-directory pruning happens in the public entry points AFTER all of
+    // a rename's volumes are processed — see pruneSeriesDirectoryIfEmpty.)
 
     return changed;
   }
@@ -626,6 +643,14 @@ class UnifiedCloudManager {
           result.failures.push({ volumeUuid, volumeTitle, error });
         }
       }
+
+      // ONE prune attempt after the whole fan-out (not per volume): the
+      // provider server-checks emptiness, so this is safe even when some
+      // volumes failed and their files still occupy the old directory.
+      if (result.renamedVolumeUuids.length > 0) {
+        await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+      }
+
       return result;
     }
 

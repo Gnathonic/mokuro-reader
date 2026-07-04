@@ -1138,7 +1138,12 @@ export class MegaProvider implements SyncProvider {
       });
       const nodes: any[] = Array.isArray(response?.f) ? response.f : [];
       const hasContents = nodes.some((n: any) => n.h !== target.nodeId);
-      if (hasContents) return;
+      if (hasContents) {
+        console.log(
+          `MEGA folder '${normalized}' not pruned: server still reports ${nodes.length - 1} node(s)`
+        );
+        return;
+      }
 
       await new Promise<void>((resolve, reject) => {
         target.delete(true, (error: Error | null) => (error ? reject(error) : resolve()));
