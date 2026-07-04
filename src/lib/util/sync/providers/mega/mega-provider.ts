@@ -801,7 +801,9 @@ export class MegaProvider implements SyncProvider {
           );
 
           if (!megaFile) {
-            throw new Error('File not found');
+            // Typed: the shared layer treats an already-gone DELETE target as
+            // converged, and relies on this code (never message text).
+            throw new ProviderError(`File not found: ${file.path}`, 'mega', 'NOT_FOUND');
           }
 
           return new Promise<void>((resolve, reject) => {
@@ -824,6 +826,9 @@ export class MegaProvider implements SyncProvider {
       // Skip reinitialize since storage.files is already fresh
       await megaCache.fetch(true);
     } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
       throw new ProviderError(
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'mega',
@@ -849,7 +854,11 @@ export class MegaProvider implements SyncProvider {
         async () => {
           const megaFile = this.getNodeById(file.fileId);
           if (!megaFile) {
-            throw new Error('File not found');
+            // Typed NOT_FOUND: the source node is gone (deleted elsewhere or a
+            // stale cached id). The shared rename layer treats this as a
+            // GENUINE failure — never "already moved" — so it must be
+            // distinguishable from other rename errors by code, not message.
+            throw new ProviderError(`File not found: ${file.path}`, 'mega', 'NOT_FOUND');
           }
 
           const pathParts = normalizedNewPath.split('/');

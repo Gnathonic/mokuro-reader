@@ -938,6 +938,13 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
+      // Typed NOT_FOUND at the boundary where the status is unambiguous about
+      // THIS operation's target — the shared layer relies on the code (never
+      // message text) to treat an already-gone delete target as converged.
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
+      }
+
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
         this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
@@ -977,14 +984,24 @@ export class WebDAVProvider implements SyncProvider {
       }
 
       if (await this.client.exists(destinationFullPath)) {
-        // Idempotent retry: if our source is already gone, a prior attempt
-        // moved it here — treat as success, not a fatal conflict. (Matches the
-        // same-file handling Google Drive / MEGA already do.) A genuine
-        // collision — source still present, different file at the destination —
-        // still throws.
+        // Idempotent retry: if our source is gone AND the occupant matches the
+        // source's recorded size, a prior attempt moved it here — treat as
+        // success. Drive/MEGA verify this case by file identity (id/nodeId);
+        // WebDAV has no stable ids across moves, so size is the closest
+        // identity proxy. Anything else — source still present, or an
+        // occupant we can't match to the source — is a genuine conflict and
+        // throws before any mutation.
         if (!(await this.client.exists(file.fileId))) {
-          console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
-          return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+          const destStat = await this.client.stat(destinationFullPath);
+          const destSize = (
+            'data' in (destStat as object)
+              ? (destStat as { data: { size?: number } }).data
+              : (destStat as { size?: number })
+          )?.size;
+          if (typeof file.size === 'number' && destSize === file.size) {
+            console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
+            return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+          }
         }
         throw new ProviderError(
           `Target file already exists at '${normalizedNewPath}'`,
@@ -999,6 +1016,13 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
+      }
+
+      // Typed NOT_FOUND: the destination was verified absent above, so a 404
+      // from the MOVE means the source is gone — a genuine failure the shared
+      // layer must see as such (never "already moved").
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

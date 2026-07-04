@@ -130,7 +130,9 @@ describe('UnifiedCloudManager rename operations', () => {
 
   it('throws on a read-only provider instead of letting the local rename desync', async () => {
     const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
+    const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -139,6 +141,21 @@ describe('UnifiedCloudManager rename operations', () => {
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'READ_ONLY' });
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('read-only provider with nothing backed up: purely-local rename proceeds (returns 0)', async () => {
+    // The zero-files check must come BEFORE the read-only gate: a read-only
+    // provider (anonymous session, auto-demoted server) has nothing to keep
+    // in sync for a never-backed-up volume, so it must not block the rename.
+    const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockReturnValue([]);
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).resolves.toBe(0);
   });
 
   it('image-only volume (no OCR): just moves files, no mokuro upload/delete', async () => {
@@ -202,17 +219,61 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
-  it('is idempotent: a file already moved by a prior partial run (404) is skipped, not fatal', async () => {
+  it('aborts BEFORE the destructive delete when a move fails — even a 404', async () => {
+    // A NOT_FOUND during a move is a GENUINE failure (deleted elsewhere,
+    // stale cached id) — never "already moved by a prior attempt": an
+    // already-moved file is absent from the fresh source listing and never
+    // reaches the move loop. Swallowing it here would delete the stale
+    // .mokuro and report success while the cbz is stranded or gone.
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider({
-      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
+      renameFile: vi.fn(async (file: CloudFileMetadata) => {
         if (file.fileId === 'cbz-1') throw new Error('Request failed with status 404 Not Found');
-        return { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
+        throw new Error('unexpected');
       })
     });
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toThrow('404');
+
+    // The destructive step never ran: the stale .mokuro survives.
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('converges on retry: files a prior run already moved are simply absent from the source set', async () => {
+    // State after a partial run (fresh fetch): the cbz+cover already sit at
+    // the new path; only the stale .mokuro remains at the old path. The retry
+    // must not re-move anything (and must not read the moved files as a
+    // TARGET_EXISTS collision — collisions require the SOURCE to still exist).
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'mokuro-1',
+        path: 'Old Series/Volume 1.mokuro',
+        modifiedTime: 't',
+        size: 10
+      },
+      {
+        provider: 'webdav',
+        fileId: 'renamed-cbz-1',
+        path: 'New Series/Volume X.cbz',
+        modifiedTime: 't',
+        size: 100
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
@@ -227,9 +288,94 @@ describe('UnifiedCloudManager rename operations', () => {
       'uuid-1'
     );
 
-    // upload(1) + webp move(1) + delete(1); cbz skipped (already moved)
-    expect(changed).toBe(3);
+    // upload fresh mokuro (overwrite) + delete stale mokuro; no moves at all
+    expect(changed).toBe(2);
+    expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to rename onto an occupied name before any remote write (TARGET_EXISTS)', async () => {
+    // Another volume's backup occupies the destination while our source still
+    // exists. Step 1's .mokuro upload is an overwrite on every provider, so
+    // the gate must fire BEFORE it — otherwise the occupant's sidecar is
+    // corrupted before the cbz move could fail.
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      ...oldSeriesFiles(),
+      {
+        provider: 'webdav',
+        fileId: 'other-cbz',
+        path: 'New Series/Volume X.cbz',
+        modifiedTime: 't',
+        size: 999
+      },
+      {
+        provider: 'webdav',
+        fileId: 'other-mok',
+        path: 'New Series/Volume X.mokuro',
+        modifiedTime: 't',
+        size: 11
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('overwrite option deletes the occupant first, then renames cleanly', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const occupantCbz: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'other-cbz',
+      path: 'New Series/Volume X.cbz',
+      modifiedTime: 't',
+      size: 999
+    };
+    const occupantMok: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'other-mok',
+      path: 'New Series/Volume X.mokuro',
+      modifiedTime: 't',
+      size: 11
+    };
+    const files = oldSeriesFiles();
+    const state = [...files, occupantCbz, occupantMok];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const changed = await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1',
+      { overwrite: true }
+    );
+
+    // occupants deleted (2) + upload (1) + cbz/webp moves (2) + stale mokuro delete (1)
+    expect(changed).toBe(6);
+    expect(provider.deleteFile).toHaveBeenCalledWith(occupantCbz);
+    expect(provider.deleteFile).toHaveBeenCalledWith(occupantMok);
+    expect(provider.renameFile).toHaveBeenCalledTimes(2);
   });
 
   it('prunes the old series directory only when it is left empty', async () => {
@@ -237,8 +383,9 @@ describe('UnifiedCloudManager rename operations', () => {
     const provider = makeRenameProvider();
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
-    // first call (find files) returns them; the later prune check sees it empty
-    getBySeries.mockReturnValueOnce(files).mockReturnValue([]);
+    // calls 1+2 (zero-files check, managed-files lookup) see the files; the
+    // destination-collision lookup and the prune check then see empty
+    getBySeries.mockReturnValueOnce(files).mockReturnValueOnce(files).mockReturnValue([]);
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
@@ -306,12 +453,10 @@ describe('UnifiedCloudManager rename operations', () => {
     getCache.mockReturnValue(cache);
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const renamedCount = await unifiedCloudManager.renameSeries(
-      'Original Series',
-      'Renamed Series'
-    );
+    const result = await unifiedCloudManager.renameSeries('Original Series', 'Renamed Series');
 
-    expect(renamedCount).toBe(2);
+    expect(result.changed).toBe(2);
+    expect(result.failures).toEqual([]);
     expect(fetchAll).toHaveBeenCalledTimes(1);
     expect(provider.renameFolder).toHaveBeenCalledWith('Original Series', 'Renamed Series');
     expect(cache.removeById).toHaveBeenCalledTimes(2);
@@ -325,14 +470,28 @@ describe('UnifiedCloudManager rename operations', () => {
   it('renames an OCR series via the per-volume path so each .mokuro is regenerated', async () => {
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const existing: CloudFileMetadata[] = [
-      { provider: 'webdav', fileId: 'cbz-1', path: 'Old Series/Volume 1.cbz', modifiedTime: 't', size: 100 },
-      { provider: 'webdav', fileId: 'mok-1', path: 'Old Series/Volume 1.mokuro', modifiedTime: 't', size: 10 }
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-1',
+        path: 'Old Series/Volume 1.mokuro',
+        modifiedTime: 't',
+        size: 10
+      }
     ];
     // No renameFolder on the mock: if the code took the bulk-move path it would
     // call an undefined method and throw — so passing proves the per-volume path.
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => existing.filter((f) => f.path.startsWith(`${s}/`)));
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({
       mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
@@ -359,28 +518,159 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(existing[1]);
   });
 
-  it('refuses a series rename with no remote writes if a volume sidecar cannot be regenerated', async () => {
+  it('collects a per-volume failure — with no remote writes for it — when a sidecar cannot be regenerated', async () => {
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const existing: CloudFileMetadata[] = [
-      { provider: 'webdav', fileId: 'cbz-1', path: 'Old Series/Volume 1.cbz', modifiedTime: 't', size: 100 },
-      { provider: 'webdav', fileId: 'mok-1', path: 'Old Series/Volume 1.mokuro', modifiedTime: 't', size: 10 }
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-1',
+        path: 'Old Series/Volume 1.mokuro',
+        modifiedTime: 't',
+        size: 10
+      }
     ];
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => existing.filter((f) => f.path.startsWith(`${s}/`)));
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({}); // OCR data missing → no fresh .mokuro
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await expect(
-      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
-        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
-      ])
-    ).rejects.toMatchObject({ name: 'ProviderError', code: 'SIDECAR_REGEN_FAILED' });
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
 
-    // The gate fires before any remote mutation — nothing was moved or deleted.
+    expect(result.renamedVolumeUuids).toEqual([]);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toMatchObject({ volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' });
+    expect(result.failures[0].error).toMatchObject({ code: 'SIDECAR_REGEN_FAILED' });
+
+    // The volume's gate fired before any remote mutation — nothing was touched.
     expect(provider.uploadFile).not.toHaveBeenCalled();
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('blocks a series rename when the cloud holds volumes missing from the local library', async () => {
+    // Cloud-only volumes can't have their .mokuro regenerated (no local OCR),
+    // so renaming around them would split the series across two cloud folders.
+    // The gate fires before any remote write.
+    // (Proper fix — downloading .mokuro/metadata without the full volume —
+    // is blocked on the metadata-persistence data update.)
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const existing: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-1',
+        path: 'Old Series/Volume 1.mokuro',
+        modifiedTime: 't',
+        size: 10
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cbz-2',
+        path: 'Old Series/Volume 2.cbz',
+        modifiedTime: 't',
+        size: 100
+      }
+    ];
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' } // Volume 2 is cloud-only
+      ])
+    ).rejects.toMatchObject({ name: 'ProviderError', code: 'CLOUD_ONLY_VOLUMES' });
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('continues past a failed volume and reports per-volume outcomes', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const existing: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-1',
+        path: 'Old Series/Volume 1.mokuro',
+        modifiedTime: 't',
+        size: 10
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cbz-2',
+        path: 'Old Series/Volume 2.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-2',
+        path: 'Old Series/Volume 2.mokuro',
+        modifiedTime: 't',
+        size: 10
+      }
+    ];
+    const provider = makeRenameProvider({
+      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
+        if (file.fileId === 'cbz-1') throw new Error('network hiccup');
+        return { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
+      })
+    });
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
+      { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' }
+    ]);
+
+    // Volume 1's cbz move failed → its stale .mokuro was NOT deleted and it is
+    // reported as a failure; Volume 2 completed fully.
+    expect(result.renamedVolumeUuids).toEqual(['uuid-2']);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toMatchObject({ volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' });
+    expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).toHaveBeenCalledWith(existing[3]); // mok-2 only
   });
 });
