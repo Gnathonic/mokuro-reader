@@ -158,7 +158,8 @@ function getDatabase(): Dexie {
 }
 
 export async function generateVolumeSidecarsFromDb(
-  volumeUuid: string
+  volumeUuid: string,
+  overrides?: { seriesTitle?: string; volumeTitle?: string }
 ): Promise<VolumeSidecarBlobResult> {
   const db = getDatabase();
 
@@ -166,6 +167,13 @@ export async function generateVolumeSidecarsFromDb(
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found in database`);
   }
+
+  // Allow the caller to build sidecars for a NOT-YET-committed rename: the
+  // .mokuro embeds the title/volume, so a rename must regenerate it with the
+  // new names BEFORE the DB is updated (the remote rename gates the local
+  // commit). UUIDs and OCR pages are unaffected by a rename.
+  const seriesTitle = overrides?.seriesTitle ?? volume.series_title;
+  const volumeTitle = overrides?.volumeTitle ?? volume.volume_title;
 
   const sidecars: VolumeSidecarBlobResult = {};
   const hasMokuroVersion =
@@ -175,15 +183,15 @@ export async function generateVolumeSidecarsFromDb(
     if (volumeOcr?.pages) {
       const metadata: MokuroMetadata = {
         version: volume.mokuro_version,
-        title: volume.series_title,
+        title: seriesTitle,
         title_uuid: volume.series_uuid,
-        volume: volume.volume_title,
+        volume: volumeTitle,
         volume_uuid: volume.volume_uuid,
         pages: volumeOcr.pages,
         chars: volume.character_count
       };
       sidecars.mokuro = {
-        filename: `${volume.volume_title}.mokuro`,
+        filename: `${volumeTitle}.mokuro`,
         blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
       };
     }
@@ -192,7 +200,7 @@ export async function generateVolumeSidecarsFromDb(
   if (volume.thumbnail) {
     const ext = extensionFromMimeType(volume.thumbnail.type || 'image/webp');
     sidecars.thumbnail = {
-      filename: `${volume.volume_title}.${ext}`,
+      filename: `${volumeTitle}.${ext}`,
       blob: volume.thumbnail
     };
   }

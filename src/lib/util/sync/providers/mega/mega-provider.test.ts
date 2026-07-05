@@ -27,6 +27,7 @@ vi.mock('megajs', () => {
     files: Record<string, any>;
     sid = 'SID123';
     reload = vi.fn(async () => {});
+    on = vi.fn();
     constructor(options: any, cb?: (e: Error | null) => void) {
       storageState.lastOptions = options;
       this.files = storageState.files;
@@ -93,13 +94,18 @@ describe('MegaProvider.login()', () => {
     expect(storageState.lastOptions.secondFactorCode).toBe('654321');
   });
 
-  it('logs in with keepalive disabled (no crashing server-change poll)', async () => {
+  it('logs in with keepalive enabled and listens to storage change events', async () => {
+    // The sc long-poll keeps the local tree in sync and feeds the reactive
+    // cache. (Its old delete-event crash came from us manually removing nodes
+    // from storage.files — those manual removals are gone.)
     const provider = new MegaProvider();
     await provider.whenReady();
 
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
-    expect(storageState.lastOptions.keepalive).toBe(false);
+    expect(storageState.lastOptions.keepalive).toBe(true);
+    const listened = (provider as any).storage.on.mock.calls.map((c: any[]) => c[0]);
+    expect(listened).toEqual(expect.arrayContaining(['add', 'move', 'delete', 'update']));
   });
 
   it('maps EMFAREQUIRED to a MFA_REQUIRED ProviderError', async () => {
@@ -316,5 +322,63 @@ describe('MegaProvider.prepareUploadTarget()', () => {
     const result = await provider.prepareUploadTarget('My Series');
 
     expect(result).toEqual({ megaSeriesFolderNodeId: 'SERIES1' });
+  });
+});
+
+describe('MegaProvider.removeDirectoryIfEmpty()', () => {
+  async function providerWithSeriesFolder(serverNodes: any[]) {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    const storage = (provider as any).storage;
+    const mokuroFolder = { name: 'mokuro-reader', directory: true, nodeId: 'root-1' };
+    const seriesFolder = {
+      name: 'Old Series',
+      directory: true,
+      nodeId: 'series-1',
+      parent: mokuroFolder,
+      delete: vi.fn((_permanent: boolean, cb: (e: Error | null) => void) => cb(null))
+    };
+    storage.files = { root: mokuroFolder, series: seriesFolder };
+    storage.api = {
+      request: vi.fn((_req: any, cb: (e: Error | null, r: any) => void) =>
+        cb(null, { f: serverNodes })
+      )
+    };
+    return { provider, seriesFolder, storage };
+  }
+
+  it('deletes the folder when the SERVER reports it empty', async () => {
+    const { provider, seriesFolder, storage } = await providerWithSeriesFolder([
+      { h: 'series-1' } // only the folder's own node comes back
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(storage.api.request).toHaveBeenCalledWith(
+      expect.objectContaining({ a: 'f', n: 'series-1' }),
+      expect.any(Function)
+    );
+    expect(seriesFolder.delete).toHaveBeenCalled();
+  });
+
+  it('does NOT delete when the server still reports contents (never a blind recursive delete)', async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'series-1' },
+      { h: 'file-9', p: 'series-1' } // a straggler another device just added
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the folder does not exist', async () => {
+    const { provider, storage } = await providerWithSeriesFolder([]);
+    storage.files = { root: { name: 'mokuro-reader', directory: true, nodeId: 'root-1' } };
+
+    await expect(provider.removeDirectoryIfEmpty('Ghost Series')).resolves.toBeUndefined();
+    expect(storage.api.request).not.toHaveBeenCalled();
   });
 });

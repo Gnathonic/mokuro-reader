@@ -3,6 +3,10 @@ export type Block = {
   vertical: boolean;
   font_size: number;
   lines: string[];
+  /** Per-line quadrilaterals (4 corner points each) from mokuro; present in
+   * standard .mokuro output and stored verbatim, but optional because
+   * image-only volumes and older imports may lack it. */
+  lines_coords?: number[][][];
 };
 
 export type Page = {

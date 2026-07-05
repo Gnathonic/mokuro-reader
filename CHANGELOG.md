@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.7.5] - 2026-07-05
+
+### Added
+
+- Blocks series rename when cloud has undownloaded volumes (#233)
+- Confirms before overwriting an existing cloud backup (#233)
+- Sanitizes titles for filesystem/cloud safety on save (#233)
+- Old cloud series folder auto-deleted after rename
+
+### Fixed
+
+- Text placement significantly improved in auto mode (#243)
+- Cloud-backed volume renames no longer revert after sync (#233)
+- Series rename now updates every volume's cloud metadata (#233)
+- Cloud-downloaded titles no longer mangled by sanitization (#233)
+- MEGA library now updates live after cloud renames (#233)
+- Duplicate OCR blocks deduplicated across all font modes (#243)
+
+### Changed
+
+- Auto font-size now positions each line by its own quad (#243)
+- Series rename now applies per-volume, reporting partial failures (#233)
+
 ## [1.7.4] - 2026-06-30
 
 ### Added

@@ -1,19 +1,55 @@
 import { derived, type Readable } from 'svelte/store';
-import type {
-  SyncProvider,
-  CloudFileMetadata,
-  ProviderType,
-  UploadPayload
+import {
+  ProviderError,
+  type SyncProvider,
+  type CloudFileMetadata,
+  type ProviderType,
+  type UploadPayload
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
+import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
+
+/** A managed sidecar whose CONTENT embeds the volume's title/series. */
+function isMokuroSidecarPath(path: string): boolean {
+  const lower = normalizeCloudPath(path).toLowerCase();
+  return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+}
+
+/**
+ * Did a provider op fail because THIS operation's target was already gone?
+ * Typed only: providers throw code 'NOT_FOUND' at the boundary where the
+ * status is unambiguous. Message sniffing ('404'/'not found') is forbidden
+ * here — wrapped errors (folder resolution, proxy pages, stale ids) match
+ * those substrings and would let a genuine failure gate a destructive step.
+ */
+function isAlreadyGoneError(error: unknown): boolean {
+  return error instanceof ProviderError && error.code === 'NOT_FOUND';
+}
 
 /**
  * CloudFileMetadata with provider information for placeholder generation
  */
 export interface CloudVolumeWithProvider extends CloudFileMetadata {
   provider: ProviderType;
+}
+
+/** Per-volume outcome of a series rename fan-out. */
+export interface SeriesRenameFailure {
+  volumeUuid: string;
+  volumeTitle: string;
+  error: unknown;
+}
+
+export interface SeriesRenameResult {
+  /** Remote files changed across all volumes. */
+  changed: number;
+  /** Volumes whose cloud files are fully at the new path (incl. volumes with
+   * nothing backed up — trivially consistent). Safe to commit locally. */
+  renamedVolumeUuids: string[];
+  /** Volumes whose cloud rename failed — must NOT be committed locally. */
+  failures: SeriesRenameFailure[];
 }
 
 function normalizeCloudPath(path: string): string {
@@ -264,59 +300,362 @@ class UnifiedCloudManager {
     oldSeriesTitle: string,
     oldVolumeTitle: string,
     newSeriesTitle: string,
-    newVolumeTitle: string
+    newVolumeTitle: string,
+    volumeUuid?: string,
+    options?: { overwrite?: boolean }
   ): Promise<number> {
     const provider = this.getActiveProvider();
     if (!provider) {
       return 0;
     }
 
+    await this.fetchAllCloudVolumes();
+
+    // Nothing backed up → nothing remote to keep in sync. This must be
+    // decided BEFORE the read-only gate so a read-only provider (anonymous
+    // session, or auto-demoted after a write failure) never blocks a
+    // purely-local rename.
+    if (this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle).length === 0) {
+      return 0;
+    }
+
+    // The remote rename GATES the local commit (caller updates the DB only if
+    // this resolves). A read-only provider cannot perform it, so fail loudly
+    // rather than let the caller commit a local rename that diverges from the
+    // unchanged remote.
+    this.assertWritable(provider);
+
+    const changed = await this.renameVolumeFiles(
+      provider,
+      oldSeriesTitle,
+      oldVolumeTitle,
+      newSeriesTitle,
+      newVolumeTitle,
+      volumeUuid,
+      options
+    );
+
+    if (changed > 0 && oldSeriesTitle !== newSeriesTitle) {
+      await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+    }
+
+    return changed;
+  }
+
+  private assertWritable(provider: SyncProvider): void {
+    if (provider.getStatus().isReadOnly) {
+      throw new ProviderError(
+        'Cannot rename: the cloud provider is read-only',
+        provider.type,
+        'READ_ONLY'
+      );
+    }
+  }
+
+  /**
+   * Best-effort prune of a series directory a rename may have emptied.
+   * The provider verifies emptiness against the SERVER; the local cache is
+   * deliberately NOT consulted — a debounced provider-event rebuild can
+   * transiently repopulate old-path entries mid-rename (e.g. MEGA's tree
+   * lags a deletion until the sc packet lands), and gating on the cache made
+   * real prunes get skipped.
+   */
+  private async pruneSeriesDirectoryIfEmpty(
+    provider: SyncProvider,
+    seriesTitle: string
+  ): Promise<void> {
+    if (!provider.removeDirectoryIfEmpty) return;
+    try {
+      await provider.removeDirectoryIfEmpty(seriesTitle);
+    } catch {
+      // Non-fatal: an orphaned empty directory is harmless.
+    }
+  }
+
+  /**
+   * Move/regenerate ONE volume's managed cloud files into a new series/volume
+   * name. Assumes the caller already checked write access and refreshed the
+   * cache, so a series rename can fan this out over many volumes on a single
+   * fetch. Idempotent + destructive-last → converges on retry. Returns the
+   * number of remote files changed. Provider-agnostic: only the SyncProvider
+   * interface (uploadFile/renameFile/deleteFile + optional removeDirectoryIfEmpty).
+   */
+  private async renameVolumeFiles(
+    provider: SyncProvider,
+    oldSeriesTitle: string,
+    oldVolumeTitle: string,
+    newSeriesTitle: string,
+    newVolumeTitle: string,
+    volumeUuid?: string,
+    options?: { overwrite?: boolean }
+  ): Promise<number> {
     const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
     const newBasePath = normalizeCloudPath(`${newSeriesTitle}/${newVolumeTitle}`);
     if (oldBasePath === newBasePath) {
       return 0;
     }
 
-    await this.fetchAllCloudVolumes();
-
-    const filesToRename = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
-    if (filesToRename.length === 0) {
+    const managedFiles = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    if (managedFiles.length === 0) {
       return 0;
     }
 
-    for (const file of filesToRename) {
-      const oldPath = normalizeCloudPath(file.path);
-      const suffix = oldPath.slice(oldBasePath.length);
-      const updatedFile = await provider.renameFile(file, `${newBasePath}${suffix}`);
-      this.replaceCachedFile(file, updatedFile);
+    // Regenerate the fresh .mokuro FIRST (no remote mutation yet), built with
+    // the new names (overrides — the DB still holds the old ones until this
+    // gate clears). Only the .mokuro embeds the title, so it's the one file we
+    // regenerate rather than move.
+    const hasCloudMokuro = managedFiles.some((file) => isMokuroSidecarPath(file.path));
+    let freshMokuroBlob: Blob | null = null;
+    if (volumeUuid) {
+      const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, {
+        seriesTitle: newSeriesTitle,
+        volumeTitle: newVolumeTitle
+      });
+      freshMokuroBlob = sidecars.mokuro?.blob ?? null;
     }
 
-    return filesToRename.length;
+    // GATE (before any remote write): an OCR volume that already has a .mokuro
+    // in the cloud but whose sidecar we COULDN'T regenerate (e.g. volume_ocr
+    // row missing — a DB inconsistency) must not be renamed. Moving its stale
+    // sidecar would silently revert the rename on re-download — the exact bug
+    // this fixes — so fail loudly while nothing has changed.
+    if (volumeUuid && hasCloudMokuro && !freshMokuroBlob) {
+      throw new ProviderError(
+        'Cannot rename: the OCR sidecar could not be regenerated (volume_ocr data missing)',
+        provider.type,
+        'SIDECAR_REGEN_FAILED'
+      );
+    }
+
+    let changed = 0;
+
+    // COLLISION GATE (before any remote write): if a managed source file still
+    // exists while a file already occupies its destination, this rename would
+    // land on ANOTHER volume's backup. Step 1's .mokuro upload is an overwrite
+    // on every provider, so proceeding would corrupt that volume's sidecar
+    // before the cbz move could fail with TARGET_EXISTS. A retry of a partial
+    // rename does not trip this: its already-moved sources are gone from the
+    // old path, so they no longer pair with the destination files.
+    const destinationFiles = this.getManagedCloudFilesForVolume(newSeriesTitle, newVolumeTitle);
+    const destinationPaths = new Set(destinationFiles.map((f) => normalizeCloudPath(f.path)));
+    const collision = managedFiles.some((file) => {
+      if (isMokuroSidecarPath(file.path)) return false; // regenerated, not moved
+      const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
+      return destinationPaths.has(`${newBasePath}${suffix}`);
+    });
+    if (collision) {
+      if (!options?.overwrite) {
+        throw new ProviderError(
+          `A backup already exists at '${newBasePath}' in the cloud`,
+          provider.type,
+          'TARGET_EXISTS'
+        );
+      }
+      // Explicit, user-confirmed overwrite: clear the occupant's files so the
+      // moves below land cleanly.
+      for (const file of destinationFiles) {
+        if (await this.deleteFileIdempotent(file)) changed++;
+      }
+    }
+
+    // 1. Upload the fresh .mokuro at the new path. Idempotent (overwrite) on retry.
+    if (freshMokuroBlob) {
+      await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
+      changed++;
+    }
+
+    // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
+    //    Move errors PROPAGATE — the destructive step 3 must never run after a
+    //    failed move. Retry convergence needs no error-swallowing here: a file
+    //    moved by a prior attempt is simply absent from the old path after the
+    //    fresh fetch, so it never re-enters this loop.
+    for (const file of managedFiles) {
+      if (isMokuroSidecarPath(file.path)) continue;
+      const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
+      await this.moveFile(provider, file, `${newBasePath}${suffix}`);
+      changed++;
+    }
+
+    // 3. DESTRUCTIVE, LAST: drop the stale .mokuro now that the fresh one is up.
+    //    When we have no fresh mokuro (legacy callers that pass no volumeUuid),
+    //    MOVE it instead so OCR is never lost — the gate above already rejected
+    //    the dangerous "had a UUID but couldn't regenerate" case.
+    for (const file of managedFiles) {
+      if (!isMokuroSidecarPath(file.path)) continue;
+      if (freshMokuroBlob) {
+        if (await this.deleteFileIdempotent(file)) changed++;
+      } else {
+        const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
+        await this.moveFile(provider, file, `${newBasePath}${suffix}`);
+        changed++;
+      }
+    }
+
+    // (Old-directory pruning happens in the public entry points AFTER all of
+    // a rename's volumes are processed — see pruneSeriesDirectoryIfEmpty.)
+
+    return changed;
+  }
+
+  /**
+   * renameFile + cache update. Errors propagate untouched: a NOT_FOUND during
+   * a move is a GENUINE failure on every provider (an already-moved file is
+   * absent from the fresh source listing and never reaches here; WebDAV
+   * additionally converges internally), so nothing may be swallowed — the
+   * destructive delete step must never run after a failed move.
+   */
+  private async moveFile(
+    provider: SyncProvider,
+    file: CloudFileMetadata,
+    newPath: string
+  ): Promise<void> {
+    const updated = await provider.renameFile(file, newPath);
+    this.replaceCachedFile(file, updated);
+  }
+
+  /**
+   * deleteFile, treating an already-gone target as success — absence IS the
+   * postcondition of a delete, which is why this is safe here and NOT for
+   * moves. Only the provider's typed NOT_FOUND counts. Returns whether it
+   * actually deleted.
+   */
+  private async deleteFileIdempotent(file: CloudFileMetadata): Promise<boolean> {
+    try {
+      await this.deleteFile(file);
+      return true;
+    } catch (error) {
+      if (isAlreadyGoneError(error)) {
+        // Already deleted by a prior attempt — drop the stale cache entry so
+        // it stops advertising a file that no longer exists.
+        const provider = this.getActiveProvider();
+        const cache = provider ? cacheManager.getCache(provider.type) : null;
+        cache?.removeById?.(file.fileId);
+        return false;
+      }
+      throw error;
+    }
   }
 
   /**
    * Rename or move a backed-up series folder in the current provider.
-   * Returns the number of remote files updated.
+   *
+   * With a volume list, this fans out per-volume and reports per-volume
+   * outcomes instead of throwing mid-loop: each volume either fully renames
+   * in the cloud (→ renamedVolumeUuids, safe to commit locally) or fails
+   * (→ failures, must keep the old title locally). Volumes with nothing
+   * backed up are trivially consistent and count as renamed. Throws ONLY on
+   * pre-flight gates (read-only, cloud-only volumes), i.e. before any remote
+   * write — a throw always means "nothing changed anywhere".
    */
-  async renameSeries(oldSeriesTitle: string, newSeriesTitle: string): Promise<number> {
+  async renameSeries(
+    oldSeriesTitle: string,
+    newSeriesTitle: string,
+    volumes?: Array<{ volumeUuid: string; volumeTitle: string }>,
+    options?: { overwrite?: boolean }
+  ): Promise<SeriesRenameResult> {
+    const allRenamed = (): SeriesRenameResult => ({
+      changed: 0,
+      renamedVolumeUuids: (volumes ?? []).map((v) => v.volumeUuid),
+      failures: []
+    });
+
     const provider = this.getActiveProvider();
     if (!provider) {
-      return 0;
+      // No cloud connected: every volume is local-only and trivially in sync.
+      return allRenamed();
     }
 
     const normalizedOldTitle = normalizeCloudPath(oldSeriesTitle);
     const normalizedNewTitle = normalizeCloudPath(newSeriesTitle);
     if (normalizedOldTitle === normalizedNewTitle) {
-      return 0;
+      return allRenamed();
     }
 
     await this.fetchAllCloudVolumes();
 
     const existingFiles = this.getCloudVolumesBySeries(oldSeriesTitle);
     if (existingFiles.length === 0) {
-      return 0;
+      // Nothing backed up under the old title — decided BEFORE the read-only
+      // gate so a read-only provider never blocks a purely-local rename.
+      return allRenamed();
     }
 
+    // Remote gates the local commit; a read-only provider can't rename.
+    this.assertWritable(provider);
+
+    // Each volume's .mokuro embeds the SERIES title, so a bulk folder move would
+    // leave every sidecar stale — silently reverting the rename on re-download.
+    // With the volume list, fan out the per-volume rename instead: it
+    // regenerates each .mokuro with the new series title, moves cbz/cover, then
+    // drops the stale sidecar — idempotent + destructive-last, so a partial
+    // failure converges on retry. The single fetch above feeds the whole loop
+    // (the in-memory cache updates as each volume moves). More requests than a
+    // bulk folder rename, but series renames are rare and recovery matters.
+    if (volumes && volumes.length > 0) {
+      // GATE (before any remote write): refuse when the old series folder
+      // holds managed files belonging to none of the volumes we can
+      // regenerate — cloud-only volumes, or local titles that no longer match
+      // their cloud filenames. Renaming around them would split the series
+      // across two cloud folders and leave stale sidecars that resurrect the
+      // old title on re-download.
+      // TODO(data-update): the proper fix is downloading a volume's .mokuro/
+      // metadata WITHOUT the full archive, so cloud-only volumes can be
+      // regenerated and renamed too. That depends on the planned
+      // metadata-persistence data update (metadata surviving volume deletion,
+      // see PR #201). Until then we fail loudly and ask the user to download
+      // the missing volumes first.
+      const knownBases = new Set(
+        volumes.map((v) => normalizeCloudPath(`${oldSeriesTitle}/${v.volumeTitle}`))
+      );
+      const cloudOnlyBases = [
+        ...new Set(
+          existingFiles
+            .map((file) => stripManagedFileExtension(normalizeCloudPath(file.path)))
+            .filter((base) => !knownBases.has(base))
+        )
+      ];
+      if (cloudOnlyBases.length > 0) {
+        const names = cloudOnlyBases.map((base) => base.slice(normalizedOldTitle.length + 1));
+        const shown = names.slice(0, 3).join(', ') + (names.length > 3 ? ', …' : '');
+        throw new ProviderError(
+          `Series not renamed: ${names.length} backed-up volume(s) in this series ` +
+            `are not in your local library (${shown}). Download them first, then rename the series.`,
+          provider.type,
+          'CLOUD_ONLY_VOLUMES'
+        );
+      }
+
+      const result: SeriesRenameResult = { changed: 0, renamedVolumeUuids: [], failures: [] };
+      for (const { volumeUuid, volumeTitle } of volumes) {
+        try {
+          result.changed += await this.renameVolumeFiles(
+            provider,
+            oldSeriesTitle,
+            volumeTitle,
+            newSeriesTitle,
+            volumeTitle,
+            volumeUuid,
+            options
+          );
+          result.renamedVolumeUuids.push(volumeUuid);
+        } catch (error) {
+          console.error(`Cloud rename failed for volume '${volumeTitle}':`, error);
+          result.failures.push({ volumeUuid, volumeTitle, error });
+        }
+      }
+
+      // ONE prune attempt after the whole fan-out (not per volume): the
+      // provider server-checks emptiness, so this is safe even when some
+      // volumes failed and their files still occupy the old directory.
+      if (result.renamedVolumeUuids.length > 0) {
+        await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+      }
+
+      return result;
+    }
+
+    // Legacy path (no volume list, e.g. an image-only series): no .mokuro to
+    // regenerate, so a provider-optimized bulk folder move is correct.
     const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
 
     const cache = cacheManager.getCache(provider.type);
@@ -329,7 +668,7 @@ class UnifiedCloudManager {
       }
     }
 
-    return renamedFiles.length;
+    return { changed: renamedFiles.length, renamedVolumeUuids: [], failures: [] };
   }
 
   /**
