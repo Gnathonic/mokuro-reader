@@ -358,8 +358,20 @@ export class FilesystemProvider implements SyncProvider {
       }
 
       // Read source
-      const sourceHandle = await this.resolveFileHandle(file.fileId, { create: false });
-      const sourceFile = await sourceHandle.getFile();
+      let sourceFile: File;
+      try {
+        const sourceHandle = await this.resolveFileHandle(file.fileId, { create: false });
+        sourceFile = await sourceHandle.getFile();
+      } catch (error) {
+        if (error instanceof Error && error.name === 'NotFoundError') {
+          // Idempotent retry: copy-then-delete isn't atomic, so a prior attempt
+          // may have completed. Source gone + destination matching the source's
+          // recorded size = already renamed (same convergence rule as WebDAV).
+          const converged = await this.findConvergedRename(file, normalizedNewPath);
+          if (converged) return converged;
+        }
+        throw error;
+      }
 
       // Write to destination
       const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: true });
@@ -389,6 +401,34 @@ export class FilesystemProvider implements SyncProvider {
     } catch (error) {
       throw this.toProviderError(error, 'Rename', file.path);
     }
+  }
+
+  /**
+   * Check whether a rename already completed in a prior attempt: destination
+   * exists and its size matches the source's recorded size. Returns its
+   * metadata, or null when there is no matching destination.
+   */
+  private async findConvergedRename(
+    file: CloudFileMetadata,
+    normalizedNewPath: string
+  ): Promise<CloudFileMetadata | null> {
+    try {
+      const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: false });
+      const destFile = await destHandle.getFile();
+      if (typeof file.size === 'number' && destFile.size === file.size) {
+        console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
+        return {
+          provider: 'filesystem',
+          fileId: normalizedNewPath,
+          path: normalizedNewPath,
+          modifiedTime: new Date(destFile.lastModified).toISOString(),
+          size: destFile.size
+        };
+      }
+    } catch {
+      // No destination either — caller falls through to the typed NOT_FOUND.
+    }
+    return null;
   }
 
   async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {

@@ -202,6 +202,72 @@ describe('error classification', () => {
   });
 });
 
+describe('renameFile idempotency', () => {
+  it('treats source-gone + matching destination as an already-completed rename', async () => {
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'B/v.cbz', '42-bytes-content-simulated-here-abcdefghi'); // 41 chars
+    const destSize = new Blob(['42-bytes-content-simulated-here-abcdefghi']).size;
+    const provider = makeProvider(root);
+
+    const result = await provider.renameFile(
+      {
+        provider: 'filesystem',
+        fileId: 'A/v.cbz',
+        path: 'A/v.cbz',
+        modifiedTime: '',
+        size: destSize
+      },
+      'B/v.cbz'
+    );
+
+    expect(result.path).toBe('B/v.cbz');
+    expect(result.size).toBe(destSize);
+  });
+
+  it('still throws typed NOT_FOUND when the source is gone and no matching destination exists', async () => {
+    const root = new FakeDirHandle('');
+    const provider = makeProvider(root);
+
+    const err = await provider
+      .renameFile(
+        {
+          provider: 'filesystem',
+          fileId: 'A/v.cbz',
+          path: 'A/v.cbz',
+          modifiedTime: '',
+          size: 42
+        },
+        'B/v.cbz'
+      )
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.code).toBe('NOT_FOUND');
+  });
+
+  it('does not converge on a destination whose size differs from the source record', async () => {
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'B/v.cbz', 'different-length-content');
+    const provider = makeProvider(root);
+
+    const err = await provider
+      .renameFile(
+        {
+          provider: 'filesystem',
+          fileId: 'A/v.cbz',
+          path: 'A/v.cbz',
+          modifiedTime: '',
+          size: 99999
+        },
+        'B/v.cbz'
+      )
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.code).toBe('NOT_FOUND');
+  });
+});
+
 describe('getStorageQuota', () => {
   it('returns the unavailable shape — origin estimate is not folder disk space', async () => {
     const provider = makeProvider(new FakeDirHandle(''));
