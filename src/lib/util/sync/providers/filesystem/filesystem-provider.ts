@@ -500,6 +500,32 @@ export class FilesystemProvider implements SyncProvider {
     }
   }
 
+  /**
+   * Remove a directory only if it is verifiably empty — never recursive.
+   * Best-effort: an orphaned empty directory is harmless.
+   */
+  async removeDirectoryIfEmpty(relativePath: string): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    const normalized = relativePath.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+    try {
+      const dir = await this.resolveDirectoryHandle(normalized, { create: false });
+      // @ts-expect-error — values() is defined on FileSystemDirectoryHandle at runtime
+      for await (const _entry of dir.values()) {
+        void _entry;
+        return; // any entry → not empty → keep
+      }
+      const parentPath = getParentPath(normalized);
+      const parent = parentPath
+        ? await this.resolveDirectoryHandle(parentPath, { create: false })
+        : this.requireRoot();
+      await parent.removeEntry(getBasename(normalized));
+      console.log(`✅ Pruned empty folder '${normalized}' from filesystem`);
+    } catch {
+      // Already gone or unreadable — harmless.
+    }
+  }
+
   async getStorageQuota(): Promise<StorageQuota> {
     // navigator.storage.estimate() reports the browser-origin quota, which has
     // nothing to do with the chosen folder's free disk space. Report "unknown"

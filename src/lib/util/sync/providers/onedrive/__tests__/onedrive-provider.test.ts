@@ -28,7 +28,7 @@ vi.mock('../graph-client', () => ({
 }));
 
 import { OneDriveProvider } from '../onedrive-provider';
-import { getItemByPath, listChildren, createFolder } from '../graph-client';
+import { getItemByPath, listChildren, createFolder, deleteItem } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
 
 describe('OneDriveProvider.listCloudVolumes', () => {
@@ -111,5 +111,40 @@ describe('folder creation coalescing', () => {
 
     const provider = new OneDriveProvider();
     await expect(provider.prepareUploadTarget('Series')).resolves.not.toThrow();
+  });
+});
+
+describe('removeDirectoryIfEmpty', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('deletes a folder the server reports empty', async () => {
+    vi.mocked(getItemByPath).mockResolvedValue({ id: 'dir-id', name: 'Old', folder: {} });
+    vi.mocked(listChildren).mockResolvedValue([]);
+
+    const provider = new OneDriveProvider();
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(vi.mocked(deleteItem)).toHaveBeenCalledWith(expect.anything(), 'dir-id');
+  });
+
+  it('keeps a folder that still has children', async () => {
+    vi.mocked(getItemByPath).mockResolvedValue({ id: 'dir-id', name: 'Old', folder: {} });
+    vi.mocked(listChildren).mockResolvedValue([{ id: 'x', name: 'v.cbz', file: {} }]);
+
+    const provider = new OneDriveProvider();
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(vi.mocked(deleteItem)).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the folder is already gone', async () => {
+    vi.mocked(getItemByPath).mockResolvedValue(null);
+
+    const provider = new OneDriveProvider();
+    await expect(provider.removeDirectoryIfEmpty('Old Series')).resolves.toBeUndefined();
+
+    expect(vi.mocked(deleteItem)).not.toHaveBeenCalled();
   });
 });

@@ -278,3 +278,34 @@ describe('getStorageQuota', () => {
     });
   });
 });
+
+describe('removeDirectoryIfEmpty', () => {
+  it('removes an empty directory non-recursively', async () => {
+    const root = new FakeDirHandle('');
+    await root.getDirectoryHandle('Old Series', { create: true });
+    const removeSpy = vi.spyOn(root, 'removeEntry');
+    const provider = makeProvider(root);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(removeSpy).toHaveBeenCalledWith('Old Series');
+    expect(root.children.has('Old Series')).toBe(false);
+  });
+
+  it('keeps a directory that still has entries', async () => {
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'Old Series/v.cbz', 'DATA');
+    const removeSpy = vi.spyOn(root, 'removeEntry');
+    const provider = makeProvider(root);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(root.children.has('Old Series')).toBe(true);
+  });
+
+  it('is best-effort: swallows a missing directory', async () => {
+    const provider = makeProvider(new FakeDirHandle(''));
+    await expect(provider.removeDirectoryIfEmpty('Old Series')).resolves.toBeUndefined();
+  });
+});

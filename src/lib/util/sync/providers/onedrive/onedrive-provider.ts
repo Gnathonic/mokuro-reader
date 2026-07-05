@@ -435,6 +435,29 @@ export class OneDriveProvider implements SyncProvider {
     console.log(`✅ Deleted series folder '${seriesTitle}' from OneDrive`);
   }
 
+  /**
+   * Remove a series directory only if the SERVER confirms it is empty — never
+   * a blind recursive delete (Graph folder deletion is recursive). Best-effort:
+   * an orphaned empty directory is harmless.
+   */
+  async removeDirectoryIfEmpty(relativePath: string): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    const normalized = relativePath.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+    try {
+      const token = await onedriveTokenManager.getAccessToken();
+      const path = `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${normalized}`;
+      const item = await getItemByPath(token, path);
+      if (!item || !item.folder) return;
+      const children = await listChildren(token, path);
+      if (children.length > 0) return;
+      await deleteItem(token, item.id);
+      console.log(`✅ Pruned empty series folder '${normalized}' from OneDrive`);
+    } catch (error) {
+      console.warn(`Could not prune OneDrive folder '${normalized}':`, error);
+    }
+  }
+
   async getStorageQuota(): Promise<StorageQuota> {
     if (!this.isAuthenticated()) {
       return { used: 0, total: null, available: null };
