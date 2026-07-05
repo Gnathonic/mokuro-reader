@@ -29,8 +29,14 @@ font size per line.
 ## Approach (chosen)
 
 Render each line as its own absolutely positioned span at its quad's position,
-with a per-line font size derived from quad geometry. Keep the existing one-box
-rendering as fallback when `lines_coords` is absent or inconsistent.
+with a per-line font size derived from quad geometry.
+
+**Mode mapping (final, per user direction):** this reconstruction is neither
+the raw file (`original`) nor the old measure-and-shrink (`auto`) — it
+supersedes the old auto and ships as the new **`auto` mode** (the app
+default). Blocks without `lines_coords` (older imports, image-only) fall back
+to the legacy hover-fit auto behavior. `original` mode reverts to the
+faithful raw-`font_size` rendering. Block dedupe applies in all modes.
 
 Alternatives considered:
 

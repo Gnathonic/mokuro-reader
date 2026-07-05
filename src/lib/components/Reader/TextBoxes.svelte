@@ -67,11 +67,29 @@
 
         let [_xmin, _ymin, _xmax, _ymax] = box;
 
-        // Only expand bounding boxes when using auto font sizing
-        // Manual font sizes should use exact OCR bounding boxes
+        // Replace manual ellipsis with proper ellipsis character (…)
+        // Handle both ASCII periods (...) and full-width periods (．．．)
+        const processedLines = lines.map((line) =>
+          line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
+        );
+
+        const isOriginalMode = $settings.fontSize === 'original';
+        const isAutoMode = $settings.fontSize === 'auto';
+
+        // Auto mode: derive per-line position/size from the OCR line quads.
+        // mokuro's block font_size overstates the true character size (it is
+        // the quad width, furigana included), so rendering it as-is overflows
+        // the box; the quads themselves are accurate. Null (no lines_coords,
+        // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
+        const lineLayouts = isAutoMode
+          ? layoutLines(block, processedLines, getDefaultMeasurer())
+          : null;
+
+        // Only expand bounding boxes for legacy hover-fit auto sizing;
+        // per-line layout and manual font sizes use exact OCR bounding boxes
         let xmin, ymin, xmax, ymax;
 
-        if ($settings.fontSize === 'auto') {
+        if (isAutoMode && !lineLayouts) {
           // Expand bounding box by 10% (5% on each side) to give text more room
           const originalWidth = _xmax - _xmin;
           const originalHeight = _ymax - _ymin;
@@ -83,7 +101,6 @@
           xmax = clamp(_xmax + expansionX, 0, img_width);
           ymax = clamp(_ymax + expansionY, 0, img_height);
         } else {
-          // Use exact OCR bounding boxes for manual font sizes
           xmin = _xmin;
           ymin = _ymin;
           xmax = _xmax;
@@ -94,12 +111,6 @@
         const height = ymax - ymin;
         const area = width * height;
 
-        // Replace manual ellipsis with proper ellipsis character (…)
-        // Handle both ASCII periods (...) and full-width periods (．．．)
-        const processedLines = lines.map((line) =>
-          line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
-        );
-
         // Determine font size based on setting
         let fontSize: string;
         if ($settings.fontSize === 'auto' || $settings.fontSize === 'original') {
@@ -107,16 +118,6 @@
         } else {
           fontSize = `${$settings.fontSize}pt`;
         }
-
-        const isOriginalMode = $settings.fontSize === 'original';
-
-        // Original mode: derive per-line position/size from the OCR line quads.
-        // mokuro's block font_size overstates the true character size (it is the
-        // quad width, furigana included), so rendering it overflows the box;
-        // the quads themselves are accurate. Null → legacy block rendering.
-        const lineLayouts = isOriginalMode
-          ? layoutLines(block, processedLines, getDefaultMeasurer())
-          : null;
 
         const textBox: TextBoxData = {
           left: `${xmin}px`,
@@ -288,8 +289,14 @@
     const [index, initialFontSize] = params;
 
     const calculate = () => {
-      // Skip if already processed, OCR is hidden, or using manual font size
-      if (processedTextBoxes.has(index) || display !== 'block' || $settings.fontSize !== 'auto')
+      // Skip if already processed, OCR is hidden, using manual font size, or
+      // the box is laid out per-line from lines_coords (no fitting needed)
+      if (
+        processedTextBoxes.has(index) ||
+        display !== 'block' ||
+        $settings.fontSize !== 'auto' ||
+        element.classList.contains('perLine')
+      )
         return;
 
       // Mark as processed immediately to prevent duplicate calculations
@@ -545,7 +552,7 @@
 </script>
 
 {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
-  {@const usePerLine = isOriginalMode && lineLayouts !== null}
+  {@const usePerLine = lineLayouts !== null}
   <div
     use:handleTextBoxHover={[index, fontSize]}
     class="textBox"

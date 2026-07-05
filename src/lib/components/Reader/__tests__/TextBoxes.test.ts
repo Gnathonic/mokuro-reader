@@ -9,7 +9,7 @@ vi.mock('$lib/settings', async () => {
   const { writable } = await import('svelte/store');
   return {
     settings: writable({
-      fontSize: 'original',
+      fontSize: 'auto',
       boldFont: false,
       displayOCR: true,
       alwaysShowOCR: true,
@@ -79,7 +79,7 @@ function makePage(blocks: unknown[]): Page {
   };
 }
 
-describe('TextBoxes original mode with lines_coords', () => {
+describe('TextBoxes auto mode with lines_coords', () => {
   it('renders each line as a positioned span sized from its quad', () => {
     const { container } = render(TextBoxes, {
       page: makePage([blockWithCoords]),
@@ -115,7 +115,7 @@ describe('TextBoxes original mode with lines_coords', () => {
     expect(box?.style.height).toBe('235px');
   });
 
-  it('falls back to block-level rendering when lines_coords is absent', () => {
+  it('falls back to legacy hover-fit auto when lines_coords is absent', () => {
     const { lines_coords: _dropped, ...legacyBlock } = blockWithCoords;
     const { container } = render(TextBoxes, {
       page: makePage([legacyBlock]),
@@ -127,12 +127,13 @@ describe('TextBoxes original mode with lines_coords', () => {
 
     const box = container.querySelector<HTMLElement>('.textBox');
     expect(box?.style.fontSize).toBe('46px');
-    // legacy original mode leaves the box unsized (overflow-visible)
-    expect(box?.style.width).toBe('');
+    expect(box?.classList.contains('perLine')).toBe(false);
+    // legacy auto expands the box 10% and fixes its dimensions as fit target
+    expect(parseFloat(box!.style.width)).toBeCloseTo(148 * 1.1, 1);
   });
 
-  it('does not use per-line rendering outside original mode', () => {
-    settingsStore.update((s) => ({ ...s, fontSize: 'auto' }));
+  it('original mode renders the raw block font_size without per-line layout', () => {
+    settingsStore.update((s) => ({ ...s, fontSize: 'original' }));
     try {
       const { container } = render(TextBoxes, {
         page: makePage([blockWithCoords]),
@@ -140,8 +141,12 @@ describe('TextBoxes original mode with lines_coords', () => {
       });
       expect(container.querySelectorAll('.ocr-line.positionedLine')).toHaveLength(0);
       expect(container.querySelectorAll('.ocr-line')).toHaveLength(3);
+      const box = container.querySelector<HTMLElement>('.textBox');
+      expect(box?.style.fontSize).toBe('46px');
+      // faithful original mode: unsized, overflow-visible box
+      expect(box?.style.width).toBe('');
     } finally {
-      settingsStore.update((s) => ({ ...s, fontSize: 'original' }));
+      settingsStore.update((s) => ({ ...s, fontSize: 'auto' }));
       expect(get(settingsStore)).toBeTruthy();
     }
   });
