@@ -23,7 +23,6 @@
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
-  import { detectBrowserPlatform, getPopupHelp, type PopupHelp } from '$lib/util/popup-help';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -327,23 +326,6 @@
     }
   }
 
-  function testPopupPermission() {
-    showSnackbar('Testing in 5 seconds — hands off the mouse/keyboard so no click can help…');
-    // Wait out the transient-activation window so this tests a TRUE
-    // background popup, which is what unattended re-auth needs.
-    setTimeout(() => {
-      triggerGoogleReauth()
-        .then(() => {
-          showSnackbar('If the Google window appeared, hands-off refresh is configured.');
-        })
-        .catch(() => {
-          showSnackbar(
-            'Popup was blocked. Follow the steps above — or just rely on click-to-reconnect.'
-          );
-        });
-    }, 5000);
-  }
-
   async function triggerGoogleReauth() {
     const provider = providerManager.getProviderInstance('google-drive');
     if (!provider) {
@@ -372,7 +354,6 @@
 
   onMount(async () => {
     filesystemSupported = isFilesystemProviderSupported();
-    popupHelp = getPopupHelp(await detectBrowserPlatform(), window.location.origin);
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
@@ -657,7 +638,6 @@
   }
 
   // Browser detection and settings URL generation
-  let popupHelp = $state<PopupHelp | null>(null);
 
   async function backupAllSeries() {
     // Get default provider
@@ -1063,72 +1043,27 @@
                   </Toggle>
                 </div>
                 <p class="text-xs text-gray-500">
-                  Keeps your progress synced during long reading sessions. Automatically prompts
-                  re-authentication when your session expires (~1 hour).
+                  Streamlines reconnection to a single click so read progress keeps syncing. Without
+                  it, syncing stops silently when your Google session expires (~1 hour) until you
+                  reconnect manually.
                 </p>
 
                 {#if $miscSettings.gdriveAutoReAuth}
-                  <div class="mt-2 rounded-lg border border-blue-700/50 bg-blue-900/30 p-3">
-                    <h4 class="mb-2 text-sm font-semibold text-blue-200">
-                      Click-to-reconnect is built in
-                    </h4>
-                    <p class="text-xs text-gray-300">
-                      When your Google session expires, your next click or tap re-opens the sign-in
-                      popup automatically — no browser configuration needed.
+                  <div
+                    class="mt-2 rounded-lg border border-blue-700/50 bg-blue-900/30 p-3 text-xs text-gray-300"
+                  >
+                    <p class="mb-1 font-semibold text-blue-200">How reconnection works</p>
+                    <p>
+                      Google sessions last about an hour. When yours expires, the app asks Google to
+                      reconnect at the moments that matter — opening the app, opening a book, or
+                      your next click — and the Google account chooser appears. One click on your
+                      account resumes syncing and pulls your latest progress.
+                    </p>
+                    <p class="mt-1">
+                      Closing Google's dialog means "keep reading without sync": progress stays
+                      local until you hit the red Reconnect button in the top bar.
                     </p>
                   </div>
-                  {#if popupHelp}
-                    <div class="mt-2 rounded-lg border border-yellow-700/50 bg-yellow-900/30 p-3">
-                      <h4 class="mb-2 text-sm font-semibold text-yellow-200">
-                        Optional: hands-off refresh ({popupHelp.name})
-                      </h4>
-                      <p class="mb-3 text-xs text-gray-300">
-                        {popupHelp.supportsPerSiteAllow
-                          ? 'To refresh with no click at all (e.g. syncing while the app sits open unattended), allow popups for this site:'
-                          : 'This browser can only allow popups for ALL sites, not just this one:'}
-                      </p>
-                      {#if popupHelp.note}
-                        <p class="mb-2 text-xs text-amber-300">{popupHelp.note}</p>
-                      {/if}
-                      <div class="mb-3 space-y-1 text-xs text-gray-300">
-                        <ol class="list-inside list-decimal space-y-1 pl-2">
-                          {#each popupHelp.steps as instruction (instruction)}
-                            <li>{instruction}</li>
-                          {/each}
-                        </ol>
-                        {#if popupHelp.settingsUrl}
-                          <div class="mt-2">
-                            <p class="text-xs text-gray-400">
-                              <span
-                                role="button"
-                                tabindex="0"
-                                class="cursor-pointer font-mono text-yellow-400 underline hover:text-yellow-300"
-                                onclick={() => {
-                                  navigator.clipboard.writeText(popupHelp?.settingsUrl ?? '');
-                                  showSnackbar('Copied! Paste this into your address bar');
-                                }}
-                                onkeydown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    navigator.clipboard.writeText(popupHelp?.settingsUrl ?? '');
-                                    showSnackbar('Copied! Paste this into your address bar');
-                                  }
-                                }}
-                              >
-                                {popupHelp.settingsUrl}
-                              </span>
-                            </p>
-                          </div>
-                        {/if}
-                      </div>
-                      {#if popupHelp.recommendation}
-                        <p class="mb-2 text-xs text-blue-300">💡 {popupHelp.recommendation}</p>
-                      {/if}
-                      <Button size="xs" color="yellow" onclick={testPopupPermission}>
-                        Test popup permission
-                      </Button>
-                    </div>
-                  {/if}
                 {/if}
               </div>
             {/if}

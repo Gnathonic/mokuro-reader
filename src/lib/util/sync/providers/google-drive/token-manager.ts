@@ -11,6 +11,7 @@ class TokenManager {
   private refreshIntervalId: number | null = null;
   private isRefreshing = false;
   private gestureRetryCancel: (() => void) | null = null;
+  private pendingPostReauthSync = false;
 
   constructor() {
     if (browser) {
@@ -105,6 +106,7 @@ class TokenManager {
       try {
         // Must stay synchronous: an await here would forfeit the activation
         // window that lets the OAuth popup open.
+        this.pendingPostReauthSync = true;
         this.requestNewToken(false);
       } catch (error) {
         console.warn('Gesture-retry re-auth failed:', error);
@@ -260,6 +262,23 @@ class TokenManager {
           import('../../provider-manager').then(({ providerManager }) => {
             providerManager.updateStatus();
           });
+
+          // After a RE-auth (not initial login — CloudView owns that flow),
+          // pull cloud state immediately. Without this, nothing syncs until
+          // the user turns pages, whose fresher timestamps would then win the
+          // newest-wins merge and clobber progress made on another device.
+          if (this.pendingPostReauthSync) {
+            this.pendingPostReauthSync = false;
+            import('../../unified-cloud-manager').then(async ({ unifiedCloudManager }) => {
+              try {
+                await unifiedCloudManager.fetchAllCloudVolumes();
+                await unifiedCloudManager.syncProgress({ silent: true });
+                console.log('✅ Post-reauth sync completed');
+              } catch (error) {
+                console.warn('Post-reauth sync failed:', error);
+              }
+            });
+          }
         }
       },
       // GIS reports NON-OAuth failures here, not in `callback` — in particular
@@ -364,9 +383,12 @@ class TokenManager {
     return timeLeft ? Math.round(timeLeft / 60000) : null;
   }
 
-  // Manual re-authentication (minimal UI, reuses existing permissions)
+  // Re-authentication (minimal UI, reuses existing permissions). Flags the
+  // next successful token for an immediate cloud pull — see the callback in
+  // initTokenClient.
   reAuthenticate(): void {
     console.log('🔄 reAuthenticate() called');
+    this.pendingPostReauthSync = true;
     this.requestNewToken(false);
   }
 }
