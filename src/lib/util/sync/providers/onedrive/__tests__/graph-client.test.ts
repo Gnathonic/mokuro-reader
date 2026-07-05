@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('$app/environment', () => ({ browser: true }));
+
 import {
   getDriveQuota,
   listChildren,
@@ -8,6 +11,8 @@ import {
   createUploadSession,
   getItemByPath
 } from '../graph-client';
+import { ProviderError } from '../../../provider-interface';
+import { onedriveTokenManager } from '../token-manager';
 
 const BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -221,6 +226,51 @@ describe('graph-client', () => {
       expect(call[0]).toBe(
         `${BASE}/me/drive/root:/mokuro-reader/Series/v1.cbz:/createUploadSession`
       );
+    });
+  });
+
+  describe('error classification', () => {
+    it('throws ProviderError with isAuthError on 401 and flags needsAttention', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => 'token expired'
+      } as Response);
+
+      const err = await getDriveQuota('TOKEN').catch((e) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err.isAuthError).toBe(true);
+      expect(err.code).toBe('GRAPH_401');
+
+      let attention = false;
+      onedriveTokenManager.needsAttention.subscribe((v) => (attention = v))();
+      expect(attention).toBe(true);
+    });
+
+    it('marks 429 and 5xx as network errors (retryable), not auth errors', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        text: async () => ''
+      } as Response);
+
+      const err = await getDriveQuota('TOKEN').catch((e) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err.isNetworkError).toBe(true);
+      expect(err.isAuthError).toBe(false);
+    });
+
+    it('keeps the Graph <status> message shape for not-found sniffing', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => ''
+      } as Response);
+      // listChildren (not getItemByPath, which maps 404 to null)
+      await expect(listChildren('TOKEN', 'mokuro-reader/x')).rejects.toThrow(/404/);
     });
   });
 });

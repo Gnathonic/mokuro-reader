@@ -1,4 +1,6 @@
 import { ONEDRIVE_CONFIG } from './constants';
+import { ProviderError } from '../../provider-interface';
+import { onedriveTokenManager } from './token-manager';
 
 const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 
@@ -29,7 +31,18 @@ function encodePath(path: string): string {
 
 async function parseError(response: Response): Promise<never> {
   const text = await response.text().catch(() => '');
-  throw new Error(`Graph ${response.status} ${response.statusText}: ${text || '(no body)'}`);
+  if (response.status === 401) {
+    // Token rejected server-side (revocation, password change). Silent
+    // refresh alone won't detect this — flag the session for reconnect.
+    onedriveTokenManager.markNeedsAttention();
+  }
+  throw new ProviderError(
+    `Graph ${response.status} ${response.statusText}: ${text || '(no body)'}`,
+    'onedrive',
+    `GRAPH_${response.status}`,
+    response.status === 401,
+    response.status === 429 || response.status >= 500
+  );
 }
 
 export async function getDriveQuota(accessToken: string): Promise<DriveQuota> {

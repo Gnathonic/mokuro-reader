@@ -225,15 +225,28 @@ export class OneDriveProvider implements SyncProvider {
         : blob instanceof ArrayBuffer
           ? new Blob([blob])
           : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
-    const fileId = await this.cloudCore.uploadFile({
-      // onedrive-core prefixes its own mokuro-reader root, so pass just the
-      // bare series title here.
-      seriesTitle,
-      filename,
-      blob: blobToUpload,
-      credentials,
-      onProgress
-    });
+    let fileId: string;
+    try {
+      fileId = await this.cloudCore.uploadFile({
+        // onedrive-core prefixes its own mokuro-reader root, so pass just the
+        // bare series title here.
+        seriesTitle,
+        filename,
+        blob: blobToUpload,
+        credentials,
+        onProgress
+      });
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new ProviderError(
+        `OneDrive upload failed: ${message}`,
+        'onedrive',
+        'UPLOAD_FAILED',
+        /\b401\b/.test(message),
+        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+      );
+    }
     console.log(`✅ Uploaded ${path} to OneDrive`);
     return fileId;
   }
@@ -246,11 +259,24 @@ export class OneDriveProvider implements SyncProvider {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }
     const credentials = await this.getWorkerDownloadCredentials(file.fileId);
-    const buffer = await this.cloudCore.downloadFile({
-      fileId: file.fileId,
-      credentials,
-      onProgress: onProgress || (() => {})
-    });
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await this.cloudCore.downloadFile({
+        fileId: file.fileId,
+        credentials,
+        onProgress: onProgress || (() => {})
+      });
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new ProviderError(
+        `OneDrive download failed: ${message}`,
+        'onedrive',
+        'DOWNLOAD_FAILED',
+        /\b401\b/.test(message),
+        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+      );
+    }
     return new Blob([buffer], { type: 'application/zip' });
   }
 
