@@ -86,6 +86,14 @@ export function createCanvasMeasurer(fontFamily = "'Noto Sans JP', sans-serif"):
   };
 }
 
+let defaultMeasurer: TextMeasurer | null = null;
+
+/** Shared memoized canvas measurer (heuristic fallback outside the browser). */
+export function getDefaultMeasurer(): TextMeasurer {
+  if (!defaultMeasurer) defaultMeasurer = createCanvasMeasurer();
+  return defaultMeasurer;
+}
+
 /**
  * Extents of a quad along the writing direction (main) and across it (cross),
  * via edge-midpoint vectors — the same construction comic-text-detector uses,

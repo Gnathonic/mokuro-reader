@@ -16,6 +16,7 @@
     type VolumeMetadata
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
+  import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
 
   interface ContextMenuData {
     x: number;
@@ -51,6 +52,9 @@
     area: number;
     useMinDimensions: boolean;
     isOriginalMode: boolean;
+    /** Per-line positions/sizes from lines_coords (original mode only);
+     * null falls back to block-level rendering */
+    lineLayouts: LineLayout[] | null;
     blockIndex: number; // Original index in page.blocks
   }
 
@@ -105,6 +109,14 @@
 
         const isOriginalMode = $settings.fontSize === 'original';
 
+        // Original mode: derive per-line position/size from the OCR line quads.
+        // mokuro's block font_size overstates the true character size (it is the
+        // quad width, furigana included), so rendering it overflows the box;
+        // the quads themselves are accurate. Null → legacy block rendering.
+        const lineLayouts = isOriginalMode
+          ? layoutLines(block, processedLines, getDefaultMeasurer())
+          : null;
+
         const textBox: TextBoxData = {
           left: `${xmin}px`,
           top: `${ymin}px`,
@@ -116,6 +128,7 @@
           area,
           useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
           isOriginalMode,
+          lineLayouts,
           blockIndex
         };
 
@@ -530,15 +543,17 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
+  {@const usePerLine = isOriginalMode && lineLayouts !== null}
   <div
     use:handleTextBoxHover={[index, fontSize]}
     class="textBox"
     class:originalMode={isOriginalMode}
+    class:perLine={usePerLine}
     class:forceVisible
     class:alwaysVisible={alwaysShowOCR}
-    style:width={isOriginalMode ? undefined : useMinDimensions ? undefined : width}
-    style:height={isOriginalMode ? undefined : useMinDimensions ? undefined : height}
+    style:width={usePerLine ? width : isOriginalMode || useMinDimensions ? undefined : width}
+    style:height={usePerLine ? height : isOriginalMode || useMinDimensions ? undefined : height}
     style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
     style:min-height={isOriginalMode ? undefined : useMinDimensions ? height : undefined}
     style:left
@@ -555,7 +570,16 @@
     {contenteditable}
   >
     <p>
-      {#each lines as line}<span class="ocr-line">{line}</span>{/each}
+      {#if usePerLine && lineLayouts}
+        {#each lines as line, lineIndex}<span
+            class="ocr-line positionedLine"
+            style:left={`${lineLayouts[lineIndex].left}px`}
+            style:top={`${lineLayouts[lineIndex].top}px`}
+            style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+          >{/each}
+      {:else}
+        {#each lines as line}<span class="ocr-line">{line}</span>{/each}
+      {/if}
     </p>
   </div>
 {/each}
@@ -626,6 +650,17 @@
   }
 
   .textBox.originalMode p {
+    white-space: nowrap;
+  }
+
+  /* Original mode with lines_coords: each line is placed at its detected quad
+     with a geometry-derived font size. line-height 1 keeps the column/row no
+     thicker than the font size; letter-spacing 0 because the print's tracking
+     is already baked into the quad length the size was fitted to. */
+  .textBox.perLine .ocr-line.positionedLine {
+    position: absolute;
+    line-height: 1;
+    letter-spacing: 0;
     white-space: nowrap;
   }
 
