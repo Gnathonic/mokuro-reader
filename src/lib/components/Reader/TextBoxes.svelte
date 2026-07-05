@@ -53,8 +53,8 @@
     area: number;
     useMinDimensions: boolean;
     isOriginalMode: boolean;
-    /** Per-line positions/sizes from lines_coords (original mode only);
-     * null falls back to block-level rendering */
+    /** Per-line positions/sizes from lines_coords (auto mode only);
+     * null falls back to legacy hover-fit auto rendering */
     lineLayouts: LineLayout[] | null;
     blockIndex: number; // Original index in page.blocks
   }
@@ -579,19 +579,19 @@
   >
     <p>
       {#if usePerLine && lineLayouts}
-        {#each lines as line, lineIndex}<span
-            class="ocr-line positionedLine"
-            class:wrappedLine={lineLayouts[lineIndex].wrap}
-            style:left={`${lineLayouts[lineIndex].left}px`}
-            style:top={`${lineLayouts[lineIndex].top}px`}
-            style:width={lineLayouts[lineIndex].wrap
-              ? `${lineLayouts[lineIndex].width}px`
-              : undefined}
-            style:height={lineLayouts[lineIndex].wrap
-              ? `${lineLayouts[lineIndex].height}px`
-              : undefined}
-            style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
-          >{/each}
+        {#each lines as line, lineIndex}{#if !lineLayouts[lineIndex].hidden}<span
+              class="ocr-line positionedLine"
+              class:wrappedLine={lineLayouts[lineIndex].wrap}
+              style:left={`${lineLayouts[lineIndex].left}px`}
+              style:top={`${lineLayouts[lineIndex].top}px`}
+              style:width={lineLayouts[lineIndex].wrap
+                ? `${lineLayouts[lineIndex].width}px`
+                : undefined}
+              style:height={lineLayouts[lineIndex].wrap
+                ? `${lineLayouts[lineIndex].height}px`
+                : undefined}
+              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+            >{/if}{/each}
       {:else}
         {#each lines as line}<span class="ocr-line">{line}</span>{/each}
       {/if}

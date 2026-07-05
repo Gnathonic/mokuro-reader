@@ -398,6 +398,92 @@ describe('layoutLines', () => {
     expect(layouts[2].fontSize).toBeLessThan(30);
   });
 
+  it('hides a line re-captured inside a bigger line quad (Saki 02 p129 あれは)', () => {
+    // L1's quad spans both print columns and its text re-contains L0's
+    // (あれは…). Rendering both stacks text; the smaller duplicate is hidden
+    // and the bigger line wraps over the full region — no text lost.
+    const sakiAreha: LayoutBlock = {
+      box: [151, 775, 266, 931],
+      vertical: true,
+      font_size: 68,
+      lines_coords: [
+        [
+          [215, 789],
+          [266, 789],
+          [266, 874],
+          [215, 874]
+        ],
+        [
+          [151, 775],
+          [254, 775],
+          [254, 931],
+          [151, 931]
+        ]
+      ],
+      lines: ['あれは', 'あれはキスではないですよ']
+    };
+    const layouts = layoutLines(sakiAreha, sakiAreha.lines, heuristicMeasurer)!;
+    expect(layouts[0].hidden).toBe(true);
+    expect(layouts[1].hidden).toBeFalsy();
+    expect(layouts[1].wrap).toBe(true);
+  });
+
+  it('drops the enclosing blob when overlapped lines have unrelated text (Saki 02 p129)', () => {
+    // Hallucination cluster: L3's quad contains L0 and L1, L0's contains L1,
+    // each with divergent OCR text. The precise small captures survive; the
+    // super-capture blobs hide, so nothing stacks.
+    const sakiGarbage: LayoutBlock = {
+      box: [307, 456, 609, 637],
+      vertical: false,
+      font_size: 81,
+      lines_coords: [
+        [
+          [385, 484],
+          [519, 484],
+          [519, 593],
+          [385, 593]
+        ],
+        [
+          [389, 544],
+          [498, 544],
+          [498, 581],
+          [389, 581]
+        ],
+        [
+          [366, 547],
+          [396, 547],
+          [396, 598],
+          [366, 598]
+        ],
+        [
+          [393, 456],
+          [609, 456],
+          [609, 637],
+          [393, 637]
+        ],
+        [
+          [334, 540],
+          [359, 540],
+          [359, 595],
+          [334, 595]
+        ]
+      ],
+      lines: [
+        'いつの年末のはいい',
+        'それは．．．おはようござい',
+        'いや、',
+        '生きたいなのはいいじじゃないこの好きなキスがまだというのはどういう',
+        'あ．．．'
+      ]
+    };
+    const layouts = layoutLines(sakiGarbage, sakiGarbage.lines, heuristicMeasurer)!;
+    expect(layouts[0].hidden).toBe(true); // contains L1, unrelated text
+    expect(layouts[3].hidden).toBe(true); // contains L0/L1, unrelated text
+    expect(layouts[1].hidden).toBeFalsy();
+    expect(layouts[2].hidden).toBeFalsy();
+    expect(layouts[4].hidden).toBeFalsy();
+  });
+
   it('still shrinks a line whose quad is far too small for the uniform size', () => {
     // A separately-detected furigana line: half-size chars in a half-size
     // quad. Rendering it at the block reference would double the print size

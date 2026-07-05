@@ -116,6 +116,15 @@ Per line:
   single. Hallucinated lines now wrap into dense contained columns instead of
   rendering sub-pixel.
 
+- **Intra-block overlap dedupe** (Saki 02 p129): the detector sometimes
+  re-captures the same ink region as several overlapping "lines" (a column
+  alone AND a bigger quad spanning it plus neighbors), which renders stacked.
+  When one line bbox covers ≥ 0.7 of a smaller one: if the smaller's text is
+  contained in the bigger's, the smaller hides (bigger wraps the full region,
+  no text lost); otherwise the texts diverged (hallucination cluster) and the
+  enclosing blob hides, keeping the precise small captures. Hidden lines do
+  not vote on the reference and are not rendered.
+
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.
 

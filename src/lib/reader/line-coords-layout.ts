@@ -40,6 +40,12 @@ export interface LineLayout {
   /** Quad bbox dims, px — the wrapping container for wrap lines */
   width: number;
   height: number;
+  /**
+   * True for lines suppressed by intra-block overlap dedupe: the detector
+   * re-captured the same ink region as multiple overlapping "lines", which
+   * would render stacked on top of each other.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -68,6 +74,9 @@ const SMALL_OUTLIER = 0.7;
 /** Lines may run this much past their own quad's length at the uniform size —
  * quad slack varies line to line while print size is constant. */
 const OVERFLOW_TOL = 1.15;
+/** Two lines whose bboxes overlap by this fraction of the smaller one are
+ * re-captures of the same ink region — one of them is suppressed. */
+const RECAPTURE_OVERLAP = 0.7;
 
 /**
  * Median of `values` where each value counts proportionally to its weight.
@@ -203,6 +212,8 @@ export function layoutLines(
     fitted: number;
     candidate: number;
     suspect: boolean;
+    bbox: { minX: number; minY: number; maxX: number; maxY: number };
+    hidden: boolean;
   }
   const measured: MeasuredLine[] = [];
   for (let i = 0; i < coords.length; i++) {
@@ -210,6 +221,8 @@ export function layoutLines(
     if (!extents) return null;
     const advanceEm = measure(processedLines[i]);
     const fitted = advanceEm > 0 ? extents.main / advanceEm : extents.cross;
+    const xs = coords[i].map((p) => p[0]);
+    const ys = coords[i].map((p) => p[1]);
     measured.push({
       extents,
       advanceEm,
@@ -217,8 +230,43 @@ export function layoutLines(
       candidate: Math.min(extents.cross, fitted),
       // quad wide enough for 1.6+ columns of its own fitted size: likely
       // multiple print columns captured as one OCR "line"
-      suspect: advanceEm > 0 && extents.cross >= SUSPECT_RATIO * fitted
+      suspect: advanceEm > 0 && extents.cross >= SUSPECT_RATIO * fitted,
+      bbox: {
+        minX: Math.min(...xs),
+        minY: Math.min(...ys),
+        maxX: Math.max(...xs),
+        maxY: Math.max(...ys)
+      },
+      hidden: false
     });
+  }
+
+  // Intra-block overlap dedupe: the detector sometimes re-captures the same
+  // ink region as several overlapping "lines" (a column alone AND a bigger
+  // quad spanning it plus its neighbors), which would render stacked. When
+  // one bbox covers most of a smaller one: if the smaller line's text is
+  // contained in the bigger's, the smaller is a re-capture and hides (the
+  // bigger wraps over the full region, no text lost); otherwise the texts
+  // diverged (hallucination cluster) and the enclosing blob hides, keeping
+  // the precise small captures.
+  const bboxArea = (b: MeasuredLine['bbox']) => (b.maxX - b.minX) * (b.maxY - b.minY);
+  for (let i = 0; i < measured.length; i++) {
+    if (measured[i].hidden) continue;
+    for (let j = i + 1; j < measured.length; j++) {
+      if (measured[i].hidden) break;
+      if (measured[j].hidden) continue;
+      const a = measured[i].bbox;
+      const b = measured[j].bbox;
+      const ox = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
+      const oy = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+      const smallArea = Math.min(bboxArea(a), bboxArea(b));
+      if (smallArea <= 0 || ox * oy < RECAPTURE_OVERLAP * smallArea) continue;
+      const smaller = bboxArea(a) <= bboxArea(b) ? i : j;
+      const bigger = smaller === i ? j : i;
+      const smallText = processedLines[smaller].trim();
+      const dropSmaller = smallText.length > 0 && processedLines[bigger].includes(smallText);
+      measured[dropSmaller ? smaller : bigger].hidden = true;
+    }
   }
 
   // Block reference size: print keeps one size per balloon, so all lines
@@ -228,13 +276,14 @@ export function layoutLines(
   // their quad ink area: a big base line must not be outvoted by the small
   // ruby fragments split around it (Killing Bites 01 p42 「百獣王」).
   const area = (m: MeasuredLine) => m.extents.main * m.extents.cross;
-  const clean = measured.filter((m) => !m.suspect);
-  const refPool = clean.length ? clean : measured;
+  const visible = measured.filter((m) => !m.hidden);
+  const clean = visible.filter((m) => !m.suspect);
+  const refPool = clean.length ? clean : visible;
   const refBase = weightedMedian(
     refPool.map((m) => m.candidate),
     refPool.map(area)
   );
-  const consensus = measured.filter((m) => !m.suspect && m.candidate >= SMALL_OUTLIER * refBase);
+  const consensus = visible.filter((m) => !m.suspect && m.candidate >= SMALL_OUTLIER * refBase);
   const consensusSizes = consensus.map((m) => m.candidate);
   const referenceSize = consensus.length
     ? weightedMedian(consensusSizes, consensus.map(area))
@@ -247,6 +296,7 @@ export function layoutLines(
   const wrapStart = hasCleanLines ? referenceSize : Number.POSITIVE_INFINITY;
   const wraps = measured.map(
     (m) =>
+      !m.hidden &&
       m.suspect &&
       (m.fitted < WRAP_SHRINK * referenceSize || !hasCleanLines) &&
       wrapFitSize(wrapStart, m.advanceEm, m.extents.main, m.extents.cross) >= WRAP_GAIN * m.fitted
@@ -274,15 +324,26 @@ export function layoutLines(
 
   const layouts: LineLayout[] = [];
   for (let i = 0; i < coords.length; i++) {
-    const { extents, advanceEm, fitted, candidate } = measured[i];
-    const xs = coords[i].map((p) => p[0]);
-    const ys = coords[i].map((p) => p[1]);
-    const minX = Math.min(...xs) - block.box[0];
-    const minY = Math.min(...ys) - block.box[1];
-    const maxX = Math.max(...xs) - block.box[0];
-    const maxY = Math.max(...ys) - block.box[1];
+    const { extents, advanceEm, candidate, bbox, hidden } = measured[i];
+    const minX = bbox.minX - block.box[0];
+    const minY = bbox.minY - block.box[1];
+    const maxX = bbox.maxX - block.box[0];
+    const maxY = bbox.maxY - block.box[1];
     const width = maxX - minX;
     const height = maxY - minY;
+
+    if (hidden) {
+      layouts.push({
+        left: minX,
+        top: minY,
+        fontSize: MIN_FONT_SIZE,
+        wrap: false,
+        width,
+        height,
+        hidden: true
+      });
+      continue;
+    }
 
     if (wraps[i]) {
       const fontSize = Math.max(
