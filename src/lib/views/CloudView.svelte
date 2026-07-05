@@ -23,6 +23,7 @@
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
+  import { detectBrowserPlatform, getPopupHelp, type PopupHelp } from '$lib/util/popup-help';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -326,6 +327,23 @@
     }
   }
 
+  function testPopupPermission() {
+    showSnackbar('Testing in 5 seconds — hands off the mouse/keyboard so no click can help…');
+    // Wait out the transient-activation window so this tests a TRUE
+    // background popup, which is what unattended re-auth needs.
+    setTimeout(() => {
+      triggerGoogleReauth()
+        .then(() => {
+          showSnackbar('If the Google window appeared, hands-off refresh is configured.');
+        })
+        .catch(() => {
+          showSnackbar(
+            'Popup was blocked. Follow the steps above — or just rely on click-to-reconnect.'
+          );
+        });
+    }, 5000);
+  }
+
   async function triggerGoogleReauth() {
     const provider = providerManager.getProviderInstance('google-drive');
     if (!provider) {
@@ -354,6 +372,7 @@
 
   onMount(async () => {
     filesystemSupported = isFilesystemProviderSupported();
+    popupHelp = getPopupHelp(await detectBrowserPlatform(), window.location.origin);
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
@@ -638,72 +657,7 @@
   }
 
   // Browser detection and settings URL generation
-  function getBrowserInfo() {
-    const ua = navigator.userAgent;
-    const isChrome = /Chrome/.test(ua) && /Google Inc/.test(navigator.vendor);
-    const isEdge = /Edg/.test(ua);
-    const isFirefox = /Firefox/.test(ua);
-    const isSafari = /Safari/.test(ua) && !/Chrome/.test(ua);
-
-    // Get current site URL for settings
-    const siteUrl = encodeURIComponent(window.location.origin);
-
-    if (isEdge) {
-      return {
-        name: 'Edge',
-        settingsUrl: `edge://settings/content/siteDetails?site=${siteUrl}`,
-        instructions: [
-          'Click the link below to copy the Edge settings URL',
-          'Paste it into your address bar and press Enter',
-          'Toggle "Pop-ups and redirects" to "Allow"',
-          'Return here and click the test button to verify'
-        ]
-      };
-    } else if (isChrome) {
-      return {
-        name: 'Chrome',
-        settingsUrl: `chrome://settings/content/siteDetails?site=${siteUrl}`,
-        instructions: [
-          'Click the link below to copy the Chrome settings URL',
-          'Paste it into your address bar and press Enter',
-          'Toggle "Pop-ups and redirects" to "Allow"',
-          'Return here and click the test button to verify'
-        ]
-      };
-    } else if (isFirefox) {
-      return {
-        name: 'Firefox',
-        settingsUrl: 'about:preferences#privacy',
-        instructions: [
-          'Click the permissions icon (🔒) in the address bar',
-          'Find "Open pop-up windows" and change to "Allow"',
-          'Or: Settings → Privacy & Security → Permissions → Pop-ups → Exceptions'
-        ]
-      };
-    } else if (isSafari) {
-      return {
-        name: 'Safari',
-        settingsUrl: null,
-        instructions: [
-          'Safari → Settings → Websites → Pop-up Windows',
-          'Find this website in the list',
-          'Change setting to "Allow"'
-        ]
-      };
-    } else {
-      return {
-        name: 'Unknown',
-        settingsUrl: null,
-        instructions: [
-          'Click the popup blocked icon in your address bar',
-          'Select "Always allow popups from this site"',
-          'Click the test button below to verify it works'
-        ]
-      };
-    }
-  }
-
-  let browserInfo = $derived(getBrowserInfo());
+  let popupHelp = $state<PopupHelp | null>(null);
 
   async function backupAllSeries() {
     // Get default provider
@@ -1114,73 +1068,67 @@
                 </p>
 
                 {#if $miscSettings.gdriveAutoReAuth}
-                  <div class="mt-2 rounded-lg border border-yellow-700/50 bg-yellow-900/30 p-3">
-                    <h4 class="mb-2 text-sm font-semibold text-yellow-200">
-                      ⚠️ Popup Permission Required ({browserInfo.name})
+                  <div class="mt-2 rounded-lg border border-blue-700/50 bg-blue-900/30 p-3">
+                    <h4 class="mb-2 text-sm font-semibold text-blue-200">
+                      Click-to-reconnect is built in
                     </h4>
-                    <p class="mb-3 text-xs text-gray-300">
-                      For auto re-authentication to work, you must allow popups for this site.
-                      Otherwise, the browser will block automatic re-authentication attempts.
+                    <p class="text-xs text-gray-300">
+                      When your Google session expires, your next click or tap re-opens the sign-in
+                      popup automatically — no browser configuration needed.
                     </p>
-                    <div class="mb-3 space-y-1 text-xs text-gray-300">
-                      <p class="font-medium">To enable popups:</p>
-                      <ol class="list-inside list-decimal space-y-1 pl-2">
-                        {#each browserInfo.instructions as instruction}
-                          <li>{instruction}</li>
-                        {/each}
-                      </ol>
-                      {#if browserInfo.settingsUrl}
-                        <div class="mt-2">
-                          <p class="text-xs text-gray-400">
-                            <span
-                              role="button"
-                              tabindex="0"
-                              class="cursor-pointer font-mono text-yellow-400 underline hover:text-yellow-300"
-                              onclick={() => {
-                                navigator.clipboard.writeText(browserInfo.settingsUrl);
-                                showSnackbar(`Copied! Paste this into your address bar`);
-                              }}
-                              onkeydown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  navigator.clipboard.writeText(browserInfo.settingsUrl);
-                                  showSnackbar(`Copied! Paste this into your address bar`);
-                                }
-                              }}
-                            >
-                              {browserInfo.settingsUrl}
-                            </span>
-                          </p>
-                        </div>
-                      {/if}
-                    </div>
-                    <Button
-                      size="xs"
-                      color="yellow"
-                      onclick={() => {
-                        showSnackbar(
-                          'Testing in 5 seconds... Do NOT click or interact until the popup appears!'
-                        );
-                        // Use 5 second timeout to escape Chrome's user gesture window (~2-5 seconds)
-                        // This properly tests if popups are allowed for true background triggers (like auto re-auth)
-                        setTimeout(() => {
-                          triggerGoogleReauth()
-                            .then(() => {
-                              showSnackbar(
-                                '✅ Test triggered - if you see the Google auth popup, popups are allowed!'
-                              );
-                            })
-                            .catch(() => {
-                              showSnackbar(
-                                '❌ Test failed - popup was blocked! Please enable popups for this site.'
-                              );
-                            });
-                        }, 5000);
-                      }}
-                    >
-                      Test Popup Permission
-                    </Button>
                   </div>
+                  {#if popupHelp}
+                    <div class="mt-2 rounded-lg border border-yellow-700/50 bg-yellow-900/30 p-3">
+                      <h4 class="mb-2 text-sm font-semibold text-yellow-200">
+                        Optional: hands-off refresh ({popupHelp.name})
+                      </h4>
+                      <p class="mb-3 text-xs text-gray-300">
+                        {popupHelp.supportsPerSiteAllow
+                          ? 'To refresh with no click at all (e.g. syncing while the app sits open unattended), allow popups for this site:'
+                          : 'This browser can only allow popups for ALL sites, not just this one:'}
+                      </p>
+                      {#if popupHelp.note}
+                        <p class="mb-2 text-xs text-amber-300">{popupHelp.note}</p>
+                      {/if}
+                      <div class="mb-3 space-y-1 text-xs text-gray-300">
+                        <ol class="list-inside list-decimal space-y-1 pl-2">
+                          {#each popupHelp.steps as instruction (instruction)}
+                            <li>{instruction}</li>
+                          {/each}
+                        </ol>
+                        {#if popupHelp.settingsUrl}
+                          <div class="mt-2">
+                            <p class="text-xs text-gray-400">
+                              <span
+                                role="button"
+                                tabindex="0"
+                                class="cursor-pointer font-mono text-yellow-400 underline hover:text-yellow-300"
+                                onclick={() => {
+                                  navigator.clipboard.writeText(popupHelp?.settingsUrl ?? '');
+                                  showSnackbar('Copied! Paste this into your address bar');
+                                }}
+                                onkeydown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    navigator.clipboard.writeText(popupHelp?.settingsUrl ?? '');
+                                    showSnackbar('Copied! Paste this into your address bar');
+                                  }
+                                }}
+                              >
+                                {popupHelp.settingsUrl}
+                              </span>
+                            </p>
+                          </div>
+                        {/if}
+                      </div>
+                      {#if popupHelp.recommendation}
+                        <p class="mb-2 text-xs text-blue-300">💡 {popupHelp.recommendation}</p>
+                      {/if}
+                      <Button size="xs" color="yellow" onclick={testPopupPermission}>
+                        Test popup permission
+                      </Button>
+                    </div>
+                  {/if}
                 {/if}
               </div>
             {/if}
