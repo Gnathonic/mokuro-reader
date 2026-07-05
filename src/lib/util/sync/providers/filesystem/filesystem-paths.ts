@@ -17,13 +17,4 @@ export function getParentPath(path: string): string {
   return segments.slice(0, -1).join('/');
 }
 
-const SYNCABLE_EXTENSIONS = ['.cbz', '.mokuro', '.mokuro.gz', '.webp'];
-const SYNCABLE_ROOT_FILENAMES = new Set(['volume-data.json', 'profiles.json']);
-
-export function isSyncableFile(path: string): boolean {
-  const basename = getBasename(path).toLowerCase();
-  if (SYNCABLE_ROOT_FILENAMES.has(basename)) {
-    return true;
-  }
-  return SYNCABLE_EXTENSIONS.some((ext) => basename.endsWith(ext));
-}
+export { isSyncableFile } from '../../syncable-file';

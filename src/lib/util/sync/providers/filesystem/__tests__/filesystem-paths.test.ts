@@ -31,7 +31,8 @@ describe('isSyncableFile', () => {
     ['Series/Volume.webp', true],
     ['volume-data.json', true],
     ['profiles.json', true],
-    ['Series/cover.jpg', false],
+    ['libraries.json', true],
+    ['Series/cover.jpg', true],
     ['.DS_Store', false],
     ['Series/Notes.txt', false],
     ['random.json', false]

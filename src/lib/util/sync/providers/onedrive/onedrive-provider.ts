@@ -20,18 +20,7 @@ import {
   patchItem
 } from './graph-client';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
-
-function isSyncableFile(path: string): boolean {
-  const lower = path.toLowerCase();
-  const basename = lower.split('/').filter(Boolean).pop() ?? '';
-  if (basename === 'volume-data.json' || basename === 'profiles.json') return true;
-  return (
-    basename.endsWith('.cbz') ||
-    basename.endsWith('.mokuro') ||
-    basename.endsWith('.mokuro.gz') ||
-    basename.endsWith('.webp')
-  );
-}
+import { isSyncableFile } from '../../syncable-file';
 
 export class OneDriveProvider implements SyncProvider {
   readonly type = 'onedrive' as const;

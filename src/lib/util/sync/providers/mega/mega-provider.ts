@@ -11,6 +11,7 @@ import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
+import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,
@@ -592,13 +593,9 @@ export class MegaProvider implements SyncProvider {
 
         // Check if file is a CBZ, sidecar, or JSON
         const name = (file as any).name || '';
-        const isCbz = name.toLowerCase().endsWith('.cbz');
-        const lowerName = name.toLowerCase();
-        const isSidecar =
-          lowerName.endsWith('.mokuro') ||
-          lowerName.endsWith('.mokuro.gz') ||
-          /\.(webp|jpe?g)$/i.test(lowerName);
-        const isJson = name === 'volume-data.json' || name === 'profiles.json';
+        const isCbz = isCbzFile(name);
+        const isSidecar = isSidecarFile(name);
+        const isJson = isRootConfigFile(name);
 
         if (!isCbz && !isSidecar && !isJson) continue;
 

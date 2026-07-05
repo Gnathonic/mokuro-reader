@@ -7,6 +7,7 @@ import type {
   StorageQuota
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
+import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
@@ -210,18 +211,11 @@ class GoogleDriveProvider implements SyncProvider {
       for (const item of allItems) {
         if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
           folderNames.set(item.id, item.name);
-        } else if (item.name.endsWith('.cbz')) {
+        } else if (isCbzFile(item.name)) {
           cbzFiles.push(item);
-        } else if (
-          item.name.endsWith('.mokuro') ||
-          item.name.endsWith('.mokuro.gz') ||
-          /\.(webp|jpe?g)$/i.test(item.name)
-        ) {
+        } else if (isSidecarFile(item.name)) {
           sidecarFiles.push(item);
-        } else if (
-          item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA ||
-          item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES
-        ) {
+        } else if (isRootConfigFile(item.name)) {
           jsonFiles.push(item);
         }
       }
