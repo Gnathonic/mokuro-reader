@@ -574,8 +574,15 @@
       {#if usePerLine && lineLayouts}
         {#each lines as line, lineIndex}<span
             class="ocr-line positionedLine"
+            class:wrappedLine={lineLayouts[lineIndex].wrap}
             style:left={`${lineLayouts[lineIndex].left}px`}
             style:top={`${lineLayouts[lineIndex].top}px`}
+            style:width={lineLayouts[lineIndex].wrap
+              ? `${lineLayouts[lineIndex].width}px`
+              : undefined}
+            style:height={lineLayouts[lineIndex].wrap
+              ? `${lineLayouts[lineIndex].height}px`
+              : undefined}
             style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
           >{/each}
       {:else}
@@ -663,6 +670,14 @@
     line-height: 1;
     letter-spacing: 0;
     white-space: nowrap;
+  }
+
+  /* A quad that captured multiple print columns (base text + furigana):
+     the text flows inside the full quad bbox at the block's reference size,
+     wrapping into columns/rows instead of shrinking onto one line. */
+  .textBox.perLine .ocr-line.positionedLine.wrappedLine {
+    white-space: normal;
+    line-break: anywhere;
   }
 
   /* Use CSS-generated newline instead of <br/> so DOM walkers

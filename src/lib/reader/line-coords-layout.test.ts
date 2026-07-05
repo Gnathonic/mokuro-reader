@@ -119,7 +119,13 @@ describe('layoutLines', () => {
         const { main, cross } = quadMainCross(block.lines_coords![i], block.vertical);
         const advanceEm = heuristicMeasurer(block.lines[i]);
         expect(l.fontSize).toBeLessThanOrEqual(cross + 0.5);
-        expect(l.fontSize * advanceEm).toBeLessThanOrEqual(main + 0.5);
+        if (l.wrap) {
+          // wrapped lines fit as N columns inside the quad
+          const cols = Math.ceil((advanceEm * l.fontSize) / main);
+          expect(cols * l.fontSize).toBeLessThanOrEqual(cross + 0.5);
+        } else {
+          expect(l.fontSize * advanceEm).toBeLessThanOrEqual(main + 0.5);
+        }
         // sanity: real dialogue lines land at readable sizes
         expect(l.fontSize).toBeGreaterThanOrEqual(10);
       });
@@ -143,24 +149,71 @@ describe('layoutLines', () => {
     expect(layouts[0].fontSize).toBeLessThan(3 * (114 / advanceEm));
   });
 
-  it('centers each line on its quad cross axis, anchored at the reading start', () => {
+  it('centers each clean line on its quad cross axis, anchored at the reading start', () => {
     const layouts = layoutLines(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
-    // Quads are wider than the glyph column (ruby, mask slack); the base
-    // glyphs sit near the middle, so the column is centered horizontally.
-    // L1: quad x [733,793], fs = 175/9 → centered at 763
-    const fs0 = 175 / 9;
-    expect(layouts[0].left).toBeCloseTo(763 - fs0 / 2 - 653, 3);
-    expect(layouts[0].top).toBeCloseTo(123 - 123, 5); // reading axis: quad top
-    // L3: quad x [653,692], fs = 197/6 → centered at 672.5
+    // L3: clean column — quad x [653,692], fs = 197/6 → centered at 672.5
     const fs2 = 197 / 6;
+    expect(layouts[2].wrap).toBe(false);
     expect(layouts[2].left).toBeCloseTo(672.5 - fs2 / 2 - 653, 3);
     expect(layouts[2].top).toBeCloseTo(128 - 123, 5);
   });
 
-  it('uses the rotated quad bbox for placement of slanted lines', () => {
+  it('wraps a line whose quad is much wider than the block reference size', () => {
+    // JJK L1: quad 60px wide (contains a neighbor's ruby ink) but the text
+    // only fits at 19.4px while its siblings run at ~33px → treat the quad
+    // as holding multiple columns and wrap at the block reference size.
+    const layouts = layoutLines(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
+    const l = layouts[0];
+    expect(l.wrap).toBe(true);
+    // wrap-fit: reference 32.83 needs 2 cols = 65.7 > 60 → shrink to 60/2 = 30
+    expect(l.fontSize).toBeCloseTo(30, 1);
+    // wrapped lines occupy their full quad bbox
+    expect(l.left).toBeCloseTo(733 - 653, 5);
+    expect(l.top).toBeCloseTo(0, 5);
+    expect(l.width).toBeCloseTo(60, 5);
+    expect(l.height).toBeCloseTo(175, 5);
+  });
+
+  it('wraps merged base+furigana lines at the block reference size (Dr Stone p32)', () => {
+    // Real block: 空は私なら + its ruby だいじょうぶ merged into one 11-char
+    // "line" in a two-column-wide quad; sibling 大丈夫 is genuinely printed
+    // large (emphasis) and must keep its own fitted size.
+    const drStoneP32: LayoutBlock = {
+      box: [1523, 754, 1674, 916],
+      vertical: true,
+      font_size: 56,
+      lines_coords: [
+        [
+          [1562, 762],
+          [1660, 754],
+          [1674, 907],
+          [1575, 916]
+        ],
+        [
+          [1523, 771],
+          [1573, 771],
+          [1573, 902],
+          [1523, 902]
+        ]
+      ],
+      lines: ['空は私ならだいじょうぶ', '大丈夫']
+    };
+    const layouts = layoutLines(drStoneP32, drStoneP32.lines, heuristicMeasurer)!;
+    expect(layouts[0].wrap).toBe(true);
+    // reference size ≈ median(candidates) ≈ (14.7 + 43.7) / 2 ≈ 29.2 — the
+    // merged line wraps at readable size instead of squeezing to 14.7px
+    expect(layouts[0].fontSize).toBeGreaterThan(25);
+    expect(layouts[0].fontSize).toBeLessThan(35);
+    // emphasis line keeps its own big fitted size, not forced uniform
+    expect(layouts[1].wrap).toBe(false);
+    expect(layouts[1].fontSize).toBeGreaterThan(40);
+  });
+
+  it('uses the rotated quad bbox for wrapped slanted lines', () => {
     const layouts = layoutLines(pokemonRotated, pokemonRotated.lines, heuristicMeasurer)!;
-    // rotated first quad: bbox x [1737,1855], centered at 1796; y-min = 2127
-    expect(layouts[0].left + layouts[0].fontSize / 2).toBeCloseTo(1796 - 1649, 3);
+    // L1 merged 今度は+ruby in a 97px-wide rotated quad → wraps at reference
+    expect(layouts[0].wrap).toBe(true);
+    expect(layouts[0].left).toBeCloseTo(1737 - 1649, 5);
     expect(layouts[0].top).toBeCloseTo(0, 5);
   });
 

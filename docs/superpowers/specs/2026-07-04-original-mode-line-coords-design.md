@@ -80,6 +80,15 @@ Per line:
   01 p27 `本物から` has a 125px quad for ~38px glyphs) and the base glyphs sit
   near the middle, so edge-anchoring can shove a column into its neighbor.
   Relative to the block box origin.
+- **Merged-column wrap**: `referenceSize = median(per-line candidates)`. A line
+  whose single-line fit is < 0.7 × reference AND whose quad cross is ≥ 1.6 ×
+  reference is treated as multiple print columns captured as one OCR "line"
+  (typically base text + furigana reading, e.g. Dr Stone 01 p32
+  `空は私ならだいじょうぶ`): it renders with `white-space: normal` inside its
+  full quad bbox at (near) the reference size, wrapping into columns. Clean
+  lines keep their own fitted size — print mixes sizes within a balloon
+  (emphasis words like `大丈夫`), so strict uniformity is deliberately not
+  enforced.
 
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.

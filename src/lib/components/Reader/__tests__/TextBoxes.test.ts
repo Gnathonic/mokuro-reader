@@ -89,11 +89,18 @@ describe('TextBoxes original mode with lines_coords', () => {
     const spans = container.querySelectorAll<HTMLElement>('.ocr-line.positionedLine');
     expect(spans).toHaveLength(3);
 
-    // first line: centered on its quad's cross axis (quad x [733,793], fs 175/9),
-    // anchored at the quad top (y 123 = box top)
-    const fs0 = 175 / 9;
-    expect(parseFloat(spans[0].style.left)).toBeCloseTo(763 - fs0 / 2 - 653, 3);
+    // first line: its quad captured a neighbor's ruby ink (60px wide for
+    // ~19px glyphs) → wraps inside the full quad bbox at the reference size
+    expect(spans[0].classList.contains('wrappedLine')).toBe(true);
+    expect(spans[0].style.left).toBe('80px');
     expect(spans[0].style.top).toBe('0px');
+    expect(spans[0].style.width).toBe('60px');
+    expect(spans[0].style.height).toBe('175px');
+    expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(30, 1);
+
+    // remaining lines: clean columns, no wrapping container
+    expect(spans[1].classList.contains('wrappedLine')).toBe(false);
+    expect(spans[1].style.width).toBe('');
 
     for (const span of spans) {
       const size = parseFloat(span.style.fontSize);
