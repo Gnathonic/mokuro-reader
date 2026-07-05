@@ -110,7 +110,7 @@
     },
     webdav: {
       items: [
-        'Compatible with Nextcloud, ownCloud, and NAS devices',
+        'Compatible with Mokuro-Bunko, Nextcloud, ownCloud, and NAS devices',
         'Persistent login (no re-authentication needed)',
         'Self-hosted and private'
       ]
@@ -848,6 +848,25 @@
             </form>
           </div>
 
+          <!-- OneDrive Option (hidden unless VITE_ONEDRIVE_CLIENT_ID is configured) -->
+          {#if onedriveConfigured}
+            <button
+              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={handleOneDriveLogin}
+              disabled={onedriveLoading}
+            >
+              <div class="flex items-center gap-4">
+                <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
+                <div class="flex-1 text-left">
+                  <div class="text-lg font-semibold">OneDrive</div>
+                  <div class="text-sm text-gray-400">
+                    5GB free • Personal or work/school • Silent refresh
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/if}
+
           <!-- WebDAV Option -->
           <button
             class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800"
@@ -859,7 +878,9 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
-                <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
+                <div class="text-sm text-gray-400">
+                  Mokuro-Bunko, Nextcloud, NAS • Persistent login
+                </div>
               </div>
             </div>
           </button>
@@ -915,25 +936,6 @@
                   <div class="text-lg font-semibold">Local Folder</div>
                   <div class="text-sm text-gray-400">
                     Any folder on this device • Offline • No account
-                  </div>
-                </div>
-              </div>
-            </button>
-          {/if}
-
-          <!-- OneDrive Option (hidden unless VITE_ONEDRIVE_CLIENT_ID is configured) -->
-          {#if onedriveConfigured}
-            <button
-              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-              onclick={handleOneDriveLogin}
-              disabled={onedriveLoading}
-            >
-              <div class="flex items-center gap-4">
-                <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
-                <div class="flex-1 text-left">
-                  <div class="text-lg font-semibold">OneDrive</div>
-                  <div class="text-sm text-gray-400">
-                    5GB free • Personal or work/school • Silent refresh
                   </div>
                 </div>
               </div>
