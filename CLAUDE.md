@@ -250,14 +250,21 @@ Night mode applies a CSS `filter` to `<dialog>` elements (see `app.html`). The `
 
 ## Environment Variables
 
-Create a `.env.local` file for Google Drive integration:
+Create a `.env.local` file for cloud provider integration:
 
 ```
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
+VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
 ```
 
-These are only required for Google Drive sync. MEGA and WebDAV don't require env vars.
+- `VITE_GDRIVE_*`: required only for Google Drive sync.
+- `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
+  Azure AD app (any Microsoft account tenant, "common" authority) and add the
+  deploy origin as a **Single-page application** redirect URI. Scopes used:
+  `Files.ReadWrite`, `offline_access`, `User.Read`. When unset, the OneDrive
+  option is hidden from the cloud screen.
+- MEGA, WebDAV, and Local Folder require no env vars.
 
 ## Testing
 
