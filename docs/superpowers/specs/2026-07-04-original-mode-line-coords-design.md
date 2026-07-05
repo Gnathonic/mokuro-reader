@@ -101,6 +101,14 @@ Per line:
   is the block size and a wrapped line's lower fit does NOT pull the block
   down (p53: three lines at ~39.8 stay there). With 0-1 clean lines the block
   follows the wrapped line down so all lines still share one size (p32).
+- **No-clean-lines blocks** (e.g. a whole balloon captured as one quad+line,
+  Dr Stone 01 p87 `人類が全員石化して`: 9 chars in a 356×390 quad): the
+  reference derives from the suspect line itself and cannot gate the wrap, so
+  suspect lines wrap at their geometry-optimal size (unbounded start,
+  ≈ √(main × cross / advance)), still gated on the ≥ 1.25× benefit — a
+  genuine one-liner in a loose quad gains nothing from wrapping and stays
+  single. Hallucinated lines now wrap into dense contained columns instead of
+  rendering sub-pixel.
 
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.

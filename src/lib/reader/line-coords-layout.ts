@@ -83,7 +83,7 @@ function median(values: number[]): number {
  */
 function wrapFitSize(startSize: number, advanceEm: number, main: number, cross: number): number {
   let best = 0;
-  for (let n = 1; n <= 8; n++) {
+  for (let n = 1; n <= 12; n++) {
     const size = Math.min(startSize, cross / n, (n * main) / advanceEm);
     if (size > best) best = size;
   }
@@ -215,12 +215,16 @@ export function layoutLines(
     .map((m) => m.candidate);
   const referenceSize = consensusSizes.length ? median(consensusSizes) : refBase;
 
+  // With no clean lines (e.g. a whole balloon captured as ONE quad+line),
+  // the reference derives from the suspect line itself, so it cannot gate
+  // the wrap — let geometry find the optimal column layout instead.
+  const hasCleanLines = cleanSizes.length > 0;
+  const wrapStart = hasCleanLines ? referenceSize : Number.POSITIVE_INFINITY;
   const wraps = measured.map(
     (m) =>
       m.suspect &&
-      m.fitted < WRAP_SHRINK * referenceSize &&
-      wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross) >=
-        WRAP_GAIN * m.fitted
+      (m.fitted < WRAP_SHRINK * referenceSize || !hasCleanLines) &&
+      wrapFitSize(wrapStart, m.advanceEm, m.extents.main, m.extents.cross) >= WRAP_GAIN * m.fitted
   );
 
   // When ≥2 clean lines agree on the size, that consensus IS the block size.
@@ -258,7 +262,7 @@ export function layoutLines(
     if (wraps[i]) {
       const fontSize = Math.max(
         MIN_FONT_SIZE,
-        wrapFitSize(uniformSize, advanceEm, extents.main, extents.cross)
+        wrapFitSize(hasCleanLines ? uniformSize : wrapStart, advanceEm, extents.main, extents.cross)
       );
       layouts.push({ left: minX, top: minY, fontSize, wrap: true, width, height });
       continue;

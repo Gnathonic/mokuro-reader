@@ -144,11 +144,63 @@ describe('layoutLines', () => {
 
   it('contains hallucinated lines inside their quad instead of overflowing 90x', () => {
     const layouts = layoutLines(fmaHallucination, fmaHallucination.lines, heuristicMeasurer)!;
-    const { main } = quadMainCross(fmaHallucination.lines_coords![0], true);
+    const { main, cross } = quadMainCross(fmaHallucination.lines_coords![0], true);
     const advanceEm = heuristicMeasurer(fmaHallucination.lines[0]);
-    expect(layouts[0].fontSize * advanceEm).toBeLessThanOrEqual(main + 0.5);
-    // 99 chars in a 114px quad: about 1px per char — tiny but contained
-    expect(layouts[0].fontSize).toBeLessThan(3 * (114 / advanceEm));
+    // 99 chars in a 94x114 quad: wraps into dense columns (like the dense
+    // print it misread), but stays inside the quad
+    expect(layouts[0].wrap).toBe(true);
+    const cols = Math.ceil((advanceEm * layouts[0].fontSize) / main);
+    expect(cols * layouts[0].fontSize).toBeLessThanOrEqual(cross + 0.5);
+    expect(layouts[0].fontSize).toBeLessThan(15);
+  });
+
+  it('wraps a whole-balloon single-line block into columns (Dr Stone p87)', () => {
+    // The detector emitted one quad covering the entire 3-column balloon:
+    // 9 chars in a 356x390 box. Single-line fit is 43px in a huge box; the
+    // geometry-optimal wrap is 3 columns at ~119px — the print layout.
+    const drStoneP87: LayoutBlock = {
+      box: [1296, 104, 1652, 494],
+      vertical: true,
+      font_size: 356,
+      lines_coords: [
+        [
+          [1296, 104],
+          [1652, 104],
+          [1652, 494],
+          [1296, 494]
+        ]
+      ],
+      lines: ['人類が全員石化して']
+    };
+    const layouts = layoutLines(drStoneP87, drStoneP87.lines, heuristicMeasurer)!;
+    expect(layouts[0].wrap).toBe(true);
+    expect(layouts[0].fontSize).toBeGreaterThan(100);
+    // 3 columns at the computed size fit the quad width
+    const cols = Math.ceil((9 * layouts[0].fontSize) / 390);
+    expect(cols).toBe(3);
+    expect(cols * layouts[0].fontSize).toBeLessThanOrEqual(356 + 0.5);
+  });
+
+  it('keeps a genuine one-line block single when wrapping buys nothing', () => {
+    // Loose quad around a short line: wrapping to 2 columns would not let
+    // the text render meaningfully bigger, so it stays one column.
+    const block: LayoutBlock = {
+      box: [0, 0, 100, 100],
+      vertical: true,
+      font_size: 60,
+      lines_coords: [
+        [
+          [0, 0],
+          [100, 0],
+          [100, 100],
+          [0, 100]
+        ]
+      ],
+      lines: ['ドン'] // 2 chars: single-line fit 50px, 2-col wrap also 50px
+    };
+    const layouts = layoutLines(block, block.lines, heuristicMeasurer)!;
+    expect(layouts[0].wrap).toBe(false);
+    expect(layouts[0].fontSize).toBeCloseTo(50, 1);
   });
 
   it('centers each clean line on its quad cross axis, anchored at the reading start', () => {
