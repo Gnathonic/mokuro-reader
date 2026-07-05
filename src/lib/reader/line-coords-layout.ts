@@ -69,10 +69,20 @@ const SMALL_OUTLIER = 0.7;
  * quad slack varies line to line while print size is constant. */
 const OVERFLOW_TOL = 1.15;
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+/**
+ * Median of `values` where each value counts proportionally to its weight.
+ * The block reference weights lines by quad ink area so a big base line is
+ * not outvoted by small ruby fragments split around it.
+ */
+function weightedMedian(values: number[], weights: number[]): number {
+  const order = values.map((v, i) => i).sort((a, b) => values[a] - values[b]);
+  const total = weights.reduce((s, w) => s + w, 0);
+  let cumulative = 0;
+  for (const i of order) {
+    cumulative += weights[i];
+    if (cumulative >= total / 2) return values[i];
+  }
+  return values[order[order.length - 1]];
 }
 
 /**
@@ -187,7 +197,14 @@ export function layoutLines(
   if (!coords || coords.length !== processedLines.length || coords.length === 0) return null;
 
   // First pass: per-line geometry and single-line fitted sizes.
-  const measured = [];
+  interface MeasuredLine {
+    extents: { main: number; cross: number };
+    advanceEm: number;
+    fitted: number;
+    candidate: number;
+    suspect: boolean;
+  }
+  const measured: MeasuredLine[] = [];
   for (let i = 0; i < coords.length; i++) {
     const extents = quadExtents(coords[i], block.vertical);
     if (!extents) return null;
@@ -207,18 +224,26 @@ export function layoutLines(
   // Block reference size: print keeps one size per balloon, so all lines
   // render uniformly at the size the trustworthy lines agree on. Exclude
   // merged-columns suspects (their fitted size is artificially small), then
-  // deliberately-small lines (standalone furigana, asides).
-  const cleanSizes = measured.filter((m) => !m.suspect).map((m) => m.candidate);
-  const refBase = median(cleanSizes.length ? cleanSizes : measured.map((m) => m.candidate));
-  const consensusSizes = measured
-    .filter((m) => !m.suspect && m.candidate >= SMALL_OUTLIER * refBase)
-    .map((m) => m.candidate);
-  const referenceSize = consensusSizes.length ? median(consensusSizes) : refBase;
+  // deliberately-small lines (standalone furigana, asides). Lines vote with
+  // their quad ink area: a big base line must not be outvoted by the small
+  // ruby fragments split around it (Killing Bites 01 p42 「百獣王」).
+  const area = (m: MeasuredLine) => m.extents.main * m.extents.cross;
+  const clean = measured.filter((m) => !m.suspect);
+  const refPool = clean.length ? clean : measured;
+  const refBase = weightedMedian(
+    refPool.map((m) => m.candidate),
+    refPool.map(area)
+  );
+  const consensus = measured.filter((m) => !m.suspect && m.candidate >= SMALL_OUTLIER * refBase);
+  const consensusSizes = consensus.map((m) => m.candidate);
+  const referenceSize = consensus.length
+    ? weightedMedian(consensusSizes, consensus.map(area))
+    : refBase;
 
   // With no clean lines (e.g. a whole balloon captured as ONE quad+line),
   // the reference derives from the suspect line itself, so it cannot gate
   // the wrap — let geometry find the optimal column layout instead.
-  const hasCleanLines = cleanSizes.length > 0;
+  const hasCleanLines = clean.length > 0;
   const wrapStart = hasCleanLines ? referenceSize : Number.POSITIVE_INFINITY;
   const wraps = measured.map(
     (m) =>

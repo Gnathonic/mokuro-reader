@@ -358,6 +358,46 @@ describe('layoutLines', () => {
     }
   });
 
+  it('does not let ruby fragments outvote the base line (Killing Bites p42)', () => {
+    // 「百獣王」 with its katakana gloss split around it: two small ruby
+    // lines vs one big base line. A plain median is ruby-dominated and
+    // dragged the 76px base down to 31px; the reference must weight lines
+    // by quad ink area so the base wins.
+    const killingBites: LayoutBlock = {
+      box: [336, 71, 498, 466],
+      vertical: true,
+      font_size: 70,
+      lines_coords: [
+        [
+          [445, 164],
+          [495, 164],
+          [495, 322],
+          [445, 322]
+        ],
+        [
+          [336, 71],
+          [454, 71],
+          [454, 453],
+          [336, 453]
+        ],
+        [
+          [448, 330],
+          [489, 330],
+          [489, 412],
+          [448, 412]
+        ]
+      ],
+      lines: ['＞グオブキ', '「百獣王」', 'ンクス']
+    };
+    const layouts = layoutLines(killingBites, killingBites.lines, heuristicMeasurer)!;
+    // base line renders at its true large size
+    expect(layouts[1].wrap).toBe(false);
+    expect(layouts[1].fontSize).toBeGreaterThan(70);
+    // ruby fragments keep their own small sizes
+    expect(layouts[0].fontSize).toBeLessThan(35);
+    expect(layouts[2].fontSize).toBeLessThan(30);
+  });
+
   it('still shrinks a line whose quad is far too small for the uniform size', () => {
     // A separately-detected furigana line: half-size chars in a half-size
     // quad. Rendering it at the block reference would double the print size
