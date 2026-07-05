@@ -89,13 +89,18 @@ Per line:
   length slack, 1.2× cross slack allowed); tighter quads fall back to their
   own fitted size so ruby lines never inflate to base size.
 - **Merged-column wrap**: a suspect line whose single-line fit is < 0.7 ×
-  reference AND whose quad cross is ≥ 1.6 × reference is multiple print
-  columns captured as one OCR "line" (typically base text + furigana reading,
-  e.g. Dr Stone 01 p32 `空は私ならだいじょうぶ`): it renders with
-  `white-space: normal` inside its full quad bbox, wrapping into columns.
+  reference AND for which wrapping buys ≥ 1.25 × the single-line size is
+  multiple print columns captured as one OCR "line" (typically base text +
+  furigana reading, e.g. Dr Stone 01 p32 `空は私ならだいじょうぶ`): it renders
+  with `white-space: normal` inside its full quad bbox, wrapping into columns.
   `wrapFitSize` picks the best column count n (size ≤ min(reference,
-  cross / n, n × main / advance)); the whole block's uniform size follows the
-  wrapped line down so all lines still share one size.
+  cross / n, n × main / advance)) — the gate is the achievable benefit, not a
+  quad-width ratio (a fixed 1.6× width gate missed Dr Stone 01 p53
+  `必要なことはう` by 0.7px, leaving it at 19px when 2 columns at 31.5px fit).
+- **Consensus trust**: when ≥ 2 clean lines agree within 1.25×, their median
+  is the block size and a wrapped line's lower fit does NOT pull the block
+  down (p53: three lines at ~39.8 stay there). With 0-1 clean lines the block
+  follows the wrapped line down so all lines still share one size (p32).
 
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.

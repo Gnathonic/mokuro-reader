@@ -50,12 +50,15 @@ export interface LineLayout {
 const MIN_FONT_SIZE = 0.5;
 
 /**
- * A line wraps when it would need to shrink below WRAP_SHRINK × reference to
- * fit on one line AND its quad is at least WRAP_WIDTH × reference wide
- * (room for 2+ columns at the block's typical size).
+ * A merged-columns suspect wraps when it would need to shrink below
+ * WRAP_SHRINK × reference to fit on one line AND wrapping actually buys at
+ * least WRAP_GAIN × the single-line size inside its quad.
  */
 const WRAP_SHRINK = 0.7;
-const WRAP_WIDTH = 1.6;
+const WRAP_GAIN = 1.25;
+/** ≥2 clean lines whose sizes agree within this spread fix the block size —
+ * a wrapped line's lower fit no longer pulls the whole block down. */
+const CONSENSUS_SPREAD = 1.25;
 /** A quad ≥ this many times its own fitted size is merged-columns suspect
  * and excluded from the block reference computation. */
 const SUSPECT_RATIO = 1.6;
@@ -212,22 +215,31 @@ export function layoutLines(
     .map((m) => m.candidate);
   const referenceSize = consensusSizes.length ? median(consensusSizes) : refBase;
 
-  // Wrapped lines may need to step below the reference to fit their quad;
-  // the whole block follows so every line still shares one size.
   const wraps = measured.map(
     (m) =>
       m.suspect &&
       m.fitted < WRAP_SHRINK * referenceSize &&
-      m.extents.cross >= WRAP_WIDTH * referenceSize
+      wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross) >=
+        WRAP_GAIN * m.fitted
   );
+
+  // When ≥2 clean lines agree on the size, that consensus IS the block size.
+  // Otherwise (0-1 clean lines: low information), wrapped lines may need to
+  // step below the reference to fit their quad, and the block follows so
+  // every line still shares one size.
+  const trustConsensus =
+    consensusSizes.length >= 2 &&
+    Math.max(...consensusSizes) <= CONSENSUS_SPREAD * Math.min(...consensusSizes);
   let uniformSize = referenceSize;
-  for (let i = 0; i < measured.length; i++) {
-    if (wraps[i]) {
-      const m = measured[i];
-      uniformSize = Math.min(
-        uniformSize,
-        wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross)
-      );
+  if (!trustConsensus) {
+    for (let i = 0; i < measured.length; i++) {
+      if (wraps[i]) {
+        const m = measured[i];
+        uniformSize = Math.min(
+          uniformSize,
+          wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross)
+        );
+      }
     }
   }
 

@@ -256,6 +256,56 @@ describe('layoutLines', () => {
     expect(layouts.every((l) => !l.wrap)).toBe(true);
   });
 
+  it('wraps a merged line even when its quad is just under 2 columns wide (Dr Stone p53)', () => {
+    // L2 必要なことはう: merged with ruby ink, 63px quad vs 63.7px old width
+    // gate → fell through to a tiny 19.2px single line. Wrapping fits 2
+    // columns at 31.5px — the gate must be the achievable benefit, not a
+    // fixed width ratio.
+    const drStoneP53: LayoutBlock = {
+      box: [92, 1123, 308, 1331],
+      vertical: true,
+      font_size: 50,
+      lines_coords: [
+        [
+          [262, 1129],
+          [303, 1129],
+          [308, 1328],
+          [267, 1328]
+        ],
+        [
+          [216, 1126],
+          [254, 1126],
+          [254, 1331],
+          [216, 1331]
+        ],
+        [
+          [144, 1123],
+          [207, 1126],
+          [202, 1260],
+          [139, 1257]
+        ],
+        [
+          [92, 1132],
+          [133, 1132],
+          [136, 1331],
+          [95, 1331]
+        ]
+      ],
+      lines: ['正確な暦は', 'どうしても', '必要なことはう', '情報だった']
+    };
+    const layouts = layoutLines(drStoneP53, drStoneP53.lines, heuristicMeasurer)!;
+    // the merged line wraps at a readable size instead of 19.2px
+    expect(layouts[2].wrap).toBe(true);
+    expect(layouts[2].fontSize).toBeGreaterThan(28);
+    // three clean lines agree at ~39.8 — their consensus is NOT dragged down
+    // to the wrapped line's fit
+    for (const i of [0, 1, 3]) {
+      expect(layouts[i].wrap).toBe(false);
+      expect(layouts[i].fontSize).toBeCloseTo(layouts[0].fontSize, 3);
+      expect(layouts[i].fontSize).toBeGreaterThan(37);
+    }
+  });
+
   it('still shrinks a line whose quad is far too small for the uniform size', () => {
     // A separately-detected furigana line: half-size chars in a half-size
     // quad. Rendering it at the block reference would double the print size
