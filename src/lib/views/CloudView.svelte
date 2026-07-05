@@ -22,6 +22,7 @@
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
+  import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -76,14 +77,19 @@
   // Show the connected provider UI only for a usable session.
   let hasAnyProvider = $derived(currentProvider !== null && !webdavNeedsReLogin);
 
-  // Provider display names
-  const providerNames: Record<ProviderType, string> = {
-    'google-drive': 'Google Drive',
-    mega: 'MEGA Cloud Storage',
-    webdav: 'WebDAV Server',
-    filesystem: 'Local Folder',
-    onedrive: 'OneDrive'
-  };
+  // Sync/Backup/Profile actions are pointless while the session is unusable —
+  // mirror the webdav read-only gate for the two reconnect states.
+  let providerActionsUnavailable = $derived(
+    (currentProvider === 'webdav' && webdavIsReadOnly) ||
+      (currentProvider === 'filesystem' && filesystemNeedsReconnect) ||
+      (currentProvider === 'onedrive' && onedriveNeedsAttention)
+  );
+
+  // Without a client id the OneDrive login can only throw — hide the option.
+  const onedriveConfigured = !!import.meta.env.VITE_ONEDRIVE_CLIENT_ID;
+
+  // Provider display names (shared module keeps all provider maps in sync)
+  const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
   // Provider info
   const providerInfo = {
@@ -915,22 +921,24 @@
             </button>
           {/if}
 
-          <!-- OneDrive Option -->
-          <button
-            class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-            onclick={handleOneDriveLogin}
-            disabled={onedriveLoading}
-          >
-            <div class="flex items-center gap-4">
-              <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
-              <div class="flex-1 text-left">
-                <div class="text-lg font-semibold">OneDrive</div>
-                <div class="text-sm text-gray-400">
-                  5GB free • Personal or work/school • Silent refresh
+          <!-- OneDrive Option (hidden unless VITE_ONEDRIVE_CLIENT_ID is configured) -->
+          {#if onedriveConfigured}
+            <button
+              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={handleOneDriveLogin}
+              disabled={onedriveLoading}
+            >
+              <div class="flex items-center gap-4">
+                <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
+                <div class="flex-1 text-left">
+                  <div class="text-lg font-semibold">OneDrive</div>
+                  <div class="text-sm text-gray-400">
+                    5GB free • Personal or work/school • Silent refresh
+                  </div>
                 </div>
               </div>
-            </div>
-          </button>
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -1181,7 +1189,7 @@
                 <Spinner size="6" />
                 <span class="text-gray-400">Loading cloud data...</span>
               </div>
-            {:else if !(currentProvider === 'webdav' && webdavIsReadOnly)}
+            {:else if !providerActionsUnavailable}
               <!-- Sync read progress button -->
               <Button
                 color="dark"
