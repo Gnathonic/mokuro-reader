@@ -609,7 +609,6 @@
     font-family: 'Noto Sans JP', sans-serif;
     /* Word wrapping controlled dynamically by JavaScript */
     border: 1px solid rgba(0, 0, 0, 0);
-    z-index: 11;
     user-select: text;
     -webkit-user-select: text;
     -moz-user-select: text;
@@ -633,7 +632,6 @@
     background-color: rgb(255, 255, 255);
     font-weight: var(--bold);
     font-family: 'Noto Sans JP', sans-serif;
-    z-index: 11;
     user-select: text;
     -webkit-user-select: text;
     -moz-user-select: text;
@@ -668,15 +666,27 @@
     white-space: nowrap;
   }
 
-  /* Original mode with lines_coords: each line is placed at its detected quad
-     with a geometry-derived font size. line-height 1 keeps the column/row no
-     thicker than the font size; letter-spacing 0 because the print's tracking
-     is already baked into the quad length the size was fitted to. */
+  /* Per-line mode: each line is placed at its detected quad with a
+     geometry-derived font size. line-height 1 keeps the column/row no
+     thicker than the font size; letter-spacing 0 because the print's
+     tracking is already baked into the quad length the size was fitted to. */
   .textBox.perLine .ocr-line.positionedLine {
     position: absolute;
     line-height: 1;
     letter-spacing: 0;
     white-space: nowrap;
+  }
+
+  /* Layering contract for overlapping blocks (detector sometimes assigns a
+     column to the neighboring block, so boxes overlap): every box's white
+     panel must paint below every box's per-line text. The boxes stay
+     z-index:auto (no own stacking context — tree order still stacks smaller
+     boxes over bigger ones), while positioned line spans get a positive
+     z-index that lifts them above all panels in the page's context. The
+     whole-box panel is kept because it masks messy/angled print that
+     per-line strips cannot cover. */
+  .textBox.perLine .ocr-line.positionedLine {
+    z-index: 1;
   }
 
   /* A quad that captured multiple print columns (base text + furigana):
