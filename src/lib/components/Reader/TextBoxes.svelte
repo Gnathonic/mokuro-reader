@@ -668,15 +668,33 @@
     white-space: nowrap;
   }
 
-  /* Original mode with lines_coords: each line is placed at its detected quad
-     with a geometry-derived font size. line-height 1 keeps the column/row no
-     thicker than the font size; letter-spacing 0 because the print's tracking
-     is already baked into the quad length the size was fitted to. */
+  /* Per-line mode: each line is placed at its detected quad with a
+     geometry-derived font size. line-height 1 keeps the column/row no
+     thicker than the font size; letter-spacing 0 because the print's
+     tracking is already baked into the quad length the size was fitted to. */
   .textBox.perLine .ocr-line.positionedLine {
     position: absolute;
     line-height: 1;
     letter-spacing: 0;
     white-space: nowrap;
+  }
+
+  /* Per-line mode: the white backing lives on each line, not the box —
+     block boxes can overlap (misassigned cross-block quads), and a whole-box
+     panel would blank out the other block's text. Each line's own strip
+     still masks the printed glyphs beneath it. */
+  .textBox.perLine:focus,
+  .textBox.perLine:hover,
+  .textBox.perLine.forceVisible,
+  .textBox.perLine.alwaysVisible {
+    background: transparent;
+  }
+
+  .textBox.perLine:focus .ocr-line.positionedLine,
+  .textBox.perLine:hover .ocr-line.positionedLine,
+  .textBox.perLine.forceVisible .ocr-line.positionedLine,
+  .textBox.perLine.alwaysVisible .ocr-line.positionedLine {
+    background: rgb(255, 255, 255);
   }
 
   /* A quad that captured multiple print columns (base text + furigana):
