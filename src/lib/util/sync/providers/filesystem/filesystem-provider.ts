@@ -112,8 +112,22 @@ export class FilesystemProvider implements SyncProvider {
       this.hasStoredHandle = false;
       throw new ProviderError('Stored folder reference is missing', 'filesystem', 'NOT_CONFIGURED');
     }
-    // @ts-expect-error — requestPermission is Chromium-only, not in all TS lib.dom targets
-    const permission = await stored.requestPermission({ mode: 'readwrite' });
+    let permission: string;
+    try {
+      // @ts-expect-error — requestPermission is Chromium-only, not in all TS lib.dom targets
+      permission = await stored.requestPermission({ mode: 'readwrite' });
+    } catch (error) {
+      // Handle is dead (folder deleted/moved) — clear it so login() offers a fresh picker.
+      console.warn('Stored filesystem handle is unusable; clearing:', error);
+      this.hasStoredHandle = false;
+      await clearRootHandle().catch(() => {});
+      clearActiveProviderKey();
+      throw new ProviderError(
+        'The previously chosen folder no longer exists — choose a folder again',
+        'filesystem',
+        'NOT_CONFIGURED'
+      );
+    }
     if (permission !== 'granted') {
       // Keep the stored handle — user may grant on a later attempt
       throw new ProviderError('Permission was not granted', 'filesystem', 'PERMISSION_DENIED');
@@ -124,10 +138,17 @@ export class FilesystemProvider implements SyncProvider {
   }
 
   private async restoreHandle(): Promise<void> {
+    let stored: FileSystemDirectoryHandle | null = null;
     try {
-      const stored = await loadRootHandle();
-      if (!stored) return;
-      this.hasStoredHandle = true;
+      stored = await loadRootHandle();
+    } catch (error) {
+      // IndexedDB read failed (transient) — keep config; a reload can retry.
+      console.warn('Failed to load stored filesystem handle:', error);
+      return;
+    }
+    if (!stored) return;
+    this.hasStoredHandle = true;
+    try {
       // @ts-expect-error — queryPermission is Chromium-only, not in all TS lib.dom targets
       const permission = await stored.queryPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
@@ -141,7 +162,13 @@ export class FilesystemProvider implements SyncProvider {
       }
       // 'prompt' → leave rootHandle null; UI will show "Reconnect"
     } catch (error) {
-      console.warn('Failed to restore filesystem handle:', error);
+      // queryPermission threw: the handle itself is dead (folder deleted or
+      // moved). Clear it so the user gets a fresh picker instead of a
+      // Reconnect button that can never succeed.
+      console.warn('Stored filesystem handle is unusable; clearing:', error);
+      this.hasStoredHandle = false;
+      await clearRootHandle().catch(() => {});
+      clearActiveProviderKey();
     }
   }
 
@@ -155,6 +182,47 @@ export class FilesystemProvider implements SyncProvider {
       );
     }
     return this.rootHandle;
+  }
+
+  /** Refresh provider-manager status after an in-provider state change
+   *  (dynamic import avoids a circular dependency — same as WebDAV). */
+  private notifyStatusChanged(): void {
+    import('../../provider-manager').then(({ providerManager }) => {
+      providerManager.updateStatus();
+    });
+  }
+
+  /**
+   * Convert raw File System Access API failures into typed ProviderErrors.
+   * NOT_FOUND code + "not found" message are load-bearing: unified-cloud-manager
+   * keys idempotent deletes off the code, and unified-sync-service sniffs the
+   * message for missing-file-is-fine paths. Matches on error.name (not
+   * instanceof DOMException) so cross-realm exceptions classify too.
+   */
+  private toProviderError(error: unknown, operation: string, path: string): ProviderError {
+    if (error instanceof ProviderError) return error;
+    const name = error instanceof Error ? error.name : '';
+    if (name === 'NotFoundError') {
+      return new ProviderError(
+        `${operation} failed: '${path}' not found`,
+        'filesystem',
+        'NOT_FOUND'
+      );
+    }
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      // Permission revoked mid-session — flip to needs-reconnect so the UI
+      // stops pretending we're connected.
+      this.rootHandle = null;
+      this.notifyStatusChanged();
+      return new ProviderError(
+        `${operation} failed: folder permission was revoked`,
+        'filesystem',
+        'PERMISSION_REVOKED',
+        true
+      );
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return new ProviderError(`${operation} failed: ${message}`, 'filesystem', 'OPERATION_FAILED');
   }
 
   private async resolveDirectoryHandle(
@@ -200,21 +268,25 @@ export class FilesystemProvider implements SyncProvider {
   }
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {
-    const root = this.requireRoot();
-    const results: CloudFileMetadata[] = [];
-    for await (const { path, fileHandle } of this.walkDirectory(root, '')) {
-      if (!isSyncableFile(path)) continue;
-      const file = await fileHandle.getFile();
-      results.push({
-        provider: 'filesystem',
-        fileId: path,
-        path,
-        modifiedTime: new Date(file.lastModified).toISOString(),
-        size: file.size
-      });
+    try {
+      const root = this.requireRoot();
+      const results: CloudFileMetadata[] = [];
+      for await (const { path, fileHandle } of this.walkDirectory(root, '')) {
+        if (!isSyncableFile(path)) continue;
+        const file = await fileHandle.getFile();
+        results.push({
+          provider: 'filesystem',
+          fileId: path,
+          path,
+          modifiedTime: new Date(file.lastModified).toISOString(),
+          size: file.size
+        });
+      }
+      console.log(`✅ Listed ${results.length} files from filesystem provider`);
+      return results;
+    } catch (error) {
+      throw this.toProviderError(error, 'List', '');
     }
-    console.log(`✅ Listed ${results.length} files from filesystem provider`);
-    return results;
   }
 
   async uploadFile(
@@ -223,87 +295,111 @@ export class FilesystemProvider implements SyncProvider {
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<string> {
-    this.requireRoot();
-    const fileHandle = await this.resolveFileHandle(path, { create: true });
-    const writable = await fileHandle.createWritable();
     try {
-      const payload =
-        blob instanceof Blob
-          ? blob
-          : blob instanceof ArrayBuffer
-            ? new Blob([blob])
-            : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
-      await writable.write(payload);
-      onProgress?.(payload.size, payload.size);
-    } finally {
-      await writable.close();
+      this.requireRoot();
+      const fileHandle = await this.resolveFileHandle(path, { create: true });
+      const writable = await fileHandle.createWritable();
+      try {
+        const payload =
+          blob instanceof Blob
+            ? blob
+            : blob instanceof ArrayBuffer
+              ? new Blob([blob])
+              : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
+        await writable.write(payload);
+        onProgress?.(payload.size, payload.size);
+      } finally {
+        await writable.close();
+      }
+      console.log(`✅ Uploaded ${path} to filesystem`);
+      return path;
+    } catch (error) {
+      throw this.toProviderError(error, 'Upload', path);
     }
-    console.log(`✅ Uploaded ${path} to filesystem`);
-    return path;
   }
 
   async downloadFile(
     file: CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    this.requireRoot();
-    const fileHandle = await this.resolveFileHandle(file.fileId, { create: false });
-    const data = await fileHandle.getFile();
-    onProgress?.(data.size, data.size);
-    console.log(`✅ Downloaded ${file.path} from filesystem`);
-    return data;
+    try {
+      this.requireRoot();
+      const fileHandle = await this.resolveFileHandle(file.fileId, { create: false });
+      const data = await fileHandle.getFile();
+      onProgress?.(data.size, data.size);
+      console.log(`✅ Downloaded ${file.path} from filesystem`);
+      return data;
+    } catch (error) {
+      throw this.toProviderError(error, 'Download', file.path);
+    }
   }
 
   async deleteFile(file: CloudFileMetadata): Promise<void> {
-    this.requireRoot();
-    const parentPath = getParentPath(file.fileId);
-    const filename = getBasename(file.fileId);
-    const parent = parentPath
-      ? await this.resolveDirectoryHandle(parentPath, { create: false })
-      : this.requireRoot();
-    await parent.removeEntry(filename);
-    console.log(`✅ Deleted ${file.path} from filesystem`);
+    try {
+      this.requireRoot();
+      const parentPath = getParentPath(file.fileId);
+      const filename = getBasename(file.fileId);
+      const parent = parentPath
+        ? await this.resolveDirectoryHandle(parentPath, { create: false })
+        : this.requireRoot();
+      await parent.removeEntry(filename);
+      console.log(`✅ Deleted ${file.path} from filesystem`);
+    } catch (error) {
+      throw this.toProviderError(error, 'Delete', file.path);
+    }
   }
 
   async renameFile(file: CloudFileMetadata, newPath: string): Promise<CloudFileMetadata> {
-    this.requireRoot();
     const normalizedNewPath = newPath.replace(/^\/+|\/+$/g, '');
-    if (file.path === normalizedNewPath) {
-      return file;
-    }
-
-    // Read source
-    const sourceHandle = await this.resolveFileHandle(file.fileId, { create: false });
-    const sourceFile = await sourceHandle.getFile();
-
-    // Write to destination
-    const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: true });
-    const writable = await destHandle.createWritable();
     try {
-      await writable.write(sourceFile);
-    } finally {
-      await writable.close();
+      this.requireRoot();
+      if (file.path === normalizedNewPath) {
+        return file;
+      }
+
+      // Read source
+      const sourceHandle = await this.resolveFileHandle(file.fileId, { create: false });
+      const sourceFile = await sourceHandle.getFile();
+
+      // Write to destination
+      const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: true });
+      const writable = await destHandle.createWritable();
+      try {
+        await writable.write(sourceFile);
+      } finally {
+        await writable.close();
+      }
+
+      // Delete source
+      const sourceParentPath = getParentPath(file.fileId);
+      const sourceParent = sourceParentPath
+        ? await this.resolveDirectoryHandle(sourceParentPath, { create: false })
+        : this.requireRoot();
+      await sourceParent.removeEntry(getBasename(file.fileId));
+
+      console.log(`✅ Renamed ${file.path} → ${normalizedNewPath} in filesystem`);
+      const destFile = await destHandle.getFile();
+      return {
+        provider: 'filesystem',
+        fileId: normalizedNewPath,
+        path: normalizedNewPath,
+        modifiedTime: new Date(destFile.lastModified).toISOString(),
+        size: destFile.size
+      };
+    } catch (error) {
+      throw this.toProviderError(error, 'Rename', file.path);
     }
-
-    // Delete source
-    const sourceParentPath = getParentPath(file.fileId);
-    const sourceParent = sourceParentPath
-      ? await this.resolveDirectoryHandle(sourceParentPath, { create: false })
-      : this.requireRoot();
-    await sourceParent.removeEntry(getBasename(file.fileId));
-
-    console.log(`✅ Renamed ${file.path} → ${normalizedNewPath} in filesystem`);
-    const destFile = await destHandle.getFile();
-    return {
-      provider: 'filesystem',
-      fileId: normalizedNewPath,
-      path: normalizedNewPath,
-      modifiedTime: new Date(destFile.lastModified).toISOString(),
-      size: destFile.size
-    };
   }
 
   async renameFolder(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
+    try {
+      return await this.renameFolderInner(oldPath, newPath);
+    } catch (error) {
+      throw this.toProviderError(error, 'Rename folder', oldPath);
+    }
+  }
+
+  private async renameFolderInner(oldPath: string, newPath: string): Promise<CloudFileMetadata[]> {
     this.requireRoot();
     const normalizedOld = oldPath.replace(/^\/+|\/+$/g, '');
     const normalizedNew = newPath.replace(/^\/+|\/+$/g, '');
@@ -365,14 +461,10 @@ export class FilesystemProvider implements SyncProvider {
   }
 
   async getStorageQuota(): Promise<StorageQuota> {
-    if (typeof navigator === 'undefined' || !navigator.storage?.estimate) {
-      return { used: 0, total: null, available: null };
-    }
-    const estimate = await navigator.storage.estimate();
-    const used = estimate.usage ?? 0;
-    const total = estimate.quota ?? null;
-    const available = total !== null ? total - used : null;
-    return { used, total, available };
+    // navigator.storage.estimate() reports the browser-origin quota, which has
+    // nothing to do with the chosen folder's free disk space. Report "unknown"
+    // rather than a misleading number; the UI hides bars for null totals.
+    return { used: 0, total: null, available: null };
   }
 }
 

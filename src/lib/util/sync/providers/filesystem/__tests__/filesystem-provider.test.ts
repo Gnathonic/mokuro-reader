@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('$app/environment', () => ({ browser: false }));
 
 import { FilesystemProvider } from '../filesystem-provider';
+import { ProviderError } from '../../../provider-interface';
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory File System Access API fake (just enough for the provider:
@@ -131,5 +132,83 @@ describe('FilesystemProvider.renameFolder', () => {
     // ...and its bytes must be intact (not truncated/destroyed by the cleanup
     // that, with the bug, recursively deleted the whole old folder).
     expect(moved!.size).toBe(expectedSize);
+  });
+});
+
+function notAllowed(): Error {
+  const e = new Error('The request is not allowed');
+  e.name = 'NotAllowedError';
+  return e;
+}
+
+describe('error classification', () => {
+  it('converts NotFoundError to a typed NOT_FOUND ProviderError with a sniffable message', async () => {
+    const root = new FakeDirHandle('');
+    const provider = makeProvider(root);
+
+    const err = await provider
+      .downloadFile({
+        provider: 'filesystem',
+        fileId: 'S/v.cbz',
+        path: 'S/v.cbz',
+        modifiedTime: '',
+        size: 1
+      })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.code).toBe('NOT_FOUND');
+    expect(err.message).toMatch(/not found/i);
+  });
+
+  it('converts NotAllowedError to isAuthError and flips into needs-reconnect state', async () => {
+    const root = new FakeDirHandle('');
+    root.getFileHandle = vi.fn().mockRejectedValue(notAllowed());
+    const provider = makeProvider(root);
+    (provider as unknown as { hasStoredHandle: boolean }).hasStoredHandle = true;
+
+    const err = await provider
+      .downloadFile({
+        provider: 'filesystem',
+        fileId: 'v.cbz',
+        path: 'v.cbz',
+        modifiedTime: '',
+        size: 1
+      })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.isAuthError).toBe(true);
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('converts deleteFile NotFoundError to the typed NOT_FOUND consumed by idempotent deletes', async () => {
+    const root = new FakeDirHandle('');
+    const provider = makeProvider(root);
+
+    const err = await provider
+      .deleteFile({
+        provider: 'filesystem',
+        fileId: 'S/v.cbz',
+        path: 'S/v.cbz',
+        modifiedTime: '',
+        size: 1
+      })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('getStorageQuota', () => {
+  it('returns the unavailable shape — origin estimate is not folder disk space', async () => {
+    const provider = makeProvider(new FakeDirHandle(''));
+    await expect(provider.getStorageQuota()).resolves.toEqual({
+      used: 0,
+      total: null,
+      available: null
+    });
   });
 });
