@@ -56,6 +56,15 @@ const MIN_FONT_SIZE = 0.5;
  */
 const WRAP_SHRINK = 0.7;
 const WRAP_WIDTH = 1.6;
+/** A quad ≥ this many times its own fitted size is merged-columns suspect
+ * and excluded from the block reference computation. */
+const SUSPECT_RATIO = 1.6;
+/** A line fitting below this fraction of the reference is deliberately small
+ * print (standalone furigana, asides): it keeps its own size. */
+const SMALL_OUTLIER = 0.7;
+/** Lines may run this much past their own quad's length at the uniform size —
+ * quad slack varies line to line while print size is constant. */
+const OVERFLOW_TOL = 1.15;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -65,16 +74,17 @@ function median(values: number[]): number {
 
 /**
  * Largest font size ≤ startSize at which `advanceEm` ems wrap into columns of
- * length `main` without the column count overflowing `cross`.
+ * length `main` without the column count overflowing `cross`. For each column
+ * count n, the size is bounded by the column pitch (cross / n) and by the text
+ * capacity (n × main / advance); take the best n.
  */
 function wrapFitSize(startSize: number, advanceEm: number, main: number, cross: number): number {
-  let size = Math.min(startSize, cross);
-  for (let iter = 0; iter < 6; iter++) {
-    const cols = Math.max(1, Math.ceil((advanceEm * size) / main));
-    if (cols * size <= cross) break;
-    size = cross / cols;
+  let best = 0;
+  for (let n = 1; n <= 8; n++) {
+    const size = Math.min(startSize, cross / n, (n * main) / advanceEm);
+    if (size > best) best = size;
   }
-  return size;
+  return best;
 }
 
 /**
@@ -180,15 +190,50 @@ export function layoutLines(
     if (!extents) return null;
     const advanceEm = measure(processedLines[i]);
     const fitted = advanceEm > 0 ? extents.main / advanceEm : extents.cross;
-    measured.push({ extents, advanceEm, fitted, candidate: Math.min(extents.cross, fitted) });
+    measured.push({
+      extents,
+      advanceEm,
+      fitted,
+      candidate: Math.min(extents.cross, fitted),
+      // quad wide enough for 1.6+ columns of its own fitted size: likely
+      // multiple print columns captured as one OCR "line"
+      suspect: advanceEm > 0 && extents.cross >= SUSPECT_RATIO * fitted
+    });
   }
-  // Reference size: what a typical line of this block runs at. Robust to a
-  // corrupted line (merged furigana, mask slack) in a multi-line block.
-  const referenceSize = median(measured.map((m) => m.candidate));
+
+  // Block reference size: print keeps one size per balloon, so all lines
+  // render uniformly at the size the trustworthy lines agree on. Exclude
+  // merged-columns suspects (their fitted size is artificially small), then
+  // deliberately-small lines (standalone furigana, asides).
+  const cleanSizes = measured.filter((m) => !m.suspect).map((m) => m.candidate);
+  const refBase = median(cleanSizes.length ? cleanSizes : measured.map((m) => m.candidate));
+  const consensusSizes = measured
+    .filter((m) => !m.suspect && m.candidate >= SMALL_OUTLIER * refBase)
+    .map((m) => m.candidate);
+  const referenceSize = consensusSizes.length ? median(consensusSizes) : refBase;
+
+  // Wrapped lines may need to step below the reference to fit their quad;
+  // the whole block follows so every line still shares one size.
+  const wraps = measured.map(
+    (m) =>
+      m.suspect &&
+      m.fitted < WRAP_SHRINK * referenceSize &&
+      m.extents.cross >= WRAP_WIDTH * referenceSize
+  );
+  let uniformSize = referenceSize;
+  for (let i = 0; i < measured.length; i++) {
+    if (wraps[i]) {
+      const m = measured[i];
+      uniformSize = Math.min(
+        uniformSize,
+        wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross)
+      );
+    }
+  }
 
   const layouts: LineLayout[] = [];
   for (let i = 0; i < coords.length; i++) {
-    const { extents, advanceEm, fitted } = measured[i];
+    const { extents, advanceEm, fitted, candidate } = measured[i];
     const xs = coords[i].map((p) => p[0]);
     const ys = coords[i].map((p) => p[1]);
     const minX = Math.min(...xs) - block.box[0];
@@ -198,25 +243,25 @@ export function layoutLines(
     const width = maxX - minX;
     const height = maxY - minY;
 
-    // Multiple print columns captured as one OCR "line" (base + furigana):
-    // the quad has room for 2+ columns at the block's typical size, and the
-    // text would have to shrink far below it to fit on one line. Wrap it
-    // inside the quad at (near) the reference size instead.
-    const wrap =
-      advanceEm > 0 &&
-      fitted < WRAP_SHRINK * referenceSize &&
-      extents.cross >= WRAP_WIDTH * referenceSize;
-
-    if (wrap) {
+    if (wraps[i]) {
       const fontSize = Math.max(
         MIN_FONT_SIZE,
-        wrapFitSize(referenceSize, advanceEm, extents.main, extents.cross)
+        wrapFitSize(uniformSize, advanceEm, extents.main, extents.cross)
       );
       layouts.push({ left: minX, top: minY, fontSize, wrap: true, width, height });
       continue;
     }
 
-    const fontSize = Math.max(MIN_FONT_SIZE, Math.min(extents.cross, fitted));
+    // Use the uniform size when this line's quad can carry it (allowing for
+    // per-quad slack); otherwise fall back to the line's own fitted size
+    // (deliberately-small print such as furigana lines, or quads far too
+    // tight for the block consensus).
+    const fitsUniform =
+      uniformSize * advanceEm <= extents.main * OVERFLOW_TOL &&
+      uniformSize <= extents.cross * 1.2 &&
+      candidate >= SMALL_OUTLIER * refBase;
+    const fontSize = Math.max(MIN_FONT_SIZE, fitsUniform ? uniformSize : candidate);
+
     // Reading axis: anchor at the quad start (top for vertical, left for
     // horizontal). Cross axis: center the rendered column/row in the quad —
     // quads are often wider than the glyphs (attached ruby, mask slack, empty

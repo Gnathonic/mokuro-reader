@@ -118,13 +118,15 @@ describe('layoutLines', () => {
       layouts!.forEach((l, i) => {
         const { main, cross } = quadMainCross(block.lines_coords![i], block.vertical);
         const advanceEm = heuristicMeasurer(block.lines[i]);
-        expect(l.fontSize).toBeLessThanOrEqual(cross + 0.5);
+        // uniform block sizing tolerates per-quad slack: 1.2x across the
+        // line, 1.15x along it (quad tightness varies; print size doesn't)
+        expect(l.fontSize).toBeLessThanOrEqual(cross * 1.2 + 0.5);
         if (l.wrap) {
           // wrapped lines fit as N columns inside the quad
           const cols = Math.ceil((advanceEm * l.fontSize) / main);
           expect(cols * l.fontSize).toBeLessThanOrEqual(cross + 0.5);
         } else {
-          expect(l.fontSize * advanceEm).toBeLessThanOrEqual(main + 0.5);
+          expect(l.fontSize * advanceEm).toBeLessThanOrEqual(main * 1.15 + 0.5);
         }
         // sanity: real dialogue lines land at readable sizes
         expect(l.fontSize).toBeGreaterThanOrEqual(10);
@@ -151,10 +153,9 @@ describe('layoutLines', () => {
 
   it('centers each clean line on its quad cross axis, anchored at the reading start', () => {
     const layouts = layoutLines(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
-    // L3: clean column — quad x [653,692], fs = 197/6 → centered at 672.5
-    const fs2 = 197 / 6;
+    // L3: clean column — quad x [653,692] → column centered at 672.5
     expect(layouts[2].wrap).toBe(false);
-    expect(layouts[2].left).toBeCloseTo(672.5 - fs2 / 2 - 653, 3);
+    expect(layouts[2].left + layouts[2].fontSize / 2).toBeCloseTo(672.5 - 653, 3);
     expect(layouts[2].top).toBeCloseTo(128 - 123, 5);
   });
 
@@ -204,9 +205,85 @@ describe('layoutLines', () => {
     // merged line wraps at readable size instead of squeezing to 14.7px
     expect(layouts[0].fontSize).toBeGreaterThan(25);
     expect(layouts[0].fontSize).toBeLessThan(35);
-    // emphasis line keeps its own big fitted size, not forced uniform
+    // 大丈夫 is printed at the SAME size as the base line (its tall quad is
+    // just loose) — the block renders uniformly at the reference size
     expect(layouts[1].wrap).toBe(false);
-    expect(layouts[1].fontSize).toBeGreaterThan(40);
+    expect(layouts[1].fontSize).toBeCloseTo(layouts[0].fontSize, 3);
+  });
+
+  it('renders every line of a clean block at the same uniform size', () => {
+    // Dr Stone 01 p29 block 7: four clean columns; per-quad fitted sizes
+    // differ (39-50) only because of quad slack, so they render uniformly.
+    const drStoneP29: LayoutBlock = {
+      box: [762, 2102, 973, 2346],
+      vertical: true,
+      font_size: 51,
+      lines_coords: [
+        [
+          [910, 2102],
+          [973, 2102],
+          [973, 2201],
+          [910, 2201]
+        ],
+        [
+          [874, 2110],
+          [913, 2110],
+          [913, 2346],
+          [874, 2346]
+        ],
+        [
+          [817, 2105],
+          [869, 2105],
+          [869, 2233],
+          [817, 2233]
+        ],
+        [
+          [762, 2105],
+          [809, 2105],
+          [809, 2346],
+          [762, 2346]
+        ]
+      ],
+      lines: ['ぬう', 'よりによって', 'こんな', 'マヌケな姿を']
+    };
+    const layouts = layoutLines(drStoneP29, drStoneP29.lines, heuristicMeasurer)!;
+    const sizes = layouts.map((l) => l.fontSize);
+    for (const s of sizes) {
+      expect(s).toBeCloseTo(sizes[0], 3);
+      expect(s).toBeGreaterThan(35);
+      expect(s).toBeLessThan(50);
+    }
+    expect(layouts.every((l) => !l.wrap)).toBe(true);
+  });
+
+  it('still shrinks a line whose quad is far too small for the uniform size', () => {
+    // A separately-detected furigana line: half-size chars in a half-size
+    // quad. Rendering it at the block reference would double the print size
+    // and overflow its quad badly — it keeps its own fitted size.
+    const block: LayoutBlock = {
+      box: [0, 0, 120, 240],
+      vertical: true,
+      font_size: 40,
+      lines_coords: [
+        [
+          [80, 0],
+          [120, 0],
+          [120, 240],
+          [80, 240]
+        ],
+        [
+          [60, 0],
+          [80, 0],
+          [80, 80],
+          [60, 80]
+        ]
+      ],
+      lines: ['あいうえおか', 'るびるび'] // ruby line: 4 chars in an 80px quad
+    };
+    const layouts = layoutLines(block, block.lines, heuristicMeasurer)!;
+    expect(layouts[0].fontSize).toBeCloseTo(40, 1); // base at reference
+    expect(layouts[1].wrap).toBe(false);
+    expect(layouts[1].fontSize).toBeLessThan(25); // ruby stays small
   });
 
   it('uses the rotated quad bbox for wrapped slanted lines', () => {

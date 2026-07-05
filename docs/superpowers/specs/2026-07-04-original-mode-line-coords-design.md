@@ -80,15 +80,22 @@ Per line:
   01 p27 `本物から` has a 125px quad for ~38px glyphs) and the base glyphs sit
   near the middle, so edge-anchoring can shove a column into its neighbor.
   Relative to the block box origin.
-- **Merged-column wrap**: `referenceSize = median(per-line candidates)`. A line
-  whose single-line fit is < 0.7 × reference AND whose quad cross is ≥ 1.6 ×
-  reference is treated as multiple print columns captured as one OCR "line"
-  (typically base text + furigana reading, e.g. Dr Stone 01 p32
-  `空は私ならだいじょうぶ`): it renders with `white-space: normal` inside its
-  full quad bbox at (near) the reference size, wrapping into columns. Clean
-  lines keep their own fitted size — print mixes sizes within a balloon
-  (emphasis words like `大丈夫`), so strict uniformity is deliberately not
-  enforced.
+- **Uniform block sizing**: print keeps one size per balloon; per-quad fitted
+  sizes differ only through quad slack, and rendering them per-line looks
+  sloppy. Reference = median of candidates from lines that are neither
+  merged-columns suspects (quad ≥ 1.6 × its own fitted size) nor deliberately
+  small (< 0.7 × the clean median — standalone furigana, asides). Every line
+  renders at the block's uniform size when its quad can carry it (1.15×
+  length slack, 1.2× cross slack allowed); tighter quads fall back to their
+  own fitted size so ruby lines never inflate to base size.
+- **Merged-column wrap**: a suspect line whose single-line fit is < 0.7 ×
+  reference AND whose quad cross is ≥ 1.6 × reference is multiple print
+  columns captured as one OCR "line" (typically base text + furigana reading,
+  e.g. Dr Stone 01 p32 `空は私ならだいじょうぶ`): it renders with
+  `white-space: normal` inside its full quad bbox, wrapping into columns.
+  `wrapFitSize` picks the best column count n (size ≤ min(reference,
+  cross / n, n × main / advance)); the whole block's uniform size follows the
+  wrapped line down so all lines still share one size.
 
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.
