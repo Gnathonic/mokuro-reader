@@ -96,18 +96,6 @@ class OneDriveTokenManager {
     return this.initPromise;
   }
 
-  /**
-   * Returns true when the app booted from a OneDrive redirect callback that
-   * the user is currently waiting on. Init-providers uses this to skip
-   * unrelated bootstrap work and let the UI surface "connected" instead.
-   */
-  hasPendingRedirect(): boolean {
-    if (!browser) return false;
-    if (localStorage.getItem(PENDING_LOGIN_KEY) !== 'true') return false;
-    const url = new URL(window.location.href);
-    return url.searchParams.has('code') || url.searchParams.has('error');
-  }
-
   isAuthenticated(): boolean {
     return this.account !== null && !!this.instance;
   }
@@ -141,22 +129,51 @@ class OneDriveTokenManager {
     const request: RedirectRequest = {
       scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[]
     };
-    await this.instance.loginRedirect(request);
+    try {
+      await this.instance.loginRedirect(request);
+    } catch (error) {
+      localStorage.removeItem(PENDING_LOGIN_KEY);
+      throw this.translateInteractionError(error);
+    }
+  }
+
+  /**
+   * MSAL throws BrowserAuthError("interaction_in_progress") when a redirect
+   * is already in flight (double-clicked button, or a stale lock after the
+   * user backed out of the Microsoft login page). Surface it as a friendly,
+   * actionable message instead of a raw MSAL crash.
+   */
+  private translateInteractionError(error: unknown): Error {
+    if (
+      this.msal &&
+      error instanceof this.msal.BrowserAuthError &&
+      error.errorCode === 'interaction_in_progress'
+    ) {
+      return new Error(
+        'Microsoft sign-in is already in progress. Finish the login window, or reload this page and try again.'
+      );
+    }
+    return error instanceof Error ? error : new Error(String(error));
   }
 
   async logout(): Promise<void> {
-    if (this.instance && this.account) {
-      await this.instance.logoutRedirect({
-        account: this.account,
-        postLogoutRedirectUri: window.location.origin
-      });
-    }
+    // Snapshot what we need for the redirect, then clear ALL local state
+    // FIRST — logoutRedirect() navigates the window away, so anything after
+    // it never runs.
+    const instance = this.instance;
+    const account = this.account;
     this.account = null;
     this.tokenStore.set('');
     this.needsAttentionStore.set(false);
     if (browser) {
       localStorage.removeItem(ONEDRIVE_CONFIG.STORAGE_KEYS.HAS_AUTHENTICATED);
       localStorage.removeItem(PENDING_LOGIN_KEY);
+    }
+    if (instance && account) {
+      await instance.logoutRedirect({
+        account,
+        postLogoutRedirectUri: window.location.origin
+      });
     }
   }
 
@@ -186,6 +203,11 @@ class OneDriveTokenManager {
     }
   }
 
+  /** Flag the session as needing user re-authentication (e.g. Graph 401). */
+  markNeedsAttention(): void {
+    this.needsAttentionStore.set(true);
+  }
+
   /**
    * Redirect-based re-authentication. Used by the UI when silent refresh
    * fails and the user clicks a "reconnect" action.
@@ -200,7 +222,12 @@ class OneDriveTokenManager {
       scopes: ONEDRIVE_CONFIG.SCOPES as unknown as string[],
       account: this.account ?? undefined
     };
-    await this.instance.acquireTokenRedirect(request);
+    try {
+      await this.instance.acquireTokenRedirect(request);
+    } catch (error) {
+      localStorage.removeItem(PENDING_LOGIN_KEY);
+      throw this.translateInteractionError(error);
+    }
   }
 }
 
