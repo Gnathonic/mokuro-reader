@@ -14,10 +14,14 @@ describe('syncable-file', () => {
     expect(isSyncableFile('Series/Vol 1.JPEG')).toBe(true);
   });
 
-  it('accepts the three root config files, including libraries.json', () => {
+  it('accepts the root config files', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
-    expect(isSyncableFile('libraries.json')).toBe(true);
+  });
+
+  it('excludes libraries.json until the libraries feature ships', () => {
+    expect(isSyncableFile('libraries.json')).toBe(false);
+    expect(isRootConfigFile('libraries.json')).toBe(false);
   });
 
   it('rejects everything else', () => {
@@ -28,7 +32,7 @@ describe('syncable-file', () => {
 
   it('is case-insensitive and uses the basename only', () => {
     expect(isSyncableFile('Series/VOL.CBZ')).toBe(true);
-    expect(isSyncableFile('a/b/c/LIBRARIES.JSON')).toBe(true);
+    expect(isSyncableFile('a/b/c/PROFILES.JSON')).toBe(true);
   });
 
   it('exposes category predicates for providers that bucket by type', () => {
@@ -36,7 +40,7 @@ describe('syncable-file', () => {
     expect(isSidecarFile('v.mokuro')).toBe(true);
     expect(isSidecarFile('v.jpeg')).toBe(true);
     expect(isSidecarFile('v.cbz')).toBe(false);
-    expect(isRootConfigFile('libraries.json')).toBe(true);
+    expect(isRootConfigFile('profiles.json')).toBe(true);
     expect(isRootConfigFile('v.cbz')).toBe(false);
   });
 });

@@ -6,10 +6,15 @@
  * - CBZ archives (the volumes themselves)
  * - Sidecars: OCR data (.mokuro / .mokuro.gz) and thumbnails (.webp/.jpg/.jpeg)
  * - Root config files: volume-data.json (read progress), profiles.json
- *   (settings profiles), libraries.json (library definitions)
+ *   (settings profiles)
+ *
+ * libraries.json is deliberately NOT listed: the libraries feature has no
+ * specced/shipped UI yet, and excluding it here keeps its cloud download path
+ * (unified-sync-service findLibrariesFile → cache lookup) inert. Add it back
+ * when the feature ships.
  */
 
-const ROOT_CONFIG_FILENAMES = new Set(['volume-data.json', 'profiles.json', 'libraries.json']);
+const ROOT_CONFIG_FILENAMES = new Set(['volume-data.json', 'profiles.json']);
 const SIDECAR_IMAGE_RE = /\.(webp|jpe?g)$/i;
 
 function basenameOf(path: string): string {
