@@ -214,6 +214,8 @@ export function layoutLines(
     suspect: boolean;
     bbox: { minX: number; minY: number; maxX: number; maxY: number };
     hidden: boolean;
+    /** Band of an overlap cluster's union bbox this line renders in */
+    slice?: { minX: number; minY: number; maxX: number; maxY: number };
   }
   const measured: MeasuredLine[] = [];
   for (let i = 0; i < coords.length; i++) {
@@ -241,31 +243,96 @@ export function layoutLines(
     });
   }
 
-  // Intra-block overlap dedupe: the detector sometimes re-captures the same
-  // ink region as several overlapping "lines" (a column alone AND a bigger
-  // quad spanning it plus its neighbors), which would render stacked. When
-  // one bbox covers most of a smaller one: if the smaller line's text is
-  // contained in the bigger's, the smaller is a re-capture and hides (the
-  // bigger wraps over the full region, no text lost); otherwise the texts
-  // diverged (hallucination cluster) and the enclosing blob hides, keeping
-  // the precise small captures.
+  // Intra-block overlap handling: the detector sometimes re-captures the
+  // same ink region as several overlapping "lines" (a column alone AND a
+  // bigger quad spanning it plus its neighbors), which would render stacked.
+  // Two cases when one bbox covers most of a smaller one:
+  // 1. The smaller line's text is contained in the bigger's → true
+  //    re-capture; the smaller hides (bigger wraps the region, no text lost).
+  // 2. The texts diverged (hallucination cluster on dense/slanted regions):
+  //    the individual placements are garbage but every OCR line must remain
+  //    READABLE — the cluster's union bbox is partitioned into reading-order
+  //    bands (weighted by text length) and each line wraps in its own band.
   const bboxArea = (b: MeasuredLine['bbox']) => (b.maxX - b.minX) * (b.maxY - b.minY);
+  const overlapsHeavily = (a: MeasuredLine['bbox'], b: MeasuredLine['bbox']) => {
+    const ox = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
+    const oy = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+    const smallArea = Math.min(bboxArea(a), bboxArea(b));
+    return smallArea > 0 && ox * oy >= RECAPTURE_OVERLAP * smallArea;
+  };
+  // Pass 1: hide true re-captures (text-subsumed duplicates).
   for (let i = 0; i < measured.length; i++) {
     if (measured[i].hidden) continue;
     for (let j = i + 1; j < measured.length; j++) {
       if (measured[i].hidden) break;
       if (measured[j].hidden) continue;
-      const a = measured[i].bbox;
-      const b = measured[j].bbox;
-      const ox = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
-      const oy = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
-      const smallArea = Math.min(bboxArea(a), bboxArea(b));
-      if (smallArea <= 0 || ox * oy < RECAPTURE_OVERLAP * smallArea) continue;
-      const smaller = bboxArea(a) <= bboxArea(b) ? i : j;
+      if (!overlapsHeavily(measured[i].bbox, measured[j].bbox)) continue;
+      const smaller = bboxArea(measured[i].bbox) <= bboxArea(measured[j].bbox) ? i : j;
       const bigger = smaller === i ? j : i;
       const smallText = processedLines[smaller].trim();
-      const dropSmaller = smallText.length > 0 && processedLines[bigger].includes(smallText);
-      measured[dropSmaller ? smaller : bigger].hidden = true;
+      if (smallText.length > 0 && processedLines[bigger].includes(smallText)) {
+        measured[smaller].hidden = true;
+      }
+    }
+  }
+  // Pass 2: cluster the remaining diverged overlaps (connected components)
+  // and partition each cluster's union bbox into reading-order bands.
+  const clusterOf = measured.map(() => -1);
+  let clusterCount = 0;
+  for (let i = 0; i < measured.length; i++) {
+    if (measured[i].hidden) continue;
+    for (let j = i + 1; j < measured.length; j++) {
+      if (measured[j].hidden) continue;
+      if (!overlapsHeavily(measured[i].bbox, measured[j].bbox)) continue;
+      if (clusterOf[i] < 0 && clusterOf[j] < 0) {
+        clusterOf[i] = clusterOf[j] = clusterCount++;
+      } else if (clusterOf[i] < 0) {
+        clusterOf[i] = clusterOf[j];
+      } else if (clusterOf[j] < 0) {
+        clusterOf[j] = clusterOf[i];
+      } else if (clusterOf[i] !== clusterOf[j]) {
+        const from = clusterOf[j];
+        for (let k = 0; k < clusterOf.length; k++)
+          if (clusterOf[k] === from) clusterOf[k] = clusterOf[i];
+      }
+    }
+  }
+  for (let c = 0; c < clusterCount; c++) {
+    const members = [];
+    for (let i = 0; i < measured.length; i++) if (clusterOf[i] === c) members.push(i);
+    if (members.length < 2) continue;
+    const union = {
+      minX: Math.min(...members.map((i) => measured[i].bbox.minX)),
+      minY: Math.min(...members.map((i) => measured[i].bbox.minY)),
+      maxX: Math.max(...members.map((i) => measured[i].bbox.maxX)),
+      maxY: Math.max(...members.map((i) => measured[i].bbox.maxY))
+    };
+    const weights = members.map((i) => Math.max(measured[i].advanceEm, 0.5));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    // vertical text: bands right→left along x; horizontal: top→bottom along y
+    let offset = 0;
+    for (let k = 0; k < members.length; k++) {
+      const frac = weights[k] / totalWeight;
+      const m = measured[members[k]];
+      if (block.vertical) {
+        const bandW = (union.maxX - union.minX) * frac;
+        m.slice = {
+          minX: union.maxX - offset - bandW,
+          maxX: union.maxX - offset,
+          minY: union.minY,
+          maxY: union.maxY
+        };
+        offset += bandW;
+      } else {
+        const bandH = (union.maxY - union.minY) * frac;
+        m.slice = {
+          minX: union.minX,
+          maxX: union.maxX,
+          minY: union.minY + offset,
+          maxY: union.minY + offset + bandH
+        };
+        offset += bandH;
+      }
     }
   }
 
@@ -276,9 +343,9 @@ export function layoutLines(
   // their quad ink area: a big base line must not be outvoted by the small
   // ruby fragments split around it (Killing Bites 01 p42 「百獣王」).
   const area = (m: MeasuredLine) => m.extents.main * m.extents.cross;
-  const visible = measured.filter((m) => !m.hidden);
+  const visible = measured.filter((m) => !m.hidden && !m.slice);
   const clean = visible.filter((m) => !m.suspect);
-  const refPool = clean.length ? clean : visible;
+  const refPool = clean.length ? clean : visible.length ? visible : measured;
   const refBase = weightedMedian(
     refPool.map((m) => m.candidate),
     refPool.map(area)
@@ -297,6 +364,7 @@ export function layoutLines(
   const wraps = measured.map(
     (m) =>
       !m.hidden &&
+      !m.slice &&
       m.suspect &&
       (m.fitted < WRAP_SHRINK * referenceSize || !hasCleanLines) &&
       wrapFitSize(wrapStart, m.advanceEm, m.extents.main, m.extents.cross) >= WRAP_GAIN * m.fitted
@@ -341,6 +409,28 @@ export function layoutLines(
         width,
         height,
         hidden: true
+      });
+      continue;
+    }
+
+    const slice = measured[i].slice;
+    if (slice) {
+      // overlap-cluster member: wrap the text inside its band of the union
+      const sliceW = slice.maxX - slice.minX;
+      const sliceH = slice.maxY - slice.minY;
+      const main = block.vertical ? sliceH : sliceW;
+      const cross = block.vertical ? sliceW : sliceH;
+      const fontSize = Math.max(
+        MIN_FONT_SIZE,
+        wrapFitSize(Number.POSITIVE_INFINITY, advanceEm, main, cross)
+      );
+      layouts.push({
+        left: slice.minX - block.box[0],
+        top: slice.minY - block.box[1],
+        fontSize,
+        wrap: true,
+        width: sliceW,
+        height: sliceH
       });
       continue;
     }

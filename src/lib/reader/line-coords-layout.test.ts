@@ -428,10 +428,12 @@ describe('layoutLines', () => {
     expect(layouts[1].wrap).toBe(true);
   });
 
-  it('drops the enclosing blob when overlapped lines have unrelated text (Saki 02 p129)', () => {
+  it('partitions overlapped lines with unrelated text into readable bands (Saki 02 p129)', () => {
     // Hallucination cluster: L3's quad contains L0 and L1, L0's contains L1,
-    // each with divergent OCR text. The precise small captures survive; the
-    // super-capture blobs hide, so nothing stacks.
+    // each with divergent OCR text. Their individual placements are garbage,
+    // but the text must stay readable: the cluster's union bbox is split
+    // into reading-order bands (sized by text length) and each line wraps
+    // inside its own band — all text visible, nothing stacked.
     const sakiGarbage: LayoutBlock = {
       box: [307, 456, 609, 637],
       vertical: false,
@@ -477,11 +479,32 @@ describe('layoutLines', () => {
       ]
     };
     const layouts = layoutLines(sakiGarbage, sakiGarbage.lines, heuristicMeasurer)!;
-    expect(layouts[0].hidden).toBe(true); // contains L1, unrelated text
-    expect(layouts[3].hidden).toBe(true); // contains L0/L1, unrelated text
-    expect(layouts[1].hidden).toBeFalsy();
-    expect(layouts[2].hidden).toBeFalsy();
-    expect(layouts[4].hidden).toBeFalsy();
+    // nothing hidden — all OCR text stays readable even when it is wrong
+    for (const l of layouts) expect(l.hidden).toBeFalsy();
+
+    // cluster members (L0, L1, L3) wrap inside bands of the union bbox
+    // (horizontal block → bands stacked top-to-bottom in reading order)
+    const cluster = [layouts[0], layouts[1], layouts[3]];
+    for (const l of cluster) {
+      expect(l.wrap).toBe(true);
+      expect(l.fontSize).toBeGreaterThan(14); // readable, not sub-pixel
+    }
+    expect(layouts[0].top).toBeLessThan(layouts[1].top);
+    expect(layouts[1].top).toBeLessThan(layouts[3].top);
+    // bands do not overlap each other
+    expect(layouts[0].top + layouts[0].height).toBeLessThanOrEqual(layouts[1].top + 0.5);
+    expect(layouts[1].top + layouts[1].height).toBeLessThanOrEqual(layouts[3].top + 0.5);
+    // bands stay inside the cluster's union bbox (x [385,609] − box x 307)
+    for (const l of cluster) {
+      expect(l.left).toBeGreaterThanOrEqual(385 - 307 - 0.5);
+      expect(l.left + l.width).toBeLessThanOrEqual(609 - 307 + 0.5);
+    }
+
+    // independent small quads (L2, L4) render in their own quads, readable
+    for (const l of [layouts[2], layouts[4]]) {
+      expect(l.hidden).toBeFalsy();
+      expect(l.fontSize).toBeGreaterThan(8);
+    }
   });
 
   it('still shrinks a line whose quad is far too small for the uniform size', () => {
