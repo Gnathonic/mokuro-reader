@@ -134,6 +134,9 @@
   let megaEmail = $state('');
   let megaPassword = $state('');
   let megaLoading = $state(false);
+  let megaTwoFactorCode = $state('');
+  let megaNeeds2fa = $state(false);
+  let megaNeedsReLogin = $state(false);
 
   // WebDAV login state
   let webdavUrl = $state('');
@@ -372,6 +375,20 @@
         // Provider not loadable, ignore
       }
     }
+
+    // Pre-fill MEGA email + reconnect banner from last session (needs-attention)
+    try {
+      const megaProviderInstance = await providerManager.getOrLoadProvider('mega');
+      const lastEmail = megaProviderInstance.getLastUsername?.();
+      if (!megaEmail && lastEmail) megaEmail = lastEmail;
+      if (megaProviderInstance.getStatus().needsAttention) {
+        megaNeedsReLogin = true;
+        const megaForm = document.getElementById('mega-login-form');
+        if (megaForm) megaForm.classList.remove('hidden');
+      }
+    } catch {
+      // Provider not loadable, ignore
+    }
   });
 
   // Google Drive handlers
@@ -407,30 +424,38 @@
   async function handleMegaLogin() {
     megaLoading = true;
     try {
-      // Lazy-load MEGA provider
       const megaProvider = await providerManager.getOrLoadProvider('mega');
-      await megaProvider.login({ email: megaEmail, password: megaPassword });
+      await megaProvider.login({
+        email: megaEmail,
+        password: megaPassword,
+        secondFactorCode: megaNeeds2fa ? megaTwoFactorCode : undefined
+      });
 
-      // Set as current provider (auto-logs out any other provider)
       await providerManager.setCurrentProvider(megaProvider);
 
-      // Populate unified cache for rest of app to use
       showSnackbar('Connected to MEGA - loading cloud data...');
       await unifiedCloudManager.fetchAllCloudVolumes();
 
-      // Update status after cache loads to ensure UI shows "Connected"
       providerManager.updateStatus();
       showSnackbar('MEGA connected');
 
-      // Clear form and trigger reactivity
+      // Clear form + 2FA/reconnect state
       megaEmail = '';
       megaPassword = '';
+      megaTwoFactorCode = '';
+      megaNeeds2fa = false;
+      megaNeedsReLogin = false;
 
-      // Automatically sync after login
       await handlePostLogin();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      showSnackbar(message);
+      if (error && (error as { code?: string }).code === 'MFA_REQUIRED') {
+        // Reveal the 2FA field and keep email/password so the user just adds the code.
+        megaNeeds2fa = true;
+        showSnackbar('Enter your MEGA two-factor authentication code');
+      } else {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        showSnackbar(message);
+      }
     } finally {
       megaLoading = false;
     }
@@ -528,6 +553,9 @@
     if (provider === 'mega') {
       megaEmail = '';
       megaPassword = '';
+      megaTwoFactorCode = '';
+      megaNeeds2fa = false;
+      megaNeedsReLogin = false;
       showSnackbar('Logged out of MEGA');
     } else if (provider === 'webdav') {
       webdavPassword = '';
@@ -766,6 +794,11 @@
           </button>
 
           <div id="mega-login-form" class="hidden pr-4 pb-4 pl-12">
+            {#if megaNeedsReLogin}
+              <p class="mb-3 text-sm text-amber-400">
+                Your MEGA session expired — sign in again to reconnect.
+              </p>
+            {/if}
             <form
               onsubmit={(e) => {
                 e.preventDefault();
@@ -787,8 +820,24 @@
                 required
                 class="rounded-lg border border-gray-600 bg-gray-700 p-2.5 text-sm text-white"
               />
+              {#if megaNeeds2fa}
+                <input
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  required
+                  maxlength="6"
+                  bind:value={megaTwoFactorCode}
+                  placeholder="6-digit 2FA code"
+                  class="rounded-lg border border-amber-600 bg-gray-700 p-2.5 text-sm text-white"
+                />
+              {/if}
               <Button type="submit" disabled={megaLoading} color="blue" size="sm">
-                {megaLoading ? 'Connecting...' : 'Connect to MEGA'}
+                {megaLoading
+                  ? 'Connecting...'
+                  : megaNeeds2fa
+                    ? 'Verify & Connect'
+                    : 'Connect to MEGA'}
               </Button>
             </form>
           </div>

@@ -426,8 +426,12 @@ async function processVolumeData(
       await deleteStoredVolume(processedVolume.metadata.volumeUuid);
     }
 
-    // Save using unified database function
-    await saveVolume(processedVolume);
+    // Save using unified database function. preserveTitles: the titles here
+    // come from the cloud path / legacy .mokuro — sanitizing them would break
+    // the stored-title === cloud-path identity for legacy backups (volume
+    // reads as un-backed-up, renames miss its files). Legacy titles are
+    // sanitized at rename time instead, when the cloud files move with them.
+    await saveVolume(processedVolume, { preserveTitles: true });
   }
 
   // Update cloud file description if folder name doesn't match series title

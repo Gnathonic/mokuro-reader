@@ -939,6 +939,13 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
+      // Typed NOT_FOUND at the boundary where the status is unambiguous about
+      // THIS operation's target — the shared layer relies on the code (never
+      // message text) to treat an already-gone delete target as converged.
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
+      }
+
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
         this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
@@ -978,6 +985,25 @@ export class WebDAVProvider implements SyncProvider {
       }
 
       if (await this.client.exists(destinationFullPath)) {
+        // Idempotent retry: if our source is gone AND the occupant matches the
+        // source's recorded size, a prior attempt moved it here — treat as
+        // success. Drive/MEGA verify this case by file identity (id/nodeId);
+        // WebDAV has no stable ids across moves, so size is the closest
+        // identity proxy. Anything else — source still present, or an
+        // occupant we can't match to the source — is a genuine conflict and
+        // throws before any mutation.
+        if (!(await this.client.exists(file.fileId))) {
+          const destStat = await this.client.stat(destinationFullPath);
+          const destSize = (
+            'data' in (destStat as object)
+              ? (destStat as { data: { size?: number } }).data
+              : (destStat as { size?: number })
+          )?.size;
+          if (typeof file.size === 'number' && destSize === file.size) {
+            console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
+            return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+          }
+        }
         throw new ProviderError(
           `Target file already exists at '${normalizedNewPath}'`,
           'webdav',
@@ -991,6 +1017,13 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
+      }
+
+      // Typed NOT_FOUND: the destination was verified absent above, so a 404
+      // from the MOVE means the source is gone — a genuine failure the shared
+      // layer must see as such (never "already moved").
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1189,6 +1222,31 @@ export class WebDAVProvider implements SyncProvider {
     console.log(
       `✅ Deleted series '${seriesTitle}' from WebDAV (${orderedSeriesFiles.length} files via fallback)`
     );
+  }
+
+  /**
+   * Remove a directory only if the SERVER confirms it is empty — never a blind
+   * recursive delete. Used to prune a series folder left empty after a rename.
+   */
+  async removeDirectoryIfEmpty(relativePath: string): Promise<void> {
+    if (!this.isAuthenticated() || !this.client) return;
+
+    const normalized = relativePath.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+
+    const folderPath = `${MOKURO_FOLDER}/${normalized}`;
+    try {
+      // getDirectoryContents returns the folder's CHILDREN; empty = prunable.
+      const contents = await this.client.getDirectoryContents(folderPath);
+      const children = Array.isArray(contents)
+        ? contents
+        : ((contents as { data?: unknown[] })?.data ?? []);
+      if (children.length === 0) {
+        await this.client.deleteFile(folderPath);
+      }
+    } catch {
+      // Folder gone already, listing unsupported, or server refused — harmless.
+    }
   }
 
   /**

@@ -140,7 +140,10 @@
     }
     e.preventDefault();
     motion.beforeAnimatedScroll();
-    camera.panBy(0, -normalizeWheelDelta(e.deltaY, e.deltaMode));
+    camera.panBy(
+      -normalizeWheelDelta(e.deltaX, e.deltaMode),
+      -normalizeWheelDelta(e.deltaY, e.deltaMode)
+    );
   }
 
   function doubleTap(x: number, y: number) {

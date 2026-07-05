@@ -442,6 +442,12 @@ class GoogleDriveProvider implements SyncProvider {
 
       console.log(`✅ Deleted file from Google Drive (${fileId})`);
     } catch (error) {
+      // Typed NOT_FOUND: DriveApiError carries the HTTP status; a 404 on a
+      // fileId-based delete means the file is already gone. The shared layer
+      // treats that as converged — by code only, never message text.
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'google-drive', 'NOT_FOUND');
+      }
       throw new ProviderError(
         `Failed to delete volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -511,6 +517,12 @@ class GoogleDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
+      }
+      // Typed NOT_FOUND: a 404 on the fileId-based move means the source is
+      // gone (deleted elsewhere / stale cached id). The shared rename layer
+      // treats this as a GENUINE failure — never "already moved".
+      if ((error as { status?: number })?.status === 404) {
+        throw new ProviderError(`File not found: ${file.path}`, 'google-drive', 'NOT_FOUND');
       }
       throw new ProviderError(
         `Failed to rename file: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -593,6 +605,39 @@ class GoogleDriveProvider implements SyncProvider {
         false,
         true
       );
+    }
+  }
+
+  /**
+   * Remove a series directory only if the SERVER confirms it is empty — never
+   * a blind recursive delete (Drive folder deletion is recursive). Emptiness
+   * is checked with a live files.list query for the folder's children, NOT
+   * the cached listing, which can lag behind a just-completed rename.
+   */
+  async removeDirectoryIfEmpty(relativePath: string): Promise<void> {
+    if (!this.isAuthenticated()) return;
+
+    const normalized = relativePath.replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+
+    try {
+      await this.ensureInitialized();
+
+      const folder = await this.findFolderByPath(normalized);
+      if (!folder) return;
+
+      // Server-side emptiness check: live children query against the folder id.
+      const children = await driveApiClient.listFiles(
+        `'${folder.id}' in parents and trashed=false`,
+        'files(id)'
+      );
+      if (children.length > 0) return;
+
+      await driveApiClient.deleteFile(folder.id);
+      console.log(`✅ Pruned empty series folder '${normalized}' from Google Drive`);
+    } catch (error) {
+      // Best-effort: an orphaned empty directory is harmless.
+      console.warn(`Could not prune Google Drive folder '${normalized}':`, error);
     }
   }
 
