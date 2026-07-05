@@ -143,21 +143,55 @@ describe('layoutLines', () => {
     expect(layouts[0].fontSize).toBeLessThan(3 * (114 / advanceEm));
   });
 
-  it('positions each line at its quad bbox relative to the block box origin', () => {
+  it('centers each line on its quad cross axis, anchored at the reading start', () => {
     const layouts = layoutLines(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
-    // first line quad starts at x=733,y=123; box origin is (653,123)
-    expect(layouts[0].left).toBeCloseTo(733 - 653, 5);
-    expect(layouts[0].top).toBeCloseTo(123 - 123, 5);
-    // third line quad starts at x=653,y=128
-    expect(layouts[2].left).toBeCloseTo(0, 5);
+    // Quads are wider than the glyph column (ruby, mask slack); the base
+    // glyphs sit near the middle, so the column is centered horizontally.
+    // L1: quad x [733,793], fs = 175/9 → centered at 763
+    const fs0 = 175 / 9;
+    expect(layouts[0].left).toBeCloseTo(763 - fs0 / 2 - 653, 3);
+    expect(layouts[0].top).toBeCloseTo(123 - 123, 5); // reading axis: quad top
+    // L3: quad x [653,692], fs = 197/6 → centered at 672.5
+    const fs2 = 197 / 6;
+    expect(layouts[2].left).toBeCloseTo(672.5 - fs2 / 2 - 653, 3);
     expect(layouts[2].top).toBeCloseTo(128 - 123, 5);
   });
 
   it('uses the rotated quad bbox for placement of slanted lines', () => {
     const layouts = layoutLines(pokemonRotated, pokemonRotated.lines, heuristicMeasurer)!;
-    // rotated first quad: bbox x-min = 1737, y-min = 2127
-    expect(layouts[0].left).toBeCloseTo(1737 - 1649, 5);
+    // rotated first quad: bbox x [1737,1855], centered at 1796; y-min = 2127
+    expect(layouts[0].left + layouts[0].fontSize / 2).toBeCloseTo(1796 - 1649, 3);
     expect(layouts[0].top).toBeCloseTo(0, 5);
+  });
+
+  it('keeps neighboring columns apart when one quad is much wider than its glyphs', () => {
+    // Dr Stone 01 p26 b11: quad 1 is 125px wide (base 本物 + ruby ほんもの +
+    // empty margin) but its glyphs are ~38px; left-anchoring drew the column
+    // in the margin, colliding with the みたい～ column to its left.
+    const drStone: LayoutBlock = {
+      box: [770, 2455, 929, 2691],
+      vertical: true,
+      font_size: 87,
+      lines_coords: [
+        [
+          [804, 2455],
+          [929, 2455],
+          [929, 2608],
+          [804, 2608]
+        ],
+        [
+          [771, 2477],
+          [820, 2477],
+          [820, 2690],
+          [771, 2690]
+        ]
+      ],
+      lines: ['本物から', 'みたい～']
+    };
+    const layouts = layoutLines(drStone, drStone.lines, heuristicMeasurer)!;
+    const spans = layouts.map((l) => [l.left, l.left + l.fontSize]);
+    const gap = Math.max(spans[0][0] - spans[1][1], spans[1][0] - spans[0][1]);
+    expect(gap).toBeGreaterThan(10); // columns must not overlap
   });
 
   it('handles horizontal blocks with the axes swapped', () => {

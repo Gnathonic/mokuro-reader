@@ -17,6 +17,7 @@
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
+  import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
     x: number;
@@ -59,8 +60,8 @@
   }
 
   let textBoxes = $derived(
-    page.blocks
-      .map((block, blockIndex) => {
+    dedupeBlocks(page.blocks)
+      .map(({ block, blockIndex }) => {
         const { img_height, img_width } = page;
         const { box, font_size, lines, vertical } = block;
 

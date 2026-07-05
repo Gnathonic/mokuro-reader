@@ -74,7 +74,12 @@ Per line:
   - `cross` cap keeps the column no wider than the detected line.
   - `main / advanceEm` cap keeps `chars × size` inside the detected length —
     this also contains hallucinated lines (text ≫ quad → small but bounded).
-- Position = quad axis-aligned bbox top-left minus block box origin.
+- Position: anchored at the quad start on the reading axis (top for vertical,
+  left for horizontal), **centered on the cross axis** — quads are often wider
+  than the glyph column (attached ruby, mask slack, empty margin; e.g. Dr Stone
+  01 p27 `本物から` has a 125px quad for ~38px glyphs) and the base glyphs sit
+  near the middle, so edge-anchoring can shove a column into its neighbor.
+  Relative to the block box origin.
 
 Returns `null` (→ caller falls back to legacy rendering) when `lines_coords` is
 missing, length-mismatched with `lines`, or any quad is malformed/degenerate.
@@ -82,6 +87,18 @@ missing, length-mismatched with `lines`, or any quad is malformed/degenerate.
 Rotation: magnitudes handle rotated quads; placement is axis-aligned bbox.
 Rendering rotated text upright is accepted prototype behavior (future: CSS
 `rotate` above a threshold).
+
+### 1b. `src/lib/reader/block-dedupe.ts` (new, pure)
+
+comic-text-detector occasionally emits the same balloon twice: once properly
+segmented, once from a second YOLO hit whose seg-lines were claimed by the
+first block — that one gets its whole bbox as a single synthetic "line" with a
+huge font_size (e.g. Dr Stone 01 p29: 4-line block + 1-line `font_size: 199`
+twin; ~19 duplicate pairs per 1000 pages in a 60-volume scan). `dedupeBlocks`
+drops a block when another block has identical joined text and box IoU > 0.5,
+keeping the one with more lines (tie: the earlier). Applied in the `textBoxes`
+derived for all font modes; preserves original `page.blocks` indices for
+context-menu/Anki lookups.
 
 ### 2. Text measurer (in the same module)
 

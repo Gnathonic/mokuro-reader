@@ -89,8 +89,10 @@ describe('TextBoxes original mode with lines_coords', () => {
     const spans = container.querySelectorAll<HTMLElement>('.ocr-line.positionedLine');
     expect(spans).toHaveLength(3);
 
-    // first line sits at its quad offset within the box (733-653, 123-123)
-    expect(spans[0].style.left).toBe('80px');
+    // first line: centered on its quad's cross axis (quad x [733,793], fs 175/9),
+    // anchored at the quad top (y 123 = box top)
+    const fs0 = 175 / 9;
+    expect(parseFloat(spans[0].style.left)).toBeCloseTo(763 - fs0 / 2 - 653, 3);
     expect(spans[0].style.top).toBe('0px');
 
     for (const span of spans) {

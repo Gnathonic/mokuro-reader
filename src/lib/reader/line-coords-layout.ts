@@ -144,9 +144,18 @@ export function layoutLines(
     const fontSize = Math.max(MIN_FONT_SIZE, Math.min(extents.cross, fitted));
     const xs = coords[i].map((p) => p[0]);
     const ys = coords[i].map((p) => p[1]);
+    // Reading axis: anchor at the quad start (top for vertical, left for
+    // horizontal). Cross axis: center the rendered column/row in the quad —
+    // quads are often wider than the glyphs (attached ruby, mask slack, empty
+    // margin) and the base glyphs sit near the middle; edge-anchoring can
+    // shove a column into its neighbor's space.
+    const minX = Math.min(...xs) - block.box[0];
+    const minY = Math.min(...ys) - block.box[1];
+    const maxX = Math.max(...xs) - block.box[0];
+    const maxY = Math.max(...ys) - block.box[1];
     layouts.push({
-      left: Math.min(...xs) - block.box[0],
-      top: Math.min(...ys) - block.box[1],
+      left: block.vertical ? (minX + maxX) / 2 - fontSize / 2 : minX,
+      top: block.vertical ? minY : (minY + maxY) / 2 - fontSize / 2,
       fontSize
     });
   }
