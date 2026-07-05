@@ -141,13 +141,46 @@ export class OneDriveProvider implements SyncProvider {
     await onedriveTokenManager.reauthenticate();
   }
 
+  // Coalesce concurrent folder creation (MEGA pattern): parallel uploads into
+  // a new series must not each POST createFolder — Graph 409s on the losers.
+  private mokuroFolderPromise: Promise<string> | null = null;
+  private seriesFolderPromises = new Map<string, Promise<string>>();
+
+  /**
+   * createFolder uses conflictBehavior 'fail'; if ANOTHER client (worker,
+   * second tab) won the race, re-fetch and return the existing folder.
+   */
+  private async createFolderTolerant(parentPath: string, name: string): Promise<string> {
+    const token = await onedriveTokenManager.getAccessToken();
+    try {
+      const created = await createFolder(token, parentPath, name);
+      return created.id;
+    } catch (error) {
+      if (error instanceof ProviderError && error.code === 'GRAPH_409') {
+        const fullPath = parentPath ? `${parentPath}/${name}` : name;
+        const existing = await getItemByPath(token, fullPath);
+        if (existing) return existing.id;
+      }
+      throw error;
+    }
+  }
+
   private async ensureMokuroFolder(): Promise<string> {
     const token = await onedriveTokenManager.getAccessToken();
     const existing = await getItemByPath(token, ONEDRIVE_CONFIG.MOKURO_FOLDER);
     if (existing) return existing.id;
-    const created = await createFolder(token, '', ONEDRIVE_CONFIG.MOKURO_FOLDER);
-    console.log(`Created ${ONEDRIVE_CONFIG.MOKURO_FOLDER} folder in OneDrive`);
-    return created.id;
+
+    if (this.mokuroFolderPromise) return this.mokuroFolderPromise;
+    this.mokuroFolderPromise = (async () => {
+      try {
+        const id = await this.createFolderTolerant('', ONEDRIVE_CONFIG.MOKURO_FOLDER);
+        console.log(`Created ${ONEDRIVE_CONFIG.MOKURO_FOLDER} folder in OneDrive`);
+        return id;
+      } finally {
+        this.mokuroFolderPromise = null;
+      }
+    })();
+    return this.mokuroFolderPromise;
   }
 
   private async ensureSeriesFolder(seriesTitle: string): Promise<string> {
@@ -155,9 +188,20 @@ export class OneDriveProvider implements SyncProvider {
     const path = `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`;
     const existing = await getItemByPath(token, path);
     if (existing) return existing.id;
-    await this.ensureMokuroFolder();
-    const created = await createFolder(token, ONEDRIVE_CONFIG.MOKURO_FOLDER, seriesTitle);
-    return created.id;
+
+    const inFlight = this.seriesFolderPromises.get(seriesTitle);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      try {
+        await this.ensureMokuroFolder();
+        return await this.createFolderTolerant(ONEDRIVE_CONFIG.MOKURO_FOLDER, seriesTitle);
+      } finally {
+        this.seriesFolderPromises.delete(seriesTitle);
+      }
+    })();
+    this.seriesFolderPromises.set(seriesTitle, promise);
+    return promise;
   }
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {

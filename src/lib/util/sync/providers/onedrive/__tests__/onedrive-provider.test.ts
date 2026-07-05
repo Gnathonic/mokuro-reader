@@ -28,7 +28,8 @@ vi.mock('../graph-client', () => ({
 }));
 
 import { OneDriveProvider } from '../onedrive-provider';
-import { getItemByPath, listChildren } from '../graph-client';
+import { getItemByPath, listChildren, createFolder } from '../graph-client';
+import { ProviderError } from '../../../provider-interface';
 
 describe('OneDriveProvider.listCloudVolumes', () => {
   let provider: OneDriveProvider;
@@ -64,5 +65,51 @@ describe('OneDriveProvider.listCloudVolumes', () => {
     // A deep 404 means missing data, not "empty library" — it must surface,
     // not silently drop the affected volumes and return a partial set.
     await expect(provider.listCloudVolumes()).rejects.toThrow(/404/);
+  });
+});
+
+describe('folder creation coalescing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('creates a missing series folder exactly once under concurrent prepareUploadTarget calls', async () => {
+    let created = false;
+    vi.mocked(getItemByPath).mockImplementation(async (_t, path) => {
+      if (path === 'mokuro-reader') return { id: 'root-id', name: 'mokuro-reader', folder: {} };
+      return created ? { id: 'series-id', name: 'Series', folder: {} } : null;
+    });
+    vi.mocked(createFolder).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      created = true;
+      return { id: 'series-id', name: 'Series', folder: {} };
+    });
+
+    const provider = new OneDriveProvider();
+    await Promise.all([
+      provider.prepareUploadTarget('Series'),
+      provider.prepareUploadTarget('Series'),
+      provider.prepareUploadTarget('Series')
+    ]);
+
+    // Two POSTs at most: one for the series folder. The mokuro root already
+    // exists, so exactly one createFolder call total.
+    expect(vi.mocked(createFolder)).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers when createFolder 409s because another client already created it', async () => {
+    let probes = 0;
+    vi.mocked(getItemByPath).mockImplementation(async (_t, path) => {
+      if (path === 'mokuro-reader') return { id: 'root-id', name: 'mokuro-reader', folder: {} };
+      probes++;
+      // Missing on the first existence probe, present on the post-409 re-fetch.
+      return probes > 1 ? { id: 'series-id', name: 'Series', folder: {} } : null;
+    });
+    vi.mocked(createFolder).mockRejectedValue(
+      new ProviderError('Graph 409 Conflict: nameAlreadyExists', 'onedrive', 'GRAPH_409')
+    );
+
+    const provider = new OneDriveProvider();
+    await expect(provider.prepareUploadTarget('Series')).resolves.not.toThrow();
   });
 });
