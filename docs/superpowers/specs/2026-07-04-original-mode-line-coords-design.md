@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-04
 **Branch:** `feat/original-mode-line-coords`
-**Status:** prototype
+**Status:** merged to develop as the auto-mode renderer (2026-07-05)
 
 ## Problem
 
