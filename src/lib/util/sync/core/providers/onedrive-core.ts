@@ -1,12 +1,45 @@
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG } from '../../providers/onedrive/constants';
-import { createChunkRanges } from '../../providers/onedrive/upload-session';
+import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
 
 const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+}
+
+const MAX_CHUNK_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 400;
+const RETRY_MAX_DELAY_MS = 5000;
+const CHUNK_TIMEOUT_MS = 5 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 30 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+/**
+ * Ask the upload session where to resume (Graph tracks received ranges
+ * server-side). Returns null when the session can't say — caller retries
+ * from its own counter.
+ */
+async function queryResumeOffset(uploadUrl: string): Promise<number | null> {
+  try {
+    const response = await fetch(uploadUrl, { signal: AbortSignal.timeout(SESSION_TIMEOUT_MS) });
+    if (!response.ok) {
+      await response.text().catch(() => '');
+      return null;
+    }
+    const data = (await response.json()) as { nextExpectedRanges?: string[] };
+    return data.nextExpectedRanges ? parseNextExpectedRange(data.nextExpectedRanges) : null;
+  } catch {
+    return null;
+  }
 }
 
 export const onedriveCore: CloudProviderCore = {
@@ -66,7 +99,8 @@ export const onedriveCore: CloudProviderCore = {
         },
         body: JSON.stringify({
           item: { '@microsoft.graph.conflictBehavior': 'replace' }
-        })
+        }),
+        signal: AbortSignal.timeout(SESSION_TIMEOUT_MS)
       }
     );
     if (!sessionResponse.ok) {
@@ -77,29 +111,71 @@ export const onedriveCore: CloudProviderCore = {
     const { uploadUrl } = (await sessionResponse.json()) as { uploadUrl: string };
 
     let lastItemId: string | null = null;
-    for (const range of createChunkRanges(blob.size, ONEDRIVE_CONFIG.UPLOAD_CHUNK_SIZE)) {
-      const chunk = blob.slice(range.start, range.end + 1);
-      const chunkResponse = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Length': String(range.end - range.start + 1),
-          'Content-Range': `bytes ${range.start}-${range.end}/${range.total}`
-        },
-        body: chunk
-      });
-      if (!chunkResponse.ok) {
+    let offset = 0;
+    let attempt = 0;
+
+    const retryOrThrow = async (reason: string): Promise<void> => {
+      attempt++;
+      if (attempt >= MAX_CHUNK_ATTEMPTS) {
+        throw new Error(`OneDrive upload failed after ${MAX_CHUNK_ATTEMPTS} attempts: ${reason}`);
+      }
+      await sleep(Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS));
+      // Trust Graph's record of received bytes over our own counter.
+      const resume = await queryResumeOffset(uploadUrl);
+      if (resume !== null) offset = resume;
+    };
+
+    while (offset < blob.size) {
+      const end = Math.min(offset + ONEDRIVE_CONFIG.UPLOAD_CHUNK_SIZE - 1, blob.size - 1);
+
+      let chunkResponse: Response;
+      try {
+        chunkResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Length': String(end - offset + 1),
+            'Content-Range': `bytes ${offset}-${end}/${blob.size}`
+          },
+          body: blob.slice(offset, end + 1),
+          signal: AbortSignal.timeout(CHUNK_TIMEOUT_MS)
+        });
+      } catch (error) {
+        await retryOrThrow(error instanceof Error ? error.message : 'network error');
+        continue;
+      }
+
+      if (chunkResponse.status === 200 || chunkResponse.status === 201) {
+        // Final chunk returns the completed driveItem.
+        const item = (await chunkResponse.json()) as { id: string };
+        lastItemId = item.id;
+        offset = end + 1;
+        attempt = 0;
+        onProgress?.(offset, blob.size);
+        continue;
+      }
+
+      if (chunkResponse.status === 202) {
+        // Intermediate chunk. Drain the body (avoids stream retention) and
+        // use Graph's nextExpectedRanges as the authoritative next offset.
+        const body = (await chunkResponse.json().catch(() => null)) as {
+          nextExpectedRanges?: string[];
+        } | null;
+        const next = body?.nextExpectedRanges
+          ? parseNextExpectedRange(body.nextExpectedRanges)
+          : null;
+        offset = next ?? end + 1;
+        attempt = 0;
+        onProgress?.(offset, blob.size);
+        continue;
+      }
+
+      await chunkResponse.text().catch(() => '');
+      if (!isRetryableStatus(chunkResponse.status)) {
         throw new Error(
           `OneDrive upload chunk failed: ${chunkResponse.status} ${chunkResponse.statusText}`
         );
       }
-      onProgress?.(range.end + 1, range.total);
-
-      // Final chunk returns the completed driveItem (201 Created or 200 OK).
-      // Non-final chunks return 202 Accepted with nextExpectedRanges.
-      if (chunkResponse.status === 201 || chunkResponse.status === 200) {
-        const item = (await chunkResponse.json()) as { id: string };
-        lastItemId = item.id;
-      }
+      await retryOrThrow(`HTTP ${chunkResponse.status} ${chunkResponse.statusText}`);
     }
 
     if (!lastItemId) {
