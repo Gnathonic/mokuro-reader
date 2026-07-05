@@ -32,11 +32,15 @@ export class OneDriveProvider implements SyncProvider {
 
   private cloudCore = getCloudProviderCore('onedrive');
   private initPromise: Promise<void>;
+  private initError: Error | null = null;
 
   constructor() {
     if (browser) {
       this.initPromise = onedriveTokenManager.initialize().catch((error) => {
-        console.warn('OneDrive MSAL init failed (will retry on login):', error);
+        // A missing/invalid client id is a deployment misconfiguration, not
+        // a "user never connected" state. Track it so getStatus() can say so.
+        this.initError = error instanceof Error ? error : new Error(String(error));
+        console.warn('OneDrive MSAL init failed:', error);
       });
     } else {
       this.initPromise = Promise.resolve();
@@ -52,6 +56,14 @@ export class OneDriveProvider implements SyncProvider {
   }
 
   getStatus(): ProviderStatus {
+    if (this.initError) {
+      return {
+        isAuthenticated: false,
+        hasStoredCredentials: onedriveTokenManager.hasStoredCredentials(),
+        needsAttention: false,
+        statusMessage: `OneDrive initialization failed: ${this.initError.message}`
+      };
+    }
     const authenticated = this.isAuthenticated();
     const hasCredentials = onedriveTokenManager.hasStoredCredentials();
     let needsAttention = false;
@@ -118,9 +130,11 @@ export class OneDriveProvider implements SyncProvider {
   }
 
   async logout(): Promise<void> {
-    await onedriveTokenManager.logout();
+    // Clear the active-provider key BEFORE the token manager's logout —
+    // logoutRedirect() navigates the window away and nothing after it runs.
     clearActiveProviderKey();
     console.log('OneDrive logged out');
+    await onedriveTokenManager.logout();
   }
 
   async reauthenticate(): Promise<void> {

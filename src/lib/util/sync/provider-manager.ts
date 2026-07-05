@@ -200,6 +200,9 @@ class ProviderManager {
       localStorage.removeItem('mega_email');
       localStorage.removeItem('mega_password');
       localStorage.removeItem('mega_folder_path');
+      // OneDrive (MSAL's own msal.* cache entries are cleared by MSAL itself)
+      localStorage.removeItem('onedrive_has_authenticated');
+      localStorage.removeItem('onedrive_login_pending');
     }
 
     this.updateStatus();
