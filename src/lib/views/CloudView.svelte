@@ -127,7 +127,7 @@
       items: [
         'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
         'Works with personal accounts (outlook.com) and work/school accounts',
-        'Silent token refresh — no hourly re-authentication popups',
+        'Persistent login (no re-authentication needed)',
         'Encrypted in transit and at rest'
       ]
     }
@@ -860,7 +860,7 @@
                 <div class="flex-1 text-left">
                   <div class="text-lg font-semibold">OneDrive</div>
                   <div class="text-sm text-gray-400">
-                    5GB free • Personal or work/school • Silent refresh
+                    5GB free • Personal or work/school • Persistent login
                   </div>
                 </div>
               </div>
