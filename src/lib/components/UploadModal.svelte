@@ -184,8 +184,8 @@
             and import here.
           </p>
           <p>
-            <b>Easiest method:</b> Back up to Google Drive or MEGA (free), then grab volumes from the
-            cloud on mobile with a tap.
+            <b>Easiest method:</b> Back up to a free cloud provider (Google Drive, MEGA, OneDrive), then
+            grab volumes from the cloud on mobile with a tap.
           </p>
         </div>
       </AccordionItem>

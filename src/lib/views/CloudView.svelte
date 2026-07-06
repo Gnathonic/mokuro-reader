@@ -95,7 +95,7 @@
   const providerInfo = {
     'google-drive': {
       items: [
-        '15GB free storage',
+        'Up to 15GB free storage',
         'Seamless Google account integration',
         'Back up from app, download on any device',
         'Auto re-authentication support'
@@ -117,9 +117,9 @@
     },
     filesystem: {
       items: [
-        'Uses a folder on this device',
+        'Reads and writes real files in a folder you pick',
         'Works offline — no account needed',
-        'Browser-quota limited (not your disk free space)',
+        'Best for bulk import/export on this device',
         'Chromium browsers only (Chrome, Edge, etc.)'
       ]
     },
@@ -710,7 +710,7 @@
               {/if}
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
-                <div class="text-sm text-gray-400">15GB free • Requires re-auth every hour</div>
+                <div class="text-sm text-gray-400">Up to 15GB free • Automatic hourly re-auth</div>
               </div>
             </div>
           </button>
