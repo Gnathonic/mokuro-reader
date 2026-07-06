@@ -100,6 +100,12 @@ function isMegaNotFoundError(error: unknown): boolean {
   return message.includes('ENOENT') || message.includes('(-9)');
 }
 
+/** megajs surfaces a full account as `EOVERQUOTA (-17)`. */
+function isMegaOverQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('EOVERQUOTA') || message.includes('(-17)');
+}
+
 /**
  * Smart retry wrapper for MEGA operations that may fail due to stale cache
  * When two devices sync back and forth, file IDs change but local cache is stale
@@ -800,6 +806,15 @@ export class MegaProvider implements SyncProvider {
 
       return fileId;
     } catch (error) {
+      // Typed QUOTA_EXCEEDED with a message users can act on, instead of
+      // megajs's raw "EOVERQUOTA (-17): Request over quota".
+      if (isMegaOverQuotaError(error)) {
+        throw new ProviderError(
+          'MEGA storage is full — free up space or upgrade your plan',
+          'mega',
+          'QUOTA_EXCEEDED'
+        );
+      }
       throw new ProviderError(
         `Failed to upload volume CBZ: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'mega',

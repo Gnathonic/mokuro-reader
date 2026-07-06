@@ -260,6 +260,7 @@ Create a `.env.local` file for cloud provider integration:
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
+VITE_MEGA_REFERRAL_URL=https://mega.nz/aff=your_referral_code
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
@@ -268,7 +269,12 @@ VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
   deploy origin as a **Single-page application** redirect URI. Scopes used:
   `Files.ReadWrite`, `offline_access`, `User.Read`. When unset, the OneDrive
   option is hidden from the cloud screen.
-- MEGA, WebDAV, and Local Folder require no env vars.
+- `VITE_MEGA_REFERRAL_URL`: optional. Paste a link from MEGA's referral
+  dashboard verbatim (must be an https mega.nz/mega.io URL, or it is ignored).
+  When set, users at ≥80% of their MEGA quota see a disclosed upgrade link on
+  the cloud page; when unset, no link is rendered. Deliberately env-scoped so
+  forks/deploys never inherit someone else's referral code.
+- MEGA, WebDAV, and Local Folder require no env vars to function.
 
 ## Testing
 

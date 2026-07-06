@@ -22,9 +22,16 @@
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
+  import {
+    getMegaReferralUrl,
+    shouldOfferMegaUpgrade
+  } from '$lib/util/sync/providers/mega/referral';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
+
+  // MEGA upgrade referral link (null unless VITE_MEGA_REFERRAL_URL is set).
+  const megaReferralUrl = getMegaReferralUrl();
 
   // Get store references for auto-subscription
   const providerStatusStore = providerManager.status;
@@ -1137,6 +1144,21 @@
                       (storageQuota.used / storageQuota.total) * 100
                     )}% used)
                   </div>
+                  {#if currentProvider === 'mega' && shouldOfferMegaUpgrade(storageQuota, megaReferralUrl)}
+                    <div class="pt-1 text-center">
+                      <a
+                        href={megaReferralUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-sm text-primary-500 hover:underline"
+                      >
+                        Running low on space? Upgrade your MEGA storage
+                      </a>
+                      <p class="text-xs text-gray-500">
+                        Referral link — supports mokuro-reader at no extra cost to you
+                      </p>
+                    </div>
+                  {/if}
                 </div>
               {:else if storageQuota && storageQuota.used > 0}
                 <p class="text-sm text-gray-300">{formatBytes(storageQuota.used)} used</p>

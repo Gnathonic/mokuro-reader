@@ -495,3 +495,26 @@ describe('MegaProvider ghost-node handling', () => {
     expect(Object.keys(storage.files).sort()).toEqual(['ghost', 'root']);
   });
 });
+
+describe('MegaProvider over-quota handling', () => {
+  it('uploadFile maps EOVERQUOTA to a typed QUOTA_EXCEEDED error with a friendly message', async () => {
+    const folder: any = {
+      name: 'mokuro-reader',
+      directory: true,
+      upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+        queueMicrotask(() => cb(new Error('EOVERQUOTA (-17): Request over quota')));
+      })
+    };
+    storageState.files = { root: folder };
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    await expect(
+      provider.uploadFile('volume-data.json', new Uint8Array([1]))
+    ).rejects.toMatchObject({
+      code: 'QUOTA_EXCEEDED',
+      message: expect.stringContaining('storage is full')
+    });
+  });
+});
