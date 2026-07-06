@@ -306,6 +306,14 @@ class TokenManager {
   }
 
   requestNewToken(forceConsent = false): void {
+    // Guards against a manual "Reconnect" click double-firing: a click is
+    // simultaneously the pointerdown that satisfies an armed gesture-retry
+    // AND the button's own handler, so both can call in on the same tick.
+    if (this.isRefreshing) {
+      console.log('Token request already in flight — ignoring duplicate call');
+      return;
+    }
+
     const tokenClient = this.tokenClientStore;
     let client: any;
 
@@ -314,6 +322,7 @@ class TokenManager {
     })();
 
     if (client) {
+      this.isRefreshing = true;
       // Determine if user has authenticated before
       const hasAuthenticated =
         browser &&
