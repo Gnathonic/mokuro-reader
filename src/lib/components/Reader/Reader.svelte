@@ -1151,6 +1151,7 @@
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {:else}
@@ -1164,6 +1165,7 @@
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {/if}

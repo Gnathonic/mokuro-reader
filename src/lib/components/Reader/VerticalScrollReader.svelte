@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Page, VolumeMetadata } from '$lib/types';
   import type { VolumeSettings } from '$lib/settings/volume-data';
-  import { settings, imageFilter } from '$lib/settings';
+  import { settings, imageFilter, updateSetting } from '$lib/settings';
   import { matchFilesToPages } from '$lib/reader/image-cache';
   import { getCharCount } from '$lib/util/count-chars';
   import { activityTracker } from '$lib/util/activity-tracker';
@@ -10,7 +10,15 @@
   import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
   import { applyVerticalZoomLayout } from '$lib/reader/zoom-layout';
   import { closestPageToCenter } from '$lib/reader/page-detection';
-  import { normalizeWheelDelta, wheelIntentIsZoom } from '$lib/reader/zoom-math';
+  import {
+    GAP_WHEEL_STEP_SIZE,
+    MAX_PAGE_GAP,
+    WheelAccumulator,
+    gapWheelSteps,
+    normalizeWheelDelta,
+    wheelIntentIsGapAdjust,
+    wheelIntentIsZoom
+  } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
@@ -27,6 +35,8 @@
     onPageChange: (newPage: number, charCount: number, isComplete: boolean) => void;
     onVolumeNav: (direction: 'prev' | 'next') => void;
     onOverlayToggle?: () => void;
+    /** The gap-adjust wheel chord changed the divider gap to this value (px). */
+    onGapChange?: (px: number) => void;
     onContextMenu?: (data: any) => void;
   }
 
@@ -39,6 +49,7 @@
     onPageChange,
     onVolumeNav,
     onOverlayToggle,
+    onGapChange,
     onContextMenu
   }: Props = $props();
 
@@ -340,8 +351,26 @@
   // Wheel — scroll or zoom
   // ============================================================
 
+  const gapAccumulator = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+
+  // The chord drives the continuous-mode dividers: gap > 0 means dividers on,
+  // reaching 0 turns them off (the M toggle keeps working independently).
+  function adjustGap(delta: number) {
+    if (delta === 0) return;
+    const next = Math.max(0, Math.min(MAX_PAGE_GAP, $settings.scrollGap + delta));
+    updateSetting('scrollGap', next);
+    const dividers = next > 0;
+    if ($settings.pageDividers !== dividers) updateSetting('pageDividers', dividers);
+    onGapChange?.(next);
+  }
+
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
+    if (wheelIntentIsGapAdjust(e)) {
+      e.preventDefault();
+      adjustGap(gapWheelSteps(e, gapAccumulator));
+      return;
+    }
     const modifier = e.ctrlKey || e.metaKey;
 
     if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior)) {
