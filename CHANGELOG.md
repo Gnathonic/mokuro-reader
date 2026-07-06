@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.8.0] - 2026-07-05
+
+### Added
+
+- New Local Folder provider: Chromium-only bulk export, or direct access to sync-only files (#250)
+- OneDrive added as a cloud sync provider (#250)
+- Paged mode pages can now have a gap between them (#234)
+- Ctrl/Cmd+Shift+Scroll live-adjusts the page gap (#234)
+
+### Fixed
+
+- Quick Actions button's solid background restored (#249)
+- Fixed a bug where reconnecting Google Drive could revert synced progress
+- File type matching on Drive and MEGA is now case-insensitive
+- Fixed overlapping text lines in auto mode
+
+### Changed
+
+- Expired Google Drive sessions now show a Reconnect button
+- Google Drive reconnect works reliably everywhere now, no popup setup needed
+- WebDAV now mentions Mokuro-Bunko server compatibility
+
 ## [1.7.5] - 2026-07-05
 
 ### Added
