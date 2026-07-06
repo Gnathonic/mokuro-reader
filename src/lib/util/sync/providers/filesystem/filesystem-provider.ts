@@ -373,6 +373,29 @@ export class FilesystemProvider implements SyncProvider {
         throw error;
       }
 
+      // Guard against clobbering an unrelated file already at the destination.
+      // A same-size occupant is treated as a prior partial-retry artifact
+      // (copy succeeded, source-delete didn't) and is safe to overwrite —
+      // mirrors WebDAV's exists()+size-match convergence check.
+      let existingDestFile: File | null = null;
+      try {
+        const existingDestHandle = await this.resolveFileHandle(normalizedNewPath, {
+          create: false
+        });
+        existingDestFile = await existingDestHandle.getFile();
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'NotFoundError')) {
+          throw error;
+        }
+      }
+      if (existingDestFile && existingDestFile.size !== sourceFile.size) {
+        throw new ProviderError(
+          `Destination '${normalizedNewPath}' already exists and does not match the source`,
+          'filesystem',
+          'TARGET_EXISTS'
+        );
+      }
+
       // Write to destination
       const destHandle = await this.resolveFileHandle(normalizedNewPath, { create: true });
       const writable = await destHandle.createWritable();
@@ -458,21 +481,15 @@ export class FilesystemProvider implements SyncProvider {
       renamed.push(await this.renameFile(file, target));
     }
 
-    // Best-effort cleanup of the now-empty old folder.
-    // Skip when the new path nests inside the old folder (e.g. "Series" -> "Series/Archive"):
-    // the renamed files now live under the old folder, so a recursive delete would destroy
-    // the very files we just wrote.
+    // Best-effort cleanup of the now-empty old folder. Only `affected` (the
+    // syncable files) were moved above, so a recursive delete here would
+    // destroy any other file the user happens to have stored under this path
+    // — prune only if the folder is verifiably empty, same as removeDirectoryIfEmpty.
+    // Skip entirely when the new path nests inside the old folder (e.g. "Series" ->
+    // "Series/Archive"): the renamed files now live under the old folder.
     const newNestsUnderOld = normalizedNew.startsWith(`${normalizedOld}/`);
     if (!newNestsUnderOld) {
-      try {
-        const parentPath = getParentPath(normalizedOld);
-        const parent = parentPath
-          ? await this.resolveDirectoryHandle(parentPath, { create: false })
-          : this.requireRoot();
-        await parent.removeEntry(getBasename(normalizedOld), { recursive: true });
-      } catch {
-        // Already gone or never existed — fine
-      }
+      await this.removeDirectoryIfEmpty(normalizedOld);
     }
 
     console.log(`✅ Renamed folder ${normalizedOld} → ${normalizedNew} in filesystem`);
