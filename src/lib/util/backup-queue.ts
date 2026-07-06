@@ -318,6 +318,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
     return;
   }
 
+  // Providers that can't upload from a worker (e.g. filesystem: the directory
+  // handle is bound to the window that received it) still go through the pool.
+  // The worker compresses only — main thread then performs the actual upload
+  // inside onComplete, while the task's memory reservation is still held.
+  const needsMainThreadUpload = !isExport && provider !== null && !provider.supportsWorkerUpload;
+
   const pool = await getFileProcessingPool();
 
   // Estimate volume size (rough estimate: page count * 0.5MB average per page)
@@ -354,21 +360,25 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       prepareData: async () => {
         getBackupUiBridge().updateProgress(processId, 'Preparing...', 5);
 
-        // Handle export-for-download (pseudo-provider)
-        if (isExport) {
+        // Export-for-download (pseudo-provider) and main-thread-upload providers
+        // both use the worker's "null provider" compress-only mode. For the
+        // filesystem provider the real upload happens in onComplete using the
+        // main-thread uploadFile API — the worker is only doing compression.
+        if (isExport || needsMainThreadUpload) {
           return {
             mode: 'compress-from-db',
-            provider: null, // null = local export
+            provider: null,
             volumeUuid: item.volumeUuid,
             volumeTitle: item.volumeTitle,
             seriesTitle: item.seriesTitle,
             downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`,
             embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
+            embedMokuroInArchive: false,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }
 
-        // Handle real cloud providers
+        // Worker-driven cloud upload (Google Drive, MEGA, WebDAV)
         const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
 
         return {
@@ -410,6 +420,65 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       onComplete: async (rawData, releaseMemory) => {
         try {
           const data = rawData as WorkerUploadCompleteData;
+          // Main-thread upload path (e.g. filesystem provider). Worker returned
+          // the compressed archive + sidecars; we perform the actual writes now.
+          // Memory remains reserved by the pool until this handler returns.
+          if (needsMainThreadUpload && data?.data) {
+            if (provider!.prepareUploadTarget) {
+              await prepareSeriesUploadTarget(provider!, item.seriesTitle);
+            }
+
+            const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
+            const archiveBytes = new Uint8Array(data.data);
+            const archiveBlob = new Blob([archiveBytes], { type: 'application/x-cbz' });
+
+            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+              getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
+              const sidecars: Array<{ filename: string; blob: Blob }> = [];
+              if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
+              if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
+              for (const sidecar of sidecars) {
+                const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
+                await provider!.uploadFile(sidecarPath, sidecar.blob);
+              }
+            }
+
+            getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
+            const uploadedFileId = await provider!.uploadFile(
+              archivePath,
+              archiveBlob,
+              undefined,
+              (loaded, total) => {
+                if (total > 0) {
+                  getBackupUiBridge().updateProgress(
+                    processId,
+                    'Uploading archive...',
+                    Math.round((loaded / total) * 100)
+                  );
+                }
+              }
+            );
+
+            const { cacheManager } = await import('./sync/cache-manager');
+            const cache = cacheManager.getCache(provider!.type);
+            if (cache?.add) {
+              cache.add(archivePath, {
+                fileId: uploadedFileId,
+                path: archivePath,
+                modifiedTime: new Date().toISOString(),
+                size: archiveBlob.size
+              });
+            }
+
+            getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+            getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
+            queueStore.update((q) =>
+              q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+            );
+            setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
+            return;
+          }
+
           // Handle export-for-download (trigger browser download)
           if (isExport && data?.data) {
             getBackupUiBridge().updateProgress(processId, 'Download ready', 100);

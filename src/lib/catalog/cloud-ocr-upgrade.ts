@@ -1,33 +1,26 @@
 import { db } from '$lib/catalog/db';
 import { parseMokuroFile } from '$lib/import/processing';
 import type { VolumeMetadata } from '$lib/types';
-import type { LibraryFileMetadata } from './library-webdav-client';
-import { getLibraryById } from '$lib/settings/libraries';
-import { getLibraryClient } from './library-cache-manager';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
 import type { ProviderType } from '$lib/util/sync/provider-interface';
 
-type LibraryUpgradeTask = {
-  kind: 'library';
-  volumeUuid: string;
-  libraryId: string;
-  sidecar: LibraryFileMetadata;
-};
+/**
+ * Background queue that upgrades image-only local volumes with OCR data from
+ * a cloud provider's .mokuro/.mokuro.gz sidecar. (Extracted from the removed
+ * libraries feature — this cloud half is used by cloud placeholders.)
+ */
 
 type CloudUpgradeTask = {
-  kind: 'cloud';
   volumeUuid: string;
   provider: ProviderType;
   sidecar: CloudVolumeWithProvider;
 };
 
-type UpgradeTask = LibraryUpgradeTask | CloudUpgradeTask;
-
 const pendingTaskIds = new Set<string>();
-const queuedTasks: UpgradeTask[] = [];
+const queuedTasks: CloudUpgradeTask[] = [];
 let processing = false;
 
 function countCharsInLines(lines: unknown): number {
@@ -63,7 +56,7 @@ function buildPageCharCounts(pages: unknown[]): { totalChars: number; cumulative
 
 async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
   if (sidecarPath.toLowerCase().endsWith('.mokuro')) {
-    console.log('[Library OCR Upgrade] Decoding plain mokuro sidecar:', sidecarPath, blob.size);
+    console.log('[Cloud OCR Upgrade] Decoding plain mokuro sidecar:', sidecarPath, blob.size);
     return new File([blob], sidecarPath.split('/').pop() || sidecarPath, {
       type: 'application/json'
     });
@@ -74,64 +67,49 @@ async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<Fil
   }
 
   if (typeof DecompressionStream === 'undefined') {
-    console.warn('[Library OCR Upgrade] DecompressionStream not available for .mokuro.gz');
+    console.warn('[Cloud OCR Upgrade] DecompressionStream not available for .mokuro.gz');
     return null;
   }
 
-  console.log('[Library OCR Upgrade] Decoding gz mokuro sidecar:', sidecarPath, blob.size);
+  console.log('[Cloud OCR Upgrade] Decoding gz mokuro sidecar:', sidecarPath, blob.size);
   const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
   const decompressedBlob = await new Response(stream).blob();
   const filename = (sidecarPath.split('/').pop() || sidecarPath).replace(/\.gz$/i, '');
   return new File([decompressedBlob], filename, { type: 'application/json' });
 }
 
-async function applyUpgrade(task: UpgradeTask): Promise<void> {
-  const taskScope =
-    task.kind === 'library' ? `library:${task.libraryId}` : `cloud:${task.provider}`;
+async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   console.log(
-    '[Library OCR Upgrade] Starting task:',
+    '[Cloud OCR Upgrade] Starting task:',
     task.volumeUuid,
     'sidecar=',
     task.sidecar.path,
-    'scope=',
-    taskScope
+    'provider=',
+    task.provider
   );
-  let sidecarBlob: Blob;
-  let sidecarPath: string;
-  if (task.kind === 'library') {
-    const library = getLibraryById(task.libraryId);
-    if (!library) {
-      console.warn('[Library OCR Upgrade] Library config not found:', task.libraryId);
-      return;
-    }
-    const client = getLibraryClient(library);
-    sidecarBlob = await client.downloadFile(task.sidecar.fileId);
-    sidecarPath = task.sidecar.path;
-  } else {
-    const activeProvider = unifiedCloudManager.getActiveProvider();
-    if (!activeProvider || activeProvider.type !== task.provider) {
-      console.warn(
-        '[Library OCR Upgrade] Active provider unavailable for cloud sidecar upgrade:',
-        task.provider,
-        'active=',
-        activeProvider?.type
-      );
-      return;
-    }
-    sidecarBlob = await activeProvider.downloadFile(task.sidecar);
-    sidecarPath = task.sidecar.path;
+  const activeProvider = unifiedCloudManager.getActiveProvider();
+  if (!activeProvider || activeProvider.type !== task.provider) {
+    console.warn(
+      '[Cloud OCR Upgrade] Active provider unavailable for cloud sidecar upgrade:',
+      task.provider,
+      'active=',
+      activeProvider?.type
+    );
+    return;
   }
+  const sidecarBlob = await activeProvider.downloadFile(task.sidecar);
+  const sidecarPath = task.sidecar.path;
 
-  console.log('[Library OCR Upgrade] Downloaded sidecar bytes:', sidecarBlob.size, sidecarPath);
+  console.log('[Cloud OCR Upgrade] Downloaded sidecar bytes:', sidecarBlob.size, sidecarPath);
   const mokuroFile = await decodeMokuroSidecar(sidecarPath, sidecarBlob);
   if (!mokuroFile) {
-    console.warn('[Library OCR Upgrade] Failed to decode sidecar:', sidecarPath);
+    console.warn('[Cloud OCR Upgrade] Failed to decode sidecar:', sidecarPath);
     return;
   }
 
   const parsed = await parseMokuroFile(mokuroFile);
   console.log(
-    '[Library OCR Upgrade] Parsed mokuro:',
+    '[Cloud OCR Upgrade] Parsed mokuro:',
     parsed.series,
     parsed.volume,
     'pages=',
@@ -142,7 +120,7 @@ async function applyUpgrade(task: UpgradeTask): Promise<void> {
     typeof existingVolume?.mokuro_version === 'string' ? existingVolume.mokuro_version.trim() : '';
   if (!existingVolume || existingMokuroVersion !== '') {
     console.log(
-      '[Library OCR Upgrade] Skipping task, volume missing or already OCR:',
+      '[Cloud OCR Upgrade] Skipping task, volume missing or already OCR:',
       task.volumeUuid,
       'existingVersion=',
       existingMokuroVersion
@@ -169,7 +147,7 @@ async function applyUpgrade(task: UpgradeTask): Promise<void> {
   });
 
   console.log(
-    '[Library OCR Upgrade] Upgraded image-only volume:',
+    '[Cloud OCR Upgrade] Upgraded image-only volume:',
     existingVolume.series_title,
     existingVolume.volume_title
   );
@@ -178,74 +156,25 @@ async function applyUpgrade(task: UpgradeTask): Promise<void> {
 async function processQueue(): Promise<void> {
   if (processing) return;
   processing = true;
-  console.log('[Library OCR Upgrade] Processing queue. pending=', queuedTasks.length);
+  console.log('[Cloud OCR Upgrade] Processing queue. pending=', queuedTasks.length);
 
   try {
     while (queuedTasks.length > 0) {
       const task = queuedTasks.shift()!;
-      const sidecarId = task.kind === 'library' ? task.sidecar.fileId : task.sidecar.fileId;
-      const taskId = `${task.volumeUuid}:${sidecarId}`;
+      const taskId = `${task.volumeUuid}:${task.sidecar.fileId}`;
       try {
         await applyUpgrade(task);
       } catch (error) {
-        console.warn('[Library OCR Upgrade] Failed to auto-upgrade volume:', error);
+        console.warn('[Cloud OCR Upgrade] Failed to auto-upgrade volume:', error);
       } finally {
         pendingTaskIds.delete(taskId);
-        console.log(
-          '[Library OCR Upgrade] Task complete:',
-          taskId,
-          'remaining=',
-          queuedTasks.length
-        );
+        console.log('[Cloud OCR Upgrade] Task complete:', taskId, 'remaining=', queuedTasks.length);
       }
     }
   } finally {
     processing = false;
-    console.log('[Library OCR Upgrade] Queue idle');
+    console.log('[Cloud OCR Upgrade] Queue idle');
   }
-}
-
-export function enqueueLibraryOcrUpgrade(
-  volume: VolumeMetadata,
-  sidecar: LibraryFileMetadata
-): void {
-  if (volume.isPlaceholder) {
-    console.log('[Library OCR Upgrade] Skip enqueue for placeholder volume:', volume.volume_uuid);
-    return;
-  }
-  const currentMokuroVersion =
-    typeof volume.mokuro_version === 'string' ? volume.mokuro_version.trim() : '';
-  if (currentMokuroVersion !== '') {
-    console.log(
-      '[Library OCR Upgrade] Skip enqueue, volume already has OCR:',
-      volume.volume_uuid,
-      currentMokuroVersion
-    );
-    return;
-  }
-
-  const taskId = `${volume.volume_uuid}:${sidecar.fileId}`;
-  if (pendingTaskIds.has(taskId)) {
-    console.log('[Library OCR Upgrade] Skip enqueue duplicate task:', taskId);
-    return;
-  }
-  pendingTaskIds.add(taskId);
-
-  queuedTasks.push({
-    kind: 'library',
-    volumeUuid: volume.volume_uuid,
-    libraryId: sidecar.libraryId,
-    sidecar
-  });
-  console.log(
-    '[Library OCR Upgrade] Enqueued task:',
-    taskId,
-    `${volume.series_title}/${volume.volume_title}`,
-    'queueLength=',
-    queuedTasks.length
-  );
-
-  void processQueue();
 }
 
 export function enqueueCloudOcrUpgrade(
@@ -253,17 +182,14 @@ export function enqueueCloudOcrUpgrade(
   sidecar: CloudVolumeWithProvider
 ): void {
   if (volume.isPlaceholder) {
-    console.log(
-      '[Library OCR Upgrade] Skip cloud enqueue for placeholder volume:',
-      volume.volume_uuid
-    );
+    console.log('[Cloud OCR Upgrade] Skip enqueue for placeholder volume:', volume.volume_uuid);
     return;
   }
   const currentMokuroVersion =
     typeof volume.mokuro_version === 'string' ? volume.mokuro_version.trim() : '';
   if (currentMokuroVersion !== '') {
     console.log(
-      '[Library OCR Upgrade] Skip cloud enqueue, volume already has OCR:',
+      '[Cloud OCR Upgrade] Skip enqueue, volume already has OCR:',
       volume.volume_uuid,
       currentMokuroVersion
     );
@@ -272,19 +198,18 @@ export function enqueueCloudOcrUpgrade(
 
   const taskId = `${volume.volume_uuid}:${sidecar.fileId}`;
   if (pendingTaskIds.has(taskId)) {
-    console.log('[Library OCR Upgrade] Skip cloud enqueue duplicate task:', taskId);
+    console.log('[Cloud OCR Upgrade] Skip enqueue duplicate task:', taskId);
     return;
   }
   pendingTaskIds.add(taskId);
 
   queuedTasks.push({
-    kind: 'cloud',
     volumeUuid: volume.volume_uuid,
     provider: sidecar.provider,
     sidecar
   });
   console.log(
-    '[Library OCR Upgrade] Enqueued cloud task:',
+    '[Cloud OCR Upgrade] Enqueued task:',
     taskId,
     `${volume.series_title}/${volume.volume_title}`,
     'queueLength=',

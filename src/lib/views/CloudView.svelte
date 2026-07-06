@@ -21,6 +21,8 @@
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
   import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
+  import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
+  import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -42,6 +44,22 @@
   let webdavNeedsAttention = $derived(
     $providerStatusStore.providers['webdav']?.needsAttention || false
   );
+  let filesystemAuth = $derived(
+    $providerStatusStore.providers['filesystem']?.isAuthenticated || false
+  );
+  let filesystemNeedsReconnect = $derived(
+    ($providerStatusStore.providers['filesystem']?.hasStoredCredentials ?? false) &&
+      !($providerStatusStore.providers['filesystem']?.isAuthenticated ?? false)
+  );
+
+  let filesystemLoading = $state(false);
+  let filesystemSupported = $state(false);
+
+  let onedriveAuth = $derived($providerStatusStore.providers['onedrive']?.isAuthenticated || false);
+  let onedriveNeedsAttention = $derived(
+    $providerStatusStore.providers['onedrive']?.needsAttention || false
+  );
+  let onedriveLoading = $state(false);
 
   // Use active_cloud_provider key (via currentProviderType) for UI state
   // This properly clears on logout unlike hasStoredCredentials
@@ -59,12 +77,19 @@
   // Show the connected provider UI only for a usable session.
   let hasAnyProvider = $derived(currentProvider !== null && !webdavNeedsReLogin);
 
-  // Provider display names
-  const providerNames: Record<ProviderType, string> = {
-    'google-drive': 'Google Drive',
-    mega: 'MEGA Cloud Storage',
-    webdav: 'WebDAV Server'
-  };
+  // Sync/Backup/Profile actions are pointless while the session is unusable —
+  // mirror the webdav read-only gate for the two reconnect states.
+  let providerActionsUnavailable = $derived(
+    (currentProvider === 'webdav' && webdavIsReadOnly) ||
+      (currentProvider === 'filesystem' && filesystemNeedsReconnect) ||
+      (currentProvider === 'onedrive' && onedriveNeedsAttention)
+  );
+
+  // Without a client id the OneDrive login can only throw — hide the option.
+  const onedriveConfigured = !!import.meta.env.VITE_ONEDRIVE_CLIENT_ID;
+
+  // Provider display names (shared module keeps all provider maps in sync)
+  const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
   // Provider info
   const providerInfo = {
@@ -85,9 +110,25 @@
     },
     webdav: {
       items: [
-        'Compatible with Nextcloud, ownCloud, and NAS devices',
+        'Compatible with Mokuro-Bunko, Nextcloud, ownCloud, and NAS devices',
         'Persistent login (no re-authentication needed)',
         'Self-hosted and private'
+      ]
+    },
+    filesystem: {
+      items: [
+        'Uses a folder on this device',
+        'Works offline — no account needed',
+        'Browser-quota limited (not your disk free space)',
+        'Chromium browsers only (Chrome, Edge, etc.)'
+      ]
+    },
+    onedrive: {
+      items: [
+        'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
+        'Works with personal accounts (outlook.com) and work/school accounts',
+        'Persistent login (no re-authentication needed)',
+        'Encrypted in transit and at rest'
       ]
     }
   };
@@ -153,7 +194,8 @@
   // Reactively fetch storage quota when provider auth state changes
   $effect(() => {
     // Track auth state for any provider
-    const isAuthenticated = googleDriveAuth || megaAuth || webdavAuth;
+    const isAuthenticated =
+      googleDriveAuth || megaAuth || webdavAuth || filesystemAuth || onedriveAuth;
 
     if (isAuthenticated) {
       fetchStorageQuota();
@@ -311,6 +353,7 @@
   }
 
   onMount(async () => {
+    filesystemSupported = isFilesystemProviderSupported();
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
@@ -424,6 +467,85 @@
     }
   }
 
+  async function handleFilesystemLogin() {
+    filesystemLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('filesystem');
+      await provider.login();
+      await providerManager.setCurrentProvider(provider);
+      showSnackbar('Connected to local folder - loading data...');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      providerManager.updateStatus();
+      showSnackbar('Local folder connected');
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      showSnackbar(message);
+    } finally {
+      filesystemLoading = false;
+    }
+  }
+
+  async function handleOneDriveLogin() {
+    onedriveLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('onedrive');
+      await provider.login();
+      await providerManager.setCurrentProvider(provider);
+      showSnackbar('Connected to OneDrive - loading data...');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      providerManager.updateStatus();
+      showSnackbar('OneDrive connected');
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      showSnackbar(message);
+    } finally {
+      onedriveLoading = false;
+    }
+  }
+
+  async function handleOneDriveReconnect() {
+    onedriveLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('onedrive');
+      if (!provider.reauthenticate) {
+        throw new Error('Provider does not support reconnect');
+      }
+      await provider.reauthenticate();
+      providerManager.updateStatus();
+      showSnackbar('OneDrive reconnected');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Reconnect failed';
+      showSnackbar(message);
+    } finally {
+      onedriveLoading = false;
+    }
+  }
+
+  async function handleFilesystemReconnect() {
+    filesystemLoading = true;
+    try {
+      const provider = await providerManager.getOrLoadProvider('filesystem');
+      if (!provider.reauthenticate) {
+        throw new Error('Provider does not support reconnect');
+      }
+      await provider.reauthenticate();
+      await providerManager.setCurrentProvider(provider);
+      providerManager.updateStatus();
+      showSnackbar('Local folder reconnected');
+      await unifiedCloudManager.fetchAllCloudVolumes();
+      await handlePostLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Reconnect failed';
+      showSnackbar(message);
+    } finally {
+      filesystemLoading = false;
+    }
+  }
+
   // Unified logout handler - all providers use providerManager.logout()
   // (Storage quota is cleared reactively via $effect when auth state changes)
   async function handleLogout() {
@@ -446,6 +568,10 @@
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
       showSnackbar('Logged out of Google Drive');
+    } else if (provider === 'filesystem') {
+      showSnackbar('Local folder disconnected');
+    } else if (provider === 'onedrive') {
+      showSnackbar('Logged out of OneDrive');
     }
   }
 
@@ -512,72 +638,6 @@
   }
 
   // Browser detection and settings URL generation
-  function getBrowserInfo() {
-    const ua = navigator.userAgent;
-    const isChrome = /Chrome/.test(ua) && /Google Inc/.test(navigator.vendor);
-    const isEdge = /Edg/.test(ua);
-    const isFirefox = /Firefox/.test(ua);
-    const isSafari = /Safari/.test(ua) && !/Chrome/.test(ua);
-
-    // Get current site URL for settings
-    const siteUrl = encodeURIComponent(window.location.origin);
-
-    if (isEdge) {
-      return {
-        name: 'Edge',
-        settingsUrl: `edge://settings/content/siteDetails?site=${siteUrl}`,
-        instructions: [
-          'Click the link below to copy the Edge settings URL',
-          'Paste it into your address bar and press Enter',
-          'Toggle "Pop-ups and redirects" to "Allow"',
-          'Return here and click the test button to verify'
-        ]
-      };
-    } else if (isChrome) {
-      return {
-        name: 'Chrome',
-        settingsUrl: `chrome://settings/content/siteDetails?site=${siteUrl}`,
-        instructions: [
-          'Click the link below to copy the Chrome settings URL',
-          'Paste it into your address bar and press Enter',
-          'Toggle "Pop-ups and redirects" to "Allow"',
-          'Return here and click the test button to verify'
-        ]
-      };
-    } else if (isFirefox) {
-      return {
-        name: 'Firefox',
-        settingsUrl: 'about:preferences#privacy',
-        instructions: [
-          'Click the permissions icon (🔒) in the address bar',
-          'Find "Open pop-up windows" and change to "Allow"',
-          'Or: Settings → Privacy & Security → Permissions → Pop-ups → Exceptions'
-        ]
-      };
-    } else if (isSafari) {
-      return {
-        name: 'Safari',
-        settingsUrl: null,
-        instructions: [
-          'Safari → Settings → Websites → Pop-up Windows',
-          'Find this website in the list',
-          'Change setting to "Allow"'
-        ]
-      };
-    } else {
-      return {
-        name: 'Unknown',
-        settingsUrl: null,
-        instructions: [
-          'Click the popup blocked icon in your address bar',
-          'Select "Always allow popups from this site"',
-          'Click the test button below to verify it works'
-        ]
-      };
-    }
-  }
-
-  let browserInfo = $derived(getBrowserInfo());
 
   async function backupAllSeries() {
     // Get default provider
@@ -722,6 +782,25 @@
             </form>
           </div>
 
+          <!-- OneDrive Option (hidden unless VITE_ONEDRIVE_CLIENT_ID is configured) -->
+          {#if onedriveConfigured}
+            <button
+              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={handleOneDriveLogin}
+              disabled={onedriveLoading}
+            >
+              <div class="flex items-center gap-4">
+                <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
+                <div class="flex-1 text-left">
+                  <div class="text-lg font-semibold">OneDrive</div>
+                  <div class="text-sm text-gray-400">
+                    5GB free • Personal or work/school • Persistent login
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/if}
+
           <!-- WebDAV Option -->
           <button
             class="border-opacity-50 w-full rounded-lg border border-gray-700 p-6 transition-colors hover:bg-gray-800"
@@ -733,7 +812,9 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
-                <div class="text-sm text-gray-400">Nextcloud, ownCloud, NAS • Persistent login</div>
+                <div class="text-sm text-gray-400">
+                  Mokuro-Bunko, Nextcloud, NAS • Persistent login
+                </div>
               </div>
             </div>
           </button>
@@ -775,6 +856,25 @@
               </Button>
             </form>
           </div>
+
+          <!-- Local Folder Option (Chromium-only) -->
+          {#if filesystemSupported}
+            <button
+              class="border-opacity-50 w-full rounded-lg border border-slate-600 p-6 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={handleFilesystemLogin}
+              disabled={filesystemLoading}
+            >
+              <div class="flex items-center gap-4">
+                <div class="flex h-8 w-8 items-center justify-center text-2xl">📁</div>
+                <div class="flex-1 text-left">
+                  <div class="text-lg font-semibold">Local Folder</div>
+                  <div class="text-sm text-gray-400">
+                    Any folder on this device • Offline • No account
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -799,6 +899,50 @@
             </div>
             <Button color="red" onclick={handleLogout}>Log out</Button>
           </div>
+
+          {#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
+            <Alert color="yellow" class="mb-4">
+              {#snippet icon()}
+                <InfoCircleSolid class="h-5 w-5" />
+              {/snippet}
+              <div class="flex flex-col gap-2">
+                <span>
+                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser
+                  access to the folder you chose previously.
+                </span>
+                <Button
+                  size="xs"
+                  color="yellow"
+                  onclick={handleFilesystemReconnect}
+                  disabled={filesystemLoading}
+                >
+                  {filesystemLoading ? 'Reconnecting...' : 'Reconnect folder'}
+                </Button>
+              </div>
+            </Alert>
+          {/if}
+
+          {#if currentProvider === 'onedrive' && onedriveNeedsAttention}
+            <Alert color="yellow" class="mb-4">
+              {#snippet icon()}
+                <InfoCircleSolid class="h-5 w-5" />
+              {/snippet}
+              <div class="flex flex-col gap-2">
+                <span>
+                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect
+                  to continue syncing.
+                </span>
+                <Button
+                  size="xs"
+                  color="yellow"
+                  onclick={handleOneDriveReconnect}
+                  disabled={onedriveLoading}
+                >
+                  {onedriveLoading ? 'Reconnecting...' : 'Reconnect OneDrive'}
+                </Button>
+              </div>
+            </Alert>
+          {/if}
 
           {#if currentProvider === 'webdav' && webdavIsReadOnly}
             <Alert color="yellow" class="mb-4">
@@ -899,77 +1043,26 @@
                   </Toggle>
                 </div>
                 <p class="text-xs text-gray-500">
-                  Keeps your progress synced during long reading sessions. Automatically prompts
-                  re-authentication when your session expires (~1 hour).
+                  Streamlines reconnection to a single click so read progress keeps syncing. Without
+                  it, syncing stops silently when your Google session expires (~1 hour) until you
+                  reconnect manually.
                 </p>
 
                 {#if $miscSettings.gdriveAutoReAuth}
-                  <div class="mt-2 rounded-lg border border-yellow-700/50 bg-yellow-900/30 p-3">
-                    <h4 class="mb-2 text-sm font-semibold text-yellow-200">
-                      ⚠️ Popup Permission Required ({browserInfo.name})
-                    </h4>
-                    <p class="mb-3 text-xs text-gray-300">
-                      For auto re-authentication to work, you must allow popups for this site.
-                      Otherwise, the browser will block automatic re-authentication attempts.
+                  <div
+                    class="mt-2 rounded-lg border border-blue-700/50 bg-blue-900/30 p-3 text-xs text-gray-300"
+                  >
+                    <p class="mb-1 font-semibold text-blue-200">How reconnection works</p>
+                    <p>
+                      Google sessions last about an hour. When yours expires, the app asks Google to
+                      reconnect at the moments that matter — opening the app, opening a book, or
+                      your next click — and the Google account chooser appears. One click on your
+                      account resumes syncing and pulls your latest progress.
                     </p>
-                    <div class="mb-3 space-y-1 text-xs text-gray-300">
-                      <p class="font-medium">To enable popups:</p>
-                      <ol class="list-inside list-decimal space-y-1 pl-2">
-                        {#each browserInfo.instructions as instruction}
-                          <li>{instruction}</li>
-                        {/each}
-                      </ol>
-                      {#if browserInfo.settingsUrl}
-                        <div class="mt-2">
-                          <p class="text-xs text-gray-400">
-                            <span
-                              role="button"
-                              tabindex="0"
-                              class="cursor-pointer font-mono text-yellow-400 underline hover:text-yellow-300"
-                              onclick={() => {
-                                navigator.clipboard.writeText(browserInfo.settingsUrl);
-                                showSnackbar(`Copied! Paste this into your address bar`);
-                              }}
-                              onkeydown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  navigator.clipboard.writeText(browserInfo.settingsUrl);
-                                  showSnackbar(`Copied! Paste this into your address bar`);
-                                }
-                              }}
-                            >
-                              {browserInfo.settingsUrl}
-                            </span>
-                          </p>
-                        </div>
-                      {/if}
-                    </div>
-                    <Button
-                      size="xs"
-                      color="yellow"
-                      onclick={() => {
-                        showSnackbar(
-                          'Testing in 5 seconds... Do NOT click or interact until the popup appears!'
-                        );
-                        // Use 5 second timeout to escape Chrome's user gesture window (~2-5 seconds)
-                        // This properly tests if popups are allowed for true background triggers (like auto re-auth)
-                        setTimeout(() => {
-                          triggerGoogleReauth()
-                            .then(() => {
-                              showSnackbar(
-                                '✅ Test triggered - if you see the Google auth popup, popups are allowed!'
-                              );
-                            })
-                            .catch(() => {
-                              showSnackbar(
-                                '❌ Test failed - popup was blocked! Please enable popups for this site.'
-                              );
-                            });
-                        }, 5000);
-                      }}
-                    >
-                      Test Popup Permission
-                    </Button>
+                    <p class="mt-1">
+                      Closing Google's dialog means "keep reading without sync": progress stays
+                      local until you hit the red Reconnect button in the top bar.
+                    </p>
                   </div>
                 {/if}
               </div>
@@ -981,7 +1074,7 @@
                 <Spinner size="6" />
                 <span class="text-gray-400">Loading cloud data...</span>
               </div>
-            {:else if !(currentProvider === 'webdav' && webdavIsReadOnly)}
+            {:else if !providerActionsUnavailable}
               <!-- Sync read progress button -->
               <Button
                 color="dark"

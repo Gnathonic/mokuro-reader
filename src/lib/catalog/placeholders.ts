@@ -2,7 +2,7 @@ import type { VolumeMetadata } from '$lib/types';
 import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import { enqueueCloudOcrUpgrade } from '$lib/util/libraries/library-ocr-upgrade-queue';
+import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
 
 /**
  * Extract series title from description field

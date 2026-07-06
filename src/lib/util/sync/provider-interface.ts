@@ -5,7 +5,7 @@
  * This allows for a unified sync experience across different cloud storage backends.
  */
 
-export type ProviderType = 'google-drive' | 'mega' | 'webdav';
+export type ProviderType = 'google-drive' | 'mega' | 'webdav' | 'filesystem' | 'onedrive';
 
 /**
  * Pseudo-provider for local browser downloads (not a real sync provider)
@@ -25,7 +25,13 @@ export type BackupProviderType = ProviderType | PseudoProviderType;
  * Type guard to check if a provider is a real sync provider
  */
 export function isRealProvider(provider: BackupProviderType): provider is ProviderType {
-  return provider === 'google-drive' || provider === 'mega' || provider === 'webdav';
+  return (
+    provider === 'google-drive' ||
+    provider === 'mega' ||
+    provider === 'webdav' ||
+    provider === 'filesystem' ||
+    provider === 'onedrive'
+  );
 }
 
 /**
@@ -187,10 +193,35 @@ export interface WebDAVFileMetadata extends CloudFileMetadata {
 }
 
 /**
+ * Filesystem (File System Access API) specific metadata
+ * Extends base with no additional fields — path acts as the identifier.
+ */
+export interface FilesystemFileMetadata extends CloudFileMetadata {
+  provider: 'filesystem';
+}
+
+/**
+ * OneDrive (Microsoft Graph) specific metadata.
+ * `fileId` holds the opaque Graph driveItem.id.
+ */
+export interface OneDriveFileMetadata extends CloudFileMetadata {
+  provider: 'onedrive';
+  /** Parent folder driveItem id (useful for move/rename) */
+  parentId?: string;
+  /** Entity tag for conditional updates */
+  etag?: string;
+}
+
+/**
  * Discriminated union of all cloud file metadata types
  * Use this when you need to handle any provider's metadata
  */
-export type AnyCloudFileMetadata = DriveFileMetadata | MegaFileMetadata | WebDAVFileMetadata;
+export type AnyCloudFileMetadata =
+  | DriveFileMetadata
+  | MegaFileMetadata
+  | WebDAVFileMetadata
+  | FilesystemFileMetadata
+  | OneDriveFileMetadata;
 
 export interface SyncProvider {
   /** Provider type identifier */
@@ -205,6 +236,13 @@ export interface SyncProvider {
    * - false: Main thread must download, workers decompress only (MEGA)
    */
   readonly supportsWorkerDownload: boolean;
+
+  /**
+   * Indicates if this provider supports uploads in web workers.
+   * - true: Workers compress + upload (Google Drive, MEGA, WebDAV)
+   * - false: Main thread must compress + upload (filesystem: handle is window-bound)
+   */
+  readonly supportsWorkerUpload: boolean;
 
   /**
    * Maximum concurrent upload operations for this provider

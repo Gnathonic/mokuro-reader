@@ -14,9 +14,7 @@
     cloud: () => import('$lib/views/CloudView.svelte'),
     upload: () => import('$lib/views/UploadView.svelte'),
     'reading-speed': () => import('$lib/views/ReadingSpeedView.svelte'),
-    'merge-series': () => import('$lib/views/MergeSeriesView.svelte'),
-    libraries: () => import('$lib/views/LibraryManagerView.svelte'),
-    'add-library': () => import('$lib/views/AddLibraryView.svelte')
+    'merge-series': () => import('$lib/views/MergeSeriesView.svelte')
   };
 
   let CurrentComponent: Component | null = $state(null);

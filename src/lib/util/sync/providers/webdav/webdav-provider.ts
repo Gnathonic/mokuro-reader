@@ -14,6 +14,7 @@ import { webdavAuthOptions } from '../../core/providers/webdav-auth';
 import { basicAuthHeader } from '$lib/util/base64';
 import { fetchServerIdentity, type ServerPermissions } from './identity';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
+import { isSyncableFile } from '../../syncable-file';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -35,6 +36,7 @@ export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
   readonly name = 'WebDAV';
   readonly supportsWorkerDownload = true; // Workers can download directly with Basic Auth
+  readonly supportsWorkerUpload = true;
   readonly uploadConcurrencyLimit = 8; // WebDAV servers can typically handle more concurrent connections
   readonly downloadConcurrencyLimit = 8;
 
@@ -681,16 +683,8 @@ export class WebDAVProvider implements SyncProvider {
             // Recurse into subdirectories
             await processFolder(item.filename);
           } else {
-            const name = item.basename.toLowerCase();
             // Include CBZ files, sidecars, and JSON config files
-            if (
-              name.endsWith('.cbz') ||
-              name.endsWith('.mokuro') ||
-              name.endsWith('.mokuro.gz') ||
-              /\.(webp|jpe?g)$/i.test(name) ||
-              item.basename === 'volume-data.json' ||
-              item.basename === 'profiles.json'
-            ) {
+            if (isSyncableFile(item.basename)) {
               // Build relative path from mokuro folder
               const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
 
@@ -743,16 +737,8 @@ export class WebDAVProvider implements SyncProvider {
 
     for (const item of contents) {
       if (item.type === 'file') {
-        const name = item.basename.toLowerCase();
         // Include CBZ files, sidecars, and JSON config files
-        if (
-          name.endsWith('.cbz') ||
-          name.endsWith('.mokuro') ||
-          name.endsWith('.mokuro.gz') ||
-          /\.(webp|jpe?g)$/i.test(name) ||
-          item.basename === 'volume-data.json' ||
-          item.basename === 'profiles.json'
-        ) {
+        if (isSyncableFile(item.basename)) {
           // Build relative path from mokuro folder
           const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
 

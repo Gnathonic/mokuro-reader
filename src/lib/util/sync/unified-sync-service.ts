@@ -7,12 +7,6 @@ import {
   parseVolumesFromJson,
   migrateProfiles
 } from '$lib/settings';
-import {
-  librariesStore,
-  importLibraries,
-  exportLibraries,
-  type LibraryConfig
-} from '$lib/settings/libraries';
 import { showSnackbar } from '../snackbar';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
@@ -211,15 +205,11 @@ class UnifiedSyncService {
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
-      // Optionally sync profiles and libraries
+      // Optionally sync profiles
       if (options.syncProfiles) {
         console.log('🔄 options.syncProfiles is true, calling syncProfiles...');
         await this.syncProfiles(provider);
         console.log('✅ syncProfiles completed');
-
-        console.log('🔄 Syncing libraries...');
-        await this.syncLibraries(provider);
-        console.log('✅ Libraries synced');
       } else {
         console.log('⏭️ Skipping profile sync (options.syncProfiles is false)');
       }
@@ -723,141 +713,6 @@ class UnifiedSyncService {
     });
 
     return merged;
-  }
-
-  /**
-   * Find libraries.json file from provider using generic cache
-   * Returns CloudFileMetadata if file exists, null otherwise
-   */
-  private findLibrariesFile(provider: SyncProvider): CloudFileMetadata | null {
-    const cache = cacheManager.getCache(provider.type);
-    if (!cache) {
-      return null;
-    }
-
-    // Query cache for libraries.json file
-    return cache.get('libraries.json');
-  }
-
-  /**
-   * Download libraries.json file from provider
-   */
-  private async downloadLibrariesFile(provider: SyncProvider): Promise<LibraryConfig[] | null> {
-    try {
-      console.log('🔎 Finding libraries.json in cache...');
-      const librariesFile = this.findLibrariesFile(provider);
-      console.log('🔎 findLibrariesFile result:', librariesFile);
-
-      if (!librariesFile) {
-        console.log('⚠️ libraries.json not found in cache, returning null');
-        return null;
-      }
-
-      console.log('⬇️ Downloading libraries.json from cloud...');
-      const blob = await provider.downloadFile(librariesFile);
-      console.log('⬇️ Downloaded blob, converting to JSON...');
-      const json = await this.blobToJson(blob);
-      console.log('✅ Successfully parsed libraries JSON:', json);
-
-      // Validate it's an array
-      if (!Array.isArray(json)) {
-        console.warn('⚠️ libraries.json is not an array, returning empty');
-        return [];
-      }
-
-      return json as LibraryConfig[];
-    } catch (error) {
-      console.error('❌ Error downloading libraries:', error);
-      // File not found is not an error
-      if (
-        error instanceof Error &&
-        (error.message.includes('not found') ||
-          error.message.includes('404') ||
-          error.message.includes('ENOENT'))
-      ) {
-        console.log('📝 Error was "not found", returning null');
-        return null;
-      }
-      console.log('🔥 Re-throwing error (not a "not found" error)');
-      throw error;
-    }
-  }
-
-  /**
-   * Upload libraries.json file to provider
-   */
-  private async uploadLibrariesFile(provider: SyncProvider, data: LibraryConfig[]): Promise<void> {
-    const blob = this.jsonToBlob(data);
-    const path = 'libraries.json';
-    await provider.uploadFile(path, blob);
-  }
-
-  /**
-   * Sync libraries with a provider
-   * Libraries are global (not per-profile) so we sync them separately
-   */
-  private async syncLibraries(provider: SyncProvider): Promise<void> {
-    console.log('🔵 syncLibraries() function called for provider:', provider.name);
-
-    // Step 1: Download cloud libraries
-    console.log('📥 Downloading cloud libraries...');
-    const cloudLibraries = await this.downloadLibrariesFile(provider);
-    console.log('📥 Downloaded cloud libraries:', cloudLibraries);
-
-    // Step 2: Get local libraries
-    const localLibraries = exportLibraries();
-    console.log('💾 Local libraries:', localLibraries);
-
-    // Step 3: Merge libraries (newest wins by library ID)
-    console.log('🔀 About to merge libraries...');
-    const mergedLibraries = this.mergeLibraries(localLibraries, cloudLibraries || []);
-    console.log('✅ Merged libraries:', mergedLibraries);
-
-    // Step 4: Update local storage
-    importLibraries(mergedLibraries);
-
-    // Step 5: Upload merged libraries if changed
-    const mergedJson = JSON.stringify(mergedLibraries);
-    const cloudJson = JSON.stringify(cloudLibraries || []);
-
-    if (mergedJson !== cloudJson) {
-      console.log('📤 Uploading merged libraries to cloud...');
-      await this.uploadLibrariesFile(provider, mergedLibraries);
-      console.log('✅ Libraries uploaded');
-    } else {
-      console.log('⏭️ Libraries unchanged, skipping upload');
-    }
-  }
-
-  /**
-   * Merge libraries using newest-wins strategy by library ID
-   * Uses lastFetched or createdAt timestamp for conflict resolution
-   */
-  private mergeLibraries(local: LibraryConfig[], cloud: LibraryConfig[]): LibraryConfig[] {
-    const mergedMap = new Map<string, LibraryConfig>();
-
-    // Add all local libraries
-    for (const lib of local) {
-      mergedMap.set(lib.id, lib);
-    }
-
-    // Merge cloud libraries (newest wins)
-    for (const cloudLib of cloud) {
-      const existing = mergedMap.get(cloudLib.id);
-      if (!existing) {
-        mergedMap.set(cloudLib.id, cloudLib);
-      } else {
-        // Compare timestamps - use lastFetched if available, otherwise createdAt
-        const existingTime = new Date(existing.lastFetched || existing.createdAt).getTime();
-        const cloudTime = new Date(cloudLib.lastFetched || cloudLib.createdAt).getTime();
-
-        if (cloudTime > existingTime) {
-          mergedMap.set(cloudLib.id, cloudLib);
-        }
-      }
-    }
-
-    return Array.from(mergedMap.values());
   }
 }
 

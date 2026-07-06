@@ -41,6 +41,7 @@
     "eslint": "^9.21.0",
     "eslint-config-prettier": "^10.0.2",
     "eslint-plugin-svelte": "^3.0.2",
+    "fake-indexeddb": "^6.2.5",
     "flowbite": "^4.0.1",
     "flowbite-svelte": "^1.28.1",
     "flowbite-svelte-icons": "^3.0.0",
@@ -63,6 +64,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@azure/msal-browser": "^5.8.0",
     "@types/gapi": "^0.0.47",
     "@vercel/analytics": "^1.5.0",
     "@zip.js/zip.js": "^2.7.57",
