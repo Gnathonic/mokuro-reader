@@ -7,12 +7,6 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
-import {
-  libraryFilesStore,
-  libraryMokuroFilesStore,
-  generateLibraryPlaceholders
-} from '$lib/util/libraries';
-import { selectedLibraryId } from '$lib/settings/libraries';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([
@@ -80,16 +74,10 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   return () => subscription.unsubscribe();
 });
 
-// Merge local volumes with cloud placeholders and library placeholders
+// Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
-  [
-    volumes,
-    unifiedCloudManager.cloudFiles,
-    libraryFilesStore,
-    libraryMokuroFilesStore,
-    selectedLibraryId
-  ],
-  ([$volumes, $cloudFiles, $libraryFiles, $libraryMokuroFiles, $selectedLibraryId]) => {
+  [volumes, unifiedCloudManager.cloudFiles],
+  ([$volumes, $cloudFiles]) => {
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);
 
@@ -97,21 +85,6 @@ export const volumesWithPlaceholders = derived(
     if ($cloudFiles.size > 0) {
       const cloudPlaceholders = generatePlaceholders($cloudFiles, localVolumes);
       for (const placeholder of cloudPlaceholders) {
-        combined[placeholder.volume_uuid] = placeholder;
-      }
-    }
-
-    // Generate library placeholders
-    if ($libraryFiles.size > 0) {
-      // Pass all combined volumes so library placeholders don't duplicate cloud placeholders
-      const allVolumes = Object.values(combined);
-      const libraryPlaceholders = generateLibraryPlaceholders(
-        $libraryFiles,
-        $libraryMokuroFiles,
-        allVolumes,
-        $selectedLibraryId
-      );
-      for (const placeholder of libraryPlaceholders) {
         combined[placeholder.volume_uuid] = placeholder;
       }
     }

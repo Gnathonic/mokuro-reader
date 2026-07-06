@@ -112,7 +112,14 @@ Zoom settles carry a `SettleReason` (`zoom-controller.ts`): only
 | Pinch survivor | keeps panning                     | ignored until fresh press               |
 | Tap commit     | immediate                         | deferred (300 ms)                       |
 | Swipe-to-flip  | yes (mobile setting, edge-gated)  | no (panning is the scroll)              |
-| Wheel          | zoom or camera glide              | zoom or (native/strip) scroll           |
+| Wheel          | zoom, gap, or camera glide        | zoom, gap, or (native/strip) scroll     |
+
+Ctrl/meta+shift+wheel is the page-gap adjustment chord on every surface
+(paged writes `pagedGap`; scroll readers write `scrollGap` and sync
+`pageDividers`), checked before the zoom intent. Binding rule: wheel combos
+with a native browser meaning keep that meaning tuned for the reader
+(ctrl+wheel zooms, shift+wheel stays a horizontal pan); the gap chord is
+deliberately one no browser binds.
 
 ## Testing
 

@@ -40,6 +40,13 @@ describe('theme migration', () => {
   });
 });
 
+describe('pagedGap migration', () => {
+  it('fills pagedGap with its default for profiles saved before the setting existed', () => {
+    const migrated = migrateProfiles({ Default: { dark: true } } as any);
+    expect(migrated.Default.pagedGap).toBe(0);
+  });
+});
+
 describe('grayscaleActive', () => {
   beforeEach(() => {
     // Known baseline: manual mode, filter off

@@ -119,6 +119,39 @@ export function normalizeWheelDelta(deltaY: number, deltaMode: number): number {
   return deltaY;
 }
 
+/** Upper bound shared by the gap sliders and the wheel chord (px). */
+export const MAX_PAGE_GAP = 100;
+
+/** Wheel px per 1px of gap: one classic ~100px notch adjusts by 5px. */
+export const GAP_WHEEL_STEP_SIZE = 20;
+
+/**
+ * Whether a wheel event means "adjust the page gap": ctrl/meta+shift+wheel.
+ * Checked BEFORE the zoom intent — combos with a native browser meaning
+ * (ctrl+wheel zoom, shift+wheel horizontal scroll) keep that meaning tuned
+ * for the reader; the gap chord is unbound in every major browser.
+ */
+export function wheelIntentIsGapAdjust(
+  e: Pick<WheelEvent, 'ctrlKey' | 'metaKey' | 'shiftKey'>
+): boolean {
+  return (e.ctrlKey || e.metaKey) && e.shiftKey;
+}
+
+/**
+ * Signed gap change (px) for a gap-adjust wheel event; positive widens
+ * (wheel up). With shift held Chromium reports the notch in deltaX while
+ * Firefox keeps deltaY — read whichever is nonzero. Feed each surface's own
+ * WheelAccumulator(GAP_WHEEL_STEP_SIZE) so trackpad streams accumulate
+ * instead of stalling below one step.
+ */
+export function gapWheelSteps(
+  e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode' | 'timeStamp'>,
+  acc: WheelAccumulator
+): number {
+  const raw = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+  return acc.add(normalizeWheelDelta(raw, e.deltaMode), e.timeStamp);
+}
+
 /**
  * Accumulates normalized wheel deltas into discrete zoom level steps.
  *

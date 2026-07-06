@@ -468,5 +468,156 @@ export function layoutLines(
       height
     });
   }
+
+  enforceNoOverlap(block, layouts, measured, wraps);
   return layouts;
+}
+
+/** Overlaps up to this much are treated as already separate (float slop). */
+const OVERLAP_EPS = 0.5;
+
+/**
+ * Final invariant: rendered text must never overlap — whatever the quads
+ * claim, two visible lines painting the same pixels is a wrong layout
+ * (OPM 28 p136/p176: offset re-captures under the RECAPTURE_OVERLAP gate,
+ * and a slant-inflated suspect bbox swallowing its clean neighbors).
+ *
+ * Clean single-column lines hold their ground; suspect/wrapped/banded lines
+ * are clipped around every clean rect they touch and re-wrap in the widest
+ * space that remains — for a slant-inflated quad that recovers the true
+ * column between its neighbors. Equal-trust collisions first try nudging
+ * apart within their own quads (uniform size preserved; first round only,
+ * since nudging is the one move that claims new ground), then split the
+ * contested span at its midpoint. Every clip yields a subset of the previous
+ * extent, so resolution never creates a new overlap and converges.
+ */
+function enforceNoOverlap(
+  block: LayoutBlock,
+  layouts: LineLayout[],
+  measured: {
+    advanceEm: number;
+    suspect: boolean;
+    bbox: { minX: number; minY: number; maxX: number; maxY: number };
+    hidden: boolean;
+    slice?: unknown;
+  }[],
+  wraps: boolean[]
+): void {
+  const vertical = block.vertical;
+  type Span = [number, number];
+  // 2 = clean, correctly-placed column; 1 = suspect/wrapped/banded (its
+  // placement already involved guessing); -1 = hidden.
+  const trust = measured.map((m, i) => (m.hidden ? -1 : m.suspect || wraps[i] || m.slice ? 1 : 2));
+
+  const crossSpan = (i: number): Span => {
+    const l = layouts[i];
+    if (l.wrap) return vertical ? [l.left, l.left + l.width] : [l.top, l.top + l.height];
+    return vertical ? [l.left, l.left + l.fontSize] : [l.top, l.top + l.fontSize];
+  };
+  const mainSpan = (i: number): Span => {
+    const l = layouts[i];
+    if (l.wrap) return vertical ? [l.top, l.top + l.height] : [l.left, l.left + l.width];
+    const advance = measured[i].advanceEm * l.fontSize;
+    return vertical ? [l.top, l.top + advance] : [l.left, l.left + advance];
+  };
+  const spanOverlap = (a: Span, b: Span) => Math.min(a[1], b[1]) - Math.max(a[0], b[0]);
+  /** Cross-axis overlap when the rendered rects truly intersect, else 0. */
+  const collision = (i: number, j: number): number => {
+    if (trust[i] < 0 || trust[j] < 0) return 0;
+    if (spanOverlap(mainSpan(i), mainSpan(j)) <= OVERLAP_EPS) return 0;
+    return spanOverlap(crossSpan(i), crossSpan(j));
+  };
+  /** Clip line i's cross extent to `span` and refit its text inside. */
+  const setCrossSpan = (i: number, span: Span) => {
+    const l = layouts[i];
+    const size = Math.max(span[1] - span[0], MIN_FONT_SIZE);
+    if (l.wrap) {
+      const main = vertical ? l.height : l.width;
+      l.fontSize = Math.max(
+        MIN_FONT_SIZE,
+        wrapFitSize(l.fontSize, measured[i].advanceEm, main, size)
+      );
+      if (vertical) {
+        l.left = span[0];
+        l.width = size;
+      } else {
+        l.top = span[0];
+        l.height = size;
+      }
+    } else {
+      l.fontSize = Math.min(l.fontSize, size);
+      const center = (span[0] + span[1]) / 2;
+      if (vertical) l.left = center - l.fontSize / 2;
+      else l.top = center - l.fontSize / 2;
+    }
+  };
+
+  for (let iter = 0; iter < 4; iter++) {
+    let dirty = false;
+
+    // Lower-trust lines yield to every clean rect they touch: subtract all
+    // of them from the line's extent and keep the widest surviving gap.
+    for (let i = 0; i < layouts.length; i++) {
+      if (trust[i] !== 1) continue;
+      const mine = crossSpan(i);
+      let segments: Span[] = [mine];
+      let clipped = false;
+      for (let j = 0; j < layouts.length; j++) {
+        if (trust[j] !== 2 || collision(i, j) <= OVERLAP_EPS) continue;
+        const other = crossSpan(j);
+        const next: Span[] = [];
+        for (const s of segments) {
+          if (other[0] > s[0]) next.push([s[0], Math.min(s[1], other[0])]);
+          if (other[1] < s[1]) next.push([Math.max(s[0], other[1]), s[1]]);
+        }
+        segments = next;
+        clipped = true;
+      }
+      if (!clipped) continue;
+      segments.sort((a, b) => b[1] - b[0] - (a[1] - a[0]));
+      setCrossSpan(i, segments[0] ?? [mine[0], mine[0] + MIN_FONT_SIZE]);
+      dirty = true;
+    }
+
+    // Equal-trust collisions: nudge apart within the quads' own slack on the
+    // first round, else split the contested span at its midpoint.
+    for (let i = 0; i < layouts.length; i++) {
+      for (let j = i + 1; j < layouts.length; j++) {
+        if (trust[i] < 0 || trust[i] !== trust[j]) continue;
+        const overlap = collision(i, j);
+        if (overlap <= OVERLAP_EPS) continue;
+        const a = crossSpan(i);
+        const b = crossSpan(j);
+        const [lo, hi] = a[0] + a[1] <= b[0] + b[1] ? [i, j] : [j, i];
+        const loSpan = lo === i ? a : b;
+        const hiSpan = hi === i ? a : b;
+        const quadSpan = (k: number): Span => {
+          const q = measured[k].bbox;
+          return vertical
+            ? [q.minX - block.box[0], q.maxX - block.box[0]]
+            : [q.minY - block.box[1], q.maxY - block.box[1]];
+        };
+        const loSlack = Math.max(0, loSpan[0] - quadSpan(lo)[0]);
+        const hiSlack = Math.max(0, quadSpan(hi)[1] - hiSpan[1]);
+        if (iter === 0 && !layouts[lo].wrap && !layouts[hi].wrap && loSlack + hiSlack >= overlap) {
+          const shiftLo = Math.min(loSlack, Math.max(overlap / 2, overlap - hiSlack));
+          const shiftHi = overlap - shiftLo;
+          if (vertical) {
+            layouts[lo].left -= shiftLo;
+            layouts[hi].left += shiftHi;
+          } else {
+            layouts[lo].top -= shiftLo;
+            layouts[hi].top += shiftHi;
+          }
+        } else {
+          const mid = (Math.max(loSpan[0], hiSpan[0]) + Math.min(loSpan[1], hiSpan[1])) / 2;
+          setCrossSpan(lo, [loSpan[0], mid]);
+          setCrossSpan(hi, [mid, hiSpan[1]]);
+        }
+        dirty = true;
+      }
+    }
+
+    if (!dirty) break;
+  }
 }

@@ -45,6 +45,7 @@
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { PROVIDER_SHORT_LABELS } from '$lib/util/sync/provider-display';
   import { providerManager } from '$lib/util/sync';
   import { backupQueue } from '$lib/util/backup-queue';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
@@ -473,7 +474,7 @@
       const providerType = cloudFile.provider;
       try {
         await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
-        const providerName = providerType === 'google-drive' ? 'Drive' : providerType;
+        const providerName = PROVIDER_SHORT_LABELS[providerType];
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Delete failed:', error);

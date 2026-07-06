@@ -12,7 +12,8 @@
     getCloudSize,
     getCloudModifiedTime
   } from '$lib/util/cloud-fields';
-  import type { ProviderType, CloudFileMetadata } from '$lib/util/sync/provider-interface';
+  import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+  import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '$lib/util/sync/provider-display';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
 
   interface Props {
@@ -36,46 +37,8 @@
     return `${mb} MB`;
   });
 
-  // Provider display helpers
-  function getProviderDisplayName(provider: ProviderType): string {
-    switch (provider) {
-      case 'google-drive':
-        return 'Drive';
-      case 'mega':
-        return 'MEGA';
-      case 'webdav':
-        return 'WebDAV';
-      default:
-        return 'Cloud';
-    }
-  }
-
-  type BadgeColor =
-    | 'blue'
-    | 'purple'
-    | 'green'
-    | 'gray'
-    | 'red'
-    | 'yellow'
-    | 'primary'
-    | 'pink'
-    | 'indigo';
-
-  function getProviderBadgeColor(provider: ProviderType): BadgeColor {
-    switch (provider) {
-      case 'google-drive':
-        return 'blue';
-      case 'mega':
-        return 'purple';
-      case 'webdav':
-        return 'green';
-      default:
-        return 'gray';
-    }
-  }
-
-  const providerName = cloudProvider ? getProviderDisplayName(cloudProvider) : 'Cloud';
-  const badgeColor = cloudProvider ? getProviderBadgeColor(cloudProvider) : 'gray';
+  const providerName = cloudProvider ? PROVIDER_SHORT_LABELS[cloudProvider] : 'Cloud';
+  const badgeColor = cloudProvider ? PROVIDER_BADGE_COLORS[cloudProvider] : 'gray';
 
   // Track queue state
   let queueState = $state($downloadQueue);

@@ -90,13 +90,15 @@ describe('TextBoxes auto mode with lines_coords', () => {
     expect(spans).toHaveLength(3);
 
     // first line: its quad captured a neighbor's ruby ink (60px wide for
-    // ~19px glyphs) → wraps inside the full quad bbox at the reference size
+    // ~19px glyphs) → wraps at the reference size inside its quad bbox,
+    // clipped off the neighboring column's rendered edge (the no-overlap
+    // invariant trims the first ~2.7px)
     expect(spans[0].classList.contains('wrappedLine')).toBe(true);
-    expect(spans[0].style.left).toBe('80px');
+    expect(parseFloat(spans[0].style.left)).toBeCloseTo(82.6, 0);
     expect(spans[0].style.top).toBe('0px');
-    expect(spans[0].style.width).toBe('60px');
+    expect(parseFloat(spans[0].style.width)).toBeCloseTo(57.4, 0);
     expect(spans[0].style.height).toBe('175px');
-    expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(30, 1);
+    expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(28.7, 1);
 
     // remaining lines: clean columns, no wrapping container
     expect(spans[1].classList.contains('wrappedLine')).toBe(false);

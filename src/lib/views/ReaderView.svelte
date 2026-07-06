@@ -2,12 +2,37 @@
   import Reader from '$lib/components/Reader/Reader.svelte';
   import Timer from '$lib/components/Reader/Timer.svelte';
   import { effectiveVolumeSettings, initializeVolume, settings, volumes } from '$lib/settings';
+  import { miscSettings } from '$lib/settings/misc';
   import { onMount } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { Spinner } from 'flowbite-svelte';
   import { routeParams } from '$lib/util/hash-router';
+  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 
   let volumeId = $derived($routeParams.volume || '');
+
+  // Opening a book with an expired Google session: request reconnection NOW,
+  // before page turns stamp fresh local timestamps that would win the
+  // newest-wins merge and clobber progress made on another device. The
+  // navigation click's activation usually lets the account chooser open
+  // immediately; if not, the blocked-popup path arms a next-click retry.
+  // Closing Google's dialog IS the "read anyway" choice — no extra dialog.
+  let gdriveReauthRequested = false;
+  $effect(() => {
+    if (!volumeId) return;
+    if (!$miscSettings.gdriveAutoReAuth) return;
+    const active = unifiedCloudManager.getActiveProvider();
+    if (active?.type !== 'google-drive') return;
+    const msLeft = tokenManager.getTimeUntilExpiry();
+    if (msLeft === null || msLeft > 0) {
+      gdriveReauthRequested = false;
+      return;
+    }
+    if (gdriveReauthRequested) return;
+    gdriveReauthRequested = true;
+    tokenManager.reAuthenticate();
+  });
 
   // Cache volume settings to prevent flash when unrelated volumes are added.
   // The effectiveVolumeSettings store emits a new object whenever ANY volume changes,

@@ -164,6 +164,7 @@ export type Settings = {
   continuousZoomDefault: ContinuousZoomMode;
   pageDividers: boolean; // Enable dividers between pages in continuous scroll modes
   scrollGap: number; // Pixels of padding between pages in scroll modes
+  pagedGap: number; // Gap between a paged-mode spread's two pages (image px, scales with zoom)
   /** @deprecated Removed — kept for settings migration compatibility */
   seamlessSpreads?: boolean;
   scrollSnap: boolean;
@@ -311,6 +312,7 @@ const defaultSettings: Settings = {
   continuousZoomDefault: 'zoomFitToScreen',
   pageDividers: false,
   scrollGap: 0,
+  pagedGap: 0,
   seamlessSpreads: undefined,
   scrollSnap: true,
   volumeDefaults: {

@@ -28,6 +28,14 @@ export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
       const { webdavProvider } = await import('./providers/webdav/webdav-provider');
       return webdavProvider;
     }
+    case 'filesystem': {
+      const { filesystemProvider } = await import('./providers/filesystem/filesystem-provider');
+      return filesystemProvider;
+    }
+    case 'onedrive': {
+      const { onedriveProvider } = await import('./providers/onedrive/onedrive-provider');
+      return onedriveProvider;
+    }
   }
 }
 
@@ -97,8 +105,13 @@ export async function initializeProviders(): Promise<void> {
     } catch (error) {
       console.warn('⚠️ Failed to initialize Google Drive API client:', error);
     }
-  } else if (activeProviderType === 'mega' || activeProviderType === 'webdav') {
-    // MEGA and WebDAV restore credentials in their constructors via whenReady()
+  } else if (
+    activeProviderType === 'mega' ||
+    activeProviderType === 'webdav' ||
+    activeProviderType === 'filesystem' ||
+    activeProviderType === 'onedrive'
+  ) {
+    // MEGA, WebDAV, and filesystem restore credentials in their constructors via whenReady()
     console.log(`⏳ Waiting for ${activeProviderType} to restore credentials...`);
     await (activeProvider as any).whenReady();
     console.log(`✅ ${activeProviderType} credentials restored`);
