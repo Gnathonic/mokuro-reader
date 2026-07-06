@@ -373,7 +373,10 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             seriesTitle: item.seriesTitle,
             downloadFilename: item.downloadFilename || `${item.volumeTitle}.cbz`,
             embedThumbnailSidecar: item.sidecarOptions.embedSidecarsInArchive,
-            embedMokuroInArchive: false,
+            // Export-to-file keeps embedding OCR data (self-contained .cbz);
+            // main-thread cloud upload (filesystem) stores it as a sidecar,
+            // matching every other cloud provider.
+            embedMokuroInArchive: isExport,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }
