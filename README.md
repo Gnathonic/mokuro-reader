@@ -196,9 +196,6 @@ For OneDrive, register an Azure AD app ("common" authority) and add your deploy
 origin as a **Single-page application** redirect URI. When unset, the OneDrive
 option is hidden. MEGA, WebDAV, and Local Folder need no configuration.
 
-Optionally, set `VITE_MEGA_REFERRAL_URL` to a MEGA referral link to show a
-disclosed storage-upgrade link to users nearing their MEGA quota.
-
 ## 💬 Community
 
 Wanna chat with the devs? Share your hopes, dreams, and issues (with Mokuro Reader specifically)? Come join the [Mokuro Reader Discord](https://discord.gg/AU5pjjSQBw)!
