@@ -31,7 +31,7 @@ describe('isSyncableFile', () => {
     ['Series/Volume.webp', true],
     ['volume-data.json', true],
     ['profiles.json', true],
-    ['libraries.json', false], // libraries feature not shipped — see syncable-file.ts
+    ['libraries.json', false], // removed libraries feature — see syncable-file.ts
     ['Series/cover.jpg', true],
     ['.DS_Store', false],
     ['Series/Notes.txt', false],

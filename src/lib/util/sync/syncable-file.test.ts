@@ -19,7 +19,7 @@ describe('syncable-file', () => {
     expect(isSyncableFile('profiles.json')).toBe(true);
   });
 
-  it('excludes libraries.json until the libraries feature ships', () => {
+  it('ignores libraries.json left behind by the removed libraries feature', () => {
     expect(isSyncableFile('libraries.json')).toBe(false);
     expect(isRootConfigFile('libraries.json')).toBe(false);
   });

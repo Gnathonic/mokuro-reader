@@ -58,10 +58,6 @@ export interface VolumeMetadata {
   driveModifiedTime?: string;
   driveSize?: number;
 
-  // Library fields (for read-only WebDAV library sources)
-  libraryId?: string;
-  libraryName?: string;
-
   // Spine width in pixels (from mokuro metadata, used for catalog stacking)
   spine_width?: number;
 }

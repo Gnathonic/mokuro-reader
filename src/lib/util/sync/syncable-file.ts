@@ -8,10 +8,9 @@
  * - Root config files: volume-data.json (read progress), profiles.json
  *   (settings profiles)
  *
- * libraries.json is deliberately NOT listed: the libraries feature has no
- * specced/shipped UI yet, and excluding it here keeps its cloud download path
- * (unified-sync-service findLibrariesFile → cache lookup) inert. Add it back
- * when the feature ships.
+ * libraries.json is deliberately NOT listed: it belonged to the removed
+ * libraries feature. Stale copies may still exist in users' cloud folders —
+ * keep ignoring them.
  */
 
 const ROOT_CONFIG_FILENAMES = new Set(['volume-data.json', 'profiles.json']);

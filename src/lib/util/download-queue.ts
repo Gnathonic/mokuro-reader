@@ -41,7 +41,6 @@ export interface QueueItem {
   volumeTitle: string;
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'downloading';
-  libraryId?: string;
 }
 
 interface SeriesQueueStatus {
@@ -143,8 +142,7 @@ export function queueVolume(volume: VolumeMetadata): void {
     seriesTitle: volume.series_title,
     volumeTitle: volume.volume_title,
     volumeMetadata: volume,
-    status: 'queued',
-    libraryId: volume.libraryId
+    status: 'queued'
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -286,24 +284,7 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
  * For MEGA, creates a temporary share link instead of passing credentials
  * Implements rate limiting to prevent API congestion
  */
-async function getProviderCredentials(
-  provider: ProviderType,
-  fileId: string,
-  libraryId?: string
-): Promise<any> {
-  if (libraryId) {
-    const { getLibraryById } = await import('$lib/settings/libraries');
-    const library = getLibraryById(libraryId);
-    if (!library) {
-      throw new Error(`Library not found: ${libraryId}`);
-    }
-    return {
-      webdavUrl: library.serverUrl.replace(/\/$/, ''),
-      webdavUsername: library.username,
-      webdavPassword: library.password
-    };
-  }
-
+async function getProviderCredentials(provider: ProviderType, fileId: string): Promise<any> {
   const activeProvider = unifiedCloudManager.getActiveProvider();
   if (!activeProvider || activeProvider.type !== provider) {
     throw new Error(`Active provider mismatch for download credentials: expected ${provider}`);
@@ -635,10 +616,9 @@ async function cleanupProviderDownloadCredentials(
  * - MEGA: Workers download from share link via MEGA API and decompress
  */
 async function processDownload(item: QueueItem, processId: string): Promise<void> {
-  const isLibraryDownload = !!item.libraryId;
-  const provider = isLibraryDownload ? null : unifiedCloudManager.getActiveProvider();
+  const provider = unifiedCloudManager.getActiveProvider();
 
-  if (!isLibraryDownload && !provider) {
+  if (!provider) {
     handleDownloadError(item, processId, `No cloud provider authenticated`);
     return;
   }
@@ -646,9 +626,9 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
   const pool = await getFileProcessingPool();
   const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
-  const providerType = isLibraryDownload ? 'webdav' : provider!.type;
-  const downloadConcurrencyLimit = isLibraryDownload ? 8 : provider!.downloadConcurrencyLimit;
-  const supportsWorkerDownload = isLibraryDownload ? true : provider!.supportsWorkerDownload;
+  const providerType = provider.type;
+  const downloadConcurrencyLimit = provider.downloadConcurrencyLimit;
+  const supportsWorkerDownload = provider.supportsWorkerDownload;
 
   if (supportsWorkerDownload) {
     // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
@@ -676,11 +656,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
       // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
       prepareData: async () => {
         // Get provider credentials (for MEGA, this creates a temporary share link)
-        const credentials = await getProviderCredentials(
-          providerType,
-          item.cloudFileId,
-          item.libraryId
-        );
+        const credentials = await getProviderCredentials(providerType, item.cloudFileId);
 
         return {
           mode: 'download-and-decompress',
@@ -732,18 +708,14 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             error instanceof Error ? error.message : 'Unknown error'
           );
         } finally {
-          if (!isLibraryDownload) {
-            await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
-          }
+          await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
           releaseMemory();
           checkAndTerminatePool();
         }
       },
       onError: async (data) => {
         console.error(`Error downloading ${item.volumeTitle}:`, data.error);
-        if (!isLibraryDownload) {
-          await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
-        }
+        await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
         handleDownloadError(item, processId, data.error);
         checkAndTerminatePool();
 
@@ -786,7 +758,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
         progress: 0,
         status: 'Reading file...'
       });
-      const blob = await provider!.downloadFile(metadata, (loaded, total) => {
+      const blob = await provider.downloadFile(metadata, (loaded, total) => {
         if (total > 0) {
           const percent = Math.round((loaded / total) * 90);
           progressTrackerStore.updateProcess(processId, {
@@ -885,9 +857,8 @@ async function processQueue(): Promise<void> {
   }
 
   // Get active provider (single-provider architecture)
-  const isLibraryDownload = !!item.libraryId;
   const provider = unifiedCloudManager.getActiveProvider();
-  if (!isLibraryDownload && !provider) {
+  if (!provider) {
     console.error(`[Download Queue] No cloud provider authenticated, skipping ${item.volumeTitle}`);
     return;
   }

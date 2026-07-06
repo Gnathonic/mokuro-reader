@@ -35,31 +35,17 @@ describe('viewToHash', () => {
     const result = viewToHash({ type: 'merge-series' });
     expect(result).toBe('#/merge-series');
   });
+});
 
-  test('generates libraries hash', () => {
-    const result = viewToHash({ type: 'libraries' });
-    expect(result).toBe('#/libraries');
-  });
-
-  test('generates add-library hash with params', () => {
-    const result = viewToHash({
-      type: 'add-library',
-      params: { url: 'https://example.com/dav', name: 'My Library' }
-    });
-    expect(result).toBe('#/add-library?url=https%3A%2F%2Fexample.com%2Fdav&name=My+Library');
+describe('removed libraries routes', () => {
+  test('stale #/libraries and #/add-library bookmarks fall back to catalog', () => {
+    expect(parseHash('#/libraries')).toEqual({ type: 'catalog' });
+    expect(parseHash('#/add-library?url=x')).toEqual({ type: 'catalog' });
   });
 });
 
 describe('nav helpers', () => {
   test('nav.toMergeSeries exists and is callable', () => {
     expect(typeof nav.toMergeSeries).toBe('function');
-  });
-
-  test('nav.toLibraries exists and is callable', () => {
-    expect(typeof nav.toLibraries).toBe('function');
-  });
-
-  test('nav.toAddLibrary exists and is callable', () => {
-    expect(typeof nav.toAddLibrary).toBe('function');
   });
 });
