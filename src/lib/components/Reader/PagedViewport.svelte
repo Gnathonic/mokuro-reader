@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { onDestroy, onMount } from 'svelte';
-  import { settings } from '$lib/settings';
+  import { settings, updateSetting } from '$lib/settings';
   import { PagedCamera } from '$lib/reader/paged-camera';
   import { ContinuousZoomController } from '$lib/reader/zoom-controller';
   import type { Size } from '$lib/reader/paged-zoom-layout';
@@ -11,7 +11,15 @@
     doubleTapTarget,
     pagedLevels
   } from '$lib/reader/paged-zoom-session';
-  import { normalizeWheelDelta, wheelIntentIsZoom } from '$lib/reader/zoom-math';
+  import {
+    GAP_WHEEL_STEP_SIZE,
+    MAX_PAGE_GAP,
+    WheelAccumulator,
+    gapWheelSteps,
+    normalizeWheelDelta,
+    wheelIntentIsGapAdjust,
+    wheelIntentIsZoom
+  } from '$lib/reader/zoom-math';
   import { pagedZoom, type PagedZoomApi } from '$lib/reader/paged-zoom';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { gestureTargetRole } from '$lib/reader/input/gesture-target';
@@ -37,10 +45,13 @@
     onPageFlip?: (side: 'left' | 'right') => void;
     /** A lone tap on the page surface (not text box / chrome). */
     onOverlayToggle?: () => void;
+    /** The gap-adjust wheel chord changed the page gap to this value (px). */
+    onGapChange?: (px: number) => void;
     children?: Snippet;
   }
 
-  let { contentSize, pageKey, rtl, onPageFlip, onOverlayToggle, children }: Props = $props();
+  let { contentSize, pageKey, rtl, onPageFlip, onOverlayToggle, onGapChange, children }: Props =
+    $props();
 
   let wrapperEl: HTMLDivElement | undefined = $state();
   let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
@@ -130,7 +141,21 @@
     // through the pageKey effect.
   };
 
+  const gapAccumulator = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+
+  function adjustGap(delta: number) {
+    if (delta === 0) return;
+    const next = Math.max(0, Math.min(MAX_PAGE_GAP, ($settings.pagedGap ?? 0) + delta));
+    updateSetting('pagedGap', next);
+    onGapChange?.(next);
+  }
+
   function handleWheel(e: WheelEvent) {
+    if (wheelIntentIsGapAdjust(e)) {
+      e.preventDefault();
+      adjustGap(gapWheelSteps(e, gapAccumulator));
+      return;
+    }
     const modifier = e.ctrlKey || e.metaKey;
     if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior)) {
       e.preventDefault();

@@ -5,6 +5,7 @@
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
+  import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
   import { setInstantAnimations } from '$lib/reader/animator';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { toggleFullScreen } from '$lib/util/fullscreen';
@@ -377,15 +378,12 @@
     const pgs = pages;
     const idx = index;
     if (!pgs || pgs.length === 0 || !pgs[idx]) return { width: 0, height: 0 };
-    const first = pgs[idx];
-    if (showSecondPage() && pgs[idx + 1]) {
-      const second = pgs[idx + 1];
-      return {
-        width: first.img_width + second.img_width,
-        height: Math.max(first.img_height, second.img_height)
-      };
-    }
-    return { width: first.img_width, height: first.img_height };
+    const first = { width: pgs[idx].img_width, height: pgs[idx].img_height };
+    const second =
+      showSecondPage() && pgs[idx + 1]
+        ? { width: pgs[idx + 1].img_width, height: pgs[idx + 1].img_height }
+        : null;
+    return spreadContentSize(first, second, $settings.pagedGap ?? 0);
   });
 
   // Fire reader closed event when component is destroyed (navigating away)
@@ -900,6 +898,10 @@
     }, 2000);
   }
 
+  function handleGapChange(px: number) {
+    showNotification(`Page gap: ${px}px`, 'page-gap');
+  }
+
   // Shared toggle for the Manual/Scheduled display filters (night, invert,
   // B&W). When the schedule owns the filter we only notify; otherwise flip
   // the manual boolean and announce the state we just wrote. (The old code
@@ -1149,6 +1151,7 @@
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {:else}
@@ -1162,6 +1165,7 @@
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {/if}
@@ -1174,6 +1178,7 @@
         rtl={volumeSettings.rightToLeft ?? true}
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
       >
         <button
           aria-label="Previous page (left edge)"
@@ -1206,6 +1211,7 @@
             <div
               class="col-start-1 row-start-1 flex flex-row"
               class:flex-row-reverse={!volumeSettings.rightToLeft}
+              style:column-gap={`${$settings.pagedGap ?? 0}px`}
               in:pageIn={{ direction: pageDirection }}
               out:pageOut={{ direction: pageDirection }}
             >
