@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.1] - 2026-07-06
+
+### Fixed
+
+- Fixed MEGA sync repeatedly failing with 'not found' errors
+
 ## [1.8.0] - 2026-07-05
 
 ### Added
