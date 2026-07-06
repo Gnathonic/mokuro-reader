@@ -218,12 +218,14 @@ describe('layoutLines', () => {
     const layouts = layoutLines(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
     const l = layouts[0];
     expect(l.wrap).toBe(true);
-    // wrap-fit: reference 32.83 needs 2 cols = 65.7 > 60 → shrink to 60/2 = 30
-    expect(l.fontSize).toBeCloseTo(30, 1);
-    // wrapped lines occupy their full quad bbox
-    expect(l.left).toBeCloseTo(733 - 653, 5);
+    // The quad bbox starts at x=80 but its first ~2.7px hold the neighboring
+    // column's ink, so the container is clipped to that column's right edge
+    // and the 2 wrap columns split what remains.
+    const neighborEdge = layouts[1].left + layouts[1].fontSize;
+    expect(l.left).toBeCloseTo(neighborEdge, 1);
     expect(l.top).toBeCloseTo(0, 5);
-    expect(l.width).toBeCloseTo(60, 5);
+    expect(l.width).toBeCloseTo(140 - neighborEdge, 1);
+    expect(l.fontSize).toBeCloseTo(l.width / 2, 1);
     expect(l.height).toBeCloseTo(175, 5);
   });
 
@@ -537,11 +539,16 @@ describe('layoutLines', () => {
     expect(layouts[1].fontSize).toBeLessThan(25); // ruby stays small
   });
 
-  it('uses the rotated quad bbox for wrapped slanted lines', () => {
+  it('clips a wrapped slanted line to the space its clean neighbor leaves', () => {
     const layouts = layoutLines(pokemonRotated, pokemonRotated.lines, heuristicMeasurer)!;
-    // L1 merged 今度は+ruby in a 97px-wide rotated quad → wraps at reference
+    // L1 merged 今度は+ruby in a 97px-wide rotated quad → wraps at reference.
+    // The slant inflates its axis-aligned bbox (x from 88) ~19px over the
+    // upright 手加減 column, so the wrap container starts at that column's
+    // right edge instead of the raw bbox.
     expect(layouts[0].wrap).toBe(true);
-    expect(layouts[0].left).toBeCloseTo(1737 - 1649, 5);
+    const neighborEdge = layouts[1].left + layouts[1].fontSize;
+    expect(layouts[0].left).toBeCloseTo(neighborEdge, 1);
+    expect(layouts[0].left).toBeGreaterThan(1737 - 1649);
     expect(layouts[0].top).toBeCloseTo(0, 5);
   });
 
@@ -678,6 +685,149 @@ describe('layoutLines', () => {
       };
       expect(layoutLines(block, block.lines, heuristicMeasurer)).toBeNull();
     });
+  });
+});
+
+describe('no-overlap invariant', () => {
+  // Rendered text must NEVER overlap: whatever the quads claim, two visible
+  // lines drawing on the same pixels means the layout is wrong.
+
+  interface Rect {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }
+
+  /** The rect the text actually paints, from the layout the reader renders. */
+  function renderedRect(
+    l: NonNullable<ReturnType<typeof layoutLines>>[number],
+    text: string,
+    vertical: boolean
+  ): Rect {
+    if (l.wrap) {
+      return { minX: l.left, minY: l.top, maxX: l.left + l.width, maxY: l.top + l.height };
+    }
+    const advance = heuristicMeasurer(text) * l.fontSize;
+    return vertical
+      ? { minX: l.left, minY: l.top, maxX: l.left + l.fontSize, maxY: l.top + advance }
+      : { minX: l.left, minY: l.top, maxX: l.left + advance, maxY: l.top + l.fontSize };
+  }
+
+  function overlapWidth(a: Rect, b: Rect): number {
+    const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+    const oy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+    return Math.min(Math.max(ox, 0), Math.max(oy, 0));
+  }
+
+  function expectNoOverlaps(block: LayoutBlock) {
+    const layouts = layoutLines(block, block.lines, heuristicMeasurer)!;
+    const rects = layouts.map((l, i) =>
+      l.hidden ? null : renderedRect(l, block.lines[i], block.vertical)
+    );
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        if (!rects[i] || !rects[j]) continue;
+        expect
+          .soft(overlapWidth(rects[i]!, rects[j]!), `lines ${i} and ${j} overlap`)
+          .toBeLessThanOrEqual(0.5);
+      }
+    }
+    return layouts;
+  }
+
+  // OPM 28 p136 b1: the detector re-captured the 研究施設 caption column as
+  // two half-width-offset quads with diverged hallucinated texts. Bbox
+  // overlap is 0.41 — far under the 0.7 re-capture gate — so both lines
+  // rendered stacked on the same column.
+  const opmRecapture: LayoutBlock = {
+    box: [267, 23, 515, 635],
+    vertical: true,
+    font_size: 75,
+    lines_coords: [
+      [
+        [325, 103],
+        [399, 103],
+        [394, 609],
+        [320, 609]
+      ],
+      [
+        [276, 84],
+        [352, 84],
+        [344, 615],
+        [268, 615]
+      ]
+    ],
+    lines: ['けたもえ', 'ログカショ']
+  };
+
+  // OPM 28 p176 b0: the 俺の核は line got a wide (~147px) slanted quad —
+  // detector noise, the print is upright — whose axis-aligned bbox (191px)
+  // swallows the neighboring columns; the merged-column wrap then filled
+  // that inflated bbox, painting across 駆動騎士 and 既に限界だ.
+  const opmSlantedBbox: LayoutBlock = {
+    box: [1355, 147, 1725, 546],
+    vertical: true,
+    font_size: 91,
+    lines_coords: [
+      [
+        [1623, 177],
+        [1710, 177],
+        [1710, 432],
+        [1623, 432]
+      ],
+      [
+        [1478, 172],
+        [1623, 147],
+        [1669, 437],
+        [1524, 459]
+      ],
+      [
+        [1439, 177],
+        [1516, 177],
+        [1516, 497],
+        [1439, 497]
+      ],
+      [
+        [1360, 177],
+        [1415, 177],
+        [1409, 546],
+        [1355, 546]
+      ]
+    ],
+    lines: ['駆動騎士', '俺の花の花花は', '既に限界だ', 'じき爆発する']
+  };
+
+  it('separates an offset re-capture pair below the hide gate (OPM 28 p136)', () => {
+    const layouts = expectNoOverlaps(opmRecapture);
+    // diverged texts: both must stay visible and readable
+    for (const l of layouts) {
+      expect(l.hidden).toBeFalsy();
+      expect(l.fontSize).toBeGreaterThan(8);
+    }
+  });
+
+  it('keeps an inflated suspect bbox off its clean neighbors (OPM 28 p176)', () => {
+    const layouts = expectNoOverlaps(opmSlantedBbox);
+    for (const l of layouts) {
+      expect(l.hidden).toBeFalsy();
+      expect(l.fontSize).toBeGreaterThan(8);
+    }
+    // The clean columns are correctly placed — the suspect must yield to
+    // them, not the other way round: each stays centered on its own quad.
+    const quadCenters = [0, 2, 3].map((i) => {
+      const xs = opmSlantedBbox.lines_coords![i].map((p) => p[0]);
+      return (Math.min(...xs) + Math.max(...xs)) / 2 - opmSlantedBbox.box[0];
+    });
+    for (const [k, i] of [0, 2, 3].entries()) {
+      expect(Math.abs(layouts[i].left + layouts[i].fontSize / 2 - quadCenters[k])).toBeLessThan(3);
+    }
+  });
+
+  it('holds for clean fixtures without disturbing them', () => {
+    for (const block of [jjkFurigana, hareguuShout]) {
+      expectNoOverlaps(block);
+    }
   });
 });
 
