@@ -382,3 +382,116 @@ describe('MegaProvider.removeDirectoryIfEmpty()', () => {
     expect(storage.api.request).not.toHaveBeenCalled();
   });
 });
+
+describe('MegaProvider ghost-node handling', () => {
+  // A "ghost" is a node deleted server-side that megajs never evicts from
+  // storage.files: its sc delete handler only unlinks parent.children, and
+  // reload() is purely additive (_importFile skips known handles). Ghosts
+  // made every sync fail: the pre-upload replace delete hit server ENOENT (-9)
+  // and the reload-based retry could never remove the ghost.
+
+  function makeMokuroFolder() {
+    return {
+      name: 'mokuro-reader',
+      directory: true,
+      upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+        queueMicrotask(() => cb(null, { nodeId: 'fresh-node' }));
+      })
+    } as any;
+  }
+
+  function makeFile(name: string, parent: any, deleteError: Error | null = null) {
+    return {
+      name,
+      directory: false,
+      parent,
+      delete: vi.fn((_force: boolean, cb: (e: Error | null) => void) => {
+        queueMicrotask(() => cb(deleteError));
+      })
+    } as any;
+  }
+
+  async function loginWithTree(files: Record<string, any>) {
+    storageState.files = files;
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  it('uploadFile tolerates ENOENT when deleting a ghost copy and still uploads', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile(
+      'volume-data.json',
+      folder,
+      new Error('ENOENT (-9): Object (typically, node or user) not found. Wrong password?')
+    );
+    const provider = await loginWithTree({ root: folder, ghost });
+
+    const fileId = await provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]));
+
+    expect(ghost.delete).toHaveBeenCalled();
+    expect(folder.upload).toHaveBeenCalledOnce();
+    expect(fileId).toBe('fresh-node');
+  });
+
+  it('uploadFile replaces every same-name copy, not just the first', async () => {
+    const folder = makeMokuroFolder();
+    const dupe1 = makeFile('volume-data.json', folder);
+    const dupe2 = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, dupe1, dupe2 });
+
+    await provider.uploadFile('volume-data.json', new Uint8Array([1]));
+
+    expect(dupe1.delete).toHaveBeenCalledOnce();
+    expect(dupe2.delete).toHaveBeenCalledOnce();
+    expect(folder.upload).toHaveBeenCalledOnce();
+  });
+
+  it('reinitialize rebuilds storage.files so server-deleted ghosts are evicted', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile('volume-data.json', folder);
+    const real = makeFile('real.cbz', folder);
+    const provider = await loginWithTree({ root: folder, ghost });
+    const storage = (provider as any).storage;
+
+    // Mirror megajs reload() semantics: additive import of the server's
+    // node set (which no longer contains the ghost).
+    storage.reload = vi.fn(async () => {
+      const server: Record<string, any> = { root: folder, real };
+      for (const [handle, node] of Object.entries(server)) {
+        if (!storage.files[handle]) storage.files[handle] = node;
+      }
+    });
+
+    await (provider as any).reinitialize();
+
+    expect(Object.keys(storage.files).sort()).toEqual(['real', 'root']);
+  });
+
+  it('reinitialize strips stale sc listeners before reloading (megajs stacks one per reload)', async () => {
+    const folder = makeMokuroFolder();
+    const provider = await loginWithTree({ root: folder });
+    const storage = (provider as any).storage;
+    storage.api = { removeAllListeners: vi.fn() };
+
+    await (provider as any).reinitialize();
+
+    expect(storage.api.removeAllListeners).toHaveBeenCalledWith('sc');
+  });
+
+  it('reinitialize keeps the previous tree when the reload fails transiently', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, ghost });
+    const storage = (provider as any).storage;
+    storage.reload = vi.fn(async () => {
+      throw new Error('ETEMPUNAVAIL (-18): A temporary congestion or server malfunction');
+    });
+
+    await (provider as any).reinitialize();
+
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(Object.keys(storage.files).sort()).toEqual(['ghost', 'root']);
+  });
+});
