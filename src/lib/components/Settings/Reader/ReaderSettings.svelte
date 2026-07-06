@@ -15,6 +15,7 @@
   } from '$lib/settings';
   import { isReader } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
+  import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
 
   // Derived visibility flags
   let isContinuous = $derived($settings.continuousScroll);
@@ -101,6 +102,21 @@
           onchange={onPageViewModeChange}
         />
       </div>
+      {#if isDualOrAuto}
+        <div>
+          <Label class="text-gray-900 dark:text-white">
+            Page gap: {$settings.pagedGap}px
+            <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Ctrl+Shift+Scroll)</span>
+          </Label>
+          <Range
+            min={0}
+            max={MAX_PAGE_GAP}
+            value={$settings.pagedGap}
+            onchange={(e) =>
+              updateSetting('pagedGap', Number((e.target as HTMLInputElement).value))}
+          />
+        </div>
+      {/if}
     {/if}
 
     <!-- 3. If continuous: Scroll mode dropdown + gap slider -->
@@ -126,10 +142,11 @@
         <div>
           <Label class="text-gray-900 dark:text-white">
             Divider size: {$settings.scrollGap}px
+            <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Ctrl+Shift+Scroll)</span>
           </Label>
           <Range
             min={0}
-            max={100}
+            max={MAX_PAGE_GAP}
             value={$settings.scrollGap}
             onchange={(e) =>
               updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}
