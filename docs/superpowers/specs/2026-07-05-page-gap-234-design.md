@@ -76,13 +76,13 @@ native meaning in any major browser: ctrl+shift+wheel.
 
 ### Wheel-to-gap helper
 
-- `gapWheelStep` lives in `src/lib/reader/zoom-math.ts` next to
-  `normalizeWheelDelta`/`wheelIntentIsZoom`.
-- Converts a wheel event to a gap delta: ~5px per standard wheel notch,
-  normalized by `deltaMode`, sign flipped so scroll-up widens.
-- Fractional deltas accumulate across events (surface-local accumulator) so
-  trackpad streams of tiny deltas don't stall at zero; result clamped 0–100
-  and rounded on write.
+- `wheelIntentIsGapAdjust` + `gapWheelSteps` live in
+  `src/lib/reader/zoom-math.ts` next to `normalizeWheelDelta`/
+  `wheelIntentIsZoom`, reusing the existing `WheelAccumulator`
+  (idle + direction-flip resets) at `GAP_WHEEL_STEP_SIZE = 20` wheel px per
+  1px of gap — one ~100px notch = 5px, trackpad streams accumulate.
+- Sign flipped so scroll-up widens; result clamped 0–`MAX_PAGE_GAP` (100) at
+  the write site.
 
 ### Feedback toast
 
@@ -95,8 +95,8 @@ native meaning in any major browser: ctrl+shift+wheel.
 ### Settings UI
 
 - `ReaderSettings.svelte`, inside the `isPaged` block: "Page gap: Npx" label
-  + `Range` slider (0–100), shown when `$settings.singlePageView !== 'single'`.
-  No toggle — 0 means off.
+  - `Range` slider (0–100), shown when `$settings.singlePageView !== 'single'`.
+    No toggle — 0 means off.
 - Both the new paged slider and the existing continuous divider slider get a
   "(Ctrl+Shift+Scroll)" hint, like the existing "(M)"/"(P)" hints.
 

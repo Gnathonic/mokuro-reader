@@ -7,6 +7,9 @@ import {
   nearestZoomLevel,
   nextZoomLevel,
   wheelIntentIsZoom,
+  wheelIntentIsGapAdjust,
+  gapWheelSteps,
+  GAP_WHEEL_STEP_SIZE,
   normalizeWheelDelta,
   WheelAccumulator,
   pinchDistance,
@@ -225,5 +228,56 @@ describe('pinchDistance / pinchMidpoint', () => {
   it('returns safe values with fewer than two points', () => {
     expect(pinchDistance([{ x: 5, y: 5 }])).toBe(0);
     expect(pinchMidpoint([])).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('wheelIntentIsGapAdjust', () => {
+  it('requires ctrl or meta plus shift', () => {
+    expect(wheelIntentIsGapAdjust({ ctrlKey: true, metaKey: false, shiftKey: true })).toBe(true);
+    expect(wheelIntentIsGapAdjust({ ctrlKey: false, metaKey: true, shiftKey: true })).toBe(true);
+  });
+
+  it('rejects partial chords', () => {
+    expect(wheelIntentIsGapAdjust({ ctrlKey: true, metaKey: false, shiftKey: false })).toBe(false);
+    expect(wheelIntentIsGapAdjust({ ctrlKey: false, metaKey: false, shiftKey: true })).toBe(false);
+    expect(wheelIntentIsGapAdjust({ ctrlKey: false, metaKey: false, shiftKey: false })).toBe(false);
+  });
+});
+
+describe('gapWheelSteps', () => {
+  it('one mouse notch widens by 5px when shift swaps the delta to deltaX (Chromium)', () => {
+    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    const px = gapWheelSteps({ deltaX: -100, deltaY: 0, deltaMode: 0, timeStamp: 1000 }, acc);
+    expect(px).toBe(5);
+  });
+
+  it('prefers deltaY when the browser keeps it there (Firefox)', () => {
+    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    const px = gapWheelSteps({ deltaX: 7, deltaY: -100, deltaMode: 0, timeStamp: 1000 }, acc);
+    expect(px).toBe(5);
+  });
+
+  it('scroll down narrows', () => {
+    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    const px = gapWheelSteps({ deltaX: 0, deltaY: 100, deltaMode: 0, timeStamp: 1000 }, acc);
+    expect(px).toBe(-5);
+  });
+
+  it('accumulates a trackpad stream of sub-step deltas into whole px', () => {
+    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    let total = 0;
+    for (let i = 0; i < 4; i++) {
+      total += gapWheelSteps(
+        { deltaX: 0, deltaY: -6, deltaMode: 0, timeStamp: 1000 + i * 16 },
+        acc
+      );
+    }
+    expect(total).toBe(1); // 24 wheel px accumulated -> one 20px step
+  });
+
+  it('normalizes line-mode deltas (Firefox wheel)', () => {
+    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    const px = gapWheelSteps({ deltaX: 0, deltaY: -3, deltaMode: 1, timeStamp: 1000 }, acc);
+    expect(px).toBe(6); // 3 lines * 40px = 120 wheel px -> six 20px steps
   });
 });
