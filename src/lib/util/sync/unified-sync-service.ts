@@ -8,6 +8,7 @@ import {
   migrateProfiles
 } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
+import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 
@@ -305,8 +306,10 @@ class UnifiedSyncService {
           `📦 Found ${volumeDataFiles.length} volume-data.json files - merging and deduplicating...`
         );
 
-        // Download all files in parallel
-        const allVolumesData = await Promise.all(
+        // Download all copies. A listed copy can be a ghost — deleted
+        // server-side but still present in a stale provider cache — so a
+        // not-found copy must not discard the readable copies with it.
+        const downloads = await Promise.allSettled(
           volumeDataFiles.map(async (file) => {
             const blob = await provider.downloadFile(file);
             const data = await this.blobToJson(blob);
@@ -314,10 +317,31 @@ class UnifiedSyncService {
           })
         );
 
-        // Merge all volumes (newest lastProgressUpdate wins per volume)
+        const transient = downloads.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected' && !this.isFileNotFoundError(result.reason)
+        );
+        if (transient) {
+          throw transient.reason;
+        }
+
+        const readable = downloads
+          .map((result, index) => ({ result, index }))
+          .filter(
+            (entry): entry is { result: PromiseFulfilledResult<any>; index: number } =>
+              entry.result.status === 'fulfilled'
+          );
+
+        if (readable.length === 0) {
+          // Every copy is a ghost — fall through to the caller's not-found
+          // recovery (one cache refresh + retry).
+          throw (downloads[0] as PromiseRejectedResult).reason;
+        }
+
+        // Merge all readable copies (newest lastProgressUpdate wins per volume)
         const merged: any = {};
-        for (const volumesData of allVolumesData) {
-          for (const [volumeId, volumeData] of Object.entries(volumesData)) {
+        for (const entry of readable) {
+          for (const [volumeId, volumeData] of Object.entries(entry.result.value)) {
             const existing = merged[volumeId];
             if (!existing) {
               merged[volumeId] = volumeData;
@@ -332,12 +356,20 @@ class UnifiedSyncService {
           }
         }
 
-        for (let i = 1; i < volumeDataFiles.length; i++) {
+        // Keep the first readable copy; delete every other listed copy.
+        // An already-gone delete target means converged, not failed.
+        const keepIndex = readable[0].index;
+        for (let i = 0; i < volumeDataFiles.length; i++) {
+          if (i === keepIndex) continue;
           console.log(`🗑️ Deleting duplicate volume-data.json (${volumeDataFiles[i].fileId})`);
-          await provider.deleteFile(volumeDataFiles[i]);
+          try {
+            await provider.deleteFile(volumeDataFiles[i]);
+          } catch (error) {
+            if (!this.isFileNotFoundError(error)) throw error;
+          }
         }
 
-        console.log(`✅ Merged ${volumeDataFiles.length} files into 1`);
+        console.log(`✅ Merged ${readable.length} readable copies into 1`);
         return merged;
       }
 
@@ -347,12 +379,7 @@ class UnifiedSyncService {
       return parseVolumesFromJson(JSON.stringify(data));
     } catch (error) {
       // File not found is not an error
-      if (
-        error instanceof Error &&
-        (error.message.includes('not found') ||
-          error.message.includes('404') ||
-          error.message.includes('ENOENT'))
-      ) {
+      if (this.isFileNotFoundError(error)) {
         if (reloadCacheOnFileNotFound) {
           console.log('📥 Download failed with file not found - refreshing cache and retrying...');
           const cache = cacheManager.getCache(provider.type);
@@ -366,6 +393,18 @@ class UnifiedSyncService {
       }
       throw error;
     }
+  }
+
+  /**
+   * True when an error means "this file does not exist": the typed provider
+   * code first, then message heuristics for providers predating typed codes.
+   */
+  private isFileNotFoundError(error: unknown): boolean {
+    if (error instanceof ProviderError && error.code === 'NOT_FOUND') {
+      return true;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('not found') || message.includes('404') || message.includes('ENOENT');
   }
 
   /**

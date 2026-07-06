@@ -94,6 +94,12 @@ async function retryWithBackoff<T>(
   throw lastError;
 }
 
+/** megajs surfaces a server-side missing node as `ENOENT (-9)`. */
+function isMegaNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('ENOENT') || message.includes('(-9)');
+}
+
 /**
  * Smart retry wrapper for MEGA operations that may fail due to stale cache
  * When two devices sync back and forth, file IDs change but local cache is stale
@@ -443,9 +449,29 @@ export class MegaProvider implements SyncProvider {
       // server-side. Every storage (login, restore, reinitialize, upload worker)
       // reuses the one persisted sid, so closing any of them invalidates the
       // stored token and makes every later request fail with ESID (-15).
-      await this.storage.reload(true);
+      //
+      // Two megajs reload() quirks force extra work here:
+      // - reload() attaches a NEW api 'sc' handler on every call without
+      //   removing the old one. Stacked handlers process each server packet
+      //   N times, and a re-processed delete splices with indexOf === -1,
+      //   silently removing an unrelated sibling from the tree.
+      // - reload() only ADDS nodes (_importFile skips known handles) and the
+      //   sc delete handler never removes nodes from storage.files, so a node
+      //   deleted server-side survives every reload as a permanent "ghost"
+      //   that fails all later operations with ENOENT (-9). Rebuild from an
+      //   empty map so the reloaded tree exactly mirrors the server.
+      this.storage.api?.removeAllListeners?.('sc');
+      const previousFiles = this.storage.files;
+      this.storage.files = {};
+      try {
+        await this.storage.reload(true);
+      } catch (error) {
+        // Keep the old (stale but usable) tree if the reload didn't complete.
+        this.storage.files = previousFiles;
+        throw error;
+      }
       this.mokuroFolder = null;
-      console.log('✅ MEGA cache reinitialized (in-place reload)');
+      console.log('✅ MEGA cache reinitialized (fresh in-place reload)');
     } catch (error) {
       if (isSessionExpiredError(error)) {
         this.markSessionExpired();
@@ -713,18 +739,21 @@ export class MegaProvider implements SyncProvider {
             buffer = new Uint8Array(arrayBuffer);
           }
 
-          // Check if file already exists
           const children = await this.listFolder(targetFolder);
-          const existingFile = children.find((f: any) => f.name === fileName && !f.directory);
 
-          // Delete existing file if found. Do NOT remove it from
-          // storage.files manually — the sc stream delivers the delete and
-          // megajs applies it; a manual removal makes the later sc packet
-          // crash on a missing node (the original "keepalive crash").
-          if (existingFile) {
+          // Replace semantics: delete EVERY same-name copy (MEGA allows
+          // duplicate names, so racing uploads can leave several). Do NOT
+          // remove them from storage.files manually — the sc stream delivers
+          // the delete and megajs applies it; a manual removal makes the
+          // later sc packet crash on a missing node (the original "keepalive
+          // crash"). A copy can also be a ghost — deleted server-side but
+          // never evicted from storage.files by megajs — so a server
+          // "already gone" answer means converged, not failed.
+          const existingFiles = children.filter((f: any) => f.name === fileName && !f.directory);
+          for (const existingFile of existingFiles) {
             await new Promise<void>((resolve, reject) => {
               existingFile.delete(true, (error: Error | null) => {
-                if (error) reject(error);
+                if (error && !isMegaNotFoundError(error)) reject(error);
                 else resolve();
               });
             });
