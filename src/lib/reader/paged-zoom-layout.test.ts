@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { alignPosition, baseTransform, clampTranslate, panEdgeState } from './paged-zoom-layout';
+import {
+  alignPosition,
+  baseTransform,
+  clampTranslate,
+  panEdgeState,
+  spreadContentSize
+} from './paged-zoom-layout';
 
 const viewport = { width: 1600, height: 900 };
 
@@ -188,5 +194,26 @@ describe('panEdgeState', () => {
     const s = panEdgeState({ x: 200, y: 0 }, { width: 1200, height: 900 }, viewport);
     expect(s.canRevealLeft).toBe(false);
     expect(s.canRevealRight).toBe(false);
+  });
+});
+
+describe('spreadContentSize', () => {
+  const a = { width: 700, height: 1000 };
+  const b = { width: 720, height: 980 };
+
+  it('passes a single page through untouched, ignoring the gap', () => {
+    expect(spreadContentSize(a, null, 24)).toEqual({ width: 700, height: 1000 });
+  });
+
+  it('sums pair widths plus the gap; height is the taller page', () => {
+    expect(spreadContentSize(a, b, 24)).toEqual({ width: 1444, height: 1000 });
+  });
+
+  it('zero gap renders the pair flush', () => {
+    expect(spreadContentSize(a, b, 0)).toEqual({ width: 1420, height: 1000 });
+  });
+
+  it('clamps a negative gap to flush', () => {
+    expect(spreadContentSize(a, b, -10)).toEqual({ width: 1420, height: 1000 });
   });
 });

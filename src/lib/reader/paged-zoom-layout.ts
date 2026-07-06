@@ -186,3 +186,17 @@ export function panEdgeState(
     canRevealRight: translate.x > minX + EDGE_EPSILON
   };
 }
+
+/**
+ * Native-pixel content size of the displayed page or pair. The gap between a
+ * pair lives in image-pixel space (it scales with zoom like a physical
+ * gutter) and must be part of the content size, or fit modes, pan clamping,
+ * and swipe edge detection are all off by the gap width.
+ */
+export function spreadContentSize(first: Size, second: Size | null, gap: number): Size {
+  if (!second) return { width: first.width, height: first.height };
+  return {
+    width: first.width + second.width + Math.max(0, gap),
+    height: Math.max(first.height, second.height)
+  };
+}
