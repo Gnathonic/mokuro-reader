@@ -898,6 +898,10 @@
     }, 2000);
   }
 
+  function handleGapChange(px: number) {
+    showNotification(`Page gap: ${px}px`, 'page-gap');
+  }
+
   // Shared toggle for the Manual/Scheduled display filters (night, invert,
   // B&W). When the schedule owns the filter we only notify; otherwise flip
   // the manual boolean and announce the state we just wrote. (The old code
@@ -1172,6 +1176,7 @@
         rtl={volumeSettings.rightToLeft ?? true}
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
       >
         <button
           aria-label="Previous page (left edge)"
