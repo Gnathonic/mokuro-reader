@@ -10,6 +10,24 @@
 
 const REF_DT = 1000 / 60;
 
+/**
+ * Global instant mode: every setTarget applies in a single frame and settles
+ * immediately. The "Disable animations" setting (e-ink devices) flips this —
+ * all reader animations (zoom, smooth scroll, camera pan) flow through
+ * Animator, so this is the one choke point. Kept as an injected flag rather
+ * than a settings import so this module stays a leaf.
+ */
+let instantMode = false;
+
+export function setInstantAnimations(instant: boolean): void {
+  instantMode = instant;
+}
+
+/** Whether reader animations are in instant mode (e-ink "disable animations"). */
+export function areAnimationsInstant(): boolean {
+  return instantMode;
+}
+
 export class Animator {
   current: number;
   target: number;
@@ -39,6 +57,14 @@ export class Animator {
   }
 
   setTarget(target: number): void {
+    if (instantMode) {
+      this.stop();
+      this.current = target;
+      this.target = target;
+      this.onFrame(target);
+      this.onSettle?.();
+      return;
+    }
     this.target = target;
     if (!this.running) {
       this.running = true;

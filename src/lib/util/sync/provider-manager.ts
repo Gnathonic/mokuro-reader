@@ -28,7 +28,9 @@ class ProviderManager {
     providers: {
       'google-drive': null,
       mega: null,
-      webdav: null
+      webdav: null,
+      filesystem: null,
+      onedrive: null
     },
     hasAnyAuthenticated: false,
     needsAttention: false,
@@ -194,9 +196,13 @@ class ProviderManager {
       localStorage.removeItem('webdav_username');
       localStorage.removeItem('webdav_password');
       // MEGA
+      localStorage.removeItem('mega_session');
       localStorage.removeItem('mega_email');
       localStorage.removeItem('mega_password');
       localStorage.removeItem('mega_folder_path');
+      // OneDrive (MSAL's own msal.* cache entries are cleared by MSAL itself)
+      localStorage.removeItem('onedrive_has_authenticated');
+      localStorage.removeItem('onedrive_login_pending');
     }
 
     this.updateStatus();
@@ -214,7 +220,9 @@ class ProviderManager {
       providers: {
         'google-drive': null,
         mega: null,
-        webdav: null
+        webdav: null,
+        filesystem: null,
+        onedrive: null
       },
       hasAnyAuthenticated: false,
       needsAttention: false,

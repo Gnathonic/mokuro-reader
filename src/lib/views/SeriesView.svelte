@@ -136,7 +136,7 @@
   );
 
   // Sort mode state (persisted to localStorage)
-  type SortMode = 'unread-first' | 'alphabetical';
+  type SortMode = 'unread-first' | 'reverse-alphabetical' | 'alphabetical';
   let sortMode = $state<SortMode>(
     (browser && (localStorage.getItem('series-sort-mode') as SortMode)) || 'unread-first'
   );
@@ -154,7 +154,12 @@
   }
 
   function toggleSortMode() {
-    sortMode = sortMode === 'unread-first' ? 'alphabetical' : 'unread-first';
+    sortMode =
+      sortMode === 'unread-first'
+        ? 'alphabetical'
+        : sortMode === 'alphabetical'
+          ? 'reverse-alphabetical'
+          : 'unread-first';
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
@@ -181,6 +186,11 @@
         if (aComplete !== bComplete) {
           return aComplete ? 1 : -1; // Unread (false) comes before complete (true)
         }
+      } else if (sortMode === 'reverse-alphabetical') {
+        return b.volume_title.localeCompare(a.volume_title, undefined, {
+          numeric: true,
+          sensitivity: 'base'
+        });
       }
 
       // Within same completion status (or alphabetical mode), sort alphabetically
@@ -648,13 +658,26 @@
       renameSaving = true;
       renameError = '';
 
-      // Execute the rename for this series UUID
-      await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
+      // Execute the rename for this series UUID — one volume at a time; each
+      // volume commits locally only after its cloud rename succeeds.
+      const result = await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
 
-      nav.toSeries(newTitle, { replaceState: true });
-      showSnackbar(`Renamed to "${newTitle}"`);
-      isRenaming = false;
-      renameValue = '';
+      if (result.failures.length === 0) {
+        nav.toSeries(result.finalTitle, { replaceState: true });
+        showSnackbar(`Renamed to "${result.finalTitle}"`);
+        isRenaming = false;
+        renameValue = '';
+      } else {
+        // Partial: the failed volumes keep the old title everywhere (cloud and
+        // local stay consistent per volume). Retrying the same rename finishes
+        // just the stragglers.
+        const failedNames = result.failures.map((f) => f.volumeTitle);
+        const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ', …' : '');
+        renameError =
+          `Renamed ${result.renamedCount} volume(s), but ${result.failures.length} failed (${shown}). ` +
+          `Failed volumes keep the old name in both your library and the cloud — ` +
+          `rename again to retry just those.`;
+      }
     } catch (err) {
       renameError = err instanceof Error ? err.message : 'Failed to rename';
       console.error('Error renaming series:', err);
@@ -800,7 +823,15 @@
 
       <Button color="light" onclick={toggleSortMode} class="!min-w-0 self-stretch">
         <SortOutline class="me-2 h-5 w-5 shrink-0" />
-        <span class="break-words">{sortMode === 'unread-first' ? 'Unread first' : 'Default'}</span>
+        <span class="break-words">
+          {#if sortMode === 'unread-first'}
+            Unread first
+          {:else if sortMode === 'reverse-alphabetical'}
+            Reverse default
+          {:else}
+            Default
+          {/if}</span
+        >
       </Button>
 
       <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">

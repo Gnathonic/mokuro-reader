@@ -72,7 +72,33 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     } finally {
       this.fetchingFlag = false;
       this.isFetchingStore.set(false);
+
+      // Run folder deduplication after cache load (incremental - one pass per call)
+      this.runDeduplication();
     }
+  }
+
+  /**
+   * Run folder deduplication asynchronously after a cache fetch completes.
+   * If duplicates were merged, refetch the cache so it reflects the merged state.
+   */
+  private runDeduplication(): void {
+    // Dynamic import to avoid circular dependency (mega-cache <-> mega-provider).
+    import('../../folder-deduplicator')
+      .then(async ({ folderDeduplicator }) => {
+        if (!megaProvider.isAuthenticated()) return;
+
+        const ops = megaProvider.getFolderOperations();
+        const result = await folderDeduplicator.deduplicateAll('mega', ops);
+
+        if (result.groupsMerged > 0) {
+          console.log('[MegaCache] Dedup merged folders, refetching cache...');
+          await this.fetch(true);
+        }
+      })
+      .catch((err) => {
+        console.error('[MegaCache] Deduplication failed:', err);
+      });
   }
 
   has(path: string): boolean {

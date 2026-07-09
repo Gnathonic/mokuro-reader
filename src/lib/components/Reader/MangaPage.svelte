@@ -62,6 +62,7 @@
 
 <div
   draggable="false"
+  data-page-index={pageIndex}
   style:width={`${page.img_width}px`}
   style:height={`${page.img_height}px`}
   style:background-image={url}

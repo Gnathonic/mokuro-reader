@@ -199,20 +199,33 @@
         {/if}
       </button>
       {#if isGoogleDrive && providerState.isAuthenticated && tokenMinutesLeft !== null}
-        {#key tokenMinutesLeft}
+        {#if tokenMinutesLeft <= 0 || providerState.needsAttention}
+          <!-- Session expired: one deliberate click reopens the Google account
+               chooser (the click supplies the user activation popup blockers
+               require) and pulls cloud progress right after. -->
           <button
             onclick={handleTokenRefresh}
-            class="flex cursor-pointer items-center justify-center rounded px-2 py-1 font-mono text-xs transition-colors
-              {tokenMinutesLeft > 30
-              ? 'text-green-600 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20'
-              : tokenMinutesLeft > 10
-                ? 'text-yellow-600 hover:bg-yellow-50 hover:text-yellow-700 dark:hover:bg-yellow-900/20'
-                : 'text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20'}"
-            title="Token expires in {tokenMinutesLeft} minutes. Click to refresh now."
+            class="flex cursor-pointer items-center justify-center rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white transition-colors hover:bg-red-700"
+            title="Google Drive session expired — click to reconnect and sync progress."
           >
-            {tokenMinutesLeft}m
+            Reconnect
           </button>
-        {/key}
+        {:else}
+          {#key tokenMinutesLeft}
+            <button
+              onclick={handleTokenRefresh}
+              class="flex cursor-pointer items-center justify-center rounded px-2 py-1 font-mono text-xs transition-colors
+                {tokenMinutesLeft > 30
+                ? 'text-green-600 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20'
+                : tokenMinutesLeft > 10
+                  ? 'text-yellow-600 hover:bg-yellow-50 hover:text-yellow-700 dark:hover:bg-yellow-900/20'
+                  : 'text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20'}"
+              title="Token expires in {tokenMinutesLeft} minutes. Click to refresh now."
+            >
+              {tokenMinutesLeft}m
+            </button>
+          {/key}
+        {/if}
       {/if}
       {#if hasActiveProvider && !providerState.isReadOnly}
         <button

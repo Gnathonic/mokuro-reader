@@ -1,13 +1,26 @@
 <script lang="ts">
   import { Button, Helper, Modal, Spinner } from 'flowbite-svelte';
   import type { Page } from '$lib/types';
-  import { showCropper, expandTextBoxBounds, type VolumeMetadata } from '$lib/anki-connect';
+  import {
+    expandTextBoxBounds,
+    extractFieldValues,
+    getCardAgeInMin,
+    getLastCardInfo,
+    getModelConfig,
+    openCreateModal,
+    openUpdateModal,
+    sendQuickCapture,
+    type VolumeMetadata
+  } from '$lib/anki-connect';
+  import { settings } from '$lib/settings';
+  import { showSnackbar } from '$lib/util';
   import { onMount } from 'svelte';
   import { textBoxPickerStore } from './text-box-picker';
 
   let open = $state(false);
   let image = $state<string | undefined>(undefined);
   let page = $state<Page | undefined>(undefined);
+  let pageNumber = $state<number | undefined>(undefined);
   let tags = $state<string | undefined>(undefined);
   let metadata = $state<VolumeMetadata | undefined>(undefined);
 
@@ -54,6 +67,7 @@
       open = value.open;
       image = value.image;
       page = value.page;
+      pageNumber = value.pageNumber;
       tags = value.tags;
       metadata = value.metadata;
 
@@ -72,7 +86,7 @@
     textBoxPickerStore.set({ open: false });
   }
 
-  function handleContinue() {
+  async function handleContinue() {
     if (selectedBlockIndex === null || !page || !image) return;
 
     const zone = textBoxZones.find((z) => z.blockIndex === selectedBlockIndex);
@@ -88,11 +102,100 @@
     const imageUrl = image;
     const ankiTags = tags;
     const volumeMetadata = metadata;
+    const currentPageNumber = pageNumber;
+    const pageFilename = page.img_path;
 
     close();
 
-    // Show the cropper with the selected text and bounds
-    showCropper(imageUrl, selectedText, selectedText, ankiTags, volumeMetadata, undefined, textBox);
+    const cardMode = $settings.ankiConnectSettings.cardMode;
+
+    if (cardMode === 'update') {
+      const lastCard = await getLastCardInfo();
+
+      if (!lastCard || !lastCard.noteId) {
+        showSnackbar('No recent card found to update');
+        return;
+      }
+
+      if (!lastCard.modelName) {
+        showSnackbar('Could not detect card note type');
+        return;
+      }
+
+      const cardAge = getCardAgeInMin(lastCard.noteId);
+      if (cardAge >= 5) {
+        showSnackbar(`Last card is ${cardAge} minutes old (max 5 min)`);
+        return;
+      }
+
+      const previousValues = extractFieldValues(lastCard);
+      const modelConfig = getModelConfig(lastCard.modelName, 'update');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'update',
+          imageUrl,
+          selectedText,
+          selectedText,
+          volumeMetadata,
+          textBox,
+          previousValues,
+          lastCard.noteId,
+          lastCard.tags,
+          lastCard.modelName,
+          pageFilename
+        );
+      } else {
+        openUpdateModal(
+          imageUrl,
+          previousValues,
+          lastCard.noteId,
+          lastCard.modelName,
+          lastCard.tags,
+          selectedText,
+          selectedText,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          currentPageNumber,
+          pageFilename
+        );
+      }
+    } else {
+      const { selectedModel } = $settings.ankiConnectSettings;
+      const modelConfig = getModelConfig(selectedModel, 'create');
+      const quickCapture = modelConfig?.quickCapture ?? false;
+
+      if (quickCapture) {
+        await sendQuickCapture(
+          'create',
+          imageUrl,
+          selectedText,
+          selectedText,
+          volumeMetadata,
+          textBox,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          pageFilename
+        );
+      } else {
+        openCreateModal(
+          imageUrl,
+          selectedText,
+          selectedText,
+          ankiTags,
+          volumeMetadata,
+          undefined,
+          textBox,
+          currentPageNumber,
+          pageFilename
+        );
+      }
+    }
   }
 
   // Handle backdrop mousedown - dismiss on mousedown outside content

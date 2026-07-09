@@ -114,14 +114,10 @@ export async function uploadToWebDAV(
 ): Promise<string> {
   // Dynamically import webdav to support usage in workers
   const { createClient } = await import('webdav');
+  const { webdavAuthOptions } = await import('$lib/util/sync/core/providers/webdav-auth');
 
-  // Create client with credentials
-  const clientOptions: { username?: string; password?: string } = {};
-  if (username || password) {
-    clientOptions.username = username || '';
-    clientOptions.password = password || '';
-  }
-  const client = createClient(serverUrl, clientOptions);
+  // Create client with credentials (UTF-8-safe Authorization header)
+  const client = createClient(serverUrl, webdavAuthOptions(username, password));
 
   // Ensure folder structure exists
   const folderPath = `mokuro-reader/${seriesTitle}`;

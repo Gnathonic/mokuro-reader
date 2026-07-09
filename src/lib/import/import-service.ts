@@ -33,6 +33,7 @@ import {
 import { getImportUiBridge, type MissingFilesInfo } from './import-ui';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
 import { generateUUID } from '$lib/util/uuid';
+import { requestPersistentStorage } from '$lib/util/upload';
 import {
   extractArchiveByVolumes,
   decompressArchive,
@@ -1007,6 +1008,10 @@ export async function importArchiveWithOptionalMokuro(
     errors: []
   };
 
+  // Request persistent storage within the originating user gesture (see the
+  // note in importFiles) before we await any decompression/processing work.
+  void requestPersistentStorage();
+
   const pairedSource = createArchiveSource(archiveFile, mokuroFile);
   const queueItem = createLocalQueueItem(pairedSource);
   addToProgressTracker(queueItem);
@@ -1056,6 +1061,13 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
   if (files.length === 0) {
     return result;
   }
+
+  // Request persistent storage now, while we still hold the user gesture that
+  // triggered this import. Firefox only surfaces its persistent-storage prompt
+  // for a gesture-initiated request; once we await pairing/decompression below,
+  // the user activation is gone and the prompt never appears. Fire-and-forget —
+  // the prompt is non-blocking and resolves independently of the import.
+  void requestPersistentStorage();
 
   try {
     // Convert to FileEntry format

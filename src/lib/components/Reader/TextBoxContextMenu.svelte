@@ -244,9 +244,9 @@
   }
 
   :global(.dark) .context-menu {
-    background-color: #1f2937;
-    border-color: #374151;
-    color: #f3f4f6;
+    background-color: var(--color-gray-800);
+    border-color: var(--color-gray-700);
+    color: var(--color-gray-100);
   }
 
   .menu-item {
@@ -276,7 +276,7 @@
   }
 
   :global(.dark) .menu-item:hover {
-    background-color: #374151;
+    background-color: var(--color-gray-700);
   }
 
   .divider {
@@ -286,6 +286,6 @@
   }
 
   :global(.dark) .divider {
-    background-color: #374151;
+    background-color: var(--color-gray-700);
   }
 </style>

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   lint:
@@ -98,7 +98,8 @@ jobs:
   release-check:
     name: Release Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Only relevant for release PRs (develop -> main); skip on PRs into develop.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
         with:

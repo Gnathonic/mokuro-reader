@@ -3,8 +3,10 @@ import {
   ensureFoldersExist,
   uploadFileWithClient
 } from '$lib/util/sync/providers/webdav/webdav-upload';
+import { basicAuthHeader } from '$lib/util/base64';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { optionalCredentialString, requireCredentialString } from '../cloud-provider-core-types';
+import { webdavAuthOptions } from './webdav-auth';
 
 export const webdavCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
@@ -20,8 +22,9 @@ export const webdavCore: CloudProviderCore = {
     const fullUrl = `${baseUrl}${encodedPath}`;
 
     const headers: Record<string, string> = {};
-    if (username || password) {
-      headers.Authorization = 'Basic ' + btoa(`${username}:${password}`);
+    if (password) {
+      // UTF-8-safe encoding; header only when a password is set (anonymous otherwise)
+      headers.Authorization = basicAuthHeader(username, password);
     }
 
     const MAX_ERROR_RETRIES = 5;
@@ -207,12 +210,7 @@ export const webdavCore: CloudProviderCore = {
     const username = optionalCredentialString(credentials, 'webdavUsername');
     const password = optionalCredentialString(credentials, 'webdavPassword');
 
-    const clientOptions: { username?: string; password?: string } = {};
-    if (username || password) {
-      clientOptions.username = username;
-      clientOptions.password = password;
-    }
-    const client = createClient(serverUrl, clientOptions);
+    const client = createClient(serverUrl, webdavAuthOptions(username, password));
 
     const folderPath = seriesTitle ? `mokuro-reader/${seriesTitle}` : 'mokuro-reader';
     await ensureFoldersExist(client, folderPath);

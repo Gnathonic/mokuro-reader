@@ -18,7 +18,7 @@
 {#if visible}
   <button
     onclick={openSettings}
-    class="fixed top-3 right-3 z-10 p-2 opacity-50 mix-blend-difference hover:text-primary-700 hover:opacity-100 hover:mix-blend-normal"
+    class="reader-hud fixed top-3 right-3 z-10 p-2 opacity-80 hover:text-primary-600 hover:opacity-100"
   >
     <UserSettingsSolid size="xl" />
   </button>

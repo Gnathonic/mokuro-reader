@@ -80,7 +80,7 @@
     <hr class="border-gray-100 opacity-10" />
     <div class="flex flex-col gap-2">
       <input
-        class="rounded-lg border border-slate-700 text-gray-900 file:mr-4 file:rounded-md file:border-0 file:bg-gray-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-gray-700 hover:file:bg-gray-200 dark:text-white dark:file:bg-gray-700 dark:file:text-gray-200 dark:hover:file:bg-gray-600"
+        class="rounded-lg border border-gray-700 text-gray-900 file:mr-4 file:rounded-md file:border-0 file:bg-gray-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-gray-700 hover:file:bg-gray-200 dark:text-white dark:file:bg-gray-700 dark:file:text-gray-200 dark:hover:file:bg-gray-600"
         type="file"
         accept=".json"
         bind:files

@@ -6,6 +6,7 @@ interface TextBoxPickerState {
   open: boolean;
   image?: string;
   page?: Page;
+  pageNumber?: number;
   tags?: string;
   metadata?: VolumeMetadata;
 }
@@ -16,7 +17,8 @@ export function showTextBoxPicker(
   image: string,
   page: Page,
   tags?: string,
-  metadata?: VolumeMetadata
+  metadata?: VolumeMetadata,
+  pageNumber?: number
 ) {
-  textBoxPickerStore.set({ open: true, image, page, tags, metadata });
+  textBoxPickerStore.set({ open: true, image, page, pageNumber, tags, metadata });
 }

@@ -189,12 +189,17 @@ npm test
 
 ### Environment Variables
 
-For Google Drive integration, create a `.env` file:
+For Google Drive and/or OneDrive integration, create a `.env` file:
 
 ```env
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
+VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
 ```
+
+For OneDrive, register an Azure AD app ("common" authority) and add your deploy
+origin as a **Single-page application** redirect URI. When unset, the OneDrive
+option is hidden. MEGA, WebDAV, and Local Folder need no configuration.
 
 ## 💬 Community
 

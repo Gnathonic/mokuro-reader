@@ -80,7 +80,7 @@
       src={cloudThumbnailUrl}
       alt={volume?.volume_title || ''}
       style="max-width: 250px; max-height: 350px; width: auto; height: auto;"
-      class="border border-gray-900 bg-black"
+      class="border border-gray-300 bg-gray-100 dark:border-gray-900 dark:bg-black"
     />
     {#if showDownloadUI}
       <div class="absolute right-2 bottom-2 rounded-full bg-black/60 p-1.5">

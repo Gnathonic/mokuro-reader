@@ -13,9 +13,9 @@
     type PageViewMode,
     type VolumeSettingsKey
   } from '$lib/settings';
-  import { zoomDefault } from '$lib/panzoom';
   import { isReader } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
+  import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
 
   // Derived visibility flags
   let isContinuous = $derived($settings.continuousScroll);
@@ -60,7 +60,6 @@
   function onPageViewModeChange(event: Event) {
     const target = event.target as HTMLSelectElement;
     updateSetting('singlePageView', target.value as PageViewMode);
-    zoomDefault();
   }
 
   function onVolumeToggle(key: VolumeSettingsKey, value: any) {
@@ -69,7 +68,6 @@
       updateVolumeSetting(volumeId, key, !value);
       const pageClamped = Math.max($volumes[volumeId].progress - 1, 1);
       updateProgress(volumeId, pageClamped);
-      zoomDefault();
     } else {
       updateVolumeSetting(volumeId, key, !value);
     }
@@ -86,7 +84,6 @@
       onchange={() => updateSetting('continuousScroll', !isContinuous)}
     >
       Continuous scroll
-      <span class="ml-1 text-xs font-medium text-amber-600 dark:text-amber-400">Alpha</span>
       <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(V)</span>
     </Toggle>
 
@@ -105,6 +102,21 @@
           onchange={onPageViewModeChange}
         />
       </div>
+      {#if isDualOrAuto}
+        <div>
+          <Label class="text-gray-900 dark:text-white">
+            Page gap: {$settings.pagedGap}px
+            <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Ctrl+Shift+Scroll)</span>
+          </Label>
+          <Range
+            min={0}
+            max={MAX_PAGE_GAP}
+            value={$settings.pagedGap}
+            onchange={(e) =>
+              updateSetting('pagedGap', Number((e.target as HTMLInputElement).value))}
+          />
+        </div>
+      {/if}
     {/if}
 
     <!-- 3. If continuous: Scroll mode dropdown + gap slider -->
@@ -130,10 +142,11 @@
         <div>
           <Label class="text-gray-900 dark:text-white">
             Divider size: {$settings.scrollGap}px
+            <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Ctrl+Shift+Scroll)</span>
           </Label>
           <Range
             min={0}
-            max={100}
+            max={MAX_PAGE_GAP}
             value={$settings.scrollGap}
             onchange={(e) =>
               updateSetting('scrollGap', Number((e.target as HTMLInputElement).value))}

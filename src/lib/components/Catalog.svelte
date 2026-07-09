@@ -247,7 +247,9 @@
     const providerNames: Record<string, string> = {
       'google-drive': 'Drive',
       mega: 'MEGA',
-      webdav: 'WebDAV'
+      webdav: 'WebDAV',
+      filesystem: 'Local Folder',
+      onedrive: 'OneDrive'
     };
     return Object.entries(placeholdersByProvider)
       .map(([provider, count]) => `${count} ${providerNames[provider] || provider}`)

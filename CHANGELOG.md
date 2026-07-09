@@ -1,5 +1,169 @@
 # Changelog
 
+## [1.8.1] - 2026-07-06
+
+### Fixed
+
+- Fixed MEGA sync repeatedly failing with 'not found' errors
+
+## [1.8.0] - 2026-07-05
+
+### Added
+
+- New Local Folder provider: Chromium-only bulk export, or direct access to sync-only files (#250)
+- OneDrive added as a cloud sync provider (#250)
+- Paged mode pages can now have a gap between them (#234)
+- Ctrl/Cmd+Shift+Scroll live-adjusts the page gap (#234)
+
+### Fixed
+
+- Quick Actions button's solid background restored (#249)
+- Fixed a bug where reconnecting Google Drive could revert synced progress
+- File type matching on Drive and MEGA is now case-insensitive
+- Fixed overlapping text lines in auto mode
+
+### Changed
+
+- Expired Google Drive sessions now show a Reconnect button
+- Google Drive reconnect works reliably everywhere now, no popup setup needed
+- WebDAV now mentions Mokuro-Bunko server compatibility
+
+## [1.7.5] - 2026-07-05
+
+### Added
+
+- Blocks series rename when cloud has undownloaded volumes (#233)
+- Confirms before overwriting an existing cloud backup (#233)
+- Sanitizes titles for filesystem/cloud safety on save (#233)
+- Old cloud series folder auto-deleted after rename
+
+### Fixed
+
+- Text placement significantly improved in auto mode (#243)
+- Cloud-backed volume renames no longer revert after sync (#233)
+- Series rename now updates every volume's cloud metadata (#233)
+- Cloud-downloaded titles no longer mangled by sanitization (#233)
+- MEGA library now updates live after cloud renames (#233)
+- Duplicate OCR blocks deduplicated across all font modes (#243)
+
+### Changed
+
+- Auto font-size now positions each line by its own quad (#243)
+- Series rename now applies per-volume, reporting partial failures (#233)
+
+## [1.7.4] - 2026-06-30
+
+### Added
+
+- Horizontal panning with wheel and touchpad (thanks @binaryBrandon)
+- MEGA two-factor authentication (2FA) login
+- Uploaded covers now show thumbnails in MEGA
+
+### Changed
+
+- MEGA support no longer held together with hope and duct tape
+- Faster MEGA downloads
+
+## [1.7.3] - 2026-06-14
+
+### Fixed
+
+- Inertial panning (fling) restored in paged mode (#232)
+
+### Changed
+
+- Default page-flip swipe threshold lowered to 35%
+
+## [1.7.2] - 2026-06-13
+
+### Added
+
+- "Fill screen" zoom mode: fills one axis, overflows the other (#231)
+
+### Fixed
+
+- Keep Zoom and Original Size no longer pin pages to the top (#231)
+- Offset spreads button works again (#231)
+- "Zoom to fit" now works in continuous scroll mode (#231)
+- Night mode, invert, B&W, and OCR toggles show the correct state (#231)
+- WebDAV logins no longer silently fall back to anonymous (#229)
+
+### Changed
+
+- Continuous "Fit to width" is now "Fill screen" (#231)
+
+## [1.7.1] - 2026-06-10
+
+### Fixed
+
+- Restore single-finger touch panning in paged mode (#227)
+
+## [1.7.0] - 2026-06-10
+
+### Added
+
+- Targeted zoom in continuous modes: wheel, double-tap, pinch (#195, #225)
+- Paged zoom rebuilt on the same engine — panzoom removed (#226)
+- "Disable animations (e-ink)" toggle (#226)
+
+### Changed
+
+- Paged wheel zoom animates through fit-relative steps (#226)
+- Double-tap cycles zoom in / fit contextually (#226)
+- Keep zoom preserves apparent size across pages (#226)
+- Continuous scroll no longer labeled Alpha
+
+### Removed
+
+- Vertical page transition (#226)
+
+## [1.6.1] - 2026-06-08
+
+### Added
+
+- Black & white (grayscale) filter with G hotkey (#221)
+- "Always show OCR" toggle with T shortcut (#220, @jakobnator)
+
+### Fixed
+
+- Firefox now requests storage upfront so imports succeed (#223)
+- Achievement badges stay consistent across themes
+
+## [1.6.0] - 2026-05-29
+
+### Added
+
+- **Theme system** - A new Appearance setting with nine built-in themes — Dark (default, unchanged), E-ink (high-contrast black-on-white for e-readers), Ice, Sepia, Nord, Sakura, Pastel, Crimson, and Godzilla — plus a Custom editor. Each theme is previewed in its own swatch. Themes are defined by nine colours (background, surface, text, muted, border, accent, and "tone" colours for downloads, mark-as-read, and delete) and re-colour the whole app, including the reader background, the in-reader HUD, manga cover frames, and download/sync/delete buttons. Themes are stored per-profile, so they sync across devices. Builds on the light-mode idea from @oscarwong67 (#86)
+
+## [1.5.10] - 2026-05-22
+
+### Fixed
+
+- **QuickActions "+" ignored Anki card mode** - The QuickActions "+" → image → text-box picker flow always opened the "Create new card" modal, ignoring the `cardMode` setting. It now uses the same update/create dispatch logic as the double-click and context-menu flows, including the 5-minute window check for updates. The `{page_num}` template variable also resolves correctly in this flow (#216)
+- **Page swipes during Anki modal** - The reader no longer flips pages while the Anki Update/Create Card modal is open, preventing accidental flips when dragging the crop box on touchscreens (#189)
+
+## [1.5.9] - 2026-05-17
+
+### Fixed
+
+- **Migaku popup scroll eaten by reader** - The reader's window-level wheel listener intercepted every wheel and blocked scrolling inside Migaku/Yomitan popup overlays. Wheel events are now only intercepted inside the reader content (#214)
+- **Migaku sentence capture stopped at line breaks** - "Capture sentence" / "read sentence" only saw the hovered OCR line because `<br/>` separators were treated as sentence boundaries. OCR lines now use a CSS-generated newline so DOM walkers see one continuous text node per speech bubble. Yomitan behaviour unchanged (#214)
+
+## [1.5.8] - 2026-05-16
+
+### Added
+
+- **`{cover}` Anki template variable** - Include the volume cover image in Anki cards alongside `{image}`, targeting a separate field (#205)
+- **Reverse alphabetical volume sort** - Sort volumes Z–A in addition to A–Z
+- **Page index DOM attribute** - The reader exposes `data-page-index` on each page so extensions (e.g. GSM stats) can read the current page without traversing styles (#207)
+
+### Fixed
+
+- **Swipe-to-flip while panning a zoomed page** - A vigorous pan past the edge of a zoomed page could silently flip the page. The swipe now only flips when the relevant edge was already visible at touch start (#186)
+- **WebP thumbnails for archive-extracted pages** - Thumbnails from CBZ/ZIP imports were silently falling back to JPEG because extracted `File` objects had no mime type. Generation is now always WebP regardless of source
+- **MEGA duplicate series/root folders under parallel uploads** - Folder creation is now serialized per path, preventing duplicates when multiple uploads race
+- **MEGA folder deduplication** - The deduplicator now runs for MEGA (previously Drive-only) and loops to convergence so late-pass leftovers no longer remain
+
 ## [1.5.7] - 2026-03-20
 
 ### Fixed

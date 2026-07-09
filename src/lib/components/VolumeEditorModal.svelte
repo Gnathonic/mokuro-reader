@@ -15,6 +15,8 @@
     getNextVolumeUuidInSeries
   } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
+  import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+  import { ProviderError } from '$lib/util/sync/provider-interface';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
@@ -198,14 +200,32 @@
       let finalSeriesTitle = seriesTitle;
 
       if (isNewSeries) {
-        if (!newSeriesName.trim()) {
+        const safeNewSeries = sanitizeRenameTitle(newSeriesName);
+        if (safeNewSeries.empty) {
           showSnackbar('Please enter a series name');
           saving = false;
           return;
         }
+        if (safeNewSeries.changed) {
+          showSnackbar(`Series saved as “${safeNewSeries.value}” to keep the name file-safe.`);
+        }
         finalSeriesUuid = generateNewSeriesUuid();
-        finalSeriesTitle = newSeriesName.trim();
+        finalSeriesTitle = safeNewSeries.value;
       }
+
+      // Sanitize the volume title so the stored title is a legal name on every sink
+      // (cloud + filesystem + OneDrive + export); title === path going forward. The series
+      // title is sanitized only when a NEW series is created (above) or via the series-rename
+      // flow — sanitizing an existing series here would split it across two cloud folders.
+      const safeVolume = sanitizeRenameTitle(volumeTitle);
+      if (safeVolume.empty) {
+        showSnackbar("Volume name can't be empty or only unusable characters.");
+        return;
+      }
+      if (safeVolume.changed) {
+        showSnackbar(`Volume saved as “${safeVolume.value}” to keep the name file-safe.`);
+      }
+      volumeTitle = safeVolume.value;
 
       // Update IndexedDB metadata
       const metadataUpdates: Partial<VolumeMetadata> = {};
@@ -224,7 +244,44 @@
         finalSeriesTitle !== originalMetadata.series_title ||
         volumeTitle !== originalMetadata.volume_title
       ) {
-        await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
+        // The cloud rename GATES the local update: it must succeed first so the
+        // remote .mokuro/cbz/cover are renamed (and the sidecar content
+        // regenerated) before we change local metadata. If it fails — offline,
+        // read-only, etc. — we abort the local rename so the library and cloud
+        // stay in sync, and tell the user why nothing changed.
+        try {
+          await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle);
+        } catch (renameErr) {
+          // Another volume's backup already occupies the new name. Nothing was
+          // written yet — offer to overwrite it or keep everything unchanged.
+          if (renameErr instanceof ProviderError && renameErr.code === 'TARGET_EXISTS') {
+            const overwrite = confirm(
+              `A backup named "${finalSeriesTitle} / ${volumeTitle}" already exists in your cloud. ` +
+                `Overwrite it with this volume? The existing backup will be deleted.`
+            );
+            if (!overwrite) {
+              showSnackbar('Rename cancelled — nothing was changed.');
+              return;
+            }
+            try {
+              await renameVolumeInCloud(originalMetadata, finalSeriesTitle, volumeTitle, {
+                overwrite: true
+              });
+            } catch (overwriteErr) {
+              console.error('Cloud rename (overwrite) failed; local rename aborted:', overwriteErr);
+              showSnackbar(
+                "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+              );
+              return;
+            }
+          } else {
+            console.error('Cloud rename failed; local rename aborted:', renameErr);
+            showSnackbar(
+              "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+            );
+            return;
+          }
+        }
       }
 
       if (Object.keys(metadataUpdates).length > 0) {
@@ -423,7 +480,7 @@
           <!-- Cover Image -->
           <div class="flex flex-col items-center gap-2">
             <div
-              class="flex h-[175px] w-[125px] items-center justify-center overflow-hidden rounded-lg border border-gray-900 bg-black"
+              class="flex h-[175px] w-[125px] items-center justify-center overflow-hidden rounded-lg border border-gray-300 bg-gray-100 dark:border-gray-900 dark:bg-black"
             >
               {#if thumbnailUrl}
                 <img

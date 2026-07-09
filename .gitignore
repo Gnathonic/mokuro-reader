@@ -17,3 +17,7 @@ vite.config.ts.timestamp-*
 *.swp
 *.swo
 *~
+
+# Playwright artifacts
+test-results/
+playwright-report/

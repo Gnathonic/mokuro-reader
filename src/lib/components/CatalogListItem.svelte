@@ -119,7 +119,7 @@
             <img
               src={thumbnailUrl}
               alt="img"
-              class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
+              class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
             />
           {:else}
             <div

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Input, Label, Select } from 'flowbite-svelte';
+  import { Label, Select } from 'flowbite-svelte';
   import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
   import { settings, updateSetting } from '$lib/settings';
 
@@ -13,12 +13,13 @@
   let zoomModes = [
     { value: 'zoomFitToScreen', name: 'Fit to screen' },
     { value: 'zoomFitToWidth', name: 'Fit to width' },
+    { value: 'zoomFillScreen', name: 'Fill screen' },
     { value: 'zoomOriginal', name: 'Original size' },
     { value: 'keepZoom', name: 'Keep zoom' }
   ];
 
   let continuousZoomModes = [
-    { value: 'zoomFitToWidth', name: 'Fit to width' },
+    { value: 'zoomFillScreen', name: 'Fill screen' },
     { value: 'zoomFitToScreen', name: 'Fit to screen' },
     { value: 'zoomOriginal', name: 'Original size (1:1)' }
   ];
@@ -26,7 +27,6 @@
   let pageTransitions = [
     { value: 'none', name: 'None' },
     { value: 'crossfade', name: 'Crossfade' },
-    { value: 'vertical', name: 'Vertical' },
     { value: 'pageTurn', name: 'Page Turn' },
     { value: 'swipe', name: 'Swipe' }
   ];
@@ -48,10 +48,6 @@
     { value: '48', name: '48' },
     { value: '60', name: '60' }
   ];
-
-  function onBackgroundColor(event: Event) {
-    updateSetting('backgroundColor', (event.target as HTMLInputElement).value);
-  }
 
   function onSelectChange(event: Event, setting: SettingsKey) {
     updateSetting(setting, (event.target as HTMLInputElement).value);
@@ -90,8 +86,4 @@
 <div>
   <Label class="text-gray-900 dark:text-white">Fontsize:</Label>
   <Select items={fontSizes} value={fontSizeValue} onchange={(e) => onSelectChange(e, 'fontSize')} />
-</div>
-<div>
-  <Label class="text-gray-900 dark:text-white">Background color:</Label>
-  <Input type="color" onchange={onBackgroundColor} value={$settings.backgroundColor} />
 </div>

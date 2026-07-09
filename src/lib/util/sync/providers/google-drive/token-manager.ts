@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { showSnackbar } from '$lib/util/snackbar';
+import { onNextUserGesture } from '$lib/util/user-gesture';
 
 class TokenManager {
   private tokenStore = writable<string>('');
@@ -9,6 +10,8 @@ class TokenManager {
   private needsAttentionStore = writable<boolean>(false);
   private refreshIntervalId: number | null = null;
   private isRefreshing = false;
+  private gestureRetryCancel: (() => void) | null = null;
+  private pendingPostReauthSync = false;
 
   constructor() {
     if (browser) {
@@ -89,10 +92,40 @@ class TokenManager {
     }, GOOGLE_DRIVE_CONFIG.TOKEN_REFRESH_CHECK_INTERVAL_MS);
   }
 
+  /**
+   * Popup blockers gate on transient user activation, not a stored permission,
+   * so a popup blocked in the background will open fine when requested from
+   * inside a real click/tap. Arm a one-shot retry on the next gesture — this
+   * makes auto re-auth work WITHOUT the user touching browser settings.
+   */
+  private armGestureRetry(): void {
+    if (this.gestureRetryCancel) return; // already armed
+    showSnackbar('Google Drive session expired — click or tap anywhere to reconnect.');
+    this.gestureRetryCancel = onNextUserGesture(() => {
+      this.gestureRetryCancel = null;
+      try {
+        // Must stay synchronous: an await here would forfeit the activation
+        // window that lets the OAuth popup open.
+        this.pendingPostReauthSync = true;
+        this.requestNewToken(false);
+      } catch (error) {
+        console.warn('Gesture-retry re-auth failed:', error);
+      }
+    });
+  }
+
+  private disarmGestureRetry(): void {
+    if (this.gestureRetryCancel) {
+      this.gestureRetryCancel();
+      this.gestureRetryCancel = null;
+    }
+  }
+
   setToken(token: string, expiresIn?: number): void {
     this.tokenStore.set(token);
     this.isRefreshing = false;
     this.needsAttentionStore.set(false); // Clear attention flag when token is set
+    this.disarmGestureRetry(); // A valid token makes any pending retry moot
 
     if (browser) {
       localStorage.setItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN, token);
@@ -204,9 +237,10 @@ class TokenManager {
             response.error === 'popup_failed_to_open' ||
             response.error === 'popup_blocked'
           ) {
-            // Popup was blocked by browser
-            console.log('Popup was blocked by browser');
-            showSnackbar('Popup blocked. Please allow popups for this site and try again.');
+            // Popup was blocked (no user activation). Retry inside the next
+            // real click/tap, where blockers always allow it.
+            console.log('Popup was blocked by browser — arming gesture retry');
+            this.armGestureRetry();
           } else {
             // Other errors (network issues, etc.) - keep auth history but clear token
             // Next sign-in will use minimal prompt since permissions weren't explicitly denied
@@ -228,7 +262,36 @@ class TokenManager {
           import('../../provider-manager').then(({ providerManager }) => {
             providerManager.updateStatus();
           });
+
+          // After a RE-auth (not initial login — CloudView owns that flow),
+          // pull cloud state immediately. Without this, nothing syncs until
+          // the user turns pages, whose fresher timestamps would then win the
+          // newest-wins merge and clobber progress made on another device.
+          if (this.pendingPostReauthSync) {
+            this.pendingPostReauthSync = false;
+            import('../../unified-cloud-manager').then(async ({ unifiedCloudManager }) => {
+              try {
+                await unifiedCloudManager.fetchAllCloudVolumes();
+                await unifiedCloudManager.syncProgress({ silent: true });
+                console.log('✅ Post-reauth sync completed');
+              } catch (error) {
+                console.warn('Post-reauth sync failed:', error);
+              }
+            });
+          }
         }
+      },
+      // GIS reports NON-OAuth failures here, not in `callback` — in particular
+      // popup_failed_to_open when the blocker eats a background-triggered
+      // popup. Without this handler, blocked auto re-auth failed silently.
+      error_callback: (error: { type?: string; message?: string }) => {
+        console.warn('Token client non-OAuth error:', error?.type, error?.message);
+        if (error?.type === 'popup_failed_to_open') {
+          this.armGestureRetry();
+        } else if (error?.type === 'popup_closed') {
+          showSnackbar('Sign-in cancelled. Please try again when ready.');
+        }
+        this.isRefreshing = false;
       }
     });
 
@@ -243,6 +306,14 @@ class TokenManager {
   }
 
   requestNewToken(forceConsent = false): void {
+    // Guards against a manual "Reconnect" click double-firing: a click is
+    // simultaneously the pointerdown that satisfies an armed gesture-retry
+    // AND the button's own handler, so both can call in on the same tick.
+    if (this.isRefreshing) {
+      console.log('Token request already in flight — ignoring duplicate call');
+      return;
+    }
+
     const tokenClient = this.tokenClientStore;
     let client: any;
 
@@ -251,6 +322,7 @@ class TokenManager {
     })();
 
     if (client) {
+      this.isRefreshing = true;
       // Determine if user has authenticated before
       const hasAuthenticated =
         browser &&
@@ -271,6 +343,7 @@ class TokenManager {
   }
 
   async logout(): Promise<void> {
+    this.disarmGestureRetry();
     // Clear the refresh interval
     if (this.refreshIntervalId) {
       clearInterval(this.refreshIntervalId);
@@ -319,9 +392,12 @@ class TokenManager {
     return timeLeft ? Math.round(timeLeft / 60000) : null;
   }
 
-  // Manual re-authentication (minimal UI, reuses existing permissions)
+  // Re-authentication (minimal UI, reuses existing permissions). Flags the
+  // next successful token for an immediate cloud pull — see the callback in
+  // initTokenClient.
   reAuthenticate(): void {
     console.log('🔄 reAuthenticate() called');
+    this.pendingPostReauthSync = true;
     this.requestNewToken(false);
   }
 }

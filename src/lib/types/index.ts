@@ -1,8 +1,14 @@
+import type { ProviderType } from '$lib/util/sync/provider-interface';
+
 export type Block = {
   box: number[];
   vertical: boolean;
   font_size: number;
   lines: string[];
+  /** Per-line quadrilaterals (4 corner points each) from mokuro; present in
+   * standard .mokuro output and stored verbatim, but optional because
+   * image-only volumes and older imports may lack it. */
+  lines_coords?: number[][][];
 };
 
 export type Page = {
@@ -38,22 +44,19 @@ export interface VolumeMetadata {
   isPlaceholder?: boolean;
 
   // Generic cloud storage fields (new multi-provider format)
-  cloudProvider?: 'google-drive' | 'mega' | 'webdav';
+  cloudProvider?: ProviderType;
   cloudFileId?: string;
   cloudModifiedTime?: string;
   cloudSize?: number;
   cloudPath?: string; // Full path for series extraction during download
-  cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail (.webp)
+  cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail sidecar
+  cloudThumbnailPath?: string; // Full path to the thumbnail sidecar (e.g. "Series/Volume.webp" or "Series/Volume.jpg")
 
   // Legacy Drive-specific fields (kept for backward compatibility)
   // When present without cloudProvider, assumed to be google-drive
   driveFileId?: string;
   driveModifiedTime?: string;
   driveSize?: number;
-
-  // Library fields (for read-only WebDAV library sources)
-  libraryId?: string;
-  libraryName?: string;
 
   // Spine width in pixels (from mokuro metadata, used for catalog stacking)
   spine_width?: number;

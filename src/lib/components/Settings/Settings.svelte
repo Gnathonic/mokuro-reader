@@ -13,6 +13,7 @@
   import VolumeDefaults from './Volume/VolumeDefaults.svelte';
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
+  import AppearanceSettings from './AppearanceSettings.svelte';
 
   let transitionParams = {
     x: 320,
@@ -92,6 +93,7 @@
       <Profiles {onClose} />
       <AnkiConnectSettings />
       <CatalogSettings />
+      <AppearanceSettings />
       <Stats />
       <About />
     </Accordion>

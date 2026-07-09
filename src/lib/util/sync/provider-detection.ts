@@ -29,7 +29,13 @@ export function clearActiveProviderKey(): void {
 export function getActiveProviderKey(): ProviderType | null {
   if (!browser) return null;
   const value = localStorage.getItem(ACTIVE_PROVIDER_KEY);
-  if (value === 'google-drive' || value === 'mega' || value === 'webdav') {
+  if (
+    value === 'google-drive' ||
+    value === 'mega' ||
+    value === 'webdav' ||
+    value === 'filesystem' ||
+    value === 'onedrive'
+  ) {
     return value;
   }
   return null;
@@ -50,10 +56,11 @@ function detectProviderFromCredentials(): ProviderType | null {
     return 'google-drive';
   }
 
-  // Check MEGA credentials
+  // Check MEGA credentials (new session token or legacy email/password)
+  const megaSession = localStorage.getItem('mega_session');
   const megaEmail = localStorage.getItem('mega_email');
   const megaPassword = localStorage.getItem('mega_password');
-  if (megaEmail && megaPassword) {
+  if (megaSession || (megaEmail && megaPassword)) {
     return 'mega';
   }
 

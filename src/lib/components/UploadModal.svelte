@@ -155,11 +155,11 @@
           </p>
           <p>Install mokuro (<b>0.2.0</b> or later required):</p>
           <div role="none" onclick={toClipboard}>
-            <code class="bg-slate-900 text-primary-600">pip install mokuro</code>
+            <code class="bg-gray-900 text-primary-600">pip install mokuro</code>
           </div>
           <p>Then run it on your manga folder:</p>
           <div role="none" onclick={toClipboard}>
-            <code class="bg-slate-900 text-primary-600">mokuro /path/to/manga/volume</code>
+            <code class="bg-gray-900 text-primary-600">mokuro /path/to/manga/volume</code>
           </div>
           <p class="text-sm">
             See the <a

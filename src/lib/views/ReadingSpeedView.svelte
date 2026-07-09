@@ -1044,6 +1044,11 @@
     const tier4Badges = ['¼ Native', 'Consistent Reader', 'Quarter Million', '25 Hour Reader'];
     if (tier4Badges.includes(badge)) return 'badge-tier-gold';
 
+    // Tier 5 (Platinum) - hard-coded blue so it never follows the theme's
+    // remapped --color-blue scale (the bare Flowbite blue badge does).
+    const tier5Badges = ['⅜ Native', 'Dedicated Reader', 'Half Million', '50 Hour Reader'];
+    if (tier5Badges.includes(badge)) return 'badge-tier-platinum';
+
     // Tier 6 (Prestige Bronze)
     const tier6Badges = ['½ Native', 'Veteran Reader', '100 Hour Reader', 'Million Club'];
     if (tier6Badges.includes(badge)) return 'badge-tier-bronze';
@@ -1413,8 +1418,9 @@
     <TrashBinSolid size="lg" class="mx-auto mb-4 text-gray-400 dark:text-gray-200" />
     <h3 class="mb-4 text-xl font-semibold text-gray-300">Remove Orphaned Volume Data?</h3>
     <p class="mb-4 text-base text-gray-400">
-      You have <span class="font-semibold text-white">{orphanedCounts.total} volume(s)</span> with missing
-      series information in your reading history.
+      You have <span class="font-semibold text-gray-900 dark:text-white"
+        >{orphanedCounts.total} volume(s)</span
+      > with missing series information in your reading history.
     </p>
     {#if orphanedCounts.speedTracked > 0 || orphanedCounts.markedAsRead > 0 || orphanedCounts.other > 0}
       <div class="mb-4 rounded bg-gray-800 p-3 text-left text-sm text-gray-400">

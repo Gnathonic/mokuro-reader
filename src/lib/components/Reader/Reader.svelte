@@ -3,19 +3,15 @@
   import type { TransitionConfig } from 'svelte/transition';
 
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
-  import {
-    Panzoom,
-    panzoomStore,
-    scrollImage,
-    toggleFullScreen,
-    zoomDefault,
-    zoomDefaultWithLayoutWait,
-    zoomFitToScreen,
-    handleWheel as panzoomHandleWheel
-  } from '$lib/panzoom';
+  import PagedViewport from './PagedViewport.svelte';
+  import { pagedZoom } from '$lib/reader/paged-zoom';
+  import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
+  import { setInstantAnimations } from '$lib/reader/animator';
+  import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { toggleFullScreen } from '$lib/util/fullscreen';
   import {
     effectiveVolumeSettings,
-    invertColorsActive,
+    imageFilter,
     progress,
     settings,
     updateProgress,
@@ -23,9 +19,10 @@
     updateVolumeSetting,
     volumes,
     type VolumeSettings,
-    type ContinuousZoomMode
+    type ContinuousZoomMode,
+    type ScheduleSettingKey
   } from '$lib/settings';
-  import { clamp, debounce, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
@@ -37,8 +34,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
+    blobToBase64,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { db } from '$lib/catalog/db';
   import { showSnackbar } from '$lib/util';
   import {
     BackwardStepSolid,
@@ -53,9 +52,10 @@
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
-  import { isWideSpread, shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
 
@@ -76,50 +76,17 @@
   );
 
   let start: Date;
-  let textBoxWasActive = false;
-  let pointerDownX = 0;
-  let pointerDownY = 0;
-  const DRAG_THRESHOLD = 5;
 
   function mouseDown() {
     start = new Date();
-  }
-
-  function handleOverlayPointerDown(e: PointerEvent) {
-    pointerDownX = e.clientX;
-    pointerDownY = e.clientY;
-
-    const target = e.target as HTMLElement;
-    if (target.closest('.textBox')) {
-      textBoxWasActive = true;
-    }
-  }
-
-  function handleOverlayToggle(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-
-    // Clicking on a text box — don't toggle
-    if (target.closest('.textBox')) return;
-
-    // Ignore drags/pans — only toggle on stationary clicks
-    const dx = e.clientX - pointerDownX;
-    const dy = e.clientY - pointerDownY;
-    if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) return;
-
-    // First tap outside after interacting with a text box dismisses it without toggling
-    if (textBoxWasActive) {
-      textBoxWasActive = false;
-      return;
-    }
-
-    overlaysVisible = !overlaysVisible;
   }
 
   export function toggleHasCover(volumeId: string) {
     updateVolumeSetting(volumeId, 'hasCover', !volumeSettings.hasCover);
     const pageClamped = Math.max($volumes[volumeId].progress - 1, 1);
     updateProgress(volumeId, pageClamped);
-    zoomDefault();
+    // The paged viewport re-applies its base when the displayed content
+    // changes (hasCover flows into the content-size prop).
   }
 
   function left(_e: any, ingoreTimeOut?: boolean) {
@@ -142,103 +109,22 @@
     }
   }
 
-  // Calculate target page when navigating forward.
-  // Uses "half-step" (+1) when the next image is a spread while current view is dual.
-  function calculateForwardTarget(currentPage: number): number {
-    const currentIndex = currentPage - 1;
-
-    if (!pages || currentIndex < 0 || currentIndex >= pages.length) {
-      return currentPage + navAmount;
-    }
-
-    const currentPageData = pages[currentIndex];
-    const nextPageData = pages[currentIndex + 1];
-    const previousPageData = currentIndex > 0 ? pages[currentIndex - 1] : undefined;
-
-    const currentIsSingle = shouldShowSinglePage(
-      $settings.singlePageView,
-      currentPageData,
-      nextPageData,
-      previousPageData,
-      currentIndex === 0,
-      volumeSettings.hasCover
-    );
-
-    if (currentIsSingle) {
-      return currentPage + 1;
-    }
-
-    // Half-step correction for off-alignment spreads:
-    // Current dual view is [N, N+1], next spread is [N+2, N+3].
-    // The further page from current in forward direction is N+3.
-    const forwardLookaheadPage = pages[currentIndex + 3];
-    const lookaheadIsWide =
-      forwardLookaheadPage !== undefined && isWideSpread(forwardLookaheadPage);
-
-    if (currentPageData && nextPageData && !isWideSpread(currentPageData) && lookaheadIsWide) {
-      return currentPage + 1;
-    }
-
-    return currentPage + 2;
-  }
-
-  // Calculate target page when navigating backward, accounting for single-page exceptions
-  function calculateBackwardTarget(currentPage: number): number {
-    if (currentPage <= 1) return 0;
-
-    const currentIndex = currentPage - 1;
-    const currentPageData = pages?.[currentIndex];
-    const currentNextPageData = pages?.[currentIndex + 1];
-    const currentPreviousPageData = currentIndex > 0 ? pages?.[currentIndex - 1] : undefined;
-
-    const currentShouldBeSingle = shouldShowSinglePage(
-      $settings.singlePageView,
-      currentPageData,
-      currentNextPageData,
-      currentPreviousPageData,
-      currentIndex === 0,
-      volumeSettings.hasCover
-    );
-
-    // Mirror of forward half-step fix:
-    // when moving backward from a dual view, inspect the further page in the
-    // previous spread chunk (currentPage - 2). If that page is wide, half-step.
-    if (!currentShouldBeSingle) {
-      const previousSpreadFurtherPage = pages?.[currentIndex - 2];
-      if (previousSpreadFurtherPage && isWideSpread(previousSpreadFurtherPage)) {
-        return currentPage - 1;
-      }
-    }
-
-    const targetIndex = currentPage - 2;
-    if (targetIndex < 0) {
-      return currentPage - 1;
-    }
-
-    const targetPage = pages?.[targetIndex];
-    const targetNextPage = pages?.[targetIndex + 1];
-    const targetPreviousPage = targetIndex > 0 ? pages?.[targetIndex - 1] : undefined;
-
-    const targetShouldBeSingle = shouldShowSinglePage(
-      $settings.singlePageView,
-      targetPage,
-      targetNextPage,
-      targetPreviousPage,
-      targetIndex === 0,
-      volumeSettings.hasCover
-    );
-
-    return targetShouldBeSingle ? currentPage - 1 : currentPage - 2;
+  // Spread-alignment target math lives in $lib/reader/page-nav (pure, tested).
+  function pageNavContext() {
+    return {
+      pages,
+      mode: $settings.singlePageView,
+      hasCover: volumeSettings.hasCover ?? false,
+      fallbackStep: navAmount
+    };
   }
 
   function navigateForward(ingoreTimeOut?: boolean): void {
-    const targetPage = calculateForwardTarget(page);
-    changePage(targetPage, ingoreTimeOut);
+    changePage(calculateForwardTarget(page, pageNavContext()), ingoreTimeOut);
   }
 
   function navigateBackward(ingoreTimeOut?: boolean): void {
-    const targetPage = calculateBackwardTarget(page);
-    changePage(targetPage, ingoreTimeOut);
+    changePage(calculateBackwardTarget(page, pageNavContext()), ingoreTimeOut);
   }
 
   function changePage(newPage: number, ingoreTimeOut = false) {
@@ -309,16 +195,8 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
-    // Ignore shortcuts when user is in a text input, editable field, text box, or UI overlay
-    const target = event.target as HTMLElement;
-    if (
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.isContentEditable ||
-      target.closest('#settings') || // Settings drawer
-      target.closest('[data-popover]') || // Page number popover and other popovers
-      target.closest('.textBox') // OCR text boxes (even when not editable)
-    ) {
+    // Ignore shortcuts when the user is typing or inside reader UI overlays
+    if (keyboardShouldIgnore(event.target)) {
       return;
     }
 
@@ -377,7 +255,7 @@
         left(event, true);
         return;
       case 'ArrowUp':
-        scrollImage('up');
+        $pagedZoom?.scrollImage('up');
         return;
       case 'PageUp':
         navigateBackward(true);
@@ -386,7 +264,7 @@
         right(event, true);
         return;
       case 'ArrowDown':
-        scrollImage('down');
+        $pagedZoom?.scrollImage('down');
         return;
       case 'PageDown':
       case 'Space':
@@ -404,23 +282,13 @@
         toggleFullScreen();
         return;
       case 'KeyI':
-        if ($settings.invertColorsSchedule.enabled) {
-          showNotification('Invert is on automatic schedule', 'invert-scheduled');
-        } else {
-          updateSetting('invertColors', !$settings.invertColors);
-          showNotification($settings.invertColors ? 'Invert Off' : 'Invert On', 'invert-toggle');
-        }
+        toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert');
         return;
       case 'KeyN':
-        if ($settings.nightModeSchedule.enabled) {
-          showNotification('Night mode is on automatic schedule', 'nightmode-scheduled');
-        } else {
-          updateSetting('nightMode', !$settings.nightMode);
-          showNotification(
-            $settings.nightMode ? 'Night Mode Off' : 'Night Mode On',
-            'nightmode-toggle'
-          );
-        }
+        toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode');
+        return;
+      case 'KeyG':
+        toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
         return;
       case 'KeyC':
         if (volume) {
@@ -447,6 +315,15 @@
           showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
         }
         return;
+      case 'KeyT': {
+        const next = !$settings.alwaysShowOCR;
+        updateSetting('alwaysShowOCR', next);
+        showNotification(
+          next ? 'Always Show OCR: On' : 'Always Show OCR: Off',
+          'always-show-ocr-toggle'
+        );
+        return;
+      }
       case 'KeyV':
         toggleContinuousScroll();
         return;
@@ -456,88 +333,6 @@
       default:
         break;
     }
-  }
-
-  let startX = 0;
-  let startY = 0;
-  let touchStart: Date;
-  let lastMultiTouchTime = 0; // Timestamp of last multi-touch event
-
-  function handleTouchStart(event: TouchEvent) {
-    if (!$settings.mobile) return;
-    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
-    if (event.touches.length > 1) return; // Ignore multi-touch starts
-
-    // Capture start position for single-finger gesture
-    const { clientX, clientY } = event.touches[0];
-    touchStart = new Date();
-    startX = clientX;
-    startY = clientY;
-  }
-
-  function handlePointerUp(event: TouchEvent) {
-    if (!$settings.mobile) return;
-    if ($settings.continuousScroll) return; // Continuous mode handles its own touch
-
-    // If fingers remain, this was a multi-touch gesture - mark it and wait
-    if (event.touches.length !== 0) {
-      lastMultiTouchTime = Date.now();
-      return;
-    }
-
-    // Ignore swipes within 200ms of a multi-touch gesture (pinch-zoom)
-    if (Date.now() - lastMultiTouchTime < 200) return;
-
-    const { clientX, clientY } = event.changedTouches[0];
-
-    const distanceX = clientX - startX;
-    const distanceY = clientY - startY;
-
-    // Vertical threshold scales with viewport for consistent feel across devices
-    const verticalThreshold = Math.min(200, window.innerHeight * 0.3);
-    const isSwipe = Math.abs(distanceY) < verticalThreshold;
-
-    const touchDuration = Date.now() - touchStart?.getTime();
-
-    if (isSwipe && touchDuration < 500) {
-      const swipeThreshold = ($settings.swipeThreshold / 100) * window.innerWidth;
-
-      if (distanceX > swipeThreshold) {
-        left(event, true);
-      } else if (distanceX < -swipeThreshold) {
-        right(event, true);
-      }
-    }
-  }
-
-  function onDoubleTap(event: MouseEvent) {
-    if ($panzoomStore) {
-      const { clientX, clientY } = event;
-      const { scale } = $panzoomStore.getTransform();
-
-      if (scale < 1) {
-        $panzoomStore.zoomTo(clientX, clientY, 1.5);
-      } else {
-        zoomFitToScreen();
-      }
-    }
-  }
-
-  // Wheel handler wrapper that excludes settings drawer, popovers, and modals
-  function handleWheelEvent(e: WheelEvent) {
-    // In continuous scroll mode, let ContinuousScrollReader handle wheel events
-    if ($settings.continuousScroll) return;
-
-    const target = e.target as HTMLElement;
-    // Don't capture wheel events from settings drawer, popovers, or modals
-    if (
-      target.closest('#settings') ||
-      target.closest('[data-popover]') ||
-      target.closest('dialog')
-    ) {
-      return;
-    }
-    panzoomHandleWheel(e);
   }
 
   onMount(() => {
@@ -554,17 +349,19 @@
     // Prevent scrollbars from appearing when in reader mode
     document.documentElement.style.overflow = 'hidden';
 
-    // Add wheel listener with capture to intercept ctrl+wheel before browser handles it
-    // passive: false is required to allow preventDefault()
-    window.addEventListener('wheel', handleWheelEvent, { capture: true, passive: false });
+    // The settings panel's "Offset spreads" button signals through this
+    // event (it has no access to reader internals). The old PixiJS reader
+    // was the listener; since its removal the button had dispatched into
+    // the void.
+    const onOffsetSpreads = () => offsetSpreads();
+    window.addEventListener('offset-spreads', onOffsetSpreads);
 
     return () => {
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
-      // Remove wheel listener
-      window.removeEventListener('wheel', handleWheelEvent, { capture: true });
+      window.removeEventListener('offset-spreads', onOffsetSpreads);
     };
   });
 
@@ -573,27 +370,20 @@
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
   });
 
-  // Apply zoom after page changes or settings changes
-  // This ensures proper scaling and centering when page dimensions or layout settings change
-  $effect(() => {
-    const pg = page;
+  // The paged viewport re-applies its base whenever the displayed content,
+  // zoom mode, viewport, or reading direction changes — driven by the
+  // pagedContentSize prop computed from page data (no DOM measurement, no
+  // layout waits).
+  let pagedContentSize = $derived.by(() => {
     const pgs = pages;
-    const pz = $panzoomStore;
-
-    // Add dependencies on settings that affect layout and zoom
-    const zoomMode = $settings.zoomDefault;
-    const pageMode = $settings.singlePageView;
-    const hasCover = volumeSettings.hasCover;
-    const rtl = volumeSettings.rightToLeft;
-
-    // Wait for all required data and panzoom instance to be ready
-    if (pg && pgs && pgs.length > 0 && pz) {
-      // Wait for Svelte DOM updates, then wait for browser layout reflow
-      // This is critical for auto page mode switching to have correct dimensions
-      tick().then(() => {
-        zoomDefaultWithLayoutWait();
-      });
-    }
+    const idx = index;
+    if (!pgs || pgs.length === 0 || !pgs[idx]) return { width: 0, height: 0 };
+    const first = { width: pgs[idx].img_width, height: pgs[idx].img_height };
+    const second =
+      showSecondPage() && pgs[idx + 1]
+        ? { width: pgs[idx + 1].img_width, height: pgs[idx + 1].img_height }
+        : null;
+    return spreadContentSize(first, second, $settings.pagedGap ?? 0);
   });
 
   // Fire reader closed event when component is destroyed (navigating away)
@@ -621,6 +411,12 @@
   // Set of missing page paths for checking if current page is a placeholder
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
 
+  // E-ink mode: all reader animations (zoom, smooth scroll, camera pan) run
+  // through Animator — flip its global instant mode from the setting.
+  $effect(() => {
+    setInstantAnimations($settings.disableAnimations);
+  });
+
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
 
@@ -635,15 +431,15 @@
 
     const durations = {
       crossfade: 200,
-      vertical: 400,
       pageTurn: 200,
       swipe: 350,
       none: 0
     };
 
+    // Legacy persisted values (e.g. the removed 'vertical') fall to 0.
     const duration = durations[transition] || 0;
 
-    if (transition === 'none') {
+    if (duration === 0 || $settings.disableAnimations) {
       return { duration: 0 };
     }
 
@@ -653,16 +449,6 @@
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
-        }
-
-        if (transition === 'vertical') {
-          // Slide vertically with a small gap between pages
-          const gap = 3; // Small gap between pages (in vh units)
-          const startOffset = direction === 'forward' ? 100 + gap : -(100 + gap);
-          const currentPos = startOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
         }
 
         if (transition === 'pageTurn') {
@@ -708,15 +494,15 @@
 
     const durations = {
       crossfade: 200,
-      vertical: 400,
       pageTurn: 200,
       swipe: 350,
       none: 0
     };
 
+    // Legacy persisted values (e.g. the removed 'vertical') fall to 0.
     const duration = durations[transition] || 0;
 
-    if (transition === 'none') {
+    if (duration === 0 || $settings.disableAnimations) {
       return { duration: 0 };
     }
 
@@ -726,16 +512,6 @@
       css: (t) => {
         if (transition === 'crossfade') {
           return `opacity: ${t}`;
-        }
-
-        if (transition === 'vertical') {
-          // Slide vertically - now used for ENTERING page
-          const gap = 3; // Small gap between pages (in vh units)
-          const endOffset = direction === 'forward' ? -(100 + gap) : 100 + gap;
-          const currentPos = endOffset * (1 - t);
-          return `
-            transform: translateY(${currentPos}vh);
-          `;
         }
 
         if (transition === 'pageTurn') {
@@ -764,7 +540,9 @@
   let cachedImageUrl1 = $state<string | null>(null);
   let cachedImageUrl2 = $state<string | null>(null);
 
-  // Update cache when page or volume data changes
+  // Update cache when page or volume data changes. Continuous readers render
+  // their own blob URLs, but QuickActions reads imageCache.getFile() for Anki
+  // image actions in BOTH modes — the cache must stay warm here.
   $effect(() => {
     const currentIndex = index;
     const files = volumeData?.files;
@@ -813,6 +591,14 @@
   // Window size state for reactive auto-detection
   let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 0);
   let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 0);
+
+  let effectiveScrollMode = $derived(
+    $settings.scrollMode === 'auto'
+      ? windowWidth > windowHeight
+        ? 'horizontal'
+        : 'vertical'
+      : $settings.scrollMode
+  );
 
   // Determine if we should show single page based on mode, pages, and screen
   // Force calculation to wait for all data by using a single derived with explicit dependencies
@@ -875,8 +661,14 @@
   let continuousVisibleCount = $state(1);
   let pageDisplay = $derived.by(() => {
     if ($settings.continuousScroll) {
-      // Continuous mode: use actual visible count from the scroll reader
-      if (continuousVisibleCount > 1 && page + 1 <= (pages?.length ?? 0)) {
+      // Continuous mode: use actual visible count from the scroll reader.
+      // Only the horizontal reader reports counts — ignore a stale value
+      // after switching to vertical.
+      if (
+        effectiveScrollMode === 'horizontal' &&
+        continuousVisibleCount > 1 &&
+        page + 1 <= (pages?.length ?? 0)
+      ) {
         return `${page},${page + 1} / ${pages?.length}`;
       }
       return `${page} / ${pages?.length}`;
@@ -912,7 +704,7 @@
   let notificationKey = $state<string>('');
   let notificationTimeout: number | undefined = undefined;
 
-  // Context menu state (rendered outside panzoom for correct positioning)
+  // Context menu state (rendered outside the zoom wrapper for correct positioning)
   interface ContextMenuData {
     x: number;
     y: number;
@@ -966,6 +758,19 @@
       seriesTitle: volume.series_title,
       volumeTitle: volume.volume_title
     };
+
+    // Load cover image for {cover} template support
+    try {
+      const dbVolume = await db.volumes.get(volume.volume_uuid);
+      if (dbVolume?.thumbnail) {
+        const coverImage = await blobToBase64(dbVolume.thumbnail);
+        if (coverImage) {
+          volumeMetadata.coverImage = coverImage;
+        }
+      }
+    } catch {
+      // Continue without cover image
+    }
 
     // Use pre-captured image URL (captured at right-click time for reliability)
     const url = contextMenuData.imageUrl;
@@ -1093,6 +898,30 @@
     }, 2000);
   }
 
+  function handleGapChange(px: number) {
+    showNotification(`Page gap: ${px}px`, 'page-gap');
+  }
+
+  // Shared toggle for the Manual/Scheduled display filters (night, invert,
+  // B&W). When the schedule owns the filter we only notify; otherwise flip
+  // the manual boolean and announce the state we just wrote. (The old code
+  // re-read $settings after updateSetting expecting a stale value — the read
+  // is synchronous, so every toast announced the OPPOSITE state.)
+  function toggleScheduledFilter(
+    settingKey: 'nightMode' | 'invertColors' | 'grayscale',
+    scheduleKey: ScheduleSettingKey,
+    label: string,
+    notifPrefix: string
+  ) {
+    if ($settings[scheduleKey].enabled) {
+      showNotification(`${label} is on automatic schedule`, `${notifPrefix}-scheduled`);
+    } else {
+      const next = !$settings[settingKey];
+      updateSetting(settingKey, next);
+      showNotification(next ? `${label} On` : `${label} Off`, `${notifPrefix}-toggle`);
+    }
+  }
+
   function rotateScrollMode() {
     const current = $settings.scrollMode;
     const order = ['auto', 'vertical', 'horizontal'] as const;
@@ -1130,13 +959,9 @@
   }
 
   function offsetSpreads() {
-    if ($settings.continuousScroll) {
-      // In continuous mode, ContinuousScrollReader handles it via custom event
-      window.dispatchEvent(new CustomEvent('offset-spreads'));
-    } else if (volume) {
-      // In paged mode, toggle hasCover to shift spread pairing
-      toggleHasCover(volume.volume_uuid);
-    }
+    // Shift spread pairing by toggling hasCover — the paged viewport and the
+    // horizontal scroll reader both derive their pairing from it.
+    if (volume) toggleHasCover(volume.volume_uuid);
     showNotification('Spreads Offset', 'offset-spreads');
   }
 
@@ -1153,19 +978,19 @@
     const currentMode = $settings.continuousZoomDefault;
     let nextMode: ContinuousZoomMode;
 
-    // Rotate through: fitToWidth -> fitToScreen -> original -> fitToWidth
-    if (currentMode === 'zoomFitToWidth') {
+    // Rotate through: fillScreen -> fitToScreen -> original -> fillScreen
+    if (currentMode === 'zoomFillScreen') {
       nextMode = 'zoomFitToScreen';
     } else if (currentMode === 'zoomFitToScreen') {
       nextMode = 'zoomOriginal';
     } else {
-      nextMode = 'zoomFitToWidth';
+      nextMode = 'zoomFillScreen';
     }
 
     updateSetting('continuousZoomDefault', nextMode);
 
     const labels: Record<ContinuousZoomMode, string> = {
-      zoomFitToWidth: 'Fit to Width',
+      zoomFillScreen: 'Fill Screen',
       zoomFitToScreen: 'Fit to Screen',
       zoomOriginal: 'Original Size'
     };
@@ -1195,10 +1020,12 @@
     const currentMode = $settings.zoomDefault;
     let nextMode: typeof currentMode;
 
-    // Rotate through: fitToScreen -> fitToWidth -> original -> keepZoom -> fitToScreen
+    // Rotate: fitToScreen -> fitToWidth -> fillScreen -> original -> keepZoom -> fitToScreen
     if (currentMode === 'zoomFitToScreen') {
       nextMode = 'zoomFitToWidth';
     } else if (currentMode === 'zoomFitToWidth') {
+      nextMode = 'zoomFillScreen';
+    } else if (currentMode === 'zoomFillScreen') {
       nextMode = 'zoomOriginal';
     } else if (currentMode === 'zoomOriginal') {
       nextMode = 'keepZoom';
@@ -1212,6 +1039,7 @@
     const labels = {
       zoomFitToScreen: 'Fit to Screen',
       zoomFitToWidth: 'Fit to Width',
+      zoomFillScreen: 'Fill Screen',
       zoomOriginal: 'Original Size',
       keepZoom: 'Keep Zoom'
     };
@@ -1223,11 +1051,9 @@
   onresize={() => {
     windowWidth = window.innerWidth;
     windowHeight = window.innerHeight;
-    zoomDefaultWithLayoutWait();
+    // The paged viewport re-applies its base on resize internally.
   }}
   onkeydown={handleShortcuts}
-  ontouchstart={handleTouchStart}
-  ontouchend={handlePointerUp}
   onscroll={() => {
     // Detect and fix scroll position drift caused by scrolling in overlays
     // (e.g., settings menu) that affects the underlying document
@@ -1248,6 +1074,8 @@
     volumeUuid={volume.volume_uuid}
     page1={pages[index]}
     page2={!useSinglePage ? pages[index + 1] : undefined}
+    page1Number={index + 1}
+    page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
@@ -1295,7 +1123,7 @@
         </div>
       </div>
     </Popover>
-    <button class="fixed top-5 left-5 z-10 opacity-50 mix-blend-difference" id="page-num">
+    <button class="reader-hud fixed top-5 left-5 z-10 opacity-80" id="page-num">
       {#key page}
         <p class="text-left" class:hidden={!$settings.charCount}>{charDisplay}</p>
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
@@ -1313,12 +1141,6 @@
     {/key}
   {/if}
   {#if $settings.continuousScroll && volumeData?.files}
-    {@const effectiveScrollMode =
-      $settings.scrollMode === 'auto'
-        ? windowWidth > windowHeight
-          ? 'horizontal'
-          : 'vertical'
-        : $settings.scrollMode}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
         {pages}
@@ -1329,6 +1151,7 @@
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {:else}
@@ -1342,13 +1165,21 @@
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {/if}
   {:else}
     <!-- Page-based mode -->
-    <div class="flex" style:background-color={$settings.backgroundColor}>
-      <Panzoom>
+    <div class="flex" style:background-color="var(--reader-bg)">
+      <PagedViewport
+        contentSize={pagedContentSize}
+        pageKey={page}
+        rtl={volumeSettings.rightToLeft ?? true}
+        onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
+        onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
+      >
         <button
           aria-label="Previous page (left edge)"
           class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
@@ -1375,19 +1206,12 @@
           onmousedown={mouseDown}
           onmouseup={right}
         ></button>
-        <div
-          class="grid"
-          style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
-          ondblclick={onDoubleTap}
-          onpointerdown={handleOverlayPointerDown}
-          onclick={handleOverlayToggle}
-          role="none"
-          id="manga-panel"
-        >
+        <div class="grid" style:filter={$imageFilter} id="manga-panel">
           {#key page}
             <div
               class="col-start-1 row-start-1 flex flex-row"
               class:flex-row-reverse={!volumeSettings.rightToLeft}
+              style:column-gap={`${$settings.pagedGap ?? 0}px`}
               in:pageIn={{ direction: pageDirection }}
               out:pageOut={{ direction: pageDirection }}
             >
@@ -1420,7 +1244,7 @@
             </div>
           {/key}
         </div>
-      </Panzoom>
+      </PagedViewport>
     </div>
 
     {#if !$settings.mobile}

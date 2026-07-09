@@ -1,0 +1,155 @@
+# Title Filesystem-Safety Sanitization — Design
+
+**Date:** 2026-06-29
+**Branch:** `fix/cloud-rename-sidecar` (stacked on PR #233)
+**Status:** Approved design, pending implementation plan
+
+## Problem
+
+User-supplied series/volume titles flow **unsanitized** into the cloud/disk path as
+`` `${seriesTitle}/${volumeTitle}` `` (built once in `unified-cloud-manager.ts`, then
+consumed by every provider). Characters that are illegal or structural on a sink corrupt
+or break sync:
+
+- **`/`** (confirmed on MEGA, generalizes to Drive + WebDAV): every provider re-splits the
+  path on `/`, so an in-title slash silently becomes extra nested folders. WebDAV
+  `createDirectory(recursive: true)` materializes them.
+- **The full Windows/OneDrive-illegal set** `< > : " / \ | ? *` plus control chars: the
+  **filesystem provider** (File System Access API, `feat/filesystem-provider`) **throws a
+  `TypeError` and aborts the write** on these; OneDrive's Graph API rejects them; they break
+  NTFS/exFAT/OneDrive even though MEGA/Drive/Linux/macOS tolerate some.
+- **`..` / `.`** as a whole title: path traversal / rejected by the FS API.
+- **Reserved device names** (`CON PRN AUX NUL COM1-9 LPT1-9`), **trailing dot/space**,
+  **leading-dot dotfiles**, **empty/whitespace-only**.
+
+All six sinks — MEGA, Google Drive, WebDAV, OneDrive, filesystem, and local file-export —
+build names from the same titles, so a title that is safe everywhere fixes all of them.
+
+## Decisions (locked with the user)
+
+1. **Normalize the stored title** so `title === path`. Round-trip becomes identity; no
+   image-only special case; no two-sided cache-consistency problem.
+2. **Substitute + notify** (not block), using **fullwidth look-alikes** for the full
+   Windows-illegal set. The only hard block is a title that sanitizes to empty.
+3. **Going-forward only** — no migration of existing libraries. Legacy titles keep working
+   on the sinks they already work on, and migrate naturally the next time they're renamed.
+4. **Land on `fix/cloud-rename-sidecar`** (PR #233).
+
+### Consequence the user accepted
+
+`:` and `?` are common in real titles, so they are **visibly altered**:
+`Steins;Gate: 0` → `Steins;Gate： 0`, `What If?` → `What If？`. This is the deliberate price
+of legal-everywhere + non-blocking.
+
+## Architecture
+
+### Key insight — sanitize at the source, not the chokepoint
+
+Because the path is built _from_ the stored title, sanitizing the **stored title** makes every
+downstream path safe with **no `unified-cloud-manager` or provider changes**. This:
+
+- keeps PR #233's rename-sidecar logic untouched;
+- avoids a chokepoint sanitizer that would mismatch **legacy** raw-path cloud files on lookup
+  (a legacy title still resolves to its raw cloud path until the user renames it, at which
+  point the existing rename-moves-files flow migrates it to the safe path).
+
+So the only change to the sync layer is: nothing. Titles arrive already safe.
+
+### Unit: `sanitizeTitleSegment`
+
+New file `src/lib/util/sanitize-title.ts`, one pure exported function. (The control-char
+class below is written with explicit escapes — `\x00-\x1F` plus `\x7F` DEL.)
+
+```typescript
+const FULLWIDTH: Record<string, string> = {
+  '/': '／', // U+FF0F FULLWIDTH SOLIDUS
+  '\\': '＼', // U+FF3C FULLWIDTH REVERSE SOLIDUS
+  ':': '：', // U+FF1A FULLWIDTH COLON
+  '*': '＊', // U+FF0A FULLWIDTH ASTERISK
+  '?': '？', // U+FF1F FULLWIDTH QUESTION MARK
+  '"': '＂', // U+FF02 FULLWIDTH QUOTATION MARK
+  '<': '＜', // U+FF1C FULLWIDTH LESS-THAN SIGN
+  '>': '＞', // U+FF1E FULLWIDTH GREATER-THAN SIGN
+  '|': '｜' // U+FF5C FULLWIDTH VERTICAL LINE
+};
+const DOT_LEADER = '․'; // ․ ONE DOT LEADER
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/**
+ * Make a single title segment safe as a file/folder name on every sink
+ * (MEGA, Google Drive, WebDAV, OneDrive, the File System Access API, and local export).
+ * Pure and non-lossy except for control-char removal. Returns '' if nothing usable remains;
+ * callers decide how to treat empty (rename → error; import → 'Untitled').
+ */
+export function sanitizeTitleSegment(raw: string): string {
+  let s = raw.replace(/[\x00-\x1F\x7F]/g, ''); // 1. strip control + DEL
+  s = s.replace(/[\\/:*?"<>|]/g, (c) => FULLWIDTH[c]); // 2. fullwidth substitution
+  s = s.replace(/^ +| +$/g, ''); // 3. trim leading/trailing spaces
+  s = s.replace(/^\.+/, (m) => DOT_LEADER.repeat(m.length)); // 4a. leading dots → leaders
+  s = s.replace(/\.+$/, (m) => DOT_LEADER.repeat(m.length)); // 4b. trailing dots → leaders
+  if (RESERVED.test(s)) s = s + '_'; // 5. reserved device names
+  return s;
+}
+```
+
+Notes:
+
+- Interior dots (`Vol. 3`) are untouched; only leading/trailing dot runs and all-dots
+  segments (`.`, `..`) are converted, neutralizing path-traversal and Windows trailing-dot
+  rules while staying visually dots.
+- Reserved-name disambiguation appends ASCII `_` (legal everywhere); never deletes, to avoid
+  collapsing two distinct titles.
+- **Out of scope** (documented residual limits, not handled): per-segment byte-length caps
+  (ext4 255-byte), case-insensitive collisions (`Naruto`/`naruto`), and APFS NFC/NFD
+  normalization. Pre-existing and orthogonal.
+
+### Apply points (the three writers of a stored title)
+
+1. **Volume rename** — `VolumeEditorModal.handleSave` (`src/lib/components/VolumeEditorModal.svelte`):
+   sanitize `volumeTitle` and the new-series name **before** the cloud-rename + DB write, so
+   both the cloud path and the DB receive the safe title. If a field sanitizes to empty,
+   show an error and abort. If a field changed, `showSnackbar` a notice.
+2. **Series rename** — `executeRenameSeries` (`src/lib/util/series-rename.ts`) /
+   `SeriesView.saveRename`: sanitize `newTitle` before the cloud rename + DB update. Empty →
+   surface via the existing `renameError` slot and abort. Changed → notify.
+3. **Import / re-download** — the point where a title is written to the `volumes` table
+   (`src/lib/import/processing.ts`, regardless of whether the title came from the `.mokuro`
+   content or the path). Sanitize silently; empty → `'Untitled'`.
+
+The sync layer (`unified-cloud-manager`, all providers, `backup-queue`, `zip.ts`,
+`volume-sidecars.ts`) is **unchanged** — it consumes already-safe titles. Browser-download
+filenames inherit the safe title; legacy raw titles are coerced by the browser as today.
+
+### Notification UX
+
+- **Substitution** (name changed but non-empty): non-error snackbar, e.g.
+  _"Saved as ‘Steins;Gate： 0’ — some characters aren’t allowed in file names and were replaced."_
+- **Empty** after sanitization on a rename: blocking error
+  (_"Name can’t be empty or only unusable characters."_) — the one irreducible block.
+- **Import**: silent; empty → `'Untitled'`.
+
+## Testing (TDD)
+
+- **`sanitize-title.test.ts`** — table-driven over the full contract: each of the 9 chars →
+  its fullwidth twin; control/DEL stripped; leading/trailing/all dots → leaders with interior
+  dots preserved; leading/trailing spaces trimmed; every reserved name (`CON`…`LPT9`,
+  case-insensitive) → suffixed; empty/whitespace/all-control → `''`; idempotency
+  (`sanitize(sanitize(x)) === sanitize(x)`); a realistic title with `:` round-trips to the
+  expected fullwidth form.
+- **Rename entry points** — `VolumeEditorModal` and `SeriesView`/`executeRenameSeries`:
+  a `/`- or `:`-bearing title is sanitized before the cloud call and DB write, the notice is
+  surfaced, and an all-illegal title is blocked.
+- **Import** — a derived title containing illegal chars is stored sanitized; an empty derived
+  title stores `'Untitled'`.
+
+## Out of scope / follow-ups
+
+- **Migration** of existing stored titles (chosen against).
+- **OneDrive/filesystem runtime exercise** — those providers live on
+  `feat/filesystem-provider`, not this branch; covered here only by the pure-function unit
+  tests. When that branch rebases on this, it inherits the safe titles for free.
+- **Anki** `sanitizeForFilename` — left as-is; fullwidth chars pass through its delete-set
+  harmlessly. Delegating it to the shared helper is an optional later cleanup.
+- **WebDAV upload-path percent-encoding** inconsistency (upload path handed to the library
+  raw while download encodes per-segment) — a separate provider-level fix, not title safety.
+- **Byte-length caps / case-collision / Unicode normalization** — documented residual limits.
