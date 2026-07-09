@@ -319,8 +319,11 @@
       }
 
       if (currentPage > 1) {
-        // Currently Reading: progress > 1 but not at final page
-        currentlyReading.push([volumeId, volumeData]);
+        // Currently Reading: progress > 1 but not at final page.
+        // Skip volumes with no remaining pages (e.g. missing catalog metadata).
+        if (totalPages - currentPage >= 1) {
+          currentlyReading.push([volumeId, volumeData]);
+        }
       } else {
         // Future Reads: no progress or progress = 1
         futureReads.push([volumeId, volumeData]);
