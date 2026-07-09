@@ -92,10 +92,12 @@ describe('TextBoxes auto mode with lines_coords', () => {
     // first line: its quad captured a neighbor's ruby ink (60px wide for
     // ~19px glyphs) → wraps at the reference size inside its quad bbox,
     // clipped off the neighboring column's rendered edge (the no-overlap
-    // invariant trims the first ~2.7px)
+    // invariant trims the first ~2.7px). The quad origin is carried on
+    // data-target-* (not style.left/top) and applied as a transform by
+    // positionPerLine after layout — see the continuity guard test below.
     expect(spans[0].classList.contains('wrappedLine')).toBe(true);
-    expect(parseFloat(spans[0].style.left)).toBeCloseTo(82.6, 0);
-    expect(spans[0].style.top).toBe('0px');
+    expect(parseFloat(spans[0].dataset.targetLeft!)).toBeCloseTo(82.6, 0);
+    expect(spans[0].dataset.targetTop).toBe('0');
     expect(parseFloat(spans[0].style.width)).toBeCloseTo(57.4, 0);
     expect(spans[0].style.height).toBe('175px');
     expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(28.7, 1);
@@ -115,6 +117,32 @@ describe('TextBoxes auto mode with lines_coords', () => {
     const box = container.querySelector<HTMLElement>('.textBox');
     expect(box?.style.width).toBe('148px');
     expect(box?.style.height).toBe('235px');
+  });
+
+  // Regression guard for #254: per-line spans must stay in normal flow so DOM
+  // text scanners (Yomitan/Migaku) read the block as one continuous run. A
+  // per-line `position: absolute` (or inline left/top) re-introduces the hard
+  // line break that splits words and truncates the mined sentence. The exact
+  // on-quad placement is a transform applied after layout and is verified in
+  // the browser, not jsdom (offsetParent is null here, so the action no-ops).
+  it('keeps per-line spans in flow with no absolute positioning (#254)', () => {
+    const { container } = render(TextBoxes, {
+      page: makePage([blockWithCoords]),
+      volumeUuid: 'test-uuid'
+    });
+
+    const spans = container.querySelectorAll<HTMLElement>('.ocr-line.positionedLine');
+    expect(spans.length).toBeGreaterThan(0);
+
+    for (const span of spans) {
+      // no inline absolute-positioning styles
+      expect(span.style.position).toBe('');
+      expect(span.style.left).toBe('');
+      expect(span.style.top).toBe('');
+      // placement data is carried for the post-layout transform instead
+      expect(span.dataset.targetLeft).toBeDefined();
+      expect(span.dataset.targetTop).toBeDefined();
+    }
   });
 
   it('falls back to legacy hover-fit auto when lines_coords is absent', () => {
