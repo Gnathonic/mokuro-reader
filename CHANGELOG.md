@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.8.2] - 2026-07-09
+
+### Fixed
+
+- Fixed Yomitan sentence capture stopping at OCR line breaks (#254)
+
+### Changed
+
+- Refreshed cloud provider descriptions (Drive quota and auto re-auth)
+
 ## [1.8.1] - 2026-07-06
 
 ### Fixed
