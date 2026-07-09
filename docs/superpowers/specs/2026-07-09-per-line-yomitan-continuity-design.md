@@ -13,13 +13,15 @@ its own `position: absolute` span (`.positionedLine` in `TextBoxes.svelte`).
 
 Yomitan's DOM text scanner (`ext/js/dom/dom-text-scanner.js#getElementSeekInfo`)
 decides line/sentence boundaries **entirely from computed CSS + DOM traversal
-order — never from geometry** — and it inspects `style.position` *before*
+order — never from geometry** — and it inspects `style.position` _before_
 `display`:
 
 ```js
 switch (style.position) {
-  case 'absolute': case 'fixed': case 'sticky':
-    newlines = 2;   // hard paragraph break
+  case 'absolute':
+  case 'fixed':
+  case 'sticky':
+    newlines = 2; // hard paragraph break
 }
 ```
 
@@ -37,7 +39,7 @@ Two facts established from Yomitan source that shape the fix:
   (no `position`), so Yomitan read them as one run.
 - The **block-level** `position: absolute` on `.textBox` (one per OCR block) is
   correct and must stay: it makes separate speech bubbles separate sentences.
-  The regression is the *second*, per-line layer of `absolute` inside the block.
+  The regression is the _second_, per-line layer of `absolute` inside the block.
 
 `inline-block`, `transform`, and `position: relative` are all confirmed against
 Yomitan source to keep text continuous (`inline-block` truncates to `inline` in
@@ -57,7 +59,7 @@ Stop giving line spans `position: absolute`. Render each line as
 per-line `transform: translate(dx, dy)` computed from a measured natural
 position. Exactly one `position: absolute` per block (`.textBox`) remains.
 
-There is no way to get exact placement *and* inline continuity without
+There is no way to get exact placement _and_ inline continuity without
 measuring: inline elements inherently advance the flow, and every zero-advance
 trick (absolute, float) re-blockifies and re-breaks Yomitan. Measurement is the
 price of keeping both, and it has direct precedent in the reader's zoom
@@ -74,7 +76,7 @@ architecture (measurement-based correction).
   positioned explicitly, so the visible newline is unnecessary, and Yomitan
   never saw it anyway.
 - `layoutLines` and `LineLayout { left, top, fontSize, wrap, width, height,
-  hidden }` are **unchanged**. `left`/`top` are already the target quad origin
+hidden }` are **unchanged**. `left`/`top` are already the target quad origin
   relative to the block box. `enforceNoOverlap`, block dedupe, and per-line
   sizing are all untouched.
 
@@ -88,7 +90,7 @@ A Svelte action on `.textBox` performs a **batched read-then-write** pass:
    — the reader applies zoom as an ancestor transform, so the box's internal
    coordinate space stays in image px; no dividing by scale.
 2. Apply every transform: `translate(LineLayout.left − offsetLeft,
-   LineLayout.top − offsetTop)`.
+LineLayout.top − offsetTop)`.
 
 Reading all before writing avoids layout thrash and is correct: transforms are
 paint-only and do not re-layout, so natural positions are stable once read.
