@@ -62,8 +62,10 @@ src/
 │   ├── util/            # Utilities
 │   │   └── sync/        # Multi-provider cloud sync
 │   │       └── providers/
+│   │           ├── filesystem/
 │   │           ├── google-drive/
 │   │           ├── mega/
+│   │           ├── onedrive/
 │   │           └── webdav/
 │   ├── views/           # Top-level view components
 │   └── workers/         # Web Workers for background tasks
@@ -89,11 +91,13 @@ src/
 
 Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-| Provider     | Auth Method          | Status       |
-| ------------ | -------------------- | ------------ |
-| Google Drive | OAuth2 implicit flow | Full support |
-| MEGA         | Email/password       | Full support |
-| WebDAV       | URL + credentials    | Full support |
+| Provider     | Auth Method                     | Status                |
+| ------------ | ------------------------------- | --------------------- |
+| Google Drive | OAuth2 implicit flow            | Full support          |
+| MEGA         | Email/password (+ optional 2FA) | Full support          |
+| WebDAV       | URL + credentials               | Full support          |
+| OneDrive     | MSAL (OAuth2 auth code + PKCE)  | Full support          |
+| Local Folder | Directory picker (no account)   | Desktop Chromium only |
 
 **Architecture:**
 

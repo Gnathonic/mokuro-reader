@@ -31,9 +31,10 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 ### ☁️ Cloud Integration
 
 - **Google Drive Sync** - Full integration with automatic token refresh and reconnection
-- **MEGA Support** - Alternative cloud storage option
+- **MEGA, OneDrive & WebDAV Support** - More cloud options, including self-hosted WebDAV servers
+- **Local Folder Access** - Bulk import/export through a folder on your device (desktop Chromium)
 - **Automatic Progress Sync** - Seamlessly sync read progress and stats across devices
-- **Easy Backup** - Backup your entire library to Google Drive, MEGA, or WebDAV
+- **Easy Backup** - Backup your entire library to any connected provider
 - **Smart Placeholder System** - Backed up volumes appear as downloadable placeholders in your catalog
 - **One-Tap Downloads** - Download cloud volumes directly from your catalog on your other devices
 - **Cross-Device Continuity** - Pick up exactly where you left off on any device
@@ -119,7 +120,7 @@ pip install mokuro
 
 ### Cloud Sync Setup
 
-Connect to **Google Drive**, **MEGA**, or **WebDAV** from the Cloud page in settings. All three providers support:
+Connect to **Google Drive**, **MEGA**, **OneDrive**, or **WebDAV** from the Cloud page in settings (a **Local Folder** option is also available on desktop Chromium browsers). All providers support:
 
 - Automatic progress and profile sync across devices
 - Volume backup with one-tap restore on other devices
