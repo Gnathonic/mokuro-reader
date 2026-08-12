@@ -18,18 +18,82 @@
     <script src="https://accounts.google.com/gsi/client"></script>
     %sveltekit.head%
     <style>
-      /* CSS Variables for night mode */
+      /*
+       * Night mode: turn the whole page into a red monochrome image.
+       *
+       * Two mechanisms, because no single one reaches everything:
+       *
+       * 1. BLEND LAYERS for the document. A `saturation` pass strips colour, then
+       *    a `multiply` pass against pure red keeps only the red channel.
+       *    Blending — unlike `filter` — still composites over cross-origin
+       *    iframes, which is what a browser extension's popup is (Yomitan
+       *    renders its dictionary popup as a chrome-extension:// frame).
+       *    Chrome 151 refuses to paint SVG reference filters onto such frames at
+       *    all (csswg-drafts#13846), and Firefox has never painted a url() filter
+       *    on the root element (Bugzilla 1769223), so
+       *    `html { filter: url(#night-mode-filter) }` covers the extension popup
+       *    in neither engine. The blend layers behave identically in both.
+       *
+       *    They sit on the ROOT rather than on a wrapper, so they blend against
+       *    the canvas background too, and nothing gains a containing block —
+       *    putting a `filter` on <body> instead would re-anchor every
+       *    position:fixed descendant to the document and unpin the reader HUD.
+       *
+       * 2. The SVG matrix for TOP-LAYER content. Modal dialogs, popovers
+       *    (Flowbite dropdowns/tooltips) and fullscreen elements paint as
+       *    siblings of the root, above the blend layers, so blending cannot
+       *    reach them. A url() filter does work on non-root elements in both
+       *    engines.
+       *
+       * The two agree exactly on the whole grey ramp (#000000 -> 0,0,0 and
+       * #ffffff -> 255,0,0 in both) and differ only on fully saturated colours,
+       * where the CSS blending spec's luma function is Rec.601 and the SVG
+       * matrix is Rec.709. On real pages that is a mean error of ~1/255.
+       */
       :root {
         --night-mode-filter: none; /* Default: no filter */
       }
 
-      /* Apply the filter to the html element */
-      html {
-        filter: var(--night-mode-filter);
+      /*
+       * BOTH layers carry the maximum z-index, and NightModeFilter.svelte keeps
+       * them the last two children of <html>.
+       *
+       * This is load-bearing, not belt-and-braces. Extensions routinely inject at
+       * z-index 2147483647 (Yomitan included). Ties are broken by tree order, so
+       * anything at that z-index painting between the two layers would be
+       * multiplied but never desaturated — its greens and blues would collapse to
+       * black. Equal z-index plus last-in-tree-order puts both layers above such
+       * an element. This is also why they cannot be html::before/::after: a
+       * ::before box is the FIRST child and loses every tie.
+       */
+      html.night-mode > .night-mode-layer {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2147483647;
       }
 
-      /* Also apply to dialog elements in the top layer (showModal promotes dialogs outside the html filter) */
-      dialog {
+      /* Paint order within the pair comes from tree order: desaturate, then redden. */
+      html.night-mode > .night-mode-desaturate {
+        background-color: #000;
+        mix-blend-mode: saturation;
+      }
+
+      html.night-mode > .night-mode-redden {
+        background-color: #f00;
+        mix-blend-mode: multiply;
+      }
+
+      /*
+       * Top layer. `dialog:modal` — not bare `dialog` — because a non-modal
+       * dialog (Flowbite's Drawer calls show(), not showModal()) stays in normal
+       * flow, where the overlays already cover it; filtering it as well would
+       * apply the transform twice and the matrix is not idempotent.
+       */
+      dialog:modal,
+      :popover-open,
+      :fullscreen:not(:root),
+      ::backdrop {
         filter: var(--night-mode-filter);
       }
     </style>
@@ -37,7 +101,7 @@
     <svg width="0" height="0" style="position: absolute; z-index: -9999; visibility: hidden">
       <defs>
         <filter id="night-mode-filter" color-interpolation-filters="sRGB">
-          <!-- Convert to grayscale first -->
+          <!-- Luminance -> red channel, everything else zeroed -->
           <feColorMatrix
             type="matrix"
             values="0.2126 0.7152 0.0722 0 0
