@@ -5,7 +5,7 @@ import { sortVolumes } from '$lib/catalog/sort-volumes';
 import { settings } from '$lib/settings/settings';
 import { registerCompletionListener, volumes, type VolumeData } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
-import { anilistUser, getAniListToken, handleAniListUnauthorized } from './anilist-auth';
+import { anilistConnected, getAniListToken, handleAniListUnauthorized } from './anilist-auth';
 import {
   planProgressPush,
   type LocalPassState,
@@ -287,7 +287,13 @@ function scheduleRetry(delayMs: number): void {
 
 async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<PushOutcome> {
   const meta = await getSeriesMetadata(seriesKey);
-  if (!pushEnabled(meta)) return 'disabled';
+  if (!pushEnabled(meta)) {
+    // Tracking was turned off (or the series unlinked) after the intent was
+    // queued: nothing will ever be pushed for it, so don't leave it in the
+    // queue to be retried on every flush forever.
+    clearPending(seriesKey);
+    return 'disabled';
+  }
   const mediaId = meta.external_ids.anilist!;
   const tracking = meta.tracking!;
   const unit = tracking.unit ?? 'volumes';
@@ -321,12 +327,13 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     await sendPlan(mediaId, plan, token);
     clearPending(seriesKey);
     // Two round-trips happened since `meta` was read; a tracking edit (unit,
-    // number overrides, the enable toggle) may have landed in between, so the
-    // record is re-read and only `last_pushed` is layered on top of it.
+    // number overrides, the enable toggle) may have landed in between. The
+    // patch is functional so the record it spreads is the one in the database
+    // at write time, not the stale copy this push started from.
     const current = (await getSeriesMetadata(seriesKey)) ?? meta;
-    await updateSeriesMetadata(current.series_title, {
+    await updateSeriesMetadata(current.series_title, (existing) => ({
       tracking: {
-        ...(current.tracking ?? tracking),
+        ...(existing.tracking ?? current.tracking ?? tracking),
         last_pushed: {
           // The progress AniList actually received — 0 for a restart, and the
           // last known figure for a status-only push.
@@ -335,7 +342,7 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
           at: new Date().toISOString()
         }
       }
-    });
+    }));
     return 'pushed';
   } catch (error) {
     if (
@@ -448,13 +455,16 @@ export function initProgressTracker(): () => void {
   const onOnline = () => void flushPendingPushes();
   window.addEventListener('online', onOnline);
 
-  let seenInitialUser = false;
-  let hadUser = false;
-  const unsubUser = anilistUser.subscribe((user) => {
-    const loggedIn = seenInitialUser && !hadUser && !!user;
-    seenInitialUser = true;
-    hadUser = !!user;
-    if (loggedIn) void flushPendingPushes();
+  // Watch the session flag, not the resolved user: a login whose Viewer lookup
+  // failed (offline for that one request) still has a usable token, and its
+  // queued pushes must flush too.
+  let seenInitialConnected = false;
+  let wasConnected = false;
+  const unsubConnected = anilistConnected.subscribe((connected) => {
+    const justConnected = seenInitialConnected && !wasConnected && connected;
+    seenInitialConnected = true;
+    wasConnected = connected;
+    if (justConnected) void flushPendingPushes();
   });
 
   const dispose = () => {
@@ -462,7 +472,7 @@ export function initProgressTracker(): () => void {
     teardown = null;
     unregister();
     window.removeEventListener('online', onOnline);
-    unsubUser();
+    unsubConnected();
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = undefined;

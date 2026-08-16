@@ -42,6 +42,7 @@ const h = vi.hoisted(() => {
     volumesStore: createStore<Record<string, { completed?: boolean }>>({}),
     settingsStore: createStore<any>({ catalogSettings: { pushProgressToAniList: true } }),
     userStore: createStore<{ id: number; name: string } | null>({ id: 1, name: 'n' }),
+    connectedStore: createStore<boolean>(true),
     dbVolumes: [] as VolumeMetadata[],
     metaByKey: new Map<string, SeriesMetadata>(),
     completionListeners: [] as ((uuid: string) => void)[],
@@ -73,12 +74,19 @@ vi.mock('$lib/catalog/db', () => ({
 
 vi.mock('./store', () => ({
   getSeriesMetadata: vi.fn(async (key: string) => h.metaByKey.get(key)),
-  updateSeriesMetadata: vi.fn(async (title: string, patch: Partial<SeriesMetadata>) => {
-    const key = title.trim().replace(/\s+/g, ' ').toLowerCase();
-    const next = { ...h.metaByKey.get(key)!, ...patch };
-    h.metaByKey.set(key, next);
-    return next;
-  })
+  updateSeriesMetadata: vi.fn(
+    async (
+      title: string,
+      patch: Partial<SeriesMetadata> | ((existing: SeriesMetadata) => Partial<SeriesMetadata>)
+    ) => {
+      const key = title.trim().replace(/\s+/g, ' ').toLowerCase();
+      // Mirrors the real store: a functional patch sees the stored record.
+      const existing = h.metaByKey.get(key)!;
+      const next = { ...existing, ...(typeof patch === 'function' ? patch(existing) : patch) };
+      h.metaByKey.set(key, next);
+      return next;
+    }
+  )
 }));
 
 vi.mock('./providers/anilist', () => ({
@@ -89,6 +97,7 @@ vi.mock('./providers/anilist', () => ({
 vi.mock('./anilist-auth', () => ({
   getAniListToken: () => h.auth.token,
   anilistUser: h.userStore,
+  anilistConnected: h.connectedStore,
   handleAniListUnauthorized: vi.fn()
 }));
 
@@ -145,6 +154,7 @@ function resetWorld() {
   h.settingsStore.set({ catalogSettings: { pushProgressToAniList: true } });
   h.completionListeners.length = 0;
   h.auth.token = 'tok';
+  h.connectedStore.set(true);
   vi.mocked(anilistRequest).mockReset();
   vi.mocked(handleAniListUnauthorized).mockReset();
   vi.mocked(db.volumes.get).mockClear();
@@ -268,6 +278,20 @@ describe('syncSeriesNow', () => {
     h.settingsStore.set({ catalogSettings: { pushProgressToAniList: false } });
     await expect(syncSeriesNow('one piece')).resolves.toBe('disabled');
     expect(anilistRequest).not.toHaveBeenCalled();
+  });
+
+  it('drops a queued intent when the series is no longer pushable', async () => {
+    // Tracking was turned off after the intent was queued: replaying it can only
+    // ever return "disabled", so it must not linger in the queue forever.
+    localStorage.setItem(
+      'anilist_pending_pushes',
+      JSON.stringify({
+        'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
+      })
+    );
+    h.metaByKey.set('one piece', meta({ tracking: { enabled: false, unit: 'volumes' } }));
+    await expect(syncSeriesNow('one piece')).resolves.toBe('disabled');
+    expect(readPendingPushes()).toEqual({});
   });
 
   it('is "disabled" for an unknown series key', async () => {
@@ -614,7 +638,9 @@ describe('initProgressTracker', () => {
     }
   });
 
-  it('flushes the queue when a signed-out session logs in', async () => {
+  it('flushes the queue when a signed-out session connects', async () => {
+    // The flush hangs off the session flag, not the resolved user: a login whose
+    // Viewer lookup failed still holds a usable token.
     localStorage.setItem(
       'anilist_pending_pushes',
       JSON.stringify({
@@ -622,6 +648,7 @@ describe('initProgressTracker', () => {
       })
     );
     h.auth.token = null;
+    h.connectedStore.set(false);
     h.userStore.set(null);
     const dispose = initProgressTracker();
     expect(anilistRequest).not.toHaveBeenCalled();
@@ -630,9 +657,25 @@ describe('initProgressTracker', () => {
     vi.mocked(anilistRequest).mockResolvedValue({
       Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 9, repeat: 0 } }
     });
-    h.userStore.set({ id: 1, name: 'n' });
+    // Still no user (the Viewer query failed) — connecting alone must flush.
+    h.connectedStore.set(true);
     await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(1));
     dispose();
-    h.userStore.set({ id: 1, name: 'n' });
+    h.connectedStore.set(true);
+  });
+
+  it('does not flush again while the session merely stays connected', async () => {
+    localStorage.setItem(
+      'anilist_pending_pushes',
+      JSON.stringify({
+        'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
+      })
+    );
+    h.auth.token = null;
+    h.connectedStore.set(true);
+    const dispose = initProgressTracker();
+    h.connectedStore.set(true);
+    expect(anilistRequest).not.toHaveBeenCalled();
+    dispose();
   });
 });
