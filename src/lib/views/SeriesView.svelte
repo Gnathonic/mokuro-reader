@@ -34,7 +34,7 @@
   import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
-  import { catalogSettings } from '$lib/settings/settings';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
@@ -220,7 +220,7 @@
       ? resolveDisplayTitle(
           seriesTitle,
           $seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)),
-          $catalogSettings?.preferredTitleLanguage ?? 'imported'
+          $preferredTitleLanguage
         )
       : ''
   );
@@ -972,9 +972,11 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title and cloud info -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
-        {seriesDisplayTitle || 'Cloud Series'}
-      </h3>
+      {#key seriesDisplayTitle}
+        <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
+          {seriesDisplayTitle || 'Cloud Series'}
+        </h3>
+      {/key}
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
           {placeholders.length} volume{placeholders.length !== 1 ? 's' : ''} in {providerDisplayName}

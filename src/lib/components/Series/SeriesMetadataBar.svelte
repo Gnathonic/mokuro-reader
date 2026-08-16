@@ -4,6 +4,8 @@
   import { ArrowUpRightFromSquareOutline } from 'flowbite-svelte-icons';
   import { seriesMetadataMap, updateSeriesMetadata, unlinkSeries } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayBase } from '$lib/metadata/display-title';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
   import { getLinkTargets } from '$lib/metadata/link-targets';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager, type MultiProviderStatus } from '$lib/util/sync';
@@ -34,10 +36,19 @@
   }
   let linked = $derived(!!meta && Object.values(meta.external_ids ?? {}).some((v) => v != null));
   let links = $derived(meta ? getLinkTargets(meta.external_ids) : []);
+  // The title shown in the header above this bar (without its tag), so the subtitle can
+  // list the OTHER names instead of repeating the one already on screen.
+  let displayBase = $derived(resolveDisplayBase(seriesTitle, meta, $preferredTitleLanguage));
+  // Spec: the subtitle is the non-displayed languages. Whichever language the header is
+  // showing is filtered out; the folder name is added back when it is not what's displayed,
+  // so the real on-disk/cloud name stays visible somewhere on the page.
   let altTitles = $derived.by(() => {
     if (!meta) return [] as string[];
-    const seen = new Set<string>([normalizeSeriesKey(seriesTitle)]);
+    const folderKey = normalizeSeriesKey(seriesTitle);
+    const displayKey = normalizeSeriesKey(displayBase);
+    const seen = new Set<string>([folderKey, displayKey]);
     const out: string[] = [];
+    if (displayKey !== folderKey) out.push(seriesTitle);
     for (const t of [meta.titles.native, meta.titles.romaji, meta.titles.english]) {
       if (t && !seen.has(normalizeSeriesKey(t))) {
         seen.add(normalizeSeriesKey(t));
@@ -182,15 +193,19 @@
       />
     </label>
 
-    <div class="flex min-w-[14rem] flex-col gap-1">
-      <Label class="text-xs text-gray-500 uppercase">Title language</Label>
-      <Select
-        size="sm"
-        items={titleLanguageOptions}
-        value={titlePreferenceValue}
-        onchange={onTitlePreferenceChange}
-      />
-    </div>
+    <!-- Only a linked series has native/romaji/english titles to choose between; on an
+         unlinked one every option would resolve back to the folder name. -->
+    {#if linked}
+      <div class="flex min-w-[14rem] flex-col gap-1">
+        <Label class="text-xs text-gray-500 uppercase">Title language</Label>
+        <Select
+          size="sm"
+          items={titleLanguageOptions}
+          value={titlePreferenceValue}
+          onchange={onTitlePreferenceChange}
+        />
+      </div>
+    {/if}
 
     {#if canRefreshSidecars}
       <Button

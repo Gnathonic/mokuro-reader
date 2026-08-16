@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 
@@ -8,7 +8,7 @@ import { createEmptySeriesMetadata } from '$lib/metadata/types';
 // module's own imports), so the store the factory closes over must be built
 // here with a minimal hand-rolled Svelte store contract rather than via an
 // imported `writable`.
-const { seriesMetadataMap, providerStatus, noopStore } = vi.hoisted(() => {
+const { seriesMetadataMap, providerStatus, noopStore, preferredTitleLanguage } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     let value = initial;
     const subs = new Set<(v: T) => void>();
@@ -34,6 +34,9 @@ const { seriesMetadataMap, providerStatus, noopStore } = vi.hoisted(() => {
       needsAttention: false,
       currentProviderType: null as string | null
     }),
+    // The global preferred title language: the bar reads it to know which title the
+    // header is already showing, so the subtitle can list the other ones.
+    preferredTitleLanguage: createStore('imported'),
     noopStore: { subscribe: (fn: (v: unknown) => void) => (fn(undefined), () => {}) }
   };
 });
@@ -51,6 +54,7 @@ vi.mock('$lib/util/sync', () => ({
   providerManager: { status: providerStatus }
 }));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage }));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
 import { showSnackbar } from '$lib/util';
@@ -68,7 +72,26 @@ function volume(title: string, isPlaceholder = false): VolumeMetadata {
   } as VolumeMetadata;
 }
 
+const LINKED_TITLES = {
+  native: 'ONE PIECE',
+  romaji: 'One Piece (romaji)',
+  english: 'One Piece (en)'
+};
+
+function linkedMeta(seriesTitle: string, overrides: Record<string, unknown> = {}) {
+  return {
+    ...createEmptySeriesMetadata(seriesTitle),
+    external_ids: { anilist: 30013 },
+    titles: LINKED_TITLES,
+    ...overrides
+  };
+}
+
 describe('SeriesMetadataBar', () => {
+  beforeEach(() => {
+    preferredTitleLanguage.set('imported');
+  });
+
   it('offers Link… when the series is not linked', () => {
     seriesMetadataMap.set(new Map());
     providerStatus.set({
@@ -157,15 +180,24 @@ describe('SeriesMetadataBar', () => {
       needsAttention: false,
       currentProviderType: null
     });
-    seriesMetadataMap.set(new Map());
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
     const { getByDisplayValue } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
     expect(getByDisplayValue('Default (global setting)')).toBeTruthy();
   });
 
+  it('hides the title-language select on an unlinked series', () => {
+    // Nothing to choose between: every option resolves back to the folder name.
+    seriesMetadataMap.set(new Map());
+    const { queryByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [] }
+    });
+    expect(queryByText('Title language')).toBeNull();
+  });
+
   it('shows the title-language select at the stored override', () => {
-    const meta = { ...createEmptySeriesMetadata('One Piece'), title_preference: 'native' as const };
+    const meta = linkedMeta('One Piece', { title_preference: 'native' as const });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByDisplayValue } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
@@ -174,7 +206,7 @@ describe('SeriesMetadataBar', () => {
   });
 
   it('clears the override by writing title_preference: undefined when the select goes back to Default', async () => {
-    const meta = { ...createEmptySeriesMetadata('One Piece'), title_preference: 'native' as const };
+    const meta = linkedMeta('One Piece', { title_preference: 'native' as const });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByDisplayValue } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
@@ -184,6 +216,44 @@ describe('SeriesMetadataBar', () => {
     expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
       title_preference: undefined
     });
+  });
+
+  it('leaves the displayed language out of the alt-title subtitle and keeps the folder name', () => {
+    // pref=english → the header shows "One Piece (en)", so the subtitle must show the
+    // OTHER names: the folder title (still the on-disk/cloud identity) plus native+romaji.
+    preferredTitleLanguage.set('english');
+    seriesMetadataMap.set(new Map([['one piece raw', linkedMeta('One Piece Raw')]]));
+
+    const { getByText, queryByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+    });
+
+    expect(getByText('One Piece Raw · ONE PIECE · One Piece (romaji)')).toBeTruthy();
+    expect(queryByText(/One Piece \(en\)/)).toBeNull();
+  });
+
+  it('lists every language and no folder-name repeat when the folder title is displayed', () => {
+    preferredTitleLanguage.set('imported');
+    seriesMetadataMap.set(new Map([['one piece raw', linkedMeta('One Piece Raw')]]));
+
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+    });
+
+    expect(getByText('ONE PIECE · One Piece (romaji) · One Piece (en)')).toBeTruthy();
+  });
+
+  it('honours a per-series title_preference when deciding what the subtitle omits', () => {
+    preferredTitleLanguage.set('english');
+    const meta = linkedMeta('One Piece Raw', { title_preference: 'native' as const });
+    seriesMetadataMap.set(new Map([['one piece raw', meta]]));
+
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+    });
+
+    // Header shows the native title → subtitle keeps folder + romaji + english
+    expect(getByText('One Piece Raw · One Piece (romaji) · One Piece (en)')).toBeTruthy();
   });
 
   it('hides the sidecar refresh when every volume is a cloud placeholder', () => {

@@ -183,7 +183,7 @@
 </script>
 
 <svelte:head>
-  <title>{seriesData?.title || 'Series'} - Text View</title>
+  <title>{seriesData?.displayTitle || 'Series'} - Text View</title>
 </svelte:head>
 
 {#if dataLoaded && volumesData.length > 0 && seriesData}
@@ -220,7 +220,7 @@
 
         <!-- Series Title -->
         <h1 class="mb-2 text-3xl font-bold text-gray-900 dark:text-white">
-          {seriesData.title}
+          {seriesData.displayTitle}
         </h1>
         <p class="mb-4 text-lg text-gray-600 dark:text-gray-400">
           All volumes combined in a single text view for language analysis and searching
