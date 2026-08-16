@@ -5,7 +5,7 @@ import { archiveAndResetVolumes, volumes, type VolumeData } from '$lib/settings/
 import type { VolumeMetadata } from '$lib/types';
 import { onSeriesRestarted } from './progress-tracker';
 import { normalizeSeriesKey } from './series-key';
-import { getSeriesMetadataForTitle, updateSeriesMetadata } from './store';
+import { updateSeriesMetadata } from './store';
 import type { SeriesMetadata } from './types';
 
 const sessionKey = (seriesKey: string) => `reread_dismissed:${seriesKey}`;
@@ -61,11 +61,11 @@ export async function restartSeries(
 
   archiveAndResetVolumes(local.map((v) => v.volume_uuid));
 
-  const meta = await getSeriesMetadataForTitle(seriesTitle);
-  await updateSeriesMetadata(seriesTitle, {
-    read_count: (meta?.read_count ?? 0) + (wasFullyCompleted ? 1 : 0),
-    reread_prompt_suppressed: false
-  });
+  await updateSeriesMetadata(seriesTitle, (existing) =>
+    wasFullyCompleted
+      ? { read_count: (existing.read_count ?? 0) + 1, reread_prompt_suppressed: undefined }
+      : { reread_prompt_suppressed: undefined }
+  );
   if (browser) sessionStorage.removeItem(sessionKey(seriesKey));
 
   onSeriesRestarted(seriesKey);

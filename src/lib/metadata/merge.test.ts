@@ -91,6 +91,16 @@ describe('sanitizeTracking', () => {
     });
   });
 
+  it('drops fractional overrides — AniList progress is a GraphQL Int', () => {
+    expect(
+      sanitizeTracking({
+        enabled: true,
+        unit: 'volumes',
+        number_overrides: { keep: 3, half: 2.5, tiny: 0.5 }
+      })
+    ).toEqual({ enabled: true, unit: 'volumes', number_overrides: { keep: 3 } });
+  });
+
   it('drops a last_pushed that is missing a field or is not an object', () => {
     expect(sanitizeTracking({ enabled: true, last_pushed: { n: 4, status: 'CURRENT' } })).toEqual({
       enabled: true,

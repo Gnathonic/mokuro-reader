@@ -46,6 +46,23 @@ describe('extractVolumeNumber — volumes', () => {
     expect(extractVolumeNumber('Vol 3', 'volumes')).toBe(3);
     expect(extractVolumeNumber('One Piece #4', 'volumes')).toBe(4);
   });
+
+  // An explicit volume marker wins over the chapter veto: these are volumes
+  // that also mention a chapter range, not chapter-titled entries.
+  it.each([
+    ['Vol 3 (Ch 21-30)', 3],
+    ['One Piece Vol 3 Ch 21-30', 3],
+    ['Volume 5 第41話-第50話', 5]
+  ])('%s → %i (explicit volume marker beats chapter veto)', (title, expected) => {
+    expect(extractVolumeNumber(title, 'volumes')).toBe(expected);
+  });
+
+  it.each([['Chapter 106'], ['第12話']])(
+    '%s → undefined still (no explicit volume marker to save it)',
+    (title) => {
+      expect(extractVolumeNumber(title, 'volumes')).toBeUndefined();
+    }
+  );
 });
 
 describe('extractVolumeNumber — chapters', () => {

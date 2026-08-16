@@ -56,6 +56,10 @@ import {
   suppressRereadPrompt
 } from './reread';
 
+/** Resolve `updateSeriesMetadata`'s patch arg (plain object or functional patch) against a fake existing record. */
+const resolvePatch = (patch: any, existing: Partial<SeriesMetadata> = {}) =>
+  typeof patch === 'function' ? patch(existing as SeriesMetadata) : patch;
+
 const vol = (uuid: string, title: string, extra: Partial<VolumeMetadata> = {}): VolumeMetadata =>
   ({
     volume_uuid: uuid,
@@ -177,30 +181,31 @@ describe('restartSeries', () => {
 
   it('archives, bumps read_count when the series was fully read, clears suppression, notifies tracker', async () => {
     h.volumesStore.set(allDone);
-    h.metaByKey.set('one piece', {
-      read_count: 1,
-      reread_prompt_suppressed: true
-    } as SeriesMetadata);
     dismissRereadForSession('one piece');
 
     await restartSeries('One Piece', series);
 
     expect(archiveAndResetVolumes).toHaveBeenCalledWith(['b', 'a', 'c']);
-    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
+    const [title, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
+    expect(title).toBe('One Piece');
+    // Race-free: read_count is bumped off the record as read inside the write
+    // transaction (simulated here via a fake "existing" record), not a value
+    // read earlier.
+    expect(resolvePatch(patch, { read_count: 1 })).toEqual({
       read_count: 2,
-      reread_prompt_suppressed: false
+      reread_prompt_suppressed: undefined
     });
     expect(sessionStorage.getItem('reread_dismissed:one piece')).toBeNull();
     expect(onSeriesRestarted).toHaveBeenCalledWith('one piece');
   });
 
-  it('does not bump read_count for a partially read series', async () => {
+  it('does not touch read_count for a partially read series, only clears suppression', async () => {
     h.volumesStore.set({ a: { completed: true } });
     await restartSeries('One Piece', series);
-    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
-      read_count: 0,
-      reread_prompt_suppressed: false
-    });
+    const [, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
+    const resolved = resolvePatch(patch, { read_count: 5 });
+    expect(resolved).toEqual({ reread_prompt_suppressed: undefined });
+    expect(resolved).not.toHaveProperty('read_count');
   });
 
   it('suppressRereadPrompt persists the flag', async () => {
@@ -236,9 +241,10 @@ describe('restartSeries', () => {
     await restartSeries('One Piece', withPlaceholder);
 
     expect(archiveAndResetVolumes).toHaveBeenCalledWith(['b', 'a', 'c']);
-    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
+    const [, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
+    expect(resolvePatch(patch, { read_count: 0 })).toEqual({
       read_count: 1,
-      reread_prompt_suppressed: false
+      reread_prompt_suppressed: undefined
     });
   });
 });

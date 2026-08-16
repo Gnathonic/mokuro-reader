@@ -99,8 +99,11 @@ export function sanitizeTracking(value: unknown): SeriesTracking | undefined {
 
   if (isRecord(value.number_overrides)) {
     const overrides: Record<string, number> = {};
+    // AniList's progress fields are GraphQL Int — a fractional value (e.g. a
+    // half-read volume) would fail the mutation, so only positive integers
+    // survive here.
     for (const [uuid, n] of Object.entries(value.number_overrides)) {
-      if (typeof n === 'number' && Number.isFinite(n) && n > 0) overrides[uuid] = n;
+      if (typeof n === 'number' && Number.isInteger(n) && n > 0) overrides[uuid] = n;
     }
     if (Object.keys(overrides).length > 0) out.number_overrides = overrides;
   }
