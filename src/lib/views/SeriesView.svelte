@@ -2,6 +2,7 @@
   import { catalog, currentSeries } from '$lib/catalog';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
+  import SeriesMetadataBar from '$lib/components/Series/SeriesMetadataBar.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
@@ -803,6 +804,8 @@
         {/if}
       </div>
     </div>
+
+    <SeriesMetadataBar seriesTitle={manga[0].series_title} volumes={manga} />
 
     <!-- Actions Row: All buttons -->
     <div class="flex flex-row items-stretch justify-end gap-2">
