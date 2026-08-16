@@ -101,6 +101,32 @@ describe('anilist provider', () => {
     await expect(anilistRequest('{ x }')).rejects.toMatchObject({ code: 'NETWORK' });
   });
 
+  it('maps a 400 "Invalid token" GraphQL body to UNAUTHORIZED, not GRAPHQL', async () => {
+    // Verified against the live API: a revoked/invalid Bearer token is answered
+    // with HTTP 400 and a GraphQL error, never a 401. Classifying it as GRAPHQL
+    // would make the tracker drop the queued push and stay silent about the
+    // dead session.
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        { data: null, errors: [{ message: 'Invalid token', status: 400 }] },
+        { status: 400 }
+      )
+    );
+    await expect(anilistRequest('{ Viewer { id } }', {}, 'stale')).rejects.toMatchObject({
+      code: 'UNAUTHORIZED'
+    });
+  });
+
+  it('keeps other GraphQL errors non-retryable', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        { data: null, errors: [{ message: 'Not Found.', status: 404 }] },
+        { status: 404 }
+      )
+    );
+    await expect(anilistRequest('{ x }')).rejects.toMatchObject({ code: 'GRAPHQL' });
+  });
+
   it('toSeriesMetadataPatch maps a result to record fields', () => {
     const r = {
       provider: 'anilist' as const,

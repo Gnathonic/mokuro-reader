@@ -72,13 +72,20 @@ export async function anilistRequest<T>(
     blockedUntil = resetEpoch * 1000;
   }
 
-  let json: { data?: T; errors?: { message?: string }[] } | null = null;
+  let json: { data?: T; errors?: { message?: string; status?: number }[] } | null = null;
   try {
     json = await res.json();
   } catch {
     json = null;
   }
   if (json?.errors?.length) {
+    // A revoked or malformed Bearer token does NOT come back as 401/403: AniList
+    // answers `400 {"errors":[{"message":"Invalid token","status":400}]}`, which
+    // would otherwise be classified as a permanent GRAPHQL failure — the tracker
+    // would drop the queued intent and the user would never be told to reconnect.
+    if (json.errors.some((e) => /invalid token/i.test(e?.message ?? ''))) {
+      throw new AniListError('UNAUTHORIZED', 'AniList rejected the session');
+    }
     throw new AniListError('GRAPHQL', json.errors[0]?.message ?? 'AniList error');
   }
   if (!res.ok || !json?.data) {
