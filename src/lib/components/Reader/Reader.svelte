@@ -2,6 +2,7 @@
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
+  import { get } from 'svelte/store';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
@@ -12,6 +13,7 @@
   import {
     effectiveVolumeSettings,
     imageFilter,
+    preferredTitleLanguage,
     progress,
     settings,
     updateProgress,
@@ -23,6 +25,11 @@
     type ScheduleSettingKey
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  import RereadPromptModal from './RereadPromptModal.svelte';
+  import { shouldOfferReread } from '$lib/metadata/reread';
+  import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
@@ -69,6 +76,43 @@
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
+
+  // Re-read detection: once per opened volume, ask when this is the first LOCAL
+  // volume of a series whose every local volume is completed (see
+  // $lib/metadata/reread.shouldOfferReread). `rereadCheckedFor` guards this to
+  // run once per reader mount for the opened volume, not on every $volumes tick.
+  let rereadPromptOpen = $state(false);
+  let rereadCheckedFor = $state<string | null>(null);
+  let rereadDisplayTitle = $state('');
+  let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
+
+  $effect(() => {
+    const v = volume;
+    const seriesVolumes = localSeriesVolumes;
+    if (!v || seriesVolumes.length === 0 || rereadCheckedFor === v.volume_uuid) return;
+    rereadCheckedFor = v.volume_uuid;
+    const seriesKey = normalizeSeriesKey(v.series_title);
+    // A fresh DB read (not the reactive seriesMetadataMap store) so a
+    // "don't ask for this series" flag saved moments earlier — e.g. by a
+    // just-finished restartSeries() clearing it back out — is always honored
+    // rather than racing a liveQuery subscriber that hasn't re-emitted yet.
+    getSeriesMetadataForTitle(v.series_title)
+      .then((meta) => {
+        rereadDisplayTitle = resolveDisplayTitle(v.series_title, meta, get(preferredTitleLanguage));
+        if (
+          shouldOfferReread({
+            volumeUuid: v.volume_uuid,
+            seriesVolumes,
+            volumesData: get(volumes),
+            meta,
+            seriesKey
+          })
+        ) {
+          rereadPromptOpen = true;
+        }
+      })
+      .catch((error) => console.warn('[reader] reread check failed:', error));
+  });
 
   // Use store directly for reactivity instead of prop
   let volumeSettings = $derived(
@@ -195,6 +239,14 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
+    // The re-read prompt modal owns the keyboard while it's open: its buttons
+    // live inside a native <dialog>, and keydowns still bubble past it up to
+    // this window listener, so without this guard Escape would both close the
+    // modal AND fire navigateBack() below, and arrow keys / Space would page
+    // the reader underneath it.
+    if (rereadPromptOpen) {
+      return;
+    }
     // Ignore shortcuts when the user is typing or inside reader UI overlays
     if (keyboardShouldIgnore(event.target)) {
       return;
@@ -1079,6 +1131,13 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
+  <RereadPromptModal
+    bind:open={rereadPromptOpen}
+    seriesTitle={volume.series_title}
+    seriesKey={normalizeSeriesKey(volume.series_title)}
+    seriesVolumes={localSeriesVolumes}
+    displayTitle={rereadDisplayTitle || volume.series_title}
+  />
   <TextBoxPicker />
   {#if overlaysVisible}
     <Popover
