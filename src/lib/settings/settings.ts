@@ -128,6 +128,8 @@ export type CatalogSettings = {
   dropShadow: boolean;
   /** Which series title to display in the catalog/series pages. Folder name is untouched. */
   preferredTitleLanguage: DisplayTitleLanguage;
+  /** Master switch for pushing completions to AniList (per-series tracking must also be on). */
+  pushProgressToAniList: boolean;
 };
 
 export type Settings = {
@@ -351,7 +353,8 @@ const defaultSettings: Settings = {
     centerVertical: false,
     compactCloudSeries: false,
     dropShadow: true,
-    preferredTitleLanguage: 'imported'
+    preferredTitleLanguage: 'imported',
+    pushProgressToAniList: true
   }
 };
 

@@ -168,3 +168,13 @@ describe('preferredTitleLanguage store', () => {
     unsubscribe();
   });
 });
+
+describe('pushProgressToAniList migration', () => {
+  it('defaults to true for profiles saved before the setting existed', () => {
+    const migrated = migrateProfiles({
+      Default: { catalogSettings: { stackingPreset: 'default' } }
+    } as any);
+    expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
+    expect(migrated.Default.catalogSettings.stackingPreset).toBe('default');
+  });
+});
