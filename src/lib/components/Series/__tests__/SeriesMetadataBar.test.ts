@@ -14,9 +14,9 @@ const {
   noopStore,
   preferredTitleLanguage,
   catalogSettings,
-  settingsStore,
   volumesData,
-  anilistUser
+  anilistUser,
+  auth
 } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     let value = initial;
@@ -51,9 +51,9 @@ const {
     catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
       pushProgressToAniList: true
     }),
-    settingsStore: createStore<unknown>({}),
     volumesData: createStore<Record<string, { completed?: boolean }>>({}),
     anilistUser: createStore<{ id: number; name: string } | null>(null),
+    auth: { clientId: undefined as string | undefined },
     noopStore: { subscribe: (fn: (v: unknown) => void) => (fn(undefined), () => {}) }
   };
 });
@@ -71,14 +71,11 @@ vi.mock('$lib/util/sync', () => ({
   providerManager: { status: providerStatus }
 }));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/settings/settings', () => ({
-  preferredTitleLanguage,
-  catalogSettings,
-  settings: settingsStore
-}));
+vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage, catalogSettings }));
 // The bar mounts SeriesTrackingPanel; these keep its module graph (IndexedDB,
-// the AniList tracker) out of a test about the bar itself. With no client id the
-// panel's tracking row stays hidden and only its read-count controls render.
+// the AniList tracker) out of a test about the bar itself. `auth.clientId` is
+// left unset for every test but the mount check, so the panel's tracking row
+// stays hidden and only its read-count controls render.
 vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
 vi.mock('$lib/metadata/progress-tracker', () => ({
   computeLocalPassState: () => ({
@@ -92,7 +89,7 @@ vi.mock('$lib/metadata/progress-tracker', () => ({
 }));
 vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
 vi.mock('$lib/metadata/anilist-auth', () => ({
-  getAniListClientId: () => undefined,
+  getAniListClientId: () => auth.clientId,
   getAniListToken: () => null,
   anilistUser
 }));
@@ -131,6 +128,7 @@ function linkedMeta(seriesTitle: string, overrides: Record<string, unknown> = {}
 describe('SeriesMetadataBar', () => {
   beforeEach(() => {
     preferredTitleLanguage.set('imported');
+    auth.clientId = undefined;
   });
 
   it('offers Link… when the series is not linked', () => {
@@ -295,6 +293,22 @@ describe('SeriesMetadataBar', () => {
 
     // Header shows the native title → subtitle keeps folder + romaji + english
     expect(getByText('One Piece Raw · One Piece (romaji) · One Piece (en)')).toBeTruthy();
+  });
+
+  it('mounts the tracking panel', () => {
+    // Guards the one-line mount in SeriesMetadataBar.svelte: the panel's own
+    // behaviour lives in SeriesTrackingPanel.test.ts, but deleting the mount
+    // has to fail something here.
+    auth.clientId = 'client';
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
+    });
+
+    expect(getByText(/Read \d+ time/)).toBeTruthy();
+    expect(getByText('Restart series…')).toBeTruthy();
+    expect(getByText('Sync now')).toBeTruthy();
   });
 
   it('hides the sidecar refresh when every volume is a cloud placeholder', () => {

@@ -2,9 +2,14 @@
 <script lang="ts">
   import { Button, Select, Toggle } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
-  import type { SeriesTracking, TrackingUnit } from '$lib/metadata/types';
-  import { seriesMetadataMap, updateSeriesMetadata } from '$lib/metadata/store';
+  import type { SeriesMetadata, SeriesTracking, TrackingUnit } from '$lib/metadata/types';
+  import {
+    seriesMetadataMap,
+    updateSeriesMetadata,
+    type SeriesMetadataPatch
+  } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import {
     computeLocalPassState,
     syncSeriesNow,
@@ -13,7 +18,7 @@
   import { restartSeries } from '$lib/metadata/reread';
   import { anilistUser, getAniListClientId, getAniListToken } from '$lib/metadata/anilist-auth';
   import { volumes as volumesStore } from '$lib/settings/volume-data';
-  import { catalogSettings } from '$lib/settings/settings';
+  import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
   import { promptConfirmation } from '$lib/util/modals';
   import { showSnackbar } from '$lib/util/snackbar';
 
@@ -23,6 +28,8 @@
     { value: 'volumes', name: 'Volumes' },
     { value: 'chapters', name: 'Chapters' }
   ];
+
+  const DEFAULT_TRACKING: SeriesTracking = { enabled: false, unit: 'volumes' };
 
   /** Every outcome `syncSeriesNow` can report — `failed` is an error, not a queue. */
   const SYNC_MESSAGES: Record<PushOutcome, string> = {
@@ -39,6 +46,9 @@
 
   let seriesKey = $derived(normalizeSeriesKey(seriesTitle));
   let meta = $derived($seriesMetadataMap.get(seriesKey));
+  // Every human-facing label uses the display title (language preference + tag);
+  // the folder title stays the identity we read and write records by.
+  let displayTitle = $derived(resolveDisplayTitle(seriesTitle, meta, $preferredTitleLanguage));
   // Cloud-only placeholders were never downloaded, so they can be neither read
   // nor reset. The tracker computes its pass state from the LOCAL volumes only
   // (`restartSeries` does the same) — filtering here keeps "Read N times" and
@@ -48,23 +58,72 @@
   let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, meta));
   let readCount = $derived(meta?.read_count ?? 0);
   let linked = $derived(!!meta?.external_ids?.anilist);
-  let tracking = $derived<SeriesTracking>(meta?.tracking ?? { enabled: false, unit: 'volumes' });
+  let tracking = $derived<SeriesTracking>(meta?.tracking ?? DEFAULT_TRACKING);
   let lastPushed = $derived(tracking.last_pushed);
   // A token can outlive the Viewer query that names the user, so either proves a session.
   let connected = $derived(!!$anilistUser || !!getAniListToken());
   let pushAllowed = $derived($catalogSettings?.pushProgressToAniList !== false);
   let syncing = $state(false);
 
-  async function setReadCount(delta: number) {
-    const next = Math.max(0, readCount + delta);
-    if (next === readCount) return;
-    await updateSeriesMetadata(seriesTitle, { read_count: next });
+  /**
+   * Writes are serialized, and each patch is built from the freshest record we
+   * have — the one the previous write returned, or the store's if it is already
+   * ahead. `seriesMetadataMap` is a Dexie liveQuery, so it lags a write by a
+   * round-trip: without this, two fast `+` clicks would both read the same count
+   * and only one increment would land.
+   */
+  let writeChain: Promise<SeriesMetadata | undefined> = Promise.resolve(undefined);
+
+  function freshest(previous: SeriesMetadata | undefined): SeriesMetadata | undefined {
+    if (!previous) return meta;
+    if (!meta) return previous;
+    return meta.updated_at > previous.updated_at ? meta : previous;
   }
 
-  async function setTracking(patch: Partial<SeriesTracking>) {
+  function queueWrite(
+    buildPatch: (current: SeriesMetadata | undefined) => SeriesMetadataPatch | null,
+    failureMessage: string
+  ): Promise<void> {
+    const run = async (previous: SeriesMetadata | undefined) => {
+      const current = freshest(previous);
+      const patch = buildPatch(current);
+      if (!patch) return current;
+      try {
+        return await updateSeriesMetadata(seriesTitle, patch);
+      } catch (error) {
+        console.error('[series-tracking] could not save the series record:', error);
+        showSnackbar(failureMessage);
+        return current;
+      }
+    };
+    // `run` never rejects; the second handler only guards a buildPatch throw.
+    writeChain = writeChain.then(run, () => run(undefined));
+    return writeChain.then(() => {});
+  }
+
+  function setReadCount(delta: number) {
+    return queueWrite((current) => {
+      const from = current?.read_count ?? 0;
+      const next = Math.max(0, from + delta);
+      return next === from ? null : { read_count: next };
+    }, "Couldn't save the read count");
+  }
+
+  function setTracking(patch: Partial<SeriesTracking>) {
     // Spread the stored record so unit/number_overrides/last_pushed survive an
     // edit to any one of them.
-    await updateSeriesMetadata(seriesTitle, { tracking: { ...tracking, ...patch } });
+    return queueWrite(
+      (current) => ({ tracking: { ...(current?.tracking ?? DEFAULT_TRACKING), ...patch } }),
+      "Couldn't save the tracking settings"
+    );
+  }
+
+  /** The reader's "Don't ask for this series" is permanent — this is its undo. */
+  function askAgainAboutRereads() {
+    return queueWrite(
+      () => ({ reread_prompt_suppressed: undefined }),
+      "Couldn't reset the re-read prompt"
+    );
   }
 
   async function syncNow() {
@@ -84,7 +143,7 @@
 
   function confirmRestart() {
     promptConfirmation(
-      `Restart ${seriesTitle}? Every volume goes back to the start; your reading stats are kept.`,
+      `Restart ${displayTitle}? Every volume goes back to the start; your reading stats are kept.`,
       async () => {
         try {
           await restartSeries(seriesTitle, volumes);
@@ -95,11 +154,6 @@
         }
       }
     );
-  }
-
-  /** The reader's "Don't ask for this series" is permanent — this is its undo. */
-  async function askAgainAboutRereads() {
-    await updateSeriesMetadata(seriesTitle, { reread_prompt_suppressed: undefined });
   }
 
   function formatPushedAt(at: string) {
@@ -170,7 +224,9 @@
           <span class="text-xs text-amber-600 dark:text-amber-400"
             >Progress pushing is off in Settings</span
           >
-        {:else if lastPushed}
+        {/if}
+        <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->
+        {#if lastPushed}
           {#key lastPushed.at}
             <span class="text-xs text-gray-500 dark:text-gray-400">
               Last pushed {tracking.unit === 'chapters' ? 'ch.' : 'vol.'}

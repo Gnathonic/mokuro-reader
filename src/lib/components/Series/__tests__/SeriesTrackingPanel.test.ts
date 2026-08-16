@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { createEmptySeriesMetadata, type SeriesMetadata } from '$lib/metadata/types';
 import type { VolumeMetadata } from '$lib/types';
@@ -22,7 +22,8 @@ const h = vi.hoisted(() => {
       set(v: T) {
         value = v;
         subs.forEach((fn) => fn(value));
-      }
+      },
+      get: () => value
     };
   }
 
@@ -33,8 +34,14 @@ const h = vi.hoisted(() => {
       pushProgressToAniList: true
     }),
     settings: createStore<unknown>({ catalogSettings: { pushProgressToAniList: true } }),
+    preferredTitleLanguage: createStore('imported'),
     anilistUser: createStore<{ id: number; name: string } | null>({ id: 1, name: 'nathan' }),
-    auth: { clientId: 'client' as string | undefined, token: 'tok' as string | null }
+    auth: { clientId: 'client' as string | undefined, token: 'tok' as string | null },
+    // Stands in for the Dexie table behind `updateSeriesMetadata`. Deliberately
+    // separate from `seriesMetadataMap`: the real store is a liveQuery that lags
+    // a write by a round-trip, which is the race the panel's write chain fixes.
+    stored: new Map<string, SeriesMetadata>(),
+    writeSeq: { n: 0 }
   };
 });
 
@@ -46,7 +53,18 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 vi.mock('$lib/metadata/store', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
-  updateSeriesMetadata: vi.fn(async () => ({}))
+  updateSeriesMetadata: vi.fn(async (title: string, patch: Partial<SeriesMetadata>) => {
+    const key = title.trim().replace(/\s+/g, ' ').toLowerCase();
+    const current = h.stored.get(key);
+    const next = {
+      ...(current ?? createEmptySeriesMetadata(title)),
+      ...patch,
+      // Strictly newer than anything the (lagging) store holds.
+      updated_at: new Date(Date.now() + ++h.writeSeq.n).toISOString()
+    } as SeriesMetadata;
+    h.stored.set(key, next);
+    return next;
+  })
 }));
 vi.mock('$lib/settings/volume-data', () => ({
   volumes: h.volumesData,
@@ -54,7 +72,8 @@ vi.mock('$lib/settings/volume-data', () => ({
 }));
 vi.mock('$lib/settings/settings', () => ({
   catalogSettings: h.catalogSettings,
-  settings: h.settings
+  settings: h.settings,
+  preferredTitleLanguage: h.preferredTitleLanguage
 }));
 vi.mock('$lib/metadata/anilist-auth', () => ({
   getAniListClientId: () => h.auth.clientId,
@@ -106,6 +125,8 @@ function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
 }
 
 function setMeta(record: SeriesMetadata | undefined) {
+  h.stored.clear();
+  if (record) h.stored.set('one piece', record);
   h.seriesMetadataMap.set(record ? new Map([['one piece', record]]) : new Map());
 }
 
@@ -114,14 +135,23 @@ function renderPanel(volumes: VolumeMetadata[] = VOLUMES) {
 }
 
 describe('SeriesTrackingPanel', () => {
+  let consoleError: MockInstance;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // The failure paths below log on purpose; keep the run's output pristine.
+    consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.auth.clientId = 'client';
     h.auth.token = 'tok';
     h.anilistUser.set({ id: 1, name: 'nathan' });
     h.catalogSettings.set({ pushProgressToAniList: true });
+    h.preferredTitleLanguage.set('imported');
     h.volumesData.set({ a: { completed: true }, b: { completed: true } });
     setMeta(meta({ read_count: 1 }));
+  });
+
+  afterEach(() => {
+    consoleError.mockRestore();
   });
 
   describe('read count', () => {
@@ -166,6 +196,29 @@ describe('SeriesTrackingPanel', () => {
       await fireEvent.click(decrease);
       expect(updateSeriesMetadata).not.toHaveBeenCalled();
     });
+
+    it('lands both of two rapid clicks instead of writing the same value twice', async () => {
+      // The store is a liveQuery and lags the write, so the second click must
+      // build on the record the first write returned.
+      setMeta(meta({ read_count: 0 }));
+      const { getByLabelText } = renderPanel();
+      const increase = getByLabelText('Increase read count');
+      await Promise.all([fireEvent.click(increase), fireEvent.click(increase)]);
+      await waitFor(() => expect(updateSeriesMetadata).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(updateSeriesMetadata).mock.calls.map((call) => call[1])).toEqual([
+        { read_count: 1 },
+        { read_count: 2 }
+      ]);
+    });
+
+    it('reports a failed write', async () => {
+      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Increase read count'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the read count")
+      );
+    });
   });
 
   describe('tracking controls', () => {
@@ -205,6 +258,15 @@ describe('SeriesTrackingPanel', () => {
       });
     });
 
+    it('reports a failed tracking write', async () => {
+      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Push progress to AniList'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the tracking settings")
+      );
+    });
+
     it('shows the last pushed figure', () => {
       setMeta(
         meta({
@@ -217,6 +279,23 @@ describe('SeriesTrackingPanel', () => {
       );
       const { getByText } = renderPanel();
       expect(getByText(/Last pushed vol\. 2 ·/)).toBeTruthy();
+    });
+
+    it('keeps the last pushed figure visible next to a hint', () => {
+      h.anilistUser.set(null);
+      h.auth.token = null;
+      setMeta(
+        meta({
+          tracking: {
+            enabled: true,
+            unit: 'volumes',
+            last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+          }
+        })
+      );
+      const { getByText } = renderPanel();
+      expect(getByText('Connect AniList in Settings')).toBeTruthy();
+      expect(getByText(/Last pushed vol\. 3 ·/)).toBeTruthy();
     });
 
     it('hints that AniList is not connected', () => {
@@ -283,6 +362,19 @@ describe('SeriesTrackingPanel', () => {
       );
     });
 
+    it('names the series by its display title, but restarts by the folder title', async () => {
+      h.preferredTitleLanguage.set('english');
+      setMeta(meta({ titles: { english: 'One Piece (en)' }, tag: '[color]' }));
+      const { getByText } = renderPanel();
+      await fireEvent.click(getByText('Restart series…'));
+      expect(promptConfirmation).toHaveBeenCalledWith(
+        expect.stringContaining('Restart One Piece (en) [color]?'),
+        expect.any(Function)
+      );
+      await vi.mocked(promptConfirmation).mock.calls[0][1]!();
+      expect(restartSeries).toHaveBeenCalledWith('One Piece', VOLUMES);
+    });
+
     it('reports a failed restart', async () => {
       vi.mocked(restartSeries).mockRejectedValueOnce(new Error('nope'));
       const { getByText } = renderPanel();
@@ -314,6 +406,16 @@ describe('SeriesTrackingPanel', () => {
       expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
         reread_prompt_suppressed: undefined
       });
+    });
+
+    it('reports a failed reset', async () => {
+      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      setMeta(meta({ read_count: 1, reread_prompt_suppressed: true }));
+      const { getByText } = renderPanel();
+      await fireEvent.click(getByText('Ask again about re-reads'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't reset the re-read prompt")
+      );
     });
   });
 });
