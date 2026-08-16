@@ -1,6 +1,6 @@
 import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import type { MokuroMetadata } from './compress-volume';
+import { buildMokuroMetadata } from './mokuro-metadata';
+import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
@@ -17,18 +17,6 @@ function extensionFromMimeType(contentType: string): string {
   return 'webp';
 }
 
-function buildMokuroMetadata(volume: VolumeMetadata, pages: unknown[]): MokuroMetadata {
-  return {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages,
-    chars: volume.character_count
-  };
-}
-
 export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
@@ -41,7 +29,8 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   if (hasMokuroVersion) {
     const volumeOcr = await db.volume_ocr.get(volumeUuid);
     if (volumeOcr?.pages) {
-      const metadata = buildMokuroMetadata(volume, volumeOcr.pages);
+      const seriesMetadata = await getSeriesMetadataForTitle(volume.series_title);
+      const metadata = buildMokuroMetadata(volume, volumeOcr.pages, { seriesMetadata });
       const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
       mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
     }

@@ -1,7 +1,9 @@
 import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
-import { compressVolume, type MokuroMetadata } from './compress-volume';
+import { compressVolume } from './compress-volume';
+import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
+import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
 import { loadVolumeSidecars } from './volume-sidecars';
@@ -79,15 +81,9 @@ export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): 
   // Create mokuro metadata only for volumes that had mokuro data
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : {
-        version: volume.mokuro_version,
-        title: volume.series_title,
-        title_uuid: volume.series_uuid,
-        volume: volume.volume_title,
-        volume_uuid: volume.volume_uuid,
-        pages: volumeOcr.pages,
-        chars: volume.character_count
-      };
+    : buildMokuroMetadata(volume, volumeOcr.pages, {
+        seriesMetadata: await getSeriesMetadataForTitle(volume.series_title)
+      });
 
   // Get set of placeholder page paths to exclude from export
   const placeholderPaths = new Set(volume.missing_page_paths || []);
@@ -174,16 +170,10 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
     return [folderPromise, ...imagePromises];
   }
 
-  // Create mokuro data in the old format for compatibility
-  const mokuroData = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
+  // Mokuro sidecar at the archive root (ZIP and CBZ), built by the shared writer
+  const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages, {
+    seriesMetadata: await getSeriesMetadataForTitle(volume.series_title)
+  });
 
   // Add mokuro data file in the root directory (for both ZIP and CBZ)
   return [
@@ -235,15 +225,9 @@ async function addVolumeToArchiveWithProgress(
 
   // Add mokuro file if not image-only
   if (!isImageOnly) {
-    const mokuroData = {
-      version: volume.mokuro_version,
-      title: volume.series_title,
-      title_uuid: volume.series_uuid,
-      volume: volume.volume_title,
-      volume_uuid: volume.volume_uuid,
-      pages: volumeOcr.pages,
-      chars: volume.character_count
-    };
+    const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages, {
+      seriesMetadata: await getSeriesMetadataForTitle(volume.series_title)
+    });
     await zipWriter.add(
       `${volume.volume_title}.mokuro`,
       new TextReader(JSON.stringify(mokuroData))

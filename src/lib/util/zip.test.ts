@@ -15,6 +15,10 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
+vi.mock('$lib/metadata/store', () => ({
+  getSeriesMetadataForTitle: vi.fn().mockResolvedValue(undefined)
+}));
+
 // Mock the backup queue to avoid Worker issues
 vi.mock('./backup-queue', () => ({
   backupQueue: {
