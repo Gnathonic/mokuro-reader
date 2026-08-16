@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Link a series to AniList; alt titles, link-out chips, free-text tag
+- Series facts + tag embedded in exported/backed-up `.mokuro` files
+- `series-metadata.json` synced across devices; "Update cloud sidecars" action
+
 ## [1.8.2] - 2026-07-09
 
 ### Fixed

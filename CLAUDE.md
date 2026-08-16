@@ -130,13 +130,14 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie. Data is split across three tables for performance:
+The application uses a V3 database (`mokuro_v3`) with Dexie. Volume data is split across three tables for performance, alongside a per-series metadata table:
 
-| Table          | Primary Key   | Indexed Fields                | Purpose                     |
-| -------------- | ------------- | ----------------------------- | --------------------------- |
-| `volumes`      | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails        |
-| `volume_ocr`   | `volume_uuid` | —                             | OCR page data (text blocks) |
-| `volume_files` | `volume_uuid` | —                             | Image files (File objects)  |
+| Table             | Primary Key   | Indexed Fields                | Purpose                                                                          |
+| ----------------- | ------------- | ----------------------------- | -------------------------------------------------------------------------------- |
+| `volumes`         | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails                                                             |
+| `volume_ocr`      | `volume_uuid` | —                             | OCR page data (text blocks)                                                      |
+| `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                       |
+| `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`) |
 
 **Key Types:**
 
@@ -201,6 +202,11 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 ```
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
+
+Reader extension: the app writes an optional top-level `series_metadata`
+object (`external_ids`, `titles`, `synonyms`, `tag`, `updated_at`) built by
+`src/lib/util/mokuro-metadata.ts` and read back by `parseMokuroFile`. Never
+put per-user preferences (tracking, title preference) in it.
 
 ### Settings Architecture
 
