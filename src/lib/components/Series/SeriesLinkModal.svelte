@@ -127,6 +127,13 @@
       loading = false;
     }
   }
+
+  // Enter in the paste field submits, like the "Link by ID" button next to it.
+  function onIdKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Enter' || loading || linking) return;
+    e.preventDefault();
+    void linkById();
+  }
 </script>
 
 <Modal bind:open size="md" title="Link to AniList" outsideclose>
@@ -181,8 +188,15 @@
       <p class="text-sm text-gray-500">No results.</p>
     {/if}
 
-    <div class="flex items-center gap-2 pt-2">
-      <Input bind:value={idInput} placeholder="…or paste an AniList URL / ID" class="flex-1" />
+    <!-- relative z-10: the night-mode filter on <dialog> creates a stacking context, so the
+         scrollable results list above can otherwise capture clicks meant for this row -->
+    <div class="relative z-10 flex items-center gap-2 pt-2">
+      <Input
+        bind:value={idInput}
+        placeholder="…or paste an AniList URL / ID"
+        class="flex-1"
+        onkeydown={onIdKeydown}
+      />
       <Button size="sm" color="light" onclick={linkById} disabled={loading || linking}
         >Link by ID</Button
       >

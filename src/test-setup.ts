@@ -40,6 +40,56 @@ if (typeof Blob !== 'undefined' && !Blob.prototype.text) {
   };
 }
 
+// Polyfill the <dialog> modal API for jsdom environment
+// jsdom does not implement showModal()/show()/close(); flowbite-svelte's Modal calls
+// showModal() as soon as it mounts, so any component test rendering a modal throws
+// without this shim.
+if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.showModal) {
+  HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.show = function (this: HTMLDialogElement) {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.close = function (this: HTMLDialogElement, returnValue?: string) {
+    this.open = false;
+    if (returnValue !== undefined) this.returnValue = returnValue;
+    this.dispatchEvent(new Event('close'));
+  };
+}
+
+// Stub the Web Animations API for jsdom environment
+// jsdom has no Element.animate(); Svelte 5 drives transitions through it, so rendering
+// any component with a transition (flowbite's Modal) throws without this.
+if (typeof Element !== 'undefined' && !Element.prototype.animate) {
+  Element.prototype.animate = function () {
+    const animation = {
+      currentTime: 0,
+      startTime: 0,
+      playState: 'finished',
+      playbackRate: 1,
+      effect: null,
+      onfinish: null as null | (() => void),
+      oncancel: null as null | (() => void),
+      finished: Promise.resolve(),
+      play() {},
+      pause() {},
+      reverse() {},
+      cancel() {},
+      finish() {
+        animation.onfinish?.();
+      },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent: () => true
+    };
+    // Transitions are not what component tests assert on — settle immediately, after the
+    // caller has had a chance to attach onfinish.
+    queueMicrotask(() => animation.onfinish?.());
+    return animation as unknown as Animation;
+  };
+}
+
 // Polyfill window.matchMedia for jsdom environment
 // Required for Svelte components that use media queries (e.g., Flowbite components)
 Object.defineProperty(window, 'matchMedia', {

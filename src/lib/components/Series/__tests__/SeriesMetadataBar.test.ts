@@ -29,7 +29,7 @@ const { seriesMetadataMap, providerStatus, noopStore } = vi.hoisted(() => {
   return {
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     providerStatus: createStore({
-      providers: {},
+      providers: {} as Record<string, { isReadOnly?: boolean }>,
       hasAnyAuthenticated: false,
       needsAttention: false,
       currentProviderType: null as string | null
@@ -55,6 +55,17 @@ vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
 import { showSnackbar } from '$lib/util';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import type { VolumeMetadata } from '$lib/types';
+
+function volume(title: string, isPlaceholder = false): VolumeMetadata {
+  return {
+    volume_uuid: `uuid-${title}`,
+    series_uuid: 'series-uuid',
+    series_title: 'One Piece',
+    volume_title: title,
+    isPlaceholder
+  } as VolumeMetadata;
+}
 
 describe('SeriesMetadataBar', () => {
   it('offers Link… when the series is not linked', () => {
@@ -108,7 +119,7 @@ describe('SeriesMetadataBar', () => {
     });
 
     const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1'), volume('Vol 2')] }
     });
 
     await fireEvent.click(getByText('Update cloud sidecars'));
@@ -118,5 +129,41 @@ describe('SeriesMetadataBar', () => {
         expect.stringContaining('Updated 1 cloud sidecar (2 skipped')
       );
     });
+  });
+
+  it('disables the sidecar refresh on a read-only provider', () => {
+    providerStatus.set({
+      providers: { webdav: { isReadOnly: true } },
+      hasAnyAuthenticated: true,
+      needsAttention: false,
+      currentProviderType: 'webdav'
+    });
+    seriesMetadataMap.set(new Map());
+
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
+    });
+
+    const button = getByText('Update cloud sidecars').closest('button')!;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('title')).toContain('read-only');
+  });
+
+  it('hides the sidecar refresh when every volume is a cloud placeholder', () => {
+    providerStatus.set({
+      providers: {},
+      hasAnyAuthenticated: true,
+      needsAttention: false,
+      currentProviderType: 'google-drive'
+    });
+    seriesMetadataMap.set(new Map());
+
+    const { queryByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1', true)] }
+    });
+
+    // Nothing local to regenerate from — the action could only ever report
+    // "No backed-up volumes to update".
+    expect(queryByText('Update cloud sidecars')).toBeNull();
   });
 });

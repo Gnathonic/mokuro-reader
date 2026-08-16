@@ -6,7 +6,7 @@
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { getLinkTargets } from '$lib/metadata/link-targets';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { providerManager } from '$lib/util/sync';
+  import { providerManager, type MultiProviderStatus } from '$lib/util/sync';
   import { showSnackbar } from '$lib/util';
   import { ProviderError } from '$lib/util/sync/provider-interface';
   import type { VolumeMetadata } from '$lib/types';
@@ -60,25 +60,41 @@
     sidecarsStale = true;
   }
 
-  // Reactive "is a cloud provider connected" state. providerManager.getActiveProvider() reads a
-  // plain private field with no reactive subscription, so it can't drive a $derived — mirror
-  // SeriesView.svelte's pattern instead: subscribe to the same providerManager.status store it
-  // uses for `hasAnyProvider`/`isCloudReady`.
-  let hasCloud = $state(false);
+  // Reactive cloud state. providerManager.getActiveProvider() reads a plain private field with
+  // no reactive subscription, so it can't drive a $derived — mirror SeriesView.svelte's pattern
+  // instead: subscribe to the same providerManager.status store it uses for
+  // `hasAnyProvider`/`isCloudReady`/`isReadOnlyMode`.
+  let providerStatus = $state<MultiProviderStatus>({
+    hasAnyAuthenticated: false,
+    currentProviderType: null,
+    needsAttention: false,
+    providers: {} as MultiProviderStatus['providers']
+  });
   $effect(() => {
     return providerManager.status.subscribe((value) => {
-      hasCloud = value.hasAnyAuthenticated;
+      providerStatus = value;
     });
   });
+  let hasCloud = $derived(providerStatus.hasAnyAuthenticated);
+  // Same rule as SeriesView.svelte: WebDAV is the one provider that can be mounted read-only.
+  let isReadOnly = $derived(
+    providerStatus.currentProviderType === 'webdav' &&
+      providerStatus.providers['webdav']?.isReadOnly === true
+  );
+  // Placeholders have no local .mokuro to regenerate from, so a placeholder-only page could
+  // only ever answer "No backed-up volumes to update" — don't offer the action at all.
+  let refreshableVolumes = $derived(volumes.filter((v) => !v.isPlaceholder));
+  let canRefreshSidecars = $derived(hasCloud && refreshableVolumes.length > 0);
 
   async function refreshSidecars() {
     refreshing = true;
     try {
       const result = await unifiedCloudManager.refreshSeriesSidecars(
         seriesTitle,
-        volumes
-          .filter((v) => !v.isPlaceholder)
-          .map((v) => ({ volumeUuid: v.volume_uuid, volumeTitle: v.volume_title }))
+        refreshableVolumes.map((v) => ({
+          volumeUuid: v.volume_uuid,
+          volumeTitle: v.volume_title
+        }))
       );
       const { succeeded, failed, skipped } = result;
       const total = succeeded + failed;
@@ -149,13 +165,15 @@
       />
     </label>
 
-    {#if hasCloud}
+    {#if canRefreshSidecars}
       <Button
         size="xs"
         color="light"
         onclick={refreshSidecars}
-        disabled={refreshing}
-        title="Rewrite the .mokuro of every backed-up volume with the current link and tag"
+        disabled={refreshing || isReadOnly}
+        title={isReadOnly
+          ? 'Your cloud provider is connected read-only — sidecars cannot be rewritten'
+          : 'Rewrite the .mokuro of every backed-up volume with the current link and tag'}
       >
         {#if refreshing}<Spinner size="4" class="me-1" />{/if}
         Update cloud sidecars
