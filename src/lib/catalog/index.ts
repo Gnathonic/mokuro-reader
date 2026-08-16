@@ -7,6 +7,7 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([
@@ -106,9 +107,9 @@ export const catalog = derived([volumesWithPlaceholders], ([$volumesWithPlacehol
 export const currentSeries = derived([routeParams, catalog], ([$routeParams, $catalog]) => {
   if (!$catalog || !$routeParams.manga) return [];
 
-  const routeKey = $routeParams.manga.trim().replace(/\s+/g, ' ').toLowerCase();
+  const routeKey = normalizeSeriesKey($routeParams.manga);
   // Primary: match by title (folder name) - handles placeholder→local transition
-  let series = $catalog.find((s) => s.title.trim().replace(/\s+/g, ' ').toLowerCase() === routeKey);
+  let series = $catalog.find((s) => normalizeSeriesKey(s.title) === routeKey);
 
   // Fallback: match by UUID (for legacy URLs)
   if (!series) {

@@ -1,5 +1,6 @@
 import type { VolumeMetadata } from '$lib/types';
 import { sortVolumes } from './sort-volumes';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 
 export interface Series {
   title: string;
@@ -11,16 +12,12 @@ function sortTitles(a: Series, b: Series) {
   return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
 }
 
-function normalizeSeriesTitle(title: string): string {
-  return title.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
 export function deriveSeriesFromVolumes(volumeEntries: Array<VolumeMetadata>) {
   // Group volumes by normalized series title (user-visible identity)
   const titleMap = new Map<string, Series>();
 
   for (const entry of volumeEntries) {
-    const key = normalizeSeriesTitle(entry.series_title);
+    const key = normalizeSeriesKey(entry.series_title);
     let volumes = titleMap.get(key);
     if (volumes === undefined) {
       volumes = {
