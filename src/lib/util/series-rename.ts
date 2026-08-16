@@ -238,6 +238,17 @@ export async function executeRenameSeries(
       }
     }
 
+    // Carry the per-series metadata (AniList link, tag, …) to the new key.
+    // Non-fatal: the rename itself already succeeded.
+    if (renamedSet.size > 0) {
+      try {
+        const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
+        await moveSeriesMetadataKey(oldTitle, newTitle);
+      } catch (error) {
+        console.warn('Failed to move series metadata after rename:', error);
+      }
+    }
+
     return {
       finalTitle: newTitle,
       renamedCount: cloud.renamedVolumeUuids.length,

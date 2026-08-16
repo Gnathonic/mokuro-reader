@@ -30,6 +30,11 @@ vi.mock('svelte/store', () => ({
   get: vi.fn()
 }));
 
+const moveSeriesMetadataKey = vi.fn();
+vi.mock('$lib/metadata/store', () => ({
+  moveSeriesMetadataKey: (...args: unknown[]) => moveSeriesMetadataKey(...args)
+}));
+
 describe('Series rename cloud propagation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -194,5 +199,29 @@ describe('Series rename cloud propagation', () => {
     } as any);
 
     await expect(executeRenameSeries('Old Series', '', 'series-1')).rejects.toThrow();
+  });
+
+  it('moves the series metadata record to the new title after a successful rename', async () => {
+    const { db } = await import('$lib/catalog/db');
+    const { get } = await import('svelte/store');
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    vi.mocked(db.volumes.where).mockReturnValue({
+      toArray: vi.fn().mockResolvedValue([
+        {
+          volume_uuid: 'vol-1',
+          series_uuid: 'series-1',
+          series_title: 'Old Series',
+          volume_title: 'V1'
+        }
+      ])
+    } as any);
+    vi.mocked(get).mockReturnValue({});
+    vi.mocked(unifiedCloudManager.renameSeries).mockResolvedValue({
+      renamedVolumeUuids: ['vol-1'],
+      failures: []
+    } as any);
+
+    await executeRenameSeries('Old Series', 'New Series');
+    expect(moveSeriesMetadataKey).toHaveBeenCalledWith('Old Series', 'New Series');
   });
 });
