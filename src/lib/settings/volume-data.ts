@@ -41,6 +41,21 @@ export type AggregateSession = {
   charsRead: number;
 };
 
+// One archived read pass, appended by "restart series". `pages`/`chars` are the
+// values at the moment of the restart; `completed` says whether that pass finished.
+export type ArchivedRead = { at: number; pages: number; chars: number; completed: boolean };
+
+function isArchivedRead(value: unknown): value is ArchivedRead {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.at === 'number' &&
+    typeof v.pages === 'number' &&
+    typeof v.chars === 'number' &&
+    typeof v.completed === 'boolean'
+  );
+}
+
 type Progress = Record<string, number> | undefined;
 type VolumeDataJSON = {
   progress?: number;
@@ -53,6 +68,8 @@ type VolumeDataJSON = {
   recentPageTurns?: PageTurn[];
   // Aggregate session data for reading speed calculation
   sessions?: AggregateSession[];
+  // Archived read passes (restart series)
+  archivedReads?: ArchivedRead[];
   // Volume metadata for self-describing sync data
   series_uuid?: string;
   series_title?: string;
@@ -71,6 +88,7 @@ export class VolumeData implements VolumeDataJSON {
   lastProgressUpdate: string;
   recentPageTurns: PageTurn[];
   sessions: AggregateSession[];
+  archivedReads: ArchivedRead[];
   series_uuid?: string;
   series_title?: string;
   volume_title?: string;
@@ -88,6 +106,9 @@ export class VolumeData implements VolumeDataJSON {
     // Session tracking fields
     this.recentPageTurns = data.recentPageTurns || [];
     this.sessions = data.sessions || [];
+    this.archivedReads = Array.isArray(data.archivedReads)
+      ? data.archivedReads.filter(isArchivedRead)
+      : [];
 
     // Volume metadata (optional, for self-describing sync data)
     this.series_uuid = data.series_uuid;
@@ -161,6 +182,11 @@ export class VolumeData implements VolumeDataJSON {
     // Only include sessions if there are any
     if (this.sessions.length > 0) {
       result.sessions = this.sessions;
+    }
+
+    // Archived read passes (restart series) — sync with the volume
+    if (this.archivedReads.length > 0) {
+      result.archivedReads = this.archivedReads;
     }
 
     // Include volume metadata if present (for self-describing sync data)
@@ -429,14 +455,40 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
   });
 }
 
+type CompletionListener = (volumeUuid: string) => void;
+const completionListeners = new Set<CompletionListener>();
+
+/**
+ * Called when a volume's `completed` flips false → true (via updateProgress or
+ * markVolumeAsComplete). Returns an unregister function.
+ */
+export function registerCompletionListener(fn: CompletionListener): () => void {
+  completionListeners.add(fn);
+  return () => {
+    completionListeners.delete(fn);
+  };
+}
+
+function notifyCompletion(volumeUuid: string) {
+  for (const fn of completionListeners) {
+    try {
+      fn(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] completion listener failed:', error);
+    }
+  }
+}
+
 export function updateProgress(
   volume: string,
   progress: number,
   chars?: number,
   completed = false
 ) {
+  let becameCompleted = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
+    becameCompleted = completed && !currentVolume.completed;
     const now = Date.now();
 
     // Add new turn with cumulative character count
@@ -480,6 +532,10 @@ export function updateProgress(
       })
     };
   });
+
+  if (becameCompleted) {
+    notifyCompletion(volume);
+  }
 }
 
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
@@ -488,6 +544,42 @@ export function markVolumeAsComplete(volumeUuid: string, pageCount: number, tota
 
 export function markVolumeAsUnread(volumeUuid: string) {
   updateProgress(volumeUuid, 0, 0, false);
+}
+
+/**
+ * "Restart series": archive each volume's current read (progress/chars/completed)
+ * onto `archivedReads`, then reset it to the start. Reading history
+ * (recentPageTurns, sessions, timeReadInMinutes) is untouched. Volumes with no
+ * progress are skipped; unknown UUIDs are not created.
+ */
+export function archiveAndResetVolumes(volumeUuids: string[]) {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  _volumesInternal.update((prev) => {
+    const updated = { ...prev };
+    for (const uuid of volumeUuids) {
+      const existing = updated[uuid];
+      if (!existing || existing.deletedOn) continue;
+      if (existing.progress <= 0 && !existing.completed) continue;
+      updated[uuid] = new VolumeData({
+        ...existing,
+        archivedReads: [
+          ...existing.archivedReads,
+          {
+            at: now,
+            pages: existing.progress,
+            chars: existing.chars,
+            completed: existing.completed
+          }
+        ],
+        progress: 0,
+        chars: 0,
+        completed: false,
+        lastProgressUpdate: nowIso
+      });
+    }
+    return updated;
+  });
 }
 
 export function startCount(volume: string) {
@@ -610,6 +702,11 @@ export const totalStats = derived([volumes, globalSettings], ([$volumes, $settin
         stats.pagesRead += volumeData.progress;
         stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
         stats.charsRead += volumeData.chars;
+        // Lifetime totals keep every archived pass (restart series never lowers them)
+        for (const read of volumeData.archivedReads) {
+          stats.pagesRead += read.pages;
+          stats.charsRead += read.chars;
+        }
 
         return stats;
       },
