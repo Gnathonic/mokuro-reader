@@ -9,9 +9,22 @@
   import type { VolumeData, VolumeMetadata } from '$lib/types';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
+  import { catalogSettings } from '$lib/settings/settings';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
 
   let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);
+  let seriesDisplayTitle = $derived(
+    volume
+      ? resolveDisplayTitle(
+          volume.series_title,
+          $seriesMetadataMap.get(normalizeSeriesKey(volume.series_title)),
+          $catalogSettings?.preferredTitleLanguage ?? 'imported'
+        )
+      : ''
+  );
 
   // Use state instead of derived to wait for data to fully load
   let volumeData = $state<VolumeData | undefined>(undefined);
@@ -172,7 +185,7 @@
           {volume.volume_title}
         </h1>
         <p class="mb-4 text-lg text-gray-600 dark:text-gray-400">
-          {volume.series_title} • Text-only view for language analysis
+          {seriesDisplayTitle} • Text-only view for language analysis
         </p>
 
         <!-- Stats -->

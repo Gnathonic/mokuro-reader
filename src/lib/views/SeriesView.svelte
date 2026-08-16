@@ -34,6 +34,10 @@
   import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
+  import { catalogSettings } from '$lib/settings/settings';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -207,6 +211,19 @@
   // Separate real volumes from placeholders
   let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
+
+  // Raw folder title (identity) and its human-facing overlay. The overlay is
+  // presentation only: rename/cloud/delete flows below keep using seriesTitle.
+  let seriesTitle = $derived(manga[0]?.series_title || placeholders[0]?.series_title || '');
+  let seriesDisplayTitle = $derived(
+    seriesTitle
+      ? resolveDisplayTitle(
+          seriesTitle,
+          $seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)),
+          $catalogSettings?.preferredTitleLanguage ?? 'imported'
+        )
+      : ''
+  );
   let volumeListRenderKey = $derived.by(() =>
     manga
       .map((vol) => {
@@ -727,7 +744,7 @@
 </script>
 
 <svelte:head>
-  <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
+  <title>{seriesDisplayTitle || 'Manga'}</title>
 </svelte:head>
 {#if $catalog === null || allVolumes === null}
   <!-- Still loading from IndexedDB -->
@@ -774,7 +791,9 @@
         {/if}
       {:else}
         <div class="flex min-w-0 items-center gap-1">
-          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{manga[0].series_title}</h3>
+          {#key seriesDisplayTitle}
+            <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
+          {/key}
           <button
             onclick={startRename}
             class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
@@ -954,7 +973,7 @@
     <!-- Header Row: Title and cloud info -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
       <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
-        {placeholders[0]?.series_title || 'Cloud Series'}
+        {seriesDisplayTitle || 'Cloud Series'}
       </h3>
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
