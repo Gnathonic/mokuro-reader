@@ -187,16 +187,18 @@ describe('sanitizeCloudSeriesMetadata', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-16T12:00:00.000Z'));
     const poisoned = { a: rec('A', '2999-01-01T00:00:00.000Z', 'cloud') };
-    // Raw, the poison pill wins against anything the user does…
-    expect(
-      mergeSeriesMetadata({ a: rec('A', '2026-08-16T12:00:01.000Z', 'local') }, poisoned).a.tag
-    ).toBe('cloud');
-    // …sanitized at the boundary, it is back in the present and loses.
+    // A "fresh local" edit is stamped realistically: `nextTimestamp` in
+    // store.ts stamps `max(now, existing + 1ms)`, so against the raw poison
+    // pill (year 2999) even that realistic local edit still loses…
+    const freshLocal = { a: rec('A', '2026-08-16T12:00:00.001Z', 'local') };
+    expect(mergeSeriesMetadata(freshLocal, poisoned).a.tag).toBe('cloud');
+    // …sanitized at the boundary, the poisoned record is clamped back to `now`…
     const cleaned = sanitizeCloudSeriesMetadata(poisoned);
     expect(cleaned.a.updated_at).toBe('2026-08-16T12:00:00.000Z');
-    expect(
-      mergeSeriesMetadata({ a: rec('A', '2026-08-16T12:00:01.000Z', 'local') }, cleaned).a.tag
-    ).toBe('local');
+    // …so the same realistic local stamp (1ms ahead of `now`, exactly what
+    // `nextTimestamp` would produce for an edit made right after the clamp)
+    // now wins on the next merge.
+    expect(mergeSeriesMetadata(freshLocal, cleaned).a.tag).toBe('local');
     vi.useRealTimers();
   });
 });

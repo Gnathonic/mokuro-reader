@@ -15,6 +15,28 @@ import { getAllSeriesMetadata, replaceAllSeriesMetadata } from '$lib/metadata/st
 import { mergeSeriesMetadata, sanitizeCloudSeriesMetadata } from '$lib/metadata/merge';
 import type { SeriesMetadata } from '$lib/metadata/types';
 
+/**
+ * Deep-sorts object keys before `JSON.stringify` so two values that differ
+ * only in key order compare equal. Used to decide whether series metadata
+ * needs to be re-uploaded without false positives from key ordering alone.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    );
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of entries) out[key] = sortKeysDeep(v);
+    return out;
+  }
+  return value;
+}
+
 export interface SyncOptions {
   /** If true, suppress snackbar notifications */
   silent?: boolean;
@@ -597,6 +619,14 @@ class UnifiedSyncService {
    * Sync series metadata (AniList link / titles / tag / tracking) with a
    * provider: download → sanitize untrusted cloud JSON → newest-wins merge →
    * write local table if changed → upload if changed.
+   *
+   * The upload decision compares `merged` against the RAW (unsanitized) cloud
+   * map, not the sanitized one. A cloud record that sanitizing altered — most
+   * importantly a far-future `updated_at` clamped back to `now` — must be
+   * re-uploaded even when `merged` is identical to the *sanitized* cloud map.
+   * Otherwise the poisoned raw value survives untouched in the cloud file and
+   * gets re-clamped to a newer `now` on every later sync, permanently
+   * outranking honest local edits instead of healing.
    */
   private async syncSeriesMetadata(provider: SyncProvider): Promise<void> {
     const cloudRaw = await this.downloadSeriesMetadataFile(provider);
@@ -604,14 +634,14 @@ class UnifiedSyncService {
     const local = await getAllSeriesMetadata();
     const merged = mergeSeriesMetadata(local, cloud ?? {});
 
-    const localJson = JSON.stringify(local);
-    const cloudJson = JSON.stringify(cloud ?? {});
-    const mergedJson = JSON.stringify(merged);
+    const localJson = stableStringify(local);
+    const rawCloudJson = stableStringify(cloudRaw ?? {});
+    const mergedJson = stableStringify(merged);
 
     if (mergedJson !== localJson) {
       await replaceAllSeriesMetadata(merged);
     }
-    if (Object.keys(merged).length > 0 && mergedJson !== cloudJson) {
+    if (Object.keys(merged).length > 0 && mergedJson !== rawCloudJson) {
       await this.uploadSeriesMetadataFile(provider, merged);
     }
   }

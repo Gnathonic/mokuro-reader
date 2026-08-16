@@ -246,4 +246,79 @@ describe('syncSeriesMetadata — series-metadata.json', () => {
     await svc.syncSeriesMetadata(provider);
     expect(uploadFile).not.toHaveBeenCalled();
   });
+
+  it('heals a poisoned raw cloud record by re-uploading the sanitized (clamped) value', async () => {
+    // Regression for: the upload decision used to compare `merged` against
+    // the SANITIZED cloud map, so a raw far-future `updated_at` that got
+    // clamped locally was never written back — it stayed poisoned in the
+    // cloud file and re-clamped to a newer `now` on every later sync,
+    // permanently outranking honest local edits. Local is empty here, so the
+    // only source for the merged record is the poisoned cloud entry.
+    // Only `Date` is faked — a real Blob's `.text()` (read back below) relies
+    // on real timers internally under jsdom, and faking those too hangs the test.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-16T12:00:00.000Z'));
+    try {
+      const cloud = {
+        version: 1,
+        series: { a: rec('a', '2999-01-01T00:00:00.000Z', 'poisoned') }
+      };
+      const file = {
+        provider: 'mega',
+        fileId: 'sm',
+        path: 'series-metadata.json'
+      } as unknown as CloudFileMetadata;
+      getCache.mockReturnValue({
+        get: (p: string) => (p === 'series-metadata.json' ? file : null)
+      });
+      const uploadFile = vi.fn<SyncProvider['uploadFile']>(async () => 'id');
+      const provider = {
+        type: 'mega',
+        downloadFile: vi.fn(async () => jsonBlob(cloud)),
+        uploadFile
+      } as unknown as SyncProvider;
+
+      await svc.syncSeriesMetadata(provider);
+
+      expect(uploadFile).toHaveBeenCalledTimes(1);
+      const [, blob] = uploadFile.mock.calls[0];
+      const uploaded = JSON.parse(await (blob as Blob).text());
+      expect(Date.parse(uploaded.series.a.updated_at)).toBeLessThanOrEqual(Date.now());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not re-upload when cloud and local are identical but key order differs', async () => {
+    const shared = {
+      series_key: 'a',
+      series_title: 'A',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      tag: 'same',
+      read_count: 0,
+      updated_at: '2026-01-01T00:00:00.000Z'
+    };
+    localSeries.a = shared;
+    // Same record, same values, fields declared in reverse order.
+    const cloudA = Object.fromEntries(Object.entries(shared).reverse());
+    const cloud = { version: 1, series: { a: cloudA } };
+    const file = {
+      provider: 'mega',
+      fileId: 'sm',
+      path: 'series-metadata.json'
+    } as unknown as CloudFileMetadata;
+    getCache.mockReturnValue({ get: (p: string) => (p === 'series-metadata.json' ? file : null) });
+    const uploadFile = vi.fn<SyncProvider['uploadFile']>(async () => 'id');
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () => jsonBlob(cloud)),
+      uploadFile
+    } as unknown as SyncProvider;
+
+    await svc.syncSeriesMetadata(provider);
+
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
 });
