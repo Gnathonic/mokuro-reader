@@ -51,6 +51,8 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 - **Volume Editor** - Edit metadata, reading progress, and cover (with cropping) directly from the catalog
 - **Series Management** - Rename or merge series from the series page
 - **Preferred Series Titles** - Display series in native, romaji, or English titles from their AniList link, with a per-series override (folder names are never changed)
+- **AniList Progress Tracking** - Opt a linked series in to push read progress, completions and re-reads to your AniList list
+- **Restart Series** - Archive a finished read and send every volume back to the start; the reader offers it when you re-open the first volume
 - **Context Menu for Text Boxes** - Right-click or long-press OCR text boxes for quick copy and Anki card creation
 - **Copy Without Linebreaks** - Copied text automatically strips linebreaks for cleaner pasting
 - **Text Analysis Tools** - Dedicated text pages for both volumes and series for analysis by browser extensions
