@@ -12,9 +12,10 @@
   interface Props {
     volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
     providerName?: string; // Shared across all items - avoids repeated lookups
+    displayTitle?: string; // Pre-resolved by the catalog store; falls back to series_title
   }
 
-  let { volumes, providerName = 'Cloud' }: Props = $props();
+  let { volumes, providerName = 'Cloud', displayTitle }: Props = $props();
 
   // Volumes are pre-sorted by catalog store (natural sort)
   let sortedVolumes = $derived(volumes);
@@ -102,7 +103,9 @@
       <a href="#/series/{encodeURIComponent(navId)}" class="h-full w-full" onclick={handleClick}>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <p class:text-green-400={isComplete} class="font-semibold">{volume.series_title}</p>
+            <p class:text-green-400={isComplete} class="font-semibold">
+              {displayTitle ?? volume.series_title}
+            </p>
             {#if isPlaceholderOnly}
               <span class="text-xs text-blue-400">In {providerName}</span>
             {/if}

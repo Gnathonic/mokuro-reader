@@ -16,9 +16,10 @@
   interface Props {
     volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
     providerName?: string; // Shared across all items - avoids repeated lookups
+    displayTitle?: string; // Pre-resolved by the catalog store; falls back to series_title
   }
 
-  let { volumes, providerName = 'Cloud' }: Props = $props();
+  let { volumes, providerName = 'Cloud', displayTitle }: Props = $props();
 
   // Volumes are pre-sorted by catalog store (natural sort)
   let seriesVolumes = $derived(volumes);
@@ -718,7 +719,7 @@
         </div>
       {/if}
       <p class="line-clamp-2 font-semibold" style="width: {containerDimensions.outerWidth}px;">
-        {volume.series_title}
+        {displayTitle ?? volume.series_title}
       </p>
       {#if isPlaceholderOnly}
         <p class="text-xs text-blue-400">

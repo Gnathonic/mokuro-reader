@@ -172,9 +172,15 @@
     return [...$catalog]
       .sort((a, b) => {
         if ($miscSettings.gallerySorting === 'ASC') {
-          return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+          return a.displayTitle.localeCompare(b.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         } else if ($miscSettings.gallerySorting === 'DESC') {
-          return b.title.localeCompare(a.title, undefined, { numeric: true, sensitivity: 'base' });
+          return b.displayTitle.localeCompare(a.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         } else {
           // SMART sorting
           // Check if series are completed
@@ -209,12 +215,18 @@
             return bLastUpdated - aLastUpdated;
           }
 
-          // If all else is equal, use natural sorting on title
-          return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+          // If all else is equal, use natural sorting on display title
+          return a.displayTitle.localeCompare(b.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         }
       })
       .filter((item) => {
-        return item.title.toLowerCase().indexOf(search.toLowerCase()) !== -1;
+        const query = search.trim().toLowerCase();
+        if (!query) return true;
+        // Matches folder title, AniList titles, synonyms, tag and the display title
+        return item.searchTerms.some((term) => term.includes(query));
       });
   });
 
@@ -325,13 +337,13 @@
       <!-- Local series -->
       <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
         {#if $miscSettings.galleryLayout === 'grid'}
-          {#each localSeries as { title, volumes } (title)}
-            <CatalogItem {volumes} providerName={providerDisplayName} />
+          {#each localSeries as { title, displayTitle, volumes } (title)}
+            <CatalogItem {volumes} {displayTitle} providerName={providerDisplayName} />
           {/each}
         {:else}
           <Listgroup active class="w-full">
-            {#each localSeries as { title, volumes } (title)}
-              <CatalogListItem {volumes} providerName={providerDisplayName} />
+            {#each localSeries as { title, displayTitle, volumes } (title)}
+              <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
             {/each}
           </Listgroup>
         {/if}
@@ -360,13 +372,13 @@
             class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
           >
             {#if $miscSettings.galleryLayout === 'grid'}
-              {#each placeholderSeries as { title, volumes } (title)}
-                <CatalogItem {volumes} providerName={providerDisplayName} />
+              {#each placeholderSeries as { title, displayTitle, volumes } (title)}
+                <CatalogItem {volumes} {displayTitle} providerName={providerDisplayName} />
               {/each}
             {:else}
               <Listgroup active class="w-full">
-                {#each placeholderSeries as { title, volumes } (title)}
-                  <CatalogListItem {volumes} providerName={providerDisplayName} />
+                {#each placeholderSeries as { title, displayTitle, volumes } (title)}
+                  <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
                 {/each}
               </Listgroup>
             {/if}
