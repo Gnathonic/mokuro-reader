@@ -50,6 +50,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 
 - **Volume Editor** - Edit metadata, reading progress, and cover (with cropping) directly from the catalog
 - **Series Management** - Rename or merge series from the series page
+- **Preferred Series Titles** - Display series in native, romaji, or English titles from their AniList link, with a per-series override (folder names are never changed)
 - **Context Menu for Text Boxes** - Right-click or long-press OCR text boxes for quick copy and Anki card creation
 - **Copy Without Linebreaks** - Copied text automatically strips linebreaks for cleaner pasting
 - **Text Analysis Tools** - Dedicated text pages for both volumes and series for analysis by browser extensions
