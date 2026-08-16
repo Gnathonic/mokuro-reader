@@ -55,6 +55,7 @@ vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
 import { showSnackbar } from '$lib/util';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { updateSeriesMetadata } from '$lib/metadata/store';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(title: string, isPlaceholder = false): VolumeMetadata {
@@ -147,6 +148,42 @@ describe('SeriesMetadataBar', () => {
     const button = getByText('Update cloud sidecars').closest('button')!;
     expect(button.disabled).toBe(true);
     expect(button.getAttribute('title')).toContain('read-only');
+  });
+
+  it('shows the title-language select at Default when there is no override', () => {
+    providerStatus.set({
+      providers: {},
+      hasAnyAuthenticated: false,
+      needsAttention: false,
+      currentProviderType: null
+    });
+    seriesMetadataMap.set(new Map());
+    const { getByDisplayValue } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [] }
+    });
+    expect(getByDisplayValue('Default (global setting)')).toBeTruthy();
+  });
+
+  it('shows the title-language select at the stored override', () => {
+    const meta = { ...createEmptySeriesMetadata('One Piece'), title_preference: 'native' as const };
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    const { getByDisplayValue } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [] }
+    });
+    expect(getByDisplayValue('Native (日本語)')).toBeTruthy();
+  });
+
+  it('clears the override by writing title_preference: undefined when the select goes back to Default', async () => {
+    const meta = { ...createEmptySeriesMetadata('One Piece'), title_preference: 'native' as const };
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    const { getByDisplayValue } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [] }
+    });
+    const select = getByDisplayValue('Native (日本語)') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: 'default' } });
+    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
+      title_preference: undefined
+    });
   });
 
   it('hides the sidecar refresh when every volume is a cloud placeholder', () => {

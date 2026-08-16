@@ -235,6 +235,12 @@ describe('series metadata store', () => {
     expect(meta?.series_title).toBe('One  Piece');
   });
 
+  it('clears title_preference when the patch sets it to undefined', async () => {
+    await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+    await updateSeriesMetadata('One Piece', { title_preference: undefined });
+    expect((await getSeriesMetadataForTitle('One Piece'))?.title_preference).toBeUndefined();
+  });
+
   it('getAll/replaceAll round-trip a record map', async () => {
     await updateSeriesMetadata('A', { tag: '1' });
     await updateSeriesMetadata('B', { tag: '2' });

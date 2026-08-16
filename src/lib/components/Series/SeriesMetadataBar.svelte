@@ -1,6 +1,6 @@
 <!-- src/lib/components/Series/SeriesMetadataBar.svelte -->
 <script lang="ts">
-  import { Button, Badge, Spinner } from 'flowbite-svelte';
+  import { Button, Badge, Label, Select, Spinner } from 'flowbite-svelte';
   import { ArrowUpRightFromSquareOutline } from 'flowbite-svelte-icons';
   import { seriesMetadataMap, updateSeriesMetadata, unlinkSeries } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
@@ -10,11 +10,28 @@
   import { showSnackbar } from '$lib/util';
   import { ProviderError } from '$lib/util/sync/provider-interface';
   import type { VolumeMetadata } from '$lib/types';
+  import type { DisplayTitleLanguage } from '$lib/metadata/types';
   import SeriesLinkModal from './SeriesLinkModal.svelte';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 
+  const titleLanguageOptions = [
+    { value: 'default', name: 'Default (global setting)' },
+    { value: 'imported', name: 'As imported (folder name)' },
+    { value: 'native', name: 'Native (日本語)' },
+    { value: 'romaji', name: 'Romaji' },
+    { value: 'english', name: 'English' }
+  ];
+
   let meta = $derived($seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)));
+  let titlePreferenceValue = $derived(meta?.title_preference ?? 'default');
+
+  async function onTitlePreferenceChange(e: Event & { currentTarget: HTMLSelectElement }) {
+    const value = e.currentTarget.value;
+    await updateSeriesMetadata(seriesTitle, {
+      title_preference: value === 'default' ? undefined : (value as DisplayTitleLanguage)
+    });
+  }
   let linked = $derived(!!meta && Object.values(meta.external_ids ?? {}).some((v) => v != null));
   let links = $derived(meta ? getLinkTargets(meta.external_ids) : []);
   let altTitles = $derived.by(() => {
@@ -164,6 +181,16 @@
         class="w-32 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-700"
       />
     </label>
+
+    <div class="flex min-w-[14rem] flex-col gap-1">
+      <Label class="text-xs text-gray-500 uppercase">Title language</Label>
+      <Select
+        size="sm"
+        items={titleLanguageOptions}
+        value={titlePreferenceValue}
+        onchange={onTitlePreferenceChange}
+      />
+    </div>
 
     {#if canRefreshSidecars}
       <Button
