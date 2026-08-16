@@ -93,6 +93,7 @@ vi.mock('./anilist-auth', () => ({
 }));
 
 import { registerCompletionListener } from '$lib/settings/volume-data';
+import { db } from '$lib/catalog/db';
 import { handleAniListUnauthorized } from './anilist-auth';
 import { anilistRequest } from './providers/anilist';
 import {
@@ -100,6 +101,7 @@ import {
   computeLocalPassState,
   flushPendingPushes,
   initProgressTracker,
+  onSeriesRestarted,
   onVolumeCompleted,
   readPendingPushes,
   syncSeriesNow,
@@ -145,6 +147,8 @@ function resetWorld() {
   h.auth.token = 'tok';
   vi.mocked(anilistRequest).mockReset();
   vi.mocked(handleAniListUnauthorized).mockReset();
+  vi.mocked(db.volumes.get).mockClear();
+  vi.mocked(db.volumes.toArray).mockClear();
   vi.mocked(registerCompletionListener).mockClear();
   h.unregisterCompletion.mockClear();
 }
@@ -289,6 +293,59 @@ describe('syncSeriesNow', () => {
     expect(readPendingPushes()['one piece']).toBeDefined();
   });
 
+  it('reports "failed" and drops the intent when AniList rejects the document', async () => {
+    localStorage.setItem(
+      'anilist_pending_pushes',
+      JSON.stringify({
+        'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
+      })
+    );
+    vi.mocked(anilistRequest).mockRejectedValueOnce(new FakeAniListError('GRAPHQL'));
+    await expect(syncSeriesNow('one piece')).resolves.toBe('failed');
+    expect(readPendingPushes()).toEqual({});
+    expect(handleAniListUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('keeps a concurrent tracking edit when it records last_pushed', async () => {
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockImplementationOnce((async () => {
+        // The series settings UI edits tracking while the push is in flight.
+        const current = h.metaByKey.get('one piece')!;
+        h.metaByKey.set('one piece', {
+          ...current,
+          tracking: { ...current.tracking!, unit: 'chapters', number_overrides: { b: 9 } }
+        });
+        return { SaveMediaListEntry: {} };
+      }) as never);
+
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+
+    const tracking = h.metaByKey.get('one piece')!.tracking!;
+    expect(tracking.unit).toBe('chapters');
+    expect(tracking.number_overrides).toEqual({ b: 9 });
+    expect(tracking.last_pushed).toMatchObject({ n: 2, status: 'CURRENT' });
+  });
+
+  it('records the progress actually sent for a status-only push', async () => {
+    h.metaByKey.set('one piece', meta({ total_volumes: 2 }));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 0 } }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'COMPLETED'
+    });
+    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({
+      n: 2,
+      status: 'COMPLETED'
+    });
+  });
+
   it('pushes progress with no remote list entry at all', async () => {
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
@@ -321,6 +378,24 @@ describe('completion fires are idempotent', () => {
     onVolumeCompleted('a');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(anilistRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('costs no catalog read at all when the same volume re-fires', async () => {
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 1, repeat: 0 } }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onVolumeCompleted('b');
+    await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(2));
+    expect(db.volumes.toArray).toHaveBeenCalledTimes(1);
+
+    onVolumeCompleted('b');
+    onVolumeCompleted('b');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(db.volumes.get).toHaveBeenCalledTimes(1);
+    expect(db.volumes.toArray).toHaveBeenCalledTimes(1);
   });
 
   it('skips repeats even when the first attempt found nothing to push', async () => {
@@ -437,6 +512,76 @@ describe('flushPendingPushes', () => {
     });
     await vi.advanceTimersByTimeAsync(6000);
     expect(anilistRequest).toHaveBeenCalledTimes(2);
+    expect(readPendingPushes()).toEqual({});
+  });
+});
+
+describe('onSeriesRestarted', () => {
+  beforeEach(resetWorld);
+
+  it('records the 0 it actually sent, not the local pass', async () => {
+    // A restart queued while offline is replayed after the next pass already
+    // started: the plan sends 0, so last_pushed must say 0 — recording the
+    // local pass (1) would make the fast-path swallow the next completion.
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1 }));
+    h.volumesStore.set({ a: { completed: true } });
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'COMPLETED', progress: 0, progressVolumes: 20, repeat: 0 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onSeriesRestarted('one piece');
+    await vi.waitFor(() =>
+      expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toBeDefined()
+    );
+
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'REPEATING',
+      progressVolumes: 0
+    });
+    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({
+      n: 0,
+      status: 'REPEATING'
+    });
+  });
+});
+
+describe('readPendingPushes', () => {
+  beforeEach(resetWorld);
+
+  it('drops entries that could never be replayed or cleared', () => {
+    localStorage.setItem(
+      'anilist_pending_pushes',
+      JSON.stringify({
+        'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' },
+        naruto: { seriesKey: 'naruto', event: 'nope', at: 'x' },
+        bleach: null,
+        undefined: undefined,
+        mismatched: { seriesKey: 'other', event: 'sync', at: 'x' },
+        keyless: { event: 'restart', at: 'x' }
+      })
+    );
+    expect(readPendingPushes()).toEqual({
+      'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
+    });
+  });
+
+  it('defaults a missing timestamp and survives a corrupt payload', () => {
+    localStorage.setItem(
+      'anilist_pending_pushes',
+      JSON.stringify({ naruto: { seriesKey: 'naruto', event: 'restart' } })
+    );
+    expect(readPendingPushes().naruto).toEqual({
+      seriesKey: 'naruto',
+      event: 'restart',
+      at: new Date(0).toISOString()
+    });
+
+    localStorage.setItem('anilist_pending_pushes', '{not json');
     expect(readPendingPushes()).toEqual({});
   });
 });

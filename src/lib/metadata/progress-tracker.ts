@@ -29,7 +29,18 @@ const PENDING_KEY = 'anilist_pending_pushes';
  */
 const COMPLETION_DEBOUNCE_MS = 60_000;
 
-export type PushOutcome = 'pushed' | 'nothing' | 'queued' | 'disabled';
+/**
+ * - `pushed`   — AniList accepted a change.
+ * - `nothing`  — the remote already reflects the local pass; no write was made.
+ * - `queued`   — a retryable failure (offline, rate limited, expired session);
+ *   the intent stays in the pending queue and is replayed by `flushPendingPushes`.
+ * - `failed`   — a non-retryable failure (AniList rejected the document, e.g. a
+ *   stale media id); the intent has been dropped. Callers should surface this as
+ *   an error, never as "queued".
+ * - `disabled` — pushing is off for this series (tracking off / unlinked / master
+ *   switch off), so nothing was attempted.
+ */
+export type PushOutcome = 'pushed' | 'nothing' | 'queued' | 'failed' | 'disabled';
 
 /** One pending intent per series. `restart` dominates `sync` (a restart must be
  *  replayed as the explicit decrease before later completions are applied). */
@@ -83,14 +94,37 @@ export function computeLocalPassState(
 
 // ---------- pending queue ----------
 
+/**
+ * A queue entry is only usable when its key matches its `seriesKey` (that is
+ * what `clearPending` deletes by) and its event is one we know how to replay —
+ * anything else would sit in localStorage forever, so it is dropped on read.
+ */
+function isPendingPush(key: string, value: unknown): value is PendingPush {
+  if (!value || typeof value !== 'object') return false;
+  const entry = value as Partial<PendingPush>;
+  if (typeof entry.seriesKey !== 'string' || entry.seriesKey !== key) return false;
+  return entry.event === 'restart' || entry.event === 'sync';
+}
+
 export function readPendingPushes(): Record<string, PendingPush> {
   if (!browser) return {};
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    parsed = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}');
   } catch {
     return {};
   }
+  if (!parsed || typeof parsed !== 'object') return {};
+  const pending: Record<string, PendingPush> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!isPendingPush(key, value)) continue;
+    pending[key] = {
+      seriesKey: value.seriesKey,
+      event: value.event,
+      at: typeof value.at === 'string' ? value.at : new Date(0).toISOString()
+    };
+  }
+  return pending;
 }
 
 function writePendingPushes(pending: Record<string, PendingPush>): void {
@@ -169,6 +203,13 @@ function pushEnabled(meta: SeriesMetadata | undefined): meta is SeriesMetadata {
 const pushChains = new Map<string, Promise<unknown>>();
 /** Last completion state we already acted on, per series (this session). */
 const recentCompletions = new Map<string, { signature: string; at: number }>();
+/**
+ * Completion fires already handled, per volume. `Reader.svelte` calls
+ * `updateProgress(..., isComplete)` on every page change, so scrolling across
+ * the end of a volume re-fires the listener — this is checked before any
+ * IndexedDB access so a repeat costs nothing at all.
+ */
+const recentCompletionFires = new Map<string, { at: number; seriesKey?: string }>();
 /** Set from a 429's Retry-After; no request is attempted before it passes. */
 let rateLimitedUntil = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -214,6 +255,22 @@ function alreadySettled(seriesKey: string, local: LocalPassState, meta: SeriesMe
     repeat: Math.max(0, local.timesRead - 1)
   };
   return planProgressPush(local, assumedRemote, meta.tracking?.unit ?? 'volumes', 'sync') === null;
+}
+
+/** Forget both debounce layers for a series — its pass state just changed. */
+function clearSeriesDebounce(seriesKey: string): void {
+  recentCompletions.delete(seriesKey);
+  for (const [volumeUuid, entry] of recentCompletionFires) {
+    if (entry.seriesKey === seriesKey) recentCompletionFires.delete(volumeUuid);
+  }
+}
+
+/** Keep the per-volume map from growing without bound in a long session. */
+function pruneCompletionFires(now: number): void {
+  if (recentCompletionFires.size < 64) return;
+  for (const [volumeUuid, entry] of recentCompletionFires) {
+    if (now - entry.at >= COMPLETION_DEBOUNCE_MS) recentCompletionFires.delete(volumeUuid);
+  }
 }
 
 function scheduleRetry(delayMs: number): void {
@@ -263,11 +320,17 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     }
     await sendPlan(mediaId, plan, token);
     clearPending(seriesKey);
-    await updateSeriesMetadata(meta.series_title, {
+    // Two round-trips happened since `meta` was read; a tracking edit (unit,
+    // number overrides, the enable toggle) may have landed in between, so the
+    // record is re-read and only `last_pushed` is layered on top of it.
+    const current = (await getSeriesMetadata(seriesKey)) ?? meta;
+    await updateSeriesMetadata(current.series_title, {
       tracking: {
-        ...tracking,
+        ...(current.tracking ?? tracking),
         last_pushed: {
-          n: local.passProgress,
+          // The progress AniList actually received — 0 for a restart, and the
+          // last known figure for a status-only push.
+          n: plan.progressVolumes ?? plan.progress ?? local.passProgress,
           status: plan.status ?? remote?.status ?? 'CURRENT',
           at: new Date().toISOString()
         }
@@ -275,19 +338,20 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     });
     return 'pushed';
   } catch (error) {
-    markPending(seriesKey, event);
-    if (error instanceof AniListError) {
+    if (
+      error instanceof AniListError &&
+      (error.code === 'NETWORK' || error.code === 'RATE_LIMITED' || error.code === 'UNAUTHORIZED')
+    ) {
+      markPending(seriesKey, event);
       if (error.code === 'UNAUTHORIZED') handleAniListUnauthorized();
       else if (error.code === 'RATE_LIMITED') scheduleRetry(error.retryAfterMs ?? 60_000);
-      else if (error.code === 'GRAPHQL') {
-        // Bad media id or schema mismatch — retrying won't help.
-        console.warn('[progress-tracker] AniList rejected the push:', error);
-        clearPending(seriesKey);
-      }
-    } else {
-      console.warn('[progress-tracker] push failed:', error);
+      return 'queued';
     }
-    return 'queued';
+    // Non-retryable: a stale media id, a schema mismatch, or an unexpected
+    // failure. Replaying it would only fail again, so drop the intent.
+    console.warn('[progress-tracker] AniList rejected the push:', error);
+    clearPending(seriesKey);
+    return 'failed';
   }
 }
 
@@ -319,11 +383,20 @@ function pushSeries(seriesKey: string, event: ProgressPushEvent): Promise<PushOu
 
 export function onVolumeCompleted(volumeUuid: string): void {
   if (!browser) return;
+  const now = Date.now();
+  const handled = recentCompletionFires.get(volumeUuid);
+  // Cheapest possible exit: no IndexedDB read, no store read, no request.
+  if (handled && now - handled.at < COMPLETION_DEBOUNCE_MS) return;
+  pruneCompletionFires(now);
+  // Claimed synchronously so simultaneous fires can't both reach the catalog.
+  recentCompletionFires.set(volumeUuid, { at: now });
   db.volumes
     .get(volumeUuid)
     .then((volume) => {
       if (!volume) return;
-      return pushSeries(normalizeSeriesKey(volume.series_title), 'completion');
+      const seriesKey = normalizeSeriesKey(volume.series_title);
+      recentCompletionFires.set(volumeUuid, { at: Date.now(), seriesKey });
+      return pushSeries(seriesKey, 'completion');
     })
     .catch((error) => console.warn('[progress-tracker] onVolumeCompleted failed:', error));
 }
@@ -331,14 +404,14 @@ export function onVolumeCompleted(volumeUuid: string): void {
 export function onSeriesRestarted(seriesKey: string): void {
   if (!browser) return;
   // A restart invalidates everything we know about the previous pass.
-  recentCompletions.delete(seriesKey);
+  clearSeriesDebounce(seriesKey);
   pushSeries(seriesKey, 'restart').catch((error) =>
     console.warn('[progress-tracker] onSeriesRestarted failed:', error)
   );
 }
 
 export function syncSeriesNow(seriesKey: string): Promise<PushOutcome> {
-  recentCompletions.delete(seriesKey);
+  clearSeriesDebounce(seriesKey);
   return pushSeries(seriesKey, 'sync');
 }
 
@@ -353,7 +426,8 @@ export async function flushPendingPushes(): Promise<void> {
       if (Date.now() < rateLimitedUntil) break;
       if (pending.event === 'restart') {
         const outcome = await pushSeries(pending.seriesKey, 'restart');
-        if (outcome === 'queued' || outcome === 'disabled') continue;
+        // Only fall through to the follow-up sync once the decrease landed.
+        if (outcome !== 'pushed' && outcome !== 'nothing') continue;
       }
       await pushSeries(pending.seriesKey, 'sync');
     }
@@ -404,6 +478,7 @@ export function initProgressTracker(): () => void {
 export function _resetTrackerStateForTests(): void {
   pushChains.clear();
   recentCompletions.clear();
+  recentCompletionFires.clear();
   rateLimitedUntil = 0;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = undefined;
