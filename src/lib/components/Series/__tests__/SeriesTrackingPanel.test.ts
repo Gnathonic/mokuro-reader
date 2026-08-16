@@ -36,6 +36,7 @@ const h = vi.hoisted(() => {
     settings: createStore<unknown>({ catalogSettings: { pushProgressToAniList: true } }),
     preferredTitleLanguage: createStore('imported'),
     anilistUser: createStore<{ id: number; name: string } | null>({ id: 1, name: 'nathan' }),
+    anilistConnected: createStore<boolean>(true),
     auth: { clientId: 'client' as string | undefined, token: 'tok' as string | null },
     // Stands in for the Dexie table behind `updateSeriesMetadata`. Deliberately
     // separate from `seriesMetadataMap`: the real store is a liveQuery that lags
@@ -79,6 +80,7 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
   getAniListClientId: () => h.auth.clientId,
   getAniListToken: () => h.auth.token,
   anilistUser: h.anilistUser,
+  anilistConnected: h.anilistConnected,
   handleAniListUnauthorized: vi.fn()
 }));
 // The real pass-state maths is the whole point of "Read N times" matching what
@@ -144,6 +146,7 @@ describe('SeriesTrackingPanel', () => {
     h.auth.clientId = 'client';
     h.auth.token = 'tok';
     h.anilistUser.set({ id: 1, name: 'nathan' });
+    h.anilistConnected.set(true);
     h.catalogSettings.set({ pushProgressToAniList: true });
     h.preferredTitleLanguage.set('imported');
     h.volumesData.set({ a: { completed: true }, b: { completed: true } });
@@ -284,6 +287,7 @@ describe('SeriesTrackingPanel', () => {
     it('keeps the last pushed figure visible next to a hint', () => {
       h.anilistUser.set(null);
       h.auth.token = null;
+      h.anilistConnected.set(false);
       setMeta(
         meta({
           tracking: {
@@ -301,6 +305,7 @@ describe('SeriesTrackingPanel', () => {
     it('hints that AniList is not connected', () => {
       h.anilistUser.set(null);
       h.auth.token = null;
+      h.anilistConnected.set(false);
       const { getByText } = renderPanel();
       expect(getByText('Connect AniList in Settings')).toBeTruthy();
     });

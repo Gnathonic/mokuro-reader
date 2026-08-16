@@ -16,6 +16,7 @@ const {
   catalogSettings,
   volumesData,
   anilistUser,
+  anilistConnected,
   auth
 } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
@@ -53,6 +54,7 @@ const {
     }),
     volumesData: createStore<Record<string, { completed?: boolean }>>({}),
     anilistUser: createStore<{ id: number; name: string } | null>(null),
+    anilistConnected: createStore<boolean>(false),
     auth: { clientId: undefined as string | undefined },
     noopStore: { subscribe: (fn: (v: unknown) => void) => (fn(undefined), () => {}) }
   };
@@ -91,7 +93,8 @@ vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
 vi.mock('$lib/metadata/anilist-auth', () => ({
   getAniListClientId: () => auth.clientId,
   getAniListToken: () => null,
-  anilistUser
+  anilistUser,
+  anilistConnected
 }));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';

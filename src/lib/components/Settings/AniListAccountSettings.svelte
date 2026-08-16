@@ -2,10 +2,10 @@
 <script lang="ts">
   import { Button, Toggle } from 'flowbite-svelte';
   import {
+    anilistConnected,
     anilistUser,
     disconnectAniList,
     getAniListClientId,
-    getAniListToken,
     startAniListLogin
   } from '$lib/metadata/anilist-auth';
   import { catalogSettings, updateCatalogSetting } from '$lib/settings/settings';
@@ -15,9 +15,11 @@
   // once per component instance, so this needs no reactivity.
   const clientId = getAniListClientId();
 
-  // A token can outlive the Viewer query that names the user (in flight or
-  // failed) — either proves a session, same rule as SeriesTrackingPanel.
-  let connected = $derived(!!$anilistUser || !!getAniListToken());
+  // `anilistConnected` is the reactive session flag (kept in sync by
+  // anilist-auth.ts on login/disconnect/expiry); a token can outlive the
+  // Viewer query that names the user, so it's the name label, not the
+  // connected state, that additionally depends on `$anilistUser`.
+  let connected = $derived($anilistConnected);
 
   function disconnect() {
     disconnectAniList();

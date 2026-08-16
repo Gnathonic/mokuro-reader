@@ -41,12 +41,23 @@ function readStoredUser(): AniListUser | null {
 const _anilistUser = writable<AniListUser | null>(readStoredUser());
 export const anilistUser: Readable<AniListUser | null> = { subscribe: _anilistUser.subscribe };
 
+// Whether a (believed-valid) session exists, independent of whether the
+// Viewer lookup that names the user has resolved. Placeholder `false` here —
+// the real initial value is assigned below, once `getAniListToken` exists, so
+// a stale/expired token found at module load can clear itself via
+// `clearAniListSession()` without racing this binding's own initialization
+// (calling `getAniListToken()` inside this very initializer would try to
+// `.set()` a store that's still being constructed).
+const _anilistConnected = writable<boolean>(false);
+export const anilistConnected: Readable<boolean> = { subscribe: _anilistConnected.subscribe };
+
 function clearAniListSession(): void {
   if (!browser) return;
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(EXPIRES_KEY);
   localStorage.removeItem(USER_KEY);
   _anilistUser.set(null);
+  _anilistConnected.set(false);
 }
 
 /**
@@ -65,6 +76,10 @@ export function getAniListToken(): string | null {
   }
   return token;
 }
+
+// Real initial value, now that clearAniListSession() (reachable if the stored
+// token turns out to be stale) can safely set an already-initialized store.
+_anilistConnected.set(getAniListToken() !== null);
 
 /** Redirect flow (no popup): remember where we were, then leave for AniList. */
 export function startAniListLogin(): void {
@@ -102,6 +117,7 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
   try {
     localStorage.setItem(TOKEN_KEY, parsed.accessToken);
     localStorage.setItem(EXPIRES_KEY, String(Date.now() + ttlSec * 1000));
+    _anilistConnected.set(true);
   } catch (error) {
     console.warn('[anilist-auth] Failed to store AniList token:', error);
     return false;

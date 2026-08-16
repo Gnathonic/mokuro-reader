@@ -16,7 +16,7 @@
     type PushOutcome
   } from '$lib/metadata/progress-tracker';
   import { restartSeries } from '$lib/metadata/reread';
-  import { anilistUser, getAniListClientId, getAniListToken } from '$lib/metadata/anilist-auth';
+  import { anilistConnected, getAniListClientId } from '$lib/metadata/anilist-auth';
   import { volumes as volumesStore } from '$lib/settings/volume-data';
   import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
   import { promptConfirmation } from '$lib/util/modals';
@@ -60,8 +60,10 @@
   let linked = $derived(!!meta?.external_ids?.anilist);
   let tracking = $derived<SeriesTracking>(meta?.tracking ?? DEFAULT_TRACKING);
   let lastPushed = $derived(tracking.last_pushed);
-  // A token can outlive the Viewer query that names the user, so either proves a session.
-  let connected = $derived(!!$anilistUser || !!getAniListToken());
+  // Reactive session flag (kept in sync by anilist-auth.ts on
+  // login/disconnect/expiry) — a token can outlive the Viewer query that
+  // names the user, so this doesn't wait on `$anilistUser`.
+  let connected = $derived($anilistConnected);
   let pushAllowed = $derived($catalogSettings?.pushProgressToAniList !== false);
   let syncing = $state(false);
 

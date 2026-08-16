@@ -27,6 +27,7 @@ const h = vi.hoisted(() => {
 
   return {
     anilistUser: createStore<{ id: number; name: string } | null>(null),
+    anilistConnected: createStore<boolean>(false),
     catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
       pushProgressToAniList: true
     }),
@@ -36,10 +37,18 @@ const h = vi.hoisted(() => {
 
 vi.mock('$lib/metadata/anilist-auth', () => ({
   anilistUser: h.anilistUser,
+  anilistConnected: h.anilistConnected,
   getAniListClientId: () => h.auth.clientId,
   getAniListToken: () => h.auth.token,
   startAniListLogin: vi.fn(),
-  disconnectAniList: vi.fn()
+  // Mirrors the real clearAniListSession(): flips the reactive connected
+  // flag too, so a click's UI effect can actually be asserted (see "shows
+  // the connected name and disconnects" below) rather than trusting the mock
+  // was told the right thing.
+  disconnectAniList: vi.fn(() => {
+    h.anilistUser.set(null);
+    h.anilistConnected.set(false);
+  })
 }));
 vi.mock('$lib/settings/settings', () => ({
   catalogSettings: h.catalogSettings,
@@ -58,11 +67,13 @@ describe('AniListAccountSettings', () => {
     h.auth.clientId = 'client';
     h.auth.token = null;
     h.anilistUser.set(null);
+    h.anilistConnected.set(false);
     h.catalogSettings.set({ pushProgressToAniList: true });
   });
 
   afterEach(() => {
     h.anilistUser.set(null);
+    h.anilistConnected.set(false);
   });
 
   it('renders nothing when no AniList client id is configured', () => {
@@ -80,16 +91,21 @@ describe('AniListAccountSettings', () => {
 
   it('shows the connected name and disconnects', async () => {
     h.anilistUser.set({ id: 1, name: 'nathan' });
-    const { getByText } = render(AniListAccountSettings);
+    h.anilistConnected.set(true);
+    const { getByText, queryByText } = render(AniListAccountSettings);
     expect(getByText('Connected as nathan')).toBeTruthy();
     await fireEvent.click(getByText('Disconnect'));
     expect(disconnectAniList).toHaveBeenCalled();
     expect(showSnackbar).toHaveBeenCalledWith('Disconnected from AniList');
+    // The stale-UI bug: this must flip to "Connect AniList" on the same click.
+    expect(queryByText(/Connected/)).toBeNull();
+    expect(getByText('Connect AniList')).toBeTruthy();
   });
 
   it('shows a fallback connected label when a token exists but the Viewer lookup has not resolved', () => {
     h.auth.token = 'tok';
     h.anilistUser.set(null);
+    h.anilistConnected.set(true);
     const { getByText, queryByText } = render(AniListAccountSettings);
     expect(getByText('Connected')).toBeTruthy();
     expect(queryByText('Connect AniList')).toBeNull();
