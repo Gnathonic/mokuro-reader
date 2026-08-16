@@ -22,6 +22,7 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { initFileHandler } from '$lib/util/file-handler';
+  import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -91,6 +92,9 @@
 
     // Initialize file handler for PWA file associations
     initFileHandler();
+
+    // AniList progress push: completion listener + pending-queue flush
+    initProgressTracker();
 
     // Initialize service worker update detection
     initSwUpdateDetection();
