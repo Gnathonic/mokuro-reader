@@ -763,3 +763,89 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     expect(cache.removeById).not.toHaveBeenCalledWith('mokuro-1');
   });
 });
+
+describe('UnifiedCloudManager sidecar refresh', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('re-uploads a regenerated .mokuro in place for backed-up volumes and skips un-backed-up ones', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles(); // Old Series/Volume 1.{cbz,mokuro,webp}
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"series_metadata":{}}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
+      { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' } // not in cloud
+    ]);
+
+    expect(generateSidecars).toHaveBeenCalledTimes(1);
+    expect(generateSidecars).toHaveBeenCalledWith('uuid-1');
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'Old Series/Volume 1.mokuro',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled(); // same path → nothing stale
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 1 });
+  });
+
+  it('replaces a legacy .mokuro.gz sidecar with the fresh .mokuro', async () => {
+    const provider = makeRenameProvider();
+    const files: CloudFileMetadata[] = [
+      { provider: 'webdav', fileId: 'cbz', path: 'S/V.cbz', modifiedTime: 't', size: 1 },
+      { provider: 'webdav', fileId: 'gz', path: 'S/V.mokuro.gz', modifiedTime: 't', size: 1 }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'V.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.refreshVolumeSidecar('S', 'V', 'u');
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'S/V.mokuro',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
+  });
+
+  it('throws READ_ONLY on a read-only provider before touching the cloud', async () => {
+    const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockReturnValue(oldSeriesFiles());
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.refreshSeriesSidecars('Old Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+      ])
+    ).rejects.toMatchObject({ code: 'READ_ONLY' });
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('counts a per-volume failure and keeps going', async () => {
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    generateSidecars.mockResolvedValue({}); // no OCR → cannot regenerate
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+    expect(result).toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+  });
+});

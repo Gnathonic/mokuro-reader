@@ -672,6 +672,78 @@ class UnifiedCloudManager {
   }
 
   /**
+   * Regenerate ONE backed-up volume's .mokuro from the DB (embedding current
+   * series metadata) and overwrite it in place. Assumes the caller refreshed
+   * the cache and checked write access. Legacy `.mokuro.gz` sidecars are
+   * replaced by the fresh `.mokuro` (upload first, delete stale last).
+   */
+  async refreshVolumeSidecar(
+    seriesTitle: string,
+    volumeTitle: string,
+    volumeUuid: string
+  ): Promise<void> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
+    this.assertWritable(provider);
+
+    const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+    if (!sidecars.mokuro) {
+      throw new ProviderError(
+        'Cannot refresh sidecar: the OCR sidecar could not be regenerated (volume_ocr data missing)',
+        provider.type,
+        'SIDECAR_REGEN_FAILED'
+      );
+    }
+
+    const targetPath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}.mokuro`);
+    await this.uploadFile(targetPath, sidecars.mokuro.blob);
+
+    // Destructive last: drop stale sidecars at OTHER paths (e.g. `.mokuro.gz`).
+    for (const file of this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle)) {
+      if (!isMokuroSidecarPath(file.path)) continue;
+      if (normalizeCloudPath(file.path) === targetPath) continue;
+      await this.deleteFileIdempotent(file);
+    }
+  }
+
+  /**
+   * Refresh the .mokuro of every BACKED-UP volume of a series (volumes with no
+   * managed cloud files are skipped — nothing to refresh). Per-volume failures
+   * are counted, not thrown; pre-flight gates (no provider / read-only) throw.
+   */
+  async refreshSeriesSidecars(
+    seriesTitle: string,
+    volumes: { volumeUuid: string; volumeTitle: string }[]
+  ): Promise<{ succeeded: number; failed: number; skipped: number }> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
+    await this.fetchAllCloudVolumes();
+    this.assertWritable(provider);
+
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const volume of volumes) {
+      if (this.getManagedCloudFilesForVolume(seriesTitle, volume.volumeTitle).length === 0) {
+        skipped++;
+        continue;
+      }
+      try {
+        await this.refreshVolumeSidecar(seriesTitle, volume.volumeTitle, volume.volumeUuid);
+        succeeded++;
+      } catch (error) {
+        console.error(`Failed to refresh sidecar for ${seriesTitle}/${volume.volumeTitle}:`, error);
+        failed++;
+      }
+    }
+    return { succeeded, failed, skipped };
+  }
+
+  /**
    * Delete an entire series folder (all volumes in the series)
    */
   async deleteSeriesFolder(seriesTitle: string): Promise<{ succeeded: number; failed: number }> {
