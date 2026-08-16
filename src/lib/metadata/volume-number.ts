@@ -21,6 +21,19 @@ const CHAPTER_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Titles that name a chapter outright. In the `volumes` unit these must NOT
+ * fall through to the bare-trailing-number pattern: "Chapter 5" would push
+ * volume 5 to AniList for what is the series' fifth chapter. Returning
+ * undefined sends the tracker to the sort-position fallback instead.
+ * `#N` is deliberately absent — it is ambiguous and is already read as a volume.
+ */
+const CHAPTER_MARKERS: RegExp[] = [
+  /第\s*\d+\s*話/, // 第12話
+  /(?:^|[\s_\-–—([])\d+\s*話/, // 12話
+  /(?:^|[^a-z])ch(?:apter)?\.?\s*\d+/i // Chapter 105, ch.7
+];
+
+/**
  * Best-effort volume/chapter number from a stored volume title. Returns
  * undefined when nothing looks like a number for the requested unit; the
  * tracker then falls back to the volume's position in sort order.
@@ -28,6 +41,9 @@ const CHAPTER_PATTERNS: RegExp[] = [
 export function extractVolumeNumber(volumeTitle: string, unit: TrackingUnit): number | undefined {
   const title = (volumeTitle ?? '').trim();
   if (!title) return undefined;
+  if (unit === 'volumes' && CHAPTER_MARKERS.some((pattern) => pattern.test(title))) {
+    return undefined;
+  }
   const patterns = unit === 'chapters' ? CHAPTER_PATTERNS : VOLUME_PATTERNS;
   for (const pattern of patterns) {
     const match = title.match(pattern);

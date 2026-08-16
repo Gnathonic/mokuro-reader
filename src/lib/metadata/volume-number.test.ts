@@ -27,6 +27,25 @@ describe('extractVolumeNumber — volumes', () => {
       expect(extractVolumeNumber(title, 'volumes')).toBeUndefined();
     }
   );
+
+  // An explicit chapter marker must not be read as a volume number: "Chapter 5"
+  // would otherwise push volume 5 for the series' fifth chapter. Undefined sends
+  // the tracker to its sort-position fallback instead.
+  it.each([
+    ['Chapter 5'],
+    ['One Piece Chapter 105'],
+    ['ch 7'],
+    ['One Piece ch.7'],
+    ['One Piece 第5話'],
+    ['ワンピース 12話']
+  ])('%s → undefined (chapter-titled entry)', (title) => {
+    expect(extractVolumeNumber(title, 'volumes')).toBeUndefined();
+  });
+
+  it('leaves ordinary volume titles alone', () => {
+    expect(extractVolumeNumber('Vol 3', 'volumes')).toBe(3);
+    expect(extractVolumeNumber('One Piece #4', 'volumes')).toBe(4);
+  });
 });
 
 describe('extractVolumeNumber — chapters', () => {
