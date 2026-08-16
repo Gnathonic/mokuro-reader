@@ -98,6 +98,10 @@
     // rather than racing a liveQuery subscriber that hasn't re-emitted yet.
     getSeriesMetadataForTitle(v.series_title)
       .then((meta) => {
+        // The user may have navigated to a different volume while this DB
+        // read was in flight — don't prompt (or set the display title) for a
+        // series that's no longer the one open in the reader.
+        if (volume?.volume_uuid !== v.volume_uuid) return;
         rereadDisplayTitle = resolveDisplayTitle(v.series_title, meta, get(preferredTitleLanguage));
         if (
           shouldOfferReread({

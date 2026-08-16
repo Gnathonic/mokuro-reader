@@ -80,21 +80,53 @@
     dismissForSession();
   }
 
+  // Reader shortcut keys that must not reach the reader/continuous-scroll
+  // readers while this modal is open. Paged-mode paging/zoom-scroll AND (in
+  // continuous-scroll mode) VerticalScrollReader/HorizontalScrollReader's own
+  // `<svelte:window onkeydown>` listeners all live at the bubble phase, so
+  // stopping propagation here (at capture) keeps every one of them from ever
+  // seeing these keys. Not `preventDefault`: a focused button (e.g. one of
+  // ours, which Flowbite auto-focuses) must still activate on Space.
+  const BLOCKED_NAV_KEYS = new Set([
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'PageUp',
+    'PageDown',
+    ' ',
+    'Home',
+    'End'
+  ]);
+
   // Capture Escape before it bubbles to the reader's own page-turn/back
   // shortcuts (Reader.svelte's handleShortcuts) AND the app-wide "Escape =
   // navigateBack" handler in +layout.svelte — both are bubble-phase
   // `<svelte:window onkeydown>` listeners the reader mounts underneath this
   // modal. `preventDefault` also suppresses the native <dialog>
   // close-on-Escape default action, so we fully own the close here instead of
-  // going through `handleClose`.
+  // going through `handleClose`. Gated on `!busy`, mirroring SeriesLinkModal's
+  // Escape guard, so Escape can't interrupt an in-flight restart.
   $effect(() => {
     if (!open) return;
+
+    // The same modal instance can reopen for a later volume/series. Reset
+    // here (start of a fresh open, not on close) so a stale `true` left over
+    // from a previous cycle can never swallow a later legitimate close —
+    // resetting on close instead would race the dialog's own native `close`
+    // event (fired by its teardown right after this same `open = false`),
+    // which needs to see the flag `restart()` just set.
+    suppressCloseDismiss = false;
 
     function handleKeydown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.stopPropagation();
         e.preventDefault();
-        dismissForSession();
+        if (!busy) dismissForSession();
+        return;
+      }
+      if (BLOCKED_NAV_KEYS.has(e.key)) {
+        e.stopPropagation();
       }
     }
 
@@ -114,7 +146,9 @@
       <Button color="alternative" size="sm" onclick={dontAsk} disabled={busy}>
         Don't ask for this series
       </Button>
-      <Button color="alternative" size="sm" onclick={notNow} disabled={busy}>Not now</Button>
+      <Button color="alternative" size="sm" onclick={notNow} disabled={busy} data-autofocus>
+        Not now
+      </Button>
       <Button color="primary" size="sm" onclick={restart} disabled={busy}>Restart series</Button>
     </div>
   </div>

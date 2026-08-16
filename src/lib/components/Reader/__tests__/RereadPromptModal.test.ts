@@ -79,4 +79,33 @@ describe('RereadPromptModal', () => {
     expect(row.className).toContain('relative');
     expect(row.className).toContain('z-10');
   });
+
+  it('autofocuses "Not now", not the first button (Escape/Enter reflex must not silently suppress the series)', () => {
+    const { getByText } = render(RereadPromptModal, { props: { ...baseProps } });
+    expect(getByText('Not now').hasAttribute('data-autofocus')).toBe(true);
+    expect(getByText("Don't ask for this series").hasAttribute('data-autofocus')).toBe(false);
+    expect(getByText('Restart series').hasAttribute('data-autofocus')).toBe(false);
+  });
+
+  it('blocks page-turn/scroll keys (e.g. ArrowRight) from reaching bubble-phase window listeners while open', () => {
+    // Reader.svelte's own shortcut handler AND VerticalScrollReader/
+    // HorizontalScrollReader's `<svelte:window onkeydown>` listeners are all
+    // bubble-phase window listeners underneath this modal. The modal's guard
+    // is a capture-phase window listener that calls stopPropagation() for
+    // these keys, so a real keydown bubbling up from inside the dialog must
+    // never reach any bubble-phase listener on window.
+    const bubbleListener = vi.fn();
+    window.addEventListener('keydown', bubbleListener);
+    render(RereadPromptModal, { props: { ...baseProps } });
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      bubbles: true,
+      cancelable: true
+    });
+    document.body.dispatchEvent(event);
+
+    expect(bubbleListener).not.toHaveBeenCalled();
+    window.removeEventListener('keydown', bubbleListener);
+  });
 });
