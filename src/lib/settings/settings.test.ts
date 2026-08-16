@@ -177,4 +177,11 @@ describe('pushProgressToAniList migration', () => {
     expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
     expect(migrated.Default.catalogSettings.stackingPreset).toBe('default');
   });
+
+  it('coerces a non-boolean stored value back to true', () => {
+    const migrated = migrateProfiles({
+      Default: { catalogSettings: { pushProgressToAniList: 'false' } }
+    } as any);
+    expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
+  });
 });

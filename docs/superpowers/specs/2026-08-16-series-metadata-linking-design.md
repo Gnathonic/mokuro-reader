@@ -272,6 +272,8 @@ local volume completed`, `passComplete = total known && passProgress >= total`,
   - restart event → `{ status: REPEATING, [progressField]: 0 }` (the one explicit decrease);
   - else `[progressField] = local.passProgress` only if it exceeds remote's, with
     `status = passComplete ? COMPLETED : (local.rereading ? REPEATING : CURRENT)`;
+    also emits `status` alone when the desired status is an upgrade of the remote one
+    (COMPLETED when the pass is complete; REPEATING when re-reading);
   - `repeat = max(remote.repeat, local.timesRead - 1)` whenever it would increase;
   - `null` when nothing would change.
 - **Sync now** = same plan against the current local state.

@@ -139,4 +139,125 @@ describe('planProgressPush', () => {
   it('never returns an empty plan object', () => {
     expect(planProgressPush(local(), remote(), 'volumes', 'sync')).toBeNull();
   });
+
+  it('treats a null remote progress value as 0 (GraphQL may omit it)', () => {
+    expect(
+      planProgressPush(
+        local({ passProgress: 1 }),
+        remote({ progressVolumes: null as any }),
+        'volumes',
+        'completion'
+      )
+    ).toEqual({ status: 'CURRENT', progressVolumes: 1 });
+  });
+
+  describe('restart idempotence', () => {
+    it('is a no-op when remote already reflects the restart', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 1, rereading: true }),
+          remote({ status: 'REPEATING', progressVolumes: 0, repeat: 0 }),
+          'volumes',
+          'restart'
+        )
+      ).toBeNull();
+    });
+
+    it('is still a no-op when the remote repeat already exceeds desired', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 3, rereading: true }),
+          remote({ status: 'REPEATING', progressVolumes: 0, repeat: 5 }),
+          'volumes',
+          'restart'
+        )
+      ).toBeNull();
+    });
+
+    it('still creates an entry when nothing is tracked yet', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 1, rereading: true }),
+          null,
+          'volumes',
+          'restart'
+        )
+      ).toEqual({ status: 'REPEATING', progressVolumes: 0 });
+    });
+  });
+
+  describe('status-only upgrades when progress does not advance', () => {
+    it('flips a CURRENT remote to COMPLETED when the pass completes without a progress bump', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 20, allCompleted: true, passComplete: true, timesRead: 1 }),
+          remote({ status: 'CURRENT', progressVolumes: 20 }),
+          'volumes',
+          'completion'
+        )
+      ).toEqual({ status: 'COMPLETED' });
+    });
+
+    it('does not re-push COMPLETED when remote already reflects it', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 20 }),
+          remote({ status: 'COMPLETED', progressVolumes: 20 }),
+          'volumes',
+          'sync'
+        )
+      ).toBeNull();
+    });
+
+    it('remote null + completion of 1 still pushes CURRENT progress (unchanged base case)', () => {
+      expect(planProgressPush(local({ passProgress: 1 }), null, 'volumes', 'completion')).toEqual({
+        status: 'CURRENT',
+        progressVolumes: 1
+      });
+    });
+
+    it('upgrades COMPLETED even from a PAUSED/DROPPED remote status', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 20, allCompleted: true, passComplete: true, timesRead: 1 }),
+          remote({ status: 'DROPPED', progressVolumes: 20 }),
+          'volumes',
+          'sync'
+        )
+      ).toEqual({ status: 'COMPLETED' });
+    });
+
+    it('flips a CURRENT remote to REPEATING when rereading without a progress bump yet', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 1, rereading: true }),
+          remote({ status: 'CURRENT', progressVolumes: 0 }),
+          'volumes',
+          'sync'
+        )
+      ).toEqual({ status: 'REPEATING' });
+    });
+
+    it('flips an untracked (null status) remote to REPEATING when rereading', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 1, rereading: true }),
+          remote({ status: null, progressVolumes: 0 }),
+          'volumes',
+          'sync'
+        )
+      ).toEqual({ status: 'REPEATING' });
+    });
+
+    it('leaves a PAUSED/DROPPED/PLANNING remote alone for REPEATING without a progress bump', () => {
+      expect(
+        planProgressPush(
+          local({ passProgress: 0, timesRead: 1, rereading: true }),
+          remote({ status: 'PAUSED', progressVolumes: 0 }),
+          'volumes',
+          'sync'
+        )
+      ).toBeNull();
+    });
+  });
 });

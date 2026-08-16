@@ -487,6 +487,13 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       migratedProfile.catalogSettings.preferredTitleLanguage = 'imported';
     }
 
+    // Validate pushProgressToAniList (added 2026-08 with series metadata tracking).
+    // A malformed/legacy stored value (e.g. a stringified boolean) must not
+    // silently disable the master switch.
+    if (typeof migratedProfile.catalogSettings.pushProgressToAniList !== 'boolean') {
+      migratedProfile.catalogSettings.pushProgressToAniList = true;
+    }
+
     // Theme migration. The `...defaultSettings, ...profile` spread above already
     // applies `theme`/`customTheme` defaults or carries existing values forward.
     migratedProfile.customTheme = {
