@@ -1,7 +1,8 @@
 import { browser } from '$app/environment';
-import { derived, get, readable, writable } from 'svelte/store';
+import { derived, get, readable, writable, type Readable } from 'svelte/store';
 import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
+import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
 import type { DisplayTitleLanguage } from '$lib/metadata/types';
 
 export type FontSize =
@@ -477,13 +478,9 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.catalogSettings || {})
     };
 
-    // Validate preferredTitleLanguage (added 2026-08 with series metadata linking)
-    const validTitleLanguages: DisplayTitleLanguage[] = ['imported', 'native', 'romaji', 'english'];
-    if (
-      !validTitleLanguages.includes(
-        migratedProfile.catalogSettings.preferredTitleLanguage as DisplayTitleLanguage
-      )
-    ) {
+    // Validate preferredTitleLanguage (added 2026-08 with series metadata linking).
+    // Same guard the cloud-metadata boundary uses, so one list defines the languages.
+    if (!isDisplayTitleLanguage(migratedProfile.catalogSettings.preferredTitleLanguage)) {
       migratedProfile.catalogSettings.preferredTitleLanguage = 'imported';
     }
 
@@ -609,6 +606,20 @@ export const activeTheme = derived(settings, ($settings): ResolvedTheme => {
 
 // Derived store for easy access to catalog settings
 export const catalogSettings = derived(settings, ($settings) => $settings?.catalogSettings);
+
+/**
+ * The preferred series title language on its own.
+ *
+ * `catalogSettings` (like `settings`) emits a fresh OBJECT on every settings write —
+ * including per-wheel-tick ones such as `pagedGap` — so anything joined on it recomputes
+ * constantly. Deriving a primitive means Svelte's `safe_not_equal` dedupes by string
+ * value, and subscribers (the `catalog` store's display-title pass above all) only rerun
+ * when the language actually changes.
+ */
+export const preferredTitleLanguage: Readable<DisplayTitleLanguage> = derived(
+  settings,
+  ($settings) => $settings?.catalogSettings?.preferredTitleLanguage ?? 'imported'
+);
 
 // A store that updates every minute to trigger schedule checks
 const currentMinute = readable(Date.now(), (set) => {

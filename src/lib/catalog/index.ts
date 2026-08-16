@@ -9,7 +9,7 @@ import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { seriesMetadataMap } from '$lib/metadata/store';
-import { catalogSettings } from '$lib/settings/settings';
+import { preferredTitleLanguage } from '$lib/settings/settings';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([
@@ -100,9 +100,12 @@ export const volumesWithPlaceholders = derived(
 // Each derived store needs to be passed as an array if using multiple inputs.
 // Display titles are resolved here (once per recompute) from series metadata +
 // the synced preferredTitleLanguage setting; grouping/routing still use series_title.
+// Join on the PRIMITIVE language store, never on `catalogSettings`: that object store
+// emits a new object on every settings write (per-wheel-tick `pagedGap` included), which
+// would re-group, re-resolve and re-sort the whole library each time.
 export const catalog = derived(
-  [volumesWithPlaceholders, seriesMetadataMap, catalogSettings],
-  ([$volumesWithPlaceholders, $seriesMetadataMap, $catalogSettings]) => {
+  [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage],
+  ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage]) => {
     // Return null while loading (before first data emission)
     if ($volumesWithPlaceholders === undefined) {
       return null;
@@ -110,7 +113,7 @@ export const catalog = derived(
     return deriveSeriesFromVolumes(
       Object.values($volumesWithPlaceholders),
       $seriesMetadataMap,
-      $catalogSettings?.preferredTitleLanguage ?? 'imported'
+      $preferredTitleLanguage
     );
   }
 );

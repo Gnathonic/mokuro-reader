@@ -9,7 +9,7 @@
   import type { VolumeData, VolumeMetadata } from '$lib/types';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
-  import { catalogSettings } from '$lib/settings/settings';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
@@ -21,7 +21,7 @@
       ? resolveDisplayTitle(
           volume.series_title,
           $seriesMetadataMap.get(normalizeSeriesKey(volume.series_title)),
-          $catalogSettings?.preferredTitleLanguage ?? 'imported'
+          $preferredTitleLanguage
         )
       : ''
   );

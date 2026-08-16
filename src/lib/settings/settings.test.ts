@@ -5,6 +5,8 @@ import {
   migrateProfiles,
   grayscaleActive,
   imageFilter,
+  preferredTitleLanguage,
+  updateCatalogSetting,
   updateSetting,
   updateScheduleSetting
 } from './settings';
@@ -138,5 +140,31 @@ describe('preferredTitleLanguage migration', () => {
       Test: { catalogSettings: { preferredTitleLanguage: 'klingon' } } as any
     });
     expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('imported');
+  });
+});
+
+describe('preferredTitleLanguage store', () => {
+  afterEach(() => {
+    updateCatalogSetting('preferredTitleLanguage', 'imported');
+  });
+
+  it('emits only when the language itself changes', () => {
+    // The catalog store joins this one instead of `catalogSettings` precisely because a
+    // primitive dedupes: an unrelated write must not rebuild the whole library.
+    const seen: string[] = [];
+    const unsubscribe = preferredTitleLanguage.subscribe((value) => seen.push(value));
+    expect(seen).toEqual(['imported']);
+
+    updateSetting('pagedGap', 9);
+    updateCatalogSetting('stackCount', 5);
+    expect(seen).toEqual(['imported']);
+
+    updateCatalogSetting('preferredTitleLanguage', 'english');
+    expect(seen).toEqual(['imported', 'english']);
+
+    updateCatalogSetting('preferredTitleLanguage', 'english');
+    expect(seen).toEqual(['imported', 'english']);
+
+    unsubscribe();
   });
 });
