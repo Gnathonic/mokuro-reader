@@ -117,3 +117,26 @@ describe('imageFilter', () => {
     expect(get(imageFilter)).toBe('invert(1) grayscale(1)');
   });
 });
+
+describe('preferredTitleLanguage migration', () => {
+  it('defaults a profile with no catalogSettings.preferredTitleLanguage to imported', () => {
+    const out = migrateProfiles({ Test: { catalogSettings: { stackCount: 2 } } as any });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('imported');
+    // Existing catalog values must survive the merge
+    expect(out.Test.catalogSettings.stackCount).toBe(2);
+  });
+
+  it('preserves a valid preferredTitleLanguage', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'romaji' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('romaji');
+  });
+
+  it('coerces an unknown preferredTitleLanguage back to imported', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'klingon' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('imported');
+  });
+});

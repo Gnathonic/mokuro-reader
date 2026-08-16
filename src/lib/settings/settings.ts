@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { derived, get, readable, writable } from 'svelte/store';
 import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
+import type { DisplayTitleLanguage } from '$lib/metadata/types';
 
 export type FontSize =
   | 'auto'
@@ -124,6 +125,8 @@ export type CatalogSettings = {
   centerVertical: boolean;
   compactCloudSeries: boolean;
   dropShadow: boolean;
+  /** Which series title to display in the catalog/series pages. Folder name is untouched. */
+  preferredTitleLanguage: DisplayTitleLanguage;
 };
 
 export type Settings = {
@@ -346,7 +349,8 @@ const defaultSettings: Settings = {
     centerHorizontal: true,
     centerVertical: false,
     compactCloudSeries: false,
-    dropShadow: true
+    dropShadow: true,
+    preferredTitleLanguage: 'imported'
   }
 };
 
@@ -472,6 +476,16 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...defaultSettings.catalogSettings,
       ...(profile.catalogSettings || {})
     };
+
+    // Validate preferredTitleLanguage (added 2026-08 with series metadata linking)
+    const validTitleLanguages: DisplayTitleLanguage[] = ['imported', 'native', 'romaji', 'english'];
+    if (
+      !validTitleLanguages.includes(
+        migratedProfile.catalogSettings.preferredTitleLanguage as DisplayTitleLanguage
+      )
+    ) {
+      migratedProfile.catalogSettings.preferredTitleLanguage = 'imported';
+    }
 
     // Theme migration. The `...defaultSettings, ...profile` spread above already
     // applies `theme`/`customTheme` defaults or carries existing values forward.
