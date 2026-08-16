@@ -2,6 +2,7 @@
   import { AccordionItem, Label, Select } from 'flowbite-svelte';
   import { catalogSettings, updateCatalogSetting } from '$lib/settings/settings';
   import type { DisplayTitleLanguage } from '$lib/metadata/types';
+  import AniListAccountSettings from './AniListAccountSettings.svelte';
 
   const titleLanguageOptions: { value: DisplayTitleLanguage; name: string }[] = [
     { value: 'imported', name: 'As imported (folder name)' },
@@ -32,6 +33,6 @@
       </p>
     </div>
 
-    <!-- Plan C mounts the AniList account section (Connect/Disconnect, push-on-completion switch) here. -->
+    <AniListAccountSettings />
   </div>
 </AccordionItem>
