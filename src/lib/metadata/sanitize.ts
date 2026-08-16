@@ -1,4 +1,9 @@
-import type { DisplayTitleLanguage, SeriesExternalIds, SeriesTitles } from './types';
+import type {
+  DisplayTitleLanguage,
+  SeriesExternalIds,
+  SeriesTitles,
+  SeriesTracking
+} from './types';
 
 /**
  * Shared validation rules for untrusted series metadata. Both boundaries where
@@ -72,6 +77,46 @@ export function sanitizeSynonyms(value: unknown): string[] {
 /** Keeps a known display language, else undefined (= no per-series override). */
 export function sanitizeTitlePreference(value: unknown): DisplayTitleLanguage | undefined {
   return isDisplayTitleLanguage(value) ? value : undefined;
+}
+
+/**
+ * Validates a `tracking` block from an untrusted source.
+ *
+ * Every field the tracker reads is checked, because each one steers a write to
+ * the user's AniList account: a junk `unit` would push volume numbers into the
+ * chapter field, a junk `number_overrides` entry would push `NaN` as progress,
+ * and a junk `last_pushed` would make `alreadySettled()` skip real pushes.
+ * A non-object drops the whole block (= "no tracking configured"); bad fields
+ * inside an object are dropped or defaulted individually.
+ */
+export function sanitizeTracking(value: unknown): SeriesTracking | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const out: SeriesTracking = {
+    enabled: value.enabled === true,
+    unit: value.unit === 'chapters' ? 'chapters' : 'volumes'
+  };
+
+  if (isRecord(value.number_overrides)) {
+    const overrides: Record<string, number> = {};
+    for (const [uuid, n] of Object.entries(value.number_overrides)) {
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) overrides[uuid] = n;
+    }
+    if (Object.keys(overrides).length > 0) out.number_overrides = overrides;
+  }
+
+  const lastPushed = value.last_pushed;
+  if (
+    isRecord(lastPushed) &&
+    typeof lastPushed.n === 'number' &&
+    Number.isFinite(lastPushed.n) &&
+    typeof lastPushed.status === 'string' &&
+    typeof lastPushed.at === 'string'
+  ) {
+    out.last_pushed = { n: lastPushed.n, status: lastPushed.status, at: lastPushed.at };
+  }
+
+  return out;
 }
 
 /** Trimmed non-empty string, else undefined. */

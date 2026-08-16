@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mergeSeriesMetadata, sanitizeCloudSeriesMetadata } from './merge';
+import { sanitizeTracking } from './sanitize';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 
 function rec(title: string, updated_at: string, tag?: string): SeriesMetadata {
@@ -52,6 +53,56 @@ describe('mergeSeriesMetadata', () => {
   });
 });
 
+describe('sanitizeTracking', () => {
+  it('returns undefined for anything that is not a plain object', () => {
+    for (const value of [undefined, null, 'nope', 7, [], true]) {
+      expect(sanitizeTracking(value)).toBeUndefined();
+    }
+  });
+
+  it('keeps a well-formed block verbatim', () => {
+    const tracking = {
+      enabled: true,
+      unit: 'chapters' as const,
+      number_overrides: { 'uuid-a': 12 },
+      last_pushed: { n: 12, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+    };
+    expect(sanitizeTracking(tracking)).toEqual(tracking);
+  });
+
+  it('defaults enabled/unit and drops bad overrides and last_pushed', () => {
+    expect(
+      sanitizeTracking({
+        enabled: 1,
+        unit: 'pages',
+        number_overrides: { keep: 3, zero: 0, negative: -1, infinite: Infinity, text: '5' },
+        last_pushed: { n: 4, status: 42, at: '2026-08-15T10:00:00.000Z' }
+      })
+    ).toEqual({ enabled: false, unit: 'volumes', number_overrides: { keep: 3 } });
+  });
+
+  it('omits number_overrides entirely when nothing survives', () => {
+    expect(
+      sanitizeTracking({ enabled: true, unit: 'volumes', number_overrides: { bad: -1 } })
+    ).toEqual({ enabled: true, unit: 'volumes' });
+    expect(sanitizeTracking({ enabled: true, unit: 'volumes', number_overrides: 'nope' })).toEqual({
+      enabled: true,
+      unit: 'volumes'
+    });
+  });
+
+  it('drops a last_pushed that is missing a field or is not an object', () => {
+    expect(sanitizeTracking({ enabled: true, last_pushed: { n: 4, status: 'CURRENT' } })).toEqual({
+      enabled: true,
+      unit: 'volumes'
+    });
+    expect(sanitizeTracking({ enabled: true, last_pushed: 'yesterday' })).toEqual({
+      enabled: true,
+      unit: 'volumes'
+    });
+  });
+});
+
 describe('sanitizeCloudSeriesMetadata', () => {
   it('passes through a valid record unchanged', () => {
     const valid = rec('A', '2026-01-01T00:00:00.000Z', 'tag');
@@ -89,7 +140,7 @@ describe('sanitizeCloudSeriesMetadata', () => {
     expect(result.a.read_count).toBe(0);
   });
 
-  it('coerces a non-finite/negative read_count to 0 and keeps a valid one', () => {
+  it('coerces a non-integer/non-finite/negative read_count to 0 and keeps a valid one', () => {
     const raw = {
       a: {
         series_key: 'a',
@@ -113,6 +164,54 @@ describe('sanitizeCloudSeriesMetadata', () => {
     const result = sanitizeCloudSeriesMetadata(raw);
     expect(result.a.read_count).toBe(0);
     expect(result.b.read_count).toBe(3);
+    // A fraction is not a count of finished passes either.
+    expect(sanitizeCloudSeriesMetadata({ a: { ...raw.a, read_count: 2.5 } }).a.read_count).toBe(0);
+  });
+
+  it('validates the tracking block field by field', () => {
+    const result = sanitizeCloudSeriesMetadata({
+      a: {
+        series_key: 'a',
+        series_title: 'A',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        tracking: {
+          enabled: 'yes',
+          unit: 'pages',
+          number_overrides: { good: 4, zero: 0, negative: -2, nan: 'x' },
+          last_pushed: { n: 'two', status: 'CURRENT', at: '2026-01-01T00:00:00.000Z' }
+        }
+      },
+      b: {
+        series_key: 'b',
+        series_title: 'B',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        tracking: 'nope'
+      }
+    });
+    expect(result.a.tracking).toEqual({
+      enabled: false,
+      unit: 'volumes',
+      number_overrides: { good: 4 }
+    });
+    expect(Object.keys(result.b)).not.toContain('tracking');
+  });
+
+  it('keeps reread_prompt_suppressed only when it is a boolean', () => {
+    const entry = (reread_prompt_suppressed: unknown) => ({
+      series_key: 'a',
+      series_title: 'A',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      reread_prompt_suppressed
+    });
+    expect(sanitizeCloudSeriesMetadata({ a: entry(true) }).a.reread_prompt_suppressed).toBe(true);
+    expect(sanitizeCloudSeriesMetadata({ a: entry(false) }).a.reread_prompt_suppressed).toBe(false);
+    // Truthy junk would read as "never offer this series a restart again".
+    expect(Object.keys(sanitizeCloudSeriesMetadata({ a: entry('yes') }).a)).not.toContain(
+      'reread_prompt_suppressed'
+    );
+    expect(Object.keys(sanitizeCloudSeriesMetadata({ a: entry(1) }).a)).not.toContain(
+      'reread_prompt_suppressed'
+    );
   });
 
   it('returns {} for a non-object root', () => {

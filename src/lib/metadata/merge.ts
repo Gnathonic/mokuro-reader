@@ -5,7 +5,8 @@ import {
   sanitizeSynonyms,
   sanitizeTag,
   sanitizeTitlePreference,
-  sanitizeTitles
+  sanitizeTitles,
+  sanitizeTracking
 } from './sanitize';
 import type { SeriesMetadata } from './types';
 
@@ -18,8 +19,9 @@ function isRecordLike(value: unknown): value is SeriesMetadata {
   );
 }
 
-function isNonNegativeFinite(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+/** `read_count` is a count of finished passes — fractions and negatives are corruption. */
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 /**
@@ -32,9 +34,11 @@ function isNonNegativeFinite(value: unknown): value is number {
  * Otherwise the entry is kept and its values are validated field by field with
  * the same rules the .mokuro embed uses (`sanitize.ts`): positive-integer
  * external ids, non-empty string titles/synonyms/tag, a `title_preference` that is
- * one of the four known languages, `read_count` coerced to a finite number >= 0,
- * `updated_at` normalized to ISO and clamped when far in the future. Bad values are dropped, not the whole entry. Other fields pass through
- * as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
+ * one of the four known languages, `read_count` coerced to a non-negative integer,
+ * a `tracking` block validated field by field, a boolean-or-absent
+ * `reread_prompt_suppressed`, and `updated_at` normalized to ISO and clamped when
+ * far in the future. Bad values are dropped, not the whole entry. Other fields pass
+ * through as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
  */
 export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, SeriesMetadata> {
   if (!isRecord(raw)) return {};
@@ -63,9 +67,16 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
       external_ids: sanitizeExternalIds(value.external_ids),
       titles: sanitizeTitles(value.titles),
       synonyms: sanitizeSynonyms(value.synonyms),
-      read_count: isNonNegativeFinite(value.read_count) ? value.read_count : 0,
+      read_count: isNonNegativeInteger(value.read_count) ? value.read_count : 0,
       updated_at
     };
+    // Tracking steers writes to the user's AniList account, so it is validated
+    // field by field; a non-object means "no tracking configured" for this series.
+    const tracking = sanitizeTracking(value.tracking);
+    if (tracking === undefined) delete entry.tracking;
+    else entry.tracking = tracking;
+    // Anything non-boolean here would be truthy-tested as "never prompt again".
+    if (typeof value.reread_prompt_suppressed !== 'boolean') delete entry.reread_prompt_suppressed;
     const tag = sanitizeTag(value.tag);
     if (tag === undefined) delete entry.tag;
     else entry.tag = tag;
