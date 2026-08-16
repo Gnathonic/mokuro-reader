@@ -51,6 +51,22 @@
     }
   });
 
+  // Capture Escape so it doesn't propagate to the series page's back-navigation handler
+  $effect(() => {
+    if (!open) return;
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!linking) open = false;
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown, true);
+    return () => window.removeEventListener('keydown', handleKeydown, true);
+  });
+
   function onQueryInput(e: Event) {
     query = (e.currentTarget as HTMLInputElement).value;
     search.setQuery(query);
