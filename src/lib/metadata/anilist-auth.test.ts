@@ -136,6 +136,92 @@ describe('handleAniListCallbackHash', () => {
   });
 });
 
+describe('anilistConnected', () => {
+  // Unlike the rest of this file, these tests need to observe the store's
+  // state at specific points relative to module load (freshly booted, no
+  // token yet) — something the shared singleton imported at the top of this
+  // file can't give once other tests have already mutated it. Each test
+  // resets the module registry and re-imports both `./anilist-auth` and its
+  // `./providers/anilist` dependency together, so the `anilistRequest` mock
+  // it configures is the exact one the fresh module instance calls. This
+  // never touches the statically-imported bindings the other 16 tests in
+  // this file use (those keep pointing at the original module instance
+  // resolved when the file first loaded), so it can't destabilize them.
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    vi.resetModules();
+  });
+
+  it('is false initially when there is no stored token', async () => {
+    const fresh = await import('./anilist-auth');
+    expect(get(fresh.anilistConnected)).toBe(false);
+  });
+
+  it('is true immediately after a successful callback, even before the Viewer resolves', async () => {
+    const providers = await import('./providers/anilist');
+    let resolveViewer!: (v: { Viewer: { id: number; name: string } }) => void;
+    vi.mocked(providers.anilistRequest).mockReturnValue(
+      new Promise((resolve) => {
+        resolveViewer = resolve;
+      })
+    );
+    const fresh = await import('./anilist-auth');
+
+    const promise = fresh.handleAniListCallbackHash(
+      '#access_token=tok&token_type=Bearer&expires_in=3600'
+    );
+    // Token is stored (and the flag flipped) synchronously, before the
+    // Viewer round-trip settles.
+    expect(get(fresh.anilistConnected)).toBe(true);
+
+    resolveViewer({ Viewer: { id: 1, name: 'nathan' } });
+    await promise;
+    expect(get(fresh.anilistConnected)).toBe(true);
+  });
+
+  it('is false after disconnectAniList()', async () => {
+    const providers = await import('./providers/anilist');
+    vi.mocked(providers.anilistRequest).mockResolvedValue({ Viewer: { id: 1, name: 'nathan' } });
+    const fresh = await import('./anilist-auth');
+
+    await fresh.handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
+    expect(get(fresh.anilistConnected)).toBe(true);
+
+    fresh.disconnectAniList();
+    expect(get(fresh.anilistConnected)).toBe(false);
+  });
+
+  it('is false after handleAniListUnauthorized()', async () => {
+    const providers = await import('./providers/anilist');
+    vi.mocked(providers.anilistRequest).mockResolvedValue({ Viewer: { id: 1, name: 'nathan' } });
+    const fresh = await import('./anilist-auth');
+
+    await fresh.handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
+    expect(get(fresh.anilistConnected)).toBe(true);
+
+    fresh.handleAniListUnauthorized();
+    expect(get(fresh.anilistConnected)).toBe(false);
+  });
+
+  it('is false once getAniListToken() detects an expired token', async () => {
+    const providers = await import('./providers/anilist');
+    vi.mocked(providers.anilistRequest).mockResolvedValue({ Viewer: { id: 1, name: 'nathan' } });
+    const fresh = await import('./anilist-auth');
+
+    await fresh.handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
+    expect(get(fresh.anilistConnected)).toBe(true);
+
+    // Simulate the token expiring without another callback happening — the
+    // flag should only flip on the next actual check, exercising the
+    // detection branch inside getAniListToken() itself (not just the
+    // module-load initializer).
+    localStorage.setItem('anilist_token_expires_at', String(Date.now() - 1));
+    expect(fresh.getAniListToken()).toBeNull();
+    expect(get(fresh.anilistConnected)).toBe(false);
+  });
+});
+
 describe('return hash', () => {
   it('consumes the saved return hash once', () => {
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
