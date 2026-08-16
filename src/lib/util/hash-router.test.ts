@@ -70,10 +70,27 @@ describe('AniList implicit-grant callback', () => {
     cleanup();
   });
 
-  test('falls back to the catalog when no return route was saved', () => {
+  test('rejects an unsolicited callback: no token is stored and the fragment is scrubbed', () => {
+    // No `anilist_return` was saved — this tab never called startAniListLogin(),
+    // so this hash can only be an attacker-crafted link (login-CSRF). It must
+    // be discarded, not treated as a real AniList login.
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/catalog');
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    cleanup();
+  });
+
+  test('sanitizes an unsafe saved return route before restoring it', () => {
+    // The saved return route still proves this tab initiated the login, so the
+    // token is trusted — but the route value itself must be validated before
+    // it's fed into history.replaceState (a protocol-relative `//host` value
+    // could otherwise navigate cross-origin or throw a SecurityError).
+    sessionStorage.setItem('anilist_return', '//evil.example.com');
     window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
     expect(window.location.hash).toBe('#/catalog');
+    expect(localStorage.getItem('anilist_token')).toBe('tok123');
     cleanup();
   });
 

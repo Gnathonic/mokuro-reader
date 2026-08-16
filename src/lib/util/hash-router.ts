@@ -232,6 +232,27 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  * Call this on app initialization, returns cleanup function
  */
 export function initRouter(): () => void {
+  // AniList implicit-grant callback lands on `{origin}/#access_token=…`.
+  // Handled first, before the legacy-pathname redirect below — that block
+  // rewrites the hash outright on subpath deploys, which would otherwise
+  // wipe the fragment before we ever get to read it.
+  if (window.location.hash.startsWith(ANILIST_CALLBACK_PREFIX)) {
+    const callbackHash = window.location.hash;
+    const rawReturnHash = consumeAniListReturnHash();
+    // Only a same-origin script can have written `anilist_return` (it's set
+    // by startAniListLogin() right before navigating to AniList), so its
+    // presence is proof this tab initiated the login. An attacker can send
+    // a bare `#access_token=…` link with no such key set — without this
+    // check that link would silently log the victim into the attacker's
+    // AniList account. Absent proof, scrub the fragment and store nothing.
+    const returnHash =
+      rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
+    window.history.replaceState(null, '', '/' + returnHash);
+    if (rawReturnHash) {
+      void handleAniListCallbackHash(callbackHash).catch(() => {});
+    }
+  }
+
   // Handle legacy pathname-based routes from before hash router migration
   const pathname = window.location.pathname;
 
@@ -243,15 +264,6 @@ export function initRouter(): () => void {
   } else if (pathname && pathname !== '/') {
     // Redirect all other legacy routes to catalog
     window.history.replaceState(null, '', '/#/catalog');
-  }
-
-  // AniList implicit-grant callback lands on `{origin}/#access_token=…`.
-  // Store the token, then put the pre-login route back before parsing.
-  if (window.location.hash.startsWith(ANILIST_CALLBACK_PREFIX)) {
-    const callbackHash = window.location.hash;
-    const returnHash = consumeAniListReturnHash() || '#/catalog';
-    window.history.replaceState(null, '', '/' + returnHash);
-    void handleAniListCallbackHash(callbackHash);
   }
 
   // Parse initial hash

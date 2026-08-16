@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
 import { writable, type Readable } from 'svelte/store';
 import { showSnackbar } from '$lib/util/snackbar';
-import { anilistRequest } from './providers/anilist';
+import { anilistRequest, AniListError } from './providers/anilist';
 
 const TOKEN_KEY = 'anilist_token';
 const EXPIRES_KEY = 'anilist_token_expires_at';
@@ -49,13 +49,17 @@ function clearAniListSession(): void {
   _anilistUser.set(null);
 }
 
-/** Current access token, or null when absent/expired (expired tokens are cleared). */
+/**
+ * Current access token, or null when absent/expired/corrupt (in which case the
+ * whole session is cleared — a missing or non-positive expiry is treated as
+ * invalid, never as "doesn't expire").
+ */
 export function getAniListToken(): string | null {
   if (!browser) return null;
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) return null;
-  const expiresAt = Number(localStorage.getItem(EXPIRES_KEY) || 0);
-  if (expiresAt > 0 && Date.now() >= expiresAt) {
+  const expiresAt = Number(localStorage.getItem(EXPIRES_KEY));
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0 || Date.now() >= expiresAt) {
     clearAniListSession();
     return null;
   }
@@ -85,13 +89,23 @@ export function parseAniListCallbackHash(
  * Handle the implicit-grant callback fragment. Stores the token synchronously
  * (so callers can immediately proceed) and resolves the Viewer in the background.
  * Returns true when the hash was a callback and was consumed.
+ *
+ * Callers MUST only invoke this when the callback has been verified as
+ * originating from a login this tab started (see `initRouter`'s use of
+ * `consumeAniListReturnHash`) — this function itself has no way to tell an
+ * attacker-crafted `#access_token=…` link from a legitimate redirect.
  */
 export async function handleAniListCallbackHash(hash: string): Promise<boolean> {
   const parsed = parseAniListCallbackHash(hash);
   if (!parsed || !browser) return false;
   const ttlSec = parsed.expiresInSec > 0 ? parsed.expiresInSec : DEFAULT_TTL_SEC;
-  localStorage.setItem(TOKEN_KEY, parsed.accessToken);
-  localStorage.setItem(EXPIRES_KEY, String(Date.now() + ttlSec * 1000));
+  try {
+    localStorage.setItem(TOKEN_KEY, parsed.accessToken);
+    localStorage.setItem(EXPIRES_KEY, String(Date.now() + ttlSec * 1000));
+  } catch (error) {
+    console.warn('[anilist-auth] Failed to store AniList token:', error);
+    return false;
+  }
   try {
     const data = await anilistRequest<{ Viewer: AniListUser | null }>(
       'query { Viewer { id name } }',
@@ -104,7 +118,13 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
       _anilistUser.set(user);
     }
   } catch (error) {
-    console.warn('[anilist-auth] Viewer lookup failed:', error);
+    if (error instanceof AniListError && error.code === 'UNAUTHORIZED') {
+      // The token AniList just issued was rejected outright — drop it rather
+      // than leave a session around that will only 401 again later.
+      handleAniListUnauthorized();
+    } else {
+      console.warn('[anilist-auth] Viewer lookup failed:', error);
+    }
   }
   return true;
 }

@@ -3,11 +3,15 @@ import { get } from 'svelte/store';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('./providers/anilist', () => ({
-  anilistRequest: vi.fn()
-}));
+vi.mock('./providers/anilist', async () => {
+  // Keep the real AniListError class (tests need to throw/inspect real
+  // instances) while replacing only the network call itself.
+  const actual = await vi.importActual<typeof import('./providers/anilist')>('./providers/anilist');
+  return { ...actual, anilistRequest: vi.fn() };
+});
 
-import { anilistRequest } from './providers/anilist';
+import { anilistRequest, AniListError } from './providers/anilist';
+import { showSnackbar } from '$lib/util/snackbar';
 import {
   anilistUser,
   buildAniListAuthorizeUrl,
@@ -36,6 +40,7 @@ describe('handleAniListCallbackHash', () => {
     localStorage.clear();
     sessionStorage.clear();
     vi.mocked(anilistRequest).mockReset();
+    vi.mocked(showSnackbar).mockClear();
   });
 
   it('stores token + expiry synchronously and the viewer once fetched', async () => {
@@ -62,6 +67,63 @@ describe('handleAniListCallbackHash', () => {
     localStorage.setItem('anilist_token_expires_at', String(Date.now() - 1));
     expect(getAniListToken()).toBeNull();
     expect(localStorage.getItem('anilist_token')).toBeNull();
+  });
+
+  it('a corrupt (non-numeric) expiry is treated as invalid, not "never expires"', () => {
+    localStorage.setItem('anilist_token', 'old');
+    localStorage.setItem('anilist_token_expires_at', 'not-a-number');
+    expect(getAniListToken()).toBeNull();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+  });
+
+  it('a zero or negative expiry is treated as invalid, not "never expires"', () => {
+    localStorage.setItem('anilist_token', 'old');
+    localStorage.setItem('anilist_token_expires_at', '0');
+    expect(getAniListToken()).toBeNull();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+
+    localStorage.setItem('anilist_token', 'old');
+    localStorage.setItem('anilist_token_expires_at', '-5');
+    expect(getAniListToken()).toBeNull();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+  });
+
+  it('a missing expiry (token set, expiry never written) is treated as invalid', () => {
+    localStorage.setItem('anilist_token', 'old');
+    expect(getAniListToken()).toBeNull();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+  });
+
+  it('returns false and stores nothing when localStorage throws (e.g. quota exceeded)', async () => {
+    // This project's jsdom localStorage is a plain-object polyfill (see
+    // src/test-setup.ts), not a real Storage instance, so spy on the
+    // instance directly rather than Storage.prototype.
+    const setItemSpy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('exceeded the quota', 'QuotaExceededError');
+    });
+    await expect(
+      handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600')
+    ).resolves.toBe(false);
+    setItemSpy.mockRestore();
+    expect(getAniListToken()).toBeNull();
+    expect(anilistRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps the token when the Viewer lookup fails with a network error', async () => {
+    vi.mocked(anilistRequest).mockRejectedValue(new AniListError('NETWORK', 'offline'));
+    await expect(
+      handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600')
+    ).resolves.toBe(true);
+    expect(getAniListToken()).toBe('tok');
+  });
+
+  it('drops the token and shows a snackbar when the Viewer lookup is unauthorized', async () => {
+    vi.mocked(anilistRequest).mockRejectedValue(new AniListError('UNAUTHORIZED', 'rejected'));
+    await expect(
+      handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600')
+    ).resolves.toBe(true);
+    expect(getAniListToken()).toBeNull();
+    expect(showSnackbar).toHaveBeenCalledWith('AniList session expired — reconnect in Settings');
   });
 
   it('disconnect clears everything', async () => {
