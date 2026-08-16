@@ -42,6 +42,70 @@ describe('series metadata store', () => {
     expect(await getSeriesMetadata('one piece')).toEqual(again);
   });
 
+  it('resolves a functional patch against the record as stored, not a stale copy', async () => {
+    await updateSeriesMetadata('One Piece', {
+      read_count: 1,
+      tracking: { enabled: true, unit: 'volumes' }
+    });
+    // Stale snapshot from before the write below — exactly what a component
+    // holding a lagging liveQuery value would build its patch from.
+    const stale = await getSeriesMetadata('one piece');
+    await updateSeriesMetadata('One Piece', {
+      tracking: {
+        ...stale!.tracking!,
+        last_pushed: { n: 4, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+      }
+    });
+
+    const next = await updateSeriesMetadata('One Piece', (existing) => ({
+      tracking: { ...existing.tracking!, enabled: false }
+    }));
+    // The functional patch saw last_pushed even though the caller never did.
+    expect(next.tracking).toEqual({
+      enabled: false,
+      unit: 'volumes',
+      last_pushed: { n: 4, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+    });
+  });
+
+  it('two concurrent functional patches both land (no lost update)', async () => {
+    await updateSeriesMetadata('One Piece', { read_count: 0 });
+    // Fired without awaiting the first: get+put runs inside one rw transaction,
+    // so the second sees what the first stored instead of the same start value.
+    const [, second] = await Promise.all([
+      updateSeriesMetadata('One Piece', (existing) => ({ read_count: existing.read_count + 1 })),
+      updateSeriesMetadata('One Piece', (existing) => ({ read_count: existing.read_count + 1 }))
+    ]);
+    expect(second.read_count).toBe(2);
+    expect((await getSeriesMetadata('one piece'))?.read_count).toBe(2);
+  });
+
+  it('a functional patch and a whole-object writer do not clobber each other', async () => {
+    await updateSeriesMetadata('One Piece', {
+      read_count: 0,
+      tracking: { enabled: true, unit: 'volumes' }
+    });
+    await Promise.all([
+      // The tracker's last_pushed write…
+      updateSeriesMetadata('One Piece', (existing) => ({
+        tracking: {
+          ...existing.tracking!,
+          last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+        }
+      })),
+      // …racing the panel's unit change.
+      updateSeriesMetadata('One Piece', (existing) => ({
+        tracking: { ...existing.tracking!, unit: 'chapters' as const }
+      }))
+    ]);
+    const stored = await getSeriesMetadata('one piece');
+    expect(stored?.tracking).toEqual({
+      enabled: true,
+      unit: 'chapters',
+      last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+    });
+  });
+
   it('unlinkSeries clears link facts but keeps tag/preferences/read_count/tracking', async () => {
     await updateSeriesMetadata('One Piece', {
       external_ids: { anilist: 30013, mal: 13 },

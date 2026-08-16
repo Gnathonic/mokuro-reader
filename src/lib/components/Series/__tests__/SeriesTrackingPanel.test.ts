@@ -54,18 +54,25 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 vi.mock('$lib/metadata/store', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
-  updateSeriesMetadata: vi.fn(async (title: string, patch: Partial<SeriesMetadata>) => {
-    const key = title.trim().replace(/\s+/g, ' ').toLowerCase();
-    const current = h.stored.get(key);
-    const next = {
-      ...(current ?? createEmptySeriesMetadata(title)),
-      ...patch,
-      // Strictly newer than anything the (lagging) store holds.
-      updated_at: new Date(Date.now() + ++h.writeSeq.n).toISOString()
-    } as SeriesMetadata;
-    h.stored.set(key, next);
-    return next;
-  })
+  // Mirrors the real store: a functional patch is resolved against the record as
+  // it is stored right now (the real one does that inside its `rw` transaction).
+  updateSeriesMetadata: vi.fn(
+    async (
+      title: string,
+      patch: Partial<SeriesMetadata> | ((existing: SeriesMetadata) => Partial<SeriesMetadata>)
+    ) => {
+      const key = title.trim().replace(/\s+/g, ' ').toLowerCase();
+      const current = h.stored.get(key) ?? createEmptySeriesMetadata(title);
+      const next = {
+        ...current,
+        ...(typeof patch === 'function' ? patch(current) : patch),
+        // Strictly newer than anything the (lagging) store holds.
+        updated_at: new Date(Date.now() + ++h.writeSeq.n).toISOString()
+      } as SeriesMetadata;
+      h.stored.set(key, next);
+      return next;
+    }
+  )
 }));
 vi.mock('$lib/settings/volume-data', () => ({
   volumes: h.volumesData,
@@ -182,13 +189,14 @@ describe('SeriesTrackingPanel', () => {
     it('increments read_count', async () => {
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Increase read count'));
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', { read_count: 2 });
+      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', expect.any(Function));
+      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(2));
     });
 
     it('decrements read_count', async () => {
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Decrease read count'));
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', { read_count: 0 });
+      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(0));
     });
 
     it('clamps read_count at 0', async () => {
@@ -202,16 +210,38 @@ describe('SeriesTrackingPanel', () => {
 
     it('lands both of two rapid clicks instead of writing the same value twice', async () => {
       // The store is a liveQuery and lags the write, so the second click must
-      // build on the record the first write returned.
+      // build on what the first one stored — that is what the functional patch
+      // (resolved inside the write's own transaction) guarantees.
       setMeta(meta({ read_count: 0 }));
       const { getByLabelText } = renderPanel();
       const increase = getByLabelText('Increase read count');
       await Promise.all([fireEvent.click(increase), fireEvent.click(increase)]);
       await waitFor(() => expect(updateSeriesMetadata).toHaveBeenCalledTimes(2));
-      expect(vi.mocked(updateSeriesMetadata).mock.calls.map((call) => call[1])).toEqual([
-        { read_count: 1 },
-        { read_count: 2 }
-      ]);
+      expect(h.stored.get('one piece')!.read_count).toBe(2);
+    });
+
+    it('does not clobber a tracking write that landed since the panel last rendered', async () => {
+      // The progress tracker writes `tracking.last_pushed` from another module;
+      // the panel's own patch must be built on top of it, not on the stale
+      // record the (lagging) liveQuery is still showing.
+      setMeta(meta({ read_count: 0, tracking: { enabled: true, unit: 'volumes' } }));
+      const { getByLabelText } = renderPanel();
+      h.stored.set('one piece', {
+        ...h.stored.get('one piece')!,
+        tracking: {
+          enabled: true,
+          unit: 'volumes',
+          last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+        }
+      });
+      await fireEvent.click(getByLabelText('Push progress to AniList'));
+      await waitFor(() =>
+        expect(h.stored.get('one piece')!.tracking).toEqual({
+          enabled: false,
+          unit: 'volumes',
+          last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
+        })
+      );
     });
 
     it('reports a failed write', async () => {
@@ -245,9 +275,9 @@ describe('SeriesTrackingPanel', () => {
       setMeta(meta({ tracking: { enabled: false, unit: 'chapters' } }));
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Push progress to AniList'));
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
-        tracking: { enabled: true, unit: 'chapters' }
-      });
+      await waitFor(() =>
+        expect(h.stored.get('one piece')!.tracking).toEqual({ enabled: true, unit: 'chapters' })
+      );
     });
 
     it('changes the unit without dropping the enabled flag or overrides', async () => {
@@ -256,9 +286,13 @@ describe('SeriesTrackingPanel', () => {
       await fireEvent.change(getByDisplayValue('Volumes') as HTMLSelectElement, {
         target: { value: 'chapters' }
       });
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
-        tracking: { enabled: true, unit: 'chapters', number_overrides: { a: 4 } }
-      });
+      await waitFor(() =>
+        expect(h.stored.get('one piece')!.tracking).toEqual({
+          enabled: true,
+          unit: 'chapters',
+          number_overrides: { a: 4 }
+        })
+      );
     });
 
     it('reports a failed tracking write', async () => {

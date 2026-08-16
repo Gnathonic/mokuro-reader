@@ -13,6 +13,18 @@ export type SeriesMetadataPatch = Partial<
   Omit<SeriesMetadata, 'series_key' | 'series_title' | 'updated_at'>
 >;
 
+/**
+ * Either a plain patch, or a function that builds one from the record as it is
+ * stored *at write time*. Two writers touch the same record from different
+ * places — the progress tracker (`tracking.last_pushed`) and the series panel
+ * (`tracking.enabled` / `unit` / `read_count`) — and both write whole objects,
+ * so a patch built from a record read earlier would silently undo the other's
+ * edit. A functional patch is resolved inside the write transaction instead.
+ */
+export type SeriesMetadataPatchInput =
+  | SeriesMetadataPatch
+  | ((existing: SeriesMetadata) => SeriesMetadataPatch);
+
 /** Drop `undefined` values so "cleared" fields disappear from IndexedDB and JSON. */
 function stripUndefined<T extends object>(obj: T): T {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
@@ -52,24 +64,35 @@ export async function getSeriesMetadataForTitle(
   return getSeriesMetadata(normalizeSeriesKey(seriesTitle));
 }
 
-/** Upsert: merges `patch` into the existing record (or a fresh one) and stamps updated_at. */
+/**
+ * Upsert: merges `patch` into the existing record (or a fresh one) and stamps
+ * updated_at.
+ *
+ * Read and write happen inside one `rw` transaction, so a concurrent writer
+ * cannot slip a `put` between them (IndexedDB runs overlapping `readwrite`
+ * transactions one after another). Pass a function for `patch` to build it from
+ * the record as it is at that moment — see `SeriesMetadataPatchInput`.
+ */
 export async function updateSeriesMetadata(
   seriesTitle: string,
-  patch: SeriesMetadataPatch
+  patch: SeriesMetadataPatchInput
 ): Promise<SeriesMetadata> {
   const key = normalizeSeriesKey(seriesTitle);
-  const stored = await db.series_metadata.get(key);
-  const updated_at = nextTimestamp(stored?.updated_at);
-  const existing = stored ?? createEmptySeriesMetadata(seriesTitle, updated_at);
-  const next = stripUndefined<SeriesMetadata>({
-    ...existing,
-    ...patch,
-    series_key: key,
-    series_title: seriesTitle,
-    updated_at
+  return db.transaction('rw', db.series_metadata, async () => {
+    const stored = await db.series_metadata.get(key);
+    const updated_at = nextTimestamp(stored?.updated_at);
+    const existing = stored ?? createEmptySeriesMetadata(seriesTitle, updated_at);
+    const resolved = typeof patch === 'function' ? patch(existing) : patch;
+    const next = stripUndefined<SeriesMetadata>({
+      ...existing,
+      ...resolved,
+      series_key: key,
+      series_title: seriesTitle,
+      updated_at
+    });
+    await db.series_metadata.put(next);
+    return next;
   });
-  await db.series_metadata.put(next);
-  return next;
 }
 
 /** Remove the external link + fetched facts; keep user preferences/tag/read_count/tracking. */

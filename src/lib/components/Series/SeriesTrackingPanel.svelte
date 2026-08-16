@@ -2,11 +2,11 @@
 <script lang="ts">
   import { Button, Select, Toggle } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
-  import type { SeriesMetadata, SeriesTracking, TrackingUnit } from '$lib/metadata/types';
+  import type { SeriesTracking, TrackingUnit } from '$lib/metadata/types';
   import {
     seriesMetadataMap,
     updateSeriesMetadata,
-    type SeriesMetadataPatch
+    type SeriesMetadataPatchInput
   } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
@@ -68,64 +68,44 @@
   let syncing = $state(false);
 
   /**
-   * Writes are serialized, and each patch is built from the freshest record we
-   * have — the one the previous write returned, or the store's if it is already
-   * ahead. `seriesMetadataMap` is a Dexie liveQuery, so it lags a write by a
-   * round-trip: without this, two fast `+` clicks would both read the same count
-   * and only one increment would land.
+   * Every write goes through `updateSeriesMetadata`, which resolves a functional
+   * patch inside its own `rw` transaction. That is what keeps concurrent writers
+   * honest: `seriesMetadataMap` is a Dexie liveQuery and lags a write by a
+   * round-trip (two fast `+` clicks would otherwise read the same count), and
+   * the progress tracker writes `tracking.last_pushed` from another module
+   * entirely.
    */
-  let writeChain: Promise<SeriesMetadata | undefined> = Promise.resolve(undefined);
-
-  function freshest(previous: SeriesMetadata | undefined): SeriesMetadata | undefined {
-    if (!previous) return meta;
-    if (!meta) return previous;
-    return meta.updated_at > previous.updated_at ? meta : previous;
-  }
-
-  function queueWrite(
-    buildPatch: (current: SeriesMetadata | undefined) => SeriesMetadataPatch | null,
-    failureMessage: string
-  ): Promise<void> {
-    const run = async (previous: SeriesMetadata | undefined) => {
-      const current = freshest(previous);
-      const patch = buildPatch(current);
-      if (!patch) return current;
-      try {
-        return await updateSeriesMetadata(seriesTitle, patch);
-      } catch (error) {
-        console.error('[series-tracking] could not save the series record:', error);
-        showSnackbar(failureMessage);
-        return current;
-      }
-    };
-    // `run` never rejects; the second handler only guards a buildPatch throw.
-    writeChain = writeChain.then(run, () => run(undefined));
-    return writeChain.then(() => {});
+  async function write(patch: SeriesMetadataPatchInput, failureMessage: string): Promise<void> {
+    try {
+      await updateSeriesMetadata(seriesTitle, patch);
+    } catch (error) {
+      console.error('[series-tracking] could not save the series record:', error);
+      showSnackbar(failureMessage);
+    }
   }
 
   function setReadCount(delta: number) {
-    return queueWrite((current) => {
-      const from = current?.read_count ?? 0;
-      const next = Math.max(0, from + delta);
-      return next === from ? null : { read_count: next };
-    }, "Couldn't save the read count");
+    // The − button is disabled at 0; this keeps a stray click from spending a
+    // write (and an `updated_at` bump the cloud would then sync) on a no-op.
+    if (delta < 0 && readCount === 0) return Promise.resolve();
+    return write(
+      (current) => ({ read_count: Math.max(0, (current.read_count ?? 0) + delta) }),
+      "Couldn't save the read count"
+    );
   }
 
   function setTracking(patch: Partial<SeriesTracking>) {
     // Spread the stored record so unit/number_overrides/last_pushed survive an
     // edit to any one of them.
-    return queueWrite(
-      (current) => ({ tracking: { ...(current?.tracking ?? DEFAULT_TRACKING), ...patch } }),
+    return write(
+      (current) => ({ tracking: { ...(current.tracking ?? DEFAULT_TRACKING), ...patch } }),
       "Couldn't save the tracking settings"
     );
   }
 
   /** The reader's "Don't ask for this series" is permanent — this is its undo. */
   function askAgainAboutRereads() {
-    return queueWrite(
-      () => ({ reread_prompt_suppressed: undefined }),
-      "Couldn't reset the re-read prompt"
-    );
+    return write({ reread_prompt_suppressed: undefined }, "Couldn't reset the re-read prompt");
   }
 
   async function syncNow() {
