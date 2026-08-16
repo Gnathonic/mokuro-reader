@@ -17,6 +17,8 @@ describe('syncable-file', () => {
   it('accepts the root config files', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
+    expect(isSyncableFile('series-metadata.json')).toBe(true);
+    expect(isRootConfigFile('SERIES-METADATA.JSON')).toBe(true);
   });
 
   it('ignores libraries.json left behind by the removed libraries feature', () => {

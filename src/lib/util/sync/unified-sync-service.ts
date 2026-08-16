@@ -11,6 +11,9 @@ import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
+import { getAllSeriesMetadata, replaceAllSeriesMetadata } from '$lib/metadata/store';
+import { mergeSeriesMetadata, sanitizeCloudSeriesMetadata } from '$lib/metadata/merge';
+import type { SeriesMetadata } from '$lib/metadata/types';
 
 export interface SyncOptions {
   /** If true, suppress snackbar notifications */
@@ -205,6 +208,15 @@ class UnifiedSyncService {
       console.log('🔄 Syncing volume data...');
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
+
+      // Series metadata (AniList link / titles / tag / tracking). Non-fatal:
+      // a failure here must not fail progress sync.
+      try {
+        await this.syncSeriesMetadata(provider);
+        console.log('✅ Series metadata synced');
+      } catch (error) {
+        console.warn('⚠️ Series metadata sync failed:', error);
+      }
 
       // Optionally sync profiles
       if (options.syncProfiles) {
@@ -538,6 +550,69 @@ class UnifiedSyncService {
 
     if (mergedJson !== cloudJson) {
       await this.uploadProfilesFile(provider, purgedProfiles);
+    }
+  }
+
+  /**
+   * Find series-metadata.json file from provider using generic cache
+   * Returns CloudFileMetadata if file exists, null otherwise
+   */
+  private findSeriesMetadataFile(provider: SyncProvider): CloudFileMetadata | null {
+    const cache = cacheManager.getCache(provider.type);
+    return cache?.get('series-metadata.json') ?? null;
+  }
+
+  /**
+   * Download series-metadata.json file from provider using generic file operations.
+   * Returns the raw (unsanitized) `series` map, or null if there is no cloud file.
+   */
+  private async downloadSeriesMetadataFile(
+    provider: SyncProvider
+  ): Promise<Record<string, SeriesMetadata> | null> {
+    const file = this.findSeriesMetadataFile(provider);
+    if (!file) return null;
+    try {
+      const blob = await provider.downloadFile(file);
+      const json = await this.blobToJson(blob);
+      const series =
+        json && typeof json === 'object' ? (json as { series?: unknown }).series : null;
+      return series && typeof series === 'object' ? (series as Record<string, SeriesMetadata>) : {};
+    } catch (error) {
+      if (this.isFileNotFoundError(error)) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Upload series-metadata.json file to provider using generic file operations
+   */
+  private async uploadSeriesMetadataFile(
+    provider: SyncProvider,
+    series: Record<string, SeriesMetadata>
+  ): Promise<void> {
+    await provider.uploadFile('series-metadata.json', this.jsonToBlob({ version: 1, series }));
+  }
+
+  /**
+   * Sync series metadata (AniList link / titles / tag / tracking) with a
+   * provider: download → sanitize untrusted cloud JSON → newest-wins merge →
+   * write local table if changed → upload if changed.
+   */
+  private async syncSeriesMetadata(provider: SyncProvider): Promise<void> {
+    const cloudRaw = await this.downloadSeriesMetadataFile(provider);
+    const cloud = cloudRaw ? sanitizeCloudSeriesMetadata(cloudRaw) : null;
+    const local = await getAllSeriesMetadata();
+    const merged = mergeSeriesMetadata(local, cloud ?? {});
+
+    const localJson = JSON.stringify(local);
+    const cloudJson = JSON.stringify(cloud ?? {});
+    const mergedJson = JSON.stringify(merged);
+
+    if (mergedJson !== localJson) {
+      await replaceAllSeriesMetadata(merged);
+    }
+    if (Object.keys(merged).length > 0 && mergedJson !== cloudJson) {
+      await this.uploadSeriesMetadataFile(provider, merged);
     }
   }
 

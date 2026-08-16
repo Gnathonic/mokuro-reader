@@ -6,14 +6,19 @@
  * - CBZ archives (the volumes themselves)
  * - Sidecars: OCR data (.mokuro / .mokuro.gz) and thumbnails (.webp/.jpg/.jpeg)
  * - Root config files: volume-data.json (read progress), profiles.json
- *   (settings profiles)
+ *   (settings profiles), series-metadata.json (per-series AniList link,
+ *   titles, tag, tracking)
  *
  * libraries.json is deliberately NOT listed: it belonged to the removed
  * libraries feature. Stale copies may still exist in users' cloud folders —
  * keep ignoring them.
  */
 
-const ROOT_CONFIG_FILENAMES = new Set(['volume-data.json', 'profiles.json']);
+const ROOT_CONFIG_FILENAMES = new Set([
+  'volume-data.json',
+  'profiles.json',
+  'series-metadata.json'
+]);
 const SIDECAR_IMAGE_RE = /\.(webp|jpe?g)$/i;
 
 function basenameOf(path: string): string {

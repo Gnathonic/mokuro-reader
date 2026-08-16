@@ -29,6 +29,15 @@ vi.mock('$lib/settings', async () => {
   };
 });
 
+const localSeries: Record<string, any> = {};
+const replaceAll = vi.fn(async (records: Record<string, any>) => {
+  for (const [k, v] of Object.entries(records)) localSeries[k] = v;
+});
+vi.mock('$lib/metadata/store', () => ({
+  getAllSeriesMetadata: vi.fn(async () => ({ ...localSeries })),
+  replaceAllSeriesMetadata: (records: Record<string, any>) => replaceAll(records)
+}));
+
 import { unifiedSyncService } from './unified-sync-service';
 
 // downloadVolumeDataFile is private; these tests target it directly because it
@@ -164,5 +173,77 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
 
     await expect(svc.downloadVolumeDataFile(provider)).rejects.toThrow('network down');
     expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncSeriesMetadata — series-metadata.json', () => {
+  const rec = (key: string, updated_at: string, tag: string) => ({
+    series_key: key,
+    series_title: key,
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    tag,
+    read_count: 0,
+    updated_at
+  });
+
+  beforeEach(() => {
+    for (const k of Object.keys(localSeries)) delete localSeries[k];
+    replaceAll.mockClear();
+    getCache.mockReset();
+  });
+
+  it('merges newest-wins into local and uploads when the merged set differs from the cloud', async () => {
+    localSeries.a = rec('a', '2026-03-01T00:00:00.000Z', 'local-newer');
+    localSeries.b = rec('b', '2026-01-01T00:00:00.000Z', 'local-only');
+    const cloud = {
+      version: 1,
+      series: {
+        a: rec('a', '2026-02-01T00:00:00.000Z', 'cloud-older'),
+        c: rec('c', '2026-02-01T00:00:00.000Z', 'cloud-only')
+      }
+    };
+    const file = {
+      provider: 'mega',
+      fileId: 'sm',
+      path: 'series-metadata.json'
+    } as unknown as CloudFileMetadata;
+    getCache.mockReturnValue({ get: (p: string) => (p === 'series-metadata.json' ? file : null) });
+    const uploadFile = vi.fn<SyncProvider['uploadFile']>(async () => 'id');
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () => jsonBlob(cloud)),
+      uploadFile
+    } as unknown as SyncProvider;
+
+    await svc.syncSeriesMetadata(provider);
+
+    expect(localSeries.a.tag).toBe('local-newer');
+    expect(localSeries.c.tag).toBe('cloud-only');
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+    const [path, blob] = uploadFile.mock.calls[0];
+    expect(path).toBe('series-metadata.json');
+    const uploaded = JSON.parse(await (blob as Blob).text());
+    expect(uploaded.version).toBe(1);
+    expect(Object.keys(uploaded.series).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('uploads local records when the cloud has no file yet', async () => {
+    localSeries.a = rec('a', '2026-03-01T00:00:00.000Z', 'x');
+    getCache.mockReturnValue({ get: () => null });
+    const uploadFile = vi.fn<SyncProvider['uploadFile']>(async () => 'id');
+    const provider = { type: 'mega', downloadFile: vi.fn(), uploadFile } as unknown as SyncProvider;
+    await svc.syncSeriesMetadata(provider);
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+    expect(replaceAll).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when both sides are empty', async () => {
+    getCache.mockReturnValue({ get: () => null });
+    const uploadFile = vi.fn();
+    const provider = { type: 'mega', downloadFile: vi.fn(), uploadFile } as unknown as SyncProvider;
+    await svc.syncSeriesMetadata(provider);
+    expect(uploadFile).not.toHaveBeenCalled();
   });
 });

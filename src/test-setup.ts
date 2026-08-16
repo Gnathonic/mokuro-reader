@@ -20,6 +20,26 @@ if (typeof Blob !== 'undefined' && !Blob.prototype.arrayBuffer) {
   };
 }
 
+// Polyfill Blob.text() for jsdom environment
+// jsdom's Blob doesn't implement text(), needed by sync code/tests that read
+// uploaded JSON payloads back out of a Blob.
+if (typeof Blob !== 'undefined' && !Blob.prototype.text) {
+  Blob.prototype.text = function () {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('Failed to read Blob as text'));
+        }
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(this);
+    });
+  };
+}
+
 // Polyfill window.matchMedia for jsdom environment
 // Required for Svelte components that use media queries (e.g., Flowbite components)
 Object.defineProperty(window, 'matchMedia', {
