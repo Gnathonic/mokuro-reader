@@ -710,8 +710,10 @@ class UnifiedCloudManager {
 
   /**
    * Refresh the .mokuro of every BACKED-UP volume of a series (volumes with no
-   * managed cloud files are skipped — nothing to refresh). Per-volume failures
-   * are counted, not thrown; pre-flight gates (no provider / read-only) throw.
+   * backed-up .mokuro — e.g. image-only volumes stored as cbz+cover only —
+   * are skipped, not failed: there is nothing to refresh). Per-volume
+   * failures are counted, not thrown; pre-flight gates (no provider /
+   * read-only) throw.
    */
   async refreshSeriesSidecars(
     seriesTitle: string,
@@ -728,7 +730,8 @@ class UnifiedCloudManager {
     let failed = 0;
     let skipped = 0;
     for (const volume of volumes) {
-      if (this.getManagedCloudFilesForVolume(seriesTitle, volume.volumeTitle).length === 0) {
+      const managed = this.getManagedCloudFilesForVolume(seriesTitle, volume.volumeTitle);
+      if (!managed.some((file) => isMokuroSidecarPath(file.path))) {
         skipped++;
         continue;
       }

@@ -848,4 +848,36 @@ describe('UnifiedCloudManager sidecar refresh', () => {
     ]);
     expect(result).toEqual({ succeeded: 0, failed: 1, skipped: 0 });
   });
+
+  it('skips an image-only volume backed up as cbz+webp with no cloud .mokuro (not a failure)', async () => {
+    const provider = makeRenameProvider();
+    const files: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'thumb-1',
+        path: 'Old Series/Volume 1.webp',
+        modifiedTime: 't',
+        size: 5
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(result).toEqual({ succeeded: 0, failed: 0, skipped: 1 });
+    expect(generateSidecars).not.toHaveBeenCalled();
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
 });
