@@ -963,6 +963,8 @@
       </div>
     </div>
 
+    <SeriesMetadataBar seriesTitle={placeholders[0].series_title} volumes={placeholders} />
+
     <!-- Actions Row -->
     <div class="flex flex-row items-stretch justify-end gap-2">
       {#if hasAnyProvider}

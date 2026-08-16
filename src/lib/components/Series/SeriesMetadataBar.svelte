@@ -60,7 +60,16 @@
     sidecarsStale = true;
   }
 
-  let hasCloud = $derived(providerManager.getActiveProvider() !== null);
+  // Reactive "is a cloud provider connected" state. providerManager.getActiveProvider() reads a
+  // plain private field with no reactive subscription, so it can't drive a $derived — mirror
+  // SeriesView.svelte's pattern instead: subscribe to the same providerManager.status store it
+  // uses for `hasAnyProvider`/`isCloudReady`.
+  let hasCloud = $state(false);
+  $effect(() => {
+    return providerManager.status.subscribe((value) => {
+      hasCloud = value.hasAnyAuthenticated;
+    });
+  });
 
   async function refreshSidecars() {
     refreshing = true;
@@ -71,17 +80,25 @@
           .filter((v) => !v.isPlaceholder)
           .map((v) => ({ volumeUuid: v.volume_uuid, volumeTitle: v.volume_title }))
       );
-      const total = result.succeeded + result.failed;
-      if (result.failed === 0) sidecarsStale = false;
-      if (total === 0) showSnackbar('No backed-up volumes to update');
-      else if (result.failed === 0)
+      const { succeeded, failed, skipped } = result;
+      const total = succeeded + failed;
+      if (failed === 0) sidecarsStale = false;
+      const skippedSuffix = skipped > 0 ? ` (${skipped} skipped — no backed-up .mokuro)` : '';
+      if (total === 0) {
         showSnackbar(
-          `Updated ${result.succeeded} cloud sidecar${result.succeeded === 1 ? '' : 's'}`
+          skipped > 0
+            ? `No backed-up .mokuro files to update (${skipped} skipped)`
+            : 'No backed-up volumes to update'
         );
-      else
+      } else if (failed === 0) {
         showSnackbar(
-          `Updated ${result.succeeded}/${total} cloud sidecars (${result.failed} failed)`
+          `Updated ${succeeded} cloud sidecar${succeeded === 1 ? '' : 's'}${skippedSuffix}`
         );
+      } else {
+        showSnackbar(
+          `Updated ${succeeded}/${total} cloud sidecars (${failed} failed)${skippedSuffix}`
+        );
+      }
     } catch (error) {
       if (error instanceof ProviderError && error.code === 'READ_ONLY') {
         showSnackbar('Your cloud provider is read-only — sidecars were not updated');
