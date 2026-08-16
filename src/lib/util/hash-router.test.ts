@@ -1,5 +1,10 @@
-import { describe, expect, test } from 'vitest';
-import { nav, parseHash, viewToHash } from '$lib/util/hash-router';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { currentView, initRouter, nav, parseHash, viewToHash } from '$lib/util/hash-router';
+import { get } from 'svelte/store';
+
+vi.mock('$lib/metadata/providers/anilist', () => ({
+  anilistRequest: vi.fn().mockResolvedValue({ Viewer: null })
+}));
 
 describe('parseHash', () => {
   test('handles merge-series route', () => {
@@ -47,5 +52,37 @@ describe('removed libraries routes', () => {
 describe('nav helpers', () => {
   test('nav.toMergeSeries exists and is callable', () => {
     expect(typeof nav.toMergeSeries).toBe('function');
+  });
+});
+
+describe('AniList implicit-grant callback', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  test('stores the token and restores the pre-login route', () => {
+    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBe('tok123');
+    expect(window.location.hash).toBe('#/series/One%20Piece');
+    cleanup();
+  });
+
+  test('falls back to the catalog when no return route was saved', () => {
+    window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/catalog');
+    cleanup();
+  });
+
+  test('a normal hash is untouched and still routes', () => {
+    window.location.hash = '#/series/some-series';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/series/some-series');
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    expect(get(currentView)).toEqual({ type: 'series', seriesId: 'some-series' });
+    cleanup();
   });
 });

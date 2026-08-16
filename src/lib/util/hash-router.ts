@@ -4,6 +4,11 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
+import {
+  ANILIST_CALLBACK_PREFIX,
+  consumeAniListReturnHash,
+  handleAniListCallbackHash
+} from '$lib/metadata/anilist-auth';
 
 /**
  * View types for in-app navigation
@@ -238,6 +243,15 @@ export function initRouter(): () => void {
   } else if (pathname && pathname !== '/') {
     // Redirect all other legacy routes to catalog
     window.history.replaceState(null, '', '/#/catalog');
+  }
+
+  // AniList implicit-grant callback lands on `{origin}/#access_token=…`.
+  // Store the token, then put the pre-login route back before parsing.
+  if (window.location.hash.startsWith(ANILIST_CALLBACK_PREFIX)) {
+    const callbackHash = window.location.hash;
+    const returnHash = consumeAniListReturnHash() || '#/catalog';
+    window.history.replaceState(null, '', '/' + returnHash);
+    void handleAniListCallbackHash(callbackHash);
   }
 
   // Parse initial hash

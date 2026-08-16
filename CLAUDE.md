@@ -266,6 +266,7 @@ Create a `.env.local` file for cloud provider integration:
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
+VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
@@ -274,6 +275,9 @@ VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
   deploy origin as a **Single-page application** redirect URI. Scopes used:
   `Files.ReadWrite`, `offline_access`, `User.Read`. When unset, the OneDrive
   option is hidden from the cloud screen.
+- `VITE_ANILIST_CLIENT_ID`: required only for pushing read progress to AniList.
+  Register an AniList API client (implicit grant) whose redirect URL is the deploy
+  origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
 
 ## Testing
