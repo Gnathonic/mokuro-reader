@@ -14,6 +14,7 @@
   import type { VolumeMetadata } from '$lib/types';
   import type { DisplayTitleLanguage } from '$lib/metadata/types';
   import SeriesLinkModal from './SeriesLinkModal.svelte';
+  import SeriesTrackingPanel from './SeriesTrackingPanel.svelte';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 
@@ -227,6 +228,8 @@
       {/if}
     {/if}
   </div>
+
+  <SeriesTrackingPanel {seriesTitle} {volumes} />
 </div>
 
 <SeriesLinkModal bind:open={linkOpen} {seriesTitle} onLinked={() => (sidecarsStale = true)} />

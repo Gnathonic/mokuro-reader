@@ -8,7 +8,16 @@ import { createEmptySeriesMetadata } from '$lib/metadata/types';
 // module's own imports), so the store the factory closes over must be built
 // here with a minimal hand-rolled Svelte store contract rather than via an
 // imported `writable`.
-const { seriesMetadataMap, providerStatus, noopStore, preferredTitleLanguage } = vi.hoisted(() => {
+const {
+  seriesMetadataMap,
+  providerStatus,
+  noopStore,
+  preferredTitleLanguage,
+  catalogSettings,
+  settingsStore,
+  volumesData,
+  anilistUser
+} = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     let value = initial;
     const subs = new Set<(v: T) => void>();
@@ -37,6 +46,14 @@ const { seriesMetadataMap, providerStatus, noopStore, preferredTitleLanguage } =
     // The global preferred title language: the bar reads it to know which title the
     // header is already showing, so the subtitle can list the other ones.
     preferredTitleLanguage: createStore('imported'),
+    // Read by the mounted SeriesTrackingPanel (its own behaviour is covered in
+    // SeriesTrackingPanel.test.ts; here they only have to exist).
+    catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
+      pushProgressToAniList: true
+    }),
+    settingsStore: createStore<unknown>({}),
+    volumesData: createStore<Record<string, { completed?: boolean }>>({}),
+    anilistUser: createStore<{ id: number; name: string } | null>(null),
     noopStore: { subscribe: (fn: (v: unknown) => void) => (fn(undefined), () => {}) }
   };
 });
@@ -54,7 +71,31 @@ vi.mock('$lib/util/sync', () => ({
   providerManager: { status: providerStatus }
 }));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage }));
+vi.mock('$lib/settings/settings', () => ({
+  preferredTitleLanguage,
+  catalogSettings,
+  settings: settingsStore
+}));
+// The bar mounts SeriesTrackingPanel; these keep its module graph (IndexedDB,
+// the AniList tracker) out of a test about the bar itself. With no client id the
+// panel's tracking row stays hidden and only its read-count controls render.
+vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
+vi.mock('$lib/metadata/progress-tracker', () => ({
+  computeLocalPassState: () => ({
+    passProgress: 0,
+    allCompleted: false,
+    passComplete: false,
+    timesRead: 0,
+    rereading: false
+  }),
+  syncSeriesNow: vi.fn()
+}));
+vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
+vi.mock('$lib/metadata/anilist-auth', () => ({
+  getAniListClientId: () => undefined,
+  getAniListToken: () => null,
+  anilistUser
+}));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
 import { showSnackbar } from '$lib/util';
