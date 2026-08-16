@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesMetadata } from './types';
-import { resolveDisplayTitle, seriesSearchTerms } from './display-title';
+import { resolveDisplayBase, resolveDisplayTitle, seriesSearchTerms } from './display-title';
 
 function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
   return {
@@ -79,6 +79,35 @@ describe('resolveDisplayTitle', () => {
     expect(resolveDisplayTitle('One Piece', meta({ tag: '  bw scans ' }), 'imported')).toBe(
       'One Piece bw scans'
     );
+  });
+
+  it('treats an unknown stored title_preference as no override (uses the global preference)', () => {
+    // e.g. a hand-edited or foreign series-metadata.json that reached the store
+    const m = meta({ title_preference: 'klingon' as never });
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
+    expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece');
+  });
+});
+
+describe('resolveDisplayBase', () => {
+  it('is resolveDisplayTitle without the tag', () => {
+    const m = meta({ tag: '[color]' });
+    expect(resolveDisplayBase('One Piece', m, 'english')).toBe('One Piece (en)');
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) [color]');
+  });
+
+  it('follows the same preference, fallback and imported rules', () => {
+    expect(resolveDisplayBase('One Piece', meta(), 'imported')).toBe('One Piece');
+    expect(resolveDisplayBase('One Piece', meta({ title_preference: 'native' }), 'english')).toBe(
+      'ONE PIECE'
+    );
+    expect(resolveDisplayBase('folder', meta({ titles: { native: 'N' } }), 'romaji')).toBe('N');
+    expect(resolveDisplayBase('folder', undefined, 'english')).toBe('folder');
+  });
+
+  it('treats an unknown stored title_preference as no override', () => {
+    const m = meta({ title_preference: '' as never });
+    expect(resolveDisplayBase('One Piece', m, 'romaji')).toBe('ONE PIECE (romaji)');
   });
 });
 

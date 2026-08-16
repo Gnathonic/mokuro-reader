@@ -145,6 +145,34 @@ describe('sanitizeCloudSeriesMetadata', () => {
     expect(result.a.read_count).toBe(2);
   });
 
+  it('keeps a known title_preference and drops an unknown one', () => {
+    const result = sanitizeCloudSeriesMetadata({
+      good: {
+        series_key: 'good',
+        series_title: 'Good',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        title_preference: 'romaji'
+      },
+      bad: {
+        series_key: 'bad',
+        series_title: 'Bad',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        // An unknown language is not 'imported', so it would silently send the series
+        // down the english → romaji → native fallback chain forever.
+        title_preference: 'klingon'
+      },
+      wrongType: {
+        series_key: 'wrongType',
+        series_title: 'Wrong',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        title_preference: 42
+      }
+    });
+    expect(result.good.title_preference).toBe('romaji');
+    expect(Object.keys(result.bad)).not.toContain('title_preference');
+    expect(Object.keys(result.wrongType)).not.toContain('title_preference');
+  });
+
   it('drops an entry whose map key disagrees with its series_key', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = sanitizeCloudSeriesMetadata({

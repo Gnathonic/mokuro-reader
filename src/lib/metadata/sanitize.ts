@@ -1,4 +1,4 @@
-import type { SeriesExternalIds, SeriesTitles } from './types';
+import type { DisplayTitleLanguage, SeriesExternalIds, SeriesTitles } from './types';
 
 /**
  * Shared validation rules for untrusted series metadata. Both boundaries where
@@ -9,6 +9,14 @@ import type { SeriesExternalIds, SeriesTitles } from './types';
 
 export const TITLE_KEYS = ['native', 'romaji', 'english'] as const;
 export const ID_KEYS = ['anilist', 'mal'] as const;
+/** Every accepted `title_preference` / `preferredTitleLanguage` value. */
+export const DISPLAY_TITLE_LANGUAGES = ['imported', 'native', 'romaji', 'english'] as const;
+
+export function isDisplayTitleLanguage(value: unknown): value is DisplayTitleLanguage {
+  return (
+    typeof value === 'string' && (DISPLAY_TITLE_LANGUAGES as readonly string[]).includes(value)
+  );
+}
 
 /** Timestamps further ahead than this are treated as clock skew / corruption. */
 export const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
@@ -59,6 +67,11 @@ export function sanitizeTitles(value: unknown): SeriesTitles {
 export function sanitizeSynonyms(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+}
+
+/** Keeps a known display language, else undefined (= no per-series override). */
+export function sanitizeTitlePreference(value: unknown): DisplayTitleLanguage | undefined {
+  return isDisplayTitleLanguage(value) ? value : undefined;
 }
 
 /** Trimmed non-empty string, else undefined. */

@@ -4,6 +4,7 @@ import {
   sanitizeExternalIds,
   sanitizeSynonyms,
   sanitizeTag,
+  sanitizeTitlePreference,
   sanitizeTitles
 } from './sanitize';
 import type { SeriesMetadata } from './types';
@@ -30,9 +31,9 @@ function isNonNegativeFinite(value: unknown): value is number {
  * disagrees with its map key, or when `updated_at` is not a parsable date.
  * Otherwise the entry is kept and its values are validated field by field with
  * the same rules the .mokuro embed uses (`sanitize.ts`): positive-integer
- * external ids, non-empty string titles/synonyms/tag, `read_count` coerced to a
- * finite number >= 0, `updated_at` normalized to ISO and clamped when far in the
- * future. Bad values are dropped, not the whole entry. Other fields pass through
+ * external ids, non-empty string titles/synonyms/tag, a `title_preference` that is
+ * one of the four known languages, `read_count` coerced to a finite number >= 0,
+ * `updated_at` normalized to ISO and clamped when far in the future. Bad values are dropped, not the whole entry. Other fields pass through
  * as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
  */
 export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, SeriesMetadata> {
@@ -68,6 +69,12 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
     const tag = sanitizeTag(value.tag);
     if (tag === undefined) delete entry.tag;
     else entry.tag = tag;
+    // An unknown language would not equal 'imported', so it would silently push the
+    // series onto the english → romaji → native fallback chain. Drop it back to
+    // "no per-series override" instead.
+    const titlePreference = sanitizeTitlePreference(value.title_preference);
+    if (titlePreference === undefined) delete entry.title_preference;
+    else entry.title_preference = titlePreference;
     out[key] = entry;
   }
 
