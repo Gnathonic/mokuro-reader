@@ -1,6 +1,7 @@
 import { db } from '$lib/catalog/db';
 import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
+import { ID_KEYS } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
 import {
   createEmptySeriesMetadata,
@@ -21,6 +22,26 @@ function hasAnyId(ids: SeriesMetadata['external_ids'] | undefined): boolean {
   return !!ids && Object.values(ids).some((v) => v != null);
 }
 
+function sameExternalIds(
+  a: SeriesMetadata['external_ids'] | undefined,
+  b: SeriesMetadata['external_ids'] | undefined
+): boolean {
+  return ID_KEYS.every((k) => (a?.[k] ?? null) === (b?.[k] ?? null));
+}
+
+/**
+ * A local edit must always supersede what is already stored, even when the
+ * stored record carries a future timestamp (clock skew on another device, a
+ * hand-edited cloud file). Plain `now` would lose the newest-wins comparison
+ * for as long as that timestamp stays in the future, so step one millisecond
+ * past it instead.
+ */
+function nextTimestamp(existing: string | undefined, now: number = Date.now()): string {
+  const previous = existing ? Date.parse(existing) : NaN;
+  const stamp = Number.isNaN(previous) ? now : Math.max(now, previous + 1);
+  return new Date(stamp).toISOString();
+}
+
 export async function getSeriesMetadata(seriesKey: string): Promise<SeriesMetadata | undefined> {
   return db.series_metadata.get(seriesKey);
 }
@@ -37,15 +58,15 @@ export async function updateSeriesMetadata(
   patch: SeriesMetadataPatch
 ): Promise<SeriesMetadata> {
   const key = normalizeSeriesKey(seriesTitle);
-  const now = new Date().toISOString();
-  const existing =
-    (await db.series_metadata.get(key)) ?? createEmptySeriesMetadata(seriesTitle, now);
+  const stored = await db.series_metadata.get(key);
+  const updated_at = nextTimestamp(stored?.updated_at);
+  const existing = stored ?? createEmptySeriesMetadata(seriesTitle, updated_at);
   const next = stripUndefined<SeriesMetadata>({
     ...existing,
     ...patch,
     series_key: key,
     series_title: seriesTitle,
-    updated_at: now
+    updated_at
   });
   await db.series_metadata.put(next);
   return next;
@@ -69,6 +90,11 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
 /**
  * Apply facts read from a .mokuro `series_metadata` block. Newest wins: only
  * writes when there is no local record or the embed is strictly newer.
+ *
+ * The embed carries no fetched facts (`format`/`status`/totals/`cover_url`), so
+ * when it points at a *different* external link than the local record those
+ * facts describe the old link and are cleared — otherwise a re-link would keep
+ * e.g. the previous series' `total_volumes` forever.
  */
 export async function upsertFromEmbedded(
   seriesTitle: string,
@@ -80,6 +106,7 @@ export async function upsertFromEmbedded(
 
   const base = existing ?? createEmptySeriesMetadata(seriesTitle, embedded.updated_at);
   const linked = hasAnyId(embedded.external_ids);
+  const linkChanged = !sameExternalIds(base.external_ids, embedded.external_ids);
   const next = stripUndefined<SeriesMetadata>({
     ...base,
     series_key: key,
@@ -88,8 +115,21 @@ export async function upsertFromEmbedded(
     titles: { ...embedded.titles },
     synonyms: [...embedded.synonyms],
     tag: embedded.tag,
+    ...(linkChanged
+      ? {
+          format: undefined,
+          status: undefined,
+          total_volumes: undefined,
+          total_chapters: undefined,
+          cover_url: undefined
+        }
+      : {}),
     updated_at: embedded.updated_at,
-    linked_at: linked ? (base.linked_at ?? embedded.updated_at) : undefined
+    linked_at: linked
+      ? linkChanged
+        ? embedded.updated_at
+        : (base.linked_at ?? embedded.updated_at)
+      : undefined
   });
   await db.series_metadata.put(next);
 }

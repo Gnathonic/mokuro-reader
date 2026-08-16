@@ -1,3 +1,11 @@
+import {
+  isRecord,
+  normalizeUpdatedAt,
+  sanitizeExternalIds,
+  sanitizeSynonyms,
+  sanitizeTag,
+  sanitizeTitles
+} from './sanitize';
 import type { SeriesMetadata } from './types';
 
 function isRecordLike(value: unknown): value is SeriesMetadata {
@@ -9,14 +17,6 @@ function isRecordLike(value: unknown): value is SeriesMetadata {
   );
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((v) => typeof v === 'string');
-}
-
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
@@ -26,33 +26,49 @@ function isNonNegativeFinite(value: unknown): value is number {
  * `mergeSeriesMetadata`. Untrusted-input validation belongs at the boundary
  * where the JSON enters the app (cloud download), not inside the pure merge.
  *
- * An entry is kept only when `series_key`/`updated_at` are strings; on a kept
- * entry, `external_ids`/`titles` are coerced to `{}` unless already plain
- * objects, `synonyms` to `[]` unless already a string array, and `read_count`
- * to `0` unless already a finite number >= 0. Other fields pass through as-is.
- * A non-object root (or an entry with a bad key/timestamp) is dropped; any
- * drop is logged once via `console.warn`.
+ * An entry is dropped when it is not an object, when `series_key` is missing or
+ * disagrees with its map key, or when `updated_at` is not a parsable date.
+ * Otherwise the entry is kept and its values are validated field by field with
+ * the same rules the .mokuro embed uses (`sanitize.ts`): positive-integer
+ * external ids, non-empty string titles/synonyms/tag, `read_count` coerced to a
+ * finite number >= 0, `updated_at` normalized to ISO and clamped when far in the
+ * future. Bad values are dropped, not the whole entry. Other fields pass through
+ * as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
  */
 export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, SeriesMetadata> {
-  if (!isPlainObject(raw)) return {};
+  if (!isRecord(raw)) return {};
 
   const out: Record<string, SeriesMetadata> = {};
   let droppedAny = false;
+  const now = Date.now();
 
   for (const [key, value] of Object.entries(raw)) {
-    if (!isRecordLike(value)) {
+    // A key/series_key mismatch means the record would be written under a key it
+    // does not describe (and would resurrect under its own key on the next sync).
+    if (!isRecord(value) || value.series_key !== key) {
       droppedAny = true;
       continue;
     }
-    out[key] = {
-      ...value,
-      external_ids: isPlainObject(value.external_ids)
-        ? (value.external_ids as SeriesMetadata['external_ids'])
-        : {},
-      titles: isPlainObject(value.titles) ? (value.titles as SeriesMetadata['titles']) : {},
-      synonyms: isStringArray(value.synonyms) ? value.synonyms : [],
-      read_count: isNonNegativeFinite(value.read_count) ? value.read_count : 0
+    const updated_at = normalizeUpdatedAt(value.updated_at, now);
+    if (!updated_at) {
+      droppedAny = true;
+      continue;
+    }
+
+    const entry: SeriesMetadata = {
+      ...(value as unknown as SeriesMetadata),
+      series_key: key,
+      series_title: typeof value.series_title === 'string' ? value.series_title : key,
+      external_ids: sanitizeExternalIds(value.external_ids),
+      titles: sanitizeTitles(value.titles),
+      synonyms: sanitizeSynonyms(value.synonyms),
+      read_count: isNonNegativeFinite(value.read_count) ? value.read_count : 0,
+      updated_at
     };
+    const tag = sanitizeTag(value.tag);
+    if (tag === undefined) delete entry.tag;
+    else entry.tag = tag;
+    out[key] = entry;
   }
 
   if (droppedAny) {

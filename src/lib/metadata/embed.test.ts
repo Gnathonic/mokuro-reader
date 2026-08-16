@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromEmbedded, toEmbedded } from './embed';
 import { createEmptySeriesMetadata } from './types';
+
+const NOW = '2026-08-16T12:00:00.000Z';
+const bareBlock = { external_ids: {}, titles: {}, synonyms: [] };
+
+afterEach(() => vi.useRealTimers());
 
 describe('toEmbedded', () => {
   it('returns undefined for missing/empty metadata (nothing worth embedding)', () => {
@@ -66,6 +71,34 @@ describe('fromEmbedded', () => {
       tag: '[color]',
       updated_at: '2026-08-16T00:00:00.000Z'
     });
+  });
+
+  it('normalizes a non-ISO updated_at (it is compared lexicographically)', () => {
+    // "Aug 16 2020" sorts above every ISO timestamp — stored raw it would win forever.
+    expect(fromEmbedded({ ...bareBlock, updated_at: 'Aug 16 2020 00:00:00 GMT+0000' })).toEqual({
+      ...bareBlock,
+      updated_at: '2020-08-16T00:00:00.000Z'
+    });
+    expect(fromEmbedded({ ...bareBlock, updated_at: '2026-08-16T12:00:00Z' })?.updated_at).toBe(
+      '2026-08-16T12:00:00.000Z'
+    );
+  });
+
+  it('clamps a far-future updated_at to now and keeps small clock skew', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    expect(fromEmbedded({ ...bareBlock, updated_at: '2999-01-01T00:00:00.000Z' })?.updated_at).toBe(
+      NOW
+    );
+    // Within the 5-minute tolerance: kept as-is.
+    const skewed = '2026-08-16T12:01:00.000Z';
+    expect(fromEmbedded({ ...bareBlock, updated_at: skewed })?.updated_at).toBe(skewed);
+  });
+
+  it('drops the block when updated_at is unparsable or not a string', () => {
+    expect(fromEmbedded({ ...bareBlock, updated_at: 'yesterday' })).toBeUndefined();
+    expect(fromEmbedded({ ...bareBlock, updated_at: 1755345600000 })).toBeUndefined();
+    expect(fromEmbedded({ ...bareBlock, updated_at: null })).toBeUndefined();
   });
 
   it('round-trips toEmbedded output', () => {

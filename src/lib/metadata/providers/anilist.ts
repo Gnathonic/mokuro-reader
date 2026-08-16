@@ -171,19 +171,27 @@ export const anilistProvider: MetadataProvider = {
   }
 };
 
-/** Fields to write into the SeriesMetadata record when the user picks a result. */
+/**
+ * Fields to write into the SeriesMetadata record when the user picks a result.
+ *
+ * Every optional fact is emitted explicitly — `undefined` when this result does
+ * not carry it — because the patch is merged over the existing record and an
+ * explicit `undefined` is what clears a key (`stripUndefined` in the store).
+ * Omitting absent keys instead would leave the previous link's facts behind on
+ * "Change" (e.g. `total_volumes: 110` surviving a re-link to a series with no
+ * volume count, which Plan C's progress push then reads).
+ */
 export function toSeriesMetadataPatch(r: MetadataSearchResult): SeriesMetadataPatch {
-  const patch: SeriesMetadataPatch = {
+  return {
     external_ids: r.idMal != null ? { anilist: r.id, mal: r.idMal } : { anilist: r.id },
     titles: { ...r.titles },
-    synonyms: [...r.synonyms]
+    synonyms: [...r.synonyms],
+    format: r.format ?? undefined,
+    status: r.status ?? undefined,
+    total_volumes: r.volumes ?? undefined,
+    total_chapters: r.chapters ?? undefined,
+    cover_url: r.coverUrl ?? undefined
   };
-  if (r.format) patch.format = r.format;
-  if (r.status) patch.status = r.status;
-  if (r.volumes != null) patch.total_volumes = r.volumes;
-  if (r.chapters != null) patch.total_chapters = r.chapters;
-  if (r.coverUrl) patch.cover_url = r.coverUrl;
-  return patch;
 }
 
 /** "30013" or "https://anilist.co/manga/30013/One-Piece/" → 30013 */

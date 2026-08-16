@@ -19,6 +19,8 @@ import {
   getAllSeriesMetadata,
   replaceAllSeriesMetadata
 } from './store';
+import { toSeriesMetadataPatch } from './providers/anilist';
+import { createEmptySeriesMetadata } from './types';
 
 describe('series metadata store', () => {
   beforeEach(async () => {
@@ -104,6 +106,101 @@ describe('series metadata store', () => {
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({});
     expect(meta?.tag).toBeUndefined();
+  });
+
+  it('re-linking clears facts the new link does not have', async () => {
+    // "Change": link to a series with 110 volumes, then to one AniList has no counts for.
+    await updateSeriesMetadata(
+      'One Piece',
+      toSeriesMetadataPatch({
+        provider: 'anilist',
+        id: 30013,
+        idMal: 13,
+        titles: { english: 'One Piece' },
+        synonyms: [],
+        format: 'MANGA',
+        status: 'RELEASING',
+        volumes: 110,
+        chapters: 1100,
+        coverUrl: 'https://img/op.jpg',
+        siteUrl: 'https://anilist.co/manga/30013'
+      })
+    );
+    expect((await getSeriesMetadataForTitle('One Piece'))?.total_volumes).toBe(110);
+
+    const meta = await updateSeriesMetadata(
+      'One Piece',
+      toSeriesMetadataPatch({
+        provider: 'anilist',
+        id: 99999,
+        titles: { romaji: 'Some Oneshot' },
+        synonyms: [],
+        siteUrl: 'https://anilist.co/manga/99999'
+      })
+    );
+    expect(meta.external_ids).toEqual({ anilist: 99999 });
+    expect(meta.total_volumes).toBeUndefined();
+    expect(meta.total_chapters).toBeUndefined();
+    expect(meta.format).toBeUndefined();
+    expect(meta.status).toBeUndefined();
+    expect(meta.cover_url).toBeUndefined();
+    expect(Object.keys(meta)).not.toContain('total_volumes');
+    expect(await getSeriesMetadataForTitle('One Piece')).toEqual(meta);
+  });
+
+  it('updateSeriesMetadata supersedes a future-dated existing record', async () => {
+    // A bad clock (or hand-edited cloud JSON) must not make local edits unmergeable.
+    await replaceAllSeriesMetadata({
+      'one piece': {
+        ...createEmptySeriesMetadata('One Piece', '2999-01-01T00:00:00.000Z'),
+        tag: '[stale]'
+      }
+    });
+    const meta = await updateSeriesMetadata('One Piece', { tag: '[fresh]' });
+    expect(meta.tag).toBe('[fresh]');
+    expect(meta.updated_at > '2999-01-01T00:00:00.000Z').toBe(true);
+    expect(meta.updated_at).toBe('2999-01-01T00:00:00.001Z');
+  });
+
+  it('upsertFromEmbedded clears the previous link facts when the embed points elsewhere', async () => {
+    await updateSeriesMetadata('One Piece', {
+      external_ids: { anilist: 30013, mal: 13 },
+      titles: { english: 'One Piece' },
+      format: 'MANGA',
+      status: 'RELEASING',
+      total_volumes: 110,
+      total_chapters: 1100,
+      cover_url: 'https://img/op.jpg',
+      linked_at: '2020-01-01T00:00:00.000Z'
+    });
+
+    // Same link, newer embed → the fetched facts survive.
+    await upsertFromEmbedded('One Piece', {
+      external_ids: { anilist: 30013, mal: 13 },
+      titles: { english: 'One Piece' },
+      synonyms: [],
+      updated_at: '2999-01-01T00:00:00.000Z'
+    });
+    let meta = await getSeriesMetadataForTitle('One Piece');
+    expect(meta?.total_volumes).toBe(110);
+    expect(meta?.linked_at).toBe('2020-01-01T00:00:00.000Z');
+
+    // Different link → the old link's facts are dropped instead of being kept.
+    await upsertFromEmbedded('One Piece', {
+      external_ids: { anilist: 99999 },
+      titles: { romaji: 'Some Oneshot' },
+      synonyms: [],
+      updated_at: '2999-01-02T00:00:00.000Z'
+    });
+    meta = await getSeriesMetadataForTitle('One Piece');
+    expect(meta?.external_ids).toEqual({ anilist: 99999 });
+    expect(meta?.total_volumes).toBeUndefined();
+    expect(meta?.total_chapters).toBeUndefined();
+    expect(meta?.format).toBeUndefined();
+    expect(meta?.status).toBeUndefined();
+    expect(meta?.cover_url).toBeUndefined();
+    expect(meta?.linked_at).toBe('2999-01-02T00:00:00.000Z');
+    expect(Object.keys(meta!)).not.toContain('format');
   });
 
   it('moveSeriesMetadataKey moves the record; newer record wins on collision', async () => {

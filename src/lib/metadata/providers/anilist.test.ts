@@ -125,9 +125,24 @@ describe('anilist provider', () => {
       total_chapters: 1100,
       cover_url: 'https://img/x.jpg'
     });
-    expect(
-      Object.keys(toSeriesMetadataPatch({ ...r, idMal: undefined, volumes: undefined }))
-    ).not.toContain('total_volumes');
+    const noMal = toSeriesMetadataPatch({ ...r, idMal: undefined });
+    expect(noMal.external_ids).toEqual({ anilist: 30013 });
+  });
+
+  it('toSeriesMetadataPatch emits absent facts as explicit undefined so a re-link clears them', () => {
+    const sparse = toSeriesMetadataPatch({
+      provider: 'anilist' as const,
+      id: 99999,
+      titles: { romaji: 'Some Oneshot' },
+      synonyms: [],
+      siteUrl: 'https://anilist.co/manga/99999'
+    });
+    // Keys must be present (value undefined) — an omitted key would merge over the
+    // previous link's record and leave its facts behind.
+    for (const k of ['format', 'status', 'total_volumes', 'total_chapters', 'cover_url']) {
+      expect(Object.keys(sparse)).toContain(k);
+      expect(sparse[k as keyof typeof sparse]).toBeUndefined();
+    }
   });
 
   it('parseAniListIdInput accepts a bare id or an anilist manga URL', () => {

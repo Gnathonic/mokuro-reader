@@ -1,16 +1,19 @@
+import {
+  ID_KEYS,
+  TITLE_KEYS,
+  isRecord,
+  normalizeUpdatedAt,
+  sanitizeExternalIds,
+  sanitizeSynonyms,
+  sanitizeTag,
+  sanitizeTitles
+} from './sanitize';
 import type {
   EmbeddedSeriesMetadata,
   SeriesExternalIds,
   SeriesMetadata,
   SeriesTitles
 } from './types';
-
-const TITLE_KEYS = ['native', 'romaji', 'english'] as const;
-const ID_KEYS = ['anilist', 'mal'] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** Facts + tag only. Returns undefined when there is nothing worth writing. */
 export function toEmbedded(
@@ -39,37 +42,25 @@ export function toEmbedded(
   return out;
 }
 
-/** Validate an untrusted `series_metadata` block from a .mokuro file. */
+/**
+ * Validate an untrusted `series_metadata` block from a .mokuro file.
+ *
+ * `updated_at` is normalized to ISO (and clamped when far in the future) before
+ * it is stored: it is the merge key, compared lexicographically, so a hand-edited
+ * "Aug 16 2020" or a year-3000 timestamp would otherwise win forever.
+ */
 export function fromEmbedded(value: unknown): EmbeddedSeriesMetadata | undefined {
   if (!isRecord(value)) return undefined;
-  if (typeof value.updated_at !== 'string' || Number.isNaN(Date.parse(value.updated_at))) {
-    return undefined;
-  }
-
-  const rawIds = isRecord(value.external_ids) ? value.external_ids : {};
-  const external_ids: SeriesExternalIds = {};
-  for (const k of ID_KEYS) {
-    const v = rawIds[k];
-    if (typeof v === 'number' && Number.isInteger(v) && v > 0) external_ids[k] = v;
-  }
-
-  const rawTitles = isRecord(value.titles) ? value.titles : {};
-  const titles: SeriesTitles = {};
-  for (const k of TITLE_KEYS) {
-    const v = rawTitles[k];
-    if (typeof v === 'string' && v.trim()) titles[k] = v;
-  }
-
-  const synonyms = Array.isArray(value.synonyms)
-    ? value.synonyms.filter((s): s is string => typeof s === 'string' && s.trim() !== '')
-    : [];
+  const updated_at = normalizeUpdatedAt(value.updated_at);
+  if (!updated_at) return undefined;
 
   const out: EmbeddedSeriesMetadata = {
-    external_ids,
-    titles,
-    synonyms,
-    updated_at: value.updated_at
+    external_ids: sanitizeExternalIds(value.external_ids),
+    titles: sanitizeTitles(value.titles),
+    synonyms: sanitizeSynonyms(value.synonyms),
+    updated_at
   };
-  if (typeof value.tag === 'string' && value.tag.trim()) out.tag = value.tag.trim();
+  const tag = sanitizeTag(value.tag);
+  if (tag) out.tag = tag;
   return out;
 }
