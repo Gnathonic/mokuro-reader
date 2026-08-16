@@ -153,6 +153,14 @@ function getDatabase(): Dexie {
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid'
     });
+    // Must mirror CatalogDexieV3 version(2) (series_metadata is read to embed
+    // series facts into regenerated .mokuro sidecars).
+    workerDb.version(2).stores({
+      volumes: 'volume_uuid, series_uuid, series_title',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key'
+    });
   }
   return workerDb;
 }

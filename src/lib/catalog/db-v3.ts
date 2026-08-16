@@ -1,4 +1,5 @@
 import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
+import type { SeriesMetadata } from '$lib/metadata/types';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
@@ -9,6 +10,7 @@ export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;
   volume_ocr!: Table<VolumeOCR>;
   volume_files!: Table<VolumeFiles>;
+  series_metadata!: Table<SeriesMetadata>;
 
   constructor(dbName: string = 'mokuro_v3') {
     super(dbName);
@@ -18,6 +20,15 @@ export class CatalogDexieV3 extends Dexie {
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid'
+    });
+
+    // v3.2: per-series metadata (AniList link, titles, tag, tracking). Keyed by
+    // normalizeSeriesKey(series_title). Additive — no data migration.
+    this.version(2).stores({
+      volumes: 'volume_uuid, series_uuid, series_title',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key'
     });
   }
 
