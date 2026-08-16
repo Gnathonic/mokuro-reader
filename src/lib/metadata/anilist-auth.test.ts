@@ -19,6 +19,7 @@ import {
   disconnectAniList,
   getAniListToken,
   handleAniListCallbackHash,
+  isAniListCallbackHash,
   parseAniListCallbackHash,
   startAniListLogin
 } from './anilist-auth';
@@ -29,9 +30,28 @@ describe('parseAniListCallbackHash', () => {
       parseAniListCallbackHash('#access_token=abc.def&token_type=Bearer&expires_in=31536000')
     ).toEqual({ accessToken: 'abc.def', expiresInSec: 31536000 });
   });
+  it('parses the fragment whatever order the parameters arrive in', () => {
+    // The provider chooses the order; a `#access_token=` prefix test would miss this.
+    expect(
+      parseAniListCallbackHash('#token_type=Bearer&expires_in=31536000&access_token=abc.def')
+    ).toEqual({ accessToken: 'abc.def', expiresInSec: 31536000 });
+  });
   it('rejects unrelated hashes', () => {
     expect(parseAniListCallbackHash('#/catalog')).toBeNull();
     expect(parseAniListCallbackHash('#access_token=')).toBeNull();
+  });
+});
+
+describe('isAniListCallbackHash', () => {
+  it('accepts a callback fragment in any parameter order', () => {
+    expect(isAniListCallbackHash('#access_token=abc&token_type=Bearer')).toBe(true);
+    expect(isAniListCallbackHash('#token_type=Bearer&access_token=abc')).toBe(true);
+  });
+  it('rejects app routes and fragments without a token', () => {
+    expect(isAniListCallbackHash('#/catalog')).toBe(false);
+    expect(isAniListCallbackHash('#/reader/a/b')).toBe(false);
+    expect(isAniListCallbackHash('#token_type=Bearer')).toBe(false);
+    expect(isAniListCallbackHash('')).toBe(false);
   });
 });
 

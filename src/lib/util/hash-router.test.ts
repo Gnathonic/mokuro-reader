@@ -70,6 +70,25 @@ describe('AniList implicit-grant callback', () => {
     cleanup();
   });
 
+  test('accepts the callback whatever order AniList orders the fragment in', () => {
+    // AniList picks the parameter order; a `#access_token=` prefix test would
+    // silently drop this login and strand the user on the catalog.
+    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    window.location.hash = '#token_type=Bearer&expires_in=3600&access_token=tok456';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBe('tok456');
+    expect(window.location.hash).toBe('#/series/One%20Piece');
+    cleanup();
+  });
+
+  test('still rejects an unsolicited callback in that order (CSRF gate holds)', () => {
+    window.location.hash = '#token_type=Bearer&access_token=attacker-token&expires_in=3600';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/catalog');
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    cleanup();
+  });
+
   test('rejects an unsolicited callback: no token is stored and the fragment is scrubbed', () => {
     // No `anilist_return` was saved — this tab never called startAniListLogin(),
     // so this hash can only be an attacker-crafted link (login-CSRF). It must

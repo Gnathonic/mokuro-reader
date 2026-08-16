@@ -5,9 +5,9 @@
 
 import { writable, derived, get } from 'svelte/store';
 import {
-  ANILIST_CALLBACK_PREFIX,
   consumeAniListReturnHash,
-  handleAniListCallbackHash
+  handleAniListCallbackHash,
+  isAniListCallbackHash
 } from '$lib/metadata/anilist-auth';
 
 /**
@@ -232,11 +232,12 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  * Call this on app initialization, returns cleanup function
  */
 export function initRouter(): () => void {
-  // AniList implicit-grant callback lands on `{origin}/#access_token=…`.
+  // AniList implicit-grant callback lands on `{origin}/#access_token=…` — in
+  // whatever parameter order AniList chooses, hence the order-independent test.
   // Handled first, before the legacy-pathname redirect below — that block
   // rewrites the hash outright on subpath deploys, which would otherwise
   // wipe the fragment before we ever get to read it.
-  if (window.location.hash.startsWith(ANILIST_CALLBACK_PREFIX)) {
+  if (isAniListCallbackHash(window.location.hash)) {
     const callbackHash = window.location.hash;
     const rawReturnHash = consumeAniListReturnHash();
     // Only a same-origin script can have written `anilist_return` (it's set

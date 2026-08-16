@@ -9,7 +9,18 @@ const USER_KEY = 'anilist_user';
 const RETURN_KEY = 'anilist_return';
 const DEFAULT_TTL_SEC = 365 * 24 * 60 * 60; // AniList tokens last one year
 
-export const ANILIST_CALLBACK_PREFIX = '#access_token=';
+/**
+ * True when this fragment is an implicit-grant callback rather than a route.
+ *
+ * The order of the fragment's parameters is the provider's choice, not ours, so
+ * matching on a `#access_token=` prefix would miss a perfectly valid
+ * `#token_type=Bearer&access_token=…`. App routes always start `#/`, which no
+ * query string can, so that is the cheap way to tell the two apart.
+ */
+export function isAniListCallbackHash(hash: string): boolean {
+  if (!hash.startsWith('#') || hash.startsWith('#/')) return false;
+  return new URLSearchParams(hash.slice(1)).has('access_token');
+}
 
 export interface AniListUser {
   id: number;
@@ -92,7 +103,7 @@ export function startAniListLogin(): void {
 export function parseAniListCallbackHash(
   hash: string
 ): { accessToken: string; expiresInSec: number } | null {
-  if (!hash.startsWith(ANILIST_CALLBACK_PREFIX)) return null;
+  if (!isAniListCallbackHash(hash)) return null;
   const params = new URLSearchParams(hash.slice(1));
   const accessToken = params.get('access_token');
   if (!accessToken) return null;
