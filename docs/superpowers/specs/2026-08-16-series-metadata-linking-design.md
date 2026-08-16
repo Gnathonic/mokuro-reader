@@ -69,10 +69,11 @@ src/lib/metadata/
   progress-plan.ts         planProgressPush(local, remote) — pure
   reread.ts                shouldOfferReread(...) — pure; restartSeries(...)
 src/lib/components/Series/
-  SeriesLinkModal.svelte   search + pick + paste-URL/ID
-  SeriesMetadataBar.svelte alt titles, link-out chips, tag/title-language editor, tracking, read count
+  SeriesLinkModal.svelte   search + pick + paste-URL/ID (debounce/abort controller in metadata/link-search.ts)
+  SeriesMetadataBar.svelte alt titles, link-out chips, Link/Unlink, tag, title-language select, sidecar refresh
+  SeriesTrackingPanel.svelte  mounted by the bar: tracking toggle/unit/Sync now, Read N times, Restart series
 src/lib/components/Reader/RereadPromptModal.svelte
-src/lib/components/Settings/MetadataSettings.svelte
+src/lib/components/Settings/MetadataSettings.svelte      preferred title language; mounts AniListAccountSettings.svelte
 ```
 
 ### Series identity
@@ -151,9 +152,10 @@ seriesMetadata? })` in `src/lib/util/mokuro-metadata.ts` replaces the four dupli
   the incoming `updated_at` is newer than the local record's. Covers local import, cloud
   download, HTML deep-link import and OCR upgrade because they all go through the parser.
 - **Cloud sidecars are not auto-rewritten** on link/tag edits (a 20-volume series would
-  mean 20 uploads). Instead: after a metadata change, if a writable provider is connected,
-  the snackbar offers **"Update N cloud sidecars"**, and the series page has the same
-  action. It regenerates and overwrites each volume's `.mokuro` in place (new
+  mean 20 uploads). Instead the series page has an explicit **"Update cloud sidecars"**
+  action; after any link/tag/unlink change (while a cloud provider is connected) the bar
+  shows an "out of date" hint next to it. It regenerates and overwrites each volume's
+  `.mokuro` in place (new
   `refreshVolumeSidecar(seriesTitle, volumeTitle, volumeUuid)` on `unifiedCloudManager`,
   built from the regen+upload core of `renameVolumeFiles`; read-only providers throw and
   the UI disables the action). Backups, renames and exports pick the embed up
@@ -273,9 +275,10 @@ local volume completed`, `passComplete = total known && passProgress >= total`,
   - `repeat = max(remote.repeat, local.timesRead - 1)` whenever it would increase;
   - `null` when nothing would change.
 - **Sync now** = same plan against the current local state.
-- **Queue.** Failed/offline pushes are stored in localStorage `anilist_pending_pushes`
-  (one latest plan per series) and flushed on load, `online`, and successful login.
-  429 honors `Retry-After`. Only the newest intent per series is kept.
+- **Queue.** Failed/offline pushes are stored in localStorage `anilist_pending_pushes` as
+  _intents_ (`restart` | `sync`, one per series; a pending restart is replayed before a
+  sync) and re-planned against the live remote entry when flushed — on load, `online`,
+  and successful login. 429 honors `Retry-After`.
 
 ### Re-reads
 
