@@ -22,6 +22,7 @@
   import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
   import SeriesRenameField from './SeriesRenameField.svelte';
   import SeriesLinkControls from './SeriesLinkControls.svelte';
+  import SeriesTitlesEditor from './SeriesTitlesEditor.svelte';
   import SeriesTrackingPanel from './SeriesTrackingPanel.svelte';
 
   let open = $state(false);
@@ -162,8 +163,11 @@
         <SeriesRenameField {seriesTitle} {seriesUuid} onRenamed={handleRenamed} />
 
         <section class="flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-700">
-          <h4 class="text-xs font-semibold text-gray-500 uppercase dark:text-gray-400">AniList</h4>
+          <h4 class="text-xs font-semibold text-gray-500 uppercase dark:text-gray-400">
+            Titles &amp; AniList
+          </h4>
           <SeriesLinkControls {seriesTitle} {volumes} bind:linkOpen />
+          <SeriesTitlesEditor {seriesTitle} />
         </section>
 
         <section class="flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-700">
