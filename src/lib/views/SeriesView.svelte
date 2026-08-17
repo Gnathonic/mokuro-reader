@@ -5,7 +5,7 @@
   import SeriesMetadataBar from '$lib/components/Series/SeriesMetadataBar.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
-  import { promptExtraction } from '$lib/util/modals';
+  import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
@@ -22,16 +22,12 @@
     GridOutline,
     ListOutline,
     DotsVerticalOutline,
-    EditOutline,
-    CloseOutline,
-    CheckOutline
+    EditOutline
   } from 'flowbite-svelte-icons';
-  import { executeRenameSeries } from '$lib/util/series-rename';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import { onMount } from 'svelte';
-  import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
   import { preferredTitleLanguage } from '$lib/settings/settings';
@@ -236,23 +232,6 @@
   );
 
   let loading = $state(false);
-
-  // Inline rename state
-  let isRenaming = $state(false);
-  let renameValue = $state('');
-  let renameError = $state('');
-  let renameSaving = $state(false);
-  let renameInputEl = $state<HTMLInputElement | null>(null);
-
-  // Focus rename field when entering rename mode (avoids a11y autofocus warning).
-  $effect(() => {
-    if (isRenaming) {
-      tick().then(() => {
-        renameInputEl?.focus();
-        renameInputEl?.select();
-      });
-    }
-  });
 
   // Subscribe to unified cloud cache updates
   let cloudFiles = $state<Map<string, any[]>>(new Map());
@@ -643,77 +622,6 @@
     if (seriesId) nav.toSeriesText(seriesId);
   }
 
-  function startRename() {
-    if (!manga || manga.length === 0) return;
-    renameValue = manga[0].series_title;
-    renameError = '';
-    isRenaming = true;
-  }
-
-  function cancelRename() {
-    isRenaming = false;
-    renameValue = '';
-    renameError = '';
-  }
-
-  async function saveRename() {
-    if (!manga || manga.length === 0) return;
-
-    const oldTitle = manga[0].series_title;
-    const newTitle = renameValue.trim();
-
-    if (!newTitle) {
-      renameError = 'Name cannot be empty';
-      return;
-    }
-
-    if (newTitle === oldTitle) {
-      cancelRename();
-      return;
-    }
-
-    try {
-      renameSaving = true;
-      renameError = '';
-
-      // Execute the rename for this series UUID — one volume at a time; each
-      // volume commits locally only after its cloud rename succeeds.
-      const result = await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
-
-      if (result.failures.length === 0) {
-        nav.toSeries(result.finalTitle, { replaceState: true });
-        showSnackbar(`Renamed to "${result.finalTitle}"`);
-        isRenaming = false;
-        renameValue = '';
-      } else {
-        // Partial: the failed volumes keep the old title everywhere (cloud and
-        // local stay consistent per volume). Retrying the same rename finishes
-        // just the stragglers.
-        const failedNames = result.failures.map((f) => f.volumeTitle);
-        const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ', …' : '');
-        renameError =
-          `Renamed ${result.renamedCount} volume(s), but ${result.failures.length} failed (${shown}). ` +
-          `Failed volumes keep the old name in both your library and the cloud — ` +
-          `rename again to retry just those.`;
-      }
-    } catch (err) {
-      renameError = err instanceof Error ? err.message : 'Failed to rename';
-      console.error('Error renaming series:', err);
-    } finally {
-      renameSaving = false;
-    }
-  }
-
-  function handleRenameKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      saveRename();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelRename();
-    }
-  }
-
   onMount(() => {
     // Check if cache is already loaded on mount (for navigation scenarios)
     const currentCloudFiles = unifiedCloudManager.getAllCloudVolumes();
@@ -755,54 +663,18 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title on left, Stats on right -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      {#if isRenaming}
-        <div class="flex min-w-0 flex-1 items-center gap-2 px-2">
-          <input
-            type="text"
-            bind:this={renameInputEl}
-            bind:value={renameValue}
-            onkeydown={handleRenameKeydown}
-            disabled={renameSaving}
-            class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xl font-bold text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
-          />
-          <button
-            onclick={saveRename}
-            disabled={renameSaving}
-            class="rounded-lg p-2 text-green-600 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900/30"
-            title="Save"
-          >
-            {#if renameSaving}
-              <Spinner size="5" />
-            {:else}
-              <CheckOutline class="h-5 w-5" />
-            {/if}
-          </button>
-          <button
-            onclick={cancelRename}
-            disabled={renameSaving}
-            class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-            title="Cancel"
-          >
-            <CloseOutline class="h-5 w-5" />
-          </button>
-        </div>
-        {#if renameError}
-          <span class="px-2 text-sm text-red-500">{renameError}</span>
-        {/if}
-      {:else}
-        <div class="flex min-w-0 items-center gap-1">
-          {#key seriesDisplayTitle}
-            <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
-          {/key}
-          <button
-            onclick={startRename}
-            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            title="Rename series"
-          >
-            <EditOutline class="h-4 w-4" />
-          </button>
-        </div>
-      {/if}
+      <div class="flex min-w-0 items-center gap-1">
+        {#key seriesDisplayTitle}
+          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
+        {/key}
+        <button
+          onclick={() => promptSeriesEditor(seriesTitle)}
+          class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+          title="Edit series"
+        >
+          <EditOutline class="h-4 w-4" />
+        </button>
+      </div>
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Volumes: {mangaStats.completed} / {manga.length}</Badge
@@ -972,11 +844,20 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title and cloud info -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      {#key seriesDisplayTitle}
-        <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
-          {seriesDisplayTitle || 'Cloud Series'}
-        </h3>
-      {/key}
+      <div class="flex min-w-0 items-center gap-1">
+        {#key seriesDisplayTitle}
+          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
+            {seriesDisplayTitle || 'Cloud Series'}
+          </h3>
+        {/key}
+        <button
+          onclick={() => promptSeriesEditor(placeholders[0].series_title)}
+          class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+          title="Edit series"
+        >
+          <EditOutline class="h-4 w-4" />
+        </button>
+      </div>
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
           {placeholders.length} volume{placeholders.length !== 1 ? 's' : ''} in {providerDisplayName}

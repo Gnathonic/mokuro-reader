@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 
 // vi.hoisted: `vi.mock` factories are hoisted above all other top-level code
@@ -8,99 +8,46 @@ import { createEmptySeriesMetadata } from '$lib/metadata/types';
 // module's own imports), so the store the factory closes over must be built
 // here with a minimal hand-rolled Svelte store contract rather than via an
 // imported `writable`.
-const {
-  seriesMetadataMap,
-  providerStatus,
-  noopStore,
-  preferredTitleLanguage,
-  catalogSettings,
-  volumesData,
-  anilistUser,
-  anilistConnected,
-  auth
-} = vi.hoisted(() => {
-  function createStore<T>(initial: T) {
-    let value = initial;
-    const subs = new Set<(v: T) => void>();
+const { seriesMetadataMap, preferredTitleLanguage, volumesData, computeLocalPassState } =
+  vi.hoisted(() => {
+    function createStore<T>(initial: T) {
+      let value = initial;
+      const subs = new Set<(v: T) => void>();
+      return {
+        subscribe(fn: (v: T) => void) {
+          subs.add(fn);
+          fn(value);
+          return () => subs.delete(fn);
+        },
+        set(v: T) {
+          value = v;
+          subs.forEach((fn) => fn(value));
+        }
+      };
+    }
     return {
-      subscribe(fn: (v: T) => void) {
-        subs.add(fn);
-        fn(value);
-        return () => subs.delete(fn);
-      },
-      set(v: T) {
-        value = v;
-        subs.forEach((fn) => fn(value));
-      }
+      seriesMetadataMap: createStore(new Map<string, unknown>()),
+      // The global preferred title language: the bar reads it to know which title the
+      // header is already showing, so the subtitle can list the other ones.
+      preferredTitleLanguage: createStore('imported'),
+      volumesData: createStore<Record<string, { completed?: boolean }>>({}),
+      // The read-only bar delegates the "Read N times" figure to the progress tracker's
+      // pure helper; the component test only needs to prove it renders what comes back.
+      computeLocalPassState: vi.fn(() => ({
+        passProgress: 0,
+        allCompleted: false,
+        passComplete: false,
+        timesRead: 0,
+        rereading: false
+      }))
     };
-  }
-  // cloudFiles is not read by the component; a stub `subscribe` satisfies the
-  // Svelte store contract without importing `writable`.
-  return {
-    seriesMetadataMap: createStore(new Map<string, unknown>()),
-    providerStatus: createStore({
-      providers: {} as Record<string, { isReadOnly?: boolean }>,
-      hasAnyAuthenticated: false,
-      needsAttention: false,
-      currentProviderType: null as string | null
-    }),
-    // The global preferred title language: the bar reads it to know which title the
-    // header is already showing, so the subtitle can list the other ones.
-    preferredTitleLanguage: createStore('imported'),
-    // Read by the mounted SeriesTrackingPanel (its own behaviour is covered in
-    // SeriesTrackingPanel.test.ts; here they only have to exist).
-    catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
-      pushProgressToAniList: true
-    }),
-    volumesData: createStore<Record<string, { completed?: boolean }>>({}),
-    anilistUser: createStore<{ id: number; name: string } | null>(null),
-    anilistConnected: createStore<boolean>(false),
-    auth: { clientId: undefined as string | undefined },
-    noopStore: { subscribe: (fn: (v: unknown) => void) => (fn(undefined), () => {}) }
-  };
-});
-vi.mock('$lib/metadata/store', () => ({
-  seriesMetadataMap,
-  updateSeriesMetadata: vi.fn(),
-  unlinkSeries: vi.fn()
-}));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { refreshSeriesSidecars: vi.fn(), cloudFiles: noopStore }
-}));
-// providerManager.status is the reactive store the component subscribes to for
-// "is a cloud provider connected" — mirrors SeriesView.svelte's own usage.
-vi.mock('$lib/util/sync', () => ({
-  providerManager: { status: providerStatus }
-}));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage, catalogSettings }));
-// The bar mounts SeriesTrackingPanel; these keep its module graph (IndexedDB,
-// the AniList tracker) out of a test about the bar itself. `auth.clientId` is
-// left unset for every test but the mount check, so the panel's tracking row
-// stays hidden and only its read-count controls render.
+  });
+vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
+vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage }));
 vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
-vi.mock('$lib/metadata/progress-tracker', () => ({
-  computeLocalPassState: () => ({
-    passProgress: 0,
-    allCompleted: false,
-    passComplete: false,
-    timesRead: 0,
-    rereading: false
-  }),
-  syncSeriesNow: vi.fn()
-}));
-vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
-vi.mock('$lib/metadata/anilist-auth', () => ({
-  getAniListClientId: () => auth.clientId,
-  getAniListToken: () => null,
-  anilistUser,
-  anilistConnected
-}));
+vi.mock('$lib/metadata/progress-tracker', () => ({ computeLocalPassState }));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
-import { showSnackbar } from '$lib/util';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { updateSeriesMetadata } from '$lib/metadata/store';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(title: string, isPlaceholder = false): VolumeMetadata {
@@ -131,25 +78,42 @@ function linkedMeta(seriesTitle: string, overrides: Record<string, unknown> = {}
 describe('SeriesMetadataBar', () => {
   beforeEach(() => {
     preferredTitleLanguage.set('imported');
-    auth.clientId = undefined;
+    computeLocalPassState.mockReturnValue({
+      passProgress: 0,
+      allCompleted: false,
+      passComplete: false,
+      timesRead: 0,
+      rereading: false
+    });
   });
 
-  it('offers Link… when the series is not linked', () => {
-    seriesMetadataMap.set(new Map());
-    providerStatus.set({
-      providers: {},
-      hasAnyAuthenticated: false,
-      needsAttention: false,
-      currentProviderType: null
+  it('renders no editing controls — the pencil in SeriesView opens the editor modal instead', () => {
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+    const { queryByText, container } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
     });
+    expect(queryByText('Tag')).toBeNull();
+    expect(container.querySelector('input[placeholder="[color]"]')).toBeNull();
+    expect(queryByText('Link…')).toBeNull();
+    expect(queryByText('Change')).toBeNull();
+    expect(queryByText('Unlink')).toBeNull();
+    expect(queryByText('Title language')).toBeNull();
+    expect(queryByText('Sync now')).toBeNull();
+    expect(queryByText('Restart series…')).toBeNull();
+    expect(queryByText('Update cloud sidecars')).toBeNull();
+  });
+
+  it('shows nothing but the read count when the series is not linked', () => {
+    seriesMetadataMap.set(new Map());
     const { getByText, queryByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
-    expect(getByText('Link…')).toBeTruthy();
     expect(queryByText('AniList')).toBeNull();
+    expect(queryByText(/Tracking/)).toBeNull();
+    expect(getByText('Read 0 times')).toBeTruthy();
   });
 
-  it('shows alt titles and provider links when linked', () => {
+  it('shows alt titles and provider link-out chips with hrefs when linked', () => {
     const meta = {
       ...createEmptySeriesMetadata('One Piece'),
       external_ids: { anilist: 30013, mal: 13 },
@@ -157,178 +121,85 @@ describe('SeriesMetadataBar', () => {
       tag: '[color]'
     };
     seriesMetadataMap.set(new Map([['one piece', meta]]));
-    const { getByText, getByDisplayValue } = render(SeriesMetadataBar, {
+    const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
-    const anilist = getByText('AniList') as HTMLAnchorElement;
-    expect(anilist.closest('a')?.getAttribute('href')).toBe('https://anilist.co/manga/30013');
-    expect(getByText('MyAnimeList').closest('a')?.getAttribute('href')).toBe(
-      'https://myanimelist.net/manga/13'
-    );
+    const anilist = getByText('AniList').closest('a');
+    expect(anilist?.getAttribute('href')).toBe('https://anilist.co/manga/30013');
+    expect(anilist?.getAttribute('target')).toBe('_blank');
+    expect(anilist?.getAttribute('rel')).toContain('noopener');
+    const mal = getByText('MyAnimeList').closest('a');
+    expect(mal?.getAttribute('href')).toBe('https://myanimelist.net/manga/13');
     expect(getByText(/ワンピース/)).toBeTruthy();
-    expect(getByDisplayValue('[color]')).toBeTruthy();
-    expect(getByText('Unlink')).toBeTruthy();
   });
 
-  it('reports skipped volumes when a sidecar refresh has nothing backed up for some of them', async () => {
-    providerStatus.set({
-      providers: {},
-      hasAnyAuthenticated: true,
-      needsAttention: false,
-      currentProviderType: 'google-drive'
+  it('shows "Read 1 time" for a fully-read single-volume series', () => {
+    computeLocalPassState.mockReturnValue({
+      passProgress: 1,
+      allCompleted: true,
+      passComplete: false,
+      timesRead: 1,
+      rereading: false
     });
     seriesMetadataMap.set(new Map());
-    vi.mocked(unifiedCloudManager.refreshSeriesSidecars).mockResolvedValue({
-      succeeded: 1,
-      failed: 0,
-      skipped: 2
-    });
-
-    const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1'), volume('Vol 2')] }
-    });
-
-    await fireEvent.click(getByText('Update cloud sidecars'));
-
-    await waitFor(() => {
-      expect(showSnackbar).toHaveBeenCalledWith(
-        expect.stringContaining('Updated 1 cloud sidecar (2 skipped')
-      );
-    });
-  });
-
-  it('disables the sidecar refresh on a read-only provider', () => {
-    providerStatus.set({
-      providers: { webdav: { isReadOnly: true } },
-      hasAnyAuthenticated: true,
-      needsAttention: false,
-      currentProviderType: 'webdav'
-    });
-    seriesMetadataMap.set(new Map());
-
     const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
     });
-
-    const button = getByText('Update cloud sidecars').closest('button')!;
-    expect(button.disabled).toBe(true);
-    expect(button.getAttribute('title')).toContain('read-only');
+    expect(getByText('Read 1 time')).toBeTruthy();
   });
 
-  it('shows the title-language select at Default when there is no override', () => {
-    providerStatus.set({
-      providers: {},
-      hasAnyAuthenticated: false,
-      needsAttention: false,
-      currentProviderType: null
-    });
+  it('shows "Tracking off" when linked but tracking is not enabled', () => {
     seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
-    const { getByDisplayValue } = render(SeriesMetadataBar, {
+    const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
-    expect(getByDisplayValue('Default (global setting)')).toBeTruthy();
+    expect(getByText('Tracking off')).toBeTruthy();
   });
 
-  it('hides the title-language select on an unlinked series', () => {
-    // Nothing to choose between: every option resolves back to the folder name.
-    seriesMetadataMap.set(new Map());
-    const { queryByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
-    });
-    expect(queryByText('Title language')).toBeNull();
-  });
-
-  it('shows the title-language select at the stored override', () => {
-    const meta = linkedMeta('One Piece', { title_preference: 'native' as const });
+  it('shows "Tracking on" with no push-yet hint when enabled but never pushed', () => {
+    const meta = linkedMeta('One Piece', { tracking: { enabled: true, unit: 'volumes' } });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
-    const { getByDisplayValue } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
-    });
-    expect(getByDisplayValue('Native (日本語)')).toBeTruthy();
-  });
-
-  it('clears the override by writing title_preference: undefined when the select goes back to Default', async () => {
-    const meta = linkedMeta('One Piece', { title_preference: 'native' as const });
-    seriesMetadataMap.set(new Map([['one piece', meta]]));
-    const { getByDisplayValue } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
-    });
-    const select = getByDisplayValue('Native (日本語)') as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: 'default' } });
-    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
-      title_preference: undefined
-    });
-  });
-
-  it('leaves the displayed language out of the alt-title subtitle and keeps the folder name', () => {
-    // pref=english → the header shows "One Piece (en)", so the subtitle must show the
-    // OTHER names: the folder title (still the on-disk/cloud identity) plus native+romaji.
-    preferredTitleLanguage.set('english');
-    seriesMetadataMap.set(new Map([['one piece raw', linkedMeta('One Piece Raw')]]));
-
     const { getByText, queryByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [] }
     });
-
-    expect(getByText('One Piece Raw · ONE PIECE · One Piece (romaji)')).toBeTruthy();
-    expect(queryByText(/One Piece \(en\)/)).toBeNull();
+    expect(getByText('Tracking on')).toBeTruthy();
+    expect(queryByText(/last pushed/)).toBeNull();
   });
 
-  it('lists every language and no folder-name repeat when the folder title is displayed', () => {
-    preferredTitleLanguage.set('imported');
-    seriesMetadataMap.set(new Map([['one piece raw', linkedMeta('One Piece Raw')]]));
-
+  it('shows the last-pushed volume and date once tracking has pushed', () => {
+    const at = '2026-07-09T12:00:00.000Z';
+    const meta = linkedMeta('One Piece', {
+      tracking: { enabled: true, unit: 'volumes', last_pushed: { n: 5, status: 'CURRENT', at } }
+    });
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [] }
     });
-
-    expect(getByText('ONE PIECE · One Piece (romaji) · One Piece (en)')).toBeTruthy();
+    const expectedDate = new Date(at).toLocaleDateString();
+    expect(getByText(`Tracking on · last pushed vol. 5 · ${expectedDate}`)).toBeTruthy();
   });
 
-  it('honours a per-series title_preference when deciding what the subtitle omits', () => {
-    preferredTitleLanguage.set('english');
-    const meta = linkedMeta('One Piece Raw', { title_preference: 'native' as const });
-    seriesMetadataMap.set(new Map([['one piece raw', meta]]));
-
+  it('uses the chapters unit label when tracking by chapters', () => {
+    const at = '2026-07-09T12:00:00.000Z';
+    const meta = linkedMeta('One Piece', {
+      tracking: { enabled: true, unit: 'chapters', last_pushed: { n: 42, status: 'CURRENT', at } }
+    });
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece Raw', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [] }
     });
-
-    // Header shows the native title → subtitle keeps folder + romaji + english
-    expect(getByText('One Piece Raw · One Piece (romaji) · One Piece (en)')).toBeTruthy();
+    expect(getByText(/last pushed ch\. 42/)).toBeTruthy();
   });
 
-  it('mounts the tracking panel', () => {
-    // Guards the one-line mount in SeriesMetadataBar.svelte: the panel's own
-    // behaviour lives in SeriesTrackingPanel.test.ts, but deleting the mount
-    // has to fail something here.
-    auth.clientId = 'client';
-    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
-
-    const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
+  it('shows no tracking status for a series linked only to MAL (no AniList id)', () => {
+    const meta = linkedMeta('One Piece', {
+      external_ids: { mal: 13 },
+      tracking: { enabled: true, unit: 'volumes' }
     });
-
-    expect(getByText(/Read \d+ time/)).toBeTruthy();
-    expect(getByText('Restart series…')).toBeTruthy();
-    expect(getByText('Sync now')).toBeTruthy();
-  });
-
-  it('hides the sidecar refresh when every volume is a cloud placeholder', () => {
-    providerStatus.set({
-      providers: {},
-      hasAnyAuthenticated: true,
-      needsAttention: false,
-      currentProviderType: 'google-drive'
-    });
-    seriesMetadataMap.set(new Map());
-
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { queryByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1', true)] }
+      props: { seriesTitle: 'One Piece', volumes: [] }
     });
-
-    // Nothing local to regenerate from — the action could only ever report
-    // "No backed-up volumes to update".
-    expect(queryByText('Update cloud sidecars')).toBeNull();
+    expect(queryByText(/Tracking/)).toBeNull();
   });
 });
