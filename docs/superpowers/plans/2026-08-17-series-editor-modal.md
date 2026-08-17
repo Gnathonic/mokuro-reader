@@ -89,6 +89,22 @@
 
 - [ ] Steps: failing test → run → implement → run + check + prettier → commit `feat(catalog): hover + E opens the series editor`.
 
+### Task 6: Manual alt titles in the series editor (run before Task 5)
+
+**Files:**
+
+- Create: `src/lib/components/Series/SeriesTitlesEditor.svelte`
+- Modify: `src/lib/components/Series/SeriesEditorModal.svelte` (mount it in the AniList/titles section, below the link controls; section title "Titles & AniList")
+- Test: `src/lib/components/Series/__tests__/SeriesTitlesEditor.test.ts`
+
+**Interfaces:**
+
+- Consumes: `seriesMetadataMap`, `updateSeriesMetadata(seriesTitle, patch)` (`$lib/metadata/store`), `normalizeSeriesKey`.
+- Produces: `SeriesTitlesEditor.svelte` props `{ seriesTitle: string }`. Renders three text inputs (Native / Romaji / English) prefilled from `meta.titles`, and a Synonyms input (comma- or newline-separated) prefilled from `meta.synonyms`. Save on blur / Enter: `updateSeriesMetadata(seriesTitle, { titles: { native?, romaji?, english? } (blank → key omitted), synonyms: string[] (trimmed, de-duplicated, blanks dropped) })`. Works for linked AND unlinked series; a helper line under the fields: "Linking to AniList replaces these." Uses the same draft/dirty pattern as the tag field so a liveQuery emission doesn't clobber mid-edit.
+- Why: self-published/Kindle-only titles are in no database; manual titles feed the display overlay, catalog search and the `.mokuro` embed with zero extra plumbing.
+
+- [ ] Steps: failing tests (prefill from meta; blur saves the patch with blank keys omitted; synonyms parsed/deduped; typing then an external meta emission does not clobber the draft) → run → implement → mount in the modal → run + `npm run check` + prettier → commit `feat(series): manual alt titles and synonyms in the series editor`.
+
 ### Task 5: End-to-end verification + docs touch-up
 
 - [ ] `npx vitest run && npm run check && npx prettier --check src README.md CHANGELOG.md docs` all green.
