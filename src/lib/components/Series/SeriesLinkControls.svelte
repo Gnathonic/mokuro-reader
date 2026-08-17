@@ -153,7 +153,9 @@
   <div class="text-gray-500 dark:text-gray-400">{altTitles.join(' · ')}</div>
 {/if}
 
-<div class="flex flex-wrap items-center gap-2">
+<!-- relative z-10: inside a modal the night-mode filter on <dialog> creates a stacking
+     context, and a scrollable sibling can otherwise swallow clicks meant for these buttons -->
+<div class="relative z-10 flex flex-wrap items-center gap-2">
   {#each links as l (l.provider)}
     <a href={l.url} target="_blank" rel="noopener noreferrer" class="inline-flex">
       <Badge color="blue" class="cursor-pointer">

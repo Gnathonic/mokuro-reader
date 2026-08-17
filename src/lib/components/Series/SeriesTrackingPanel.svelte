@@ -145,7 +145,9 @@
 </script>
 
 <div class="flex flex-col gap-2">
-  <div class="flex flex-wrap items-center gap-2">
+  <!-- relative z-10: inside a modal the night-mode filter on <dialog> creates a stacking
+       context, and a scrollable sibling can otherwise swallow clicks meant for these buttons -->
+  <div class="relative z-10 flex flex-wrap items-center gap-2">
     <!-- Migaku/Yomitan rewrite text in place; a fresh node per value keeps the count honest -->
     {#key passState.timesRead}
       <span class="text-gray-700 dark:text-gray-300">
@@ -184,7 +186,7 @@
   <!-- Without a client id nothing can ever be pushed, so the whole row is noise. -->
   {#if clientId}
     {#if linked}
-      <div class="flex flex-wrap items-center gap-3">
+      <div class="relative z-10 flex flex-wrap items-center gap-3">
         <Toggle
           checked={tracking.enabled}
           onchange={(e) => setTracking({ enabled: e.currentTarget.checked })}

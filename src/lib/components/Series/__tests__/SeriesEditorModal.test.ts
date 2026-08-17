@@ -35,7 +35,9 @@ const h = vi.hoisted(() => {
     createStore,
     catalog: createStore<unknown[] | null>([]),
     seriesMetadataMap: createStore(new Map<string, unknown>()),
-    routeParams: createStore<{ manga?: string; volume?: string }>({}),
+    currentView: createStore<{ type: string; seriesId?: string; volumeId?: string }>({
+      type: 'catalog'
+    }),
     providerStatus: createStore({
       providers: {} as Record<string, { isReadOnly?: boolean }>,
       hasAnyAuthenticated: false,
@@ -67,10 +69,15 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { refreshSeriesSidecars: vi.fn(), cloudFiles: h.noopStore }
 }));
 vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/util', async () => {
+  // `$lib/util` re-exports `./modals`; the confirmation popup reads its store through the
+  // barrel while the panel imports it directly, and both must see the SAME store instance.
+  const modals = await vi.importActual<typeof import('$lib/util/modals')>('$lib/util/modals');
+  return { ...modals, showSnackbar: vi.fn() };
+});
 vi.mock('$lib/util/hash-router', () => ({
   nav: { toSeries: h.toSeries },
-  routeParams: h.routeParams
+  currentView: h.currentView
 }));
 vi.mock('$lib/settings/settings', () => ({
   preferredTitleLanguage: h.preferredTitleLanguage,
@@ -104,7 +111,14 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
 }));
 
 import SeriesEditorModal from '../SeriesEditorModal.svelte';
-import { seriesEditorModalStore, promptSeriesEditor, closeSeriesEditor } from '$lib/util/modals';
+import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
+import {
+  seriesEditorModalStore,
+  promptSeriesEditor,
+  closeSeriesEditor,
+  promptConfirmation,
+  confirmationPopupStore
+} from '$lib/util/modals';
 import { showSnackbar } from '$lib/util';
 
 function volume(seriesTitle: string, title: string): VolumeMetadata {
@@ -162,8 +176,9 @@ describe('SeriesEditorModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     closeSeriesEditor();
+    confirmationPopupStore.set(undefined);
     threeSeriesCatalog();
-    h.routeParams.set({});
+    h.currentView.set({ type: 'catalog' });
     h.preferredTitleLanguage.set('imported');
     h.auth.clientId = undefined;
     h.providerStatus.set({
@@ -253,7 +268,7 @@ describe('SeriesEditorModal', () => {
 
   it('Escape closes the editor', async () => {
     await openFor('Berserk');
-    await fireEvent.keyDown(window, { key: 'Escape' });
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
     await tick();
     expect(get(seriesEditorModalStore)).toBeUndefined();
   });
@@ -267,10 +282,79 @@ describe('SeriesEditorModal', () => {
     // The editor is still open underneath
     expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk');
 
-    await fireEvent.keyDown(window, { key: 'Escape' });
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
     await tick();
     await waitFor(() => expect(queryByPlaceholderText('Search AniList…')).toBeNull());
     expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk');
+  });
+
+  it('Escape still closes the editor after a confirmation was dismissed earlier', async () => {
+    // Regression: the guard stands down while a confirmation is on top. The popup used to
+    // flip only its LOCAL `open`, leaving the store at `open: true` forever, so from the
+    // first confirmation onward Escape fell through to the page's back-navigation.
+    const pageBackNav = vi.fn();
+    window.addEventListener('keydown', pageBackNav);
+    try {
+      const popup = render(ConfirmationPopup);
+      promptConfirmation('Restart series?', vi.fn());
+      await tick();
+      await tick();
+      await fireEvent.click(popup.getByText('Yes'));
+      await tick();
+      expect(get(confirmationPopupStore)?.open).toBe(false);
+
+      const utils = render(SeriesEditorModal);
+      promptSeriesEditor('Berserk');
+      await tick();
+      await tick();
+      expect(utils.queryByText('Folder name')).toBeTruthy();
+
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await tick();
+
+      expect(get(seriesEditorModalStore)).toBeUndefined();
+      expect(pageBackNav).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', pageBackNav);
+    }
+  });
+
+  it('keeps Escape away from the page while a confirmation is on top', async () => {
+    const pageBackNav = vi.fn();
+    window.addEventListener('keydown', pageBackNav);
+    try {
+      await openFor('Berserk');
+      promptConfirmation('Restart series?', vi.fn());
+      await tick();
+
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await tick();
+
+      // The editor stays open (the confirmation owns this Escape) and the page never sees it.
+      expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk');
+      expect(pageBackNav).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', pageBackNav);
+    }
+  });
+
+  it('Escape in the folder-name field reverts the draft instead of closing the editor', async () => {
+    const pageBackNav = vi.fn();
+    window.addEventListener('keydown', pageBackNav);
+    try {
+      const { getByDisplayValue } = await openFor('Berserk');
+      const input = getByDisplayValue('Berserk') as HTMLInputElement;
+      await fireEvent.input(input, { target: { value: 'Berserk Deluxe' } });
+
+      await fireEvent.keyDown(input, { key: 'Escape' });
+      await tick();
+
+      expect(input.value).toBe('Berserk');
+      expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk');
+      expect(pageBackNav).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', pageBackNav);
+    }
   });
 
   it('feeds the series volumes from the catalog to the AniList controls', async () => {
@@ -285,15 +369,25 @@ describe('SeriesEditorModal', () => {
     expect(getByText('Update cloud sidecars')).toBeTruthy();
   });
 
-  it('keeps the footer action row above the night-mode stacking context', async () => {
-    const { getAllByText } = await openFor('Berserk');
-    const row = closeButton(getAllByText).closest('div.flex')!;
-    expect(row.className).toContain('relative');
-    expect(row.className).toContain('z-10');
+  it('keeps every action row above the night-mode stacking context', async () => {
+    const { getAllByText, getByText } = await openFor('Berserk');
+
+    // Footer (Next unlinked / Close), AniList row, tracking row, rename Save/Cancel — a
+    // <dialog> under the night-mode filter is a new stacking context, so each row that can
+    // be clicked needs its own z-index or a scrollable sibling swallows the clicks.
+    for (const row of [
+      closeButton(getAllByText).closest('div.flex'),
+      getByText('Link…').closest('div.flex'),
+      getByText('Restart series…').closest('div.flex'),
+      getByText('Save').closest('div.flex')
+    ]) {
+      expect(row!.className).toContain('relative');
+      expect(row!.className).toContain('z-10');
+    }
   });
 
   it('renames through executeRenameSeries and re-points the modal at the new title', async () => {
-    h.routeParams.set({ manga: 'Berserk' });
+    h.currentView.set({ type: 'series', seriesId: 'Berserk' });
     h.executeRenameSeries.mockResolvedValue({
       finalTitle: 'Berserk Deluxe',
       renamedCount: 1,
@@ -318,7 +412,7 @@ describe('SeriesEditorModal', () => {
   });
 
   it('does not navigate when the current route is a different series', async () => {
-    h.routeParams.set({ manga: 'Akira' });
+    h.currentView.set({ type: 'series', seriesId: 'Akira' });
     h.executeRenameSeries.mockResolvedValue({
       finalTitle: 'Berserk Deluxe',
       renamedCount: 1,
@@ -329,6 +423,24 @@ describe('SeriesEditorModal', () => {
     await fireEvent.input(getByDisplayValue('Berserk'), {
       target: { value: 'Berserk Deluxe' }
     });
+    await fireEvent.click(getByText('Save'));
+
+    await waitFor(() => expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk Deluxe'));
+    expect(h.toSeries).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when the series editor was opened from the reader', async () => {
+    // reader / volume-text / series-text all carry a `manga` route param for this series;
+    // only the series page itself may be re-pointed.
+    h.currentView.set({ type: 'reader', seriesId: 'Berserk', volumeId: 'v1' });
+    h.executeRenameSeries.mockResolvedValue({
+      finalTitle: 'Berserk Deluxe',
+      renamedCount: 1,
+      failures: []
+    });
+
+    const { getByDisplayValue, getByText } = await openFor('Berserk');
+    await fireEvent.input(getByDisplayValue('Berserk'), { target: { value: 'Berserk Deluxe' } });
     await fireEvent.click(getByText('Save'));
 
     await waitFor(() => expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk Deluxe'));

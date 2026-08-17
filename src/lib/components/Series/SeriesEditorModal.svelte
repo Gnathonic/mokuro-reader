@@ -16,7 +16,7 @@
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { preferredTitleLanguage } from '$lib/settings/settings';
-  import { nav, routeParams } from '$lib/util/hash-router';
+  import { nav, currentView } from '$lib/util/hash-router';
   import { showSnackbar } from '$lib/util';
   import type { Series } from '$lib/catalog/catalog';
   import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
@@ -98,13 +98,16 @@
     const oldUuid = seriesUuid;
     seriesEditorModalStore.update((s) => (s ? { ...s, seriesTitle: finalTitle } : s));
     showSnackbar(`Renamed to "${finalTitle}"`);
-    // Only re-point the URL when the page behind the modal IS this series page; opening the
-    // editor from a catalog card must not navigate. `routeParams.manga` is the folder title,
-    // but SeriesView also resolves it by series_uuid, so accept either.
-    const routeKey = $routeParams.manga;
+    // Only re-point the URL when the page behind the modal IS this series' page. The view type
+    // has to be checked, not just `routeParams.manga`: reader / volume-text / series-text all
+    // carry a `manga` param too, and navigating those to the series page would yank the reader
+    // out from under the user. `seriesId` is the folder title, but SeriesView also resolves it
+    // by series_uuid, so accept either.
+    const view = $currentView;
     if (
-      routeKey &&
-      (normalizeSeriesKey(routeKey) === normalizeSeriesKey(oldTitle) || routeKey === oldUuid)
+      view.type === 'series' &&
+      (normalizeSeriesKey(view.seriesId) === normalizeSeriesKey(oldTitle) ||
+        view.seriesId === oldUuid)
     ) {
       nav.toSeries(finalTitle, { replaceState: true });
     }
@@ -126,7 +129,17 @@
 
     function handleKeydown(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
-      if (linkOpen || $confirmationPopupStore?.open) return;
+      // A modal opened FROM here is on top: let IT handle Escape (don't preventDefault), but
+      // still stop the key from reaching the page underneath, whose bubble-phase handler would
+      // navigate back to the catalog.
+      if (linkOpen || $confirmationPopupStore?.open) {
+        e.stopPropagation();
+        return;
+      }
+      // A field that reverts its own draft on Escape (the folder name) gets first refusal.
+      // This listener is capture-phase, so it must NOT stopPropagation here or the key would
+      // never reach the field at all; the field stops it before the page sees it.
+      if ((e.target as HTMLElement | null)?.closest?.('[data-escape-reverts]')) return;
       e.stopPropagation();
       e.preventDefault();
       handleClose();

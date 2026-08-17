@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import {
   seriesEditorModalStore,
@@ -10,8 +10,12 @@ import {
 } from './modals';
 
 describe('seriesEditorModalStore', () => {
-  it('promptSeriesEditor opens the store for a series title', () => {
+  beforeEach(() => {
     closeSeriesEditor();
+    closeVolumeEditor();
+  });
+
+  it('promptSeriesEditor opens the store for a series title', () => {
     promptSeriesEditor('One Piece');
     expect(get(seriesEditorModalStore)).toEqual({ open: true, seriesTitle: 'One Piece' });
   });
@@ -20,7 +24,6 @@ describe('seriesEditorModalStore', () => {
     const onClose = vi.fn();
     promptSeriesEditor('One Piece', { onClose });
     expect(get(seriesEditorModalStore)?.onClose).toBe(onClose);
-    closeSeriesEditor();
   });
 
   it('closeSeriesEditor clears the store', () => {
@@ -30,12 +33,9 @@ describe('seriesEditorModalStore', () => {
   });
 
   it('does not disturb the volume editor store (mirrored pattern, separate state)', () => {
-    closeVolumeEditor();
     promptSeriesEditor('One Piece');
     expect(get(volumeEditorModalStore)).toBeUndefined();
     promptVolumeEditor('uuid-1');
     expect(get(seriesEditorModalStore)?.seriesTitle).toBe('One Piece');
-    closeVolumeEditor();
-    closeSeriesEditor();
   });
 });

@@ -31,6 +31,11 @@
     });
   });
 
+  function closePopup() {
+    open = false;
+    confirmationPopupStore.update((value) => (value ? { ...value, open: false } : value));
+  }
+
   function handleConfirm() {
     // Save the user's preference if checkbox option is provided
     if (browser && $confirmationPopupStore?.checkboxOption) {
@@ -48,8 +53,11 @@
       $confirmationPopupStore.onConfirm(checkboxValue, checkboxValue2);
     }
 
-    // Always close the modal after confirmation
-    open = false;
+    // Always close the modal after confirmation. The STORE has to be flipped too, not just
+    // the local `open`: other modals read `$confirmationPopupStore?.open` to know whether a
+    // confirmation is on top of them, and a store left at `open: true` would strand them
+    // forever. The object itself is kept so the fade-out still has its message.
+    closePopup();
   }
 
   function handleCancel() {
@@ -57,12 +65,14 @@
       $confirmationPopupStore.onCancel();
     }
 
-    // Always close the modal after cancellation
-    open = false;
+    // Always close the modal after cancellation (see handleConfirm for why the store too).
+    closePopup();
   }
 </script>
 
-<Modal bind:open size="xs" autoclose outsideclose>
+<!-- onclose: outsideclose / the header X bypass the buttons, and the store must still be
+     marked closed so modals underneath stop treating a confirmation as being on top. -->
+<Modal bind:open size="xs" autoclose outsideclose onclose={closePopup}>
   <div class="text-center">
     <ExclamationCircleOutline class="mx-auto mb-4 h-12 w-12 text-gray-400 dark:text-gray-200" />
     <h3 class="mb-5 text-lg font-normal text-gray-500 dark:text-gray-400">
