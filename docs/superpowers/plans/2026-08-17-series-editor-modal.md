@@ -70,7 +70,9 @@
 
 **Files:**
 
-- Modify: `src/lib/metadata/display-title.ts` (`resolveDisplayBase`/`resolveDisplayTitle` ignore `meta.title_preference`; JSDoc updated), `src/lib/metadata/display-title.test.ts` (per-series override tests → assert the override is ignored)
+- Modify: `src/lib/metadata/display-title.ts` (`resolveDisplayBase`/`resolveDisplayTitle` ignore `meta.title_preference`; JSDoc updated; **tag rendering changes to parentheses**: `resolveDisplayTitle` appends `` ` (${tag})` `` — strip one pair of surrounding `()`/`[]` from the raw tag before wrapping so `[color]`, `(color)` and `color` all render as `Title (color)`; the STORED/embedded tag stays raw), `src/lib/metadata/display-title.test.ts` (per-series override tests → assert the override is ignored; tag tests → `Title (color)` for all three inputs; blank tag → no suffix)
+- Modify: tag input placeholder/hint in `SeriesLinkControls.svelte` (`placeholder="color"`, helper "Shown as (tag) after the title") and any test asserting the old `[color]` display (`SeriesMetadataBar.test.ts`, catalog tests, verify scripts)
+- Modify: spec `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` display-title clause: `+ ' (' + tag + ')'`
 - Modify: `src/lib/components/Settings/CatalogSettings.svelte` (add the "Preferred series title language" `Select` — same options/`updateCatalogSetting('preferredTitleLanguage', …)` as today)
 - Modify: `src/lib/components/Settings/MetadataSettings.svelte` (remove the language select; accordion title → `AniList`; keep `AniListAccountSettings`)
 - Modify: `src/lib/components/Settings/Settings.svelte` only if the accordion order/labels need it
