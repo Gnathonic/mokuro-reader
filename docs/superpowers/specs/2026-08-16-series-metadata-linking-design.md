@@ -18,13 +18,14 @@ push read progress / re-reads to a tracker.
    IDs are stored as an extensible map (`{ anilist, mal }` today). MAL and Anime-Planet are
    link-out only (their APIs are not browser-callable / do not exist).
 2. **Storage = new `series_metadata` Dexie table, a `series-metadata.json` cloud root
-   file, and embed-on-write.** Series facts are embedded in every `.mokuro` the app writes
-   and read back on import. Linking never triggers a mass re-upload by itself.
+   file, and a per-series sidecar.** _Amended 2026-08-17:_ the sidecar is one
+   `<Series Title>/series.json` (facts + a volume index), not a `series_metadata` embed in
+   every `.mokuro`. Linking never triggers a mass re-upload by itself.
 3. **The folder name (`series_title`) is never derived from metadata.** Display name is an
    overlay: preferred-language title (or the imported title) plus an optional free-text
    **tag**. No "rename to canonical" shortcut; the existing manual rename is unchanged.
 4. **Tag = a single free-text field per series**, appended to the display name. It is
-   **exported in the `.mokuro`** (mokuro-bunko needs it) and synced. Variants of the same
+   **exported in `series.json`** (mokuro-bunko needs it; amended from the `.mokuro`) and synced. Variants of the same
    work (`[color]`, `[bw]`, `webp`…) are independent series with their own link, tag,
    tracking and read count — **no cross-linking**.
 5. **Progress: one-way push, per-series opt-in**, on volume completion. Never decreases
@@ -54,7 +55,7 @@ push read progress / re-reads to a tracker.
 
 ```
 src/lib/metadata/
-  types.ts                 SeriesMetadata, EmbeddedSeriesMetadata, DisplayTitleLanguage
+  types.ts                 SeriesMetadata (facts_updated_at split), DisplayTitleLanguage
   series-key.ts            normalizeSeriesKey(title)  (= catalog's normalizeSeriesTitle, exported once)
   provider-interface.ts    MetadataProvider, MetadataSearchResult
   providers/anilist.ts     AniList GraphQL provider (search, getById, siteUrl) + rate guard
@@ -63,7 +64,10 @@ src/lib/metadata/
   volume-number.ts         extractVolumeNumber(volumeTitle, unit)  (reuses series-extraction patterns)
   store.ts                 series_metadata table access + liveQuery stores + upsert/merge helpers
   merge.ts                 mergeSeriesMetadata(local, cloud) — pure, newest-wins per key
-  embed.ts                 toEmbedded(meta) / fromEmbedded(json) — .mokuro round-trip
+  series-file.ts           series.json v2 shape: buildSeriesFile / parseSeriesFile (amended; replaced embed.ts)
+  series-index.ts          series_index cache table (Dexie v3) + indexNeedsRefresh
+  series-file-sync.ts      debounced auto-write of series.json after local fact edits
+  series-index-sync.ts     refresh changed series.json files after a cloud listing
   anilist-auth.ts          token storage, authorize URL, hash-callback parsing, Viewer fetch
   progress-tracker.ts      onVolumeCompleted/onSeriesRestarted/syncNow + pending queue
   progress-plan.ts         planProgressPush(local, remote) — pure
@@ -72,7 +76,7 @@ src/lib/components/Series/
   SeriesLinkModal.svelte   search + pick + paste-URL/ID (debounce/abort controller in metadata/link-search.ts)
   SeriesMetadataBar.svelte read-only summary: alt titles, link-out chips, Read N times, tracking status; pencil opens SeriesEditorModal
   SeriesEditorModal.svelte rename + SeriesLinkControls/SeriesTitlesEditor/SeriesTrackingPanel; "Next unlinked series →"; opened by the pencil or hover + `e` on a catalog card
-  SeriesLinkControls.svelte Link…/Change/Unlink, tag field, "Update cloud sidecars"
+  SeriesLinkControls.svelte Link…/Change/Unlink, tag field (amended: no "Update cloud sidecars" button)
   SeriesTrackingPanel.svelte  tracking toggle/unit/Sync now, Read N times, Restart series
 src/lib/components/Reader/RereadPromptModal.svelte
 src/lib/components/Settings/CatalogSettings.svelte        preferred series title language (global)
@@ -124,45 +128,71 @@ export interface SeriesMetadata {
 ```
 
 Dexie: `db-v3.ts` gains `this.version(2).stores({ …existing…, series_metadata: 'series_key' })`
-(additive; no data migration).
+and (amended) `this.version(3).stores({ …, series_index: 'series_key' })` — both additive, no
+data migration. `facts_updated_at` stamps the shareable facts separately from the record's own
+`updated_at`, so per-user edits do not make a stale sidecar look newer.
 
 **Unlink** clears `external_ids/titles/synonyms/format/status/totals/cover_url/linked_at`
 and bumps `updated_at`, so the unlink propagates through sync instead of the old link
 resurrecting. `tag`, `title_preference`, `read_count`, `tracking` survive an unlink.
 
-### `.mokuro` embed (read + write)
+### Series file (`series.json`)
 
-Embedded object — series **facts** plus the tag, no per-user preferences/tracking:
+**Amended 2026-08-17** — the original design embedded a `series_metadata` object in every
+`.mokuro`. Replaced by one sidecar per series at `<Series Title>/series.json`
+(`src/lib/metadata/series-file.ts`); `.mokuro` files are written in pure upstream format
+again. The file carries the series **facts** plus an **index of the series' volumes**, so
+another device can show stats for — and attach synced progress to — volumes it has not
+installed, without downloading every `.mokuro`:
 
 ```json
-"series_metadata": {
+{
+  "version": 2,
+  "series_title": "ONE PIECE [color]",
   "external_ids": { "anilist": 30013, "mal": 13 },
   "titles": { "native": "ONE PIECE", "romaji": "ONE PIECE", "english": "One Piece" },
   "synonyms": ["ワンピース"],
   "tag": "[color]",
-  "updated_at": "2026-08-16T00:00:00.000Z"
+  "updated_at": "2026-08-16T00:00:00.000Z",
+  "volumes": [
+    {
+      "volume_uuid": "…",
+      "volume_title": "ONE PIECE v01",
+      "page_count": 192,
+      "character_count": 8123,
+      "page_char_counts": [40, 91, "…"],
+      "mokuro_version": "0.2.1",
+      "spine_width": 24
+    }
+  ]
 }
 ```
 
-- **Write.** One shared `buildMokuroMetadata(volume, pages, { seriesTitle?, volumeTitle?,
-seriesMetadata? })` in `src/lib/util/mokuro-metadata.ts` replaces the four duplicated
-  object literals (`compress-volume.ts` ×2, `volume-sidecars.ts`, `zip.ts`). It emits
-  `series_metadata` when a record exists for the volume's key and (targeted improvement)
-  emits `spine_width` consistently when defined. Upstream mokuro ignores unknown keys;
-  mokuro-bunko will read `series_metadata.tag`.
-- **Read.** `parseMokuroFile` extracts and validates `series_metadata` (`fromEmbedded`);
-  after the volume commit, `upsertFromEmbedded(seriesKey, embedded)` writes it only if
-  the incoming `updated_at` is newer than the local record's. Covers local import, cloud
-  download, HTML deep-link import and OCR upgrade because they all go through the parser.
-- **Cloud sidecars are not auto-rewritten** on link/tag edits (a 20-volume series would
-  mean 20 uploads). Instead the series page has an explicit **"Update cloud sidecars"**
-  action; after any link/tag/unlink change (while a cloud provider is connected) the bar
-  shows an "out of date" hint next to it. It regenerates and overwrites each volume's
-  `.mokuro` in place (new
-  `refreshVolumeSidecar(seriesTitle, volumeTitle, volumeUuid)` on `unifiedCloudManager`,
-  built from the regen+upload core of `renameVolumeFiles`; read-only providers throw and
-  the UI disables the action). Backups, renames and exports pick the embed up
-  automatically because they already regenerate.
+- **Unauthoritative.** Local IndexedDB always wins for installed volumes; the index only
+  fills gaps. `generatePlaceholders` adopts an entry's `volume_uuid` and counts for a
+  cloud-only volume, else falls back to today's deterministic placeholder.
+- **No per-user state**: never `tracking`, `read_count`, `title_preference`,
+  `reread_prompt_suppressed`, thumbnails or page/OCR data.
+- **Merge.** `updated_at` is the **facts** stamp only (`SeriesMetadata.facts_updated_at`,
+  split from the record's own `updated_at`); `upsertFromSeriesFile` applies strictly newer
+  facts. Volume entries merge by `volume_uuid` (local wins) with the existing cloud copy,
+  then entries absent from the cloud listing are pruned (`buildSeriesFile`).
+- **Write policy** (no UI button): debounced 2 s per series after a local fact edit
+  (`series-file-sync.ts`), after a series' backup uploads finish, at the new title on
+  rename (old file deleted), and deleted with the series folder. Gated on a writable
+  connected provider and ≥1 backed-up volume; read-only providers skip, failures are
+  logged only. Facts arriving _from_ a sidecar never schedule a write (no ping-pong).
+- **Cache + refresh.** `series_index` (Dexie v3, PK `series_key`) stores the last fetched
+  file with its cloud `size`/`modifiedTime`/provider. After every `fetchAllCloudVolumes`,
+  `series-index-sync.ts` re-downloads only the files whose stamp differs
+  (`indexNeedsRefresh`), max 4 concurrent, fire-and-forget, and drops orphaned keys.
+- **Import/export.** A `series.json` in a selection or at the root of a series ZIP is
+  applied after the volumes save (keyed to the final sanitized series title, index merged,
+  `source.provider = 'import'`); series ZIP and single-volume ZIP/CBZ exports include one
+  built from the local volumes.
+- **mokuro-bunko dependency.** Bunko treats every `.json` as a progress file; it must
+  partition by path (root `.json` = progress/profiles, `<Series>/series.json` = static
+  sidecar) before this runs against a bunko-backed library.
 
 ### Cloud sync of the table
 
@@ -239,7 +269,7 @@ SeriesMetadata>` from `liveQuery(db.series_metadata)`), never per card in `$deri
   **`SeriesEditorModal`** (also reachable via hover + `e` on a catalog card), which hosts
   every editing control: rename, **Link… / Change / Unlink**, tag text field, manual
   titles/synonyms, tracking toggle + unit + **Sync now** + "last pushed vN · date",
-  **Read N times** +/-, **Restart series…** (confirm), **Update cloud sidecars**, and a
+  **Read N times** +/-, **Restart series…** (confirm), and a
   "Next unlinked series →" button. Title language has no per-series control — it is the
   global Catalog setting below.
 - **`SeriesLinkModal`**: query prefilled with `series_title`; results show cover, titles,
@@ -330,17 +360,19 @@ chars = 0, completed = false` and `lastProgressUpdate = now`. `recentPageTurns`,
 ## Error handling
 
 - AniList unreachable / rate-limited: modal shows inline error with retry; pushes queue.
-- Sidecar refresh: per-volume try/catch, summary snackbar "Updated 18/20 sidecars"; read-only
-  provider disables the action with a tooltip.
-- Embedded metadata malformed: parser drops it (logs once), volume import proceeds.
+- `series.json` write (amended): automatic and silent — try/catch per series, logged, never
+  surfaced in a reading flow; read-only or disconnected provider skips; the next edit or
+  backup rewrites the file.
+- `series.json` malformed (import or refresh): `parseSeriesFile` returns `undefined`, one
+  `console.warn`, the volume import / listing proceeds.
 - Rename to a title whose key already has a record: newer `updated_at` wins, other discarded.
 
 ## Testing
 
 Unit (Vitest): `toSeriesMetadata` mapping from a fixture GraphQL response;
 `resolveDisplayTitle` (all prefs, fallbacks, tag); `extractVolumeNumber` (volumes and
-chapters, JP/EN patterns, none → undefined); `mergeSeriesMetadata`; `toEmbedded/fromEmbedded`
-round-trip through `buildMokuroMetadata` + `parseMokuroFile`; `planProgressPush` matrix
+chapters, JP/EN patterns, none → undefined); `mergeSeriesMetadata`; `buildSeriesFile` /
+`parseSeriesFile` round-trip (union, prune, sort) and `indexNeedsRefresh`; `planProgressPush` matrix
 (first read, re-read, restart, no-op, repeat bump); `handleAniListCallback` hash parsing;
 `restartSeries` + `totalStats` invariance; `shouldOfferReread`; rename key migration.
 Component: `SeriesLinkModal` with a mocked provider. Manual/E2E: `verify` skill —
@@ -349,8 +381,8 @@ push against a test account.
 
 ## Phasing
 
-- **A. Link + embed + sync** — types, table, provider, link modal, link-out chips, tag
-  field, `buildMokuroMetadata` + parser read-back, `series-metadata.json`, sidecar refresh.
+- **A. Link + `series.json` + sync** — types, tables, provider, link modal, link-out chips,
+  tag field, `series.json` write/refresh/import/export, `series-metadata.json`.
 - **B. Titles overlay** — setting + migration, `resolveDisplayTitle`, catalog/series/reader
   display, search/sort.
 - **C. Tracking + re-reads** — auth, tracker, plan, queue, `archivedReads`, restart,

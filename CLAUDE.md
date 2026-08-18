@@ -130,7 +130,7 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie. Volume data is split across three tables for performance, alongside per-series metadata and index tables:
+The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie schema **version 3** (`db-v3.ts`; version 2 added `series_metadata`, version 3 added `series_index` — both additive, no data migration). Volume data is split across three tables for performance, alongside per-series metadata and index tables:
 
 | Table             | Primary Key   | Indexed Fields                | Purpose                                                                           |
 | ----------------- | ------------- | ----------------------------- | --------------------------------------------------------------------------------- |
@@ -204,10 +204,64 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
 
-Reader extension: the app writes an optional top-level `series_metadata`
-object (`external_ids`, `titles`, `synonyms`, `tag`, `updated_at`) built by
-`src/lib/util/mokuro-metadata.ts` and read back by `parseMokuroFile`. Never
-put per-user preferences (tracking, title preference) in it.
+The app writes `.mokuro` files in this pure upstream format — no reader-specific
+keys. Series-level data lives beside them in `series.json`.
+
+### Series sidecar `series.json`
+
+One file per series at `<Series Title>/series.json` (`src/lib/metadata/series-file.ts`,
+`SERIES_FILE_NAME`). It carries the shareable series facts plus an index of the
+series' volumes:
+
+```typescript
+{
+  version: 2,
+  series_title: string,          // the folder name, never derived from metadata
+  external_ids: { anilist?: number, mal?: number },
+  titles: { native?, romaji?, english? },
+  synonyms: string[],
+  tag?: string,
+  updated_at: string,            // ISO — the facts stamp (SeriesMetadata.facts_updated_at)
+  volumes: {                     // the index
+    volume_uuid: string,
+    volume_title: string,
+    page_count: number,
+    character_count: number,
+    page_char_counts: number[],
+    mokuro_version: string,
+    spine_width?: number
+  }[]
+}
+```
+
+Rules:
+
+- **Unauthoritative.** Local IndexedDB always wins for installed volumes; the
+  index only fills gaps for volumes this device does not have, so the catalog can
+  show a cloud-only volume with real page/char counts and attach synced progress
+  to its real `volume_uuid` (`placeholders.ts`).
+- **Never per-user state**: no progress, tracking, `title_preference`,
+  `read_count`, `reread_prompt_suppressed`, thumbnails or page/OCR data.
+- **Merge**: facts merge by `updated_at` (strictly newer wins,
+  `upsertFromSeriesFile`); volume entries merge by `volume_uuid` (local wins),
+  then entries missing from the cloud listing are pruned (`buildSeriesFile`).
+- **Written** automatically — debounced 2 s per series after a local fact edit
+  (`series-file-sync.ts`), after a series' backup uploads finish, on series
+  rename (written at the new title, old deleted) and removed with the series
+  folder. Gated on a writable connected provider and ≥1 backed-up volume;
+  read-only providers skip silently. There is no UI button. Facts arriving _from_
+  a sidecar never schedule a write (no ping-pong).
+- **Cached** in the `series_index` Dexie table with the cloud file's
+  `size`/`modifiedTime`. After every cloud listing, `series-index-sync.ts`
+  re-downloads only the files whose (`size`, `modifiedTime`, provider) differ
+  from the cached stamp (`indexNeedsRefresh`), max 4 concurrent, in the
+  background.
+- **Import/export**: a `series.json` in an imported ZIP (or file selection) is
+  applied after the volumes save; series ZIP and single-volume ZIP/CBZ exports
+  include one built from the local volumes.
+- **mokuro-bunko note**: bunko treats every `.json` as a progress file — it must
+  partition by path (root `.json` = progress/profiles, `<Series>/series.json` =
+  static series sidecar) before this is used against a bunko-backed library.
 
 ### Settings Architecture
 

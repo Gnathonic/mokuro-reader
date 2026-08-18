@@ -5,8 +5,8 @@
 ### Added
 
 - Link a series to AniList; alt titles, link-out chips, free-text tag
-- Series facts + tag embedded in exported/backed-up `.mokuro` files
-- `series-metadata.json` synced across devices; "Update cloud sidecars" action
+- `series.json` per series: link, titles, tag and a volume index (stats for not-installed volumes)
+- `series-metadata.json` synced across devices
 - Show series titles in your preferred language (native/romaji/english)
 - Push read progress and re-reads to AniList (per-series opt-in)
 - Restart series: archive a finished read; reader offers it on re-open
