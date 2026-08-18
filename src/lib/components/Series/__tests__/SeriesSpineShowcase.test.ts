@@ -347,6 +347,20 @@ describe('SeriesSpineShowcase', () => {
     });
   });
 
+  it('writes nothing for a wheel that carries no delta', async () => {
+    // A stationary wheel (and some trackpad/inertia end events) reports 0 on both axes;
+    // reading a direction off that would nudge the offset on every stray event.
+    const { strip } = renderShowcase();
+    await tick();
+
+    pointer(strip, 'pointermove', { clientX: HIT_VOLUME_1_X });
+    wheel(strip, { deltaY: 0, deltaX: 0, shiftKey: true });
+    wheel(strip, { deltaY: 0, deltaX: 0, shiftKey: true, altKey: true });
+    await flushSpineOffsetWrites();
+
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
   it('writes nothing for a gesture without modifiers', async () => {
     const { strip } = renderShowcase();
     await tick();

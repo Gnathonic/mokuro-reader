@@ -234,6 +234,10 @@
     // gesture's direction has to come from whichever axis actually carries it.
     const wheelDelta = e.deltaY || e.deltaX;
 
+    // No delta on either axis is no gesture. Without this, `wheelDelta > 0 ? … : …` reads a
+    // stationary wheel as "up" and every stray event nudges the offset by a step.
+    if (wheelDelta === 0) return;
+
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+Scroll: adjust individual volume
       const target = stackedVolumes[hoveredVolumeIndex];

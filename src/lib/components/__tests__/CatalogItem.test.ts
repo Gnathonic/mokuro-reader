@@ -324,6 +324,21 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     });
   });
 
+  it('writes nothing for a wheel that carries no delta', async () => {
+    // A stationary wheel (and some trackpad/inertia end events) reports 0 on both axes;
+    // reading a direction off that would nudge the offset on every stray event.
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: 0, deltaX: 0 });
+    await fireEvent.mouseMove(card, { clientX: 4000, clientY: 10, shiftKey: true, altKey: true });
+    await fireEvent.wheel(card, { shiftKey: true, altKey: true, deltaY: 0, deltaX: 0 });
+    await flushSpineOffsetWrites();
+
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
   it('writes nothing without the modifier keys', async () => {
     const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
     const card = getCard(container);

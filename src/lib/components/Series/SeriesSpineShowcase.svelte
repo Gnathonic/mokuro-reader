@@ -17,14 +17,25 @@
    * GEOMETRY: every number here comes from `$lib/util/spine-stack-geometry`, the card's own
    * rules, in card pixels — the same uniform height (the AVERAGE of the contain-fitted
    * thumbnail heights, never upscaled), the same per-volume aspect widths and the same step.
-   * Zoom is applied last, purely as a render scale, so at 1× a spine here is the same number
-   * of pixels as on the card. Anything computed independently here would make a gap tuned in
-   * the editor land differently on the card.
+   * Zoom is applied last, purely as a render scale. Anything computed independently here
+   * would make a gap tuned in the editor land differently on the card.
    *
-   * The one deliberate difference is WHICH volumes are drawn: this is a placement editor, so
-   * it shows the whole series (the card may hide read volumes or cap a cloud stack). The
-   * uniform height is still measured over the card's own subset, so the volumes the two have
-   * in common are the same size in both.
+   * Two deliberate differences, both bounded:
+   *
+   * 1. This shelf ALWAYS uses spine-mode semantics (`stackCount = 0`: one row, no vertical
+   *    step, uniform height). When the catalog is configured that way — stack count "all
+   *    volumes", or any stack count with a vertical step of 0 — the card is in uniform mode
+   *    too and 1× is literally its on-screen pixel size. When the catalog runs a fixed stack
+   *    count WITH a vertical step, the card is not in uniform mode at all (each cover is
+   *    contain-fitted on its own, stepped down as well as across), so there is no single
+   *    card size for 1× to match; the horizontal step still transfers, which is what the
+   *    offsets being tuned here actually control.
+   * 2. This is a placement editor, so it draws the whole series; the card may hide read
+   *    volumes or cap a cloud stack. Sizes and steps still match — the uniform height is
+   *    measured over the CARD's subset — but a per-volume nudge cascades over the volumes
+   *    each one is showing, so with `hideReadVolumes` on, a nudged volume shifts a different
+   *    set of neighbours here than on the card, and shared volumes can sit at different
+   *    absolute positions.
    */
   import { Button, ButtonGroup, Range } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
@@ -337,8 +348,12 @@
   /**
    * Drawn width per volume, index-aligned with the strip. Each spine owns only the pixels
    * it is actually painted in — hit-testing a 40px spine against a full 250px band would
-   * nudge the wrong volume. A volume whose thumbnail has not landed keeps a full-width slot
-   * so the strip does not reflow as images arrive.
+   * nudge the wrong volume.
+   *
+   * A volume whose dimensions have not arrived yet has nothing drawn for it, so it falls
+   * back to a full spine width: the strip stays wide enough to scroll and to hover while
+   * cloud thumbnails load, and each one narrows to its real width as it lands (the strip
+   * DOES reflow then — the alternative, a zero-width gap, is worse to aim at).
    */
   let spineWidths = $derived(
     showcaseVolumes.map((vol) => getCanvasDimensions(vol.volume_uuid)?.width ?? spineWidth)
@@ -427,6 +442,10 @@
     // own zoom. The shelf's zoom is a two-state button, so this gesture is not ours: leave
     // it entirely alone rather than swallowing it into the pan below.
     if (e.ctrlKey) return;
+
+    // No delta on either axis is no gesture. Without this, `delta > 0 ? … : …` reads a
+    // stationary wheel as "up" and every stray event nudges the offset by a step.
+    if (delta === 0) return;
 
     if (e.shiftKey && e.altKey && hoveredVolume) {
       e.preventDefault();
