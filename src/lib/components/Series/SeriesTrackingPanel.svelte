@@ -1,8 +1,7 @@
 <!-- src/lib/components/Series/SeriesTrackingPanel.svelte -->
 <script lang="ts">
-  import { Button, Select, Toggle } from 'flowbite-svelte';
+  import { Button, Select } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
-  import type { SeriesTracking, TrackingUnit } from '$lib/metadata/types';
   import {
     seriesMetadataMap,
     updateSeriesMetadata,
@@ -10,35 +9,16 @@
   } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import {
-    computeLocalPassState,
-    syncSeriesNow,
-    type PushOutcome
-  } from '$lib/metadata/progress-tracker';
+  import { computeLocalPassState } from '$lib/metadata/progress-tracker';
+  import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
   import { restartSeries } from '$lib/metadata/reread';
-  import { anilistConnected, getAniListClientId } from '$lib/metadata/anilist-auth';
+  import { anilistConnected, anilistUser, getAniListClientId } from '$lib/metadata/anilist-auth';
   import { volumes as volumesStore } from '$lib/settings/volume-data';
   import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
   import { promptConfirmation } from '$lib/util/modals';
   import { showSnackbar } from '$lib/util/snackbar';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
-
-  const unitOptions = [
-    { value: 'volumes', name: 'Volumes' },
-    { value: 'chapters', name: 'Chapters' }
-  ];
-
-  const DEFAULT_TRACKING: SeriesTracking = { enabled: false, unit: 'volumes' };
-
-  /** Every outcome `syncSeriesNow` can report — `failed` is an error, not a queue. */
-  const SYNC_MESSAGES: Record<PushOutcome, string> = {
-    pushed: 'Pushed to AniList',
-    nothing: 'Already up to date',
-    queued: 'Queued — will push when AniList is reachable',
-    disabled: 'Tracking is off for this series',
-    failed: 'AniList rejected the update'
-  };
 
   // Env-derived and constant for the life of the tab; the script body runs once
   // per component instance, so this needs no reactivity.
@@ -58,14 +38,38 @@
   let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, meta));
   let readCount = $derived(meta?.read_count ?? 0);
   let linked = $derived(!!meta?.external_ids?.anilist);
-  let tracking = $derived<SeriesTracking>(meta?.tracking ?? DEFAULT_TRACKING);
-  let lastPushed = $derived(tracking.last_pushed);
+  let lastPushed = $derived(meta?.tracking?.last_pushed);
+  // Volumes or chapters is a fact about the archives, not a preference: detected
+  // from every title in the folder (placeholders included — they have titles)
+  // unless somebody has corrected it on the record.
+  let unitState = $derived(resolveTrackingUnit(meta, volumes));
+  let resolvedUnit = $derived(unitState.unit);
+  // What detection says on its own, so the "Auto" option can name it even while
+  // an override is in force.
+  let detectedUnit = $derived(
+    unitState.source === 'detected'
+      ? unitState.unit
+      : resolveTrackingUnit(meta ? { ...meta, unit: undefined } : undefined, volumes).unit
+  );
+  let unitOptions = $derived([
+    { value: '', name: `Auto (${detectedUnit})` },
+    { value: 'volumes', name: 'Volumes' },
+    { value: 'chapters', name: 'Chapters' }
+  ]);
   // Reactive session flag (kept in sync by anilist-auth.ts on
   // login/disconnect/expiry) — a token can outlive the Viewer query that
   // names the user, so this doesn't wait on `$anilistUser`.
   let connected = $derived($anilistConnected);
   let pushAllowed = $derived($catalogSettings?.pushProgressToAniList !== false);
-  let syncing = $state(false);
+  // One line, because there is nothing to decide here any more: pushing is the
+  // global switch in Settings and the series is either linked or it is not.
+  let pushStatus = $derived(
+    !connected
+      ? 'Connect AniList in Settings'
+      : !pushAllowed
+        ? 'Progress push is off in Settings'
+        : `Progress push on${$anilistUser ? ` · Connected as ${$anilistUser.name}` : ''}`
+  );
 
   /**
    * Every write goes through `updateSeriesMetadata`, which resolves a functional
@@ -94,33 +98,21 @@
     );
   }
 
-  function setTracking(patch: Partial<SeriesTracking>) {
-    // Spread the stored record so unit/number_overrides/last_pushed survive an
-    // edit to any one of them.
+  /**
+   * `unit` is a shared fact, so this is a fact edit: it moves `facts_updated_at`
+   * and the store's listener publishes the new `series.json`. An empty value is
+   * "no correction" — back to auto-detection.
+   */
+  function setUnit(value: string) {
     return write(
-      (current) => ({ tracking: { ...(current.tracking ?? DEFAULT_TRACKING), ...patch } }),
-      "Couldn't save the tracking settings"
+      { unit: value === 'volumes' || value === 'chapters' ? value : undefined },
+      "Couldn't save the tracking unit"
     );
   }
 
   /** The reader's "Don't ask for this series" is permanent — this is its undo. */
   function askAgainAboutRereads() {
     return write({ reread_prompt_suppressed: undefined }, "Couldn't reset the re-read prompt");
-  }
-
-  async function syncNow() {
-    if (syncing) return;
-    syncing = true;
-    try {
-      const outcome = await syncSeriesNow(seriesKey);
-      showSnackbar(SYNC_MESSAGES[outcome] ?? 'Sync finished');
-    } catch (error) {
-      // `syncSeriesNow` is documented never to reject; belt and braces.
-      console.error('[series-tracking] sync failed:', error);
-      showSnackbar("Couldn't reach AniList — try again");
-    } finally {
-      syncing = false;
-    }
   }
 
   function confirmRestart() {
@@ -187,38 +179,36 @@
   {#if clientId}
     {#if linked}
       <div class="relative z-10 flex flex-wrap items-center gap-3">
-        <Toggle
-          checked={tracking.enabled}
-          onchange={(e) => setTracking({ enabled: e.currentTarget.checked })}
-        >
-          Push progress to AniList
-        </Toggle>
+        <!-- Migaku/Yomitan rewrite text in place; a fresh node per value keeps this honest -->
+        {#key pushStatus}
+          <span
+            class="text-xs {connected && !pushAllowed
+              ? 'text-amber-600 dark:text-amber-400'
+              : 'text-gray-500 dark:text-gray-400'}">{pushStatus}</span
+          >
+        {/key}
         <Select
           size="sm"
-          class="w-32"
+          class="w-40"
           items={unitOptions}
-          value={tracking.unit}
+          placeholder=""
+          value={unitState.source === 'set' ? resolvedUnit : ''}
           aria-label="Tracking unit"
-          onchange={(e) => setTracking({ unit: e.currentTarget.value as TrackingUnit })}
+          onchange={(e) => setUnit(e.currentTarget.value)}
         />
-        <Button size="xs" color="light" onclick={syncNow} disabled={syncing}>Sync now</Button>
-        {#if !connected}
-          <span class="text-xs text-gray-500 dark:text-gray-400">Connect AniList in Settings</span>
-        {:else if !pushAllowed}
-          <span class="text-xs text-amber-600 dark:text-amber-400"
-            >Progress pushing is off in Settings</span
-          >
-        {/if}
         <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->
         {#if lastPushed}
           {#key lastPushed.at}
             <span class="text-xs text-gray-500 dark:text-gray-400">
-              Last pushed {tracking.unit === 'chapters' ? 'ch.' : 'vol.'}
+              Last pushed {resolvedUnit === 'chapters' ? 'ch.' : 'vol.'}
               {lastPushed.n} · {formatPushedAt(lastPushed.at)}
             </span>
           {/key}
         {/if}
       </div>
+      <span class="text-xs text-gray-500 dark:text-gray-400">
+        Detected from the archive names; override if wrong. Saved with the series.
+      </span>
     {:else}
       <span class="text-xs text-gray-500 dark:text-gray-400">Link to AniList to track progress</span
       >

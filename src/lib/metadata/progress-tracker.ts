@@ -16,6 +16,7 @@ import {
 import { AniListError, anilistRequest } from './providers/anilist';
 import { normalizeSeriesKey } from './series-key';
 import { getAllSeriesMetadata, getSeriesMetadata, updateSeriesMetadata } from './store';
+import { resolveTrackingUnit } from './tracking-unit';
 import type { SeriesMetadata } from './types';
 import { extractVolumeNumber } from './volume-number';
 
@@ -37,8 +38,8 @@ const COMPLETION_DEBOUNCE_MS = 60_000;
  * - `failed`   — a non-retryable failure (AniList rejected the document, e.g. a
  *   stale media id); the intent has been dropped. Callers should surface this as
  *   an error, never as "queued".
- * - `disabled` — pushing is off for this series (tracking off / unlinked / master
- *   switch off), so nothing was attempted.
+ * - `disabled` — nothing to push for this series: it is not linked to AniList,
+ *   or the master switch in Settings is off. There is no per-series opt-in.
  */
 export type PushOutcome = 'pushed' | 'nothing' | 'queued' | 'failed' | 'disabled';
 
@@ -59,7 +60,8 @@ export function volumeNumberFor(
 ): number {
   const override = meta?.tracking?.number_overrides?.[volume.volume_uuid];
   if (typeof override === 'number' && override > 0) return override;
-  const parsed = extractVolumeNumber(volume.volume_title, meta?.tracking?.unit ?? 'volumes');
+  const { unit } = resolveTrackingUnit(meta, sortedSeriesVolumes);
+  const parsed = extractVolumeNumber(volume.volume_title, unit);
   if (parsed !== undefined) return parsed;
   return sortedSeriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid) + 1;
 }
@@ -70,7 +72,7 @@ export function computeLocalPassState(
   meta: SeriesMetadata | undefined
 ): LocalPassState {
   const sorted = [...seriesVolumes].sort(sortVolumes);
-  const unit = meta?.tracking?.unit ?? 'volumes';
+  const { unit } = resolveTrackingUnit(meta, sorted);
   let passProgress = 0;
   let allCompleted = sorted.length > 0;
   for (const volume of sorted) {
@@ -193,9 +195,13 @@ async function getSeriesVolumesByKey(seriesKey: string): Promise<VolumeMetadata[
   return all.filter((v) => normalizeSeriesKey(v.series_title) === seriesKey);
 }
 
+/**
+ * Pushing needs exactly two things: a series linked to AniList, and the one
+ * global switch in Settings. There is no per-series opt-in — whether a series
+ * counts is answered by "did you link it".
+ */
 function pushEnabled(meta: SeriesMetadata | undefined): meta is SeriesMetadata {
-  if (!meta?.tracking?.enabled) return false;
-  if (!meta.external_ids.anilist) return false;
+  if (!meta?.external_ids?.anilist) return false;
   return get(settings)?.catalogSettings?.pushProgressToAniList !== false;
 }
 
@@ -237,7 +243,12 @@ function passSignature(local: LocalPassState): string {
  * "nothing could have changed" test. A remote edited by hand on anilist.co is
  * deliberately not detected here: that is what "Sync now" (`sync`) is for.
  */
-function alreadySettled(seriesKey: string, local: LocalPassState, meta: SeriesMetadata): boolean {
+function alreadySettled(
+  seriesKey: string,
+  local: LocalPassState,
+  meta: SeriesMetadata,
+  seriesVolumes: VolumeMetadata[]
+): boolean {
   const recent = recentCompletions.get(seriesKey);
   if (
     recent &&
@@ -254,7 +265,8 @@ function alreadySettled(seriesKey: string, local: LocalPassState, meta: SeriesMe
     progressVolumes: lastPushed.n,
     repeat: Math.max(0, local.timesRead - 1)
   };
-  return planProgressPush(local, assumedRemote, meta.tracking?.unit ?? 'volumes', 'sync') === null;
+  const { unit } = resolveTrackingUnit(meta, seriesVolumes);
+  return planProgressPush(local, assumedRemote, unit, 'sync') === null;
 }
 
 /** Forget both debounce layers for a series — its pass state just changed. */
@@ -288,15 +300,13 @@ function scheduleRetry(delayMs: number): void {
 async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<PushOutcome> {
   const meta = await getSeriesMetadata(seriesKey);
   if (!pushEnabled(meta)) {
-    // Tracking was turned off (or the series unlinked) after the intent was
-    // queued: nothing will ever be pushed for it, so don't leave it in the
-    // queue to be retried on every flush forever.
+    // The series was unlinked (or the master switch turned off) after the
+    // intent was queued: nothing will ever be pushed for it, so don't leave it
+    // in the queue to be retried on every flush forever.
     clearPending(seriesKey);
     return 'disabled';
   }
   const mediaId = meta.external_ids.anilist!;
-  const tracking = meta.tracking!;
-  const unit = tracking.unit ?? 'volumes';
 
   const token = getAniListToken();
   if (!token) {
@@ -306,9 +316,12 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
 
   const seriesVolumes = await getSeriesVolumesByKey(seriesKey);
   const local = computeLocalPassState(seriesVolumes, get(volumes), meta);
+  // Volumes or chapters is a property of the archives, either stated on the
+  // record (someone corrected it) or read off their titles.
+  const { unit } = resolveTrackingUnit(meta, seriesVolumes);
 
   if (event === 'completion') {
-    if (alreadySettled(seriesKey, local, meta)) return 'nothing';
+    if (alreadySettled(seriesKey, local, meta, seriesVolumes)) return 'nothing';
     recentCompletions.set(seriesKey, { signature: passSignature(local), at: Date.now() });
   }
 
@@ -326,14 +339,14 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     }
     await sendPlan(mediaId, plan, token);
     clearPending(seriesKey);
-    // Two round-trips happened since `meta` was read; a tracking edit (unit,
-    // number overrides, the enable toggle) may have landed in between. The
-    // patch is functional so the record it spreads is the one in the database
-    // at write time, not the stale copy this push started from.
+    // Two round-trips happened since `meta` was read; a tracking edit (a number
+    // override) may have landed in between. The patch is functional so the
+    // record it spreads is the one in the database at write time, not the stale
+    // copy this push started from.
     const current = (await getSeriesMetadata(seriesKey)) ?? meta;
     await updateSeriesMetadata(current.series_title, (existing) => ({
       tracking: {
-        ...(existing.tracking ?? current.tracking ?? tracking),
+        ...(existing.tracking ?? current.tracking ?? {}),
         last_pushed: {
           // The progress AniList actually received — 0 for a restart, and the
           // last known figure for a status-only push.

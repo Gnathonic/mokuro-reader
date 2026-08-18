@@ -89,8 +89,12 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
     if (tag === undefined) delete entry.tag;
     else entry.tag = tag;
     // A shared fact like the tag, and one the tracker pushes progress by: an
-    // unknown value must fall back to auto-detection, never ride along.
-    const unit = sanitizeTrackingUnit(value.unit);
+    // unknown value must fall back to auto-detection, never ride along. Records
+    // written before the unit became a fact carry it inside `tracking`; lift it
+    // once so the correction is not lost.
+    const unit =
+      sanitizeTrackingUnit(value.unit) ??
+      sanitizeTrackingUnit(isRecord(value.tracking) ? value.tracking.unit : undefined);
     if (unit === undefined) delete entry.unit;
     else entry.unit = unit;
     // An unknown language would not equal 'imported', so it would silently push the

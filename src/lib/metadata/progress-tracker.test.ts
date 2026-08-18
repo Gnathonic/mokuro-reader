@@ -140,7 +140,6 @@ const meta = (over: Partial<SeriesMetadata> = {}): SeriesMetadata => ({
   titles: {},
   synonyms: [],
   read_count: 0,
-  tracking: { enabled: true, unit: 'volumes' },
   updated_at: '2026-01-01T00:00:00.000Z',
   ...over
 });
@@ -168,7 +167,7 @@ function resetWorld() {
 describe('volumeNumberFor', () => {
   const sorted = [vol('a', 'Vol 01'), vol('b', 'Vol 02'), vol('c', 'Extras')];
   it('prefers overrides, then parsed numbers, then sort position', () => {
-    const m = meta({ tracking: { enabled: true, unit: 'volumes', number_overrides: { b: 7 } } });
+    const m = meta({ tracking: { number_overrides: { b: 7 } } });
     expect(volumeNumberFor(sorted[1], sorted, m)).toBe(7);
     expect(volumeNumberFor(sorted[0], sorted, m)).toBe(1);
     expect(volumeNumberFor(sorted[2], sorted, m)).toBe(3);
@@ -218,14 +217,26 @@ describe('computeLocalPassState', () => {
       passComplete: false
     });
   });
-  it('uses total_chapters for the chapters unit', () => {
+  it('uses total_chapters for a folder detected as chapters', () => {
     const chapters = [vol('a', 'Chapter 1'), vol('b', 'Chapter 2')];
     const state = computeLocalPassState(
       chapters,
       { a: { completed: true }, b: { completed: true } },
-      meta({ tracking: { enabled: true, unit: 'chapters' }, total_chapters: 2 })
+      meta({ total_chapters: 2 })
     );
     expect(state.passComplete).toBe(true);
+  });
+
+  it('honours a corrected unit over the titles', () => {
+    // Chapter-titled files that are really volumes: the fact wins, so the pass
+    // is measured against total_volumes.
+    const chapters = [vol('a', 'Chapter 1'), vol('b', 'Chapter 2')];
+    const state = computeLocalPassState(
+      chapters,
+      { a: { completed: true }, b: { completed: true } },
+      meta({ unit: 'volumes', total_volumes: 2, total_chapters: 900 })
+    );
+    expect(state).toMatchObject({ passProgress: 2, passComplete: true });
   });
   it('is empty for a series with no local volumes', () => {
     expect(computeLocalPassState([], {}, meta())).toEqual({
@@ -271,9 +282,7 @@ describe('syncSeriesNow', () => {
     expect(anilistRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('is "disabled" when tracking is off, unlinked, or the master switch is off', async () => {
-    h.metaByKey.set('one piece', meta({ tracking: { enabled: false, unit: 'volumes' } }));
-    await expect(syncSeriesNow('one piece')).resolves.toBe('disabled');
+  it('is "disabled" when the series is unlinked or the master switch is off', async () => {
     h.metaByKey.set('one piece', meta({ external_ids: {} }));
     await expect(syncSeriesNow('one piece')).resolves.toBe('disabled');
     h.metaByKey.set('one piece', meta());
@@ -282,8 +291,55 @@ describe('syncSeriesNow', () => {
     expect(anilistRequest).not.toHaveBeenCalled();
   });
 
+  it('pushes a linked series that has no tracking block at all', async () => {
+    // There is no per-series opt-in any more: linking the series IS the opt-in.
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, tracking: undefined }));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toMatchObject({ progressVolumes: 2 });
+  });
+
+  it('pushes chapter-titled archives into the chapter field', async () => {
+    h.dbVolumes.splice(
+      0,
+      h.dbVolumes.length,
+      vol('a', 'One Piece Chapter 1'),
+      vol('b', 'One Piece Chapter 2')
+    );
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'CURRENT',
+      progress: 2
+    });
+  });
+
+  it('lets a corrected unit override the titles', async () => {
+    h.dbVolumes.splice(
+      0,
+      h.dbVolumes.length,
+      vol('a', 'One Piece Chapter 1'),
+      vol('b', 'One Piece Chapter 2')
+    );
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, unit: 'volumes' }));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'CURRENT',
+      progressVolumes: 2
+    });
+  });
+
   it('drops a queued intent when the series is no longer pushable', async () => {
-    // Tracking was turned off after the intent was queued: replaying it can only
+    // The series was unlinked after the intent was queued: replaying it can only
     // ever return "disabled", so it must not linger in the queue forever.
     localStorage.setItem(
       'anilist_pending_pushes',
@@ -291,7 +347,7 @@ describe('syncSeriesNow', () => {
         'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
       })
     );
-    h.metaByKey.set('one piece', meta({ tracking: { enabled: false, unit: 'volumes' } }));
+    h.metaByKey.set('one piece', meta({ external_ids: {} }));
     await expect(syncSeriesNow('one piece')).resolves.toBe('disabled');
     expect(readPendingPushes()).toEqual({});
   });
@@ -340,7 +396,7 @@ describe('syncSeriesNow', () => {
         const current = h.metaByKey.get('one piece')!;
         h.metaByKey.set('one piece', {
           ...current,
-          tracking: { ...current.tracking!, unit: 'chapters', number_overrides: { b: 9 } }
+          tracking: { ...current.tracking, number_overrides: { b: 9 } }
         });
         return { SaveMediaListEntry: {} };
       }) as never);
@@ -348,7 +404,6 @@ describe('syncSeriesNow', () => {
     await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
 
     const tracking = h.metaByKey.get('one piece')!.tracking!;
-    expect(tracking.unit).toBe('chapters');
     expect(tracking.number_overrides).toEqual({ b: 9 });
     expect(tracking.last_pushed).toMatchObject({ n: 2, status: 'CURRENT' });
   });
@@ -433,7 +488,7 @@ describe('completion fires are idempotent', () => {
     onVolumeCompleted('b');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(anilistRequest).toHaveBeenCalledTimes(1);
-    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toBeUndefined();
+    expect(h.metaByKey.get('one piece')!.tracking?.last_pushed).toBeUndefined();
   });
 
   it('pushes again once local progress actually moves', async () => {

@@ -14,9 +14,12 @@ export interface SeriesExternalIds {
   mal?: number;
 }
 
+/**
+ * Per-series push bookkeeping. Neither a switch nor a unit lives here any more:
+ * pushing is one global setting (`catalogSettings.pushProgressToAniList`) and
+ * the unit is an objective fact about the archives (`SeriesMetadata.unit`).
+ */
 export interface SeriesTracking {
-  enabled: boolean;
-  unit: TrackingUnit;
   /** volume_uuid -> volume/chapter number override */
   number_overrides?: Record<string, number>;
   last_pushed?: { n: number; status: string; at: string };

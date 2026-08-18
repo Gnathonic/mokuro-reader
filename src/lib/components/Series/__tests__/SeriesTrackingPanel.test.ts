@@ -96,17 +96,13 @@ vi.mock('$lib/metadata/progress-tracker', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/progress-tracker')>(
     '$lib/metadata/progress-tracker'
   );
-  return {
-    computeLocalPassState: actual.computeLocalPassState,
-    syncSeriesNow: vi.fn(async () => 'pushed')
-  };
+  return { computeLocalPassState: actual.computeLocalPassState };
 });
 vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn(async () => {}) }));
 vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { updateSeriesMetadata } from '$lib/metadata/store';
-import { syncSeriesNow } from '$lib/metadata/progress-tracker';
 import { restartSeries } from '$lib/metadata/reread';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
@@ -128,7 +124,6 @@ function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
   return {
     ...createEmptySeriesMetadata('One Piece'),
     external_ids: { anilist: 30013 },
-    tracking: { enabled: true, unit: 'volumes' },
     ...overrides
   };
 }
@@ -224,24 +219,20 @@ describe('SeriesTrackingPanel', () => {
       // The progress tracker writes `tracking.last_pushed` from another module;
       // the panel's own patch must be built on top of it, not on the stale
       // record the (lagging) liveQuery is still showing.
-      setMeta(meta({ read_count: 0, tracking: { enabled: true, unit: 'volumes' } }));
+      setMeta(meta({ read_count: 0 }));
       const { getByLabelText } = renderPanel();
       h.stored.set('one piece', {
         ...h.stored.get('one piece')!,
-        tracking: {
-          enabled: true,
-          unit: 'volumes',
-          last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-        }
+        tracking: { last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
       });
-      await fireEvent.click(getByLabelText('Push progress to AniList'));
-      await waitFor(() =>
-        expect(h.stored.get('one piece')!.tracking).toEqual({
-          enabled: false,
-          unit: 'volumes',
+      await fireEvent.click(getByLabelText('Increase read count'));
+      await waitFor(() => {
+        const stored = h.stored.get('one piece')!;
+        expect(stored.read_count).toBe(1);
+        expect(stored.tracking).toEqual({
           last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-        })
-      );
+        });
+      });
     });
 
     it('reports a failed write', async () => {
@@ -257,65 +248,91 @@ describe('SeriesTrackingPanel', () => {
   describe('tracking controls', () => {
     it('asks for a link instead of tracking controls when the series is unlinked', () => {
       setMeta(meta({ external_ids: {}, tracking: undefined }));
-      const { getByText, queryByText } = renderPanel();
+      const { getByText, queryByLabelText } = renderPanel();
       expect(getByText('Link to AniList to track progress')).toBeTruthy();
-      expect(queryByText('Sync now')).toBeNull();
+      expect(queryByLabelText('Tracking unit')).toBeNull();
     });
 
     it('hides tracking entirely when no AniList client id is configured', () => {
       h.auth.clientId = undefined;
-      const { queryByText } = renderPanel();
-      expect(queryByText('Sync now')).toBeNull();
+      const { queryByText, queryByLabelText } = renderPanel();
+      expect(queryByLabelText('Tracking unit')).toBeNull();
       expect(queryByText('Link to AniList to track progress')).toBeNull();
       // The read-count controls stay: they are local bookkeeping.
       expect(queryByText('Read 2 times')).toBeTruthy();
     });
 
-    it('enables tracking without dropping the unit', async () => {
-      setMeta(meta({ tracking: { enabled: false, unit: 'chapters' } }));
-      const { getByLabelText } = renderPanel();
-      await fireEvent.click(getByLabelText('Push progress to AniList'));
-      await waitFor(() =>
-        expect(h.stored.get('one piece')!.tracking).toEqual({ enabled: true, unit: 'chapters' })
-      );
+    it('offers no per-series push switch — that setting is global now', () => {
+      const { queryByText } = renderPanel();
+      expect(queryByText('Push progress to AniList')).toBeNull();
+      expect(queryByText('Sync now')).toBeNull();
     });
 
-    it('changes the unit without dropping the enabled flag or overrides', async () => {
-      setMeta(meta({ tracking: { enabled: true, unit: 'volumes', number_overrides: { a: 4 } } }));
-      const { getByDisplayValue } = renderPanel();
-      await fireEvent.change(getByDisplayValue('Volumes') as HTMLSelectElement, {
+    it('names the detected unit in the Auto option and selects it by default', () => {
+      const { getByLabelText } = renderPanel();
+      const select = getByLabelText('Tracking unit') as HTMLSelectElement;
+      // "One Piece Volume 1/2" reads as volumes without anybody saying so.
+      expect(select.value).toBe('');
+      expect([...select.options].map((o) => o.textContent?.trim())).toEqual([
+        'Auto (volumes)',
+        'Volumes',
+        'Chapters'
+      ]);
+    });
+
+    it('detects chapters from the archive names', () => {
+      const { getByLabelText } = renderPanel([
+        volume('a', 'One Piece Chapter 1'),
+        volume('b', 'One Piece Chapter 2')
+      ]);
+      const select = getByLabelText('Tracking unit') as HTMLSelectElement;
+      expect([...select.options][0].textContent?.trim()).toBe('Auto (chapters)');
+    });
+
+    it('writes a correction as a top-level fact, not into the tracking block', async () => {
+      setMeta(meta({ tracking: { number_overrides: { a: 4 } } }));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.change(getByLabelText('Tracking unit') as HTMLSelectElement, {
+        target: { value: 'chapters' }
+      });
+      await waitFor(() => expect(h.stored.get('one piece')!.unit).toBe('chapters'));
+      // The correction is a fact edit; the push bookkeeping is untouched.
+      expect(h.stored.get('one piece')!.tracking).toEqual({ number_overrides: { a: 4 } });
+      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', { unit: 'chapters' });
+    });
+
+    it('shows a stored correction and clears it back to Auto', async () => {
+      setMeta(meta({ unit: 'chapters' }));
+      const { getByLabelText } = renderPanel();
+      const select = getByLabelText('Tracking unit') as HTMLSelectElement;
+      expect(select.value).toBe('chapters');
+      // The Auto label still names what detection says on its own.
+      expect([...select.options][0].textContent?.trim()).toBe('Auto (volumes)');
+
+      await fireEvent.change(select, { target: { value: '' } });
+      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', { unit: undefined });
+    });
+
+    it('reports a failed unit write', async () => {
+      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.change(getByLabelText('Tracking unit') as HTMLSelectElement, {
         target: { value: 'chapters' }
       });
       await waitFor(() =>
-        expect(h.stored.get('one piece')!.tracking).toEqual({
-          enabled: true,
-          unit: 'chapters',
-          number_overrides: { a: 4 }
-        })
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the tracking unit")
       );
     });
 
-    it('reports a failed tracking write', async () => {
-      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
-      const { getByLabelText } = renderPanel();
-      await fireEvent.click(getByLabelText('Push progress to AniList'));
-      await waitFor(() =>
-        expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the tracking settings")
-      );
-    });
-
-    it('shows the last pushed figure', () => {
+    it('shows the last pushed figure in the resolved unit', () => {
       setMeta(
         meta({
-          tracking: {
-            enabled: true,
-            unit: 'volumes',
-            last_pushed: { n: 2, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-          }
+          unit: 'chapters',
+          tracking: { last_pushed: { n: 2, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
         })
       );
       const { getByText } = renderPanel();
-      expect(getByText(/Last pushed vol\. 2 ·/)).toBeTruthy();
+      expect(getByText(/Last pushed ch\. 2 ·/)).toBeTruthy();
     });
 
     it('keeps the last pushed figure visible next to a hint', () => {
@@ -324,11 +341,7 @@ describe('SeriesTrackingPanel', () => {
       h.anilistConnected.set(false);
       setMeta(
         meta({
-          tracking: {
-            enabled: true,
-            unit: 'volumes',
-            last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-          }
+          tracking: { last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
         })
       );
       const { getByText } = renderPanel();
@@ -347,37 +360,12 @@ describe('SeriesTrackingPanel', () => {
     it('hints when the global push switch is off', () => {
       h.catalogSettings.set({ pushProgressToAniList: false });
       const { getByText } = renderPanel();
-      expect(getByText('Progress pushing is off in Settings')).toBeTruthy();
-    });
-  });
-
-  describe('sync now', () => {
-    it('calls the tracker with the series key', async () => {
-      const { getByText } = renderPanel();
-      await fireEvent.click(getByText('Sync now'));
-      expect(syncSeriesNow).toHaveBeenCalledWith('one piece');
+      expect(getByText('Progress push is off in Settings')).toBeTruthy();
     });
 
-    it.each([
-      ['pushed', 'Pushed to AniList'],
-      ['nothing', 'Already up to date'],
-      ['queued', 'Queued — will push when AniList is reachable'],
-      ['disabled', 'Tracking is off for this series'],
-      ['failed', 'AniList rejected the update']
-    ])('maps the %s outcome to a snackbar', async (outcome, message) => {
-      vi.mocked(syncSeriesNow).mockResolvedValueOnce(outcome as 'pushed');
+    it('names the connected account while pushing is on', () => {
       const { getByText } = renderPanel();
-      await fireEvent.click(getByText('Sync now'));
-      await waitFor(() => expect(showSnackbar).toHaveBeenCalledWith(message));
-    });
-
-    it('reports a thrown sync as an error', async () => {
-      vi.mocked(syncSeriesNow).mockRejectedValueOnce(new Error('boom'));
-      const { getByText } = renderPanel();
-      await fireEvent.click(getByText('Sync now'));
-      await waitFor(() =>
-        expect(showSnackbar).toHaveBeenCalledWith("Couldn't reach AniList — try again")
-      );
+      expect(getByText('Progress push on · Connected as nathan')).toBeTruthy();
     });
   });
 

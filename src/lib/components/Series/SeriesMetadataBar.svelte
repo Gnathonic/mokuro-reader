@@ -13,7 +13,9 @@
   import { resolveDisplayBase } from '$lib/metadata/display-title';
   import { getLinkTargets } from '$lib/metadata/link-targets';
   import { computeLocalPassState } from '$lib/metadata/progress-tracker';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
+  import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
+  import { anilistConnected } from '$lib/metadata/anilist-auth';
+  import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
   import { volumes as volumesData } from '$lib/settings/volume-data';
   import type { VolumeMetadata } from '$lib/types';
 
@@ -52,13 +54,15 @@
   // Tracking only ever runs through AniList, so the status line keys off that link
   // specifically — a bare MAL link has no tracking to report.
   let trackingLinked = $derived(!!meta?.external_ids?.anilist);
-  let tracking = $derived(meta?.tracking);
-  let lastPushed = $derived(tracking?.last_pushed);
+  let lastPushed = $derived(meta?.tracking?.last_pushed);
+  // There is no per-series switch: a linked series is tracked whenever the
+  // account is connected and the global setting allows it.
+  let pushOn = $derived($anilistConnected && $catalogSettings?.pushProgressToAniList !== false);
   let trackingStatus = $derived.by(() => {
     if (!trackingLinked) return '';
-    if (!tracking?.enabled) return 'Tracking off';
+    if (!pushOn) return 'Tracking off';
     if (!lastPushed) return 'Tracking on';
-    const unitLabel = tracking.unit === 'chapters' ? 'ch.' : 'vol.';
+    const unitLabel = resolveTrackingUnit(meta, volumes).unit === 'chapters' ? 'ch.' : 'vol.';
     const date = new Date(lastPushed.at);
     const dateLabel = Number.isNaN(date.getTime()) ? lastPushed.at : date.toLocaleDateString();
     return `Tracking on · last pushed ${unitLabel} ${lastPushed.n} · ${dateLabel}`;

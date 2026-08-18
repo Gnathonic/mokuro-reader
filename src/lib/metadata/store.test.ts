@@ -69,7 +69,7 @@ describe('series metadata store', () => {
   it('resolves a functional patch against the record as stored, not a stale copy', async () => {
     await updateSeriesMetadata('One Piece', {
       read_count: 1,
-      tracking: { enabled: true, unit: 'volumes' }
+      tracking: { number_overrides: { a: 2 } }
     });
     // Stale snapshot from before the write below — exactly what a component
     // holding a lagging liveQuery value would build its patch from.
@@ -82,12 +82,11 @@ describe('series metadata store', () => {
     });
 
     const next = await updateSeriesMetadata('One Piece', (existing) => ({
-      tracking: { ...existing.tracking!, enabled: false }
+      tracking: { ...existing.tracking!, number_overrides: { a: 5 } }
     }));
     // The functional patch saw last_pushed even though the caller never did.
     expect(next.tracking).toEqual({
-      enabled: false,
-      unit: 'volumes',
+      number_overrides: { a: 5 },
       last_pushed: { n: 4, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
     });
   });
@@ -107,7 +106,7 @@ describe('series metadata store', () => {
   it('a functional patch and a whole-object writer do not clobber each other', async () => {
     await updateSeriesMetadata('One Piece', {
       read_count: 0,
-      tracking: { enabled: true, unit: 'volumes' }
+      tracking: { number_overrides: { a: 2 } }
     });
     await Promise.all([
       // The tracker's last_pushed write…
@@ -117,15 +116,14 @@ describe('series metadata store', () => {
           last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
         }
       })),
-      // …racing the panel's unit change.
+      // …racing the panel's number-override edit.
       updateSeriesMetadata('One Piece', (existing) => ({
-        tracking: { ...existing.tracking!, unit: 'chapters' as const }
+        tracking: { ...existing.tracking!, number_overrides: { a: 9 } }
       }))
     ]);
     const stored = await getSeriesMetadata('one piece');
     expect(stored?.tracking).toEqual({
-      enabled: true,
-      unit: 'chapters',
+      number_overrides: { a: 9 },
       last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
     });
   });
@@ -144,7 +142,7 @@ describe('series metadata store', () => {
       title_preference: 'native',
       read_count: 2,
       unit: 'chapters',
-      tracking: { enabled: true, unit: 'volumes' }
+      tracking: { number_overrides: { a: 2 } }
     });
     const meta = await unlinkSeries('One Piece');
     expect(meta.external_ids).toEqual({});
@@ -159,7 +157,7 @@ describe('series metadata store', () => {
     expect(meta.read_count).toBe(2);
     // The unit describes the archives in the folder, not the link that was removed.
     expect(meta.unit).toBe('chapters');
-    expect(meta.tracking).toEqual({ enabled: true, unit: 'volumes' });
+    expect(meta.tracking).toEqual({ number_overrides: { a: 2 } });
     expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
 

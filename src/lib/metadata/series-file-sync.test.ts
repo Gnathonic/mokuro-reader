@@ -334,7 +334,7 @@ describe('series-file-sync', () => {
 
   it('does NOT fire for a per-user edit (spine offsets, rereads, tracking)', async () => {
     await updateSeriesMetadata('One Piece', { read_count: 2 });
-    await updateSeriesMetadata('One Piece', { tracking: { enabled: true, unit: 'volumes' } });
+    await updateSeriesMetadata('One Piece', { tracking: { number_overrides: { a: 2 } } });
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(writeSeriesFile).not.toHaveBeenCalled();

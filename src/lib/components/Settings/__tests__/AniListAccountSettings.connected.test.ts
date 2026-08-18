@@ -21,6 +21,18 @@ vi.mock('$lib/settings/settings', () => ({
   updateCatalogSetting: vi.fn()
 }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+// "Sync all linked series now" pulls the tracker, which pulls IndexedDB and the
+// (mocked-out) settings store at module load. This file is about the auth UI.
+vi.mock('$lib/metadata/progress-tracker', () => ({
+  syncAllSeriesNow: vi.fn(async () => ({
+    pushed: 0,
+    nothing: 0,
+    queued: 0,
+    failed: 0,
+    disabled: 0,
+    total: 0
+  }))
+}));
 vi.mock('$lib/metadata/providers/anilist', async () => {
   // Keep the real AniListError class (needed to simulate a failed Viewer
   // lookup) while replacing only the network call itself.

@@ -62,15 +62,15 @@ describe('sanitizeTracking', () => {
 
   it('keeps a well-formed block verbatim', () => {
     const tracking = {
-      enabled: true,
-      unit: 'chapters' as const,
       number_overrides: { 'uuid-a': 12 },
       last_pushed: { n: 12, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
     };
     expect(sanitizeTracking(tracking)).toEqual(tracking);
   });
 
-  it('defaults enabled/unit and drops bad overrides and last_pushed', () => {
+  it('drops the legacy enable flag and unit, and bad overrides/last_pushed', () => {
+    // `enabled`/`unit` moved out of the block: pushing is one global setting and
+    // the unit is a top-level fact.
     expect(
       sanitizeTracking({
         enabled: 1,
@@ -78,37 +78,28 @@ describe('sanitizeTracking', () => {
         number_overrides: { keep: 3, zero: 0, negative: -1, infinite: Infinity, text: '5' },
         last_pushed: { n: 4, status: 42, at: '2026-08-15T10:00:00.000Z' }
       })
-    ).toEqual({ enabled: false, unit: 'volumes', number_overrides: { keep: 3 } });
+    ).toEqual({ number_overrides: { keep: 3 } });
+    expect(sanitizeTracking({ enabled: true, unit: 'chapters' })).toBeUndefined();
   });
 
-  it('omits number_overrides entirely when nothing survives', () => {
-    expect(
-      sanitizeTracking({ enabled: true, unit: 'volumes', number_overrides: { bad: -1 } })
-    ).toEqual({ enabled: true, unit: 'volumes' });
-    expect(sanitizeTracking({ enabled: true, unit: 'volumes', number_overrides: 'nope' })).toEqual({
-      enabled: true,
-      unit: 'volumes'
-    });
+  it('is undefined when nothing usable survives', () => {
+    expect(sanitizeTracking({ number_overrides: { bad: -1 } })).toBeUndefined();
+    expect(sanitizeTracking({ number_overrides: 'nope' })).toBeUndefined();
+    expect(sanitizeTracking('nope')).toBeUndefined();
   });
 
   it('drops fractional overrides — AniList progress is a GraphQL Int', () => {
-    expect(
-      sanitizeTracking({
-        enabled: true,
-        unit: 'volumes',
-        number_overrides: { keep: 3, half: 2.5, tiny: 0.5 }
-      })
-    ).toEqual({ enabled: true, unit: 'volumes', number_overrides: { keep: 3 } });
+    expect(sanitizeTracking({ number_overrides: { keep: 3, half: 2.5, tiny: 0.5 } })).toEqual({
+      number_overrides: { keep: 3 }
+    });
   });
 
   it('drops a last_pushed that is missing a field or is not an object', () => {
-    expect(sanitizeTracking({ enabled: true, last_pushed: { n: 4, status: 'CURRENT' } })).toEqual({
-      enabled: true,
-      unit: 'volumes'
-    });
-    expect(sanitizeTracking({ enabled: true, last_pushed: 'yesterday' })).toEqual({
-      enabled: true,
-      unit: 'volumes'
+    expect(
+      sanitizeTracking({ number_overrides: { keep: 3 }, last_pushed: { n: 4, status: 'CURRENT' } })
+    ).toEqual({ number_overrides: { keep: 3 } });
+    expect(sanitizeTracking({ number_overrides: { keep: 3 }, last_pushed: 'yesterday' })).toEqual({
+      number_overrides: { keep: 3 }
     });
   });
 });
@@ -198,12 +189,32 @@ describe('sanitizeCloudSeriesMetadata', () => {
         tracking: 'nope'
       }
     });
-    expect(result.a.tracking).toEqual({
-      enabled: false,
-      unit: 'volumes',
-      number_overrides: { good: 4 }
-    });
+    expect(result.a.tracking).toEqual({ number_overrides: { good: 4 } });
     expect(Object.keys(result.b)).not.toContain('tracking');
+  });
+
+  it('lifts a legacy per-series tracking unit to the top level', () => {
+    // Records written before the unit became a shared fact carry it inside
+    // `tracking`; the correction must survive the move, but never override a
+    // unit already stated at the top level.
+    const entry = (over: Record<string, unknown>) => ({
+      series_key: 'a',
+      series_title: 'A',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...over
+    });
+    expect(
+      sanitizeCloudSeriesMetadata({ a: entry({ tracking: { enabled: true, unit: 'chapters' } }) }).a
+        .unit
+    ).toBe('chapters');
+    expect(
+      sanitizeCloudSeriesMetadata({
+        a: entry({ unit: 'volumes', tracking: { unit: 'chapters' } })
+      }).a.unit
+    ).toBe('volumes');
+    expect(
+      Object.keys(sanitizeCloudSeriesMetadata({ a: entry({ tracking: { unit: 'pages' } }) }).a)
+    ).not.toContain('unit');
   });
 
   it('keeps a known tracking unit and drops anything else', () => {

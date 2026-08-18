@@ -42,7 +42,7 @@ function linkedMeta(): SeriesMetadata {
     volume_offsets: { 'vol-1': 4 },
     read_count: 3,
     reread_prompt_suppressed: true,
-    tracking: { enabled: true, unit: 'volumes' }
+    tracking: { number_overrides: { 'vol-1': 2 } }
   };
 }
 

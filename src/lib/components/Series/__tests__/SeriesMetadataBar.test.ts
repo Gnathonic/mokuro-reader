@@ -8,42 +8,55 @@ import { createEmptySeriesMetadata } from '$lib/metadata/types';
 // module's own imports), so the store the factory closes over must be built
 // here with a minimal hand-rolled Svelte store contract rather than via an
 // imported `writable`.
-const { seriesMetadataMap, preferredTitleLanguage, volumesData, computeLocalPassState } =
-  vi.hoisted(() => {
-    function createStore<T>(initial: T) {
-      let value = initial;
-      const subs = new Set<(v: T) => void>();
-      return {
-        subscribe(fn: (v: T) => void) {
-          subs.add(fn);
-          fn(value);
-          return () => subs.delete(fn);
-        },
-        set(v: T) {
-          value = v;
-          subs.forEach((fn) => fn(value));
-        }
-      };
-    }
+const {
+  seriesMetadataMap,
+  preferredTitleLanguage,
+  catalogSettings,
+  anilistConnected,
+  volumesData,
+  computeLocalPassState
+} = vi.hoisted(() => {
+  function createStore<T>(initial: T) {
+    let value = initial;
+    const subs = new Set<(v: T) => void>();
     return {
-      seriesMetadataMap: createStore(new Map<string, unknown>()),
-      // The global preferred title language: the bar reads it to know which title the
-      // header is already showing, so the subtitle can list the other ones.
-      preferredTitleLanguage: createStore('imported'),
-      volumesData: createStore<Record<string, { completed?: boolean }>>({}),
-      // The read-only bar delegates the "Read N times" figure to the progress tracker's
-      // pure helper; the component test only needs to prove it renders what comes back.
-      computeLocalPassState: vi.fn(() => ({
-        passProgress: 0,
-        allCompleted: false,
-        passComplete: false,
-        timesRead: 0,
-        rereading: false
-      }))
+      subscribe(fn: (v: T) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      },
+      set(v: T) {
+        value = v;
+        subs.forEach((fn) => fn(value));
+      }
     };
-  });
+  }
+  return {
+    seriesMetadataMap: createStore(new Map<string, unknown>()),
+    // The global preferred title language: the bar reads it to know which title the
+    // header is already showing, so the subtitle can list the other ones.
+    preferredTitleLanguage: createStore('imported'),
+    // Tracking is on when the account is connected and the global switch allows
+    // it — there is no per-series flag to read any more.
+    catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
+      pushProgressToAniList: true
+    }),
+    anilistConnected: createStore(true),
+    volumesData: createStore<Record<string, { completed?: boolean }>>({}),
+    // The read-only bar delegates the "Read N times" figure to the progress tracker's
+    // pure helper; the component test only needs to prove it renders what comes back.
+    computeLocalPassState: vi.fn(() => ({
+      passProgress: 0,
+      allCompleted: false,
+      passComplete: false,
+      timesRead: 0,
+      rereading: false
+    }))
+  };
+});
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
-vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage }));
+vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage, catalogSettings }));
+vi.mock('$lib/metadata/anilist-auth', () => ({ anilistConnected }));
 vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
 vi.mock('$lib/metadata/progress-tracker', () => ({ computeLocalPassState }));
 
@@ -78,6 +91,8 @@ function linkedMeta(seriesTitle: string, overrides: Record<string, unknown> = {}
 describe('SeriesMetadataBar', () => {
   beforeEach(() => {
     preferredTitleLanguage.set('imported');
+    catalogSettings.set({ pushProgressToAniList: true });
+    anilistConnected.set(true);
     computeLocalPassState.mockReturnValue({
       passProgress: 0,
       allCompleted: false,
@@ -148,7 +163,8 @@ describe('SeriesMetadataBar', () => {
     expect(getByText('Read 1 time')).toBeTruthy();
   });
 
-  it('shows "Tracking off" when linked but tracking is not enabled', () => {
+  it('shows "Tracking off" when the global push switch is off', () => {
+    catalogSettings.set({ pushProgressToAniList: false });
     seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
     const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
@@ -156,9 +172,17 @@ describe('SeriesMetadataBar', () => {
     expect(getByText('Tracking off')).toBeTruthy();
   });
 
-  it('shows "Tracking on" with no push-yet hint when enabled but never pushed', () => {
-    const meta = linkedMeta('One Piece', { tracking: { enabled: true, unit: 'volumes' } });
-    seriesMetadataMap.set(new Map([['one piece', meta]]));
+  it('shows "Tracking off" when the AniList account is not connected', () => {
+    anilistConnected.set(false);
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [] }
+    });
+    expect(getByText('Tracking off')).toBeTruthy();
+  });
+
+  it('shows "Tracking on" for a linked series with no per-series flag at all', () => {
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
     const { getByText, queryByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
@@ -169,7 +193,7 @@ describe('SeriesMetadataBar', () => {
   it('shows the last-pushed volume and date once tracking has pushed', () => {
     const at = '2026-07-09T12:00:00.000Z';
     const meta = linkedMeta('One Piece', {
-      tracking: { enabled: true, unit: 'volumes', last_pushed: { n: 5, status: 'CURRENT', at } }
+      tracking: { last_pushed: { n: 5, status: 'CURRENT', at } }
     });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByText } = render(SeriesMetadataBar, {
@@ -179,23 +203,33 @@ describe('SeriesMetadataBar', () => {
     expect(getByText(`Tracking on · last pushed vol. 5 · ${expectedDate}`)).toBeTruthy();
   });
 
-  it('uses the chapters unit label when tracking by chapters', () => {
+  it('uses the chapters label when the archives are chapters', () => {
     const at = '2026-07-09T12:00:00.000Z';
     const meta = linkedMeta('One Piece', {
-      tracking: { enabled: true, unit: 'chapters', last_pushed: { n: 42, status: 'CURRENT', at } }
+      tracking: { last_pushed: { n: 42, status: 'CURRENT', at } }
     });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [volume('Chapter 41'), volume('Chapter 42')] }
     });
     expect(getByText(/last pushed ch\. 42/)).toBeTruthy();
   });
 
-  it('shows no tracking status for a series linked only to MAL (no AniList id)', () => {
+  it('prefers a corrected unit over the archive names', () => {
+    const at = '2026-07-09T12:00:00.000Z';
     const meta = linkedMeta('One Piece', {
-      external_ids: { mal: 13 },
-      tracking: { enabled: true, unit: 'volumes' }
+      unit: 'volumes',
+      tracking: { last_pushed: { n: 3, status: 'CURRENT', at } }
     });
+    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    const { getByText } = render(SeriesMetadataBar, {
+      props: { seriesTitle: 'One Piece', volumes: [volume('Chapter 41'), volume('Chapter 42')] }
+    });
+    expect(getByText(/last pushed vol\. 3/)).toBeTruthy();
+  });
+
+  it('shows no tracking status for a series linked only to MAL (no AniList id)', () => {
+    const meta = linkedMeta('One Piece', { external_ids: { mal: 13 } });
     seriesMetadataMap.set(new Map([['one piece', meta]]));
     const { queryByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }

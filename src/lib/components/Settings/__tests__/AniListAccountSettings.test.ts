@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level
 // statement (including this file's own imports), so any state a factory
@@ -31,7 +31,15 @@ const h = vi.hoisted(() => {
     catalogSettings: createStore<{ pushProgressToAniList: boolean } | undefined>({
       pushProgressToAniList: true
     }),
-    auth: { clientId: 'client' as string | undefined, token: null as string | null }
+    auth: { clientId: 'client' as string | undefined, token: null as string | null },
+    syncAllSeriesNow: vi.fn(async () => ({
+      pushed: 3,
+      nothing: 8,
+      queued: 1,
+      failed: 0,
+      disabled: 0,
+      total: 12
+    }))
   };
 });
 
@@ -50,6 +58,7 @@ vi.mock('$lib/metadata/anilist-auth', () => ({
     h.anilistConnected.set(false);
   })
 }));
+vi.mock('$lib/metadata/progress-tracker', () => ({ syncAllSeriesNow: h.syncAllSeriesNow }));
 vi.mock('$lib/settings/settings', () => ({
   catalogSettings: h.catalogSettings,
   updateCatalogSetting: vi.fn()
@@ -57,6 +66,7 @@ vi.mock('$lib/settings/settings', () => ({
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { startAniListLogin, disconnectAniList } from '$lib/metadata/anilist-auth';
+import { syncAllSeriesNow } from '$lib/metadata/progress-tracker';
 import { updateCatalogSetting } from '$lib/settings/settings';
 import { showSnackbar } from '$lib/util/snackbar';
 import AniListAccountSettings from '../AniListAccountSettings.svelte';
@@ -69,6 +79,14 @@ describe('AniListAccountSettings', () => {
     h.anilistUser.set(null);
     h.anilistConnected.set(false);
     h.catalogSettings.set({ pushProgressToAniList: true });
+    vi.mocked(syncAllSeriesNow).mockResolvedValue({
+      pushed: 3,
+      nothing: 8,
+      queued: 1,
+      failed: 0,
+      disabled: 0,
+      total: 12
+    });
   });
 
   afterEach(() => {
@@ -81,6 +99,7 @@ describe('AniListAccountSettings', () => {
     const { container, queryByText } = render(AniListAccountSettings);
     expect(queryByText(/Connect AniList/)).toBeNull();
     expect(queryByText(/Push progress to AniList when/)).toBeNull();
+    expect(queryByText('Sync all linked series now')).toBeNull();
     // Vitest runs with DEV set, so the setup hint shows; production would render nothing.
     expect(container.textContent).toContain('VITE_ANILIST_CLIENT_ID');
   });
@@ -127,5 +146,70 @@ describe('AniListAccountSettings', () => {
       'Push progress to AniList when a volume is finished'
     ) as HTMLInputElement;
     expect(input.checked).toBe(false);
+  });
+});
+
+describe('AniListAccountSettings — sync all', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.auth.clientId = 'client';
+    h.anilistUser.set({ id: 1, name: 'nathan' });
+    h.anilistConnected.set(true);
+    h.catalogSettings.set({ pushProgressToAniList: true });
+    vi.mocked(syncAllSeriesNow).mockResolvedValue({
+      pushed: 3,
+      nothing: 8,
+      queued: 1,
+      failed: 0,
+      disabled: 0,
+      total: 12
+    });
+  });
+
+  it('syncs every linked series and reports the tally', async () => {
+    const { getByText } = render(AniListAccountSettings);
+    await fireEvent.click(getByText('Sync all linked series now'));
+    expect(syncAllSeriesNow).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(showSnackbar).toHaveBeenCalledWith(
+        'Synced 12 series — 3 pushed, 8 up to date, 1 queued'
+      )
+    );
+  });
+
+  it('says so when nothing is linked', async () => {
+    vi.mocked(syncAllSeriesNow).mockResolvedValue({
+      pushed: 0,
+      nothing: 0,
+      queued: 0,
+      failed: 0,
+      disabled: 0,
+      total: 0
+    });
+    const { getByText } = render(AniListAccountSettings);
+    await fireEvent.click(getByText('Sync all linked series now'));
+    await waitFor(() => expect(showSnackbar).toHaveBeenCalledWith('No linked series to sync'));
+  });
+
+  it('cannot be clicked while signed out', () => {
+    h.anilistConnected.set(false);
+    const { getByText } = render(AniListAccountSettings);
+    expect(
+      (getByText('Sync all linked series now').closest('button') as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
+  it('reports a thrown pass as an error', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(syncAllSeriesNow).mockRejectedValueOnce(new Error('boom'));
+      const { getByText } = render(AniListAccountSettings);
+      await fireEvent.click(getByText('Sync all linked series now'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't reach AniList — try again")
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

@@ -84,19 +84,18 @@ export function sanitizeTitlePreference(value: unknown): DisplayTitleLanguage | 
  * Validates a `tracking` block from an untrusted source.
  *
  * Every field the tracker reads is checked, because each one steers a write to
- * the user's AniList account: a junk `unit` would push volume numbers into the
- * chapter field, a junk `number_overrides` entry would push `NaN` as progress,
- * and a junk `last_pushed` would make `alreadySettled()` skip real pushes.
- * A non-object drops the whole block (= "no tracking configured"); bad fields
- * inside an object are dropped or defaulted individually.
+ * the user's AniList account: a junk `number_overrides` entry would push `NaN`
+ * as progress, and a junk `last_pushed` would make `alreadySettled()` skip real
+ * pushes. Legacy `enabled`/`unit` are dropped — pushing is a global setting and
+ * the unit is a top-level fact (`sanitizeTrackingUnit`); a caller holding a
+ * whole record lifts a legacy `tracking.unit` up before calling this. A
+ * non-object, or an object with nothing usable left, is `undefined` (= "no
+ * tracking state for this series").
  */
 export function sanitizeTracking(value: unknown): SeriesTracking | undefined {
   if (!isRecord(value)) return undefined;
 
-  const out: SeriesTracking = {
-    enabled: value.enabled === true,
-    unit: value.unit === 'chapters' ? 'chapters' : 'volumes'
-  };
+  const out: SeriesTracking = {};
 
   if (isRecord(value.number_overrides)) {
     const overrides: Record<string, number> = {};
@@ -120,7 +119,7 @@ export function sanitizeTracking(value: unknown): SeriesTracking | undefined {
     out.last_pushed = { n: lastPushed.n, status: lastPushed.status, at: lastPushed.at };
   }
 
-  return out;
+  return out.number_overrides || out.last_pushed ? out : undefined;
 }
 
 /** Series spine offset is a percentage nudge on the catalog stack step. */
