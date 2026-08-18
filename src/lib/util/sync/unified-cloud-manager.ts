@@ -28,6 +28,7 @@ import {
   moveSeriesIndexKey,
   putSeriesIndex
 } from '$lib/metadata/series-index';
+import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -143,6 +144,41 @@ class UnifiedCloudManager {
    */
   async fetchAllCloudVolumes(): Promise<void> {
     await cacheManager.fetchAll();
+    this.refreshSeriesIndexesInBackground();
+  }
+
+  /**
+   * Re-read the `series.json` sidecars this listing shows as changed.
+   *
+   * Fire-and-forget by design: the listing itself is what the caller (catalog,
+   * cloud screen, rename) is waiting on, while the index refresh is a cache
+   * warm-up that may download files. Every failure path is swallowed — an index
+   * that stays stale costs a placeholder its counts, nothing more.
+   */
+  private refreshSeriesIndexesInBackground(): void {
+    try {
+      const provider = this.getActiveProvider();
+      if (!provider) return;
+
+      const files = (this.getAllCloudVolumes() ?? []) as CloudFileMetadata[];
+      if (files.length === 0) return;
+
+      const listing = new Map<string, CloudVolumeWithProvider[]>();
+      for (const file of files) {
+        const folder = normalizeCloudPath(file.path).split('/')[0];
+        if (!folder) continue;
+        const entry: CloudVolumeWithProvider = { ...file, provider: provider.type };
+        const existing = listing.get(folder);
+        if (existing) existing.push(entry);
+        else listing.set(folder, [entry]);
+      }
+
+      void Promise.resolve(refreshSeriesIndexes(listing)).catch((error) =>
+        console.warn('Series index refresh failed:', error)
+      );
+    } catch (error) {
+      console.warn('Series index refresh could not start:', error);
+    }
   }
 
   /**
@@ -289,6 +325,33 @@ class UnifiedCloudManager {
         `Failed to delete ${failures.length} of ${files.length} file(s): ${failures.join('; ')}`
       );
     }
+
+    await this.cleanupSeriesFileIfFolderEmptied(seriesTitle);
+  }
+
+  /**
+   * Drop `<Series>/series.json` (and its cached record) once the folder holds no
+   * `.cbz` any more — after the last volume was deleted or moved out.
+   *
+   * An index for a series with no volumes is worse than no index: the refresh
+   * pass ignores such folders, so the file would linger forever, and any device
+   * that still had the cached record would keep showing a series that is gone.
+   * Best-effort — an orphaned sidecar is harmless, so nothing here is allowed to
+   * fail the delete/rename that triggered it.
+   */
+  private async cleanupSeriesFileIfFolderEmptied(seriesTitle: string): Promise<void> {
+    try {
+      const stillHasArchive = this.getCloudVolumesBySeries(seriesTitle).some((file) =>
+        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+      );
+      if (stillHasArchive) return;
+
+      const sidecar = this.getCloudSeriesFile(seriesTitle);
+      if (sidecar) await this.deleteFileIdempotent(sidecar);
+      await deleteSeriesIndex(normalizeSeriesKey(seriesTitle));
+    } catch (error) {
+      console.warn(`Failed to clean up series.json for '${seriesTitle}':`, error);
+    }
   }
 
   private replaceCachedFile(oldFile: CloudFileMetadata, updatedFile: CloudFileMetadata): void {
@@ -357,6 +420,9 @@ class UnifiedCloudManager {
     );
 
     if (changed > 0 && oldSeriesTitle !== newSeriesTitle) {
+      // Sidecar first: while `series.json` is still there the old directory can
+      // never be empty, so the prune below would always no-op.
+      await this.cleanupSeriesFileIfFolderEmptied(oldSeriesTitle);
       await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
     }
 
@@ -760,7 +826,14 @@ class UnifiedCloudManager {
     if (!indexNeedsRefresh(cached, stamp)) return cached?.file;
 
     const fresh = await this.readCloudSeriesFile(cloudFile);
-    if (!fresh) return undefined; // unreadable content → this write replaces it
+    if (!fresh) {
+      // The cloud copy is junk (hand-edited, truncated, a proxy error page), so
+      // this write replaces it — but the volumes another device published are
+      // still known from the last good fetch. Merging on top of the CACHED copy
+      // keeps them; starting from nothing would quietly delete them from the
+      // index for everyone.
+      return cached?.file;
+    }
     await putSeriesIndex({
       series_key: seriesKey,
       series_title: seriesTitle,
@@ -857,16 +930,24 @@ class UnifiedCloudManager {
     const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
     await this.uploadFile(path, blob);
 
-    // Stamp the cache with what we just uploaded (the same values `uploadFile`
-    // wrote into the file cache) so a listing that still reports our own write
-    // does not trigger a re-download. Providers that stamp their own
-    // modifiedTime cost at most one extra refresh.
+    // Stamp the cache with EXACTLY what the file cache now holds for this path
+    // (read back rather than re-derived): `indexNeedsRefresh` compares the
+    // cached stamp against the listing, so a second `new Date()` here would
+    // differ from the entry `uploadFile` just added and make the very next
+    // listing re-download our own write. Providers that later report their own
+    // modifiedTime still cost at most one extra refresh.
+    const uploaded = this.getCloudSeriesFile(seriesTitle);
     const now = new Date().toISOString();
     await putSeriesIndex({
       series_key: seriesKey,
       series_title: seriesTitle,
       file,
-      source: { provider: provider.type, path, size: blob.size, modifiedTime: now },
+      source: {
+        provider: provider.type,
+        path,
+        size: uploaded?.size ?? blob.size,
+        modifiedTime: uploaded?.modifiedTime ?? now
+      },
       fetched_at: now
     });
     return 'written';

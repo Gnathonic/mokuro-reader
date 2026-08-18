@@ -4,6 +4,7 @@ import type { CloudFileMetadata } from './provider-interface';
 const fetchAll = vi.fn();
 const getBySeries = vi.fn();
 const getCache = vi.fn();
+const getAllFiles = vi.fn(() => [] as unknown[]);
 const getActiveProvider = vi.fn();
 
 vi.mock('$lib/util/sync/cache-manager', () => ({
@@ -11,7 +12,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
     fetchAll,
     getBySeries,
     getCache,
-    getAllFiles: vi.fn(),
+    getAllFiles,
     allFiles: { subscribe: vi.fn() },
     isFetchingState: { subscribe: vi.fn() }
   }
@@ -63,6 +64,11 @@ vi.mock('$lib/metadata/series-index', async () => {
     moveSeriesIndexKey: (o: string, n: string) => moveSeriesIndexKey(o, n)
   };
 });
+
+const refreshSeriesIndexes = vi.fn(async (_map: unknown) => {});
+vi.mock('$lib/metadata/series-index-sync', () => ({
+  refreshSeriesIndexes: (map: unknown) => refreshSeriesIndexes(map)
+}));
 
 /** A writable provider mock exposing every primitive renameVolume composes. */
 function makeRenameProvider(overrides: Record<string, unknown> = {}) {
@@ -1213,5 +1219,239 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     expect(deleted).toContain('One Piece/series.json');
     expect(result.failed).toBe(0);
     expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
+  });
+});
+
+describe('UnifiedCloudManager series.json lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    getSeriesIndex.mockResolvedValue(undefined);
+    getAllFiles.mockReturnValue([]);
+  });
+
+  function file(path: string, overrides: Partial<CloudFileMetadata> = {}): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size: 100,
+      ...overrides
+    };
+  }
+
+  /** The JSON body of the `series.json` upload. */
+  async function uploadedJson(provider: { uploadFile: ReturnType<typeof vi.fn> }) {
+    const call = provider.uploadFile.mock.calls.find(
+      (args: unknown[]) => typeof args[0] === 'string' && args[0].endsWith('series.json')
+    );
+    expect(call).toBeTruthy();
+    return JSON.parse(await (call![1] as Blob).text());
+  }
+
+  /** A cache mock backed by a mutable listing, so deletes/uploads are visible. */
+  function statefulCache(
+    state: CloudFileMetadata[],
+    addOverrides: Partial<CloudFileMetadata> = {}
+  ) {
+    getBySeries.mockImplementation((series: string) =>
+      state.filter((f) => f.path.startsWith(`${series}/`))
+    );
+    const cache = {
+      removeById: vi.fn((fileId: string) => {
+        const index = state.findIndex((f) => f.fileId === fileId);
+        if (index >= 0) state.splice(index, 1);
+      }),
+      add: vi.fn((path: string, meta: CloudFileMetadata) => {
+        state.push({ ...meta, path, fileId: meta.fileId ?? path, ...addOverrides });
+      })
+    };
+    getCache.mockReturnValue(cache);
+    return cache;
+  }
+
+  it('kicks off an index refresh after a listing, without awaiting it', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([file('One Piece/Volume 1.cbz'), file('One Piece/series.json')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.fetchAllCloudVolumes();
+
+    expect(fetchAll).toHaveBeenCalled();
+    expect(refreshSeriesIndexes).toHaveBeenCalledTimes(1);
+    const listing = refreshSeriesIndexes.mock.calls[0][0] as Map<string, CloudFileMetadata[]>;
+    expect(listing.get('One Piece')).toHaveLength(2);
+  });
+
+  it('keeps the cached entries when the cloud copy is unparsable junk', async () => {
+    // Junk is not "no index": another device's volumes are still known from the
+    // last good fetch, and discarding them here would drop them from the file we
+    // are about to write.
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => new Blob(['<html>proxy error</html>']))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz'),
+      // Volume 2 is backed up but not installed here — exactly the entry only
+      // the cached index knows about.
+      file('One Piece/Volume 2.cbz'),
+      file('One Piece/series.json', { size: 999 })
+    ]);
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'local-uuid',
+        series_uuid: 's',
+        series_title: 'One Piece',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: {
+        version: 2,
+        series_title: 'One Piece',
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-01-01T00:00:00.000Z',
+        volumes: [
+          {
+            volume_uuid: 'other-device-uuid',
+            volume_title: 'Volume 2',
+            page_count: 3,
+            character_count: 3,
+            page_char_counts: [3],
+            mokuro_version: '0.4.11'
+          }
+        ]
+      },
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 42,
+        modifiedTime: '2026-08-01T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-01T00:00:00.000Z'
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+
+    const uploaded = await uploadedJson(provider);
+    // Volume 2 came only from the cached copy; the junk cloud file must not have
+    // erased it.
+    expect(uploaded.volumes.map((v: { volume_uuid: string }) => v.volume_uuid)).toContain(
+      'other-device-uuid'
+    );
+  });
+
+  it('stamps the cached index with the size/mtime the file cache holds', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    // The cache normalises what it stores (some providers report their own
+    // stamp); the index must be stamped with THAT, not a second new Date().
+    statefulCache([file('One Piece/Volume 1.cbz')], {
+      size: 4242,
+      modifiedTime: '2026-08-17T12:00:00.000Z'
+    });
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'local-uuid',
+        series_uuid: 's',
+        series_title: 'One Piece',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+
+    expect(putSeriesIndex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          path: 'One Piece/series.json',
+          size: 4242,
+          modifiedTime: '2026-08-17T12:00:00.000Z'
+        })
+      })
+    );
+  });
+
+  it('deletes the sidecar and the cached index when the last volume leaves a folder', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/Volume 1.mokuro', { fileId: 'mokuro-1' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
+  });
+
+  it('keeps the sidecar while other volumes remain in the folder', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/Volume 2.cbz', { fileId: 'cbz-2' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
+
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the emptied folder’s sidecar after a cross-series volume move', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+    generateSidecars.mockResolvedValue({});
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('One Piece', 'Volume 1', 'Naruto', 'Volume 1', 'uuid-1');
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
+    // The directory prune runs after the sidecar is gone, or it can never be empty.
+    expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('leaves the sidecar alone when a rename stays inside the series', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+    generateSidecars.mockResolvedValue({});
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('One Piece', 'Volume 1', 'One Piece', 'Vol 1', 'uuid-1');
+
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).not.toHaveBeenCalled();
   });
 });

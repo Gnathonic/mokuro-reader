@@ -69,6 +69,13 @@ async function runWrite(seriesKey: string): Promise<void> {
   try {
     if (!hasWritableProvider()) return;
     if (!(await hasBackedUpVolume(seriesTitle))) return;
+    // Known window: this builds against the CACHED listing. `writeSeriesFile`
+    // re-reads the cloud copy whenever that listing shows a stamp the index
+    // cache has not seen, but if the listing itself predates another device's
+    // upload we merge on top of an older copy and its entries drop out of the
+    // file until that device writes again. Closing it would mean a full
+    // `fetchAllCloudVolumes()` per edit (there is no per-folder listing in the
+    // provider interface) — far too expensive for a debounced background write.
     await unifiedCloudManager.writeSeriesFile(seriesTitle);
   } catch (error) {
     console.warn(`[series-file-sync] failed to write series.json for '${seriesTitle}':`, error);

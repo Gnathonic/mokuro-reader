@@ -376,6 +376,20 @@ async function processVolumeData(
   // This handles missing pages, image-only volumes, placeholder generation, etc.
   const processedVolume = await processVolume(decompressedVolume);
 
+  // UUID contract with the catalog placeholder (see `generatePlaceholders`):
+  // the queued placeholder keeps whatever uuid it was shown with, and the
+  // imported volume must land on the same one so progress recorded against the
+  // placeholder (volume-data.json is keyed by uuid) stays attached.
+  //
+  // - OCR volumes: `processVolume` takes the uuid from the archive's `.mokuro`,
+  //   which is the same source the `series.json` index entry was written from,
+  //   so an index-backed placeholder already matches. Without an index the
+  //   placeholder's uuid was derived from the path and the real one replaces it
+  //   — the pre-existing behaviour, and the placeholder disappears because the
+  //   local row now owns that cloud path.
+  // - Image-only volumes: the import mints a uuid from the path, so the
+  //   placeholder's uuid is forced in below.
+  //
   // Keep cloud placeholder series identity for image-only imports so they stay grouped
   // with existing volumes before OCR sidecars are applied.
   const isImageOnly =

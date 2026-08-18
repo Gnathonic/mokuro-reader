@@ -8,6 +8,7 @@ import { generatePlaceholders } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
 
@@ -77,17 +78,50 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
   return () => subscription.unsubscribe();
 });
 
+/**
+ * What the placeholder pass actually consumes from the cached indexes: which
+ * series have one, and whether it has been re-fetched since (`fetched_at` is
+ * bumped by every `putSeriesIndex`). `seriesIndexMap` is a Dexie liveQuery, so
+ * it re-emits a brand-new Map of brand-new row objects on ANY write to the
+ * table — reference comparison would never hold, and rebuilding the placeholder
+ * set per write would re-run the whole cloud scan (plus its OCR-upgrade side
+ * effects) for a series the user is not even looking at.
+ */
+function seriesIndexSignature(map: Map<string, SeriesIndexRecord>): string {
+  const parts: string[] = [];
+  for (const [key, record] of map) parts.push(`${key}\u0000${record.fetched_at}`);
+  parts.sort();
+  return parts.join('');
+}
+
+let lastPlaceholderInputs: {
+  volumes: unknown;
+  cloudFiles: unknown;
+  indexSignature: string;
+} | null = null;
+let lastPlaceholders: VolumeMetadata[] = [];
+
 // Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles],
-  ([$volumes, $cloudFiles]) => {
+  [volumes, unifiedCloudManager.cloudFiles, seriesIndexMap],
+  ([$volumes, $cloudFiles, $seriesIndexMap]) => {
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);
 
     // Generate cloud provider placeholders
     if ($cloudFiles.size > 0) {
-      const cloudPlaceholders = generatePlaceholders($cloudFiles, localVolumes);
-      for (const placeholder of cloudPlaceholders) {
+      const indexSignature = seriesIndexSignature($seriesIndexMap);
+      if (
+        !lastPlaceholderInputs ||
+        lastPlaceholderInputs.volumes !== $volumes ||
+        lastPlaceholderInputs.cloudFiles !== $cloudFiles ||
+        lastPlaceholderInputs.indexSignature !== indexSignature
+      ) {
+        lastPlaceholders = generatePlaceholders($cloudFiles, localVolumes, $seriesIndexMap);
+        lastPlaceholderInputs = { volumes: $volumes, cloudFiles: $cloudFiles, indexSignature };
+      }
+
+      for (const placeholder of lastPlaceholders) {
         combined[placeholder.volume_uuid] = placeholder;
       }
     }

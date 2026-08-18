@@ -3,7 +3,9 @@ import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manag
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
-import { isSeriesFilePath } from '$lib/metadata/series-file';
+import { isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
+import type { SeriesIndexRecord } from '$lib/metadata/series-index';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 
 /**
  * Extract series title from description field
@@ -34,7 +36,7 @@ function extractSeriesTitleFromDescription(description: string | undefined): str
 function parseCloudPath(
   path: string,
   description?: string
-): { seriesTitle: string; volumeTitle: string } | null {
+): { seriesTitle: string; volumeTitle: string; folderName: string } | null {
   const parts = path.split('/');
   if (parts.length !== 2) return null;
 
@@ -48,15 +50,42 @@ function parseCloudPath(
   // Prefer verified series title from description over folder name
   const seriesTitle = extractSeriesTitleFromDescription(description) || folderName;
 
-  return { seriesTitle, volumeTitle };
+  return { seriesTitle, volumeTitle, folderName };
+}
+
+/**
+ * The `series.json` entry describing this cloud file, if the cached index has
+ * one. Looked up by FOLDER name — the index is a sidecar of the cloud folder,
+ * so a `Series:` description (which only renames the series for display) must
+ * not change which file we read. Titles are compared with the catalog's own
+ * grouping normalisation so a casing/whitespace difference between the cloud
+ * filename and the indexed title still matches.
+ */
+function findIndexEntry(
+  indexMap: Map<string, SeriesIndexRecord> | undefined,
+  folderName: string,
+  volumeTitle: string
+): SeriesFileVolume | undefined {
+  const record = indexMap?.get(normalizeSeriesKey(folderName));
+  if (!record) return undefined;
+
+  const wanted = normalizeSeriesKey(volumeTitle);
+  return record.file.volumes.find((entry) => normalizeSeriesKey(entry.volume_title) === wanted);
 }
 
 /**
  * Generate placeholder VolumeMetadata for a cloud-only file
+ *
+ * With an index entry the placeholder carries the volume's REAL uuid and counts
+ * (written by whichever device has it installed), so synced progress — keyed by
+ * uuid — attaches to it before it is ever downloaded, and the catalog can show
+ * page/character totals. Without one it falls back to the derived identity: a
+ * deterministic uuid from the path and zeroed counts, filled in on download.
  */
 function createPlaceholder(
   cloudFile: CloudVolumeWithProvider,
-  seriesUuid: string
+  seriesUuid: string,
+  indexEntry?: SeriesFileVolume
 ): VolumeMetadata | null {
   const parsed = parseCloudPath(cloudFile.path, cloudFile.description);
   if (!parsed) return null;
@@ -65,17 +94,18 @@ function createPlaceholder(
 
   // Generate deterministic volume UUID from series + volume name
   // This ensures the same volume gets the same UUID across devices
-  const volumeUuid = generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
+  const volumeUuid =
+    indexEntry?.volume_uuid ?? generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
-  return {
-    mokuro_version: 'unknown', // Will be filled in after download
+  const placeholder: VolumeMetadata = {
+    mokuro_version: indexEntry?.mokuro_version ?? 'unknown', // Filled in after download
     series_title: seriesTitle,
     series_uuid: seriesUuid,
     volume_title: volumeTitle,
     volume_uuid: volumeUuid,
-    page_count: 0, // Unknown until downloaded
-    character_count: 0, // Unknown until downloaded
-    page_char_counts: [], // Empty until downloaded and calculated
+    page_count: indexEntry?.page_count ?? 0, // Unknown until downloaded
+    character_count: indexEntry?.character_count ?? 0, // Unknown until downloaded
+    page_char_counts: [...(indexEntry?.page_char_counts ?? [])], // Empty until downloaded
 
     // Placeholder-specific fields
     isPlaceholder: true,
@@ -85,15 +115,24 @@ function createPlaceholder(
     cloudSize: cloudFile.size,
     cloudPath: cloudFile.path // Store path for series extraction during download
   };
+
+  if (indexEntry?.spine_width !== undefined) placeholder.spine_width = indexEntry.spine_width;
+
+  return placeholder;
 }
 
 /**
  * Identify cloud-only files by comparing cloud files with local volumes
  * Returns placeholder VolumeMetadata for files that exist in cloud but not locally
+ *
+ * `indexMap` is the cached `series.json` per series (`seriesIndexMap`). It is
+ * optional and purely additive: a series without an index behaves exactly as
+ * before.
  */
 export function generatePlaceholders(
   cloudFilesMap: Map<string, CloudVolumeWithProvider[]>,
-  localVolumes: VolumeMetadata[]
+  localVolumes: VolumeMetadata[],
+  indexMap?: Map<string, SeriesIndexRecord>
 ): VolumeMetadata[] {
   // Skip during SSR/build
   if (!browser) {
@@ -104,6 +143,11 @@ export function generatePlaceholders(
   const localPaths = new Set(
     localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`)
   );
+  // …and of local uuids. A placeholder that adopts an indexed uuid can collide
+  // with an installed volume the path check misses (renamed locally, or filed
+  // under the .mokuro's own series title). Emitting it would overwrite the real
+  // row in the catalog's combined map — the placeholder is merged in last.
+  const localUuids = new Set(localVolumes.map((vol) => vol.volume_uuid));
   const localVolumeByPath = new Map<string, VolumeMetadata>();
   const localImageOnlyByVolumeTitle = new Map<string, VolumeMetadata[]>();
   for (const vol of localVolumes) {
@@ -172,6 +216,7 @@ export function generatePlaceholders(
 
   // Generate placeholders
   const placeholders: VolumeMetadata[] = [];
+  const emittedUuids = new Set<string>();
   for (const cloudFile of cloudOnlyFiles) {
     const parsed = parseCloudPath(cloudFile.path, cloudFile.description);
     if (!parsed) continue;
@@ -182,8 +227,16 @@ export function generatePlaceholders(
       seriesTitleToUuid.get(parsed.seriesTitle.toLowerCase()) ||
       generateDeterministicUUID(parsed.seriesTitle);
 
-    const placeholder = createPlaceholder(cloudFile, seriesUuid);
+    const indexEntry = findIndexEntry(indexMap, parsed.folderName, parsed.volumeTitle);
+    const placeholder = createPlaceholder(cloudFile, seriesUuid, indexEntry);
     if (placeholder) {
+      // Installed already (under any title), or a duplicate of a placeholder we
+      // just emitted: either way a second row with this uuid would clobber the
+      // first one in the catalog's uuid-keyed map.
+      if (localUuids.has(placeholder.volume_uuid)) continue;
+      if (emittedUuids.has(placeholder.volume_uuid)) continue;
+      emittedUuids.add(placeholder.volume_uuid);
+
       const basePath = cloudFile.path.replace(/\.cbz$/i, '');
       const thumbnailInfo = thumbnailMap.get(basePath);
       if (thumbnailInfo) {

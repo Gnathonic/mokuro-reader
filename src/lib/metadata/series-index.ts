@@ -24,6 +24,15 @@ export async function getSeriesIndex(seriesKey: string): Promise<SeriesIndexReco
   return db.series_index.get(seriesKey);
 }
 
+/**
+ * Every cached record. One read for the whole table: the listing refresh needs
+ * the cached stamp of each series AND the keys that no longer have a folder, so
+ * a per-series `get` would be N round trips for the same data.
+ */
+export async function listSeriesIndexes(): Promise<SeriesIndexRecord[]> {
+  return db.series_index.toArray();
+}
+
 export async function putSeriesIndex(rec: SeriesIndexRecord): Promise<void> {
   await db.series_index.put(rec);
 }
