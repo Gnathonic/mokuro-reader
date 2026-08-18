@@ -11,6 +11,7 @@
 - Push read progress and re-reads to AniList (per-series opt-in)
 - Restart series: archive a finished read; reader offers it on re-open
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
+- Series editor: spine shelf with persistent series/volume offsets
 
 ## [1.8.2] - 2026-07-09
 
