@@ -223,5 +223,9 @@
       <span class="text-xs text-gray-500 dark:text-gray-400">Link to AniList to track progress</span
       >
     {/if}
+  {:else if import.meta.env.DEV}
+    <span class="text-xs text-gray-500 dark:text-gray-400"
+      >AniList progress push is hidden: no <code>VITE_ANILIST_CLIENT_ID</code> (see Settings → AniList)</span
+    >
   {/if}
 </div>

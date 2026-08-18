@@ -76,10 +76,13 @@ describe('AniListAccountSettings', () => {
     h.anilistConnected.set(false);
   });
 
-  it('renders nothing when no AniList client id is configured', () => {
+  it('renders only a dev hint (no account controls) when no AniList client id is configured', () => {
     h.auth.clientId = undefined;
-    const { container } = render(AniListAccountSettings);
-    expect(container.textContent?.trim()).toBe('');
+    const { container, queryByText } = render(AniListAccountSettings);
+    expect(queryByText(/Connect AniList/)).toBeNull();
+    expect(queryByText(/Push progress to AniList when/)).toBeNull();
+    // Vitest runs with DEV set, so the setup hint shows; production would render nothing.
+    expect(container.textContent).toContain('VITE_ANILIST_CLIENT_ID');
   });
 
   it('shows Connect and calls startAniListLogin when not connected', async () => {

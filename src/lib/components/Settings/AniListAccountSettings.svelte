@@ -54,4 +54,11 @@
       forward; use "Restart series" to record a re-read.
     </p>
   </div>
+{:else if import.meta.env.DEV}
+  <!-- Dev-only: production builds without a client simply hide AniList. -->
+  <p class="text-xs text-gray-500">
+    AniList account & progress push are hidden: set <code>VITE_ANILIST_CLIENT_ID</code> in
+    <code>.env.local</code> (register a client at anilist.co/settings/developer with redirect
+    <code>{location.origin}/</code>) and restart the dev server.
+  </p>
 {/if}
