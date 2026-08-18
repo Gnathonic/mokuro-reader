@@ -20,7 +20,7 @@ export interface RemoteEntry {
   repeat: number;
 }
 
-export type ProgressPushEvent = 'completion' | 'restart' | 'sync';
+export type ProgressPushEvent = 'completion' | 'restart' | 'sync' | 'read_count';
 
 export interface ProgressPushPlan {
   status?: 'CURRENT' | 'COMPLETED' | 'REPEATING';
@@ -31,6 +31,9 @@ export interface ProgressPushPlan {
 
 /**
  * Decide what (if anything) to send to AniList. Pure.
+ * - read_count: a manual correction of "Read N times" → the repeat count alone,
+ *   in EITHER direction. It is the one event that may lower a remote figure
+ *   besides a restart, because the user typed the number on purpose.
  * - restart: the one explicit decrease → REPEATING with progress 0. A no-op
  *   (null) when remote already reflects it (status REPEATING, progress 0,
  *   repeat already caught up) — restarting twice must not re-push.
@@ -60,6 +63,12 @@ export function planProgressPush(
   const remoteRepeat = remote?.repeat ?? 0;
   const desiredRepeat = Math.max(0, local.timesRead - 1);
   const plan: ProgressPushPlan = {};
+
+  if (event === 'read_count') {
+    // Nothing else is implied: the pass itself did not move, so status and
+    // progress stay exactly as they are.
+    return desiredRepeat === remoteRepeat ? null : { repeat: desiredRepeat };
+  }
 
   if (event === 'restart') {
     const alreadyRestarted =

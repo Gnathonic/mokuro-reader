@@ -111,6 +111,7 @@ import {
   computeLocalPassState,
   flushPendingPushes,
   initProgressTracker,
+  onReadCountChanged,
   onSeriesRestarted,
   onVolumeCompleted,
   readPendingPushes,
@@ -523,7 +524,7 @@ describe('flushPendingPushes', () => {
     vi.useRealTimers();
   });
 
-  const seedPending = (event: 'restart' | 'sync') =>
+  const seedPending = (event: 'restart' | 'read_count' | 'sync') =>
     localStorage.setItem(
       'anilist_pending_pushes',
       JSON.stringify({
@@ -556,6 +557,31 @@ describe('flushPendingPushes', () => {
     expect(calls[1][1]).toEqual({ mediaId: 30013, status: 'REPEATING', progressVolumes: 0 });
     // The follow-up sync re-plans against the live remote and finds nothing left.
     expect(calls).toHaveLength(3);
+    expect(readPendingPushes()).toEqual({});
+  });
+
+  it('replays a queued read_count as a read_count, then syncs', async () => {
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 0 }));
+    h.volumesStore.set({});
+    seedPending('read_count');
+
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 4 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} })
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 0 }
+        }
+      });
+
+    await flushPendingPushes();
+
+    // The decrease survived the round trip through the queue.
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({ mediaId: 30013, repeat: 0 });
     expect(readPendingPushes()).toEqual({});
   });
 
@@ -600,6 +626,30 @@ describe('flushPendingPushes', () => {
 describe('onSeriesRestarted', () => {
   beforeEach(resetWorld);
 
+  it('pushes a restart for a linked series that never had a tracking block', async () => {
+    // The reported bug: re-reads never reached AniList because a per-series
+    // toggle nobody had switched on gated every push.
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1, tracking: undefined }));
+    h.volumesStore.set({});
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'COMPLETED', progress: 0, progressVolumes: 20, repeat: 0 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onSeriesRestarted('one piece');
+    await vi.waitFor(() =>
+      expect(h.metaByKey.get('one piece')!.tracking?.last_pushed).toBeDefined()
+    );
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'REPEATING',
+      progressVolumes: 0
+    });
+  });
+
   it('records the 0 it actually sent, not the local pass', async () => {
     // A restart queued while offline is replayed after the next pass already
     // started: the plan sends 0, so last_pushed must say 0 — recording the
@@ -628,6 +678,65 @@ describe('onSeriesRestarted', () => {
       n: 0,
       status: 'REPEATING'
     });
+  });
+});
+
+describe('onReadCountChanged', () => {
+  beforeEach(resetWorld);
+
+  it('raises the repeat count without touching progress or status', async () => {
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 2 }));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 2, repeat: 0 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    await expect(onReadCountChanged('one piece')).resolves.toBe('pushed');
+    // read_count 2 + a completed pass = 3 reads = repeat 2.
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({ mediaId: 30013, repeat: 2 });
+  });
+
+  it('lowers the repeat count and records the progress AniList already holds', async () => {
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 0 }));
+    h.volumesStore.set({});
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 7, repeat: 3 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    await expect(onReadCountChanged('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({ mediaId: 30013, repeat: 0 });
+    // No progress moved, so last_pushed must not invent one from the local pass.
+    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({ n: 7 });
+  });
+
+  it('is "nothing" when the remote repeat already agrees', async () => {
+    // read_count 0 + a completed pass = 1 read = repeat 0, which is what the
+    // remote already says.
+    vi.mocked(anilistRequest).mockResolvedValueOnce({
+      Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 2, repeat: 0 } }
+    });
+    await expect(onReadCountChanged('one piece')).resolves.toBe('nothing');
+    expect(anilistRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues as read_count so a decrease is not downgraded to a sync', async () => {
+    h.auth.token = null;
+    await expect(onReadCountChanged('one piece')).resolves.toBe('queued');
+    expect(readPendingPushes()['one piece']).toMatchObject({ event: 'read_count' });
+
+    // A later completion must not collapse the queued correction into a sync.
+    h.volumesStore.set({ a: { completed: true } });
+    onVolumeCompleted('a');
+    await vi.waitFor(() =>
+      expect(readPendingPushes()['one piece']).toMatchObject({ event: 'read_count' })
+    );
   });
 });
 

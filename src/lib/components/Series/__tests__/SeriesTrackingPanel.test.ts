@@ -96,13 +96,17 @@ vi.mock('$lib/metadata/progress-tracker', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/progress-tracker')>(
     '$lib/metadata/progress-tracker'
   );
-  return { computeLocalPassState: actual.computeLocalPassState };
+  return {
+    computeLocalPassState: actual.computeLocalPassState,
+    onReadCountChanged: vi.fn(async () => 'pushed')
+  };
 });
 vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn(async () => {}) }));
 vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { updateSeriesMetadata } from '$lib/metadata/store';
+import { onReadCountChanged } from '$lib/metadata/progress-tracker';
 import { restartSeries } from '$lib/metadata/reread';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
@@ -241,6 +245,44 @@ describe('SeriesTrackingPanel', () => {
       await fireEvent.click(getByLabelText('Increase read count'));
       await waitFor(() =>
         expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the read count")
+      );
+    });
+
+    it('pushes the corrected count to AniList, in both directions', async () => {
+      // "Read N times" is the repeat count on AniList; before this, a manual
+      // correction (and every re-read recorded with it) never left the device.
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Increase read count'));
+      await waitFor(() => expect(onReadCountChanged).toHaveBeenCalledWith('one piece'));
+
+      vi.mocked(onReadCountChanged).mockClear();
+      await fireEvent.click(getByLabelText('Decrease read count'));
+      await waitFor(() => expect(onReadCountChanged).toHaveBeenCalledWith('one piece'));
+    });
+
+    it('does not push when the write itself failed', async () => {
+      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Increase read count'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith("Couldn't save the read count")
+      );
+      expect(onReadCountChanged).not.toHaveBeenCalled();
+    });
+
+    it('does not push a click the − button ignored at 0', async () => {
+      setMeta(meta({ read_count: 0 }));
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Decrease read count').closest('button')!);
+      expect(onReadCountChanged).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a rejected push', async () => {
+      vi.mocked(onReadCountChanged).mockResolvedValueOnce('failed');
+      const { getByLabelText } = renderPanel();
+      await fireEvent.click(getByLabelText('Increase read count'));
+      await waitFor(() =>
+        expect(showSnackbar).toHaveBeenCalledWith('AniList rejected the read count')
       );
     });
   });

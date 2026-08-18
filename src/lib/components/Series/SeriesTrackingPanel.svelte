@@ -9,7 +9,7 @@
   } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { computeLocalPassState } from '$lib/metadata/progress-tracker';
+  import { computeLocalPassState, onReadCountChanged } from '$lib/metadata/progress-tracker';
   import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
   import { restartSeries } from '$lib/metadata/reread';
   import { anilistConnected, anilistUser, getAniListClientId } from '$lib/metadata/anilist-auth';
@@ -79,23 +79,33 @@
    * the progress tracker writes `tracking.last_pushed` from another module
    * entirely.
    */
-  async function write(patch: SeriesMetadataPatchInput, failureMessage: string): Promise<void> {
+  async function write(patch: SeriesMetadataPatchInput, failureMessage: string): Promise<boolean> {
     try {
       await updateSeriesMetadata(seriesTitle, patch);
+      return true;
     } catch (error) {
       console.error('[series-tracking] could not save the series record:', error);
       showSnackbar(failureMessage);
+      return false;
     }
   }
 
-  function setReadCount(delta: number) {
+  async function setReadCount(delta: number) {
     // The − button is disabled at 0; this keeps a stray click from spending a
     // write (and an `updated_at` bump the cloud would then sync) on a no-op.
-    if (delta < 0 && readCount === 0) return Promise.resolve();
-    return write(
+    if (delta < 0 && readCount === 0) return;
+    const saved = await write(
       (current) => ({ read_count: Math.max(0, (current.read_count ?? 0) + delta) }),
       "Couldn't save the read count"
     );
+    if (!saved) return;
+    // "Read N times" is AniList's repeat count. Nothing else pushes it — a
+    // correction here is deliberate, so it travels in both directions.
+    onReadCountChanged(seriesKey)
+      .then((outcome) => {
+        if (outcome === 'failed') showSnackbar('AniList rejected the read count');
+      })
+      .catch((error) => console.warn('[series-tracking] read count push failed:', error));
   }
 
   /**

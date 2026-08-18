@@ -43,11 +43,15 @@ const COMPLETION_DEBOUNCE_MS = 60_000;
  */
 export type PushOutcome = 'pushed' | 'nothing' | 'queued' | 'failed' | 'disabled';
 
-/** One pending intent per series. `restart` dominates `sync` (a restart must be
- *  replayed as the explicit decrease before later completions are applied). */
+/**
+ * One pending intent per series. `restart` dominates `read_count`, which
+ * dominates `sync`: both carry an explicit decrease the user asked for, and
+ * collapsing them into a plain sync (which only ever moves forward) would
+ * silently drop it. The follow-up sync runs anyway once they land.
+ */
 export interface PendingPush {
   seriesKey: string;
-  event: 'restart' | 'sync';
+  event: 'restart' | 'read_count' | 'sync';
   at: string;
 }
 
@@ -105,7 +109,7 @@ function isPendingPush(key: string, value: unknown): value is PendingPush {
   if (!value || typeof value !== 'object') return false;
   const entry = value as Partial<PendingPush>;
   if (typeof entry.seriesKey !== 'string' || entry.seriesKey !== key) return false;
-  return entry.event === 'restart' || entry.event === 'sync';
+  return entry.event === 'restart' || entry.event === 'read_count' || entry.event === 'sync';
 }
 
 export function readPendingPushes(): Record<string, PendingPush> {
@@ -138,11 +142,18 @@ function writePendingPushes(pending: Record<string, PendingPush>): void {
   }
 }
 
+function mergePendingEvent(
+  event: ProgressPushEvent,
+  existing: PendingPush['event'] | undefined
+): PendingPush['event'] {
+  if (event === 'restart' || existing === 'restart') return 'restart';
+  if (event === 'read_count' || existing === 'read_count') return 'read_count';
+  return 'sync';
+}
+
 function markPending(seriesKey: string, event: ProgressPushEvent): void {
   const pending = readPendingPushes();
-  const existing = pending[seriesKey];
-  const next: PendingPush['event'] =
-    event === 'restart' || existing?.event === 'restart' ? 'restart' : 'sync';
+  const next = mergePendingEvent(event, pending[seriesKey]?.event);
   pending[seriesKey] = { seriesKey, event: next, at: new Date().toISOString() };
   writePendingPushes(pending);
 }
@@ -339,6 +350,14 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     }
     await sendPlan(mediaId, plan, token);
     clearPending(seriesKey);
+    // A repeat-only push (a manual "Read N times" correction) moved no progress
+    // at all, so there is no figure to record: keep what AniList already holds,
+    // else what we last sent. Fabricating the local pass here would let the
+    // fast path in `alreadySettled` swallow the next real push.
+    const unchangedProgress =
+      (unit === 'chapters' ? remote?.progress : remote?.progressVolumes) ??
+      meta.tracking?.last_pushed?.n ??
+      0;
     // Two round-trips happened since `meta` was read; a tracking edit (a number
     // override) may have landed in between. The patch is functional so the
     // record it spreads is the one in the database at write time, not the stale
@@ -350,7 +369,10 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
         last_pushed: {
           // The progress AniList actually received — 0 for a restart, and the
           // last known figure for a status-only push.
-          n: plan.progressVolumes ?? plan.progress ?? local.passProgress,
+          n:
+            plan.progressVolumes ??
+            plan.progress ??
+            (event === 'read_count' ? unchangedProgress : local.passProgress),
           status: plan.status ?? remote?.status ?? 'CURRENT',
           at: new Date().toISOString()
         }
@@ -430,6 +452,16 @@ export function onSeriesRestarted(seriesKey: string): void {
   );
 }
 
+/**
+ * "Read N times" was corrected by hand in the series panel. That figure is
+ * AniList's `repeat`, and a correction is meant in both directions — so it gets
+ * its own event rather than riding along with a sync (which only moves forward).
+ */
+export function onReadCountChanged(seriesKey: string): Promise<PushOutcome> {
+  clearSeriesDebounce(seriesKey);
+  return pushSeries(seriesKey, 'read_count');
+}
+
 export function syncSeriesNow(seriesKey: string): Promise<PushOutcome> {
   clearSeriesDebounce(seriesKey);
   return pushSeries(seriesKey, 'sync');
@@ -500,8 +532,8 @@ export async function flushPendingPushes(): Promise<void> {
   try {
     for (const pending of Object.values(readPendingPushes())) {
       if (Date.now() < rateLimitedUntil) break;
-      if (pending.event === 'restart') {
-        const outcome = await pushSeries(pending.seriesKey, 'restart');
+      if (pending.event === 'restart' || pending.event === 'read_count') {
+        const outcome = await pushSeries(pending.seriesKey, pending.event);
         // Only fall through to the follow-up sync once the decrease landed.
         if (outcome !== 'pushed' && outcome !== 'nothing') continue;
       }

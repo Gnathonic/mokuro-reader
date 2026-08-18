@@ -261,3 +261,48 @@ describe('planProgressPush', () => {
     });
   });
 });
+
+describe('read_count corrections', () => {
+  const tracked = (over: Partial<RemoteEntry> = {}): RemoteEntry => ({
+    status: 'CURRENT',
+    progress: 0,
+    progressVolumes: 3,
+    repeat: 2,
+    ...over
+  });
+
+  it('raises the repeat count', () => {
+    expect(planProgressPush(local({ timesRead: 4 }), tracked(), 'volumes', 'read_count')).toEqual({
+      repeat: 3
+    });
+  });
+
+  it('lowers the repeat count — the user typed the number on purpose', () => {
+    expect(planProgressPush(local({ timesRead: 1 }), tracked(), 'volumes', 'read_count')).toEqual({
+      repeat: 0
+    });
+  });
+
+  it('is a no-op when the repeat count already agrees', () => {
+    expect(
+      planProgressPush(local({ timesRead: 3 }), tracked(), 'volumes', 'read_count')
+    ).toBeNull();
+  });
+
+  it('never touches progress or status', () => {
+    const plan = planProgressPush(
+      local({ passProgress: 9, passComplete: true, timesRead: 5 }),
+      tracked(),
+      'volumes',
+      'read_count'
+    )!;
+    expect(plan).toEqual({ repeat: 4 });
+  });
+
+  it('counts a missing remote entry as repeat 0', () => {
+    expect(planProgressPush(local({ timesRead: 2 }), null, 'volumes', 'read_count')).toEqual({
+      repeat: 1
+    });
+    expect(planProgressPush(local({ timesRead: 1 }), null, 'volumes', 'read_count')).toBeNull();
+  });
+});
