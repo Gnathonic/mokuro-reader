@@ -191,7 +191,7 @@
           <h4 class="text-xs font-semibold text-gray-500 uppercase dark:text-gray-400">
             Titles &amp; AniList
           </h4>
-          <SeriesLinkControls {seriesTitle} {volumes} bind:linkOpen />
+          <SeriesLinkControls {seriesTitle} bind:linkOpen />
           <SeriesTitlesEditor {seriesTitle} />
         </section>
 

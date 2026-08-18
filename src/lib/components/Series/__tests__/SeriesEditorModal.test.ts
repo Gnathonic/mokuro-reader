@@ -68,7 +68,7 @@ vi.mock('$lib/metadata/store', () => ({
   unlinkSeries: vi.fn()
 }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { refreshSeriesSidecars: vi.fn(), cloudFiles: h.noopStore }
+  unifiedCloudManager: { cloudFiles: h.noopStore }
 }));
 vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
 vi.mock('$lib/util', async () => {
@@ -450,16 +450,18 @@ describe('SeriesEditorModal', () => {
     expect(get(seriesEditorModalStore)).toBeUndefined();
   });
 
-  it('feeds the series volumes from the catalog to the AniList controls', async () => {
+  it('offers no manual cloud-publish action even with a cloud connected', async () => {
     h.providerStatus.set({
       providers: {},
       hasAnyAuthenticated: true,
       needsAttention: false,
       currentProviderType: 'google-drive'
     });
-    const { getByText } = await openFor('Berserk');
-    // Only reachable when a non-placeholder volume was resolved for this series.
-    expect(getByText('Update cloud sidecars')).toBeTruthy();
+    const { getByText, queryByText } = await openFor('Berserk');
+    expect(getByText('Link…')).toBeTruthy();
+    // The old "Update cloud sidecars" button is gone: `<Series>/series.json` is
+    // written automatically (debounced) after a fact edit — see series-file-sync.ts.
+    expect(queryByText('Update cloud sidecars')).toBeNull();
   });
 
   it('keeps every action row above the night-mode stacking context', async () => {

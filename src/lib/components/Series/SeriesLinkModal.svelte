@@ -11,11 +11,7 @@
   import { updateSeriesMetadata } from '$lib/metadata/store';
   import type { MetadataSearchResult } from '$lib/metadata/provider-interface';
 
-  let {
-    open = $bindable(false),
-    seriesTitle,
-    onLinked
-  }: { open?: boolean; seriesTitle: string; onLinked?: () => void } = $props();
+  let { open = $bindable(false), seriesTitle }: { open?: boolean; seriesTitle: string } = $props();
 
   let query = $state('');
   let idInput = $state('');
@@ -96,7 +92,6 @@
         linked_at: new Date().toISOString()
       });
       showSnackbar(`Linked to AniList: ${primaryTitle(result)}`);
-      onLinked?.();
       open = false;
     } catch (e) {
       console.error('Failed to save series link:', e);
