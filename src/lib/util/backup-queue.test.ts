@@ -1,0 +1,96 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * The end of a backup run has to be strictly write-then-read: the listing
+ * refresh feeds the `series.json` writes, and the index refresh reads those
+ * writes back.
+ */
+
+const { calls, fetchAllCloudVolumes, writeSeriesFile, refreshSeriesIndexesInBackground } =
+  vi.hoisted(() => {
+    const calls: string[] = [];
+    return {
+      calls,
+      fetchAllCloudVolumes: vi.fn(async (options?: { refreshIndexes?: boolean }) => {
+        calls.push(`fetch:${options?.refreshIndexes === false ? 'no-index-refresh' : 'default'}`);
+      }),
+      writeSeriesFile: vi.fn(async (seriesTitle: string) => {
+        // Stands in for the `putSeriesIndex` a successful write ends with.
+        calls.push(`write:${seriesTitle}`);
+        return 'written' as const;
+      }),
+      refreshSeriesIndexesInBackground: vi.fn(() => {
+        calls.push('refresh');
+      })
+    };
+  });
+
+vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+  unifiedCloudManager: {
+    fetchAllCloudVolumes,
+    writeSeriesFile,
+    refreshSeriesIndexesInBackground,
+    getDefaultProvider: () => null
+  }
+}));
+
+vi.mock('$lib/util/backup-ui', () => ({
+  getBackupUiBridge: () => ({
+    addProgress: vi.fn(),
+    updateProgress: vi.fn(),
+    removeProgress: vi.fn(),
+    notify: vi.fn()
+  })
+}));
+
+vi.mock('$lib/util/file-processing-pool', () => ({
+  getFileProcessingPool: async () => ({ addTask: vi.fn() }),
+  incrementPoolUsers: vi.fn(),
+  decrementPoolUsers: vi.fn()
+}));
+
+vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
+
+import { finishBackupRun, noteSeriesNeedingIndexWrite } from './backup-queue';
+
+describe('finishBackupRun', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it('lists, writes the run’s indexes, and only then refreshes them', async () => {
+    noteSeriesNeedingIndexWrite('One Piece');
+    noteSeriesNeedingIndexWrite('Berserk');
+
+    await finishBackupRun();
+
+    // The listing must not start the index refresh itself: it would race the
+    // writes below and could cache the pre-upload copy of a file we just wrote.
+    expect(calls[0]).toBe('fetch:no-index-refresh');
+    expect(calls.slice(1, 3).sort()).toEqual(['write:Berserk', 'write:One Piece']);
+    expect(calls[3]).toBe('refresh');
+  });
+
+  it('drains the run so the next one does not rewrite the same indexes', async () => {
+    noteSeriesNeedingIndexWrite('One Piece');
+    await finishBackupRun();
+    writeSeriesFile.mockClear();
+
+    await finishBackupRun();
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(refreshSeriesIndexesInBackground).toHaveBeenCalledTimes(2);
+  });
+
+  it('still refreshes when an index write fails', async () => {
+    writeSeriesFile.mockRejectedValueOnce(new Error('offline'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    noteSeriesNeedingIndexWrite('One Piece');
+
+    await finishBackupRun();
+
+    expect(refreshSeriesIndexesInBackground).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});

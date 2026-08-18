@@ -293,6 +293,11 @@ function handleBackupError(item: BackupQueueItem, processId: string, errorMessag
  */
 const seriesNeedingIndexWrite = new Set<string>();
 
+/** Note that this run uploaded a volume of `seriesTitle`. */
+export function noteSeriesNeedingIndexWrite(seriesTitle: string): void {
+  if (seriesTitle) seriesNeedingIndexWrite.add(seriesTitle);
+}
+
 /**
  * Write the per-series index for every series this run backed up. Runs after
  * the cache refresh so the file is built from the server's real listing (which
@@ -312,6 +317,23 @@ async function writeSeriesIndexesForRun(): Promise<void> {
 }
 
 /**
+ * The end of a backup run: replace the optimistic cache entries with the
+ * server's real listing, publish this run's `series.json` files against it, and
+ * only THEN let the index refresh read them back.
+ *
+ * The order matters. The refresh downloads every sidecar whose listing stamp
+ * differs from the cached record, so running it on the pre-write listing races
+ * the writes: it re-reads the copies we are about to replace and can cache the
+ * pre-upload version of a file we just wrote. Suppressing it during the fetch
+ * and starting it afterwards makes the run strictly write-then-read.
+ */
+export async function finishBackupRun(): Promise<void> {
+  await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
+  await writeSeriesIndexesForRun();
+  unifiedCloudManager.refreshSeriesIndexesInBackground();
+}
+
+/**
  * Check if queue is empty and release shared pool if so
  */
 async function checkAndTerminatePool(): Promise<void> {
@@ -320,13 +342,12 @@ async function checkAndTerminatePool(): Promise<void> {
     decrementPoolUsers();
     processingStarted = false;
 
-    // Refresh cache immediately for all providers
-    // This replaces optimistic entries with real server data
+    // Replace the optimistic cache entries with real server data, write this
+    // run's series.json files against that listing, then let the index refresh
+    // read them back.
     console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
-    await unifiedCloudManager.fetchAllCloudVolumes();
+    await finishBackupRun();
     console.log('[Backup Queue] Cloud cache refreshed with server data');
-
-    await writeSeriesIndexesForRun();
   }
 }
 
@@ -505,7 +526,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               });
             }
 
-            seriesNeedingIndexWrite.add(item.seriesTitle);
+            noteSeriesNeedingIndexWrite(item.seriesTitle);
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
@@ -576,7 +597,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
           const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
           addToCache(archivePath, uploadedFileId, data.size || 0);
-          seriesNeedingIndexWrite.add(item.seriesTitle);
+          noteSeriesNeedingIndexWrite(item.seriesTitle);
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);

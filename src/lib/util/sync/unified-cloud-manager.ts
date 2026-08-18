@@ -156,14 +156,18 @@ class UnifiedCloudManager {
   }
 
   /**
-   * Re-read the `series.json` sidecars this listing shows as changed.
+   * Re-read the `series.json` sidecars the CURRENT listing shows as changed.
    *
    * Fire-and-forget by design: the listing itself is what the caller (catalog,
    * cloud screen, rename) is waiting on, while the index refresh is a cache
    * warm-up that may download files. Every failure path is swallowed — an index
    * that stays stale costs a placeholder its counts, nothing more.
+   *
+   * Public so a caller that had to suppress the automatic refresh (a listing it
+   * was about to invalidate by writing sidecars — see `fetchAllCloudVolumes`)
+   * can start it once its own writes are done.
    */
-  private refreshSeriesIndexesInBackground(): void {
+  refreshSeriesIndexesInBackground(): void {
     try {
       const provider = this.getActiveProvider();
       if (!provider) return;
