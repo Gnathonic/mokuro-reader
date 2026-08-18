@@ -72,25 +72,52 @@ async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
  * on every edit. The refresh closes that window — but there is no per-folder
  * listing in the provider interface, so it is a whole-account fetch and a
  * burst of edits must not stack one per series: the first flusher starts it and
- * everyone flushed while it is in flight awaits the same promise.
+ * everyone flushed while it is in flight awaits the same promise. A listing
+ * that succeeded within `LISTING_TTL_MS` is reused outright (an import batch or
+ * a tagging spree schedules one flush per series), and a refresh that hangs
+ * past `LISTING_TIMEOUT_MS` counts as failed so it cannot pin the writer for
+ * the rest of the session.
  */
 let listingRefresh: Promise<boolean> | null = null;
+let lastListingAt = 0;
+export const LISTING_TTL_MS = 30_000;
+export const LISTING_TIMEOUT_MS = 60_000;
 
-/** Refresh the cloud listing (coalesced). `false` = the view is still stale. */
+/** Test hook: forget the last successful listing time and any in-flight refresh. */
+export function _resetListingRefreshForTests(): void {
+  listingRefresh = null;
+  lastListingAt = 0;
+}
+
+/** Refresh the cloud listing (coalesced, TTL-cached). `false` = the view is still stale. */
 function refreshCloudListing(): Promise<boolean> {
   if (listingRefresh) return listingRefresh;
+  if (lastListingAt && Date.now() - lastListingAt < LISTING_TTL_MS) return Promise.resolve(true);
 
   // Deferred to a microtask so the promise identity below exists before the
   // body can settle, whatever the provider does synchronously.
   const refresh = Promise.resolve().then(async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // No index refresh: that pass downloads sidecars, and this is a write
       // path that is about to publish one.
-      await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`listing refresh exceeded ${LISTING_TIMEOUT_MS} ms`)),
+          LISTING_TIMEOUT_MS
+        );
+      });
+      await Promise.race([
+        unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false }),
+        timeout
+      ]);
+      lastListingAt = Date.now();
       return true;
     } catch (error) {
       console.debug('[series-file-sync] could not refresh the cloud listing:', error);
       return false;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   });
 

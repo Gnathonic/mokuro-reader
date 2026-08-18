@@ -59,8 +59,11 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 import {
+  _resetListingRefreshForTests,
   flushSeriesFileWrites,
   initSeriesFileSync,
+  LISTING_TIMEOUT_MS,
+  LISTING_TTL_MS,
   scheduleSeriesFileWrite
 } from './series-file-sync';
 import { updateSeriesMetadata, unlinkSeries, upsertFromSeriesFile } from './store';
@@ -85,6 +88,7 @@ describe('series-file-sync', () => {
   beforeEach(async () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    _resetListingRefreshForTests();
     writeSeriesFile.mockResolvedValue('written');
     fetchAllCloudVolumes.mockResolvedValue(undefined);
     getManagedCloudFilesForVolume.mockImplementation((_s: string, volumeTitle: string) => [
@@ -188,6 +192,38 @@ describe('series-file-sync', () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('reuses a listing that succeeded within the TTL instead of fetching again', async () => {
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(LISTING_TTL_MS / 2);
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(LISTING_TTL_MS);
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up on a listing refresh that hangs, and the next flush tries again', async () => {
+    fetchAllCloudVolumes.mockImplementationOnce(() => new Promise<void>(() => {}));
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(LISTING_TIMEOUT_MS + 1);
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(2);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
   });
 
   it('skips the write when the listing refresh fails (never writes against a stale view)', async () => {
