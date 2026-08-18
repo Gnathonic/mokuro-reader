@@ -40,6 +40,12 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
+    // `$service-worker` is a SvelteKit virtual module; vitest can't mock it
+    // directly (SvelteKit's import guard rejects the re-resolved virtual id),
+    // so point it at a static stand-in for tests only.
+    alias: {
+      '$service-worker': new URL('./src/__mocks__/service-worker-env.ts', import.meta.url).pathname
+    },
     // Resolve Svelte 5 for browser/client context in tests
     server: { deps: { inline: ['svelte'] } }
   },
