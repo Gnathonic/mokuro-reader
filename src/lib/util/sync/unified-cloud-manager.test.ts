@@ -1023,9 +1023,11 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(file.volumes.map((v: { volume_title: string }) => v.volume_title)).toEqual(['Volume 1']);
   });
 
-  it('does not prune when the listing shows no archives at all (cache not primed)', async () => {
-    // An empty/unfetched listing is "we don't know", not "the cloud is empty" —
-    // pruning against it would wipe every other device's entries.
+  it('skips a folder the listing shows no volume archives in', async () => {
+    // Callers prime the listing right before writing, so "no .cbz in this
+    // folder" means the folder holds no volumes — writing would conjure
+    // `<Series>/series.json` (and the folder) out of thin air for a series
+    // that is only local, or resurrect one whose volumes were all deleted.
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
@@ -1043,13 +1045,24 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await unifiedCloudManager.writeSeriesFile('One Piece');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
 
-    const file = await uploadedSeriesFile(provider);
-    expect(file.volumes.map((v: { volume_title: string }) => v.volume_title).sort()).toEqual([
-      'Volume 1',
-      'Volume 7'
-    ]);
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('skips a folder holding only an orphaned series.json (no volumes left)', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile('One Piece/series.json', { fileId: 'sj', size: 42 })]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
   });
 
   it('skips a read-only provider without touching the cloud', async () => {
@@ -1128,9 +1141,31 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     getSeriesIndex.mockResolvedValue(undefined);
   });
 
+  /** A cache mock backed by a mutable listing, so moves/deletes are visible. */
+  function mutableCache(state: CloudFileMetadata[]) {
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    const cache = {
+      removeById: vi.fn((fileId: string) => {
+        const index = state.findIndex((f) => f.fileId === fileId);
+        if (index >= 0) state.splice(index, 1);
+      }),
+      add: vi.fn((path: string, meta: CloudFileMetadata) => {
+        state.push({ ...meta, path, fileId: meta.fileId ?? path });
+      })
+    };
+    getCache.mockReturnValue(cache);
+    return cache;
+  }
+
   it('writes the index at the new title, drops the old file and moves the cached record', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider();
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
     const state: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -1139,17 +1174,10 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
         modifiedTime: 't',
         size: 100
       },
-      {
-        provider: 'webdav',
-        fileId: 'sj',
-        path: 'Old Series/series.json',
-        modifiedTime: 't',
-        size: 20
-      }
+      sidecar
     ];
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
-    getCache.mockReturnValue(cache);
+    mutableCache(state);
     generateSidecars.mockResolvedValue({});
     // The DB still holds the OLD title while the cloud rename gates the local commit.
     localVolumes.mockResolvedValue([
@@ -1181,7 +1209,44 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       undefined,
       undefined
     );
-    expect(provider.deleteFile).toHaveBeenCalledWith(state[1]);
+    expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
+  });
+
+  it('does not create a series.json for a folder whose only file was an orphan sidecar', async () => {
+    // Nothing is backed up under the old title but a stale `series.json`. The
+    // rename must clean it up without minting `<new>/series.json` for a folder
+    // that holds no volumes.
+    const provider = makeRenameProvider();
+    const orphan: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache([orphan]);
+    generateSidecars.mockResolvedValue({});
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).toHaveBeenCalledWith(orphan);
   });
 
   it('deletes the sidecar with the series folder and drops the cached index', async () => {

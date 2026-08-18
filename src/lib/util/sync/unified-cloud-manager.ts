@@ -888,9 +888,11 @@ class UnifiedCloudManager {
    * when they are newer. Installed volumes always override their index entry;
    * placeholders never contribute (their uuids and counts are derived).
    *
-   * A cloud copy we cannot read is reported as `'skipped'` rather than
-   * overwritten blind; a failed upload throws to the (background) caller, which
-   * logs it — a series.json write must never surface in a reading flow.
+   * A folder the listing shows no `.cbz` in is `'skipped'`: the index belongs
+   * to a folder of volumes, never to an empty one. A cloud copy we cannot read
+   * is `'skipped'` too rather than overwritten blind; a failed upload throws to
+   * the (background) caller, which logs it — a series.json write must never
+   * surface in a reading flow.
    *
    * `options.localSeriesTitle` reads the installed volumes under a DIFFERENT
    * title than the one being written: during a series rename the cloud move
@@ -923,6 +925,15 @@ class UnifiedCloudManager {
         ? await getSeriesMetadataForTitle(options.localSeriesTitle)
         : undefined);
 
+    // The index describes a folder of volumes: with no `.cbz` in it there is
+    // nothing to index, and writing would create `<Series>/series.json` (and
+    // the folder itself) for a series the cloud does not hold — a local-only
+    // series, or one whose volumes have all been deleted. Every caller primes
+    // the listing immediately before writing, so an empty result here really
+    // is an empty folder rather than an unfetched cache.
+    const cloudTitles = this.cloudVolumeTitles(seriesTitle);
+    if (cloudTitles.size === 0) return 'skipped';
+
     let existing: SeriesFile | undefined;
     try {
       existing = await this.resolveExistingSeriesFile(seriesKey, seriesTitle, provider.type);
@@ -931,16 +942,12 @@ class UnifiedCloudManager {
       return 'skipped';
     }
 
-    // An empty listing means "not fetched", not "the cloud folder is empty":
-    // pruning against it would delete every entry this device does not have.
-    const cloudTitles = this.cloudVolumeTitles(seriesTitle);
-
     const file = buildSeriesFile({
       seriesTitle,
       meta,
       localVolumes,
       existing,
-      cloudVolumeTitles: cloudTitles.size > 0 ? cloudTitles : undefined
+      cloudVolumeTitles: cloudTitles
     });
     if (!file) return 'skipped';
 
