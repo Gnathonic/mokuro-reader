@@ -14,7 +14,6 @@
  * volumes still import.
  */
 
-import { db } from '$lib/catalog/db';
 import { getSeriesIndex, putSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import {
@@ -23,7 +22,7 @@ import {
   parseSeriesFile,
   type SeriesFile
 } from '$lib/metadata/series-file';
-import { getSeriesMetadataForTitle, upsertFromSeriesFile } from '$lib/metadata/store';
+import { upsertFromSeriesFile } from '$lib/metadata/store';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 
 /** A validated `series.json` waiting for the batch's volumes to be saved. */
@@ -113,59 +112,67 @@ export function collectSeriesFileFromBytes(
 // being scanned, several layers below the call that knows the import is done.
 const pendingFiles: PendingSeriesFile[] = [];
 const importedTitles = new Set<string>();
+/** volume_uuid → the series title that volume was stored under. */
+const importedVolumes = new Map<string, string>();
 
 export function recordSeriesFile(entry: PendingSeriesFile): void {
   pendingFiles.push(entry);
 }
 
-/** The series title a volume of this batch was actually stored under. */
-export function recordImportedSeriesTitle(seriesTitle: string): void {
-  if (seriesTitle) importedTitles.add(seriesTitle);
+/**
+ * The series title a volume of this batch was actually stored under, with that
+ * volume's uuid when the caller knows it — the uuid is what lets a sidecar be
+ * matched to its series by index membership rather than by its (possibly
+ * stale) `series_title`.
+ */
+export function recordImportedSeriesTitle(seriesTitle: string, volumeUuid?: string): void {
+  if (!seriesTitle) return;
+  importedTitles.add(seriesTitle);
+  if (volumeUuid) importedVolumes.set(volumeUuid, seriesTitle);
 }
 
 /** Forget the batch without applying it (tests, cancelled imports). */
 export function resetImportedSeriesFiles(): void {
   pendingFiles.length = 0;
   importedTitles.clear();
-}
-
-/** Does this library already hold the series the file names, under that name? */
-async function seriesExistsLocally(seriesTitle: string): Promise<boolean> {
-  if (!normalizeSeriesKey(seriesTitle)) return false;
-  try {
-    if (await getSeriesMetadataForTitle(seriesTitle)) return true;
-    return (await db.volumes.where('series_title').equalsIgnoreCase(seriesTitle).count()) > 0;
-  } catch (error) {
-    // A lookup failure must not turn into a mis-keyed write: treat it as "yes,
-    // it exists elsewhere", which only ever makes the fallback more cautious.
-    console.warn(`[Import] Could not check whether '${seriesTitle}' is already installed:`, error);
-    return true;
-  }
+  importedVolumes.clear();
 }
 
 /**
  * Which series does this file belong to?
  *
- * The file's own `series_title` decides whenever it names one of the series
- * just imported — that is what keeps a multi-series drop straight. When it
- * names none of them, a lone file in a single-series batch is taken to be that
- * series' sidecar written before it was renamed here — unless the name it does
- * carry is a series this library already has under that very name, in which
- * case the file belongs to that one and applying it here would graft one
- * series' identity onto another. Anything else is a guess we refuse to make.
+ * In order of how much the file actually proves:
+ *
+ * 1. Its index lists a volume we just imported → it is that series' sidecar,
+ *    whatever name it carries (this is how a sidecar written before the series
+ *    was renamed here still lands correctly).
+ * 2. Its `series_title` names one of the series just imported → that one. This
+ *    keeps a multi-series drop straight.
+ * 3. A lone file in a single-series batch that claims nothing (no title) or
+ *    claims that very series.
+ *
+ * Anything else is ignored. A file naming a series that is not in the batch
+ * belongs to that series — "Bleach/series.json" dropped next to a Naruto
+ * archive must never link Naruto to Bleach's AniList entry.
  */
-async function resolveSeriesTitle(
+function resolveSeriesTitle(
   entry: PendingSeriesFile,
   titlesByKey: Map<string, string>,
+  volumesByUuid: Map<string, string>,
   pendingCount: number
-): Promise<string | undefined> {
-  const ownTitle = sanitizeTitleSegment(entry.file.series_title);
-  const named = titlesByKey.get(normalizeSeriesKey(ownTitle));
+): string | undefined {
+  for (const indexed of entry.file.volumes) {
+    const owner = volumesByUuid.get(indexed.volume_uuid);
+    if (owner) return owner;
+  }
+
+  const named = titlesByKey.get(normalizeSeriesKey(sanitizeTitleSegment(entry.file.series_title)));
   if (named) return named;
 
   if (pendingCount === 1 && titlesByKey.size === 1) {
-    if (await seriesExistsLocally(ownTitle)) return undefined;
-    return [...titlesByKey.values()][0];
+    const only = [...titlesByKey.values()][0];
+    const claimed = normalizeSeriesKey(entry.file.series_title);
+    if (!claimed || claimed === normalizeSeriesKey(only)) return only;
   }
   return undefined;
 }
@@ -180,14 +187,16 @@ async function resolveSeriesTitle(
 export async function applyImportedSeriesFiles(): Promise<void> {
   const entries = pendingFiles.splice(0, pendingFiles.length);
   const titles = [...importedTitles];
+  const volumesByUuid = new Map(importedVolumes);
   importedTitles.clear();
+  importedVolumes.clear();
   if (entries.length === 0) return;
 
   const titlesByKey = new Map<string, string>();
   for (const title of titles) titlesByKey.set(normalizeSeriesKey(title), title);
 
   for (const entry of entries) {
-    const seriesTitle = await resolveSeriesTitle(entry, titlesByKey, entries.length);
+    const seriesTitle = resolveSeriesTitle(entry, titlesByKey, volumesByUuid, entries.length);
     if (!seriesTitle) {
       console.warn(
         `[Import] Could not tell which series the ${SERIES_FILE_NAME} at '${entry.path}' belongs to; ignoring it`

@@ -171,7 +171,10 @@ function hasUnfinishedImports(): boolean {
  * came with this import can be keyed to it once the batch is done.
  */
 function noteImportedVolume(processed: ProcessedVolume): void {
-  recordImportedSeriesTitle(storedTitleSegment(processed.metadata.series));
+  recordImportedSeriesTitle(
+    storedTitleSegment(processed.metadata.series),
+    processed.metadata.volumeUuid
+  );
 }
 
 // ============================================

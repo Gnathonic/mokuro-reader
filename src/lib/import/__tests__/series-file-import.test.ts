@@ -402,9 +402,25 @@ describe('keying a series.json to a series of the batch', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the single imported series when the file names another', async () => {
+  it('never grafts a foreign series.json onto the one series of the batch', async () => {
+    // "Bleach/series.json" dropped alongside "Naruto v01.cbz": the file names a
+    // series this import knows nothing about, so Naruto stays unlinked.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    record('Bleach');
+    recordImportedSeriesTitle('Naruto');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.count()).toBe(0);
+    expect(await db.series_index.count()).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys a renamed series by index membership, whatever title the file carries', async () => {
+    // The sidecar was written before the series was renamed here, so its title
+    // is stale — but its index lists the very volume we just imported.
     record('Old Title');
-    recordImportedSeriesTitle('New Title');
+    recordImportedSeriesTitle('New Title', 'volume-uuid');
 
     await applyImportedSeriesFiles();
 
@@ -413,7 +429,20 @@ describe('keying a series.json to a series of the batch', () => {
     expect((await db.series_index.get('new title'))?.series_title).toBe('New Title');
   });
 
-  it('refuses the single-series fallback when the file names a series we already have', async () => {
+  it('membership wins over a title that names another series of the same batch', async () => {
+    record('One Piece');
+    // Its index lists the Naruto volume (the file was written after a merge),
+    // so it belongs to Naruto no matter what its `series_title` says.
+    recordImportedSeriesTitle('One Piece', 'one-piece-vol');
+    recordImportedSeriesTitle('Naruto', 'volume-uuid');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.get('one piece')).toBeUndefined();
+    expect((await db.series_metadata.get('naruto'))?.external_ids).toEqual({ anilist: 30013 });
+  });
+
+  it('refuses a file that names a series we already have under that name', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await db.volumes.put({ ...volume, series_title: 'Bleach', volume_uuid: 'bleach-vol' });
     record('Bleach');
