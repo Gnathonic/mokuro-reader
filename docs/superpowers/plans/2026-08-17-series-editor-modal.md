@@ -136,6 +136,22 @@
 - [ ] Playwright (dedicated port, not 5173): import a 3-volume series; catalog card shift+scroll → reload → the offset persists (card and IndexedDB `series_metadata.spine_offset`); open the editor → "Shelf" shows 3 spines; slider to +5 → card updates live; alt+shift+wheel over volume 2 → `volume_offsets[uuid]` written; "Reset all volume offsets" clears; Escape/close keeps values; record observed values + screenshots under `scratchpad/verify-e/`. Suite/check/prettier tails.
 - [ ] Commit any doc line: CHANGELOG `- Series editor: spine shelf with persistent series/volume offsets` (terse), `docs: spine showcase`.
 
+### Task 12: Shelf rendering — no drop shadow, larger, zoom control (user amendment 2026-08-17)
+
+**Files:**
+
+- Modify: `src/lib/components/Series/SeriesSpineShowcase.svelte` (+ test), `src/lib/settings/misc.ts` (device-local `shelfZoom?: number`, default 1)
+
+**Requirements:**
+
+- The showcase renders WITHOUT the drop shadow (`dropShadow={false}` to `CompositeCanvas`, regardless of the catalog setting).
+- Default render scale = 1× card scale (spine width = the card's `BASE_WIDTH` = 250 px at zoom 1; today it is 0.556×), so nudges are easy to see; the strip height follows the zoom.
+- A zoom control in the shelf controls row: `−` / `+` buttons (steps ×0.8 / ×1.25, clamped 0.5×–3×) + a readout (`100%`) + double-click/`Reset` to 1×; `Ctrl+wheel` over the strip zooms too (preventDefault). Zoom is a device-local preference stored in `miscSettings.shelfZoom` (not synced, not per series).
+- Offsets stay in card px (unchanged storage); only rendering scales — a +1 px nudge remains +1 px on the card. Caption/readout show stored values.
+- Tests: no shadow prop passed; default scale 1 → spine width 250; `+` → 312.5 (1.25×), clamps at 3× / 0.5×; ctrl+wheel zooms and is prevented; zoom persisted to misc settings; offsets written unchanged by zoom.
+
+- [ ] Steps: failing tests → implement → suite/check/prettier → commit `feat(series): shelf renders larger without shadow; zoom control`.
+
 ### Task 5: End-to-end verification + docs touch-up
 
 - [ ] `npx vitest run && npm run check && npx prettier --check src README.md CHANGELOG.md docs` all green.
