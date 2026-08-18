@@ -31,7 +31,9 @@ const { updateSeriesMetadata, emitSeriesMetadata, seriesMetadataMap } = vi.hoist
   const subscribers = new Set<(v: Map<string, Row>) => void>();
   let value = new Map<string, Row>();
   return {
-    updateSeriesMetadata: vi.fn(async (_seriesTitle: string, _patch: unknown) => undefined),
+    updateSeriesMetadata: vi.fn(
+      async (_seriesTitle: string, _patch: unknown): Promise<unknown> => undefined
+    ),
     emitSeriesMetadata: (next: Map<string, Row>) => {
       value = next;
       for (const fn of subscribers) fn(value);
@@ -47,10 +49,18 @@ const { updateSeriesMetadata, emitSeriesMetadata, seriesMetadataMap } = vi.hoist
 });
 vi.mock('$lib/metadata/store', () => ({ updateSeriesMetadata, seriesMetadataMap }));
 
+// Everything else in spine-offsets stays real; `volumeOffsetsByIndex` is spied on because
+// its call count is the observable signal of the stack layout being recomputed.
+vi.mock('$lib/metadata/spine-offsets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/metadata/spine-offsets')>();
+  return { ...actual, volumeOffsetsByIndex: vi.fn(actual.volumeOffsetsByIndex) };
+});
+
+import { tick } from 'svelte';
 import CatalogItem from '../CatalogItem.svelte';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
-import { flushSpineOffsetWrites } from '$lib/metadata/spine-offsets';
+import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
@@ -183,22 +193,28 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     withThumbnail({ volume_uuid: 'uuid-1', volume_title: 'Vol 2' })
   ];
 
+  function record(overrides: Partial<SeriesMetadata> = {}): Record<string, unknown> {
+    return {
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      read_count: 0,
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...overrides
+    };
+  }
+
   function meta(overrides: Partial<SeriesMetadata> = {}): Map<string, Record<string, unknown>> {
-    return new Map([
-      [
-        'one piece',
-        {
-          series_key: 'one piece',
-          series_title: 'One Piece',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          read_count: 0,
-          updated_at: '2026-01-01T00:00:00.000Z',
-          ...overrides
-        }
-      ]
-    ]);
+    return new Map([['one piece', record(overrides)]]);
+  }
+
+  /** The width the card sized its stack to — the visible effect of the series offset. */
+  function stackWidth(container: HTMLElement): string {
+    const el = container.querySelector('div.overflow-hidden');
+    if (!el) throw new Error('stack container not found');
+    return (el as HTMLElement).style.width;
   }
 
   /** Resolve the functional patch the card's write handed to the store. */
@@ -302,6 +318,144 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     await fireEvent.mouseEnter(card);
     await fireEvent.wheel(card, { deltaY: -1 });
     await fireEvent.contextMenu(card, {});
+    await flushSpineOffsetWrites();
+
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('CatalogItem spine offset resync is stable', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  function record(overrides: Partial<SeriesMetadata> = {}): Record<string, unknown> {
+    return {
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      read_count: 0,
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...overrides
+    };
+  }
+
+  const metaMap = (overrides: Partial<SeriesMetadata> = {}) =>
+    new Map([['one piece', record(overrides)]]);
+
+  const volumes = () => [
+    localVolume({ volume_uuid: 'uuid-0', thumbnail_width: 250, thumbnail_height: 360 }),
+    localVolume({ volume_uuid: 'uuid-1', thumbnail_width: 250, thumbnail_height: 360 })
+  ];
+
+  function stackWidth(container: HTMLElement): string {
+    const el = container.querySelector('div.overflow-hidden');
+    if (!el) throw new Error('stack container not found');
+    return (el as HTMLElement).style.width;
+  }
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    updateSeriesMetadata.mockClear();
+    vi.mocked(volumeOffsetsByIndex).mockClear();
+    emitSeriesMetadata(new Map());
+  });
+
+  afterEach(async () => {
+    cleanup();
+    await flushSpineOffsetWrites();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  it('keeps the gesture value when the PRE-write record is emitted after the write lands', async () => {
+    emitSeriesMetadata(metaMap({ spine_offset: 4 }));
+    const { container } = render(CatalogItem, { props: { volumes: volumes() } });
+    const card = getCard(container);
+    const seeded = stackWidth(container);
+
+    // The store's write resolves when its transaction commits; the liveQuery emission
+    // carrying the new record arrives later.
+    updateSeriesMetadata.mockImplementationOnce(async () =>
+      record({ spine_offset: 4.25, updated_at: '2026-01-02T00:00:00.000Z' })
+    );
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+    const nudged = stackWidth(container);
+    expect(nudged).not.toBe(seeded);
+
+    await flushSpineOffsetWrites();
+    await tick();
+    await tick();
+
+    // Stale echo: the record as it was BEFORE our write.
+    emitSeriesMetadata(metaMap({ spine_offset: 4 }));
+    await tick();
+    expect(stackWidth(container)).toBe(nudged);
+
+    // Our own write finally comes back around — same value, and it settles there.
+    emitSeriesMetadata(metaMap({ spine_offset: 4.25, updated_at: '2026-01-02T00:00:00.000Z' }));
+    await tick();
+    expect(stackWidth(container)).toBe(nudged);
+  });
+
+  it('adopts a genuinely newer record from another writer', async () => {
+    emitSeriesMetadata(metaMap({ spine_offset: 4 }));
+    const { container } = render(CatalogItem, { props: { volumes: volumes() } });
+    const card = getCard(container);
+    const seeded = stackWidth(container);
+
+    updateSeriesMetadata.mockImplementationOnce(async () =>
+      record({ spine_offset: 4.25, updated_at: '2026-01-02T00:00:00.000Z' })
+    );
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+    await flushSpineOffsetWrites();
+    await tick();
+    await tick();
+
+    // Another device wrote after us: strictly newer, so the guard must not wedge.
+    emitSeriesMetadata(metaMap({ spine_offset: 4, updated_at: '2026-01-03T00:00:00.000Z' }));
+    await tick();
+    expect(stackWidth(container)).toBe(seeded);
+  });
+
+  it('an equal re-emission does not recompute the stack layout', async () => {
+    emitSeriesMetadata(metaMap({ volume_offsets: { 'uuid-1': 6 } }));
+    const { container } = render(CatalogItem, { props: { volumes: volumes() } });
+    await tick();
+    const calls = vi.mocked(volumeOffsetsByIndex).mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+    const width = stackWidth(container);
+
+    // Any metadata write re-emits the whole table: same values for this series, fresh
+    // objects. Nothing about this card changed, so nothing may be recomputed.
+    emitSeriesMetadata(metaMap({ volume_offsets: { 'uuid-1': 6 } }));
+    await tick();
+    emitSeriesMetadata(metaMap({ volume_offsets: { 'uuid-1': 6 } }));
+    await tick();
+
+    expect(vi.mocked(volumeOffsetsByIndex).mock.calls.length).toBe(calls);
+    expect(stackWidth(container)).toBe(width);
+  });
+
+  it('skips the write when a reset gesture lands on what is already stored', async () => {
+    const { container } = render(CatalogItem, { props: { volumes: volumes() } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    // No record at all, no local offset: both resets are no-ops.
+    await fireEvent.contextMenu(card, { shiftKey: true });
+    await fireEvent.mouseMove(card, { clientX: 4000, clientY: 10, shiftKey: true, altKey: true });
+    await fireEvent.contextMenu(card, { shiftKey: true, altKey: true });
     await flushSpineOffsetWrites();
 
     expect(updateSeriesMetadata).not.toHaveBeenCalled();

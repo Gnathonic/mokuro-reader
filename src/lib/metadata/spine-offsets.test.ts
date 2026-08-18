@@ -2,14 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { updateSeriesMetadata } = vi.hoisted(() => ({
   // Typed args so `mock.calls[i][n]` stays type-safe under svelte-check.
-  updateSeriesMetadata: vi.fn(async (_seriesTitle: string, _patch: unknown) => undefined)
+  updateSeriesMetadata: vi.fn(
+    async (_seriesTitle: string, _patch: unknown): Promise<unknown> => undefined
+  )
 }));
 vi.mock('./store', () => ({ updateSeriesMetadata }));
 
 import {
   SPINE_OFFSET_WRITE_DELAY_MS,
+  clampSpineOffset,
+  clampVolumeOffset,
   flushSpineOffsetWrites,
   getSpineOffsets,
+  sameSpineOffsets,
+  sameVolumeOffsets,
   scheduleSpineOffsetWrite,
   volumeOffsetsByIndex
 } from './spine-offsets';
@@ -249,5 +255,77 @@ describe('scheduleSpineOffsetWrite', () => {
   it('flushSpineOffsetWrites is a no-op when nothing is pending', async () => {
     await expect(flushSpineOffsetWrites()).resolves.toBeUndefined();
     expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('offset equality + clamping helpers', () => {
+  it('sameVolumeOffsets compares by value, not identity', () => {
+    expect(sameVolumeOffsets({ a: 1, b: -2 }, { b: -2, a: 1 })).toBe(true);
+    expect(sameVolumeOffsets({}, {})).toBe(true);
+    expect(sameVolumeOffsets({ a: 1 }, { a: 2 })).toBe(false);
+    expect(sameVolumeOffsets({ a: 1 }, { a: 1, b: 1 })).toBe(false);
+    expect(sameVolumeOffsets({ a: 1, b: 1 }, { a: 1 })).toBe(false);
+    expect(sameVolumeOffsets({ a: 1 }, { b: 1 })).toBe(false);
+  });
+
+  it('sameSpineOffsets compares both halves', () => {
+    expect(
+      sameSpineOffsets({ spineOffset: 1, volumeOffsets: {} }, { spineOffset: 1, volumeOffsets: {} })
+    ).toBe(true);
+    expect(
+      sameSpineOffsets({ spineOffset: 1, volumeOffsets: {} }, { spineOffset: 2, volumeOffsets: {} })
+    ).toBe(false);
+    expect(
+      sameSpineOffsets(
+        { spineOffset: 1, volumeOffsets: { a: 1 } },
+        { spineOffset: 1, volumeOffsets: {} }
+      )
+    ).toBe(false);
+  });
+
+  it('clamps to the same range the cloud boundary enforces', () => {
+    expect(clampSpineOffset(9000)).toBe(50);
+    expect(clampSpineOffset(-9000)).toBe(-50);
+    expect(clampSpineOffset(1.25)).toBe(1.25);
+    expect(clampSpineOffset(Number.NaN)).toBe(0);
+    expect(clampVolumeOffset(9000)).toBe(500);
+    expect(clampVolumeOffset(-9000)).toBe(-500);
+    expect(clampVolumeOffset(12)).toBe(12);
+  });
+});
+
+describe('scheduleSpineOffsetWrite clamping + write result', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    updateSeriesMetadata.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await flushSpineOffsetWrites();
+    updateSeriesMetadata.mockClear();
+  });
+
+  it('clamps local writes so they agree with the cloud sanitizer', async () => {
+    scheduleSpineOffsetWrite('One Piece', {
+      spineOffset: 9000,
+      volumeOffsets: { 'uuid-a': -9000, 'uuid-b': 4 }
+    });
+    await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
+
+    expect(resolvePatch(0, stored())).toEqual({
+      spine_offset: 50,
+      volume_offsets: { 'uuid-a': -500, 'uuid-b': 4 }
+    });
+  });
+
+  it('resolves with the record the store wrote, so callers can recognise its echo', async () => {
+    const written = stored({ spine_offset: 2, updated_at: '2026-02-02T00:00:00.000Z' });
+    updateSeriesMetadata.mockImplementationOnce(async () => written);
+
+    const done = scheduleSpineOffsetWrite('One Piece', { spineOffset: 2 });
+    await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
+
+    await expect(done).resolves.toBe(written);
   });
 });

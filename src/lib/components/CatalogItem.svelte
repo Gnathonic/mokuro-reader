@@ -8,10 +8,15 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import {
+    clampSpineOffset,
+    clampVolumeOffset,
     getSpineOffsets,
+    sameSpineOffsets,
+    sameVolumeOffsets,
     scheduleSpineOffsetWrite,
     volumeOffsetsByIndex,
-    type SpineOffsetPatch
+    type SpineOffsetPatch,
+    type SpineOffsets
   } from '$lib/metadata/spine-offsets';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
@@ -99,32 +104,71 @@
 
   // Spine offsets live on the synced series record (see $lib/metadata/spine-offsets).
   // Local copies are optimistic: the wheel updates them immediately while the debounced
-  // write lands, and they resync from the store once no write of ours is outstanding.
+  // write lands, and they resync from the store once our write has come back around.
   let seriesKey = $derived(normalizeSeriesKey(volume?.series_title ?? ''));
-  let storedOffsets = $derived(getSpineOffsets($seriesMetadataMap.get(seriesKey)));
+  let storedRecord = $derived($seriesMetadataMap.get(seriesKey));
+  let storedOffsets = $derived(getSpineOffsets(storedRecord));
 
   // Per-series horizontal offset adjustment, in percent
   let hOffsetAdjust = $state(0);
   // Per-volume horizontal offset adjustments (volume_uuid → pixels)
   let volumeOffsetsByUuid = $state<Record<string, number>>({});
   let pendingOffsetWrites = $state(0);
+  // The record our last write produced, until the store echoes it back. Deliberately not
+  // reactive: only the effect below clears it, and it must not re-trigger that effect.
+  let awaitingEcho: { offsets: SpineOffsets; updatedAt: string } | null = null;
 
   $effect(() => {
     const stored = storedOffsets;
-    // While a write of ours is in flight the local values are the newer truth; an
-    // emission carrying the pre-write record would otherwise snap the stack back.
+    const storedUpdatedAt = storedRecord?.updated_at ?? '';
+    // While a write of ours is in flight the local values are the newer truth.
     if (pendingOffsetWrites > 0) return;
-    hOffsetAdjust = stored.spineOffset;
-    volumeOffsetsByUuid = stored.volumeOffsets;
+    if (awaitingEcho) {
+      // The write resolves when its transaction commits, but the liveQuery emission lands
+      // a beat later — until it does, `stored` is still the PRE-write record and applying
+      // it would visibly bounce the stack back for ~300 ms after every gesture. Wait for
+      // the emission that carries our own values (or, if another writer got in after us,
+      // for anything strictly newer, so this can never wedge).
+      const settled =
+        sameSpineOffsets(stored, awaitingEcho.offsets) || storedUpdatedAt > awaitingEcho.updatedAt;
+      if (!settled) return;
+      awaitingEcho = null;
+    }
+    // Assign only on a real change: `seriesMetadataMap` emits on ANY series' metadata write
+    // (a tag edit, a tracking push, a sync), and a fresh-but-equal object here would
+    // invalidate containerDimensions → stepSizes → the canvas draw on every mounted card.
+    if (hOffsetAdjust !== stored.spineOffset) hOffsetAdjust = stored.spineOffset;
+    if (!sameVolumeOffsets(volumeOffsetsByUuid, stored.volumeOffsets)) {
+      volumeOffsetsByUuid = stored.volumeOffsets;
+    }
   });
 
   function writeSpineOffsets(patch: SpineOffsetPatch) {
     const seriesTitle = volume?.series_title;
     if (!seriesTitle) return;
+    // Nothing queued and the gesture landed back on what is already stored (a reset on a
+    // series that never had offsets): skip the write rather than create an empty record /
+    // bump `updated_at` for nothing. With a write still queued the patch is corrective —
+    // it has to go out to undo what that queued write is about to store.
+    if (
+      pendingOffsetWrites === 0 &&
+      sameSpineOffsets(storedOffsets, {
+        spineOffset: hOffsetAdjust,
+        volumeOffsets: volumeOffsetsByUuid
+      })
+    ) {
+      return;
+    }
     pendingOffsetWrites++;
-    void scheduleSpineOffsetWrite(seriesTitle, patch).finally(() => {
-      pendingOffsetWrites--;
-    });
+    void scheduleSpineOffsetWrite(seriesTitle, patch)
+      .then((written) => {
+        if (written) {
+          awaitingEcho = { offsets: getSpineOffsets(written), updatedAt: written.updated_at };
+        }
+      })
+      .finally(() => {
+        pendingOffsetWrites--;
+      });
   }
 
   // Index-keyed view of the offsets for the stack currently on screen. Keyed by uuid in
@@ -187,18 +231,20 @@
       if (!target) return;
       e.preventDefault();
       const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
-      const next = (volumeOffsetsByUuid[target.volume_uuid] ?? 0) + delta;
-      setVolumeOffset(target.volume_uuid, next);
+      setVolumeOffset(target.volume_uuid, (volumeOffsetsByUuid[target.volume_uuid] ?? 0) + delta);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+Scroll: adjust series offset
       e.preventDefault();
       const delta = e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP;
-      hOffsetAdjust += delta;
+      // Clamped with the same rule the writer applies, so the stack never shows a value
+      // that storage would refuse.
+      hOffsetAdjust = clampSpineOffset(hOffsetAdjust + delta);
       writeSpineOffsets({ spineOffset: hOffsetAdjust });
     }
   }
 
-  function setVolumeOffset(volumeUuid: string, px: number) {
+  function setVolumeOffset(volumeUuid: string, value: number) {
+    const px = clampVolumeOffset(value);
     const next = { ...volumeOffsetsByUuid };
     if (px === 0) delete next[volumeUuid];
     else next[volumeUuid] = px;

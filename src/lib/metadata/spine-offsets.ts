@@ -1,4 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
+import { SPINE_OFFSET_LIMIT, VOLUME_OFFSET_LIMIT } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
 import { updateSeriesMetadata, type SeriesMetadataPatch } from './store';
 import type { SeriesMetadata } from './types';
@@ -43,6 +44,33 @@ function isUsableNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function clampTo(value: number, limit: number): number {
+  return Math.min(limit, Math.max(-limit, value));
+}
+
+/** Same range the cloud boundary enforces, applied to our own writes. */
+export function clampSpineOffset(value: number): number {
+  return isUsableNumber(value) ? clampTo(value, SPINE_OFFSET_LIMIT) : 0;
+}
+
+/** Same range the cloud boundary enforces, applied to our own writes. */
+export function clampVolumeOffset(value: number): number {
+  return isUsableNumber(value) ? clampTo(value, VOLUME_OFFSET_LIMIT) : 0;
+}
+
+/** Shallow value equality for a uuid → px map. */
+export function sameVolumeOffsets(a: Record<string, number>, b: Record<string, number>): boolean {
+  if (a === b) return true;
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
+}
+
+/** Value equality for a whole offsets pair — "is the record already what we want?". */
+export function sameSpineOffsets(a: SpineOffsets, b: SpineOffsets): boolean {
+  return a.spineOffset === b.spineOffset && sameVolumeOffsets(a.volumeOffsets, b.volumeOffsets);
+}
+
 /**
  * Read the offsets off a metadata record (or nothing) into the shape the card uses.
  * Junk that predates the sanitizer — or a record hand-edited in the cloud file — is
@@ -84,8 +112,8 @@ interface PendingWrite {
   hasVolumeOffsets: boolean;
   /** A "reset all" arrived in this burst: start from an empty map, not the record's. */
   resetVolumes: boolean;
-  done: Promise<void>;
-  resolve: () => void;
+  done: Promise<SeriesMetadata | undefined>;
+  resolve: (written: SeriesMetadata | undefined) => void;
 }
 
 const pending = new Map<string, PendingWrite>();
@@ -120,14 +148,15 @@ async function runWrite(key: string): Promise<void> {
   if (!entry) return;
   pending.delete(key);
   clearTimeout(entry.timer);
+  let written: SeriesMetadata | undefined;
   try {
-    await updateSeriesMetadata(entry.seriesTitle, buildPatch(entry));
+    written = await updateSeriesMetadata(entry.seriesTitle, buildPatch(entry));
   } catch (err) {
     // Callers are fire-and-forget UI handlers; a rejected promise there would surface as
     // an unhandled rejection and the card would sit with `pending` never clearing.
     console.warn('scheduleSpineOffsetWrite: failed to persist spine offsets', err);
   } finally {
-    entry.resolve();
+    entry.resolve(written);
   }
 }
 
@@ -135,13 +164,17 @@ async function runWrite(key: string): Promise<void> {
  * Queue a spine-offset write for `seriesTitle`, coalescing everything that arrives
  * within `SPINE_OFFSET_WRITE_DELAY_MS` into a single `updateSeriesMetadata` call.
  *
- * Returns a promise that resolves once that write has landed — callers use it to know
- * when it is safe to resync their optimistic local state from the store again.
+ * Values are clamped to the same range the cloud boundary enforces, so a local write and
+ * a synced one can never disagree about what is storable.
+ *
+ * Resolves with the record the write produced (`undefined` if it failed) once that write
+ * has landed — callers use it to know which store emission is the echo of their own write,
+ * and can adopt its values as the settled truth.
  */
 export function scheduleSpineOffsetWrite(
   seriesTitle: string,
   patch: SpineOffsetPatch
-): Promise<void> {
+): Promise<SeriesMetadata | undefined> {
   const key = normalizeSeriesKey(seriesTitle);
   const existing = pending.get(key);
 
@@ -151,8 +184,8 @@ export function scheduleSpineOffsetWrite(
     entry = existing;
     entry.seriesTitle = seriesTitle;
   } else {
-    let resolve!: () => void;
-    const done = new Promise<void>((r) => (resolve = r));
+    let resolve!: (written: SeriesMetadata | undefined) => void;
+    const done = new Promise<SeriesMetadata | undefined>((r) => (resolve = r));
     entry = {
       seriesTitle,
       timer: 0 as unknown as ReturnType<typeof setTimeout>,
@@ -166,7 +199,7 @@ export function scheduleSpineOffsetWrite(
   }
 
   if (patch.spineOffset !== undefined) {
-    entry.spineOffset = patch.spineOffset;
+    entry.spineOffset = clampSpineOffset(patch.spineOffset);
     entry.hasSpineOffset = true;
   }
   if (patch.volumeOffsets !== undefined) {
@@ -176,7 +209,7 @@ export function scheduleSpineOffsetWrite(
       entry.resetVolumes = true;
       entry.volumeOffsets = {};
     } else {
-      for (const [uuid, px] of entries) entry.volumeOffsets[uuid] = px;
+      for (const [uuid, px] of entries) entry.volumeOffsets[uuid] = clampVolumeOffset(px);
     }
     entry.hasVolumeOffsets = true;
   }
