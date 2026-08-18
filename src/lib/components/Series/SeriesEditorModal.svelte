@@ -116,17 +116,23 @@
   }
 
   function handleClose() {
+    open = false;
+    linkOpen = false;
+    const value = $seriesEditorModalStore;
+    if (!value) return; // already closed (the dialog's own onclose can fire after ours)
     // Flush a focused field's draft while `seriesTitle` is still valid. Blurring here
     // (before the store is cleared below) makes the field's own onblur handler save
     // normally; otherwise the field loses focus later — dialog teardown, unmount — after
     // the store has already gone blank, and the guarded save just drops the edit instead
     // (see SeriesTitlesEditor.svelte / SeriesLinkControls.svelte's `ownerSeriesTitle`
-    // check). Harmless when focus isn't on an editable field (e.g. the Close button).
-    (document.activeElement as HTMLElement | null)?.blur?.();
-    open = false;
-    linkOpen = false;
-    const value = $seriesEditorModalStore;
-    if (!value) return; // already closed (the dialog's own onclose can fire after ours)
+    // check).
+    //
+    // Two guards: this runs BELOW the re-entry check (the dialog's own onclose calls us a
+    // second time, by which point focus has already returned to whatever opened the
+    // editor), and only for focus still inside the dialog — otherwise that second pass
+    // would blur the trigger and leave the page with nothing focused.
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest?.('dialog')) active.blur?.();
     closeSeriesEditor();
     value.onClose?.();
   }

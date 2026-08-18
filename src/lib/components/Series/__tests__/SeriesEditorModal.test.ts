@@ -326,6 +326,26 @@ describe('SeriesEditorModal', () => {
     expect(updateSeriesMetadata).not.toHaveBeenCalledWith('', expect.anything());
   });
 
+  it('leaves focus alone when it is already outside the dialog on close', async () => {
+    // The close handler blurs the focused field so its draft saves — but it runs again on
+    // the dialog's own `close` event, by which point focus has gone back to whatever opened
+    // the editor. Blurring THAT would leave the page with nothing focused.
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    try {
+      await openFor('Berserk');
+      trigger.focus();
+
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      await tick();
+
+      expect(get(seriesEditorModalStore)).toBeUndefined();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      trigger.remove();
+    }
+  });
+
   it('opens the AniList link modal above the editor and lets Escape close only that one', async () => {
     const { getByText, queryByPlaceholderText } = await openFor('Berserk');
 

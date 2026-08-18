@@ -95,7 +95,10 @@
    */
   function saveTitles() {
     const savingFor = seriesTitle;
-    titlesSaveChain = titlesSaveChain.then(() => runTitlesSave(savingFor));
+    // `.catch` keeps the chain usable: `runTitlesSave` handles its own write failures, but
+    // anything unexpected escaping it would leave a rejected promise as the chain's tail
+    // and every later blur would queue onto it and never run.
+    titlesSaveChain = titlesSaveChain.then(() => runTitlesSave(savingFor)).catch(() => {});
   }
 
   async function runTitlesSave(savingFor: string) {
@@ -167,7 +170,7 @@
   /** Same synchronous-capture reasoning as `saveTitles` above. */
   function saveSynonyms() {
     const savingFor = seriesTitle;
-    synonymsSaveChain = synonymsSaveChain.then(() => runSynonymsSave(savingFor));
+    synonymsSaveChain = synonymsSaveChain.then(() => runSynonymsSave(savingFor)).catch(() => {});
   }
 
   async function runSynonymsSave(savingFor: string) {
