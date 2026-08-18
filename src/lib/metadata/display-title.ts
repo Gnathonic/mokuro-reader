@@ -68,6 +68,12 @@ export function resolveDisplayBase(
  * before wrapping. The STORED/embedded tag (`meta.tag`) is never rewritten — this is a
  * pure presentation overlay, same as the title language above.
  *
+ * The tag is only appended when the display base actually resolved to an alt title
+ * (native/romaji/english) — i.e. `base !== seriesTitle`. When the base IS the folder
+ * name (`globalPref === 'imported'`, or the alt-title fallback when a series has no
+ * alt titles at all), the tag is withheld: folder names already carry the tag to
+ * prevent collisions, so appending it again would duplicate it.
+ *
  * Never changes the stored `series_title` (folder name / grouping key / route key).
  */
 export function resolveDisplayTitle(
@@ -76,6 +82,7 @@ export function resolveDisplayTitle(
   globalPref: DisplayTitleLanguage
 ): string {
   const base = resolveDisplayBase(seriesTitle, meta, globalPref);
+  if (base === seriesTitle) return base;
   const rawTag = nonBlank(meta?.tag);
   if (!rawTag) return base;
   const tag = stripOuterBracketPair(rawTag);

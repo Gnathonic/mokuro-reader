@@ -61,44 +61,55 @@ describe('resolveDisplayTitle', () => {
     ).toBe('R');
   });
 
-  it('wraps the tag in parentheses, stripping a single pair of surrounding brackets', () => {
+  it('wraps the tag in parentheses, stripping a single pair of surrounding brackets — but only when the base came from an alt title', () => {
     // bracketed, parenthesized and bare tags all render identically
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'imported')).toBe(
-      'One Piece (color)'
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'english')).toBe(
+      'One Piece (en) (color)'
     );
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '(color)' }), 'imported')).toBe(
-      'One Piece (color)'
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '(color)' }), 'english')).toBe(
+      'One Piece (en) (color)'
     );
-    expect(resolveDisplayTitle('One Piece', meta({ tag: 'color' }), 'imported')).toBe(
-      'One Piece (color)'
+    expect(resolveDisplayTitle('One Piece', meta({ tag: 'color' }), 'english')).toBe(
+      'One Piece (en) (color)'
     );
     // full-width bracket pairs are stripped too
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '（color）' }), 'imported')).toBe(
-      'One Piece (color)'
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '（color）' }), 'english')).toBe(
+      'One Piece (en) (color)'
     );
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '【color】' }), 'imported')).toBe(
-      'One Piece (color)'
-    );
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'english')).toBe(
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '【color】' }), 'english')).toBe(
       'One Piece (en) (color)'
     );
   });
 
+  it("withholds the tag for the 'imported' preference — the folder name already carries it", () => {
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'imported')).toBe(
+      'One Piece'
+    );
+  });
+
+  it('withholds the tag when the base falls back to the folder title (no alt titles at all)', () => {
+    expect(resolveDisplayTitle('One Piece', meta({ titles: {}, tag: '[color]' }), 'english')).toBe(
+      'One Piece'
+    );
+  });
+
   it('ignores an empty or whitespace-only tag', () => {
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '' }), 'imported')).toBe('One Piece');
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '   ' }), 'imported')).toBe('One Piece');
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '' }), 'english')).toBe('One Piece (en)');
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '   ' }), 'english')).toBe(
+      'One Piece (en)'
+    );
   });
 
   it('trims surrounding whitespace from the tag and keeps inner spacing', () => {
-    expect(resolveDisplayTitle('One Piece', meta({ tag: '  bw scans ' }), 'imported')).toBe(
-      'One Piece (bw scans)'
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '  bw scans ' }), 'english')).toBe(
+      'One Piece (en) (bw scans)'
     );
   });
 
   it('keeps the raw tag verbatim for storage — only the DISPLAY string gets parens', () => {
     const m = meta({ tag: '[color]' });
     expect(m.tag).toBe('[color]');
-    expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece (color)');
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) (color)');
   });
 
   it('ignores a title_preference of any value, known or not — title language is global-only', () => {

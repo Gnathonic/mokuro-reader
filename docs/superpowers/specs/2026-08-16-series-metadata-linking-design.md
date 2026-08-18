@@ -219,7 +219,11 @@ is the pure mapper. `link-targets.ts` builds `https://anilist.co/manga/{id}` and
   back `english → romaji → native → seriesTitle` when missing; then
   `+ ' (' + tag + ')'` if the tag is non-empty, stripping one surrounding pair of
   `()`/`[]`/`（）`/`【】` from the raw tag first so `[color]`, `(color)` and `color` all
-  render as `Title (color)`. Pure, unit-tested.
+  render as `Title (color)`. The tag is appended only when the base actually resolved
+  to an alt title (i.e. it differs from `seriesTitle`) — when the base IS the folder
+  name (`imported`, or the alt-title fallback for a series with no alt titles), the tag
+  is withheld, since folder names already carry the tag to prevent collisions. Pure,
+  unit-tested.
 - Applied wherever a **series** title is displayed (Catalog card, SeriesView header,
   reader/volume headers found by grep). Grouping, routes, cloud paths keep `series_title`.
   Catalog sort uses the display title; catalog search matches `series_title`, all `titles`,

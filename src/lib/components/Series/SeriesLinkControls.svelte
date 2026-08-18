@@ -189,7 +189,7 @@
       onblur={saveTag}
       onkeydown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
       placeholder="color"
-      title="Shown as (tag) after the title"
+      title="Shown as (tag) after alt titles; folder names already include it"
       class="w-32 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-700"
     />
   </label>
