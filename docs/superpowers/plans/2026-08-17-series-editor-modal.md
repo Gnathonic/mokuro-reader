@@ -140,15 +140,15 @@
 
 **Files:**
 
-- Modify: `src/lib/components/Series/SeriesSpineShowcase.svelte` (+ test), `src/lib/settings/misc.ts` (device-local `shelfZoom?: number`, default 1)
+- Modify: `src/lib/components/Series/SeriesSpineShowcase.svelte` (+ test)
 
 **Requirements:**
 
 - The showcase renders WITHOUT the drop shadow (`dropShadow={false}` to `CompositeCanvas`, regardless of the catalog setting).
 - Default render scale = 1× card scale (spine width = the card's `BASE_WIDTH` = 250 px at zoom 1; today it is 0.556×), so nudges are easy to see; the strip height follows the zoom.
-- A zoom control in the shelf controls row: `−` / `+` buttons (steps ×0.8 / ×1.25, clamped 0.5×–3×) + a readout (`100%`) + double-click/`Reset` to 1×; `Ctrl+wheel` over the strip zooms too (preventDefault). Zoom is a device-local preference stored in `miscSettings.shelfZoom` (not synced, not per series).
+- A zoom control in the shelf controls row: `−` / `+` buttons (steps ×0.8 / ×1.25, clamped 0.5×–3×) + a readout (`100%`) + double-click/`Reset` to 1×; `Ctrl+wheel` over the strip zooms too (preventDefault). Zoom is component-local state (starts at 1× on every mount; NOT persisted — user decision).
 - Offsets stay in card px (unchanged storage); only rendering scales — a +1 px nudge remains +1 px on the card. Caption/readout show stored values.
-- Tests: no shadow prop passed; default scale 1 → spine width 250; `+` → 312.5 (1.25×), clamps at 3× / 0.5×; ctrl+wheel zooms and is prevented; zoom persisted to misc settings; offsets written unchanged by zoom.
+- Tests: no shadow prop passed; default scale 1 → spine width 250; `+` → 312.5 (1.25×), clamps at 3× / 0.5×; ctrl+wheel zooms and is prevented; offsets written unchanged by zoom.
 
 - [ ] Steps: failing tests → implement → suite/check/prettier → commit `feat(series): shelf renders larger without shadow; zoom control`.
 
