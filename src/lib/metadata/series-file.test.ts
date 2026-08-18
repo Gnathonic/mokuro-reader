@@ -164,13 +164,15 @@ describe('buildSeriesFile', () => {
       updated_at: '2026-01-01T00:00:00.000Z',
       volumes: []
     };
+    const neverLinkedHere = {
+      ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
+      spine_offset: 12,
+      read_count: 2
+    };
+    expect(neverLinkedHere.facts_updated_at).toBeUndefined(); // no facts clock at all
     const file = buildSeriesFile({
       seriesTitle: 'One Piece',
-      meta: {
-        ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
-        spine_offset: 12,
-        read_count: 2
-      },
+      meta: neverLinkedHere,
       localVolumes: [volume()],
       existing
     })!;
@@ -239,6 +241,77 @@ describe('buildSeriesFile', () => {
       existing: file
     })!;
     expect(again).toEqual(file);
+  });
+
+  it('publishes a deliberate unlink (factless record WITH a facts clock)', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: { anilist: 30013 },
+      titles: { english: 'One Piece' },
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes: []
+    };
+    const unlinkedHere = {
+      ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
+      facts_updated_at: '2026-06-01T00:00:00.000Z'
+    };
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: unlinkedHere,
+      localVolumes: [volume()],
+      existing
+    })!;
+    expect(file.external_ids).toEqual({});
+    expect(file.titles).toEqual({});
+    expect(file.updated_at).toBe('2026-06-01T00:00:00.000Z');
+
+    // …but an unlink older than the published facts does not resurrect itself.
+    const stale = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: { ...unlinkedHere, facts_updated_at: '2025-01-01T00:00:00.000Z' },
+      localVolumes: [volume()],
+      existing
+    })!;
+    expect(stale.external_ids).toEqual({ anilist: 30013 });
+    expect(stale.updated_at).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('counts synonyms as facts', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
+        synonyms: ['ワンピース']
+      },
+      localVolumes: []
+    })!;
+    // Worth uploading on its own, even with no ids/titles/tag and no volumes.
+    expect(file.synonyms).toEqual(['ワンピース']);
+    expect(file.updated_at).toBe('2026-06-01T00:00:00.000Z');
+
+    // …and a synonyms-only record is not "factless", so it wins over an older file.
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: { anilist: 30013 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes: []
+    };
+    const merged = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
+        synonyms: ['ワンピース']
+      },
+      localVolumes: [],
+      existing
+    })!;
+    expect(merged.synonyms).toEqual(['ワンピース']);
+    expect(merged.external_ids).toEqual({});
   });
 
   it('unions volumes by uuid with local winning, and sorts naturally', () => {

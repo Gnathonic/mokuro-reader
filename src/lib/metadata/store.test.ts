@@ -189,6 +189,46 @@ describe('series metadata store', () => {
     expect(unlinked.spine_offset).toBe(12); // per-user state survives an unlink
   });
 
+  it('leaves facts_updated_at unset on a record that has never carried facts', async () => {
+    // A catalog spine nudge creates the record; it says nothing about the series,
+    // so it must not claim a facts clock — that would outrank a real sidecar.
+    const nudged = await updateSeriesMetadata('One Piece', { spine_offset: 12 });
+    expect(nudged.facts_updated_at).toBeUndefined();
+    expect(Object.keys(nudged)).not.toContain('facts_updated_at');
+    expect(await getSeriesMetadataForTitle('One Piece')).toEqual(nudged);
+
+    const reread = await updateSeriesMetadata('One Piece', { read_count: 1 });
+    expect(reread.facts_updated_at).toBeUndefined();
+
+    // An unlink IS a deliberate fact edit, even though it leaves the facts empty.
+    await updateSeriesMetadata('One Piece', { external_ids: { anilist: 30013 } });
+    const unlinked = await unlinkSeries('One Piece');
+    expect(unlinked.facts_updated_at).toBe(unlinked.updated_at);
+    expect(unlinked.external_ids).toEqual({});
+  });
+
+  it('a stamp-less factless record adopts even an older sidecar', async () => {
+    await updateSeriesMetadata('One Piece', { spine_offset: 12 });
+    const before = await getSeriesMetadataForTitle('One Piece');
+    expect(before?.facts_updated_at).toBeUndefined();
+
+    // Older than the record's own clock, but the record has no facts opinion at all.
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013 },
+        titles: { english: 'One Piece' },
+        synonyms: [],
+        updated_at: '2020-01-01T00:00:00.000Z'
+      })
+    );
+    const meta = await getSeriesMetadataForTitle('One Piece');
+    expect(meta?.external_ids).toEqual({ anilist: 30013 });
+    expect(meta?.facts_updated_at).toBe('2020-01-01T00:00:00.000Z');
+    expect(meta?.spine_offset).toBe(12);
+    expect(meta?.updated_at).toBe(before?.updated_at); // record clock never moves backwards
+  });
+
   it('upsertFromSeriesFile compares against facts_updated_at, not the record stamp', async () => {
     // Linked on 2026-02-01, then a per-user write bumped the record to 2026-09-01.
     await replaceAllSeriesMetadata({

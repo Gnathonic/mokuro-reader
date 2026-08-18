@@ -3,7 +3,7 @@
   /**
    * Manual alt titles + synonyms editor. Self-published/Kindle-only series are in no
    * database, so users type these by hand — the fields feed the display overlay, catalog
-   * search and the `.mokuro` embed automatically (the same `SeriesMetadata` fields an
+   * search and the `series.json` sidecar automatically (the same `SeriesMetadata` fields an
    * AniList link would otherwise populate). Works for linked AND unlinked series; linking
    * replaces whatever is typed here (hence the helper line below the fields).
    *

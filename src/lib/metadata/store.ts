@@ -3,7 +3,7 @@ import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { ID_KEYS } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
-import type { SeriesFile } from './series-file';
+import { seriesFactsStamp, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 
 export type SeriesMetadataPatch = Partial<
@@ -54,10 +54,17 @@ function nextTimestamp(existing: string | undefined, now: number = Date.now()): 
 /** The shareable facts — everything else on the record is this library's own state. */
 const FACT_KEYS = ['external_ids', 'titles', 'synonyms', 'tag'] as const;
 
-/** Merge key for the facts. Legacy records (written before the split) fall back. */
-export function factsStamp(meta: Pick<SeriesMetadata, 'updated_at' | 'facts_updated_at'>): string {
-  return meta.facts_updated_at ?? meta.updated_at;
-}
+/**
+ * Merge key for the facts, or `undefined` when this library has never had an
+ * opinion about the series.
+ *
+ * A record with no facts and no fact edit in its history carries no facts stamp
+ * at all: its `updated_at` only ever tracked per-user state (spine offsets,
+ * rereads, tracking), so treating it as a facts stamp would make an empty record
+ * outrank a real sidecar. Legacy records that still carry facts fall back to
+ * `updated_at`.
+ */
+export const factsStamp = seriesFactsStamp;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -135,9 +142,13 @@ export async function updateSeriesMetadata(
       series_key: key,
       series_title: seriesTitle,
       updated_at,
+      // A fact edit — including an unlink, which empties the facts deliberately —
+      // is the only thing that may move this clock.
       facts_updated_at: changesFacts(existing, resolved)
         ? updated_at
-        : (stored?.facts_updated_at ?? stored?.updated_at ?? updated_at)
+        : stored
+          ? factsStamp(stored)
+          : undefined
     });
     await db.series_metadata.put(next);
     return next;
@@ -178,7 +189,9 @@ export async function upsertFromSeriesFile(seriesTitle: string, file: SeriesFile
   const key = normalizeSeriesKey(seriesTitle);
   await db.transaction('rw', db.series_metadata, async () => {
     const existing = await db.series_metadata.get(key);
-    if (existing && factsStamp(existing) >= file.updated_at) return;
+    // No local facts stamp = no local opinion, so any sidecar with facts applies.
+    const localStamp = existing ? factsStamp(existing) : undefined;
+    if (localStamp !== undefined && localStamp >= file.updated_at) return;
 
     const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
     const linked = hasAnyId(file.external_ids);

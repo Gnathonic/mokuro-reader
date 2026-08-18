@@ -80,44 +80,65 @@ function compareEntries(a: SeriesFileVolume, b: SeriesFileVolume): number {
 
 /** The shareable half of a series record (or of the file already in the cloud). */
 interface SeriesFacts {
-  external_ids: SeriesExternalIds;
-  titles: SeriesTitles;
-  synonyms: string[];
+  external_ids?: SeriesExternalIds;
+  titles?: SeriesTitles;
+  synonyms?: string[];
   tag?: string;
-  /** The facts clock — NOT a record's general `updated_at`. */
-  updated_at: string;
+  /**
+   * The facts clock — NOT a record's general `updated_at`. `undefined` means this
+   * record has never carried facts and has never had a fact edit, so it has no
+   * opinion about them at all.
+   */
+  updated_at?: string;
 }
 
-function hasFacts(facts: Pick<SeriesFacts, 'external_ids' | 'titles' | 'tag'>): boolean {
+/** Does this record/file say anything shareable about the series? */
+export function hasSeriesFacts(facts: SeriesFacts): boolean {
   return (
     Object.keys(facts.external_ids ?? {}).length > 0 ||
     Object.keys(facts.titles ?? {}).length > 0 ||
+    (facts.synonyms ?? []).some((s) => s.trim() !== '') ||
     !!facts.tag?.trim()
   );
 }
 
-/** Facts of a local record, stamped with its facts clock (legacy: `updated_at`). */
+/**
+ * The facts clock of a series record: the explicit stamp once a fact edit has
+ * happened (including an unlink, which clears the facts on purpose), else the
+ * record's own stamp for legacy records that still carry facts, else `undefined`
+ * — "this library has never had an opinion about this series".
+ */
+export function seriesFactsStamp(meta: SeriesMetadata): string | undefined {
+  return meta.facts_updated_at ?? (hasSeriesFacts(meta) ? meta.updated_at : undefined);
+}
+
+/** Facts of a local record, stamped with its (normalized) facts clock. */
 function localFacts(meta: SeriesMetadata): SeriesFacts {
+  const stamp = seriesFactsStamp(meta);
   return {
     external_ids: meta.external_ids ?? {},
     titles: meta.titles ?? {},
     synonyms: meta.synonyms ?? [],
     tag: meta.tag,
     updated_at:
-      normalizeUpdatedAt(meta.facts_updated_at ?? meta.updated_at) ?? new Date().toISOString()
+      stamp === undefined ? undefined : (normalizeUpdatedAt(stamp) ?? new Date().toISOString())
   };
 }
 
 /**
  * Build the file to upload for one series.
  *
- * Facts come from the local record, stamped with its *facts* clock
- * (`facts_updated_at`, falling back to `updated_at` on legacy records) — never
- * with `updated_at` itself, which every per-user write (spine offsets, rereads,
- * tracking pushes) bumps. The facts already in the cloud file are kept instead
- * when the local record has no facts at all, or when the file's facts are newer
- * than the local ones: a library that never linked this series must not publish
- * its emptiness as an unlink to everyone else.
+ * Facts come from the local record, stamped with its *facts* clock — never with
+ * `updated_at` itself, which every per-user write (spine offsets, rereads,
+ * tracking pushes) bumps. Which side wins:
+ *
+ * - local record carries facts → newest facts clock wins, ties keep local (that
+ *   is the same link round-tripping back through `upsertFromSeriesFile`);
+ * - local record is factless but HAS a facts clock (someone unlinked here) → the
+ *   unlink is published, but only when it is strictly newer than the file;
+ * - local record is factless with NO facts clock (this library never had an
+ *   opinion; its `updated_at` only ever tracked per-user state) → whatever is
+ *   already published is carried through untouched.
  *
  * Volumes are the union of the existing index and the installed volumes, keyed
  * by `volume_uuid` with local winning — a device only ever knows about its own
@@ -141,19 +162,24 @@ export function buildSeriesFile(args: {
   const { seriesTitle, meta, localVolumes, existing, cloudVolumeTitles } = args;
 
   const local = meta ? localFacts(meta) : undefined;
-  const existingHasFacts = !!existing && hasFacts(existing);
-  // A local record wins only when it actually carries facts AND its facts clock is
-  // at least as new as the file's. Equality keeps local (that is the same link
-  // round-tripping back through `upsertFromSeriesFile`).
-  const keepExisting =
-    !local || (existingHasFacts && (!hasFacts(local) || existing!.updated_at > local.updated_at));
-  const source = keepExisting ? existing : local;
+  const localStamp = local?.updated_at;
+  const existingHasFacts = !!existing && hasSeriesFacts(existing);
+
+  let source: SeriesFacts | undefined;
+  if (!local || localStamp === undefined) {
+    source = existing;
+  } else if (!existingHasFacts) {
+    source = local;
+  } else if (hasSeriesFacts(local)) {
+    source = localStamp >= existing!.updated_at ? local : existing;
+  } else {
+    source = localStamp > existing!.updated_at ? local : existing;
+  }
 
   const external_ids: SeriesExternalIds = {};
   const titles: SeriesTitles = {};
   let synonyms: string[] = [];
   let tag: string | undefined;
-  let updated_at: string;
 
   if (source) {
     for (const k of ID_KEYS)
@@ -161,10 +187,8 @@ export function buildSeriesFile(args: {
     for (const k of TITLE_KEYS) if (source.titles?.[k]) titles[k] = source.titles[k];
     synonyms = [...(source.synonyms ?? [])];
     tag = source.tag?.trim() || undefined;
-    updated_at = source.updated_at;
-  } else {
-    updated_at = new Date().toISOString();
   }
+  const updated_at = source?.updated_at ?? new Date().toISOString();
 
   const installed = localVolumes.filter((v) => !v.isPlaceholder);
   const localUuids = new Set(installed.map((v) => v.volume_uuid));
@@ -181,7 +205,9 @@ export function buildSeriesFile(args: {
   }
   volumes.sort(compareEntries);
 
-  if (!hasFacts({ external_ids, titles, tag }) && volumes.length === 0) return undefined;
+  if (!hasSeriesFacts({ external_ids, titles, synonyms, tag }) && volumes.length === 0) {
+    return undefined;
+  }
 
   const file: SeriesFile = {
     version: 2,
