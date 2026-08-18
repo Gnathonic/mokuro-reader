@@ -74,6 +74,7 @@ vi.mock('$lib/catalog/db', () => ({
 
 vi.mock('./store', () => ({
   getSeriesMetadata: vi.fn(async (key: string) => h.metaByKey.get(key)),
+  getAllSeriesMetadata: vi.fn(async () => Object.fromEntries(h.metaByKey)),
   updateSeriesMetadata: vi.fn(
     async (
       title: string,
@@ -113,6 +114,7 @@ import {
   onSeriesRestarted,
   onVolumeCompleted,
   readPendingPushes,
+  syncAllSeriesNow,
   syncSeriesNow,
   volumeNumberFor
 } from './progress-tracker';
@@ -677,5 +679,116 @@ describe('initProgressTracker', () => {
     h.connectedStore.set(true);
     expect(anilistRequest).not.toHaveBeenCalled();
     dispose();
+  });
+});
+
+describe('syncAllSeriesNow', () => {
+  beforeEach(resetWorld);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A second linked series, with its own volumes in the catalog. */
+  function addNaruto(over: Partial<SeriesMetadata> = {}) {
+    h.metaByKey.set(
+      'naruto',
+      meta({
+        series_key: 'naruto',
+        series_title: 'Naruto',
+        external_ids: { anilist: 30011 },
+        total_volumes: 72,
+        ...over
+      })
+    );
+    const narutoVol = { ...vol('n1', 'Vol 01'), series_title: 'Naruto' } as VolumeMetadata;
+    h.dbVolumes.push(narutoVol);
+    h.volumesStore.set({ a: { completed: true }, b: { completed: true }, n1: { completed: true } });
+  }
+
+  it('tallies every linked series and never touches the unlinked ones', async () => {
+    vi.useFakeTimers();
+    addNaruto();
+    // A series with no AniList id at all: not part of the pass.
+    h.metaByKey.set(
+      'bleach',
+      meta({ series_key: 'bleach', series_title: 'Bleach', external_ids: {} })
+    );
+
+    vi.mocked(anilistRequest)
+      // One Piece: remote is behind → a push.
+      .mockResolvedValueOnce({
+        Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 1, repeat: 0 } }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} })
+      // Naruto: remote is already ahead → nothing to do.
+      .mockResolvedValueOnce({
+        Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 9, repeat: 0 } }
+      });
+
+    const pending = syncAllSeriesNow();
+    await vi.advanceTimersByTimeAsync(2000);
+    const tally = await pending;
+
+    expect(tally).toEqual({ pushed: 1, nothing: 1, queued: 0, failed: 0, disabled: 0, total: 2 });
+    // Serialized: One Piece's read + write, then Naruto's read — never interleaved.
+    expect(
+      vi
+        .mocked(anilistRequest)
+        .mock.calls.map(
+          (c) => (c[1] as { mediaId?: number }).mediaId ?? (c[1] as { id?: number }).id
+        )
+    ).toEqual([30013, 30013, 30011]);
+  });
+
+  it('counts a queued series without stopping the pass', async () => {
+    vi.useFakeTimers();
+    addNaruto();
+    h.auth.token = null;
+
+    const pending = syncAllSeriesNow();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(await pending).toEqual({
+      pushed: 0,
+      nothing: 0,
+      queued: 2,
+      failed: 0,
+      disabled: 0,
+      total: 2
+    });
+    expect(anilistRequest).not.toHaveBeenCalled();
+  });
+
+  it('joins the pass already running instead of doubling the traffic', async () => {
+    vi.useFakeTimers();
+    addNaruto();
+    vi.mocked(anilistRequest).mockResolvedValue({
+      Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 9, repeat: 0 } }
+    });
+
+    const first = syncAllSeriesNow();
+    const second = syncAllSeriesNow();
+    expect(second).toBe(first);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(await first).toMatchObject({ total: 2 });
+    expect(anilistRequest).toHaveBeenCalledTimes(2);
+
+    // Finished: a later click starts a fresh pass.
+    const third = syncAllSeriesNow();
+    expect(third).not.toBe(first);
+    await vi.advanceTimersByTimeAsync(2000);
+    await third;
+  });
+
+  it('is an empty pass when nothing is linked', async () => {
+    h.metaByKey.clear();
+    expect(await syncAllSeriesNow()).toEqual({
+      pushed: 0,
+      nothing: 0,
+      queued: 0,
+      failed: 0,
+      disabled: 0,
+      total: 0
+    });
+    expect(anilistRequest).not.toHaveBeenCalled();
   });
 });

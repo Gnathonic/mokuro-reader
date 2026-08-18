@@ -15,7 +15,7 @@ import {
 } from './progress-plan';
 import { AniListError, anilistRequest } from './providers/anilist';
 import { normalizeSeriesKey } from './series-key';
-import { getSeriesMetadata, updateSeriesMetadata } from './store';
+import { getAllSeriesMetadata, getSeriesMetadata, updateSeriesMetadata } from './store';
 import type { SeriesMetadata } from './types';
 import { extractVolumeNumber } from './volume-number';
 
@@ -422,6 +422,62 @@ export function syncSeriesNow(seriesKey: string): Promise<PushOutcome> {
   return pushSeries(seriesKey, 'sync');
 }
 
+/** Outcome tally of one `syncAllSeriesNow` pass. */
+export type SyncAllTally = Record<PushOutcome, number> & { total: number };
+
+/**
+ * Pause between series. AniList allows 30 requests a minute and a sync spends
+ * up to two per series, so a library of any size would trip the limiter at full
+ * speed. A 429 is still handled (`rateLimitedUntil` + the pending queue); this
+ * just keeps an ordinary run from provoking one.
+ */
+const SYNC_ALL_GAP_MS = 500;
+
+let syncAllInFlight: Promise<SyncAllTally> | null = null;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * "Sync all linked series now" from Settings: one sequential pass over every
+ * series with an AniList id.
+ *
+ * Sequential rather than parallel because the budget above is per account, not
+ * per series, and because `pushSeries` only serializes within a series. A second
+ * invocation while one is running joins the first instead of doubling the
+ * traffic.
+ */
+export function syncAllSeriesNow(): Promise<SyncAllTally> {
+  if (syncAllInFlight) return syncAllInFlight;
+
+  const run = async (): Promise<SyncAllTally> => {
+    const tally: SyncAllTally = {
+      pushed: 0,
+      nothing: 0,
+      queued: 0,
+      failed: 0,
+      disabled: 0,
+      total: 0
+    };
+    const records = Object.values(await getAllSeriesMetadata()).filter(
+      (record) => !!record.external_ids?.anilist
+    );
+    for (let i = 0; i < records.length; i++) {
+      if (i > 0) await sleep(SYNC_ALL_GAP_MS);
+      const outcome = await syncSeriesNow(records[i].series_key);
+      tally[outcome]++;
+      tally.total++;
+    }
+    return tally;
+  };
+
+  syncAllInFlight = run().finally(() => {
+    syncAllInFlight = null;
+  });
+  return syncAllInFlight;
+}
+
 let flushing = false;
 export async function flushPendingPushes(): Promise<void> {
   if (!browser || flushing) return;
@@ -494,4 +550,5 @@ export function _resetTrackerStateForTests(): void {
   retryTimer = undefined;
   flushing = false;
   teardown = null;
+  syncAllInFlight = null;
 }
