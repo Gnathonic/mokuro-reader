@@ -8,7 +8,8 @@
     toSeriesMetadataPatch
   } from '$lib/metadata/providers/anilist';
   import { createLinkSearch, describeSearchError } from '$lib/metadata/link-search';
-  import { updateSeriesMetadata } from '$lib/metadata/store';
+  import { getSeriesMetadataForTitle, updateSeriesMetadata } from '$lib/metadata/store';
+  import { splitFolderTag } from '$lib/metadata/folder-tag';
   import type { MetadataSearchResult } from '$lib/metadata/provider-interface';
 
   let { open = $bindable(false), seriesTitle }: { open?: boolean; seriesTitle: string } = $props();
@@ -19,6 +20,9 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let linking = $state(false);
+  // The folder name split into a clean search base and its baked-in variant tag
+  // (`One Piece (color)` → search "One Piece", offer tag "color").
+  let folderTag = $derived(splitFolderTag(seriesTitle).tag);
 
   const search = createLinkSearch({
     provider: anilistProvider,
@@ -37,10 +41,11 @@
   // Prefill and search when the modal opens
   $effect(() => {
     if (open) {
-      query = seriesTitle;
+      const { base } = splitFolderTag(seriesTitle);
+      query = base;
       idInput = '';
       error = null;
-      search.setQuery(seriesTitle);
+      search.setQuery(base);
     } else {
       search.cancel();
       results = [];
@@ -87,8 +92,11 @@
   async function link(result: MetadataSearchResult) {
     linking = true;
     try {
+      // Adopt the folder's bracket tag unless the series already has one.
+      const existingTag = (await getSeriesMetadataForTitle(seriesTitle))?.tag?.trim();
       await updateSeriesMetadata(seriesTitle, {
         ...toSeriesMetadataPatch(result),
+        ...(folderTag && !existingTag ? { tag: folderTag } : {}),
         linked_at: new Date().toISOString()
       });
       showSnackbar(`Linked to AniList: ${primaryTitle(result)}`);
@@ -134,6 +142,12 @@
 <Modal bind:open size="md" title="Link to AniList" outsideclose>
   <div class="flex flex-col gap-3">
     <Input value={query} oninput={onQueryInput} placeholder="Search AniList…" autofocus />
+    {#if folderTag}
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        Folder tag <span class="font-medium">({folderTag})</span> left out of the search; it becomes
+        the series tag on link if none is set.
+      </p>
+    {/if}
 
     {#if loading}
       <div class="flex items-center gap-2 text-sm text-gray-500">

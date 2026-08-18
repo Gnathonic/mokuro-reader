@@ -1,15 +1,8 @@
+import { BRACKET_PAIRS } from './folder-tag';
 import type { DisplayTitleLanguage, SeriesMetadata, SeriesTitles } from './types';
 
 /** Fallback order when the requested language is missing (spec: english → romaji → native → folder). */
 const FALLBACK_ORDER: Array<keyof SeriesTitles> = ['english', 'romaji', 'native'];
-
-/** Matching bracket pairs stripped from a tag before it is wrapped in `(…)` for display. */
-const BRACKET_PAIRS: Array<[string, string]> = [
-  ['(', ')'],
-  ['[', ']'],
-  ['（', '）'],
-  ['【', '】']
-];
 
 function nonBlank(value: string | undefined): string | undefined {
   const trimmed = value?.trim();

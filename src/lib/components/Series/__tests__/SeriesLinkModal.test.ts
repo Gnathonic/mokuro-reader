@@ -19,8 +19,12 @@ vi.mock('$lib/metadata/providers/anilist', async () => {
 });
 
 const updateSeriesMetadata = vi.fn();
+const getSeriesMetadataForTitle = vi.fn(
+  (..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined)
+);
 vi.mock('$lib/metadata/store', () => ({
-  updateSeriesMetadata: (...args: unknown[]) => updateSeriesMetadata(...args)
+  updateSeriesMetadata: (...args: unknown[]) => updateSeriesMetadata(...args),
+  getSeriesMetadataForTitle: (...args: unknown[]) => getSeriesMetadataForTitle(...args)
 }));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
 
@@ -40,6 +44,48 @@ describe('SeriesLinkModal', () => {
     vi.clearAllMocks();
     search.mockResolvedValue([]);
     getById.mockResolvedValue(result);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+  });
+
+  it('searches with the folder name minus its bracket tag, and adopts the tag on link', async () => {
+    const { getByPlaceholderText, getByText } = render(SeriesLinkModal, {
+      props: { open: true, seriesTitle: 'One Piece [color]' }
+    });
+
+    expect((getByPlaceholderText('Search AniList…') as HTMLInputElement).value).toBe('One Piece');
+    await waitFor(() => expect(search).toHaveBeenCalledWith('One Piece', expect.anything()));
+    expect(getByText('(color)')).toBeTruthy();
+
+    const input = getByPlaceholderText('…or paste an AniList URL / ID');
+    await fireEvent.input(input, { target: { value: '30013' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(updateSeriesMetadata).toHaveBeenCalledWith(
+        'One Piece [color]',
+        expect.objectContaining({ external_ids: { anilist: 30013, mal: 13 }, tag: 'color' })
+      )
+    );
+  });
+
+  it('keeps a tag the series already has instead of the folder one', async () => {
+    getSeriesMetadataForTitle.mockResolvedValue({ tag: 'my tag' });
+    const { getByPlaceholderText } = render(SeriesLinkModal, {
+      props: { open: true, seriesTitle: 'One Piece [color]' }
+    });
+
+    const input = getByPlaceholderText('…or paste an AniList URL / ID');
+    await fireEvent.input(input, { target: { value: '30013' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(updateSeriesMetadata).toHaveBeenCalled());
+    expect(updateSeriesMetadata.mock.calls[0][1]).not.toHaveProperty('tag');
+  });
+
+  it('searches the whole name when it carries no bracket tag', async () => {
+    render(SeriesLinkModal, { props: { open: true, seriesTitle: 'One Piece' } });
+    await waitFor(() => expect(search).toHaveBeenCalledWith('One Piece', expect.anything()));
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
   });
 
   it('links by ID when Enter is pressed in the paste field', async () => {
