@@ -146,7 +146,9 @@ export function resetImportedSeriesFiles(): void {
  *
  * 1. Its index lists a volume we just imported → it is that series' sidecar,
  *    whatever name it carries (this is how a sidecar written before the series
- *    was renamed here still lands correctly).
+ *    was renamed here still lands correctly). When the index straddles several
+ *    imported series, the one its `series_title` names wins, else the one
+ *    holding most of its volumes.
  * 2. Its `series_title` names one of the series just imported → that one. This
  *    keeps a multi-series drop straight.
  * 3. A lone file in a single-series batch that claims nothing (no title) or
@@ -162,9 +164,20 @@ function resolveSeriesTitle(
   volumesByUuid: Map<string, string>,
   pendingCount: number
 ): string | undefined {
+  // Membership: an index can straddle two local series (a volume that this
+  // batch stored under a variant title), so tally every owner and let the
+  // file's own name break the tie before falling back to the majority.
+  const ownerHits = new Map<string, number>();
   for (const indexed of entry.file.volumes) {
     const owner = volumesByUuid.get(indexed.volume_uuid);
-    if (owner) return owner;
+    if (owner) ownerHits.set(owner, (ownerHits.get(owner) ?? 0) + 1);
+  }
+  if (ownerHits.size > 0) {
+    const claimedKey = normalizeSeriesKey(sanitizeTitleSegment(entry.file.series_title));
+    for (const owner of ownerHits.keys()) {
+      if (normalizeSeriesKey(owner) === claimedKey) return owner;
+    }
+    return [...ownerHits.entries()].sort((a, b) => b[1] - a[1])[0][0];
   }
 
   const named = titlesByKey.get(normalizeSeriesKey(sanitizeTitleSegment(entry.file.series_title)));

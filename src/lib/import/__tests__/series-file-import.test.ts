@@ -445,6 +445,57 @@ describe('keying a series.json to a series of the batch', () => {
     expect((await db.series_metadata.get('naruto'))?.external_ids).toEqual({ anilist: 30013 });
   });
 
+  it('when the index straddles two imported series, the one the file names wins', async () => {
+    // "One Piece/series.json" whose index lists a volume this batch stored
+    // under "One Piece Colored" (sorted first) AND its own volume: the file
+    // belongs to the series it names, not the first membership hit.
+    recordSeriesFile({
+      file: buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: { ...meta, series_title: 'One Piece' },
+        localVolumes: [
+          { ...volume, series_title: 'One Piece', volume_uuid: 'colored-vol', volume_title: 'A' },
+          { ...volume, series_title: 'One Piece', volume_uuid: 'plain-vol', volume_title: 'B' }
+        ]
+      })!,
+      path: 'One Piece/series.json',
+      size: 10,
+      modifiedTime: '2026-08-17T00:00:00.000Z'
+    });
+    recordImportedSeriesTitle('One Piece Colored', 'colored-vol');
+    recordImportedSeriesTitle('One Piece', 'plain-vol');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.get('one piece colored')).toBeUndefined();
+    expect((await db.series_metadata.get('one piece'))?.external_ids).toEqual({ anilist: 30013 });
+  });
+
+  it('when the file names neither owner, the series holding most of its volumes wins', async () => {
+    recordSeriesFile({
+      file: buildSeriesFile({
+        seriesTitle: 'Stale Name',
+        meta: { ...meta, series_title: 'Stale Name' },
+        localVolumes: [
+          { ...volume, series_title: 'Stale Name', volume_uuid: 'a-1', volume_title: 'A1' },
+          { ...volume, series_title: 'Stale Name', volume_uuid: 'b-1', volume_title: 'B1' },
+          { ...volume, series_title: 'Stale Name', volume_uuid: 'b-2', volume_title: 'B2' }
+        ]
+      })!,
+      path: 'Stale Name/series.json',
+      size: 10,
+      modifiedTime: '2026-08-17T00:00:00.000Z'
+    });
+    recordImportedSeriesTitle('Alpha', 'a-1');
+    recordImportedSeriesTitle('Beta', 'b-1');
+    recordImportedSeriesTitle('Beta', 'b-2');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.get('alpha')).toBeUndefined();
+    expect((await db.series_metadata.get('beta'))?.external_ids).toEqual({ anilist: 30013 });
+  });
+
   it('refuses a file that names a series we already have under that name', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await db.volumes.put({ ...volume, series_title: 'Bleach', volume_uuid: 'bleach-vol' });
