@@ -151,6 +151,13 @@ function getDatabase(): Dexie {
       volume_files: 'volume_uuid',
       series_metadata: 'series_key'
     });
+    workerDb.version(3).stores({
+      volumes: 'volume_uuid, series_uuid, series_title',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key',
+      series_index: 'series_key'
+    });
   }
   return workerDb;
 }

@@ -130,14 +130,15 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie. Volume data is split across three tables for performance, alongside a per-series metadata table:
+The application uses a V3 database (`mokuro_v3`) with Dexie. Volume data is split across three tables for performance, alongside per-series metadata and index tables:
 
-| Table             | Primary Key   | Indexed Fields                | Purpose                                                                          |
-| ----------------- | ------------- | ----------------------------- | -------------------------------------------------------------------------------- |
-| `volumes`         | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails                                                             |
-| `volume_ocr`      | `volume_uuid` | —                             | OCR page data (text blocks)                                                      |
-| `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                       |
-| `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`) |
+| Table             | Primary Key   | Indexed Fields                | Purpose                                                                           |
+| ----------------- | ------------- | ----------------------------- | --------------------------------------------------------------------------------- |
+| `volumes`         | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails                                                              |
+| `volume_ocr`      | `volume_uuid` | —                             | OCR page data (text blocks)                                                       |
+| `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                        |
+| `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)  |
+| `series_index`    | `series_key`  | —                             | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative) |
 
 **Key Types:**
 

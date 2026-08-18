@@ -1,5 +1,6 @@
 import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
+import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
@@ -11,6 +12,7 @@ export class CatalogDexieV3 extends Dexie {
   volume_ocr!: Table<VolumeOCR>;
   volume_files!: Table<VolumeFiles>;
   series_metadata!: Table<SeriesMetadata>;
+  series_index!: Table<SeriesIndexRecord>;
 
   constructor(dbName: string = 'mokuro_v3') {
     super(dbName);
@@ -29,6 +31,16 @@ export class CatalogDexieV3 extends Dexie {
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid',
       series_metadata: 'series_key'
+    });
+
+    // v3.3: cached per-series series.json sidecar (facts + unauthoritative volume
+    // index), keyed the same as series_metadata. Additive — no data migration.
+    this.version(3).stores({
+      volumes: 'volume_uuid, series_uuid, series_title',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key',
+      series_index: 'series_key'
     });
   }
 
