@@ -1,9 +1,51 @@
 import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '$lib/types';
+import { getSeriesIndex } from '$lib/metadata/series-index';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { SERIES_FILE_NAME, buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 import { buildMokuroMetadata } from './mokuro-metadata';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
   thumbnailFile: File | null;
+  /** The series' `series.json` — one per series, not per volume. */
+  seriesFile: File | null;
+}
+
+/**
+ * The `series.json` a local export should carry: this library's facts plus the
+ * index of ALL its volumes of that series, merged on top of the last cached
+ * copy so entries another device published survive the round trip.
+ *
+ * `undefined` when the series has nothing to say (no facts, no volumes) — the
+ * export then simply writes no sidecar.
+ */
+export async function buildSeriesFileForExport(
+  seriesTitle: string
+): Promise<SeriesFile | undefined> {
+  const key = normalizeSeriesKey(seriesTitle);
+  if (!key) return undefined;
+
+  const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
+  const localVolumes = allVolumes.filter(
+    (volume) => normalizeSeriesKey(volume.series_title) === key
+  );
+  const [meta, cached] = await Promise.all([
+    getSeriesMetadataForTitle(seriesTitle),
+    getSeriesIndex(key)
+  ]);
+
+  return buildSeriesFile({ seriesTitle, meta, localVolumes, existing: cached?.file });
+}
+
+/** The same file as a downloadable/embeddable sidecar, or `null`. */
+export async function loadSeriesFileSidecar(seriesTitle: string): Promise<File | null> {
+  const file = await buildSeriesFileForExport(seriesTitle);
+  if (!file) return null;
+  return new File([JSON.stringify(file, null, 2)], SERIES_FILE_NAME, {
+    type: 'application/json'
+  });
 }
 
 function extensionFromMimeType(contentType: string): string {
@@ -42,7 +84,9 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
     });
   }
 
-  return { mokuroFile, thumbnailFile };
+  const seriesFile = await loadSeriesFileSidecar(volume.series_title);
+
+  return { mokuroFile, thumbnailFile, seriesFile };
 }
 
 export function downloadFileBlob(file: File): void {

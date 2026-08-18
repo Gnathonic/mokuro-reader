@@ -27,6 +27,16 @@ export async function volumeExists(volumeUuid: string): Promise<boolean> {
 }
 
 /**
+ * The title a volume is actually stored under: sanitized unless the caller asked
+ * to preserve it (see `saveVolume`), and never empty. Exported because callers
+ * that key other records off the stored series title (the `series.json` import)
+ * must use exactly the same value.
+ */
+export function storedTitleSegment(raw: string, preserveTitles?: boolean): string {
+  return (preserveTitles ? raw : sanitizeTitleSegment(raw)) || 'Untitled';
+}
+
+/**
  * Save a processed volume to the database
  *
  * Performs an atomic write to all three tables.
@@ -63,13 +73,9 @@ export async function saveVolume(
   // Convert ProcessedMetadata to VolumeMetadata format
   const volumeMetadata: VolumeMetadata = {
     mokuro_version: metadata.mokuroVersion || '',
-    series_title:
-      (options?.preserveTitles ? metadata.series : sanitizeTitleSegment(metadata.series)) ||
-      'Untitled',
+    series_title: storedTitleSegment(metadata.series, options?.preserveTitles),
     series_uuid: metadata.seriesUuid,
-    volume_title:
-      (options?.preserveTitles ? metadata.volume : sanitizeTitleSegment(metadata.volume)) ||
-      'Untitled',
+    volume_title: storedTitleSegment(metadata.volume, options?.preserveTitles),
     volume_uuid: metadata.volumeUuid,
     page_count: metadata.pageCount,
     character_count: metadata.chars,

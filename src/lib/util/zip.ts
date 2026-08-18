@@ -5,7 +5,8 @@ import { compressVolume } from './compress-volume';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
-import { loadVolumeSidecars } from './volume-sidecars';
+import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
+import { SERIES_FILE_NAME } from '$lib/metadata/series-file';
 
 export interface ExportSidecarOptions {
   includeSidecars: boolean;
@@ -251,7 +252,12 @@ export async function createArchiveBlob(
   // For single volume, use shared compression function (returns Blob directly)
   if (volumes.length === 1) {
     const { metadata, filesData } = await prepareVolumeData(volumes[0]);
-    return await compressVolume(volumes[0].volume_title, metadata, filesData);
+    // The archive travels on its own, so it carries the series sidecar too:
+    // re-importing it restores the series facts and the volume index.
+    const seriesFile = await buildSeriesFileForExport(volumes[0].series_title);
+    return await compressVolume(volumes[0].volume_title, metadata, filesData, undefined, {
+      seriesFile
+    });
   }
 
   // For multiple volumes, create a single ZIP containing all volumes
@@ -291,6 +297,15 @@ export async function createArchiveBlob(
         },
         sidecarOptions
       );
+    }
+
+    // One `series.json` at the archive root for the whole series (never one per
+    // volume): the facts plus the index of every local volume of that series.
+    const seriesFile = await buildSeriesFileForExport(
+      seriesTitle ?? volumes[0]?.series_title ?? ''
+    );
+    if (seriesFile) {
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(JSON.stringify(seriesFile, null, 2)));
     }
 
     // Close the archive and get the Blob directly

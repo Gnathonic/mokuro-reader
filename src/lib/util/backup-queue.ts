@@ -405,6 +405,10 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // main-thread cloud upload (filesystem) stores it as a sidecar,
             // matching every other cloud provider.
             embedMokuroInArchive: isExport,
+            // Same split for the series sidecar: an exported archive carries
+            // `series.json` so a re-import restores the series facts, while a
+            // cloud upload gets the managed `<Series>/series.json` instead.
+            embedSeriesFile: isExport,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }

@@ -1,5 +1,8 @@
 import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
+import type { VolumeMetadata } from '$lib/types';
+import { SERIES_FILE_NAME, buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 
 // Re-exported for existing importers (volume-sidecars, zip, tests).
@@ -37,13 +40,17 @@ function extensionFromMimeType(contentType: string): string {
  * @param metadata Mokuro metadata object (null for image-only volumes)
  * @param filesData Array of files with filenames and Uint8Array data
  * @param onProgress Optional progress callback (completed items, total items)
+ * @param options.seriesFile The series' `series.json`, written at the archive
+ *   root for self-contained exports. Cloud uploads leave it out: there the file
+ *   lives once per series folder, merged with what other devices published.
  * @returns Promise resolving to compressed CBZ as Blob
  */
 export async function compressVolume(
   volumeTitle: string,
   metadata: MokuroMetadata | null,
   filesData: { filename: string; data: Uint8Array }[],
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  options: { seriesFile?: SeriesFile | null } = {}
 ): Promise<Blob> {
   // Create zip writer with compatibility options:
   // - bufferedWrite: true - writes sizes in header (not data descriptor after data)
@@ -117,6 +124,14 @@ export async function compressVolume(
     if (onProgress) {
       onProgress(completedItems, totalItems);
     }
+  }
+
+  // The series sidecar rides at the archive root, next to the .mokuro.
+  if (options.seriesFile) {
+    await zipWriter.add(
+      SERIES_FILE_NAME,
+      new TextReader(JSON.stringify(options.seriesFile, null, 2))
+    );
   }
 
   // Close and get the compressed data as Blob
@@ -209,6 +224,30 @@ export async function generateVolumeSidecarsFromDb(
 }
 
 /**
+ * The series sidecar an export embeds, built from the same database handle the
+ * compression uses (this runs in a Worker, which has no access to the app's own
+ * Dexie instance). Mirrors `buildSeriesFileForExport` in `volume-sidecars.ts`.
+ */
+async function buildSeriesFileFromDb(
+  db: Dexie,
+  seriesTitle: string
+): Promise<SeriesFile | undefined> {
+  const key = normalizeSeriesKey(seriesTitle);
+  if (!key) return undefined;
+
+  const [meta, cached, allVolumes] = await Promise.all([
+    db.table('series_metadata').get(key),
+    db.table('series_index').get(key),
+    db.table('volumes').toArray()
+  ]);
+  const localVolumes = (allVolumes as VolumeMetadata[]).filter(
+    (volume) => normalizeSeriesKey(volume.series_title) === key
+  );
+
+  return buildSeriesFile({ seriesTitle, meta, localVolumes, existing: cached?.file });
+}
+
+/**
  * Compress a volume by streaming files directly from IndexedDB
  * This avoids memory issues with large volumes by:
  * 1. Reading files one at a time from IndexedDB
@@ -222,7 +261,11 @@ export async function generateVolumeSidecarsFromDb(
 export async function compressVolumeFromDb(
   volumeUuid: string,
   onProgress?: (completed: number, total: number) => void,
-  options: { embedThumbnailSidecar?: boolean; embedMokuroInArchive?: boolean } = {}
+  options: {
+    embedThumbnailSidecar?: boolean;
+    embedMokuroInArchive?: boolean;
+    embedSeriesFile?: boolean;
+  } = {}
 ): Promise<Blob> {
   const db = getDatabase();
 
@@ -323,6 +366,16 @@ export async function compressVolumeFromDb(
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
+  }
+
+  // The series sidecar: only for self-contained exports. A cloud upload gets
+  // `<Series>/series.json` written once per series instead, merged with the
+  // copy other devices published — an archive-local copy would be stale.
+  if (options.embedSeriesFile) {
+    const seriesFile = await buildSeriesFileFromDb(db, volume.series_title);
+    if (seriesFile) {
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(JSON.stringify(seriesFile, null, 2)));
+    }
   }
 
   // Add thumbnail sidecar when requested (used by sidecar-aware exports/backups)

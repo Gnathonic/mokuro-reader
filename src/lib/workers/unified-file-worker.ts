@@ -119,6 +119,8 @@ interface CompressFromDbMessage {
   downloadFilename?: string; // For local export
   embedThumbnailSidecar?: boolean;
   embedMokuroInArchive?: boolean;
+  /** Write the series' `series.json` into the archive (self-contained exports). */
+  embedSeriesFile?: boolean;
   includeSidecars?: boolean;
 }
 
@@ -760,7 +762,8 @@ ctx.addEventListener('message', async (event) => {
         },
         {
           embedThumbnailSidecar: message.embedThumbnailSidecar === true,
-          embedMokuroInArchive: message.embedMokuroInArchive !== false
+          embedMokuroInArchive: message.embedMokuroInArchive !== false,
+          embedSeriesFile: message.embedSeriesFile === true
         }
       );
 
