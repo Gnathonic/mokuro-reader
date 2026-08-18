@@ -49,6 +49,8 @@ const h = vi.hoisted(() => {
       pushProgressToAniList: true
     }),
     volumesData: createStore<Record<string, { completed?: boolean }>>({}),
+    // SeriesSpineShowcase mirrors the catalog card's "hide read volumes" subset.
+    progressData: createStore<Record<string, number>>({}),
     anilistUser: createStore<{ id: number; name: string } | null>(null),
     anilistConnected: createStore<boolean>(false),
     auth: { clientId: undefined as string | undefined },
@@ -85,7 +87,10 @@ vi.mock('$lib/settings/settings', () => ({
 }));
 // The modal mounts SeriesTrackingPanel; these keep its module graph (IndexedDB,
 // the AniList tracker) out of a test about the modal itself.
-vi.mock('$lib/settings/volume-data', () => ({ volumes: h.volumesData }));
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: h.volumesData,
+  progress: h.progressData
+}));
 vi.mock('$lib/metadata/progress-tracker', () => ({
   computeLocalPassState: () => ({
     passProgress: 0,

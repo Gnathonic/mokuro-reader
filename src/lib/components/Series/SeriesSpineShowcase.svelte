@@ -13,10 +13,23 @@
    * card and this showcase can be on screen at once. Local state is optimistic and resyncs
    * from the store only once our own write has echoed back — see the `awaitingEcho` note
    * below, which mirrors CatalogItem.svelte.
+   *
+   * GEOMETRY: every number here comes from `$lib/util/spine-stack-geometry`, the card's own
+   * rules, in card pixels — the same uniform height (the AVERAGE of the contain-fitted
+   * thumbnail heights, never upscaled), the same per-volume aspect widths and the same step.
+   * Zoom is applied last, purely as a render scale, so at 1× a spine here is the same number
+   * of pixels as on the card. Anything computed independently here would make a gap tuned in
+   * the editor land differently on the card.
+   *
+   * The one deliberate difference is WHICH volumes are drawn: this is a placement editor, so
+   * it shows the whole series (the card may hide read volumes or cap a cloud stack). The
+   * uniform height is still measured over the card's own subset, so the volumes the two have
+   * in common are the same size in both.
    */
-  import { Button, Range } from 'flowbite-svelte';
+  import { Button, ButtonGroup, Range } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { catalogSettings } from '$lib/settings/settings';
+  import { progress } from '$lib/settings/volume-data';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
@@ -37,6 +50,15 @@
     type SpineOffsets
   } from '$lib/metadata/spine-offsets';
   import { computeStackLayout, hitTestStack } from '$lib/util/spine-stack-layout';
+  import {
+    CARD_BASE_HEIGHT,
+    CARD_BASE_WIDTH,
+    computeStepSizes,
+    computeUniformHeight,
+    getSpineCanvasDimensions,
+    selectCardStackVolumes,
+    type Dimensions
+  } from '$lib/util/spine-stack-geometry';
   import { SPINE_OFFSET_LIMIT } from '$lib/metadata/sanitize';
   import CompositeCanvas from '../CompositeCanvas.svelte';
 
@@ -53,9 +75,9 @@
   // Card-space geometry (what the offsets are expressed in) and the zoom this strip
   // draws at. Per-volume nudges are stored in card pixels, so they are scaled here too:
   // the strip is a zoomed view of the card's stack, not a different layout. Zoom 1×
-  // means "card scale" — a spine is drawn exactly `BASE_WIDTH` px wide.
-  const BASE_WIDTH = 250;
-  const BASE_HEIGHT = 360;
+  // means "card scale" — a spine is drawn at exactly the size the card draws it.
+  const BASE_WIDTH = CARD_BASE_WIDTH;
+  const BASE_HEIGHT = CARD_BASE_HEIGHT;
 
   const ADJUST_STEP = 0.25; // % of the horizontal step, per wheel tick
   const VOLUME_ADJUST_STEP = 1; // card px, per wheel tick
@@ -68,48 +90,58 @@
   const SLIDER_LIMIT = Math.min(25, SPINE_OFFSET_LIMIT);
 
   // ── Zoom: a device-local, session-only render scale ────────────────────────────────────
-  // Not persisted anywhere (not synced, not in miscSettings) — it resets to 1× every time
-  // the showcase mounts. Offsets are unaffected: they stay in card px and only the drawing
-  // scales, so a +1 px nudge remains +1 px in storage no matter the zoom.
-  const ZOOM_MIN = 0.5;
-  const ZOOM_MAX = 3;
-  const ZOOM_STEP_IN = 1.25;
-  const ZOOM_STEP_OUT = 0.8;
-  const ZOOM_DEFAULT = 1;
+  // Two states only — 1× is card scale (what the catalog actually draws) and 2× is the
+  // magnifier for judging a few pixels of overlap. Not persisted anywhere (not synced, not
+  // in miscSettings): it resets to 1× every time the showcase mounts. Offsets are
+  // unaffected — they stay in card px and only the drawing scales, so a +1 px nudge remains
+  // +1 px in storage at either zoom.
+  const ZOOM_LEVELS = [1, 2] as const;
 
-  let zoom = $state(ZOOM_DEFAULT);
-
-  function clampZoom(z: number): number {
-    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
-  }
-
-  function setZoom(next: number) {
-    zoom = clampZoom(next);
-  }
-
-  function zoomIn() {
-    setZoom(zoom * ZOOM_STEP_IN);
-  }
-
-  function zoomOut() {
-    setZoom(zoom * ZOOM_STEP_OUT);
-  }
-
-  function resetZoom() {
-    zoom = ZOOM_DEFAULT;
-  }
+  let zoom = $state<number>(ZOOM_LEVELS[0]);
 
   let spineWidth = $derived(BASE_WIDTH * zoom);
-  let spineHeight = $derived(BASE_HEIGHT * zoom);
 
-  let sortedVolumes = $derived([...volumes].sort(sortVolumes).slice(0, MAX_SHOWCASE_VOLUMES));
+  let sortedVolumes = $derived([...volumes].sort(sortVolumes));
+  let localVolumes = $derived(sortedVolumes.filter((v) => !v.isPlaceholder));
+  let unreadVolumes = $derived(
+    localVolumes.filter((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
+  );
+
+  /**
+   * Exactly the volumes the catalog card stacks in spine mode (`stackCount = 0`) — NOT what
+   * the shelf draws (that is every volume, below). This subset exists only to measure the
+   * card's uniform height from, so a volume the two have in common is drawn at the same
+   * size in both places.
+   *
+   * Derived from props and settings only — never from the fetched thumbnails below, which
+   * would turn the fetch effect into a loop.
+   */
+  let cardVolumes = $derived(
+    selectCardStackVolumes({
+      localVolumes,
+      unreadVolumes,
+      placeholders: sortedVolumes,
+      hideRead: $catalogSettings?.hideReadVolumes ?? true,
+      // The shelf IS spine mode: all of the subset, one row, no vertical step.
+      stackCount: 0,
+      // The card's compact cloud mode collapses to a single cover; a one-spine shelf could
+      // not be spaced at all, so the shelf always measures the (capped) stack.
+      compactCloud: false
+    })
+  );
+
+  /**
+   * The shelf is a placement editor: it always shows the whole series, read or not, up to
+   * its own memory cap. Only the SIZE of each spine comes from the card's stack.
+   */
+  let displayedVolumes = $derived(sortedVolumes.slice(0, MAX_SHOWCASE_VOLUMES));
 
   // Cloud placeholders enriched with their fetched thumbnail, exactly like the catalog
   // card: the volume keeps its slot in the strip whether or not the image has landed, so
   // each thumbnail pops into a fixed position instead of shifting the ones already drawn.
   let cloudThumbnailData = $state<Record<string, CloudThumbnailResult>>({});
   let showcaseVolumes = $derived(
-    sortedVolumes.map((vol) => {
+    displayedVolumes.map((vol) => {
       const ct = cloudThumbnailData[vol.volume_uuid];
       return ct
         ? { ...vol, thumbnail: ct.file, thumbnail_width: ct.width, thumbnail_height: ct.height }
@@ -117,12 +149,12 @@
     })
   );
 
-  // Fetch targets come from `sortedVolumes` (props only), never from the enriched list:
-  // depending on `cloudThumbnailData` here would make each arriving thumbnail re-run the
-  // effect that fetches thumbnails.
+  // Fetch targets come from `displayedVolumes` (props/settings only), never from the
+  // enriched list: depending on `cloudThumbnailData` here would make each arriving
+  // thumbnail re-run the effect that fetches thumbnails.
   $effect(() => {
     let cancelled = false;
-    for (const vol of sortedVolumes) {
+    for (const vol of displayedVolumes) {
       // Already have pixels locally, or nothing to fetch: leave it alone.
       if (vol.thumbnail || !vol.cloudThumbnailFileId) continue;
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
@@ -140,24 +172,52 @@
     };
   });
 
+  /** The card's dimension rule: stored size, else the base box once there are pixels. */
+  function dimensionsOf(vol: VolumeMetadata): Dimensions | undefined {
+    const ct = cloudThumbnailData[vol.volume_uuid];
+    const width = ct?.width ?? vol.thumbnail_width;
+    const height = ct?.height ?? vol.thumbnail_height;
+    if (width && height) return { width, height };
+    if (ct?.file || vol.thumbnail) return { width: BASE_WIDTH, height: BASE_HEIGHT };
+    return undefined;
+  }
+
   let thumbnailDimensions = $derived.by(() => {
-    const dims = new Map<string, { width: number; height: number }>();
+    const dims = new Map<string, Dimensions>();
     for (const vol of showcaseVolumes) {
-      if (vol.thumbnail_width && vol.thumbnail_height) {
-        dims.set(vol.volume_uuid, { width: vol.thumbnail_width, height: vol.thumbnail_height });
-      } else if (vol.thumbnail) {
-        dims.set(vol.volume_uuid, { width: BASE_WIDTH, height: BASE_HEIGHT });
-      }
+      const d = dimensionsOf(vol);
+      if (d) dims.set(vol.volume_uuid, d);
     }
     return dims;
   });
 
-  /** Spine mode: uniform height, width from the aspect ratio, capped at one spine width. */
+  /**
+   * The height every spine is drawn at, in card px: the average contain-fitted height of
+   * the CARD's stack. Deliberately measured over `cardVolumes` even when "show all" is on,
+   * so widening the shelf cannot change how big the volumes it shares with the card are.
+   */
+  let uniformHeight = $derived(
+    computeUniformHeight({
+      dims: cardVolumes.map(dimensionsOf),
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      stackCountSetting: 0,
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
+  );
+
+  /** Drawn height of a spine. Small scans stay small — the card never upscales either. */
+  let spineHeight = $derived((uniformHeight ?? BASE_HEIGHT) * zoom);
+
+  /** Card geometry × zoom: the same picture, drawn bigger. */
   function getCanvasDimensions(volumeUuid: string): { width: number; height: number } | null {
-    const dims = thumbnailDimensions.get(volumeUuid);
-    if (!dims) return null;
-    const aspectRatio = dims.width / dims.height;
-    return { width: Math.min(spineHeight * aspectRatio, spineWidth), height: spineHeight };
+    const dims = getSpineCanvasDimensions(
+      thumbnailDimensions.get(volumeUuid),
+      uniformHeight,
+      BASE_WIDTH,
+      BASE_HEIGHT
+    );
+    return dims ? { width: dims.width * zoom, height: dims.height * zoom } : null;
   }
 
   // ── Offsets: optimistic local state over the synced record ────────────────────────────
@@ -239,14 +299,32 @@
   }
 
   // ── Layout ────────────────────────────────────────────────────────────────────────────
-  let horizontalStepPx = $derived(
-    (spineWidth * (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust)) / 100
+  /** The card's own step for this series, in card px, before zoom. */
+  let cardStepSizes = $derived(
+    computeStepSizes({
+      stackCountSetting: 0,
+      horizontalStepPct: $catalogSettings?.horizontalStep ?? 11,
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      hOffsetAdjust,
+      centerHorizontal: $catalogSettings?.centerHorizontal ?? true,
+      centerVertical: $catalogSettings?.centerVertical ?? false,
+      actualCount: showcaseVolumes.length,
+      // Spine mode fills every slot it was sized for, so neither the centring nor the
+      // spreading branch can fire; the container only has to be self-consistent.
+      innerWidth: BASE_WIDTH,
+      innerHeight: uniformHeight ?? BASE_HEIGHT,
+      uniformHeight,
+      dims: showcaseVolumes.map(dimensionsOf),
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
   );
+  let horizontalStepPx = $derived(cardStepSizes.horizontal * zoom);
   let stepSizes = $derived({
     horizontal: horizontalStepPx,
-    vertical: 0,
-    leftOffset: 0,
-    topOffset: 0
+    vertical: cardStepSizes.vertical * zoom,
+    leftOffset: cardStepSizes.leftOffset * zoom,
+    topOffset: cardStepSizes.topOffset * zoom
   });
   let scaledVolumeOffsets = $derived(
     new Map(
@@ -256,19 +334,37 @@
       ])
     )
   );
+  /**
+   * Drawn width per volume, index-aligned with the strip. Each spine owns only the pixels
+   * it is actually painted in — hit-testing a 40px spine against a full 250px band would
+   * nudge the wrong volume. A volume whose thumbnail has not landed keeps a full-width slot
+   * so the strip does not reflow as images arrive.
+   */
+  let spineWidths = $derived(
+    showcaseVolumes.map((vol) => getCanvasDimensions(vol.volume_uuid)?.width ?? spineWidth)
+  );
   let layout = $derived(
     computeStackLayout({
       count: showcaseVolumes.length,
-      baseWidth: spineWidth,
+      baseWidth: spineWidths[showcaseVolumes.length - 1] ?? spineWidth,
       horizontalStepPx,
       volumeOffsetsByIndex: scaledVolumeOffsets
     })
   );
-  let canvasWidth = $derived(Math.max(spineWidth, layout.totalWidth));
+  /** Right edge of the widest-reaching spine — the strip is exactly as wide as it draws. */
+  let canvasWidth = $derived.by(() => {
+    const count = showcaseVolumes.length;
+    if (count === 0) return spineWidth;
+    let right = 0;
+    for (let i = 0; i < count; i++) {
+      right = Math.max(right, (layout.lefts[i] ?? 0) + spineWidths[i]);
+    }
+    return right;
+  });
   /**
    * CompositeCanvas right-aligns the last spine to `canvasWidth`; mirror that shift here so
-   * the hit test agrees with what is actually painted (it is 0 whenever the last volume is
-   * a full-width spine, non-zero for a narrower one or before its thumbnail has loaded).
+   * the hit test agrees with what is actually painted (it is 0 whenever the last spine is
+   * the one reaching furthest right, non-zero before its thumbnail has loaded).
    */
   let alignShift = $derived.by(() => {
     const count = showcaseVolumes.length;
@@ -314,7 +410,7 @@
     const x = clientX - rect.left + el.scrollLeft - alignShift;
     // Past every spine's right edge means the empty tail of the strip: keep the back-most
     // volume targeted, the same fallback the catalog card uses.
-    hoveredIndex = hitTestStack(layout, x, spineWidth) ?? count - 1;
+    hoveredIndex = hitTestStack(layout, x, spineWidths) ?? count - 1;
   }
 
   function stripOverflows(): boolean {
@@ -327,14 +423,10 @@
     // gesture's direction has to come from whichever axis actually carries it.
     const delta = e.deltaY || e.deltaX;
 
-    if (e.ctrlKey) {
-      // Browsers report both Ctrl+wheel and trackpad pinch as a wheel event with ctrlKey
-      // set, specifically so pages can treat them as zoom instead of scroll — preventDefault
-      // here also stops the browser's own page-zoom from firing alongside ours.
-      e.preventDefault();
-      setZoom(zoom * (delta > 0 ? ZOOM_STEP_OUT : ZOOM_STEP_IN));
-      return;
-    }
+    // Ctrl+wheel (and trackpad pinch, which browsers deliver the same way) is the page's
+    // own zoom. The shelf's zoom is a two-state button, so this gesture is not ours: leave
+    // it entirely alone rather than swallowing it into the pan below.
+    if (e.ctrlKey) return;
 
     if (e.shiftKey && e.altKey && hoveredVolume) {
       e.preventDefault();
@@ -458,22 +550,25 @@
     <span class="mx-1 h-4 w-px bg-gray-300 dark:bg-gray-700" aria-hidden="true"></span>
 
     <span class="text-xs text-gray-500 dark:text-gray-400">Zoom</span>
-    <Button size="xs" color="alternative" aria-label="Zoom out" onclick={zoomOut}>−</Button>
-    <button
-      type="button"
-      class="w-12 text-right font-mono text-xs text-gray-600 dark:text-gray-300"
-      ondblclick={resetZoom}
-      title="Double-click to reset zoom"
-    >
-      {Math.round(zoom * 100)}%
-    </button>
-    <Button size="xs" color="alternative" aria-label="Zoom in" onclick={zoomIn}>+</Button>
-    <Button size="xs" color="alternative" onclick={resetZoom}>Reset zoom</Button>
+    <!-- Two states, not a slider: 1× is what the catalog actually draws, 2× is the
+         magnifier for judging a few pixels of overlap. -->
+    <ButtonGroup size="sm">
+      {#each ZOOM_LEVELS as level (level)}
+        <Button
+          size="xs"
+          color={zoom === level ? 'primary' : 'alternative'}
+          aria-pressed={zoom === level}
+          onclick={() => (zoom = level)}
+        >
+          {level}×
+        </Button>
+      {/each}
+    </ButtonGroup>
   </div>
 
   <p class="text-xs text-gray-500 dark:text-gray-400">
     Shift+scroll: series offset · Alt+Shift+scroll over a volume: nudge that volume ·
-    Alt+Shift+right-click: reset it · Ctrl+scroll: zoom the shelf
+    Alt+Shift+right-click: reset it
   </p>
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -509,6 +604,7 @@
         volumeOffsets={scaledVolumeOffsets}
         highlightIndex={hoveredIndex}
         dropShadow={false}
+        border={true}
       />
     </div>
   </div>
@@ -525,9 +621,10 @@
     {/if}
   </p>
 
-  {#if volumes.length > MAX_SHOWCASE_VOLUMES}
+  {#if showcaseVolumes.length < volumes.length}
+    <!-- Only the shelf's own memory cap can trim the series (see MAX_SHOWCASE_VOLUMES). -->
     <p class="text-xs text-gray-500 dark:text-gray-400">
-      Showing first {MAX_SHOWCASE_VOLUMES} of {volumes.length} volumes
+      Showing first {showcaseVolumes.length} of {volumes.length} volumes
     </p>
   {/if}
 </div>

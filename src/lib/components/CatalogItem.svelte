@@ -19,6 +19,15 @@
     type SpineOffsets
   } from '$lib/metadata/spine-offsets';
   import { computeStackLayout, hitTestStack } from '$lib/util/spine-stack-layout';
+  import {
+    CARD_BASE_HEIGHT,
+    CARD_BASE_WIDTH,
+    MAX_CLOUD_STACK,
+    computeStepSizes,
+    computeUniformHeight,
+    getSpineCanvasDimensions,
+    selectCardStackVolumes
+  } from '$lib/util/spine-stack-geometry';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
@@ -77,29 +86,24 @@
     });
   });
 
-  // Cap for cloud thumbnail stacks to limit memory and network usage.
-  // Each decoded bitmap uses ~360KB (250×360×4 RGBA). The cache limit is 100MB.
-  // Without a cap, large series (100+ volumes) cause constant cache eviction/re-decode loops.
-  const MAX_CLOUD_STACK = 25;
+  // Check if cloud series should use compact layout
+  let useCompactForCloud = $derived(
+    isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
+  );
 
-  // Get volumes for stacked thumbnail based on settings
-  let stackedVolumes = $derived.by(() => {
-    const hideRead = $catalogSettings?.hideReadVolumes ?? true;
-    const stackCount = $catalogSettings?.stackCount ?? 3;
-
-    if (hasLocalVolumes) {
-      // Local path: existing behavior
-      const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
-      return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
-    }
-
-    // Cloud path: use enriched placeholders, capped to prevent cache thrashing
-    if (useCompactForCloud) {
-      return enrichedPlaceholders.slice(0, 1);
-    }
-    const limit = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
-    return enrichedPlaceholders.slice(0, limit);
-  });
+  // Get volumes for stacked thumbnail based on settings.
+  // The rule itself lives in $lib/util/spine-stack-geometry so the series editor's spine
+  // shelf stacks EXACTLY the same volumes (cloud placeholders capped there too).
+  let stackedVolumes = $derived(
+    selectCardStackVolumes({
+      localVolumes,
+      unreadVolumes,
+      placeholders: enrichedPlaceholders,
+      hideRead: $catalogSettings?.hideReadVolumes ?? true,
+      stackCount: $catalogSettings?.stackCount ?? 3,
+      compactCloud: useCompactForCloud
+    })
+  );
 
   let showDropShadow = $derived($catalogSettings?.dropShadow ?? true);
 
@@ -339,9 +343,9 @@
   // Cloud thumbnail data keyed by volume_uuid (File objects, no blob URLs needed)
   let cloudThumbnailData: Record<string, CloudThumbnailResult> = $state({});
 
-  // Base thumbnail dimensions
-  const BASE_WIDTH = 250;
-  const BASE_HEIGHT = 360;
+  // Base thumbnail dimensions (shared with the series editor's spine shelf)
+  const BASE_WIDTH = CARD_BASE_WIDTH;
+  const BASE_HEIGHT = CARD_BASE_HEIGHT;
   const OUTER_PADDING = 25; // pt-4 pb-6 ≈ 25px
 
   // Get dimensions from volume metadata, with fallback to defaults
@@ -368,63 +372,27 @@
   // In that window, render a stable placeholder stack instead of a blank canvas.
   let hasRenderableThumbnails = $derived(thumbnailDimensions.size > 0);
 
-  // Check if cloud series should use compact layout
-  let useCompactForCloud = $derived(
-    isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
-  );
-
-  // Calculate rendered dimensions for an image given max constraints
-  function getRenderedDimensions(naturalWidth: number, naturalHeight: number) {
-    const scaleW = BASE_WIDTH / naturalWidth;
-    const scaleH = BASE_HEIGHT / naturalHeight;
-    const scale = Math.min(scaleW, scaleH, 1);
-    return {
-      width: naturalWidth * scale,
-      height: naturalHeight * scale
-    };
-  }
+  // Thumbnail dimensions in stack order (undefined where a thumbnail is still missing) —
+  // the shape the shared geometry module works in.
+  let stackedDims = $derived(stackedVolumes.map((vol) => thumbnailDimensions.get(vol.volume_uuid)));
 
   // Calculate uniform height when vertical offset is 0 or stack count is 0 (spine mode)
-  let uniformHeight = $derived.by(() => {
-    const vOffsetPercent = $catalogSettings?.verticalStep ?? 5;
-    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    // Force uniform height when stack count is 0 (all volumes) or v.offset is 0
-    if ((vOffsetPercent !== 0 && stackCountSetting !== 0) || thumbnailDimensions.size === 0)
-      return null;
-
-    // Calculate average rendered height
-    let totalHeight = 0;
-    let count = 0;
-    for (const vol of stackedVolumes) {
-      const dims = thumbnailDimensions.get(vol.volume_uuid);
-      if (dims) {
-        const rendered = getRenderedDimensions(dims.width, dims.height);
-        totalHeight += rendered.height;
-        count++;
-      }
-    }
-
-    return count > 0 ? totalHeight / count : BASE_HEIGHT;
-  });
+  let uniformHeight = $derived(
+    computeUniformHeight({
+      dims: stackedDims,
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      stackCountSetting: $catalogSettings?.stackCount ?? 3,
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
+  );
 
   // Get the rendered width of the top (first) volume - defines the left edge of the stack
   // Wider volumes underneath will be clipped by overflow-hidden
-  let topVolumeWidth = $derived.by(() => {
-    if (stackedVolumes.length === 0) return BASE_WIDTH;
-
-    const topVol = stackedVolumes[0];
-    const dims = thumbnailDimensions.get(topVol.volume_uuid);
-    if (!dims) return BASE_WIDTH;
-
-    if (uniformHeight !== null) {
-      // Uniform height mode: width from aspect ratio (capped at BASE_WIDTH)
-      const aspectRatio = dims.width / dims.height;
-      return Math.min(uniformHeight * aspectRatio, BASE_WIDTH);
-    } else {
-      // Normal mode: contain within max bounds
-      return getRenderedDimensions(dims.width, dims.height).width;
-    }
-  });
+  let topVolumeWidth = $derived(
+    getSpineCanvasDimensions(stackedDims[0], uniformHeight, BASE_WIDTH, BASE_HEIGHT)?.width ??
+      BASE_WIDTH
+  );
 
   // Calculate container dimensions based on settings
   let containerDimensions = $derived.by(() => {
@@ -479,97 +447,36 @@
 
   // Calculate canvas dimensions for a volume thumbnail
   function getCanvasDimensions(volumeUuid: string): { width: number; height: number } | null {
-    const dims = thumbnailDimensions.get(volumeUuid);
-    if (!dims) return null;
-
-    if (uniformHeight !== null) {
-      // Uniform height mode: fixed height, width from aspect ratio (capped)
-      const aspectRatio = dims.width / dims.height;
-      const width = Math.min(uniformHeight * aspectRatio, BASE_WIDTH);
-      return { width, height: uniformHeight };
-    } else {
-      // Normal mode: contain within max bounds
-      return getRenderedDimensions(dims.width, dims.height);
-    }
+    return getSpineCanvasDimensions(
+      thumbnailDimensions.get(volumeUuid),
+      uniformHeight,
+      BASE_WIDTH,
+      BASE_HEIGHT
+    );
   }
 
   // Calculate step sizes and centering/spreading offsets
-  let stepSizes = $derived.by(() => {
-    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
-    // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
-    const vOffsetPercent =
-      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
-    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
-    const centerVertical = $catalogSettings?.centerVertical ?? false;
+  let stepSizes = $derived(
+    computeStepSizes({
+      stackCountSetting: $catalogSettings?.stackCount ?? 3,
+      horizontalStepPct: $catalogSettings?.horizontalStep ?? 11,
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      hOffsetAdjust,
+      centerHorizontal: $catalogSettings?.centerHorizontal ?? true,
+      centerVertical: $catalogSettings?.centerVertical ?? false,
+      actualCount: stackedVolumes.length,
+      innerWidth: containerDimensions.innerWidth,
+      innerHeight: containerDimensions.innerHeight,
+      uniformHeight,
+      dims: stackedDims,
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
+  );
 
-    // Default step in pixels based on base thumbnail size
-    let horizontalStep = BASE_WIDTH * hOffsetPercent;
-    let verticalStep = BASE_HEIGHT * vOffsetPercent;
-
-    const actualCount = stackedVolumes.length;
-    // Use actual count when stackCount is 0 (all volumes)
-    const effectiveStackCount = stackCountSetting === 0 ? actualCount : stackCountSetting;
-    const { innerWidth, innerHeight } = containerDimensions;
-
-    // Calculate horizontal layout
-    let leftOffset = 0;
-    if (actualCount < effectiveStackCount && actualCount > 1) {
-      if (centerHorizontal) {
-        // Center: keep step size, add offset
-        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
-        leftOffset = (innerWidth - actualStackWidth) / 2;
-      } else {
-        // Spread: recalculate step to fill width evenly
-        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
-      }
-    }
-
-    // Get max rendered height from actual thumbnails (or uniform height if in spine mode)
-    let maxRenderedHeight = uniformHeight ?? BASE_HEIGHT;
-    if (uniformHeight === null && thumbnailDimensions.size > 0) {
-      // Start at 0 to find actual max, not clamped to BASE_HEIGHT
-      let actualMaxHeight = 0;
-      for (const vol of stackedVolumes) {
-        const dims = thumbnailDimensions.get(vol.volume_uuid);
-        if (dims) {
-          const rendered = getRenderedDimensions(dims.width, dims.height);
-          actualMaxHeight = Math.max(actualMaxHeight, rendered.height);
-        }
-      }
-      // Use actual max if we found dimensions, otherwise keep BASE_HEIGHT default
-      if (actualMaxHeight > 0) {
-        maxRenderedHeight = actualMaxHeight;
-      }
-    }
-
-    // Calculate vertical layout
-    let topOffset = 0;
-    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
-    const extraVerticalSpace = innerHeight - actualStackHeight;
-
-    if (actualCount > 0 && extraVerticalSpace > 0) {
-      // Spreading only works with 2+ volumes and v.offset > 0
-      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
-
-      if (canSpread) {
-        // Spread: recalculate step to fill height evenly
-        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
-      } else {
-        // Center: for single volumes, v.offset = 0, or when centering enabled
-        topOffset = extraVerticalSpace / 2;
-      }
-    }
-
-    return {
-      horizontal: horizontalStep,
-      vertical: verticalStep,
-      leftOffset,
-      topOffset
-    };
-  });
-
-  // Calculate step sizes for placeholder thumbnails (same logic but uses all series volumes)
+  // Calculate step sizes for placeholder thumbnails: the same rule over all series volumes,
+  // drawn as uniform base-size boxes (no thumbnails yet) in the capped number of slots the
+  // container was sized for.
   let placeholderStepSizes = $derived.by(() => {
     // Use compact settings for cloud series if enabled
     if (useCompactForCloud) {
@@ -583,57 +490,32 @@
     }
 
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
-    const vOffsetPercent =
-      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
-    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
-    const centerVertical = $catalogSettings?.centerVertical ?? false;
-
-    let horizontalStep = BASE_WIDTH * hOffsetPercent;
-    let verticalStep = BASE_HEIGHT * vOffsetPercent;
-
-    // For placeholders, use capped count to match stackedVolumes sizing
     const maxCount = isPlaceholderOnly
       ? stackCountSetting === 0
         ? MAX_CLOUD_STACK
         : Math.min(stackCountSetting, MAX_CLOUD_STACK)
       : stackCountSetting;
     const actualCount = Math.min(seriesVolumes.length, maxCount);
-    const effectiveStackCount = maxCount;
-    const { innerWidth, innerHeight } = containerDimensions;
-
-    // Calculate horizontal layout
-    let leftOffset = 0;
-    if (actualCount < effectiveStackCount && actualCount > 1) {
-      if (centerHorizontal) {
-        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
-        leftOffset = (innerWidth - actualStackWidth) / 2;
-      } else {
-        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
-      }
-    }
-
-    // For placeholders, height is always BASE_HEIGHT (uniform boxes)
-    const maxRenderedHeight = BASE_HEIGHT;
-    let topOffset = 0;
-    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
-    const extraVerticalSpace = innerHeight - actualStackHeight;
-
-    if (actualCount > 0 && extraVerticalSpace > 0) {
-      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
-      if (canSpread) {
-        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
-      } else {
-        topOffset = extraVerticalSpace / 2;
-      }
-    }
 
     return {
       count: actualCount,
-      horizontal: horizontalStep,
-      vertical: verticalStep,
-      leftOffset,
-      topOffset
+      ...computeStepSizes({
+        stackCountSetting,
+        horizontalStepPct: $catalogSettings?.horizontalStep ?? 11,
+        verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+        hOffsetAdjust,
+        centerHorizontal: $catalogSettings?.centerHorizontal ?? true,
+        centerVertical: $catalogSettings?.centerVertical ?? false,
+        actualCount,
+        effectiveStackCount: maxCount,
+        innerWidth: containerDimensions.innerWidth,
+        innerHeight: containerDimensions.innerHeight,
+        // Placeholder boxes are always full base size.
+        uniformHeight: BASE_HEIGHT,
+        dims: [],
+        baseWidth: BASE_WIDTH,
+        baseHeight: BASE_HEIGHT
+      })
     };
   });
 

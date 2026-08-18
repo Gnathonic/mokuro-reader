@@ -14,6 +14,12 @@
       topOffset: number;
     };
     dropShadow?: boolean;
+    /**
+     * The 1px edge around each thumbnail. Defaults to `dropShadow` (the catalog card ships
+     * both together), but the spine shelf wants the edges WITHOUT the shadow: the edges are
+     * what makes the spacing between two spines judgeable, while the shadow only muddies it.
+     */
+    border?: boolean;
     volumeOffsets?: Map<number, number>;
     highlightIndex?: number | null;
   }
@@ -25,9 +31,12 @@
     getCanvasDimensions,
     stepSizes,
     dropShadow = true,
+    border,
     volumeOffsets = new Map(),
     highlightIndex = null
   }: Props = $props();
+
+  let showBorder = $derived(border ?? dropShadow);
 
   // Hardware limits for canvas segments
   const MAX_SEGMENT_SIZE = 1024;
@@ -201,7 +210,7 @@
         // Draw the thumbnail
         ctx.drawImage(entry.bitmap, localX, localY, dims.width, dims.height);
 
-        if (dropShadow) {
+        if (showBorder) {
           // Draw border
           ctx.strokeStyle = '#111827'; // gray-900
           ctx.lineWidth = 1;
@@ -236,6 +245,8 @@
     void isVisible;
     void highlightIndex;
     void volumeOffsets;
+    void dropShadow;
+    void showBorder;
 
     // Use rAF to ensure DOM is ready
     requestAnimationFrame(draw);

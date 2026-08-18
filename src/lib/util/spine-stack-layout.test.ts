@@ -130,6 +130,45 @@ describe('hitTestStack', () => {
     expect(hitTestStack({ lefts: [], totalWidth: 0 }, 10, 100)).toBeNull();
   });
 
+  describe('per-volume widths', () => {
+    // The shelf draws each volume at its own aspect width: a narrow spine behind a wide
+    // cover only owns its own few pixels, so a fixed band would target the wrong volume.
+    const shelf = computeStackLayout({ count: 3, baseWidth: 40, horizontalStepPx: 60 });
+    // lefts: [0, 60, 120]
+    const coverFirst = [250, 40, 40]; // a full cover in front of two narrow spines
+    const spinesOnly = [40, 40, 40];
+
+    it('keeps the front volume for its full drawn width', () => {
+      expect(hitTestStack(shelf, 0, coverFirst)).toBe(0);
+      expect(hitTestStack(shelf, 200, coverFirst)).toBe(0);
+      expect(hitTestStack(shelf, 250, coverFirst)).toBe(0);
+      // The cover is drawn over both spines, and past its edge nothing is left.
+      expect(hitTestStack(shelf, 250.5, coverFirst)).toBeNull();
+    });
+
+    it('gives a narrow spine only the band it is actually drawn in', () => {
+      expect(hitTestStack(shelf, 40, spinesOnly)).toBe(0);
+      expect(hitTestStack(shelf, 41, spinesOnly)).toBeNull(); // the gap between two spines
+      expect(hitTestStack(shelf, 60, spinesOnly)).toBe(1);
+      expect(hitTestStack(shelf, 130, spinesOnly)).toBe(2);
+      // A single nominal width would have handed all of that to volume 0.
+      expect(hitTestStack(shelf, 130, 250)).toBe(0);
+    });
+
+    it('never hits a volume whose width is missing (nothing is drawn for it)', () => {
+      expect(hitTestStack(shelf, 20, [40])).toBe(0);
+      expect(hitTestStack(shelf, 70, [40])).toBeNull();
+    });
+
+    it('agrees with the scalar form when every width is the same', () => {
+      const uniform = [100, 100, 100];
+      const layout = computeStackLayout({ count: 3, baseWidth: 100, horizontalStepPx: 30 });
+      for (let x = -10; x <= 250; x += 2.5) {
+        expect(hitTestStack(layout, x, uniform)).toBe(hitTestStack(layout, x, 100));
+      }
+    });
+  });
+
   it('matches the card’s previous inline hit test (null ⇒ its last-volume fallback)', () => {
     const offsets = new Map([
       [0, 6],

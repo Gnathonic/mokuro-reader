@@ -53,11 +53,22 @@ export function computeStackLayout({
  * wins even though later spines overlap it. Returns `null` when `x` is left of the stack
  * or past every spine's right edge — callers decide what that means (the catalog card
  * treats it as "the back-most volume").
+ *
+ * `width` is either one nominal width for every spine (the catalog card, whose stack is
+ * clipped to the base box) or a per-index array (the spine shelf, where each volume is
+ * drawn at its own aspect width — hit-testing a narrow spine against a full 250px band
+ * would target the wrong volume). A missing entry is treated as zero width: nothing is
+ * drawn for that volume, so nothing can be over it.
  */
-export function hitTestStack(layout: StackLayout, x: number, baseWidth: number): number | null {
+export function hitTestStack(
+  layout: StackLayout,
+  x: number,
+  width: number | number[]
+): number | null {
   for (let i = 0; i < layout.lefts.length; i++) {
     const left = layout.lefts[i];
-    if (x >= left && x <= left + baseWidth) return i;
+    const w = typeof width === 'number' ? width : (width[i] ?? 0);
+    if (x >= left && x <= left + w) return i;
   }
   return null;
 }
