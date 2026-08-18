@@ -141,9 +141,17 @@ class UnifiedCloudManager {
   /**
    * Fetch all cloud volumes from the current provider
    * Delegates to cacheManager
+   *
+   * `refreshIndexes: false` suppresses the background `series.json` refresh for
+   * listings that are about to be invalidated — the pre-flight fetch of a
+   * rename, whose listing still shows the OLD folder. Refreshing from it would
+   * race the rename and re-create the series' `series_metadata` row under the
+   * old title (via `upsertFromSeriesFile`) after `moveSeriesMetadataKey` already
+   * moved it, leaving a ghost series in the catalog that no cleanup owns.
    */
-  async fetchAllCloudVolumes(): Promise<void> {
+  async fetchAllCloudVolumes(options?: { refreshIndexes?: boolean }): Promise<void> {
     await cacheManager.fetchAll();
+    if (options?.refreshIndexes === false) return;
     this.refreshSeriesIndexesInBackground();
   }
 
@@ -173,7 +181,9 @@ class UnifiedCloudManager {
         else listing.set(folder, [entry]);
       }
 
-      void Promise.resolve(refreshSeriesIndexes(listing)).catch((error) =>
+      // Bound to THIS provider: the run may start long after the switch that
+      // makes these ids and paths meaningless.
+      void Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
         console.warn('Series index refresh failed:', error)
       );
     } catch (error) {
@@ -338,6 +348,12 @@ class UnifiedCloudManager {
    * that still had the cached record would keep showing a series that is gone.
    * Best-effort — an orphaned sidecar is harmless, so nothing here is allowed to
    * fail the delete/rename that triggered it.
+   *
+   * CAVEAT (deferred): "no `.cbz` left" is read from the CACHED listing, which
+   * the caller has just mutated locally. A cache that under-reports the folder
+   * (a listing that predates another device's upload) makes this delete a real
+   * remote `series.json` — recoverable, since the next write republishes it from
+   * the cached index, but it is a destructive step gated on local state.
    */
   private async cleanupSeriesFileIfFolderEmptied(seriesTitle: string): Promise<void> {
     try {
@@ -393,7 +409,8 @@ class UnifiedCloudManager {
       return 0;
     }
 
-    await this.fetchAllCloudVolumes();
+    // Pre-rename listing: no index refresh (see fetchAllCloudVolumes).
+    await this.fetchAllCloudVolumes({ refreshIndexes: false });
 
     // Nothing backed up → nothing remote to keep in sync. This must be
     // decided BEFORE the read-only gate so a read-only provider (anonymous
@@ -658,7 +675,8 @@ class UnifiedCloudManager {
       return allRenamed();
     }
 
-    await this.fetchAllCloudVolumes();
+    // Pre-rename listing: no index refresh (see fetchAllCloudVolumes).
+    await this.fetchAllCloudVolumes({ refreshIndexes: false });
 
     const existingFiles = this.getCloudVolumesBySeries(oldSeriesTitle);
     if (existingFiles.length === 0) {

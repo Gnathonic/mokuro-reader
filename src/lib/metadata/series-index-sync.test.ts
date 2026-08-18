@@ -11,7 +11,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
 const listSeriesIndexes = vi.fn(async (): Promise<SeriesIndexRecord[]> => []);
-const putSeriesIndex = vi.fn(async (_rec: SeriesIndexRecord) => {});
+const putSeriesIndexes = vi.fn(async (_recs: SeriesIndexRecord[]) => {});
 const deleteSeriesIndex = vi.fn(async (_key: string) => {});
 vi.mock('$lib/metadata/series-index', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/series-index')>(
@@ -21,7 +21,7 @@ vi.mock('$lib/metadata/series-index', async () => {
     // The real size/mtime comparison decides what gets re-downloaded.
     indexNeedsRefresh: actual.indexNeedsRefresh,
     listSeriesIndexes: () => listSeriesIndexes(),
-    putSeriesIndex: (rec: SeriesIndexRecord) => putSeriesIndex(rec),
+    putSeriesIndexes: (recs: SeriesIndexRecord[]) => putSeriesIndexes(recs),
     deleteSeriesIndex: (key: string) => deleteSeriesIndex(key)
   };
 });
@@ -120,11 +120,12 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'))
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
     );
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
-    expect(putSeriesIndex).toHaveBeenCalledWith(
+    expect(putSeriesIndexes).toHaveBeenCalledWith([
       expect.objectContaining({
         series_key: 'one piece',
         // The FOLDER name is the stored title, never the one inside the file.
@@ -136,7 +137,7 @@ describe('refreshSeriesIndexes', () => {
           modifiedTime: '2026-08-17T00:00:00.000Z'
         }
       })
-    );
+    ]);
     expect(upsertFromSeriesFile).toHaveBeenCalledWith(
       'One Piece',
       expect.objectContaining({ external_ids: { anilist: 30013 } })
@@ -151,12 +152,13 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'))
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
     );
 
-    expect(putSeriesIndex).toHaveBeenCalledWith(
+    expect(putSeriesIndexes).toHaveBeenCalledWith([
       expect.objectContaining({ series_key: 'one piece', series_title: 'One Piece' })
-    );
+    ]);
     expect(upsertFromSeriesFile).toHaveBeenCalledWith('One Piece', expect.anything());
   });
 
@@ -167,11 +169,12 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'))
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
     );
 
     expect(provider.downloadFile).not.toHaveBeenCalled();
-    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).not.toHaveBeenCalled();
     expect(deleteSeriesIndex).not.toHaveBeenCalled();
   });
 
@@ -181,11 +184,12 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('Ghost Series/series.json'), cloudFile('One Piece/Volume 1.cbz'))
+      listing(cloudFile('Ghost Series/series.json'), cloudFile('One Piece/Volume 1.cbz')),
+      'webdav'
     );
 
     expect(provider.downloadFile).not.toHaveBeenCalled();
-    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).not.toHaveBeenCalled();
     expect(upsertFromSeriesFile).not.toHaveBeenCalled();
   });
 
@@ -198,7 +202,8 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('Ghost Series/series.json'), cloudFile('One Piece/Volume 1.cbz'))
+      listing(cloudFile('Ghost Series/series.json'), cloudFile('One Piece/Volume 1.cbz')),
+      'webdav'
     );
 
     expect(deleteSeriesIndex).toHaveBeenCalledWith('ghost series');
@@ -210,7 +215,7 @@ describe('refreshSeriesIndexes', () => {
     listSeriesIndexes.mockResolvedValue([cachedRecord()]);
 
     const { refreshSeriesIndexes } = await load();
-    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')));
+    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')), 'webdav');
 
     expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
     expect(provider.downloadFile).not.toHaveBeenCalled();
@@ -228,7 +233,7 @@ describe('refreshSeriesIndexes', () => {
     ]);
 
     const { refreshSeriesIndexes } = await load();
-    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')));
+    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')), 'webdav');
 
     expect(deleteSeriesIndex).not.toHaveBeenCalled();
   });
@@ -238,7 +243,7 @@ describe('refreshSeriesIndexes', () => {
     listSeriesIndexes.mockResolvedValue([cachedRecord()]);
 
     const { refreshSeriesIndexes } = await load();
-    await refreshSeriesIndexes(new Map());
+    await refreshSeriesIndexes(new Map(), 'webdav');
 
     expect(deleteSeriesIndex).not.toHaveBeenCalled();
   });
@@ -264,7 +269,7 @@ describe('refreshSeriesIndexes', () => {
     }
 
     const { refreshSeriesIndexes } = await load();
-    await refreshSeriesIndexes(listing(...files));
+    await refreshSeriesIndexes(listing(...files), 'webdav');
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(9);
     expect(peak).toBe(4);
@@ -279,10 +284,11 @@ describe('refreshSeriesIndexes', () => {
 
     const { refreshSeriesIndexes } = await load();
     await refreshSeriesIndexes(
-      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'))
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
     );
 
-    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).not.toHaveBeenCalled();
     expect(upsertFromSeriesFile).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
@@ -306,13 +312,14 @@ describe('refreshSeriesIndexes', () => {
         cloudFile('Bad Series/series.json'),
         cloudFile('One Piece/Volume 1.cbz'),
         cloudFile('One Piece/series.json')
-      )
+      ),
+      'webdav'
     );
 
-    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
-    expect(putSeriesIndex).toHaveBeenCalledWith(
+    expect(putSeriesIndexes).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndexes).toHaveBeenCalledWith([
       expect.objectContaining({ series_key: 'one piece' })
-    );
+    ]);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
@@ -329,11 +336,12 @@ describe('refreshSeriesIndexes', () => {
     const { refreshSeriesIndexes } = await load();
     await expect(
       refreshSeriesIndexes(
-        listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'))
+        listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+        'webdav'
       )
     ).resolves.toBeUndefined();
 
-    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -342,9 +350,74 @@ describe('refreshSeriesIndexes', () => {
     listSeriesIndexes.mockResolvedValue([cachedRecord()]);
 
     const { refreshSeriesIndexes } = await load();
-    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')));
+    await refreshSeriesIndexes(listing(cloudFile('One Piece/Volume 1.cbz')), 'webdav');
 
     expect(deleteSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('bails when the provider changed between the listing and the run', async () => {
+    // The listing was captured on webdav; by the time the refresh runs the user
+    // has switched accounts. Downloading these file ids against the new provider
+    // (or cleaning up against a listing from the other account) is nonsense.
+    const provider = makeProvider({ type: 'mega' });
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesIndexes.mockResolvedValue([cachedRecord()]);
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(
+      listing(cloudFile('Ghost Series/series.json'), cloudFile('One Piece/series.json')),
+      'webdav'
+    );
+
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).not.toHaveBeenCalled();
+    expect(deleteSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('drops a queued replay whose provider is no longer active', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const provider = makeProvider({
+      downloadFile: vi.fn(async () => {
+        await gate;
+        return new Blob([seriesJson()]);
+      })
+    });
+    getActiveProvider.mockReturnValue(provider);
+
+    const map = listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'));
+
+    const { refreshSeriesIndexes } = await load();
+    const first = refreshSeriesIndexes(map, 'webdav');
+    const queuedReplay = refreshSeriesIndexes(map, 'webdav');
+    // The provider switches while the first run is still downloading.
+    getActiveProvider.mockReturnValue(makeProvider({ type: 'mega' }));
+    release();
+    await Promise.all([first, queuedReplay]);
+
+    expect(provider.downloadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes every refreshed record in a single bulk put', async () => {
+    const provider = makeProvider();
+    getActiveProvider.mockReturnValue(provider);
+
+    const files: CloudVolumeWithProvider[] = [];
+    for (let i = 0; i < 3; i++) {
+      files.push(cloudFile(`Series ${i}/Volume 1.cbz`));
+      files.push(cloudFile(`Series ${i}/series.json`));
+    }
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(listing(...files), 'webdav');
+
+    // One liveQuery emission for the whole run, not one per folder — each
+    // emission rebuilds the catalog's placeholder join.
+    expect(putSeriesIndexes).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndexes.mock.calls[0][0]).toHaveLength(3);
+    expect(upsertFromSeriesFile).toHaveBeenCalledTimes(3);
   });
 
   it('coalesces calls made while a run is in flight into exactly one more run', async () => {
@@ -363,9 +436,9 @@ describe('refreshSeriesIndexes', () => {
     const map = listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'));
 
     const { refreshSeriesIndexes } = await load();
-    const first = refreshSeriesIndexes(map);
-    const second = refreshSeriesIndexes(map);
-    const third = refreshSeriesIndexes(map);
+    const first = refreshSeriesIndexes(map, 'webdav');
+    const second = refreshSeriesIndexes(map, 'webdav');
+    const third = refreshSeriesIndexes(map, 'webdav');
     release();
     await Promise.all([first, second, third]);
 

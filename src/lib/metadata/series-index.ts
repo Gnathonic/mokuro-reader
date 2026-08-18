@@ -37,6 +37,16 @@ export async function putSeriesIndex(rec: SeriesIndexRecord): Promise<void> {
   await db.series_index.put(rec);
 }
 
+/**
+ * Cache several records at once. The table backs a liveQuery the catalog joins,
+ * so a listing refresh that touched N series must emit ONE change, not N — each
+ * emission re-derives the placeholder set for the whole library.
+ */
+export async function putSeriesIndexes(records: SeriesIndexRecord[]): Promise<void> {
+  if (records.length === 0) return;
+  await db.series_index.bulkPut(records);
+}
+
 export async function deleteSeriesIndex(seriesKey: string): Promise<void> {
   await db.series_index.delete(seriesKey);
 }

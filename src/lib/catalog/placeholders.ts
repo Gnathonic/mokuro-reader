@@ -217,6 +217,7 @@ export function generatePlaceholders(
   // Generate placeholders
   const placeholders: VolumeMetadata[] = [];
   const emittedUuids = new Set<string>();
+  let warnedDuplicateUuid = false;
   for (const cloudFile of cloudOnlyFiles) {
     const parsed = parseCloudPath(cloudFile.path, cloudFile.description);
     if (!parsed) continue;
@@ -234,7 +235,20 @@ export function generatePlaceholders(
       // just emitted: either way a second row with this uuid would clobber the
       // first one in the catalog's uuid-keyed map.
       if (localUuids.has(placeholder.volume_uuid)) continue;
-      if (emittedUuids.has(placeholder.volume_uuid)) continue;
+      if (emittedUuids.has(placeholder.volume_uuid)) {
+        // Two cloud files claiming one uuid means a stale or hand-edited index
+        // (the same entry listed for two volumes). Warn once per run so the
+        // volume that silently vanishes from the catalog is diagnosable.
+        if (!warnedDuplicateUuid) {
+          warnedDuplicateUuid = true;
+          console.warn(
+            '[Placeholders] Dropping a cloud volume whose indexed uuid is already taken:',
+            cloudFile.path,
+            placeholder.volume_uuid
+          );
+        }
+        continue;
+      }
       emittedUuids.add(placeholder.volume_uuid);
 
       const basePath = cloudFile.path.replace(/\.cbz$/i, '');

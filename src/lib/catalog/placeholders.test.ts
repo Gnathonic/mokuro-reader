@@ -209,6 +209,34 @@ describe('generatePlaceholders with a series index', () => {
     expect(placeholders[0].volume_uuid).toBe('real-uuid-1');
   });
 
+  it('warns once when two cloud files claim the same indexed uuid', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const duplicated = new Map<string, CloudVolumeWithProvider[]>([
+      [
+        'One Piece',
+        [
+          cloudFile('One Piece/Volume 1.cbz'),
+          cloudFile('One Piece/Volume 1 (copy).cbz'),
+          cloudFile('One Piece/Volume 1 (dupe).cbz')
+        ]
+      ]
+    ]);
+
+    const placeholders = generatePlaceholders(
+      duplicated,
+      [],
+      indexMap('One Piece', [
+        indexEntry(),
+        indexEntry({ volume_title: 'Volume 1 (copy)' }),
+        indexEntry({ volume_title: 'Volume 1 (dupe)' })
+      ])
+    );
+
+    expect(placeholders).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('never builds a placeholder for the sidecar itself, index or not', () => {
     const placeholders = generatePlaceholders(
       cloudFiles,

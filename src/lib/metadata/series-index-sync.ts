@@ -1,10 +1,14 @@
-import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
+import type {
+  CloudFileMetadata,
+  ProviderType,
+  SyncProvider
+} from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import {
   deleteSeriesIndex,
   indexNeedsRefresh,
   listSeriesIndexes,
-  putSeriesIndex,
+  putSeriesIndexes,
   type SeriesIndexRecord
 } from './series-index';
 import { isSeriesFilePath, parseSeriesFile, type SeriesFile } from './series-file';
@@ -30,6 +34,13 @@ import { upsertFromSeriesFile } from './store';
  * - Facts go through `upsertFromSeriesFile`, which applies only strictly newer
  *   facts and never schedules a `series.json` write — so a refresh can never
  *   ping-pong into an upload (see `series-file-sync.ts`).
+ * - A run is BOUND to the provider whose listing produced it. Between the fetch
+ *   and the (background, possibly queued) run the user can switch accounts, and
+ *   the listing's file ids, paths and folder set all belong to the old one:
+ *   downloading or cleaning up against the new provider would be nonsense.
+ * - All refreshed records are written in ONE `putSeriesIndexes`: the table feeds
+ *   a liveQuery the catalog joins, so a write per folder would rebuild the
+ *   placeholder set N times for a single listing.
  */
 
 /** Downloads in flight at once. Bounded so a big library cannot flood a provider. */
@@ -100,15 +111,22 @@ interface RefreshTask {
   stamp: { size: number; modifiedTime: string };
 }
 
-/** Download + validate one sidecar, then cache it and apply its facts. */
-async function refreshOne(provider: SyncProvider, task: RefreshTask): Promise<void> {
+/**
+ * Download + validate one sidecar and apply its facts. Returns the record to
+ * cache (the caller writes them all at once) or `undefined` when the file is
+ * unusable.
+ */
+async function refreshOne(
+  provider: SyncProvider,
+  task: RefreshTask
+): Promise<SeriesIndexRecord | undefined> {
   let parsed: SeriesFile | undefined;
   try {
     const blob = await provider.downloadFile(task.sidecar);
     parsed = parseSeriesFile(JSON.parse(await blob.text()));
   } catch (error) {
     console.warn(`[series-index-sync] could not read '${task.sidecar.path}':`, error);
-    return;
+    return undefined;
   }
 
   if (!parsed) {
@@ -116,7 +134,7 @@ async function refreshOne(provider: SyncProvider, task: RefreshTask): Promise<vo
     // Dropping it leaves the previous cached copy in place, which is still the
     // best thing this device knows.
     console.warn(`[series-index-sync] ignoring an invalid series.json at '${task.sidecar.path}'`);
-    return;
+    return undefined;
   }
 
   const record: SeriesIndexRecord = {
@@ -133,12 +151,13 @@ async function refreshOne(provider: SyncProvider, task: RefreshTask): Promise<vo
   };
 
   try {
-    await putSeriesIndex(record);
     // Facts only, strictly-newer, and never a write trigger.
     await upsertFromSeriesFile(task.title, parsed);
   } catch (error) {
-    console.warn(`[series-index-sync] could not store the index for '${task.title}':`, error);
+    console.warn(`[series-index-sync] could not apply the facts for '${task.title}':`, error);
   }
+
+  return record;
 }
 
 async function runPool<T>(
@@ -155,14 +174,19 @@ async function runPool<T>(
   await Promise.all(workers);
 }
 
-async function runRefresh(cloudFilesMap: Map<string, CloudFileMetadata[]>): Promise<void> {
+async function runRefresh(
+  cloudFilesMap: Map<string, CloudFileMetadata[]>,
+  providerType: ProviderType
+): Promise<void> {
   // An empty listing means "not fetched" as often as it means "empty cloud"
   // (a provider fetch failure logs and leaves the cache untouched). Cleaning up
   // against it would wipe every cached index on a flaky launch.
   if (cloudFilesMap.size === 0) return;
 
   const provider = providerManager.getActiveProvider();
-  if (!provider) return;
+  // Bound to the provider the listing came from: a switch (or a disconnect)
+  // between the fetch and this run invalidates every id and path in it.
+  if (!provider || provider.type !== providerType) return;
 
   const folders = collectFolders(cloudFilesMap);
   const cached = await listSeriesIndexes();
@@ -193,37 +217,58 @@ async function runRefresh(cloudFilesMap: Map<string, CloudFileMetadata[]>): Prom
     tasks.push({ key, title: folder.title, sidecar, stamp });
   }
 
-  await runPool(tasks, MAX_CONCURRENT_INDEX_DOWNLOADS, (task) => refreshOne(provider, task));
+  const refreshed: SeriesIndexRecord[] = [];
+  await runPool(tasks, MAX_CONCURRENT_INDEX_DOWNLOADS, async (task) => {
+    const record = await refreshOne(provider, task);
+    if (record) refreshed.push(record);
+  });
+
+  if (refreshed.length === 0) return;
+  try {
+    await putSeriesIndexes(refreshed);
+  } catch (error) {
+    console.warn('[series-index-sync] could not store the refreshed indexes:', error);
+  }
+}
+
+interface RefreshRequest {
+  cloudFilesMap: Map<string, CloudFileMetadata[]>;
+  /** The provider the listing was captured from. */
+  providerType: ProviderType;
 }
 
 /** The run currently in flight, or `null`. */
 let inFlight: Promise<void> | null = null;
-/** The newest listing that arrived while a run was in flight. */
-let queued: Map<string, CloudFileMetadata[]> | null = null;
+/** The newest request that arrived while a run was in flight. */
+let queued: RefreshRequest | null = null;
 
 /**
  * Refresh the cached `series.json` indexes for a cloud listing.
  *
+ * `providerType` is the provider the listing was captured from; the run (and a
+ * queued replay of it) is dropped if that is no longer the active provider.
+ *
  * Never rejects. Calls that arrive while a run is in flight do not start a
- * second one: the newest listing is queued and replayed once when the current
+ * second one: the newest request is queued and replayed once when the current
  * run finishes, so a burst of listings costs at most one extra pass. The
  * returned promise resolves when the whole chain (including a queued replay)
  * is done, which is what tests await; callers in the app fire and forget.
  */
 export function refreshSeriesIndexes(
-  cloudFilesMap: Map<string, CloudFileMetadata[]>
+  cloudFilesMap: Map<string, CloudFileMetadata[]>,
+  providerType: ProviderType
 ): Promise<void> {
   if (inFlight) {
-    queued = cloudFilesMap;
+    queued = { cloudFilesMap, providerType };
     return inFlight;
   }
 
   inFlight = (async () => {
     try {
-      let current: Map<string, CloudFileMetadata[]> | null = cloudFilesMap;
+      let current: RefreshRequest | null = { cloudFilesMap, providerType };
       while (current) {
         try {
-          await runRefresh(current);
+          await runRefresh(current.cloudFilesMap, current.providerType);
         } catch (error) {
           console.warn('[series-index-sync] refresh failed:', error);
         }
