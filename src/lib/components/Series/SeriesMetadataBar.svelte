@@ -49,7 +49,10 @@
   // "Read N times": local passes only — placeholders were never downloaded, so they can
   // be neither read nor tracked (matches SeriesTrackingPanel's own computation).
   let localVolumes = $derived(volumes.filter((v) => !v.isPlaceholder));
-  let passState = $derived(computeLocalPassState(localVolumes, $volumesData, meta));
+  // Resolved from every title on the page (placeholders included) and handed to
+  // the pass-state helper, which would otherwise re-detect from the local subset.
+  let resolvedUnit = $derived(resolveTrackingUnit(meta, volumes).unit);
+  let passState = $derived(computeLocalPassState(localVolumes, $volumesData, meta, resolvedUnit));
 
   // Tracking only ever runs through AniList, so the status line keys off that link
   // specifically — a bare MAL link has no tracking to report.
@@ -62,7 +65,7 @@
     if (!trackingLinked) return '';
     if (!pushOn) return 'Tracking off';
     if (!lastPushed) return 'Tracking on';
-    const unitLabel = resolveTrackingUnit(meta, volumes).unit === 'chapters' ? 'ch.' : 'vol.';
+    const unitLabel = resolvedUnit === 'chapters' ? 'ch.' : 'vol.';
     const date = new Date(lastPushed.at);
     const dateLabel = Number.isNaN(date.getTime()) ? lastPushed.at : date.toLocaleDateString();
     return `Tracking on · last pushed ${unitLabel} ${lastPushed.n} · ${dateLabel}`;

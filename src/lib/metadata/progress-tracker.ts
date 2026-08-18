@@ -15,9 +15,10 @@ import {
 } from './progress-plan';
 import { AniListError, anilistRequest } from './providers/anilist';
 import { normalizeSeriesKey } from './series-key';
+import { getSeriesIndex } from './series-index';
 import { getAllSeriesMetadata, getSeriesMetadata, updateSeriesMetadata } from './store';
 import { resolveTrackingUnit } from './tracking-unit';
-import type { SeriesMetadata } from './types';
+import type { SeriesMetadata, TrackingUnit } from './types';
 import { extractVolumeNumber } from './volume-number';
 
 const PENDING_KEY = 'anilist_pending_pushes';
@@ -57,36 +58,49 @@ export interface PendingPush {
 
 // ---------- pure helpers ----------
 
+/**
+ * `unit` is a parameter, not something resolved here: detection regex-scans
+ * every title in the series, so resolving it per volume would be O(n²) on a
+ * long series — and this runs inside `$derived`s on the series page. Callers
+ * that already know the unit (everything in this module does) pass it.
+ */
 export function volumeNumberFor(
   volume: VolumeMetadata,
   sortedSeriesVolumes: VolumeMetadata[],
-  meta: SeriesMetadata | undefined
+  meta: SeriesMetadata | undefined,
+  unit?: TrackingUnit
 ): number {
   const override = meta?.tracking?.number_overrides?.[volume.volume_uuid];
   if (typeof override === 'number' && override > 0) return override;
-  const { unit } = resolveTrackingUnit(meta, sortedSeriesVolumes);
-  const parsed = extractVolumeNumber(volume.volume_title, unit);
+  const resolved = unit ?? resolveTrackingUnit(meta, sortedSeriesVolumes).unit;
+  const parsed = extractVolumeNumber(volume.volume_title, resolved);
   if (parsed !== undefined) return parsed;
   return sortedSeriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid) + 1;
 }
 
+/**
+ * Pass `unit` when the caller already resolved it — detection is O(titles) and
+ * the series page resolves it anyway (from a title list that includes cloud
+ * placeholders, which `seriesVolumes` here deliberately does not).
+ */
 export function computeLocalPassState(
   seriesVolumes: VolumeMetadata[],
   volumesData: Record<string, Pick<VolumeData, 'completed'> | undefined>,
-  meta: SeriesMetadata | undefined
+  meta: SeriesMetadata | undefined,
+  unit?: TrackingUnit
 ): LocalPassState {
   const sorted = [...seriesVolumes].sort(sortVolumes);
-  const { unit } = resolveTrackingUnit(meta, sorted);
+  const resolved = unit ?? resolveTrackingUnit(meta, sorted).unit;
   let passProgress = 0;
   let allCompleted = sorted.length > 0;
   for (const volume of sorted) {
     if (volumesData[volume.volume_uuid]?.completed) {
-      passProgress = Math.max(passProgress, volumeNumberFor(volume, sorted, meta));
+      passProgress = Math.max(passProgress, volumeNumberFor(volume, sorted, meta, resolved));
     } else {
       allCompleted = false;
     }
   }
-  const total = unit === 'chapters' ? meta?.total_chapters : meta?.total_volumes;
+  const total = resolved === 'chapters' ? meta?.total_chapters : meta?.total_volumes;
   const passComplete = typeof total === 'number' && total > 0 && passProgress >= total;
   const readCount = meta?.read_count ?? 0;
   return {
@@ -207,6 +221,39 @@ async function getSeriesVolumesByKey(seriesKey: string): Promise<VolumeMetadata[
 }
 
 /**
+ * The unit for a push, resolved from the SAME titles the series page shows.
+ *
+ * `db.volumes` holds only what is installed here, but the series page also
+ * lists the cloud-only volumes from the cached `series.json` index — and those
+ * titles are usually the majority of a long series. Detecting from the local
+ * subset alone would let the UI say "Auto (chapters)" while the push writes
+ * `progressVolumes`. The index is only read when detection actually has to run:
+ * a stored `unit` fact answers on its own.
+ */
+async function resolveUnitForPush(
+  seriesKey: string,
+  meta: SeriesMetadata | undefined,
+  localVolumes: VolumeMetadata[]
+): Promise<TrackingUnit> {
+  if (meta?.unit === 'volumes' || meta?.unit === 'chapters') return meta.unit;
+
+  const byUuid = new Map<string, { volume_title: string }>();
+  for (const volume of localVolumes) {
+    byUuid.set(volume.volume_uuid, { volume_title: volume.volume_title });
+  }
+  try {
+    const index = await getSeriesIndex(seriesKey);
+    for (const entry of index?.file?.volumes ?? []) {
+      if (!byUuid.has(entry.volume_uuid)) byUuid.set(entry.volume_uuid, entry);
+    }
+  } catch (error) {
+    // The cache is disposable; a read failure must not stop a push.
+    console.warn('[progress-tracker] could not read the cached series index:', error);
+  }
+  return resolveTrackingUnit(meta, [...byUuid.values()]).unit;
+}
+
+/**
  * Pushing needs exactly two things: a series linked to AniList, and the one
  * global switch in Settings. There is no per-series opt-in — whether a series
  * counts is answered by "did you link it".
@@ -258,7 +305,7 @@ function alreadySettled(
   seriesKey: string,
   local: LocalPassState,
   meta: SeriesMetadata,
-  seriesVolumes: VolumeMetadata[]
+  unit: TrackingUnit
 ): boolean {
   const recent = recentCompletions.get(seriesKey);
   if (
@@ -276,7 +323,6 @@ function alreadySettled(
     progressVolumes: lastPushed.n,
     repeat: Math.max(0, local.timesRead - 1)
   };
-  const { unit } = resolveTrackingUnit(meta, seriesVolumes);
   return planProgressPush(local, assumedRemote, unit, 'sync') === null;
 }
 
@@ -326,13 +372,13 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
   }
 
   const seriesVolumes = await getSeriesVolumesByKey(seriesKey);
-  const local = computeLocalPassState(seriesVolumes, get(volumes), meta);
   // Volumes or chapters is a property of the archives, either stated on the
   // record (someone corrected it) or read off their titles.
-  const { unit } = resolveTrackingUnit(meta, seriesVolumes);
+  const unit = await resolveUnitForPush(seriesKey, meta, seriesVolumes);
+  const local = computeLocalPassState(seriesVolumes, get(volumes), meta, unit);
 
   if (event === 'completion') {
-    if (alreadySettled(seriesKey, local, meta, seriesVolumes)) return 'nothing';
+    if (alreadySettled(seriesKey, local, meta, unit)) return 'nothing';
     recentCompletions.set(seriesKey, { signature: passSignature(local), at: Date.now() });
   }
 

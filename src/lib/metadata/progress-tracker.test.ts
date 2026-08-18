@@ -46,6 +46,11 @@ const h = vi.hoisted(() => {
     dbVolumes: [] as VolumeMetadata[],
     metaByKey: new Map<string, SeriesMetadata>(),
     completionListeners: [] as ((uuid: string) => void)[],
+    /** The cached `series.json` index, keyed by series — cloud-only volumes. */
+    seriesIndex: new Map<
+      string,
+      { file: { volumes: { volume_uuid: string; volume_title: string }[] } }
+    >(),
     unregisterCompletion: vi.fn(),
     auth: { token: 'tok' as string | null }
   };
@@ -90,6 +95,10 @@ vi.mock('./store', () => ({
   )
 }));
 
+vi.mock('./series-index', () => ({
+  getSeriesIndex: vi.fn(async (key: string) => h.seriesIndex.get(key))
+}));
+
 vi.mock('./providers/anilist', () => ({
   anilistRequest: vi.fn(),
   AniListError: h.FakeAniListError
@@ -105,6 +114,7 @@ vi.mock('./anilist-auth', () => ({
 import { registerCompletionListener } from '$lib/settings/volume-data';
 import { db } from '$lib/catalog/db';
 import { handleAniListUnauthorized } from './anilist-auth';
+import { getSeriesIndex } from './series-index';
 import { anilistRequest } from './providers/anilist';
 import {
   _resetTrackerStateForTests,
@@ -153,6 +163,8 @@ function resetWorld() {
   h.volumesStore.set({ a: { completed: true }, b: { completed: true } });
   h.metaByKey.clear();
   h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+  h.seriesIndex.clear();
+  vi.mocked(getSeriesIndex).mockClear();
   h.settingsStore.set({ catalogSettings: { pushProgressToAniList: true } });
   h.completionListeners.length = 0;
   h.auth.token = 'tok';
@@ -172,6 +184,13 @@ describe('volumeNumberFor', () => {
     expect(volumeNumberFor(sorted[1], sorted, m)).toBe(7);
     expect(volumeNumberFor(sorted[0], sorted, m)).toBe(1);
     expect(volumeNumberFor(sorted[2], sorted, m)).toBe(3);
+  });
+
+  it('reads the title in the unit it is given instead of re-detecting one', () => {
+    const chapters = [vol('a', 'One Piece 0007')];
+    // Detection would say volumes here (no markers, no totals); the caller's
+    // answer wins — that is what keeps this off the O(n²) path.
+    expect(volumeNumberFor(chapters[0], chapters, meta(), 'chapters')).toBe(7);
   });
 });
 
@@ -318,6 +337,41 @@ describe('syncSeriesNow', () => {
       status: 'CURRENT',
       progress: 2
     });
+  });
+
+  it('detects the unit from the cloud index too, not just the installed volumes', async () => {
+    // One chapter installed out of a thousand: detecting from `db.volumes`
+    // alone would call it volumes and push chapter 1 as volume 1.
+    h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'One Piece 0001'));
+    h.volumesStore.set({ a: { completed: true } });
+    h.metaByKey.set('one piece', meta({ total_volumes: 108, total_chapters: 1100 }));
+    h.seriesIndex.set('one piece', {
+      file: {
+        volumes: Array.from({ length: 1050 }, (_, i) => ({
+          volume_uuid: `cloud-${i + 1}`,
+          volume_title: `One Piece ${String(i + 1).padStart(4, '0')}`
+        }))
+      }
+    });
+
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'CURRENT',
+      progress: 1
+    });
+  });
+
+  it('skips the index read when the unit is already a stated fact', async () => {
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, unit: 'volumes' }));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+    expect(getSeriesIndex).not.toHaveBeenCalled();
   });
 
   it('lets a corrected unit override the titles', async () => {
