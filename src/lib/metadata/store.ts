@@ -3,7 +3,7 @@ import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { ID_KEYS } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
-import { seriesFactsStamp, type SeriesFile } from './series-file';
+import { hasSeriesFacts, seriesFactsStamp, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 
 export type SeriesMetadataPatch = Partial<
@@ -208,7 +208,16 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
  * writes when there is no local record or the file's stamp is strictly newer
  * than the local *facts* stamp — not the record's `updated_at`, which every
  * per-user write bumps. The volume index is not touched here: it is cached
- * separately and never overrides local volumes.
+ * separately and never overrides local volumes. Returns whether the record was
+ * actually written.
+ *
+ * A file with no facts at all and no local record to update is ignored
+ * outright: an index-only sidecar (written by a device that never linked the
+ * series) says nothing about the facts, so creating an empty record from it
+ * would publish that emptiness through the root metadata merge and unlink the
+ * series on the devices that DID link it. Against an existing record the same
+ * file still has to win on a strictly-newer facts stamp, which is what makes a
+ * deliberate unlink — a factless file carrying a real stamp — propagate.
  *
  * The file carries no fetched facts (`format`/`status`/totals/`cover_url`), so
  * when it points at a *different* external link than the local record those
@@ -218,13 +227,18 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
  * Read and write share one `rw` transaction so a concurrent writer cannot slip
  * a `put` between them, same as `updateSeriesMetadata`.
  */
-export async function upsertFromSeriesFile(seriesTitle: string, file: SeriesFile): Promise<void> {
+export async function upsertFromSeriesFile(
+  seriesTitle: string,
+  file: SeriesFile
+): Promise<boolean> {
   const key = normalizeSeriesKey(seriesTitle);
-  await db.transaction('rw', db.series_metadata, async () => {
+  return db.transaction('rw', db.series_metadata, async () => {
     const existing = await db.series_metadata.get(key);
+    // An index-only file for a series we hold no record for: nothing to apply.
+    if (!existing && !hasSeriesFacts(file)) return false;
     // No local facts stamp = no local opinion, so any sidecar with facts applies.
     const localStamp = existing ? factsStamp(existing) : undefined;
-    if (localStamp !== undefined && localStamp >= file.updated_at) return;
+    if (localStamp !== undefined && localStamp >= file.updated_at) return false;
 
     const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
     const linked = hasAnyId(file.external_ids);
@@ -259,6 +273,7 @@ export async function upsertFromSeriesFile(seriesTitle: string, file: SeriesFile
         : undefined
     });
     await db.series_metadata.put(next);
+    return true;
   });
 }
 

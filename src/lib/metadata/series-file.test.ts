@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
   buildSeriesFile,
   isSeriesFilePath,
@@ -420,6 +421,57 @@ describe('buildSeriesFile', () => {
     expect(file.external_ids).toEqual({});
     expect(file.volumes).toHaveLength(1);
     expect(Date.parse(file.updated_at)).not.toBeNaN();
+  });
+
+  it('stamps a factless build with the epoch sentinel — no opinion cannot outrank a link', () => {
+    // No local facts clock and no published file: this library has never had an
+    // opinion about the series. `new Date()` here would make the emptiest
+    // possible file the newest one and unlink the series on every other device.
+    const noRecord = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()]
+    })!;
+    expect(noRecord.updated_at).toBe(FACTLESS_UPDATED_AT);
+
+    const perUserOnly = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      // A record that only ever tracked per-user state (a spine nudge bumped
+      // `updated_at`, no fact was ever edited) has no facts clock either.
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
+        spine_offset: 4
+      },
+      localVolumes: [volume()]
+    })!;
+    expect(perUserOnly.updated_at).toBe(FACTLESS_UPDATED_AT);
+  });
+
+  it('keeps the source stamp when the facts come from the record or the existing file', () => {
+    const fromRecord = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [volume()]
+    })!;
+    expect(fromRecord.updated_at).toBe('2026-08-16T00:00:00.000Z');
+
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: { anilist: 30013 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-05-05T00:00:00.000Z',
+      volumes: []
+    };
+    const fromExisting = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      existing
+    })!;
+    expect(fromExisting.updated_at).toBe('2026-05-05T00:00:00.000Z');
+    expect(fromExisting.external_ids).toEqual({ anilist: 30013 });
   });
 });
 

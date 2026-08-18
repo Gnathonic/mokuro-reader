@@ -17,6 +17,20 @@ import type { SeriesExternalIds, SeriesMetadata, SeriesTitles } from './types';
 export const SERIES_FILE_NAME = 'series.json';
 
 /**
+ * The `updated_at` of a file whose facts come from nowhere: this library has no
+ * facts clock for the series and nothing is published yet, so the file carries
+ * an index and no opinion.
+ *
+ * It must never be `new Date()`. `upsertFromSeriesFile` applies the newest facts
+ * stamp, so a freshly-stamped empty file would beat every real link: a device
+ * that never linked the series would unlink it everywhere just by backing a
+ * volume up. The epoch loses every comparison, which is exactly right for "no
+ * opinion" — and a deliberate unlink still publishes the record's own (real)
+ * facts clock, so it still wins.
+ */
+export const FACTLESS_UPDATED_AT = '1970-01-01T00:00:00.000Z';
+
+/**
  * One volume in the series index. Enough to show a cloud-only volume in the
  * catalog and attach synced progress to it without downloading its `.mokuro`.
  * Never per-user state (progress, offsets, read counts) and never page/OCR data.
@@ -139,7 +153,8 @@ function localFacts(meta: SeriesMetadata): SeriesFacts {
  *   unlink is published, but only when it is strictly newer than the file;
  * - local record is factless with NO facts clock (this library never had an
  *   opinion; its `updated_at` only ever tracked per-user state) → whatever is
- *   already published is carried through untouched.
+ *   already published is carried through untouched, and with nothing published
+ *   either the file is index-only and stamped `FACTLESS_UPDATED_AT`.
  *
  * Volumes are the union of the existing index and the installed volumes, keyed
  * by `volume_uuid` with local winning — a device only ever knows about its own
@@ -189,7 +204,9 @@ export function buildSeriesFile(args: {
     synonyms = [...(source.synonyms ?? [])];
     tag = source.tag?.trim() || undefined;
   }
-  const updated_at = source?.updated_at ?? new Date().toISOString();
+  // No source at all = no facts clock here and nothing published: the file is
+  // index-only and must not be able to outrank anybody's facts.
+  const updated_at = source?.updated_at ?? FACTLESS_UPDATED_AT;
 
   const installed = localVolumes.filter((v) => !v.isPlaceholder);
   const localUuids = new Set(installed.map((v) => v.volume_uuid));

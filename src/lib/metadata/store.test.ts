@@ -20,7 +20,7 @@ import {
   replaceAllSeriesMetadata
 } from './store';
 import { toSeriesMetadataPatch } from './providers/anilist';
-import type { SeriesFile } from './series-file';
+import { FACTLESS_UPDATED_AT, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata } from './types';
 
 /** A minimal series.json carrying only the facts the store reads. */
@@ -229,6 +229,51 @@ describe('series metadata store', () => {
     expect(meta?.updated_at).toBe(before?.updated_at); // record clock never moves backwards
   });
 
+  it('upsertFromSeriesFile ignores a factless sidecar for a series it has no record for', async () => {
+    // A device that never linked the series publishes an index-only file. It
+    // says nothing about the facts, so it must not conjure an empty record —
+    // and, through the root metadata merge, unlink the series everywhere.
+    const applied = await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-08-17T00:00:00.000Z'
+      })
+    );
+
+    expect(applied).toBe(false);
+    expect(await getSeriesMetadataForTitle('One Piece')).toBeUndefined();
+    expect(await (db as any).table('series_metadata').count()).toBe(0);
+  });
+
+  it('an index-only sidecar from an unlinked device never unlinks a linked series', async () => {
+    // Device B (never linked One Piece) backs it up: `buildSeriesFile` stamps
+    // its factless file with the epoch sentinel. Device A imports/refreshes it
+    // and must keep its link.
+    await updateSeriesMetadata('One Piece', { external_ids: { anilist: 30013 } });
+    const linked = await getSeriesMetadataForTitle('One Piece');
+
+    const applied = await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: FACTLESS_UPDATED_AT
+      })
+    );
+
+    expect(applied).toBe(false);
+    expect((await getSeriesMetadataForTitle('One Piece'))?.external_ids).toEqual({
+      anilist: 30013
+    });
+    expect((await getSeriesMetadataForTitle('One Piece'))?.facts_updated_at).toBe(
+      linked?.facts_updated_at
+    );
+  });
+
   it('upsertFromSeriesFile compares against facts_updated_at, not the record stamp', async () => {
     // Linked on 2026-02-01, then a per-user write bumped the record to 2026-09-01.
     await replaceAllSeriesMetadata({
@@ -303,8 +348,8 @@ describe('series metadata store', () => {
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 30013 });
 
-    // newer file without ids → unlink propagates
-    await upsertFromSeriesFile(
+    // newer file without ids → a REAL unlink, which still propagates
+    const applied = await upsertFromSeriesFile(
       'One Piece',
       seriesFile({
         external_ids: {},
@@ -313,6 +358,7 @@ describe('series metadata store', () => {
         updated_at: '2026-03-01T00:00:00.000Z'
       })
     );
+    expect(applied).toBe(true);
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({});
     expect(meta?.tag).toBeUndefined();
