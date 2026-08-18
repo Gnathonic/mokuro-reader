@@ -23,6 +23,7 @@
   import SeriesRenameField from './SeriesRenameField.svelte';
   import SeriesLinkControls from './SeriesLinkControls.svelte';
   import SeriesTitlesEditor from './SeriesTitlesEditor.svelte';
+  import SeriesSpineShowcase from './SeriesSpineShowcase.svelte';
   import SeriesTrackingPanel from './SeriesTrackingPanel.svelte';
 
   let open = $state(false);
@@ -175,6 +176,11 @@
           </h4>
           <SeriesLinkControls {seriesTitle} {volumes} bind:linkOpen />
           <SeriesTitlesEditor {seriesTitle} />
+        </section>
+
+        <section class="flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-700">
+          <h4 class="text-xs font-semibold text-gray-500 uppercase dark:text-gray-400">Shelf</h4>
+          <SeriesSpineShowcase {seriesTitle} {volumes} />
         </section>
 
         <section class="flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-700">

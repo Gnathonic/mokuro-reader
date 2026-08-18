@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
@@ -103,6 +103,12 @@ vi.mock('$lib/metadata/link-search', () => ({
   createLinkSearch: () => ({ setQuery: vi.fn(), cancel: vi.fn() }),
   describeSearchError: (e: unknown) => String(e)
 }));
+// SeriesSpineShowcase pulls the cloud-thumbnail fetcher; keep the sync/download graph out
+// of a test about the modal (its own suite covers the shelf's behaviour).
+vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+  fetchCloudThumbnail: vi.fn(async () => null),
+  getCachedCloudThumbnail: vi.fn(() => undefined)
+}));
 vi.mock('$lib/metadata/anilist-auth', () => ({
   getAniListClientId: () => h.auth.clientId,
   getAniListToken: () => null,
@@ -173,8 +179,25 @@ async function openFor(title: string) {
   return utils;
 }
 
+/** CompositeCanvas (inside the spine showcase) observes visibility; jsdom has no IO. */
+class IntersectionObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
 describe('SeriesEditorModal', () => {
+  afterEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
   beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
     vi.clearAllMocks();
     closeSeriesEditor();
     confirmationPopupStore.set(undefined);
@@ -225,6 +248,14 @@ describe('SeriesEditorModal', () => {
     // SeriesTrackingPanel
     expect(getByText(/Read \d+ time/)).toBeTruthy();
     expect(getByText('Restart series…')).toBeTruthy();
+  });
+
+  it('mounts the spine shelf with its offset controls', async () => {
+    const { getByText, getByLabelText } = await openFor('Berserk');
+    expect(getByText('Shelf')).toBeTruthy();
+    expect(getByLabelText('Spine shelf')).toBeTruthy();
+    expect(getByLabelText('Series spine offset')).toBeTruthy();
+    expect(getByText('Reset all volume offsets')).toBeTruthy();
   });
 
   it('moves to the next unlinked series in catalog order, wrapping past the linked one', async () => {

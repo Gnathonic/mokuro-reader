@@ -18,6 +18,7 @@
     type SpineOffsetPatch,
     type SpineOffsets
   } from '$lib/metadata/spine-offsets';
+  import { computeStackLayout, hitTestStack } from '$lib/util/spine-stack-layout';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
@@ -283,24 +284,17 @@
       stackedVolumes.length > 0 && hasRenderableThumbnails ? stepSizes : placeholderStepSizes;
     const count = stackedVolumes.length;
 
-    // Build cascading left positions
-    let cumOffset = 0;
-    const positions: number[] = [];
-    for (let i = 0; i < count; i++) {
-      positions[i] = sizes.leftOffset + i * sizes.horizontal + cumOffset;
-      cumOffset += volumeOffsets.get(i) ?? 0;
-    }
-
-    // Hit test front-to-back (index 0 is front/leftmost, drawn on top)
-    for (let i = 0; i < count; i++) {
-      const left = positions[i];
-      const right = left + BASE_WIDTH;
-      if (mouseX >= left && mouseX <= right) {
-        hoveredVolumeIndex = i;
-        return;
-      }
-    }
-    hoveredVolumeIndex = count - 1;
+    // Shared with the series editor's spine showcase so both agree on which spine a
+    // pointer is over. `leftOffset` is the stack's own inset, so the hit test runs in
+    // stack-local coordinates; past every spine's right edge falls back to the back-most
+    // volume (nothing is drawn there, but the nudge gesture still needs a target).
+    const layout = computeStackLayout({
+      count,
+      baseWidth: BASE_WIDTH,
+      horizontalStepPx: sizes.horizontal,
+      volumeOffsetsByIndex: volumeOffsets
+    });
+    hoveredVolumeIndex = hitTestStack(layout, mouseX - sizes.leftOffset, BASE_WIDTH) ?? count - 1;
   }
 
   $effect(() => {
