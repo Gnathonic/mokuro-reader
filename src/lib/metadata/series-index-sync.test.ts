@@ -386,6 +386,9 @@ describe('refreshSeriesIndexes', () => {
       })
     });
     getActiveProvider.mockReturnValue(provider);
+    // Nothing cached, so the replay would re-download every sidecar of the
+    // listing if it ran at all.
+    listSeriesIndexes.mockResolvedValue([]);
 
     const map = listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json'));
 
@@ -393,11 +396,16 @@ describe('refreshSeriesIndexes', () => {
     const first = refreshSeriesIndexes(map, 'webdav');
     const queuedReplay = refreshSeriesIndexes(map, 'webdav');
     // The provider switches while the first run is still downloading.
-    getActiveProvider.mockReturnValue(makeProvider({ type: 'mega' }));
+    const switchedTo = makeProvider({ type: 'mega' });
+    getActiveProvider.mockReturnValue(switchedTo);
     release();
     await Promise.all([first, queuedReplay]);
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
+    // The replay must not run against the account that is now active: its file
+    // ids and folder set belong to the old one.
+    expect(switchedTo.downloadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndexes).toHaveBeenCalledTimes(1);
   });
 
   it('writes every refreshed record in a single bulk put', async () => {
