@@ -206,6 +206,22 @@ describe('sanitizeCloudSeriesMetadata', () => {
     expect(Object.keys(result.b)).not.toContain('tracking');
   });
 
+  it('keeps a known tracking unit and drops anything else', () => {
+    const entry = (unit: unknown) => ({
+      series_key: 'a',
+      series_title: 'A',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      unit
+    });
+    expect(sanitizeCloudSeriesMetadata({ a: entry('chapters') }).a.unit).toBe('chapters');
+    expect(sanitizeCloudSeriesMetadata({ a: entry('volumes') }).a.unit).toBe('volumes');
+    // A junk unit must fall back to auto-detection, not push chapter numbers
+    // into the volume field (or the reverse).
+    for (const junk of ['pages', 1, null, {}, '']) {
+      expect(Object.keys(sanitizeCloudSeriesMetadata({ a: entry(junk) }).a)).not.toContain('unit');
+    }
+  });
+
   it('clamps the spine offset and drops junk values', () => {
     const entry = (spine_offset: unknown) => ({
       series_key: 'a',

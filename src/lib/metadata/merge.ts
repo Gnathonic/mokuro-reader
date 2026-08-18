@@ -8,6 +8,7 @@ import {
   sanitizeTitlePreference,
   sanitizeTitles,
   sanitizeTracking,
+  sanitizeTrackingUnit,
   sanitizeVolumeOffsets
 } from './sanitize';
 import type { SeriesMetadata } from './types';
@@ -87,6 +88,11 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
     const tag = sanitizeTag(value.tag);
     if (tag === undefined) delete entry.tag;
     else entry.tag = tag;
+    // A shared fact like the tag, and one the tracker pushes progress by: an
+    // unknown value must fall back to auto-detection, never ride along.
+    const unit = sanitizeTrackingUnit(value.unit);
+    if (unit === undefined) delete entry.unit;
+    else entry.unit = unit;
     // An unknown language would not equal 'imported', so it would silently push the
     // series onto the english → romaji → native fallback chain. Drop it back to
     // "no per-series override" instead.

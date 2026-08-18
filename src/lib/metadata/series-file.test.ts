@@ -4,6 +4,7 @@ import {
   SERIES_FILE_NAME,
   buildSeriesFile,
   isSeriesFilePath,
+  mergeSeriesFileForCache,
   parseSeriesFile,
   volumeToIndexEntry,
   type SeriesFile
@@ -536,12 +537,20 @@ describe('parseSeriesFile', () => {
       external_ids: { anilist: 30013, mal: -1, kitsu: 5 },
       titles: { english: 'One Piece', klingon: 'nope', romaji: '  ' },
       synonyms: ['ok', '', 42],
-      tag: '   '
+      tag: '   ',
+      unit: 'tankobon'
     })!;
     expect(parsed.external_ids).toEqual({ anilist: 30013 });
     expect(parsed.titles).toEqual({ english: 'One Piece' });
     expect(parsed.synonyms).toEqual(['ok']);
     expect('tag' in parsed).toBe(false);
+    // An unknown unit is "nobody has corrected it", not a third unit.
+    expect('unit' in parsed).toBe(false);
+  });
+
+  it('keeps a known unit', () => {
+    expect(parseSeriesFile({ ...valid, unit: 'chapters' })?.unit).toBe('chapters');
+    expect(parseSeriesFile({ ...valid, unit: 'volumes' })?.unit).toBe('volumes');
   });
 
   it('drops bad volume entries and keeps the good ones', () => {
@@ -635,5 +644,85 @@ describe('isSeriesFilePath', () => {
     expect(isSeriesFilePath('One Piece/series.json.bak')).toBe(false);
     expect(isSeriesFilePath('series.json/')).toBe(false);
     expect(isSeriesFilePath('')).toBe(false);
+  });
+});
+
+describe('the tracking unit as a shared fact', () => {
+  it('round-trips through build → JSON → parse', () => {
+    const built = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: { ...linkedMeta(), unit: 'chapters' },
+      localVolumes: [volume()]
+    })!;
+    expect(built.unit).toBe('chapters');
+    expect(parseSeriesFile(JSON.parse(JSON.stringify(built)))).toEqual(built);
+  });
+
+  it('is worth publishing on its own', () => {
+    // Nobody linked the series, but somebody corrected its unit: that is a fact
+    // about the archives and the next device should not have to guess again.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
+        unit: 'chapters',
+        facts_updated_at: '2026-08-16T00:00:00.000Z'
+      },
+      localVolumes: []
+    })!;
+    expect(file.unit).toBe('chapters');
+    expect(file.updated_at).toBe('2026-08-16T00:00:00.000Z');
+  });
+
+  it('takes the unit from whichever side wins the facts comparison', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: { anilist: 30013 },
+      titles: {},
+      synonyms: [],
+      unit: 'volumes',
+      updated_at: '2026-08-17T00:00:00.000Z',
+      volumes: []
+    };
+    // Older local facts lose: the published unit is carried through untouched.
+    expect(
+      buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: { ...linkedMeta(), unit: 'chapters' },
+        localVolumes: [],
+        existing
+      })!.unit
+    ).toBe('volumes');
+    // Newer local facts win, and clearing the unit locally clears it in the file.
+    expect(
+      buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: {
+          ...linkedMeta(),
+          updated_at: '2026-08-18T00:00:00.000Z',
+          facts_updated_at: '2026-08-18T00:00:00.000Z'
+        },
+        localVolumes: [],
+        existing
+      })!.unit
+    ).toBeUndefined();
+  });
+
+  it('drops the unit when a factless file wins the cache merge', () => {
+    const withUnit: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      unit: 'chapters',
+      updated_at: '2026-08-16T00:00:00.000Z',
+      volumes: []
+    };
+    const newer: SeriesFile = { ...withUnit, updated_at: '2026-08-18T00:00:00.000Z' };
+    delete newer.unit;
+    expect(mergeSeriesFileForCache('One Piece', newer, withUnit).unit).toBeUndefined();
+    expect(mergeSeriesFileForCache('One Piece', withUnit, newer).unit).toBeUndefined();
   });
 });

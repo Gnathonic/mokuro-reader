@@ -2,7 +2,8 @@ import type {
   DisplayTitleLanguage,
   SeriesExternalIds,
   SeriesTitles,
-  SeriesTracking
+  SeriesTracking,
+  TrackingUnit
 } from './types';
 
 /**
@@ -158,6 +159,15 @@ export function sanitizeVolumeOffsets(value: unknown): Record<string, number> | 
     out[uuid] = clamp(px, VOLUME_OFFSET_LIMIT);
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * The tracking unit is a shared *fact* (it travels in `series.json`), so it is
+ * validated like one: exactly one of the two known strings, else undefined —
+ * "nobody has corrected it", which sends the reader to auto-detection.
+ */
+export function sanitizeTrackingUnit(value: unknown): TrackingUnit | undefined {
+  return value === 'volumes' || value === 'chapters' ? value : undefined;
 }
 
 /** Trimmed non-empty string, else undefined. */

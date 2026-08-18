@@ -143,6 +143,7 @@ describe('series metadata store', () => {
       tag: '[bw]',
       title_preference: 'native',
       read_count: 2,
+      unit: 'chapters',
       tracking: { enabled: true, unit: 'volumes' }
     });
     const meta = await unlinkSeries('One Piece');
@@ -156,6 +157,8 @@ describe('series metadata store', () => {
     expect(meta.tag).toBe('[bw]');
     expect(meta.title_preference).toBe('native');
     expect(meta.read_count).toBe(2);
+    // The unit describes the archives in the folder, not the link that was removed.
+    expect(meta.unit).toBe('chapters');
     expect(meta.tracking).toEqual({ enabled: true, unit: 'volumes' });
     expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
@@ -183,6 +186,13 @@ describe('series metadata store', () => {
 
     const tagged = await updateSeriesMetadata('One Piece', { tag: '[color]' });
     expect(tagged.facts_updated_at).toBe(tagged.updated_at);
+
+    // The tracking unit is a shared fact too: correcting it must schedule a
+    // series.json write, and re-writing the same value must not.
+    const united = await updateSeriesMetadata('One Piece', { unit: 'chapters' });
+    expect(united.facts_updated_at).toBe(united.updated_at);
+    const again = await updateSeriesMetadata('One Piece', { unit: 'chapters' });
+    expect(again.facts_updated_at).toBe(united.facts_updated_at);
 
     const unlinked = await unlinkSeries('One Piece');
     expect(unlinked.facts_updated_at).toBe(unlinked.updated_at);
@@ -510,5 +520,56 @@ describe('series metadata store', () => {
     expect(Object.keys(all).sort()).toEqual(['a', 'b']);
     await replaceAllSeriesMetadata({ ...all, b: { ...all.b, tag: '22' } });
     expect((await getSeriesMetadataForTitle('B'))?.tag).toBe('22');
+  });
+});
+
+describe('the tracking unit as a shared fact', () => {
+  beforeEach(async () => {
+    await (db as any).table('series_metadata').clear();
+  });
+
+  it('applies a sidecar unit and clears it again when a newer sidecar drops it', async () => {
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013 },
+        titles: {},
+        synonyms: [],
+        unit: 'chapters',
+        updated_at: '2026-08-16T00:00:00.000Z'
+      })
+    );
+    expect((await getSeriesMetadataForTitle('One Piece'))?.unit).toBe('chapters');
+
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013 },
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-08-17T00:00:00.000Z'
+      })
+    );
+    const cleared = await getSeriesMetadataForTitle('One Piece');
+    expect(cleared?.unit).toBeUndefined();
+    expect(Object.keys(cleared!)).not.toContain('unit');
+  });
+
+  it('ignores an older sidecar unit', async () => {
+    await updateSeriesMetadata('One Piece', {
+      external_ids: { anilist: 30013 },
+      unit: 'chapters'
+    });
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013 },
+        titles: {},
+        synonyms: [],
+        unit: 'volumes',
+        updated_at: '2020-01-01T00:00:00.000Z'
+      })
+    );
+    expect((await getSeriesMetadataForTitle('One Piece'))?.unit).toBe('chapters');
   });
 });

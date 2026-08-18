@@ -9,9 +9,10 @@ import {
   sanitizeExternalIds,
   sanitizeSynonyms,
   sanitizeTag,
-  sanitizeTitles
+  sanitizeTitles,
+  sanitizeTrackingUnit
 } from './sanitize';
-import type { SeriesExternalIds, SeriesMetadata, SeriesTitles } from './types';
+import type { SeriesExternalIds, SeriesMetadata, SeriesTitles, TrackingUnit } from './types';
 
 /** Basename of the per-series sidecar, stored at `<Series Title>/series.json`. */
 export const SERIES_FILE_NAME = 'series.json';
@@ -63,6 +64,8 @@ export interface SeriesFile {
   titles: SeriesTitles;
   synonyms: string[];
   tag?: string;
+  /** Are these archives volumes or chapters? Absent = auto-detect from the titles. */
+  unit?: TrackingUnit;
   updated_at: string;
   volumes: SeriesFileVolume[];
 }
@@ -99,6 +102,7 @@ interface SeriesFacts {
   titles?: SeriesTitles;
   synonyms?: string[];
   tag?: string;
+  unit?: TrackingUnit;
   /**
    * The facts clock — NOT a record's general `updated_at`. `undefined` means this
    * record has never carried facts and has never had a fact edit, so it has no
@@ -113,7 +117,8 @@ export function hasSeriesFacts(facts: SeriesFacts): boolean {
     Object.keys(facts.external_ids ?? {}).length > 0 ||
     Object.keys(facts.titles ?? {}).length > 0 ||
     (facts.synonyms ?? []).some((s) => s.trim() !== '') ||
-    !!facts.tag?.trim()
+    !!facts.tag?.trim() ||
+    !!facts.unit
   );
 }
 
@@ -135,6 +140,7 @@ function localFacts(meta: SeriesMetadata): SeriesFacts {
     titles: meta.titles ?? {},
     synonyms: meta.synonyms ?? [],
     tag: meta.tag,
+    unit: meta.unit,
     updated_at:
       stamp === undefined ? undefined : (normalizeUpdatedAt(stamp) ?? new Date().toISOString())
   };
@@ -196,6 +202,7 @@ export function buildSeriesFile(args: {
   const titles: SeriesTitles = {};
   let synonyms: string[] = [];
   let tag: string | undefined;
+  let unit: TrackingUnit | undefined;
 
   if (source) {
     for (const k of ID_KEYS)
@@ -203,6 +210,7 @@ export function buildSeriesFile(args: {
     for (const k of TITLE_KEYS) if (source.titles?.[k]) titles[k] = source.titles[k];
     synonyms = [...(source.synonyms ?? [])];
     tag = source.tag?.trim() || undefined;
+    unit = sanitizeTrackingUnit(source.unit);
   }
   // No source at all = no facts clock here and nothing published: the file is
   // index-only and must not be able to outrank anybody's facts.
@@ -223,7 +231,7 @@ export function buildSeriesFile(args: {
   }
   volumes.sort(compareEntries);
 
-  if (!hasSeriesFacts({ external_ids, titles, synonyms, tag }) && volumes.length === 0) {
+  if (!hasSeriesFacts({ external_ids, titles, synonyms, tag, unit }) && volumes.length === 0) {
     return undefined;
   }
 
@@ -237,6 +245,7 @@ export function buildSeriesFile(args: {
     volumes
   };
   if (tag) file.tag = tag;
+  if (unit) file.unit = unit;
   return file;
 }
 
@@ -287,6 +296,7 @@ export function mergeSeriesFileForCache(
   const volumes = [...byUuid.values()].sort(compareEntries);
   const merged: SeriesFile = { ...base, series_title: seriesTitle, volumes };
   if (!base.tag) delete merged.tag;
+  if (!base.unit) delete merged.unit;
   return merged;
 }
 
@@ -374,6 +384,8 @@ export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   };
   const tag = sanitizeTag(value.tag);
   if (tag) file.tag = tag;
+  const unit = sanitizeTrackingUnit(value.unit);
+  if (unit) file.unit = unit;
   return file;
 }
 

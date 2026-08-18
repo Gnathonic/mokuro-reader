@@ -52,7 +52,7 @@ function nextTimestamp(existing: string | undefined, now: number = Date.now()): 
 }
 
 /** The shareable facts — everything else on the record is this library's own state. */
-const FACT_KEYS = ['external_ids', 'titles', 'synonyms', 'tag'] as const;
+const FACT_KEYS = ['external_ids', 'titles', 'synonyms', 'tag', 'unit'] as const;
 
 /**
  * Merge key for the facts, or `undefined` when this library has never had an
@@ -102,7 +102,7 @@ const factsChangeListeners = new Set<FactsChangeListener>();
 
 /**
  * Called after a *local fact edit* commits — a link, an unlink, a title,
- * synonyms or the tag actually changing value. Never for per-user writes
+ * synonyms, the tag or the tracking unit actually changing value. Never for per-user writes
  * (spine offsets, rereads, tracking) and never for `upsertFromSeriesFile`,
  * which applies what a sidecar already says: re-publishing that would be a
  * write loop between devices.
@@ -188,7 +188,11 @@ export async function updateSeriesMetadata(
   return next;
 }
 
-/** Remove the external link + fetched facts; keep user preferences/tag/read_count/tracking. */
+/**
+ * Remove the external link + fetched facts; keep user preferences, `tag`,
+ * `read_count` and `tracking`. `unit` stays too: it describes the archives in
+ * the folder, not the link that was just removed.
+ */
 export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata> {
   return updateSeriesMetadata(seriesTitle, {
     external_ids: {},
@@ -251,6 +255,7 @@ export async function upsertFromSeriesFile(
       titles: { ...file.titles },
       synonyms: [...file.synonyms],
       tag: file.tag,
+      unit: file.unit,
       ...(linkChanged
         ? {
             format: undefined,
