@@ -41,6 +41,14 @@ export interface SeriesMetadata {
   total_chapters?: number;
   cover_url?: string;
   title_preference?: DisplayTitleLanguage;
+  /**
+   * Catalog spine stack: adjustment to the global horizontal step, in percent.
+   * Added to `catalogSettings.horizontalStep` for this series only. Not embedded
+   * in .mokuro — it describes this library's shelf, not the series.
+   */
+  spine_offset?: number;
+  /** Catalog spine stack: per-volume horizontal nudge in px, keyed by `volume_uuid`. */
+  volume_offsets?: Record<string, number>;
   /** Archived completed passes; timesRead = read_count + (all volumes completed now ? 1 : 0) */
   read_count: number;
   reread_prompt_suppressed?: boolean;

@@ -122,6 +122,44 @@ export function sanitizeTracking(value: unknown): SeriesTracking | undefined {
   return out;
 }
 
+/** Series spine offset is a percentage nudge on the catalog stack step. */
+export const SPINE_OFFSET_LIMIT = 50;
+/** Per-volume spine nudge, in px — a volume thumbnail is 250 px wide. */
+export const VOLUME_OFFSET_LIMIT = 500;
+
+function clamp(value: number, limit: number): number {
+  return Math.min(limit, Math.max(-limit, value));
+}
+
+/**
+ * Clamps `spine_offset` to ±`SPINE_OFFSET_LIMIT` %, dropping non-finite values.
+ *
+ * The value is added to the catalog's horizontal step and multiplies out across the
+ * whole stack, so a junk number does not corrupt data but does size the card (and
+ * its container) far past anything usable.
+ */
+export function sanitizeSpineOffset(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return clamp(value, SPINE_OFFSET_LIMIT);
+}
+
+/**
+ * Keeps only non-empty string keys with finite numeric px values, clamped to
+ * ±`VOLUME_OFFSET_LIMIT`. An empty result is `undefined` (= "no offsets"), so the
+ * field disappears instead of being stored as `{}` — same shape as `sanitizeTracking`'s
+ * `number_overrides`.
+ */
+export function sanitizeVolumeOffsets(value: unknown): Record<string, number> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [uuid, px] of Object.entries(value)) {
+    if (!uuid.trim()) continue;
+    if (typeof px !== 'number' || !Number.isFinite(px)) continue;
+    out[uuid] = clamp(px, VOLUME_OFFSET_LIMIT);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** Trimmed non-empty string, else undefined. */
 export function sanitizeTag(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;

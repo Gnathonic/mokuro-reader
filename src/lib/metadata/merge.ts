@@ -2,11 +2,13 @@ import {
   isRecord,
   normalizeUpdatedAt,
   sanitizeExternalIds,
+  sanitizeSpineOffset,
   sanitizeSynonyms,
   sanitizeTag,
   sanitizeTitlePreference,
   sanitizeTitles,
-  sanitizeTracking
+  sanitizeTracking,
+  sanitizeVolumeOffsets
 } from './sanitize';
 import type { SeriesMetadata } from './types';
 
@@ -36,8 +38,8 @@ function isNonNegativeInteger(value: unknown): value is number {
  * external ids, non-empty string titles/synonyms/tag, a `title_preference` that is
  * one of the four known languages, `read_count` coerced to a non-negative integer,
  * a `tracking` block validated field by field, a boolean-or-absent
- * `reread_prompt_suppressed`, and `updated_at` normalized to ISO and clamped when
- * far in the future. Bad values are dropped, not the whole entry. Other fields pass
+ * `reread_prompt_suppressed`, catalog spine offsets clamped to a renderable range,
+ * and `updated_at` normalized to ISO and clamped when far in the future. Bad values are dropped, not the whole entry. Other fields pass
  * through as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
  */
 export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, SeriesMetadata> {
@@ -86,6 +88,14 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
     const titlePreference = sanitizeTitlePreference(value.title_preference);
     if (titlePreference === undefined) delete entry.title_preference;
     else entry.title_preference = titlePreference;
+    // Spine offsets only steer catalog layout, but an out-of-range value would size the
+    // card's container from its own arithmetic — clamp to a range that still renders.
+    const spineOffset = sanitizeSpineOffset(value.spine_offset);
+    if (spineOffset === undefined) delete entry.spine_offset;
+    else entry.spine_offset = spineOffset;
+    const volumeOffsets = sanitizeVolumeOffsets(value.volume_offsets);
+    if (volumeOffsets === undefined) delete entry.volume_offsets;
+    else entry.volume_offsets = volumeOffsets;
     out[key] = entry;
   }
 

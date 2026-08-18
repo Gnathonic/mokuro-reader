@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mergeSeriesMetadata, sanitizeCloudSeriesMetadata } from './merge';
-import { sanitizeTracking } from './sanitize';
+import { sanitizeSpineOffset, sanitizeTracking, sanitizeVolumeOffsets } from './sanitize';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 
 function rec(title: string, updated_at: string, tag?: string): SeriesMetadata {
@@ -204,6 +204,69 @@ describe('sanitizeCloudSeriesMetadata', () => {
       number_overrides: { good: 4 }
     });
     expect(Object.keys(result.b)).not.toContain('tracking');
+  });
+
+  it('clamps the spine offset and drops junk values', () => {
+    const entry = (spine_offset: unknown) => ({
+      series_key: 'a',
+      series_title: 'A',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      spine_offset
+    });
+    expect(sanitizeCloudSeriesMetadata({ a: entry(3.5) }).a.spine_offset).toBe(3.5);
+    // A wild value would blow the catalog stack far past the card.
+    expect(sanitizeCloudSeriesMetadata({ a: entry(9000) }).a.spine_offset).toBe(50);
+    expect(sanitizeCloudSeriesMetadata({ a: entry(-9000) }).a.spine_offset).toBe(-50);
+    for (const junk of [Number.NaN, Infinity, '4', null, {}]) {
+      expect(Object.keys(sanitizeCloudSeriesMetadata({ a: entry(junk) }).a)).not.toContain(
+        'spine_offset'
+      );
+    }
+  });
+
+  it('clamps per-volume offsets and drops junk keys/values', () => {
+    const result = sanitizeCloudSeriesMetadata({
+      a: {
+        series_key: 'a',
+        series_title: 'A',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        volume_offsets: {
+          good: -12,
+          huge: 99999,
+          tiny: -99999,
+          zero: 0,
+          nan: Number.NaN,
+          text: '4',
+          '': 5
+        }
+      },
+      b: {
+        series_key: 'b',
+        series_title: 'B',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        volume_offsets: 'nope'
+      },
+      c: {
+        series_key: 'c',
+        series_title: 'C',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        volume_offsets: { nan: Number.NaN }
+      }
+    });
+    // A `0` is inert (the reader filters it) so it is left alone; junk keys/values go.
+    expect(result.a.volume_offsets).toEqual({ good: -12, huge: 500, tiny: -500, zero: 0 });
+    // A non-object, or an object with nothing valid left, means "no offsets".
+    expect(Object.keys(result.b)).not.toContain('volume_offsets');
+    expect(Object.keys(result.c)).not.toContain('volume_offsets');
+  });
+
+  it('sanitizeSpineOffset / sanitizeVolumeOffsets are usable on their own', () => {
+    expect(sanitizeSpineOffset(0)).toBe(0);
+    expect(sanitizeSpineOffset(51)).toBe(50);
+    expect(sanitizeSpineOffset('51')).toBeUndefined();
+    expect(sanitizeVolumeOffsets({ a: 1 })).toEqual({ a: 1 });
+    expect(sanitizeVolumeOffsets({})).toBeUndefined();
+    expect(sanitizeVolumeOffsets([1, 2])).toBeUndefined();
   });
 
   it('keeps reread_prompt_suppressed only when it is a boolean', () => {

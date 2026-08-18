@@ -5,6 +5,14 @@
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
   import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import {
+    getSpineOffsets,
+    scheduleSpineOffsetWrite,
+    volumeOffsetsByIndex,
+    type SpineOffsetPatch
+  } from '$lib/metadata/spine-offsets';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
@@ -89,10 +97,41 @@
 
   let showDropShadow = $derived($catalogSettings?.dropShadow ?? true);
 
-  // Per-series horizontal offset adjustment (in-memory only, not persisted)
+  // Spine offsets live on the synced series record (see $lib/metadata/spine-offsets).
+  // Local copies are optimistic: the wheel updates them immediately while the debounced
+  // write lands, and they resync from the store once no write of ours is outstanding.
+  let seriesKey = $derived(normalizeSeriesKey(volume?.series_title ?? ''));
+  let storedOffsets = $derived(getSpineOffsets($seriesMetadataMap.get(seriesKey)));
+
+  // Per-series horizontal offset adjustment, in percent
   let hOffsetAdjust = $state(0);
-  // Per-volume horizontal offset adjustments (index → pixels)
-  let volumeOffsets = $state<Map<number, number>>(new Map());
+  // Per-volume horizontal offset adjustments (volume_uuid → pixels)
+  let volumeOffsetsByUuid = $state<Record<string, number>>({});
+  let pendingOffsetWrites = $state(0);
+
+  $effect(() => {
+    const stored = storedOffsets;
+    // While a write of ours is in flight the local values are the newer truth; an
+    // emission carrying the pre-write record would otherwise snap the stack back.
+    if (pendingOffsetWrites > 0) return;
+    hOffsetAdjust = stored.spineOffset;
+    volumeOffsetsByUuid = stored.volumeOffsets;
+  });
+
+  function writeSpineOffsets(patch: SpineOffsetPatch) {
+    const seriesTitle = volume?.series_title;
+    if (!seriesTitle) return;
+    pendingOffsetWrites++;
+    void scheduleSpineOffsetWrite(seriesTitle, patch).finally(() => {
+      pendingOffsetWrites--;
+    });
+  }
+
+  // Index-keyed view of the offsets for the stack currently on screen. Keyed by uuid in
+  // storage precisely because this list changes (hideReadVolumes, stackCount), so an
+  // index-keyed record would drift onto the wrong volume.
+  let volumeOffsets = $derived(volumeOffsetsByIndex(stackedVolumes, volumeOffsetsByUuid));
+
   let isHovered = $state(false);
   let modifierState = $state<'none' | 'shift' | 'alt-shift'>('none');
   let hoveredVolumeIndex = $state<number | null>(null);
@@ -144,31 +183,42 @@
 
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+Scroll: adjust individual volume
+      const target = stackedVolumes[hoveredVolumeIndex];
+      if (!target) return;
       e.preventDefault();
       const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
-      const current = volumeOffsets.get(hoveredVolumeIndex) ?? 0;
-      const next = new Map(volumeOffsets);
-      next.set(hoveredVolumeIndex, current + delta);
-      volumeOffsets = next;
+      const next = (volumeOffsetsByUuid[target.volume_uuid] ?? 0) + delta;
+      setVolumeOffset(target.volume_uuid, next);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+Scroll: adjust series offset
       e.preventDefault();
       const delta = e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP;
       hOffsetAdjust += delta;
+      writeSpineOffsets({ spineOffset: hOffsetAdjust });
     }
+  }
+
+  function setVolumeOffset(volumeUuid: string, px: number) {
+    const next = { ...volumeOffsetsByUuid };
+    if (px === 0) delete next[volumeUuid];
+    else next[volumeUuid] = px;
+    volumeOffsetsByUuid = next;
+    // 0 tells the writer to delete this volume's key rather than store a no-op.
+    writeSpineOffsets({ volumeOffsets: { [volumeUuid]: px } });
   }
 
   function handleContextMenu(e: MouseEvent) {
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+RMB: reset individual volume offset
+      const target = stackedVolumes[hoveredVolumeIndex];
+      if (!target) return;
       e.preventDefault();
-      const next = new Map(volumeOffsets);
-      next.delete(hoveredVolumeIndex);
-      volumeOffsets = next;
+      setVolumeOffset(target.volume_uuid, 0);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+RMB: reset series offset
       e.preventDefault();
       hOffsetAdjust = 0;
+      writeSpineOffsets({ spineOffset: 0 });
     }
   }
 
