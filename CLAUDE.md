@@ -221,6 +221,7 @@ series' volumes:
   titles: { native?, romaji?, english? },
   synonyms: string[],
   tag?: string,
+  unit?: 'volumes' | 'chapters', // are the archives volumes or chapters? absent = auto-detect
   updated_at: string,            // ISO — the facts stamp (SeriesMetadata.facts_updated_at)
   volumes: {                     // the index
     volume_uuid: string,

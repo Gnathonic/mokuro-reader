@@ -61,7 +61,8 @@ src/lib/metadata/
   providers/anilist.ts     AniList GraphQL provider (search, getById, siteUrl) + rate guard
   link-targets.ts          pure URL builders: anilist(id), mal(id)
   display-title.ts         resolveDisplayTitle(seriesTitle, meta, globalPref)
-  volume-number.ts         extractVolumeNumber(volumeTitle, unit)  (reuses series-extraction patterns)
+  volume-number.ts         extractVolumeNumber(volumeTitle, unit) + detectTrackingUnit(titles, totals)
+  tracking-unit.ts         resolveTrackingUnit(meta, volumes) → { unit, source } (amended)
   store.ts                 series_metadata table access + liveQuery stores + upsert/merge helpers
   merge.ts                 mergeSeriesMetadata(local, cloud) — pure, newest-wins per key
   series-file.ts           series.json v2 shape: buildSeriesFile / parseSeriesFile (amended; replaced embed.ts)
@@ -69,7 +70,7 @@ src/lib/metadata/
   series-file-sync.ts      debounced auto-write of series.json after local fact edits
   series-index-sync.ts     refresh changed series.json files after a cloud listing
   anilist-auth.ts          token storage, authorize URL, hash-callback parsing, Viewer fetch
-  progress-tracker.ts      onVolumeCompleted/onSeriesRestarted/syncNow + pending queue
+  progress-tracker.ts      onVolumeCompleted/onSeriesRestarted/onReadCountChanged/syncNow/syncAllSeriesNow + pending queue
   progress-plan.ts         planProgressPush(local, remote) — pure
   reread.ts                shouldOfferReread(...) — pure; restartSeries(...)
 src/lib/components/Series/
@@ -77,7 +78,7 @@ src/lib/components/Series/
   SeriesMetadataBar.svelte read-only summary: alt titles, link-out chips, Read N times, tracking status; pencil opens SeriesEditorModal
   SeriesEditorModal.svelte rename + SeriesLinkControls/SeriesTitlesEditor/SeriesTrackingPanel; "Next unlinked series →"; opened by the pencil or hover + `e` on a catalog card
   SeriesLinkControls.svelte Link…/Change/Unlink, tag field (amended: no "Update cloud sidecars" button)
-  SeriesTrackingPanel.svelte  tracking toggle/unit/Sync now, Read N times, Restart series
+  SeriesTrackingPanel.svelte  unit override (Auto/Volumes/Chapters) + push status, Read N times, Restart series
 src/lib/components/Reader/RereadPromptModal.svelte
 src/lib/components/Settings/CatalogSettings.svelte        preferred series title language (global)
 src/lib/components/Settings/MetadataSettings.svelte       "AniList" accordion: account Connect/Disconnect + push switch
@@ -112,13 +113,14 @@ export interface SeriesMetadata {
   total_volumes?: number;
   total_chapters?: number;
   cover_url?: string; // link dialog only; not used for thumbnails
+  unit?: 'volumes' | 'chapters'; // FACT: what the archives are; absent = auto-detect (amended 2026-08-18)
   title_preference?: DisplayTitleLanguage; // legacy per-series override; no longer consulted (kept for synced-data compat)
   read_count: number; // ARCHIVED completed passes (bumped by a restart of a fully-read series); default 0
   // timesRead = read_count + (all volumes completed now ? 1 : 0)
   reread_prompt_suppressed?: boolean; // "Don't ask for this series"
   tracking?: {
-    enabled: boolean;
-    unit: 'volumes' | 'chapters';
+    // amended 2026-08-18: `enabled`/`unit` removed — pushing is one global
+    // setting, the unit is the top-level fact above
     number_overrides?: Record<string, number>; // volume_uuid -> n
     last_pushed?: { n: number; status: string; at: string };
   };
@@ -134,7 +136,32 @@ data migration. `facts_updated_at` stamps the shareable facts separately from th
 
 **Unlink** clears `external_ids/titles/synonyms/format/status/totals/cover_url/linked_at`
 and bumps `updated_at`, so the unlink propagates through sync instead of the old link
-resurrecting. `tag`, `title_preference`, `read_count`, `tracking` survive an unlink.
+resurrecting. `tag`, `unit`, `title_preference`, `read_count`, `tracking` survive an
+unlink — the unit describes the archives in the folder, not the link.
+
+### Tracking unit and the push switch (amended 2026-08-18, user directive)
+
+> "Move the 'Push progress to AniList' and 'Sync now' buttons to the global settings, and
+> change the chapters/volumes setting to be auto-detected but user-correctable when needed
+> and saved to series.json. Whether the format is chapters or volumes isn't a user
+> preference, it's an objective fact about the items."
+
+- **No per-series opt-in.** A push happens when the series is linked to AniList and
+  `catalogSettings.pushProgressToAniList` is on. `tracking.enabled` is gone.
+- **Unit = a fact, not a preference.** `detectTrackingUnit(titles, totals)`
+  (`volume-number.ts`) reads it off the archive names: explicit 巻/`vol` markers vote
+  volumes, 話/`ch` markers vote chapters, majority wins; with no votes, a bare number
+  above `total_volumes` but inside `total_chapters` means chapters; otherwise volumes.
+  `resolveTrackingUnit(meta, volumes)` (`tracking-unit.ts`) lets a stored `unit` win and
+  reports `'set' | 'detected'`. The series panel offers `Auto (detected) / Volumes /
+Chapters`; a correction is a FACT edit (`facts_updated_at`, published in `series.json`).
+- **Settings → AniList** owns the master switch and **Sync all linked series now**
+  (`syncAllSeriesNow()`, sequential, 500 ms apart, tallied by outcome).
+- **Re-reads push** (amended 2026-08-18): a restart already went through the tracker; the
+  manual **Read N times** ± now pushes too, as the `read_count` event —
+  `{ repeat: desiredRepeat }` in BOTH directions (a deliberate correction, unlike the
+  forward-only completion/sync paths), queued under its own intent so a decrease is never
+  downgraded to a sync.
 
 ### Series file (`series.json`)
 
@@ -153,6 +180,7 @@ installed, without downloading every `.mokuro`:
   "titles": { "native": "ONE PIECE", "romaji": "ONE PIECE", "english": "One Piece" },
   "synonyms": ["ワンピース"],
   "tag": "[color]",
+  "unit": "volumes",
   "updated_at": "2026-08-16T00:00:00.000Z",
   "volumes": [
     {
@@ -268,7 +296,8 @@ SeriesMetadata>` from `liveQuery(db.series_metadata)`), never per card in `$deri
   **Read N times** (`timesRead`), one-line tracking status. A pencil opens
   **`SeriesEditorModal`** (also reachable via hover + `e` on a catalog card), which hosts
   every editing control: rename, **Link… / Change / Unlink**, tag text field, manual
-  titles/synonyms, tracking toggle + unit + **Sync now** + "last pushed vN · date",
+  titles/synonyms, the **tracking unit** override + push status + "last pushed vN · date"
+  (amended 2026-08-18: no per-series toggle, no per-series Sync now),
   **Read N times** +/-, **Restart series…** (confirm), and a
   "Next unlinked series →" button. Title language has no per-series control — it is the
   global Catalog setting below.
@@ -279,7 +308,8 @@ SeriesMetadata>` from `liveQuery(db.series_metadata)`), never per card in `$deri
   (global — native/romaji/english/imported; no per-series override).
 - **Settings drawer → `MetadataSettings`** accordion (labeled "AniList"): account
   **Connect / Disconnect** (shows username); global "Push progress to AniList on
-  completion" master switch (default on; per-series `tracking.enabled` still required).
+  completion" master switch (default on — amended 2026-08-18: it is the ONLY switch) and
+  **Sync all linked series now**.
   Account section hidden when `VITE_ANILIST_CLIENT_ID` is unset.
 - **`RereadPromptModal`** in the reader (see Re-reads).
 - Out of scope: bulk "find matches for all unlinked series"; sibling/variant navigation;
@@ -305,7 +335,7 @@ SeriesMetadata>` from `liveQuery(db.series_metadata)`), never per card in `$deri
   transition and call `progressTracker.onVolumeCompleted(volumeUuid)` (fire-and-forget,
   browser-only). `restartSeries` calls `onSeriesRestarted(seriesKey)`.
 - **Volume number.** `n = tracking.number_overrides[uuid] ?? extractVolumeNumber(volume_title,
-unit) ?? (1-based index in `sortVolumes` order)`. `extractVolumeNumber` reuses
+resolveTrackingUnit(meta, volumes).unit) ?? (1-based index in `sortVolumes` order)`. `extractVolumeNumber` reuses
   `series-extraction`'s `VOLUME_PATTERNS`/`BARE_VOLUME_PATTERNS` and adds `第N話` / `ch.N`
   / `chapter N` for the chapter unit.
 - **Local pass state** for a series: `passProgress = max n over volumes with completed
@@ -324,8 +354,8 @@ local volume completed`, `passComplete = total known && passProgress >= total`,
   - `null` when nothing would change.
 - **Sync now** = same plan against the current local state.
 - **Queue.** Failed/offline pushes are stored in localStorage `anilist_pending_pushes` as
-  _intents_ (`restart` | `sync`, one per series; a pending restart is replayed before a
-  sync) and re-planned against the live remote entry when flushed — on load, `online`,
+  _intents_ (`restart` | `read_count` | `sync`, one per series; a pending restart or
+  read-count correction is replayed before the follow-up sync) and re-planned against the live remote entry when flushed — on load, `online`,
   and successful login. 429 honors `Retry-After`.
 
 ### Re-reads
