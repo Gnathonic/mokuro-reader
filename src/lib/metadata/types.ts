@@ -41,6 +41,13 @@ export interface SeriesMetadata {
   total_volumes?: number;
   total_chapters?: number;
   cover_url?: string;
+  /**
+   * Objective unit of the archives — are the files in this series folder volumes
+   * or chapters? Not a preference: it is a property of the items themselves, so
+   * it is shared in `series.json` alongside the other facts. `undefined` = no one
+   * has corrected it, auto-detect from the volume titles (`tracking-unit.ts`).
+   */
+  unit?: TrackingUnit;
   title_preference?: DisplayTitleLanguage;
   /**
    * Catalog spine stack: adjustment to the global horizontal step, in percent.

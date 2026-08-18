@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractVolumeNumber } from './volume-number';
+import { detectTrackingUnit, extractVolumeNumber } from './volume-number';
 
 describe('extractVolumeNumber — volumes', () => {
   it.each([
@@ -80,5 +80,71 @@ describe('extractVolumeNumber — chapters', () => {
 
   it('does not treat 巻 as a chapter number', () => {
     expect(extractVolumeNumber('第3巻', 'chapters')).toBeUndefined();
+  });
+});
+
+describe('detectTrackingUnit', () => {
+  it('reads chapter-marked titles as chapters', () => {
+    expect(detectTrackingUnit(['Chapter 1', 'Chapter 2', 'Chapter 3'])).toBe('chapters');
+    expect(detectTrackingUnit(['第1話', '第2話'])).toBe('chapters');
+    expect(detectTrackingUnit(['One Piece ch.7', 'One Piece ch.8'])).toBe('chapters');
+  });
+
+  it('reads volume-marked titles as volumes', () => {
+    expect(detectTrackingUnit(['Vol 01', 'Vol 02'])).toBe('volumes');
+    expect(detectTrackingUnit(['第01巻', '第02巻'])).toBe('volumes');
+    expect(detectTrackingUnit(['One Piece_v02', 'One Piece_v03'])).toBe('volumes');
+  });
+
+  it('lets an explicit volume marker win over a chapter range in the same title', () => {
+    expect(detectTrackingUnit(['Vol 1 (Ch 1-10)', 'Vol 2 (Ch 11-20)'])).toBe('volumes');
+  });
+
+  it('goes with the majority of a mixed folder', () => {
+    expect(detectTrackingUnit(['Chapter 1', 'Chapter 2', 'Vol 01'])).toBe('chapters');
+    expect(detectTrackingUnit(['Chapter 1', 'Vol 01', 'Vol 02'])).toBe('volumes');
+  });
+
+  it('ignores the ambiguous #N marker when counting volume markers', () => {
+    // `#4` reads as a volume in extractVolumeNumber but says nothing about the
+    // unit, so a chapter-marked sibling still decides the folder.
+    expect(detectTrackingUnit(['One Piece #4', 'One Piece Chapter 5'])).toBe('chapters');
+  });
+
+  it('reads bare numbers above the volume count as chapters', () => {
+    expect(
+      detectTrackingUnit(['One Piece 1050', 'One Piece 1051'], {
+        total_volumes: 108,
+        total_chapters: 1100
+      })
+    ).toBe('chapters');
+  });
+
+  it('keeps volumes when the bare numbers fit inside the volume count', () => {
+    expect(
+      detectTrackingUnit(['One Piece 01', 'One Piece 02'], {
+        total_volumes: 108,
+        total_chapters: 1100
+      })
+    ).toBe('volumes');
+  });
+
+  it('keeps volumes when the bare numbers overshoot the chapter count too', () => {
+    // 1050 > 108 volumes, but also > 900 chapters: nothing about it says
+    // "chapters", so the safe default stands.
+    expect(
+      detectTrackingUnit(['Something 1050'], { total_volumes: 108, total_chapters: 900 })
+    ).toBe('volumes');
+  });
+
+  it('reads bare numbers above the volume count as chapters when no chapter count is known', () => {
+    expect(detectTrackingUnit(['Series 300'], { total_volumes: 20 })).toBe('chapters');
+  });
+
+  it('defaults to volumes with no titles, no numbers, or no totals', () => {
+    expect(detectTrackingUnit([])).toBe('volumes');
+    expect(detectTrackingUnit(['Extras', 'Omake'])).toBe('volumes');
+    expect(detectTrackingUnit(['Series 300'])).toBe('volumes');
+    expect(detectTrackingUnit(['', '   '])).toBe('volumes');
   });
 });
