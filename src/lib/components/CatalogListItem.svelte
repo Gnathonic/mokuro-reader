@@ -6,6 +6,8 @@
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
+  import { promptSeriesEditor } from '$lib/util/modals';
+  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
@@ -95,10 +97,30 @@
     persistCatalogScrollPosition();
     nav.toSeries(navId);
   }
+
+  // Hover + "e" opens the series editor for this card (mirrors CatalogItem / VolumeItem).
+  let isHovered = $state(false);
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (!shouldOpenSeriesEditor(e, isHovered, document.activeElement)) return;
+    e.preventDefault();
+    if (volume) promptSeriesEditor(volume.series_title);
+  }
+
+  $effect(() => {
+    if (!isHovered) return;
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if volume}
-  <div class:opacity-70={isPlaceholderOnly}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class:opacity-70={isPlaceholderOnly}
+    onmouseenter={() => (isHovered = true)}
+    onmouseleave={() => (isHovered = false)}
+  >
     <ListgroupItem>
       <a href="#/series/{encodeURIComponent(navId)}" class="h-full w-full" onclick={handleClick}>
         <div class="flex items-center justify-between">

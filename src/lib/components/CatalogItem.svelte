@@ -3,6 +3,8 @@
   import { progress, catalogSettings } from '$lib/settings';
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
+  import { promptSeriesEditor } from '$lib/util/modals';
+  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
@@ -128,6 +130,11 @@
 
   function handleKeyChange(e: KeyboardEvent) {
     if (!isHovered) return;
+    if (e.type === 'keydown' && shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
+      e.preventDefault();
+      if (volume) promptSeriesEditor(volume.series_title);
+      return;
+    }
     updateModifierState(e);
   }
 
