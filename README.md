@@ -94,7 +94,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 | `C`                     | Toggle cover display                                   |
 | `Z`                     | Toggle zoom mode                                       |
 | `F`                     | Toggle fullscreen                                      |
-| `E`                     | Open the series editor for the hovered catalog card    |
+| `E`                     | Open the editor for the hovered catalog card or volume |
 | `Esc`                   | Exit current volume (or exit series if on series page) |
 | `←` / `→`               | Navigate to previous/next page                         |
 | `↑` / `↓`               | Pan view up/down                                       |

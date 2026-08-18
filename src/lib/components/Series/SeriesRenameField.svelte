@@ -17,11 +17,16 @@
   let {
     seriesTitle,
     seriesUuid,
-    onRenamed
+    onRenamed,
+    canRename = true
   }: {
     seriesTitle: string;
     seriesUuid: string;
     onRenamed: (finalTitle: string) => void;
+    /** False when every volume in this series is a cloud-only placeholder: there is no
+     * local row for `executeRenameSeries` to touch, so a "rename" would silently do
+     * nothing (see the `renamedCount === 0` guard in `saveRename` below). */
+    canRename?: boolean;
   } = $props();
 
   let renameValue = $state(seriesTitle);
@@ -36,6 +41,8 @@
   }
 
   async function saveRename() {
+    if (!canRename) return;
+
     const oldTitle = seriesTitle;
     const newTitle = renameValue.trim();
 
@@ -56,6 +63,16 @@
       // Execute the rename for this series UUID — one volume at a time; each
       // volume commits locally only after its cloud rename succeeds.
       const result = await executeRenameSeries(oldTitle, newTitle, seriesUuid);
+
+      // A placeholder-only series has no local row for executeRenameSeries to touch: it
+      // returns success-shaped zeros (renamedCount 0, no failures) rather than throwing.
+      // Treat that as a no-op, not a success — otherwise the caller re-keys the store at
+      // a title nothing was actually renamed to.
+      if (result.renamedCount === 0 && result.failures.length === 0) {
+        renameSaving = false;
+        renameError = 'Nothing to rename';
+        return;
+      }
 
       if (result.failures.length === 0) {
         renameSaving = false;
@@ -105,25 +122,39 @@
       type="text"
       bind:value={renameValue}
       onkeydown={handleRenameKeydown}
-      disabled={renameSaving}
+      disabled={renameSaving || !canRename}
       aria-label="Folder name"
       data-escape-reverts={dirty ? '' : undefined}
       class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
     />
     <!-- relative z-10: night-mode filter on <dialog> creates a stacking context -->
     <div class="relative z-10 flex items-center gap-2">
-      <Button size="sm" color="primary" onclick={saveRename} disabled={renameSaving || !dirty}>
+      <Button
+        size="sm"
+        color="primary"
+        onclick={saveRename}
+        disabled={renameSaving || !dirty || !canRename}
+      >
         {#if renameSaving}<Spinner size="4" class="me-1" />{/if}
         Save
       </Button>
-      <Button size="sm" color="alternative" onclick={resetRename} disabled={renameSaving || !dirty}>
+      <Button
+        size="sm"
+        color="alternative"
+        onclick={resetRename}
+        disabled={renameSaving || !dirty || !canRename}
+      >
         Cancel
       </Button>
     </div>
   </div>
-  <p class="text-xs text-gray-500 dark:text-gray-400">
-    This is the folder name in your library and in the cloud — renaming moves the cloud files too.
-  </p>
+  {#if canRename}
+    <p class="text-xs text-gray-500 dark:text-gray-400">
+      This is the folder name in your library and in the cloud — renaming moves the cloud files too.
+    </p>
+  {:else}
+    <p class="text-xs text-amber-600 dark:text-amber-400">Download a volume to rename</p>
+  {/if}
   {#if renameError}
     <span class="text-sm text-red-500">{renameError}</span>
   {/if}

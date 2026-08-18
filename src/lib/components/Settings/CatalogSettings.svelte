@@ -263,8 +263,9 @@
           )}
       />
       <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-        Applies to series linked to AniList. Folder names are never changed; when a language is
-        missing the reader falls back to English → Romaji → Native → folder name.
+        Applies to series with alt titles (AniList link or manual titles). Folder names are never
+        changed; when a language is missing the reader falls back to English → Romaji → Native →
+        folder name.
       </p>
     </div>
 

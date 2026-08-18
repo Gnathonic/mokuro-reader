@@ -66,6 +66,10 @@
   // (sidecar refresh) or count them (tracking).
   let volumes = $derived(series?.volumes ?? []);
   let seriesUuid = $derived(series?.series_uuid ?? volumes[0]?.series_uuid ?? '');
+  // Cloud-only (placeholder) series have no local row for executeRenameSeries to touch —
+  // it would report success-shaped zeros without renaming anything. Gate the field instead
+  // of letting that false success re-key the store at a title nothing was renamed to.
+  let canRename = $derived(volumes.some((v) => !v.isPlaceholder));
   let meta = $derived(seriesTitle ? metaMap.get(normalizeSeriesKey(seriesTitle)) : undefined);
   let displayTitle = $derived(seriesTitle ? resolveDisplayTitle(seriesTitle, meta, titlePref) : '');
 
@@ -171,13 +175,17 @@
 <Modal bind:open size="lg" outsideclose onclose={handleClose}>
   {#if seriesTitle}
     <div class="flex flex-col gap-5 p-2 text-sm">
-      <h3 class="text-xl font-semibold text-gray-900 dark:text-white">{displayTitle}</h3>
+      <!-- Keyed like the rest of the body: Yomitan/Migaku mutate this text node, and a
+           rename or "Next unlinked series →" swap must land on fresh DOM, not stale spans. -->
+      {#key displayTitle}
+        <h3 class="text-xl font-semibold text-gray-900 dark:text-white">{displayTitle}</h3>
+      {/key}
 
       <!-- Keyed on the folder title: "Next unlinked series →" and a successful rename both
            re-point this modal at a different series, and the per-series local state inside
            (rename draft, tag draft, "sidecars out of date") must not carry over. -->
       {#key seriesTitle}
-        <SeriesRenameField {seriesTitle} {seriesUuid} onRenamed={handleRenamed} />
+        <SeriesRenameField {seriesTitle} {seriesUuid} {canRename} onRenamed={handleRenamed} />
 
         <section class="flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-700">
           <h4 class="text-xs font-semibold text-gray-500 uppercase dark:text-gray-400">

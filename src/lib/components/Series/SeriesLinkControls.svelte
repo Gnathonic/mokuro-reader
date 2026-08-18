@@ -76,15 +76,25 @@
       tagDirty = false;
       return;
     }
-    await updateSeriesMetadata(seriesTitle, { tag: next || undefined });
-    tagDirty = false;
-    sidecarsStale = true;
+    try {
+      await updateSeriesMetadata(seriesTitle, { tag: next || undefined });
+      tagDirty = false;
+      sidecarsStale = true;
+    } catch (error) {
+      console.error('Error saving series tag:', error);
+      showSnackbar("Couldn't save the tag. Check your connection and try again.");
+    }
   }
 
   async function onUnlink() {
-    await unlinkSeries(seriesTitle);
-    showSnackbar('Unlinked from AniList');
-    sidecarsStale = true;
+    try {
+      await unlinkSeries(seriesTitle);
+      showSnackbar('Unlinked from AniList');
+      sidecarsStale = true;
+    } catch (error) {
+      console.error('Error unlinking series:', error);
+      showSnackbar("Couldn't unlink from AniList. Check your connection and try again.");
+    }
   }
 
   // Reactive cloud state. providerManager.getActiveProvider() reads a plain private field with

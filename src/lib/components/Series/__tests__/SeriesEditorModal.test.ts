@@ -126,24 +126,25 @@ import {
   confirmationPopupStore
 } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util';
-import { updateSeriesMetadata } from '$lib/metadata/store';
+import { updateSeriesMetadata, unlinkSeries } from '$lib/metadata/store';
 
-function volume(seriesTitle: string, title: string): VolumeMetadata {
+function volume(seriesTitle: string, title: string, isPlaceholder = false): VolumeMetadata {
   return {
     volume_uuid: `uuid-${seriesTitle}-${title}`,
     series_uuid: `series-${seriesTitle}`,
     series_title: seriesTitle,
-    volume_title: title
+    volume_title: title,
+    isPlaceholder
   } as VolumeMetadata;
 }
 
-function series(title: string) {
+function series(title: string, volumes = [volume(title, 'Vol 1')]) {
   return {
     title,
     displayTitle: title,
     searchTerms: [title.toLowerCase()],
     series_uuid: `series-${title}`,
-    volumes: [volume(title, 'Vol 1')]
+    volumes
   };
 }
 
@@ -560,5 +561,49 @@ describe('SeriesEditorModal', () => {
 
     expect(getByText('Name cannot be empty')).toBeTruthy();
     expect(h.executeRenameSeries).not.toHaveBeenCalled();
+  });
+
+  it('disables the rename field for a placeholder-only (cloud-only) series', async () => {
+    // No local row exists for a cloud-only series, so executeRenameSeries can't rename
+    // anything even though it would report success-shaped zeros — gate the field instead.
+    h.catalog.set([series('Cloud Only', [volume('Cloud Only', 'Vol 1', true)])]);
+    h.seriesMetadataMap.set(new Map());
+
+    const { getByDisplayValue, getByText } = await openFor('Cloud Only');
+
+    const input = getByDisplayValue('Cloud Only') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    expect(getByText('Download a volume to rename')).toBeTruthy();
+
+    await fireEvent.click(getByText('Save'));
+    expect(h.executeRenameSeries).not.toHaveBeenCalled();
+  });
+
+  it('shows an error snackbar when the tag save fails, without crashing', async () => {
+    (updateSeriesMetadata as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'));
+    const { getByPlaceholderText } = await openFor('Berserk');
+
+    const tagInput = getByPlaceholderText('color') as HTMLInputElement;
+    await fireEvent.input(tagInput, { target: { value: 'reread' } });
+    await fireEvent.blur(tagInput);
+
+    await waitFor(() =>
+      expect(showSnackbar).toHaveBeenCalledWith(
+        "Couldn't save the tag. Check your connection and try again."
+      )
+    );
+  });
+
+  it('shows an error snackbar when unlink fails, without crashing', async () => {
+    (unlinkSeries as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'));
+    const { getByText } = await openFor('Akira');
+
+    await fireEvent.click(getByText('Unlink'));
+
+    await waitFor(() =>
+      expect(showSnackbar).toHaveBeenCalledWith(
+        "Couldn't unlink from AniList. Check your connection and try again."
+      )
+    );
   });
 });

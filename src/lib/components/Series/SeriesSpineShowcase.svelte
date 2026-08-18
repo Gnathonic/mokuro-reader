@@ -372,7 +372,8 @@
   }
 
   function handlePointerDown(e: PointerEvent) {
-    // Touch keeps its native `pan-x` scrolling; dragging is for mouse/pen.
+    // Touch keeps its native `pan-x pan-y` scrolling (horizontal for the strip, vertical
+    // falls through to the dialog); dragging is for mouse/pen.
     if (e.button !== 0 || e.pointerType === 'touch' || !stripEl) return;
     dragState = { pointerId: e.pointerId, startX: e.clientX, startScroll: stripEl.scrollLeft };
     dragging = true;
@@ -482,7 +483,7 @@
     class="spine-strip overflow-x-auto overflow-y-hidden rounded-lg bg-gray-100 dark:bg-gray-900"
     class:cursor-grabbing={dragging}
     class:cursor-grab={!dragging}
-    style="height: {spineHeight + 18}px; touch-action: pan-x;"
+    style="height: {spineHeight + 18}px; touch-action: pan-x pan-y;"
     role="group"
     aria-label="Spine shelf"
     tabindex="0"
