@@ -639,6 +639,56 @@ describe('flushPendingPushes', () => {
     expect(readPendingPushes()).toEqual({});
   });
 
+  it('replays a restart AND the read-count correction queued behind it', async () => {
+    // Offline: the user restarts the series and then corrects "Read N times"
+    // downwards. Collapsing both into one restart would lose the decrease.
+    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1 }));
+    h.volumesStore.set({});
+    h.auth.token = null;
+
+    onSeriesRestarted('one piece');
+    await vi.waitFor(() =>
+      expect(readPendingPushes()['one piece']).toMatchObject({ event: 'restart' })
+    );
+    await onReadCountChanged('one piece');
+    expect(readPendingPushes()['one piece']).toMatchObject({
+      event: 'restart',
+      alsoReadCount: true
+    });
+
+    h.auth.token = 'tok';
+    vi.mocked(anilistRequest)
+      // restart: remote is a finished read with 3 repeats
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'COMPLETED', progress: 0, progressVolumes: 20, repeat: 3 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} })
+      // read_count: progress is reset now, but repeat is still the old 3
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'REPEATING', progress: 0, progressVolumes: 0, repeat: 3 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} })
+      // follow-up sync: nothing left to do
+      .mockResolvedValueOnce({
+        Media: {
+          mediaListEntry: { status: 'REPEATING', progress: 0, progressVolumes: 0, repeat: 0 }
+        }
+      });
+
+    await flushPendingPushes();
+
+    const calls = vi.mocked(anilistRequest).mock.calls;
+    expect(calls[1][1]).toEqual({ mediaId: 30013, status: 'REPEATING', progressVolumes: 0 });
+    // The decrease survived the restart instead of being swallowed by it.
+    expect(calls[3][1]).toEqual({ mediaId: 30013, repeat: 0 });
+    expect(calls).toHaveLength(5);
+    expect(readPendingPushes()).toEqual({});
+  });
+
   it('keeps the queued intent when the replay still fails', async () => {
     seedPending('restart');
     vi.mocked(anilistRequest).mockRejectedValue(new FakeAniListError('NETWORK'));
@@ -802,6 +852,12 @@ describe('readPendingPushes', () => {
       'anilist_pending_pushes',
       JSON.stringify({
         'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' },
+        bleach2: {
+          seriesKey: 'bleach2',
+          event: 'sync',
+          alsoReadCount: true,
+          at: '2026-01-01T00:00:00.000Z'
+        },
         naruto: { seriesKey: 'naruto', event: 'nope', at: 'x' },
         bleach: null,
         undefined: undefined,
@@ -810,7 +866,10 @@ describe('readPendingPushes', () => {
       })
     );
     expect(readPendingPushes()).toEqual({
-      'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
+      'one piece': { seriesKey: 'one piece', event: 'sync', at: '2026-01-01T00:00:00.000Z' },
+      // `alsoReadCount` only means anything behind a restart; the flush would
+      // never look at it here, so it is not carried through.
+      bleach2: { seriesKey: 'bleach2', event: 'sync', at: '2026-01-01T00:00:00.000Z' }
     });
   });
 

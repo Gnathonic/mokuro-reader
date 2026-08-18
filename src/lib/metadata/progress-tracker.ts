@@ -49,10 +49,17 @@ export type PushOutcome = 'pushed' | 'nothing' | 'queued' | 'failed' | 'disabled
  * dominates `sync`: both carry an explicit decrease the user asked for, and
  * collapsing them into a plain sync (which only ever moves forward) would
  * silently drop it. The follow-up sync runs anyway once they land.
+ *
+ * A restart and a read-count correction are two separate writes, though — the
+ * restart zeroes progress, the correction sets `repeat` — so when both are
+ * waiting, `alsoReadCount` keeps the second one instead of letting the restart
+ * swallow it.
  */
 export interface PendingPush {
   seriesKey: string;
   event: 'restart' | 'read_count' | 'sync';
+  /** A read-count correction is queued behind this restart. */
+  alsoReadCount?: true;
   at: string;
 }
 
@@ -138,11 +145,13 @@ export function readPendingPushes(): Record<string, PendingPush> {
   const pending: Record<string, PendingPush> = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (!isPendingPush(key, value)) continue;
-    pending[key] = {
+    const entry: PendingPush = {
       seriesKey: value.seriesKey,
       event: value.event,
       at: typeof value.at === 'string' ? value.at : new Date(0).toISOString()
     };
+    if (value.alsoReadCount === true && value.event === 'restart') entry.alsoReadCount = true;
+    pending[key] = entry;
   }
   return pending;
 }
@@ -167,8 +176,16 @@ function mergePendingEvent(
 
 function markPending(seriesKey: string, event: ProgressPushEvent): void {
   const pending = readPendingPushes();
-  const next = mergePendingEvent(event, pending[seriesKey]?.event);
-  pending[seriesKey] = { seriesKey, event: next, at: new Date().toISOString() };
+  const existing = pending[seriesKey];
+  const next: PendingPush = {
+    seriesKey,
+    event: mergePendingEvent(event, existing?.event),
+    at: new Date().toISOString()
+  };
+  const readCountWaiting =
+    event === 'read_count' || existing?.event === 'read_count' || existing?.alsoReadCount === true;
+  if (next.event === 'restart' && readCountWaiting) next.alsoReadCount = true;
+  pending[seriesKey] = next;
   writePendingPushes(pending);
 }
 
@@ -595,6 +612,12 @@ export async function flushPendingPushes(): Promise<void> {
         const outcome = await pushSeries(pending.seriesKey, pending.event);
         // Only fall through to the follow-up sync once the decrease landed.
         if (outcome !== 'pushed' && outcome !== 'nothing') continue;
+        if (pending.event === 'restart' && pending.alsoReadCount) {
+          // The restart just reset progress; the correction still owes AniList
+          // its repeat count. (A failure here re-queues it on its own.)
+          const corrected = await pushSeries(pending.seriesKey, 'read_count');
+          if (corrected !== 'pushed' && corrected !== 'nothing') continue;
+        }
       }
       await pushSeries(pending.seriesKey, 'sync');
     }
