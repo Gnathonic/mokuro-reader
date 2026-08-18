@@ -99,7 +99,7 @@ vi.mock('$lib/metadata/progress-tracker', () => ({
     timesRead: 0,
     rereading: false
   }),
-  syncSeriesNow: vi.fn()
+  onReadCountChanged: vi.fn(async () => 'nothing')
 }));
 vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn() }));
 // The nested SeriesLinkModal kicks off a debounced AniList search as soon as it opens;

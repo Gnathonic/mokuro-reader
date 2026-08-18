@@ -14,9 +14,9 @@ export type SeriesMetadataPatch = Partial<
  * Either a plain patch, or a function that builds one from the record as it is
  * stored *at write time*. Two writers touch the same record from different
  * places — the progress tracker (`tracking.last_pushed`) and the series panel
- * (`tracking.enabled` / `unit` / `read_count`) — and both write whole objects,
- * so a patch built from a record read earlier would silently undo the other's
- * edit. A functional patch is resolved inside the write transaction instead.
+ * (`read_count`, `unit`, number overrides) — and both write whole objects, so a
+ * patch built from a record read earlier would silently undo the other's edit.
+ * A functional patch is resolved inside the write transaction instead.
  */
 export type SeriesMetadataPatchInput =
   | SeriesMetadataPatch
