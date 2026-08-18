@@ -107,3 +107,15 @@ export function seriesSearchTerms(seriesTitle: string, meta: SeriesMetadata | un
   }
   return terms;
 }
+
+/**
+ * Does the series carry ANY alternate title — a native/romaji/english title or a
+ * synonym? False for an unlinked series with no manual entries: the "needs a touch-up"
+ * signal the editor's "Next series without titles" loop walks.
+ */
+export function hasAnyAltTitle(meta: SeriesMetadata | undefined): boolean {
+  if (!meta) return false;
+  const titles = meta.titles ?? {};
+  if (nonBlank(titles.native) || nonBlank(titles.romaji) || nonBlank(titles.english)) return true;
+  return (meta.synonyms ?? []).some((s) => nonBlank(s) !== undefined);
+}

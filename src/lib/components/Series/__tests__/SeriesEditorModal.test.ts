@@ -280,6 +280,29 @@ describe('SeriesEditorModal', () => {
     expect(getByDisplayValue('Berserk')).toBeTruthy();
   });
 
+  it('moves to the next series that has no alt titles or synonyms at all', async () => {
+    // Akira: linked with titles. Berserk: unlinked but manually titled. Chainsaw Man: bare.
+    h.seriesMetadataMap.set(
+      new Map<string, unknown>([
+        ['akira', linkedMeta('Akira')],
+        [
+          'berserk',
+          { ...linkedMeta('Berserk'), external_ids: {}, titles: {}, synonyms: ['ベルセルク'] }
+        ]
+      ])
+    );
+    const { getByText, queryByText } = await openFor('Akira');
+
+    await fireEvent.click(getByText(/Next series without titles/));
+    await tick();
+    expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Chainsaw Man');
+
+    // From Chainsaw Man there is nothing else bare (Berserk has a synonym) → hidden.
+    expect(queryByText(/Next series without titles/)).toBeNull();
+    // ...but "Next unlinked" still offers Berserk.
+    expect(getByText(/Next unlinked series/)).toBeTruthy();
+  });
+
   it('hides "Next unlinked series" when every other series is linked', async () => {
     h.catalog.set([series('Akira'), series('Berserk')]);
     h.seriesMetadataMap.set(new Map<string, unknown>([['akira', linkedMeta('Akira')]]));

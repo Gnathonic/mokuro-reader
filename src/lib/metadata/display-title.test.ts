@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesMetadata } from './types';
-import { resolveDisplayBase, resolveDisplayTitle, seriesSearchTerms } from './display-title';
+import {
+  hasAnyAltTitle,
+  resolveDisplayBase,
+  resolveDisplayTitle,
+  seriesSearchTerms
+} from './display-title';
 
 function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
   return {
@@ -162,5 +167,22 @@ describe('seriesSearchTerms', () => {
       meta({ titles: { english: ' ' }, synonyms: ['', 'x'], tag: ' ' })
     );
     expect(terms).toEqual(['x']);
+  });
+});
+
+describe('hasAnyAltTitle', () => {
+  it('is false for no record, blank titles and blank synonyms', () => {
+    expect(hasAnyAltTitle(undefined)).toBe(false);
+    expect(
+      hasAnyAltTitle(
+        meta({ titles: { native: ' ', romaji: '', english: undefined }, synonyms: ['', '  '] })
+      )
+    ).toBe(false);
+    expect(hasAnyAltTitle(meta({ titles: {}, synonyms: [] }))).toBe(false);
+  });
+
+  it('is true with any one language title or a synonym', () => {
+    expect(hasAnyAltTitle(meta({ titles: { romaji: 'X' }, synonyms: [] }))).toBe(true);
+    expect(hasAnyAltTitle(meta({ titles: {}, synonyms: ['Y'] }))).toBe(true);
   });
 });

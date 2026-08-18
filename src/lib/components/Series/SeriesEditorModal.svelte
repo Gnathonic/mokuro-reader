@@ -14,7 +14,7 @@
   import { catalog } from '$lib/catalog';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { hasAnyAltTitle, resolveDisplayTitle } from '$lib/metadata/display-title';
   import { preferredTitleLanguage } from '$lib/settings/settings';
   import { nav, currentView } from '$lib/util/hash-router';
   import { showSnackbar } from '$lib/util';
@@ -74,11 +74,14 @@
   let displayTitle = $derived(seriesTitle ? resolveDisplayTitle(seriesTitle, meta, titlePref) : '');
 
   /**
-   * The next series in catalog order (wrapping) that still has no AniList link — the
-   * "link my whole library" loop. Computed only while the modal is open so the catalog
-   * page never pays for it (CLAUDE.md: no per-card heavy `$derived`).
+   * The next series in catalog order (wrapping past the current one) whose metadata
+   * satisfies `needsWork` — the "walk my whole library" loops. Computed only while the
+   * modal is open so the catalog page never pays for it (CLAUDE.md: no per-card heavy
+   * `$derived`).
    */
-  let nextUnlinked = $derived.by(() => {
+  function findNextSeries(
+    needsWork: (meta: SeriesMetadata | undefined) => boolean
+  ): Series | undefined {
     if (!open || !seriesTitle) return undefined;
     const list = catalogSeries ?? [];
     if (list.length === 0) return undefined;
@@ -87,14 +90,25 @@
     for (let step = 1; step <= list.length; step++) {
       const candidate = list[(currentIndex + step + list.length) % list.length];
       if (!candidate || normalizeSeriesKey(candidate.title) === key) continue;
-      const candidateMeta = metaMap.get(normalizeSeriesKey(candidate.title));
-      if (candidateMeta?.external_ids?.anilist == null) return candidate;
+      if (needsWork(metaMap.get(normalizeSeriesKey(candidate.title)))) return candidate;
     }
     return undefined;
-  });
+  }
+
+  /** Still has no AniList link. */
+  let nextUnlinked = $derived(findNextSeries((m) => m?.external_ids?.anilist == null));
+  /** Has no alt titles at all (native/romaji/english/synonyms) — needs a link or manual entry. */
+  let nextUntitled = $derived(findNextSeries((m) => !hasAnyAltTitle(m)));
 
   function goToNextUnlinked() {
-    const next = nextUnlinked;
+    goTo(nextUnlinked);
+  }
+
+  function goToNextUntitled() {
+    goTo(nextUntitled);
+  }
+
+  function goTo(next: Series | undefined) {
     if (!next) return;
     seriesEditorModalStore.update((s) => (s ? { ...s, seriesTitle: next.title } : s));
   }
@@ -212,10 +226,20 @@
       <div
         class="relative z-10 flex items-center justify-between gap-2 border-t border-gray-200 pt-4 dark:border-gray-700"
       >
-        <div>
+        <div class="flex flex-wrap gap-2">
           {#if nextUnlinked}
             <Button size="sm" color="light" onclick={goToNextUnlinked}>
               Next unlinked series →
+            </Button>
+          {/if}
+          {#if nextUntitled}
+            <Button
+              size="sm"
+              color="light"
+              onclick={goToNextUntitled}
+              title="Series with no native/romaji/english title and no synonyms"
+            >
+              Next series without titles →
             </Button>
           {/if}
         </div>
