@@ -153,7 +153,9 @@ unlink — the unit describes the archives in the folder, not the link.
   volumes, 話/`ch` markers vote chapters, majority wins; with no votes, a bare number
   above `total_volumes` but inside `total_chapters` means chapters; otherwise volumes.
   `resolveTrackingUnit(meta, volumes)` (`tracking-unit.ts`) lets a stored `unit` win and
-  reports `'set' | 'detected'`. The series panel offers `Auto (detected) / Volumes /
+  reports `'set' | 'detected'`. Detection runs ONCE per pass (the unit is a parameter of
+  `computeLocalPassState`/`volumeNumberFor`) and over the installed volumes **union the
+  cached `series.json` index**, so the page and the push always agree. The series panel offers `Auto (detected) / Volumes /
 Chapters`; a correction is a FACT edit (`facts_updated_at`, published in `series.json`).
 - **Settings → AniList** owns the master switch and **Sync all linked series now**
   (`syncAllSeriesNow()`, sequential, 500 ms apart, tallied by outcome).
@@ -355,7 +357,8 @@ local volume completed`, `passComplete = total known && passProgress >= total`,
 - **Sync now** = same plan against the current local state.
 - **Queue.** Failed/offline pushes are stored in localStorage `anilist_pending_pushes` as
   _intents_ (`restart` | `read_count` | `sync`, one per series; a pending restart or
-  read-count correction is replayed before the follow-up sync) and re-planned against the live remote entry when flushed — on load, `online`,
+  read-count correction is replayed before the follow-up sync, and a restart carries
+  `alsoReadCount` when a correction is waiting behind it) and re-planned against the live remote entry when flushed — on load, `online`,
   and successful login. 429 honors `Retry-After`.
 
 ### Re-reads
