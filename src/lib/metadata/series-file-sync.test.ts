@@ -31,8 +31,9 @@ const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
 const getManagedCloudFilesForVolume = vi.hoisted(() =>
   vi.fn((_series: string, volumeTitle: string) => [{ path: `One Piece/${volumeTitle}.cbz` }])
 );
+const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { writeSeriesFile, getManagedCloudFilesForVolume }
+  unifiedCloudManager: { writeSeriesFile, getManagedCloudFilesForVolume, fetchAllCloudVolumes }
 }));
 
 // An in-memory stand-in for the two tables involved: the gate reads the
@@ -85,6 +86,7 @@ describe('series-file-sync', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     writeSeriesFile.mockResolvedValue('written');
+    fetchAllCloudVolumes.mockResolvedValue(undefined);
     getManagedCloudFilesForVolume.mockImplementation((_s: string, volumeTitle: string) => [
       { path: `One Piece/${volumeTitle}.cbz` }
     ]);
@@ -132,6 +134,83 @@ describe('series-file-sync', () => {
       'Berserk',
       'One Piece'
     ]);
+  });
+
+  it('refreshes the cloud listing once for every series flushed together', async () => {
+    addVolume('Berserk', 'Volume 1');
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+
+    scheduleSeriesFileWrite('One Piece');
+    scheduleSeriesFileWrite('Berserk');
+    await flushSeriesFileWrites();
+
+    // One listing for the whole flush — it is a whole-account fetch, so N
+    // series must not cost N of them. And never the index refresh: that pass
+    // downloads sidecars, and this is a write path.
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledWith({ refreshIndexes: false });
+    expect(writeSeriesFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a listing refresh that is still in flight with the next series due', async () => {
+    // A real listing is a network round trip, so the second debounce timer of a
+    // burst fires while the first write is still waiting for it.
+    addVolume('Berserk', 'Volume 1');
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+    fetchAllCloudVolumes.mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50))
+    );
+
+    scheduleSeriesFileWrite('One Piece');
+    scheduleSeriesFileWrite('Berserk');
+    await vi.advanceTimersByTimeAsync(2100);
+
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('decides the write on the refreshed listing, not the one the edit saw', async () => {
+    // At edit time nothing is backed up (the listing predates the upload); the
+    // refresh is what reveals the archive.
+    let refreshed = false;
+    fetchAllCloudVolumes.mockImplementation(async () => {
+      refreshed = true;
+    });
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) =>
+      refreshed ? [{ path: `${series}/${volumeTitle}.cbz` }] : []
+    );
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('skips the write when the listing refresh fails (never writes against a stale view)', async () => {
+    fetchAllCloudVolumes.mockRejectedValue(new Error('offline'));
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh the listing when the gates already rule the write out', async () => {
+    providerStatus.set({
+      providers: { webdav: { isReadOnly: true } },
+      hasAnyAuthenticated: true,
+      needsAttention: false,
+      currentProviderType: 'webdav'
+    });
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
   });
 
   it('does not write when no cloud provider is connected', async () => {

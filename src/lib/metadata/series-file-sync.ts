@@ -22,6 +22,8 @@ import { registerFactsChangeListener } from './store';
  * - Driven by `registerFactsChangeListener`, which only fires for local fact
  *   edits. Facts arriving FROM a sidecar (`upsertFromSeriesFile`) never
  *   schedule a write, so two devices cannot ping-pong the same file.
+ * - Preceded by ONE cloud listing refresh per flush (shared by every series in
+ *   it), because the write merges and prunes against that listing.
  *
  * Failures are logged and dropped: the next edit or backup rewrites the file.
  */
@@ -60,6 +62,46 @@ async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
   });
 }
 
+/**
+ * The listing refresh shared by everything flushed together, or `null` between
+ * flushes.
+ *
+ * `writeSeriesFile` merges on top of the cloud copy the listing points at and
+ * prunes against the volumes the listing shows, so a listing that predates
+ * another device's write would erase that device's link and its newer volumes
+ * on every edit. The refresh closes that window — but there is no per-folder
+ * listing in the provider interface, so it is a whole-account fetch and a
+ * burst of edits must not stack one per series: the first flusher starts it and
+ * everyone flushed while it is in flight awaits the same promise.
+ */
+let listingRefresh: Promise<boolean> | null = null;
+
+/** Refresh the cloud listing (coalesced). `false` = the view is still stale. */
+function refreshCloudListing(): Promise<boolean> {
+  if (listingRefresh) return listingRefresh;
+
+  // Deferred to a microtask so the promise identity below exists before the
+  // body can settle, whatever the provider does synchronously.
+  const refresh = Promise.resolve().then(async () => {
+    try {
+      // No index refresh: that pass downloads sidecars, and this is a write
+      // path that is about to publish one.
+      await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
+      return true;
+    } catch (error) {
+      console.debug('[series-file-sync] could not refresh the cloud listing:', error);
+      return false;
+    }
+  });
+
+  listingRefresh = refresh;
+  // Cleared once settled, so the NEXT flush gets its own listing.
+  void refresh.finally(() => {
+    if (listingRefresh === refresh) listingRefresh = null;
+  });
+  return refresh;
+}
+
 async function runWrite(seriesKey: string): Promise<void> {
   timers.delete(seriesKey);
   const seriesTitle = pendingTitles.get(seriesKey);
@@ -68,14 +110,11 @@ async function runWrite(seriesKey: string): Promise<void> {
 
   try {
     if (!hasWritableProvider()) return;
+    // Both gates below read the listing, so refresh it first — and skip the
+    // write entirely when that fails rather than publish a file built from a
+    // view we know may be hours old.
+    if (!(await refreshCloudListing())) return;
     if (!(await hasBackedUpVolume(seriesTitle))) return;
-    // Known window: this builds against the CACHED listing. `writeSeriesFile`
-    // re-reads the cloud copy whenever that listing shows a stamp the index
-    // cache has not seen, but if the listing itself predates another device's
-    // upload we merge on top of an older copy and its entries drop out of the
-    // file until that device writes again. Closing it would mean a full
-    // `fetchAllCloudVolumes()` per edit (there is no per-folder listing in the
-    // provider interface) — far too expensive for a debounced background write.
     await unifiedCloudManager.writeSeriesFile(seriesTitle);
   } catch (error) {
     console.warn(`[series-file-sync] failed to write series.json for '${seriesTitle}':`, error);
