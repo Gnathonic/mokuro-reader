@@ -25,7 +25,6 @@ function indexEntry(overrides: Partial<SeriesFileVolume> = {}): SeriesFileVolume
     volume_title: 'Volume 1',
     page_count: 180,
     character_count: 5000,
-    page_char_counts: [100, 250],
     mokuro_version: '0.4.11',
     ...overrides
   };
@@ -120,7 +119,7 @@ describe('generatePlaceholders with a series index', () => {
       volume_title: 'Volume 1',
       page_count: 180,
       character_count: 5000,
-      page_char_counts: [100, 250],
+      page_char_counts: [],
       mokuro_version: '0.4.11',
       spine_width: 42,
       isPlaceholder: true,
@@ -138,13 +137,12 @@ describe('generatePlaceholders with a series index', () => {
     expect(placeholders[0].volume_uuid).toBe('real-uuid-1');
   });
 
-  it('copies page_char_counts rather than sharing the cached array', () => {
+  it('leaves page_char_counts empty — the index carries totals only', () => {
     const map = indexMap('One Piece', [indexEntry()]);
     const placeholders = generatePlaceholders(cloudFiles, [], map);
 
-    expect(placeholders[0].page_char_counts).not.toBe(
-      [...map.values()][0].file.volumes[0].page_char_counts
-    );
+    expect(placeholders[0].page_char_counts).toEqual([]);
+    expect(placeholders[0].character_count).toBe(5000);
   });
 
   it('falls back to the deterministic uuid and zero counts without a matching entry', () => {

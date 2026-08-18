@@ -82,13 +82,22 @@
     return manga.reduce((total, vol) => {
       const volumeData = $volumes?.[vol.volume_uuid];
       const currentPage = volumeData?.progress || 0;
-      if (currentPage <= 0 || !vol.page_char_counts?.length) return total;
+      if (currentPage <= 0) return total;
 
       // If volume is completed, use full character count
       // (completion can trigger on second-to-last page, so progress may be short)
       if (volumeData?.completed) {
-        return total + (vol.page_char_counts[vol.page_char_counts.length - 1] || 0);
+        return (
+          total +
+          (vol.page_char_counts?.length
+            ? vol.page_char_counts[vol.page_char_counts.length - 1] || 0
+            : vol.character_count || volumeData.chars || 0)
+        );
       }
+
+      // Not installed (placeholder from the series index): no per-page counts,
+      // but the progress record keeps the cumulative chars read of that volume.
+      if (!vol.page_char_counts?.length) return total + (volumeData?.chars || 0);
 
       // page_char_counts is cumulative: [50, 120, 200] means page 3 has 200 total chars through it
       // currentPage is 1-indexed, so page 1 = index 0, page N = index N-1

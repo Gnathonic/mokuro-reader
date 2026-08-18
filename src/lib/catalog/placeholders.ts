@@ -105,7 +105,7 @@ function createPlaceholder(
     volume_uuid: volumeUuid,
     page_count: indexEntry?.page_count ?? 0, // Unknown until downloaded
     character_count: indexEntry?.character_count ?? 0, // Unknown until downloaded
-    page_char_counts: [...(indexEntry?.page_char_counts ?? [])], // Empty until downloaded
+    page_char_counts: [], // Empty until downloaded — the index carries totals only
 
     // Placeholder-specific fields
     isPlaceholder: true,

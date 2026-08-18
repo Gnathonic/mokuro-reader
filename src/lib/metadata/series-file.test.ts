@@ -53,7 +53,6 @@ describe('volumeToIndexEntry', () => {
       volume_title: 'Vol 1',
       page_count: 2,
       character_count: 123,
-      page_char_counts: [60, 123],
       mokuro_version: '0.2.1',
       spine_width: 17
     });
@@ -77,7 +76,6 @@ describe('volumeToIndexEntry', () => {
     expect(Object.keys(entry).sort()).toEqual([
       'character_count',
       'mokuro_version',
-      'page_char_counts',
       'page_count',
       'volume_title',
       'volume_uuid'
@@ -330,7 +328,6 @@ describe('buildSeriesFile', () => {
           volume_title: 'Vol 1',
           page_count: 1,
           character_count: 1,
-          page_char_counts: [1],
           mokuro_version: ''
         },
         {
@@ -338,7 +335,6 @@ describe('buildSeriesFile', () => {
           volume_title: 'Vol 10',
           page_count: 9,
           character_count: 900,
-          page_char_counts: [900],
           mokuro_version: '0.2.1'
         }
       ]
@@ -356,7 +352,6 @@ describe('buildSeriesFile', () => {
       volume_title: 'Vol 1',
       page_count: 2,
       character_count: 123,
-      page_char_counts: [60, 123],
       mokuro_version: '0.2.1'
     });
   });
@@ -387,7 +382,6 @@ describe('buildSeriesFile', () => {
           volume_title: 'Vol 1',
           page_count: 1,
           character_count: 1,
-          page_char_counts: [1],
           mokuro_version: '0.2.1'
         },
         {
@@ -395,7 +389,6 @@ describe('buildSeriesFile', () => {
           volume_title: 'Vol 3',
           page_count: 1,
           character_count: 1,
-          page_char_counts: [1],
           mokuro_version: '0.2.1'
         }
       ]
@@ -491,7 +484,6 @@ describe('parseSeriesFile', () => {
         volume_title: 'Vol 1',
         page_count: 2,
         character_count: 123,
-        page_char_counts: [60, 123],
         mokuro_version: '0.2.1',
         spine_width: 17
       }
@@ -560,20 +552,17 @@ describe('parseSeriesFile', () => {
         ...valid.volumes,
         'garbage',
         null,
-        { volume_title: 'No uuid', page_count: 1, character_count: 1, page_char_counts: [1] },
+        { volume_title: 'No uuid', page_count: 1, character_count: 1 },
         { ...valid.volumes[0], volume_uuid: 'v', volume_title: '   ' },
         { ...valid.volumes[0], volume_uuid: 'v', page_count: -1 },
         { ...valid.volumes[0], volume_uuid: 'v', page_count: 1.5 },
         { ...valid.volumes[0], volume_uuid: 'v', character_count: 'lots' },
-        { ...valid.volumes[0], volume_uuid: 'v', page_char_counts: 'nope' },
-        { ...valid.volumes[0], volume_uuid: 'v', page_char_counts: [1, -2] },
         { ...valid.volumes[0], volume_uuid: 'v', mokuro_version: 3 },
         {
           volume_uuid: 'vol-2',
           volume_title: 'Vol 2',
           page_count: 0,
           character_count: 0,
-          page_char_counts: [],
           mokuro_version: '',
           spine_width: 'wide',
           thumbnail: 'nope'
@@ -587,32 +576,18 @@ describe('parseSeriesFile', () => {
         volume_title: 'Vol 2',
         page_count: 0,
         character_count: 0,
-        page_char_counts: [],
         mokuro_version: ''
       }
     ]);
   });
 
-  it('rejects an entry with more page_char_counts than pages, keeping the rest', () => {
-    // The two disagree, so the entry describes no real volume: a placeholder
-    // built from it would report characters for pages that do not exist.
+  it('ignores a legacy page_char_counts array instead of carrying it into the cache', () => {
     const parsed = parseSeriesFile({
       ...valid,
-      volumes: [
-        { ...valid.volumes[0], volume_uuid: 'overrun', page_count: 1, page_char_counts: [10, 20] },
-        valid.volumes[0]
-      ]
-    })!;
-    expect(parsed.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1']);
-  });
-
-  it('keeps an entry whose page_char_counts are short (image-only volumes carry none)', () => {
-    const parsed = parseSeriesFile({
-      ...valid,
-      volumes: [{ ...valid.volumes[0], page_count: 9, page_char_counts: [] }]
+      volumes: [{ ...valid.volumes[0], page_char_counts: [10, 20, 30] }]
     })!;
     expect(parsed.volumes).toHaveLength(1);
-    expect(parsed.volumes[0].page_char_counts).toEqual([]);
+    expect('page_char_counts' in parsed.volumes[0]).toBe(false);
   });
 
   it('treats a non-array volumes field as an empty index', () => {

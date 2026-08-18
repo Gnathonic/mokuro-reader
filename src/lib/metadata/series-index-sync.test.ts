@@ -68,7 +68,6 @@ function seriesJson(overrides: Record<string, unknown> = {}): string {
         volume_title: 'Volume 1',
         page_count: 200,
         character_count: 5000,
-        page_char_counts: [10, 30],
         mokuro_version: '0.4.11'
       }
     ],

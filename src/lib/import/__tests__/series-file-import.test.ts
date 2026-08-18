@@ -288,7 +288,6 @@ describe('importing a volume archive that carries series.json', () => {
             volume_title: 'Vol 9',
             page_count: 2,
             character_count: 7,
-            page_char_counts: [3, 7],
             mokuro_version: '0.2.1'
           }
         ]

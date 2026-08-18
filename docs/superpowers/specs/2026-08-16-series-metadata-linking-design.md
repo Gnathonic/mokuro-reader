@@ -190,13 +190,14 @@ installed, without downloading every `.mokuro`:
       "volume_title": "ONE PIECE v01",
       "page_count": 192,
       "character_count": 8123,
-      "page_char_counts": [40, 91, "…"],
       "mokuro_version": "0.2.1",
       "spine_width": 24
     }
   ]
 }
 ```
+
+No per-page arrays: `page_char_counts` was dropped from the index (2026-08-18) — it made the file huge and nothing needs it (a not-installed volume's chars read come from the synced `VolumeData.chars`). Readers ignore it if present in older files.
 
 - **Unauthoritative.** Local IndexedDB always wins for installed volumes; the index only
   fills gaps. `generatePlaceholders` adopts an entry's `volume_uuid` and counts for a

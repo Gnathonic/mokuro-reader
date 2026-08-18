@@ -228,7 +228,6 @@ series' volumes:
     volume_title: string,
     page_count: number,
     character_count: number,
-    page_char_counts: number[],
     mokuro_version: string,
     spine_width?: number
   }[]
@@ -239,8 +238,10 @@ Rules:
 
 - **Unauthoritative.** Local IndexedDB always wins for installed volumes; the
   index only fills gaps for volumes this device does not have, so the catalog can
-  show a cloud-only volume with real page/char counts and attach synced progress
-  to its real `volume_uuid` (`placeholders.ts`).
+  show a cloud-only volume with real page/char totals and attach synced progress
+  to its real `volume_uuid` (`placeholders.ts`). Totals only — no per-page
+  `page_char_counts` (it bloated the file; a placeholder's chars read come from
+  the synced `VolumeData.chars`).
 - **Never per-user state**: no progress, tracking, `title_preference`,
   `read_count`, `reread_prompt_suppressed`, thumbnails or page/OCR data.
 - **Merge**: facts merge by `updated_at` (strictly newer wins,

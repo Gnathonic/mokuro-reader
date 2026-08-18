@@ -41,8 +41,6 @@ export interface SeriesFileVolume {
   volume_title: string;
   page_count: number;
   character_count: number;
-  /** Cumulative character count per page. */
-  page_char_counts: number[];
   /** `''` for image-only volumes. */
   mokuro_version: string;
   spine_width?: number;
@@ -82,7 +80,6 @@ export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
     volume_title: volume.volume_title,
     page_count: volume.page_count,
     character_count: volume.character_count,
-    page_char_counts: [...(volume.page_char_counts ?? [])],
     mokuro_version: volume.mokuro_version
   };
   // Same rule as the parser, so build → JSON → parse is an identity: a 0 or junk
@@ -306,32 +303,21 @@ function isNonNegativeInt(value: unknown): value is number {
 
 function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   if (!isRecord(value)) return undefined;
-  const {
-    volume_uuid,
-    volume_title,
-    page_count,
-    character_count,
-    page_char_counts,
-    mokuro_version
-  } = value;
+  const { volume_uuid, volume_title, page_count, character_count, mokuro_version } = value;
 
   if (typeof volume_uuid !== 'string' || !volume_uuid.trim()) return undefined;
   if (typeof volume_title !== 'string' || !volume_title.trim()) return undefined;
   if (!isNonNegativeInt(page_count) || !isNonNegativeInt(character_count)) return undefined;
-  if (!Array.isArray(page_char_counts) || !page_char_counts.every(isNonNegativeInt))
-    return undefined;
-  // A short array is normal (an image-only volume carries none); more counts
-  // than pages means the entry contradicts itself, and a placeholder built from
-  // it would report characters for pages that do not exist.
-  if (page_char_counts.length > page_count) return undefined;
   if (typeof mokuro_version !== 'string') return undefined;
 
+  // Older files carried a per-page cumulative `page_char_counts` array; it is
+  // ignored on read (dropped: it made the file huge and nothing needs it —
+  // `VolumeData.chars` already holds what was read of a not-installed volume).
   const entry: SeriesFileVolume = {
     volume_uuid,
     volume_title,
     page_count,
     character_count,
-    page_char_counts: [...page_char_counts],
     mokuro_version
   };
   const spine = value.spine_width;

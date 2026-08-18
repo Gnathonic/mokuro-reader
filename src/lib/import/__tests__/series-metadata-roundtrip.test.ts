@@ -51,7 +51,6 @@ describe('series metadata leaves the .mokuro and lives in series.json', () => {
         volume_title: 'Vol 1',
         page_count: 1,
         character_count: 5,
-        page_char_counts: [5],
         mokuro_version: '0.2.1',
         spine_width: 17
       }
