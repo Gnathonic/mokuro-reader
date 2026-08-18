@@ -1249,6 +1249,61 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(orphan);
   });
 
+  it('keeps the old sidecar when the moved archives have not surfaced under the new title', async () => {
+    // A cache without removeById/add cannot reflect the rename locally: the
+    // archives stay listed under the OLD folder and the write at the new title
+    // is skipped (no volumes there). The old index must survive until the next
+    // listing/backup rather than leave the series with none.
+    const provider = makeRenameProvider();
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      sidecar
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    // No removeById/add: the listing never changes locally.
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue({});
+    generateSidecars.mockResolvedValue({});
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(provider.uploadFile).not.toHaveBeenCalledWith(
+      'New Series/series.json',
+      expect.anything(),
+      undefined,
+      undefined
+    );
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(sidecar);
+  });
+
   it('deletes the sidecar with the series folder and drops the cached index', async () => {
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const deleted: string[] = [];

@@ -47,8 +47,8 @@ function extensionFromMimeType(contentType: string): string {
 /**
  * The per-VOLUME sidecars. The series' `series.json` is deliberately not one of
  * them: building it reads the whole volumes table, which a per-volume caller
- * (the export loop) must not pay once per volume — `loadSeriesFileSidecar` is
- * called once per series instead.
+ * (the export loop) must not pay once per volume — `buildSeriesFileForExport`
+ * is called once per series instead.
  */
 export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);

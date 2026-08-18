@@ -997,8 +997,20 @@ class UnifiedCloudManager {
       // Move the cache first so the write below merges the OLD index instead of
       // starting from an empty one.
       await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
-      await this.writeSeriesFile(newSeriesTitle, { localSeriesTitle: oldSeriesTitle });
-      if (staleFile) await this.deleteFileIdempotent(staleFile);
+      const outcome = await this.writeSeriesFile(newSeriesTitle, {
+        localSeriesTitle: oldSeriesTitle
+      });
+      // Retire the old file once the new one exists — or when the old folder
+      // holds no archive any more (a stale sidecar with nothing to index). A
+      // skipped write while the old folder still lists archives means the
+      // moved files have not surfaced under the new title yet; keeping the old
+      // index beats leaving the series with none until the next backup.
+      const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldSeriesTitle).some((file) =>
+        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+      );
+      if (staleFile && (outcome === 'written' || !oldFolderStillHasArchive)) {
+        await this.deleteFileIdempotent(staleFile);
+      }
     } catch (error) {
       console.warn(`Failed to move series.json to '${newSeriesTitle}':`, error);
     }
