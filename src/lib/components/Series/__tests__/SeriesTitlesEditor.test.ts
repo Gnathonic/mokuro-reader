@@ -267,4 +267,69 @@ describe('SeriesTitlesEditor', () => {
       consoleError.mockRestore();
     }
   });
+
+  it('D1: does not wipe a sibling field being edited while another field save is in flight', async () => {
+    // Regression: `titles` is one wholesale-replaced object, so ANY field's blur re-saves
+    // the whole group. The old code cleared ALL THREE dirty flags once that write landed,
+    // even for fields that were never part of it — wiping an in-progress edit on a sibling
+    // field the instant the unrelated write resolved.
+    setMeta(meta({ titles: {} }));
+    let resolveNativeWrite!: () => void;
+    h.updateSeriesMetadata.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveNativeWrite = () => resolve(undefined);
+        })
+    );
+    const { getByLabelText } = renderEditor();
+    const native = getByLabelText('Native') as HTMLInputElement;
+    const romaji = getByLabelText('Romaji') as HTMLInputElement;
+
+    await fireEvent.input(native, { target: { value: 'Native Title' } });
+    await fireEvent.blur(native); // kicks off the delayed write for { native: 'Native Title' }
+    await waitFor(() => expect(h.updateSeriesMetadata).toHaveBeenCalledTimes(1));
+
+    // While that write is still pending, the user starts typing into Romaji.
+    await fireEvent.input(romaji, { target: { value: 'Romaji Title' } });
+
+    // Native's write lands, and the liveQuery echoes the committed value back.
+    resolveNativeWrite();
+    setMeta(meta({ titles: { native: 'Native Title' } }));
+    await waitFor(() => expect(native.value).toBe('Native Title'));
+
+    // The Romaji draft must have survived settling Native's write.
+    expect(romaji.value).toBe('Romaji Title');
+
+    // Blurring Romaji now persists BOTH fields together — the second write.
+    await fireEvent.blur(romaji);
+    await waitFor(() => expect(h.updateSeriesMetadata).toHaveBeenCalledTimes(2));
+    expect(h.updateSeriesMetadata).toHaveBeenNthCalledWith(2, 'One Piece', {
+      titles: { native: 'Native Title', romaji: 'Romaji Title' }
+    });
+  });
+
+  it('D2: does not write once seriesTitle has gone blank by the time the field is blurred', async () => {
+    // Regression: the host modal's Escape-close clears `seriesTitle` in its store before a
+    // still-focused field's blur fires, so the save used to run as `updateSeriesMetadata('',
+    // ...)` — a junk record keyed `""`, and the edit lost.
+    const { getByLabelText, rerender } = renderEditor();
+    const native = getByLabelText('Native') as HTMLInputElement;
+    await fireEvent.input(native, { target: { value: 'New Title' } });
+
+    await rerender({ seriesTitle: '' });
+    await fireEvent.blur(native);
+
+    expect(h.updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it('D2: does not write once seriesTitle has changed to a different series by the time the field is blurred', async () => {
+    const { getByLabelText, rerender } = renderEditor();
+    const native = getByLabelText('Native') as HTMLInputElement;
+    await fireEvent.input(native, { target: { value: 'New Title' } });
+
+    await rerender({ seriesTitle: 'Some Other Series' });
+    await fireEvent.blur(native);
+
+    expect(h.updateSeriesMetadata).not.toHaveBeenCalled();
+  });
 });

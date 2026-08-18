@@ -78,6 +78,16 @@ export async function updateSeriesMetadata(
   patch: SeriesMetadataPatchInput
 ): Promise<SeriesMetadata> {
   const key = normalizeSeriesKey(seriesTitle);
+  if (!key) {
+    // A blur-triggered save (title/synonyms/tag fields) can fire after its owning modal
+    // has already cleared the series it was editing — e.g. Escape closing the series
+    // editor while a text field still has focus. Writing here would create a junk
+    // `series_metadata` row keyed `""` and silently discard the edit. No-op + warn
+    // instead of throwing: the callers are fire-and-forget blur handlers, and throwing
+    // would surface as an unhandled promise rejection there.
+    console.warn('updateSeriesMetadata: ignoring a write with a blank series title');
+    return createEmptySeriesMetadata(seriesTitle);
+  }
   return db.transaction('rw', db.series_metadata, async () => {
     const stored = await db.series_metadata.get(key);
     const updated_at = nextTimestamp(stored?.updated_at);

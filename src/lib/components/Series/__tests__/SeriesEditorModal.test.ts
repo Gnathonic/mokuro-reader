@@ -120,6 +120,7 @@ import {
   confirmationPopupStore
 } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util';
+import { updateSeriesMetadata } from '$lib/metadata/store';
 
 function volume(seriesTitle: string, title: string): VolumeMetadata {
   return {
@@ -271,6 +272,27 @@ describe('SeriesEditorModal', () => {
     await fireEvent.keyDown(document.body, { key: 'Escape' });
     await tick();
     expect(get(seriesEditorModalStore)).toBeUndefined();
+  });
+
+  it('flushes a focused title field before Escape closes the editor, instead of dropping the edit', async () => {
+    // Regression: the field's own blur used to fire (dialog teardown, unmount) AFTER the
+    // store had already cleared `seriesTitle`, writing a junk record keyed `""`. Escape
+    // now blurs the focused field itself first, while `seriesTitle` is still valid, so the
+    // field's normal onblur save runs and the edit is kept.
+    const { getByLabelText } = await openFor('Berserk');
+    const native = getByLabelText('Native') as HTMLInputElement;
+    native.focus();
+    await fireEvent.input(native, { target: { value: 'Berserk Native' } });
+
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    await tick();
+
+    expect(get(seriesEditorModalStore)).toBeUndefined();
+    expect(updateSeriesMetadata).toHaveBeenCalledWith('Berserk', {
+      titles: { native: 'Berserk Native' }
+    });
+    // Never the blank-title junk-write shape.
+    expect(updateSeriesMetadata).not.toHaveBeenCalledWith('', expect.anything());
   });
 
   it('opens the AniList link modal above the editor and lets Escape close only that one', async () => {

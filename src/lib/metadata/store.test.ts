@@ -42,6 +42,24 @@ describe('series metadata store', () => {
     expect(await getSeriesMetadata('one piece')).toEqual(again);
   });
 
+  it('ignores a write with a blank series title instead of creating a junk "" record', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const meta = await updateSeriesMetadata('', { tag: '[bw]' });
+      expect(meta.series_key).toBe('');
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      // No row was actually written for the blank key.
+      expect(await getSeriesMetadata('')).toBeUndefined();
+      expect(await (db as any).table('series_metadata').count()).toBe(0);
+
+      // Whitespace-only titles normalize to the same blank key and are ignored too.
+      await updateSeriesMetadata('   ', { tag: '[bw]' });
+      expect(await (db as any).table('series_metadata').count()).toBe(0);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
   it('resolves a functional patch against the record as stored, not a stale copy', async () => {
     await updateSeriesMetadata('One Piece', {
       read_count: 1,

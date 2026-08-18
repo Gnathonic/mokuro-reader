@@ -27,6 +27,11 @@
     linkOpen = $bindable(false)
   }: { seriesTitle: string; volumes: VolumeMetadata[]; linkOpen?: boolean } = $props();
 
+  // See SeriesTitlesEditor.svelte for why: captured once so the tag field's blur-save can
+  // refuse to write once the host modal has cleared `seriesTitle` out from under it (e.g.
+  // Escape closing the editor while the tag input still has focus).
+  const ownerSeriesTitle = seriesTitle;
+
   let meta = $derived($seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)));
   let linked = $derived(!!meta && Object.values(meta.external_ids ?? {}).some((v) => v != null));
   let links = $derived(meta ? getLinkTargets(meta.external_ids) : []);
@@ -65,6 +70,7 @@
   });
 
   async function saveTag() {
+    if (!seriesTitle.trim() || seriesTitle !== ownerSeriesTitle) return;
     const next = tagDraft.trim();
     if ((meta?.tag ?? '') === next) {
       tagDirty = false;

@@ -8,12 +8,21 @@
    * replaces whatever is typed here (hence the helper line below the fields).
    *
    * Same draft/dirty pattern as the tag field in SeriesLinkControls: each field keeps its
-   * own draft + dirty flag so a liveQuery emission mid-edit doesn't clobber unsaved typing,
-   * and each saves on blur/Enter only when its value actually changed. Like `saveTag`, the
-   * dirty flag is cleared only AFTER the write resolves — clearing it before the `await`
-   * would let the resync effect below snap the field back to the OLD stored value the
-   * instant the flag flips, before the write's own echo lands (visible as a revert-then-
-   * jump flicker on a slow write). On failure the flag is left dirty so the edit isn't lost.
+   * own draft + dirty flag so a liveQuery emission mid-edit doesn't clobber unsaved typing.
+   * Two things a plain "clear dirty after await" version gets wrong, both fixed here:
+   *
+   * 1. `titles` is one object (native+romaji+english together, not deep-merged by the
+   *    store), so ANY of the three inputs blurring re-saves all three current drafts. If
+   *    that clears all three dirty flags unconditionally once the write lands, a sibling
+   *    field edited *while the write was in flight* gets its still-unsaved draft wiped by
+   *    the resync effect. Fixed by snapshotting each field's value when its save starts and
+   *    only clearing ITS dirty flag if the draft still matches that snapshot when the write
+   *    resolves — an edit that moved on in the meantime stays dirty (and on screen).
+   * 2. Two saves can be triggered close together (blur field A, then blur field B before
+   *    A's write resolves). Saves are chained through `titlesSaveChain`/`synonymsSaveChain`
+   *    so at most one write is ever in flight, and each queued save reads drafts fresh at
+   *    the moment it actually runs (not when it was queued) — so it never re-sends a stale
+   *    snapshot over a newer edit.
    */
   import { Label } from 'flowbite-svelte';
   import { seriesMetadataMap, updateSeriesMetadata } from '$lib/metadata/store';
@@ -21,6 +30,15 @@
   import type { SeriesTitles } from '$lib/metadata/types';
 
   let { seriesTitle }: { seriesTitle: string } = $props();
+
+  // The series this component instance's drafts belong to, captured once at mount. The
+  // host modal remounts this component (via `{#key seriesTitle}`) on every legitimate
+  // series switch, so `seriesTitle` should never actually drift from this within one
+  // instance's life — EXCEPT when the modal is closing (e.g. Escape) and clears its store
+  // out from under a still-focused field before that field's blur has fired. Saves below
+  // refuse to run once that happens, instead of writing a junk record for a blank/foreign
+  // series title.
+  const ownerSeriesTitle = seriesTitle;
 
   let meta = $derived($seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)));
 
@@ -58,30 +76,58 @@
     );
   }
 
+  // A save-in-progress mutex: chaining through this (rather than firing each save the
+  // instant a blur happens) guarantees at most one `updateSeriesMetadata` call for the
+  // title group is ever in flight, so two close-together blurs can't race each other or
+  // the mocked store in tests.
+  let titlesSaveChain: Promise<void> = Promise.resolve();
+
   /**
-   * Any of the three inputs blurring saves the whole group — `titles` is replaced wholesale
-   * by `updateSeriesMetadata` (not deep-merged), so the patch always carries the current
-   * value of all three, with blank ones omitted (blank all three -> `titles: {}`).
+   * Any of the three inputs blurring queues a save of the whole group (see file header).
+   *
+   * `seriesTitle` is captured HERE, synchronously, at blur time — not inside the queued
+   * task. The task can sit behind an earlier save for a microtask or two, and by the time
+   * it runs, the host modal may have already cleared its store (a close raced this blur).
+   * Reading the live `seriesTitle` prop from inside the deferred task would see that
+   * cleared value and wrongly drop an edit that was perfectly valid the moment the user
+   * blurred the field. The drafts themselves are read fresh inside the task on purpose
+   * (see runTitlesSave) — only the series identity needs this snapshot.
    */
-  async function saveTitles() {
+  function saveTitles() {
+    const savingFor = seriesTitle;
+    titlesSaveChain = titlesSaveChain.then(() => runTitlesSave(savingFor));
+  }
+
+  async function runTitlesSave(savingFor: string) {
+    if (!savingFor.trim() || savingFor !== ownerSeriesTitle) return;
+
+    // Snapshot each field's draft NOW (this save's turn, so these are already the freshest
+    // values pending any earlier save in the chain) — used both to build the patch and,
+    // after the write, to decide which dirty flags are still safe to clear.
+    const nativeAtSave = nativeDraft.trim();
+    const romajiAtSave = romajiDraft.trim();
+    const englishAtSave = englishDraft.trim();
     const titles: SeriesTitles = {};
-    const native = nativeDraft.trim();
-    const romaji = romajiDraft.trim();
-    const english = englishDraft.trim();
-    if (native) titles.native = native;
-    if (romaji) titles.romaji = romaji;
-    if (english) titles.english = english;
+    if (nativeAtSave) titles.native = nativeAtSave;
+    if (romajiAtSave) titles.romaji = romajiAtSave;
+    if (englishAtSave) titles.english = englishAtSave;
+
+    // Only mark a field clean if its draft hasn't moved since THIS save captured it — a
+    // field edited while this write was in flight stays dirty (and its typed value stays
+    // on screen) instead of being reset by the resync effect once this write lands.
+    function settleUnchangedFields() {
+      if (nativeDraft.trim() === nativeAtSave) nativeDirty = false;
+      if (romajiDraft.trim() === romajiAtSave) romajiDirty = false;
+      if (englishDraft.trim() === englishAtSave) englishDirty = false;
+    }
+
     if (titlesEqual(titles, meta?.titles ?? {})) {
-      nativeDirty = false;
-      romajiDirty = false;
-      englishDirty = false;
+      settleUnchangedFields();
       return;
     }
     try {
-      await updateSeriesMetadata(seriesTitle, { titles });
-      nativeDirty = false;
-      romajiDirty = false;
-      englishDirty = false;
+      await updateSeriesMetadata(savingFor, { titles });
+      settleUnchangedFields();
     } catch (err) {
       // Leave the fields dirty so the resync effect doesn't fall back to the stale stored
       // value and silently discard the edit; the draft stays on screen to retry.
@@ -116,15 +162,31 @@
     return a.length === b.length && a.every((v, i) => v === b[i]);
   }
 
-  async function saveSynonyms() {
-    const synonyms = parseSynonyms(synonymsDraft);
+  let synonymsSaveChain: Promise<void> = Promise.resolve();
+
+  /** Same synchronous-capture reasoning as `saveTitles` above. */
+  function saveSynonyms() {
+    const savingFor = seriesTitle;
+    synonymsSaveChain = synonymsSaveChain.then(() => runSynonymsSave(savingFor));
+  }
+
+  async function runSynonymsSave(savingFor: string) {
+    if (!savingFor.trim() || savingFor !== ownerSeriesTitle) return;
+
+    const draftAtSave = synonymsDraft;
+    const synonyms = parseSynonyms(draftAtSave);
+
+    function settleIfUnchanged() {
+      if (synonymsDraft === draftAtSave) synonymsDirty = false;
+    }
+
     if (synonymsEqual(synonyms, meta?.synonyms ?? [])) {
-      synonymsDirty = false;
+      settleIfUnchanged();
       return;
     }
     try {
-      await updateSeriesMetadata(seriesTitle, { synonyms });
-      synonymsDirty = false;
+      await updateSeriesMetadata(savingFor, { synonyms });
+      settleIfUnchanged();
     } catch (err) {
       console.error('Failed to save series synonyms:', err);
     }
