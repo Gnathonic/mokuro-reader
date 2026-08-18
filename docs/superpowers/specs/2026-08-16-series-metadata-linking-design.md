@@ -70,10 +70,13 @@ src/lib/metadata/
   reread.ts                shouldOfferReread(...) — pure; restartSeries(...)
 src/lib/components/Series/
   SeriesLinkModal.svelte   search + pick + paste-URL/ID (debounce/abort controller in metadata/link-search.ts)
-  SeriesMetadataBar.svelte alt titles, link-out chips, Link/Unlink, tag, title-language select, sidecar refresh
-  SeriesTrackingPanel.svelte  mounted by the bar: tracking toggle/unit/Sync now, Read N times, Restart series
+  SeriesMetadataBar.svelte read-only summary: alt titles, link-out chips, Read N times, tracking status; pencil opens SeriesEditorModal
+  SeriesEditorModal.svelte rename + SeriesLinkControls/SeriesTitlesEditor/SeriesTrackingPanel; "Next unlinked series →"; opened by the pencil or hover + `e` on a catalog card
+  SeriesLinkControls.svelte Link…/Change/Unlink, tag field, "Update cloud sidecars"
+  SeriesTrackingPanel.svelte  tracking toggle/unit/Sync now, Read N times, Restart series
 src/lib/components/Reader/RereadPromptModal.svelte
-src/lib/components/Settings/MetadataSettings.svelte      preferred title language; mounts AniListAccountSettings.svelte
+src/lib/components/Settings/CatalogSettings.svelte        preferred series title language (global)
+src/lib/components/Settings/MetadataSettings.svelte       "AniList" accordion: account Connect/Disconnect + push switch
 ```
 
 ### Series identity
@@ -105,7 +108,7 @@ export interface SeriesMetadata {
   total_volumes?: number;
   total_chapters?: number;
   cover_url?: string; // link dialog only; not used for thumbnails
-  title_preference?: DisplayTitleLanguage; // per-series override of the global setting
+  title_preference?: DisplayTitleLanguage; // legacy per-series override; no longer consulted (kept for synced-data compat)
   read_count: number; // ARCHIVED completed passes (bumped by a restart of a fully-read series); default 0
   // timesRead = read_count + (all volumes completed now ? 1 : 0)
   reread_prompt_suppressed?: boolean; // "Don't ask for this series"
@@ -226,16 +229,22 @@ SeriesMetadata>` from `liveQuery(db.series_metadata)`), never per card in `$deri
 
 ### UI
 
-- **SeriesView → `SeriesMetadataBar`** under the title: alt-title subtitle (the two
-  non-displayed languages), provider chips (AniList / MAL link-out), **Link… / Change /
-  Unlink**, tag text field, per-series title-language select (`Default` + 4), tracking
-  toggle + unit + **Sync now** + "last pushed vN · date", **Read N times** (`timesRead`) with +/-,
-  **Restart series…** (confirm), **Update cloud sidecars**.
+- **SeriesView → `SeriesMetadataBar`** under the title: read-only summary — alt-title
+  subtitle (the two non-displayed languages), provider chips (AniList / MAL link-out),
+  **Read N times** (`timesRead`), one-line tracking status. A pencil opens
+  **`SeriesEditorModal`** (also reachable via hover + `e` on a catalog card), which hosts
+  every editing control: rename, **Link… / Change / Unlink**, tag text field, manual
+  titles/synonyms, tracking toggle + unit + **Sync now** + "last pushed vN · date",
+  **Read N times** +/-, **Restart series…** (confirm), **Update cloud sidecars**, and a
+  "Next unlinked series →" button. Title language has no per-series control — it is the
+  global Catalog setting below.
 - **`SeriesLinkModal`**: query prefilled with `series_title`; results show cover, titles,
   format, year, volume/chapter counts; click → link. "Paste AniList URL or ID" fallback.
   Action buttons get `relative z-10` (night-mode rule).
-- **Settings drawer → `MetadataSettings`** accordion: preferred title language; AniList
-  account **Connect / Disconnect** (shows username); global "Push progress to AniList on
+- **Settings drawer → `CatalogSettings`** accordion: preferred series title language
+  (global — native/romaji/english/imported; no per-series override).
+- **Settings drawer → `MetadataSettings`** accordion (labeled "AniList"): account
+  **Connect / Disconnect** (shows username); global "Push progress to AniList on
   completion" master switch (default on; per-series `tracking.enabled` still required).
   Account section hidden when `VITE_ANILIST_CLIENT_ID` is unset.
 - **`RereadPromptModal`** in the reader (see Re-reads).
