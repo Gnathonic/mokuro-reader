@@ -46,6 +46,9 @@ vi.mock('$lib/util/modals', () => ({
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 
+const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
+vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+
 vi.mock('$lib/util/file-processing-pool', () => ({
   getFileProcessingPool: async () => ({ addTask: () => {} }),
   incrementPoolUsers: () => {},
@@ -473,6 +476,53 @@ describe('keying a series.json to a series of the batch', () => {
 
     await applyImportedSeriesFiles();
     expect(await db.series_metadata.count()).toBe(0);
+  });
+});
+
+describe('publishing what an import applied', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    resetImportedSeriesFiles();
+    await clearDb();
+  });
+
+  afterEach(() => {
+    resetImportedSeriesFiles();
+  });
+
+  function record(seriesTitle: string) {
+    recordSeriesFile({
+      file: seriesFileFor(seriesTitle),
+      path: `${seriesTitle}/series.json`,
+      size: 10,
+      modifiedTime: '2026-08-17T00:00:00.000Z'
+    });
+  }
+
+  it('queues a cloud write for facts an import brought in', async () => {
+    // An import is out of band — the cloud copy knows nothing about these
+    // facts, and nothing else will publish them.
+    record('One Piece');
+    recordImportedSeriesTitle('One Piece');
+
+    await applyImportedSeriesFiles();
+
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('queues nothing when the sidecar had nothing newer to say', async () => {
+    record('One Piece');
+    recordImportedSeriesTitle('One Piece');
+    await applyImportedSeriesFiles();
+    scheduleSeriesFileWrite.mockClear();
+
+    // The same file again: already applied, so there is nothing to publish.
+    record('One Piece');
+    recordImportedSeriesTitle('One Piece');
+    await applyImportedSeriesFiles();
+
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 });
 

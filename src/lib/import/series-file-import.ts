@@ -22,6 +22,7 @@ import {
   parseSeriesFile,
   type SeriesFile
 } from '$lib/metadata/series-file';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { upsertFromSeriesFile } from '$lib/metadata/store';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 
@@ -205,7 +206,12 @@ export async function applyImportedSeriesFiles(): Promise<void> {
     }
 
     try {
-      await upsertFromSeriesFile(seriesTitle, entry.file);
+      const applied = await upsertFromSeriesFile(seriesTitle, entry.file);
+      // An import is out of band: the cloud copy has never seen these facts and
+      // no other path will publish them, so queue a write. No ping-pong risk —
+      // this only fires for facts that actually landed, and the debounced
+      // writer still needs a writable cloud that already holds the series.
+      if (applied) scheduleSeriesFileWrite(seriesTitle);
       const key = normalizeSeriesKey(seriesTitle);
       // Merge over whatever is cached: an imported file only knows the volumes
       // of the library that exported it, so caching it as-is would drop the
