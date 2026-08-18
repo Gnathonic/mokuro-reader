@@ -49,7 +49,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 ### 🔧 Power Features
 
 - **Volume Editor** - Edit metadata, reading progress, and cover (with cropping) directly from the catalog
-- **Series Management** - Rename or merge series from the series page
+- **Series Editor** - Rename a series and edit its AniList link, titles and tracking in one modal - open it with the pencil on the series page, or hover a catalog card and press `E` (merging series lives in Catalog settings)
 - **Preferred Series Titles** - Display series in native, romaji, or English titles from their AniList link, set globally in Catalog settings (folder names are never changed)
 - **AniList Progress Tracking** - Opt a linked series in to push read progress, completions and re-reads to your AniList list
 - **Restart Series** - Archive a finished read and send every volume back to the start; the reader offers it when you re-open the first volume
@@ -94,6 +94,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 | `C`                     | Toggle cover display                                   |
 | `Z`                     | Toggle zoom mode                                       |
 | `F`                     | Toggle fullscreen                                      |
+| `E`                     | Open the series editor for the hovered catalog card    |
 | `Esc`                   | Exit current volume (or exit series if on series page) |
 | `←` / `→`               | Navigate to previous/next page                         |
 | `↑` / `↓`               | Pan view up/down                                       |
