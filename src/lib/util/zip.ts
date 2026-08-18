@@ -6,7 +6,7 @@ import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
 import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
-import { SERIES_FILE_NAME } from '$lib/metadata/series-file';
+import { SERIES_FILE_NAME, stringifySeriesFile } from '$lib/metadata/series-file';
 
 export interface ExportSidecarOptions {
   includeSidecars: boolean;
@@ -305,7 +305,7 @@ export async function createArchiveBlob(
       seriesTitle ?? volumes[0]?.series_title ?? ''
     );
     if (seriesFile) {
-      await zipWriter.add(SERIES_FILE_NAME, new TextReader(JSON.stringify(seriesFile, null, 2)));
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(seriesFile)));
     }
 
     // Close the archive and get the Blob directly

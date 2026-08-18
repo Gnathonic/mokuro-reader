@@ -1,7 +1,12 @@
 import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
 import type { VolumeMetadata } from '$lib/types';
-import { SERIES_FILE_NAME, buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
+import {
+  SERIES_FILE_NAME,
+  buildSeriesFileFrom,
+  type SeriesFile,
+  stringifySeriesFile
+} from '$lib/metadata/series-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 
@@ -128,10 +133,7 @@ export async function compressVolume(
 
   // The series sidecar rides at the archive root, next to the .mokuro.
   if (options.seriesFile) {
-    await zipWriter.add(
-      SERIES_FILE_NAME,
-      new TextReader(JSON.stringify(options.seriesFile, null, 2))
-    );
+    await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(options.seriesFile)));
   }
 
   // Close and get the compressed data as Blob
@@ -376,7 +378,7 @@ export async function compressVolumeFromDb(
   if (options.embedSeriesFile) {
     const seriesFile = await buildSeriesFileFromDb(db, volume.series_title);
     if (seriesFile) {
-      await zipWriter.add(SERIES_FILE_NAME, new TextReader(JSON.stringify(seriesFile, null, 2)));
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(seriesFile)));
     }
   }
 

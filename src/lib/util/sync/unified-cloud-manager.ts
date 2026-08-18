@@ -17,7 +17,8 @@ import {
   buildSeriesFile,
   isSeriesFilePath,
   parseSeriesFile,
-  type SeriesFile
+  type SeriesFile,
+  stringifySeriesFile
 } from '$lib/metadata/series-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
@@ -956,7 +957,7 @@ class UnifiedCloudManager {
     if (!file) return 'skipped';
 
     const path = normalizeCloudPath(`${seriesTitle}/${SERIES_FILE_NAME}`);
-    const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
+    const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
     await this.uploadFile(path, blob);
 
     // Stamp the cache with EXACTLY what the file cache now holds for this path

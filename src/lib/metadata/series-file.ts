@@ -338,6 +338,15 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
  *
  * `version: 1` (facts only, no index) is accepted and yields an empty index.
  */
+/**
+ * The one serializer every writer uses (cloud upload, series ZIP, single-volume
+ * CBZ, worker download path). Compact on purpose: the file is read by machines
+ * (this app, mokuro-bunko), and pretty-printing cost ~25% for nothing.
+ */
+export function stringifySeriesFile(file: SeriesFile): string {
+  return JSON.stringify(file);
+}
+
 export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   if (!isRecord(value)) return undefined;
   if (value.version !== 1 && value.version !== 2) return undefined;
