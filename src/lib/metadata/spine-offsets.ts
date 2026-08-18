@@ -12,7 +12,8 @@ import type { SeriesMetadata } from './types';
  *
  * These are user-visible catalog layout, not facts about the series, so they live on
  * the synced `SeriesMetadata` record (root `series-metadata.json`) and are deliberately
- * NOT part of the `.mokuro` embed.
+ * never published in the shared `series.json` sidecar. Writing them must not touch
+ * `facts_updated_at` either — see `updateSeriesMetadata`.
  *
  * Writes are debounced per series: a wheel burst fires a tick every few milliseconds,
  * and each `updateSeriesMetadata` is an IndexedDB transaction plus a liveQuery emission

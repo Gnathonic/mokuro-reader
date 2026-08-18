@@ -383,6 +383,38 @@ describe('sanitizeCloudSeriesMetadata', () => {
     vi.useRealTimers();
   });
 
+  it('normalizes facts_updated_at the same way, and drops it when unparsable', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-16T12:00:00.000Z'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const entry = (facts_updated_at: unknown) => ({
+      series_key: 'a',
+      series_title: 'A',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      read_count: 0,
+      updated_at: '2026-08-16T00:00:00.000Z',
+      facts_updated_at
+    });
+
+    // It decides whose external link wins in series.json — same poison pills.
+    expect(
+      sanitizeCloudSeriesMetadata({ a: entry('Aug 16 2020 00:00:00 GMT+0000') }).a.facts_updated_at
+    ).toBe('2020-08-16T00:00:00.000Z');
+    expect(
+      sanitizeCloudSeriesMetadata({ a: entry('2999-01-01T00:00:00.000Z') }).a.facts_updated_at
+    ).toBe('2026-08-16T12:00:00.000Z');
+    // Unparsable → the field disappears (readers fall back to `updated_at`),
+    // the record itself is kept.
+    const dropped = sanitizeCloudSeriesMetadata({ a: entry('whenever') }).a;
+    expect('facts_updated_at' in dropped).toBe(false);
+    expect(dropped.updated_at).toBe('2026-08-16T00:00:00.000Z');
+
+    warn.mockRestore();
+    vi.useRealTimers();
+  });
+
   it('a clamped cloud record no longer outranks a fresh local one', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-16T12:00:00.000Z'));

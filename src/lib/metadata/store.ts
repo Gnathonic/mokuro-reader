@@ -51,6 +51,45 @@ function nextTimestamp(existing: string | undefined, now: number = Date.now()): 
   return new Date(stamp).toISOString();
 }
 
+/** The shareable facts — everything else on the record is this library's own state. */
+const FACT_KEYS = ['external_ids', 'titles', 'synonyms', 'tag'] as const;
+
+/** Merge key for the facts. Legacy records (written before the split) fall back. */
+export function factsStamp(meta: Pick<SeriesMetadata, 'updated_at' | 'facts_updated_at'>): string {
+  return meta.facts_updated_at ?? meta.updated_at;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Structural equality, enough for the fact values (ids, titles, synonyms, tag). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => sameValue(item, b[i]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    return keys.every((k) => k in b && sameValue(a[k], b[k]));
+  }
+  return false;
+}
+
+/**
+ * Does this patch actually change a shareable fact?
+ *
+ * Only a "yes" may move `facts_updated_at`. A spine-offset nudge, a finished
+ * reread, a tracking push or a title-preference toggle all bump `updated_at`, and
+ * publishing that stamp as the facts stamp would let a library that never linked
+ * the series unlink it on every other device (`buildSeriesFile` compares stamps).
+ */
+function changesFacts(existing: SeriesMetadata, patch: SeriesMetadataPatch): boolean {
+  return FACT_KEYS.some((key) => key in patch && !sameValue(patch[key], existing[key]));
+}
+
 export async function getSeriesMetadata(seriesKey: string): Promise<SeriesMetadata | undefined> {
   return db.series_metadata.get(seriesKey);
 }
@@ -95,7 +134,10 @@ export async function updateSeriesMetadata(
       ...resolved,
       series_key: key,
       series_title: seriesTitle,
-      updated_at
+      updated_at,
+      facts_updated_at: changesFacts(existing, resolved)
+        ? updated_at
+        : (stored?.facts_updated_at ?? stored?.updated_at ?? updated_at)
     });
     await db.series_metadata.put(next);
     return next;
@@ -119,48 +161,59 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
 
 /**
  * Apply the metadata facts from a `series.json` sidecar. Newest wins: only
- * writes when there is no local record or the file is strictly newer. The
- * volume index is not touched here — it is cached separately and never
- * overrides local volumes.
+ * writes when there is no local record or the file's stamp is strictly newer
+ * than the local *facts* stamp — not the record's `updated_at`, which every
+ * per-user write bumps. The volume index is not touched here: it is cached
+ * separately and never overrides local volumes.
  *
  * The file carries no fetched facts (`format`/`status`/totals/`cover_url`), so
  * when it points at a *different* external link than the local record those
  * facts describe the old link and are cleared — otherwise a re-link would keep
  * e.g. the previous series' `total_volumes` forever.
+ *
+ * Read and write share one `rw` transaction so a concurrent writer cannot slip
+ * a `put` between them, same as `updateSeriesMetadata`.
  */
 export async function upsertFromSeriesFile(seriesTitle: string, file: SeriesFile): Promise<void> {
   const key = normalizeSeriesKey(seriesTitle);
-  const existing = await db.series_metadata.get(key);
-  if (existing && existing.updated_at >= file.updated_at) return;
+  await db.transaction('rw', db.series_metadata, async () => {
+    const existing = await db.series_metadata.get(key);
+    if (existing && factsStamp(existing) >= file.updated_at) return;
 
-  const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
-  const linked = hasAnyId(file.external_ids);
-  const linkChanged = !sameExternalIds(base.external_ids, file.external_ids);
-  const next = stripUndefined<SeriesMetadata>({
-    ...base,
-    series_key: key,
-    series_title: seriesTitle,
-    external_ids: { ...file.external_ids },
-    titles: { ...file.titles },
-    synonyms: [...file.synonyms],
-    tag: file.tag,
-    ...(linkChanged
-      ? {
-          format: undefined,
-          status: undefined,
-          total_volumes: undefined,
-          total_chapters: undefined,
-          cover_url: undefined
-        }
-      : {}),
-    updated_at: file.updated_at,
-    linked_at: linked
-      ? linkChanged
-        ? file.updated_at
-        : (base.linked_at ?? file.updated_at)
-      : undefined
+    const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
+    const linked = hasAnyId(file.external_ids);
+    const linkChanged = !sameExternalIds(base.external_ids, file.external_ids);
+    const next = stripUndefined<SeriesMetadata>({
+      ...base,
+      series_key: key,
+      series_title: seriesTitle,
+      external_ids: { ...file.external_ids },
+      titles: { ...file.titles },
+      synonyms: [...file.synonyms],
+      tag: file.tag,
+      ...(linkChanged
+        ? {
+            format: undefined,
+            status: undefined,
+            total_volumes: undefined,
+            total_chapters: undefined,
+            cover_url: undefined
+          }
+        : {}),
+      // The record's own stamp never moves backwards: the root series-metadata.json
+      // merge is "newest updated_at wins", so lowering it to an older file stamp
+      // would let another device's pre-link copy of this record win and undo the
+      // facts we just applied (with the per-user state riding along).
+      updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
+      facts_updated_at: file.updated_at,
+      linked_at: linked
+        ? linkChanged
+          ? file.updated_at
+          : (base.linked_at ?? file.updated_at)
+        : undefined
+    });
+    await db.series_metadata.put(next);
   });
-  await db.series_metadata.put(next);
 }
 
 /** After a series rename: carry the record to the new key (newer record wins on collision). */

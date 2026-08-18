@@ -7,9 +7,9 @@ import type {
 
 /**
  * Shared validation rules for untrusted series metadata. Both boundaries where
- * foreign data enters the app — the `.mokuro` embed (`embed.ts`) and the
- * `series-metadata.json` cloud file (`merge.ts`) — use these so a value that is
- * rejected in one place cannot slip through the other.
+ * foreign data enters the app — the per-series `series.json` sidecar
+ * (`series-file.ts`) and the `series-metadata.json` cloud file (`merge.ts`) — use
+ * these so a value that is rejected in one place cannot slip through the other.
  */
 
 export const TITLE_KEYS = ['native', 'romaji', 'english'] as const;

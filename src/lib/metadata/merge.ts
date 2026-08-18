@@ -34,12 +34,12 @@ function isNonNegativeInteger(value: unknown): value is number {
  * An entry is dropped when it is not an object, when `series_key` is missing or
  * disagrees with its map key, or when `updated_at` is not a parsable date.
  * Otherwise the entry is kept and its values are validated field by field with
- * the same rules the .mokuro embed uses (`sanitize.ts`): positive-integer
+ * the same rules the `series.json` sidecar uses (`sanitize.ts`): positive-integer
  * external ids, non-empty string titles/synonyms/tag, a `title_preference` that is
  * one of the four known languages, `read_count` coerced to a non-negative integer,
  * a `tracking` block validated field by field, a boolean-or-absent
  * `reread_prompt_suppressed`, catalog spine offsets clamped to a renderable range,
- * and `updated_at` normalized to ISO and clamped when far in the future. Bad values are dropped, not the whole entry. Other fields pass
+ * and `updated_at`/`facts_updated_at` normalized to ISO and clamped when far in the future. Bad values are dropped, not the whole entry. Other fields pass
  * through as-is. A non-object root is dropped; any drop is logged once via `console.warn`.
  */
 export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, SeriesMetadata> {
@@ -72,6 +72,11 @@ export function sanitizeCloudSeriesMetadata(raw: unknown): Record<string, Series
       read_count: isNonNegativeInteger(value.read_count) ? value.read_count : 0,
       updated_at
     };
+    // The facts merge key gets the same treatment as `updated_at` — it decides
+    // whose external link wins in `series.json`, by the same lexicographic compare.
+    const factsUpdatedAt = normalizeUpdatedAt(value.facts_updated_at, now);
+    if (factsUpdatedAt === undefined) delete entry.facts_updated_at;
+    else entry.facts_updated_at = factsUpdatedAt;
     // Tracking steers writes to the user's AniList account, so it is validated
     // field by field; a non-object means "no tracking configured" for this series.
     const tracking = sanitizeTracking(value.tracking);

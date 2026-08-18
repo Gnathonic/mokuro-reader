@@ -52,6 +52,11 @@ export interface SeriesFile {
   volumes: SeriesFileVolume[];
 }
 
+/** A usable spine width: a positive finite number of pixels. */
+function isSpineWidth(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
 /** Project a local volume onto its index entry (index fields only). */
 export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
   const entry: SeriesFileVolume = {
@@ -62,7 +67,9 @@ export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
     page_char_counts: [...(volume.page_char_counts ?? [])],
     mokuro_version: volume.mokuro_version
   };
-  if (volume.spine_width != null) entry.spine_width = volume.spine_width;
+  // Same rule as the parser, so build → JSON → parse is an identity: a 0 or junk
+  // width is "no width", not a width of zero.
+  if (isSpineWidth(volume.spine_width)) entry.spine_width = volume.spine_width;
   return entry;
 }
 
@@ -71,18 +78,46 @@ function compareEntries(a: SeriesFileVolume, b: SeriesFileVolume): number {
   return sortVolumes(a as unknown as VolumeMetadata, b as unknown as VolumeMetadata);
 }
 
-function hasFacts(file: Pick<SeriesFile, 'external_ids' | 'titles' | 'tag'>): boolean {
+/** The shareable half of a series record (or of the file already in the cloud). */
+interface SeriesFacts {
+  external_ids: SeriesExternalIds;
+  titles: SeriesTitles;
+  synonyms: string[];
+  tag?: string;
+  /** The facts clock — NOT a record's general `updated_at`. */
+  updated_at: string;
+}
+
+function hasFacts(facts: Pick<SeriesFacts, 'external_ids' | 'titles' | 'tag'>): boolean {
   return (
-    Object.keys(file.external_ids).length > 0 || Object.keys(file.titles).length > 0 || !!file.tag
+    Object.keys(facts.external_ids ?? {}).length > 0 ||
+    Object.keys(facts.titles ?? {}).length > 0 ||
+    !!facts.tag?.trim()
   );
+}
+
+/** Facts of a local record, stamped with its facts clock (legacy: `updated_at`). */
+function localFacts(meta: SeriesMetadata): SeriesFacts {
+  return {
+    external_ids: meta.external_ids ?? {},
+    titles: meta.titles ?? {},
+    synonyms: meta.synonyms ?? [],
+    tag: meta.tag,
+    updated_at:
+      normalizeUpdatedAt(meta.facts_updated_at ?? meta.updated_at) ?? new Date().toISOString()
+  };
 }
 
 /**
  * Build the file to upload for one series.
  *
- * Facts come from the local record when one is passed (so an unlink propagates:
- * an empty record with a newer `updated_at` clears the previous link), otherwise
- * the facts already in the cloud file are carried through untouched.
+ * Facts come from the local record, stamped with its *facts* clock
+ * (`facts_updated_at`, falling back to `updated_at` on legacy records) — never
+ * with `updated_at` itself, which every per-user write (spine offsets, rereads,
+ * tracking pushes) bumps. The facts already in the cloud file are kept instead
+ * when the local record has no facts at all, or when the file's facts are newer
+ * than the local ones: a library that never linked this series must not publish
+ * its emptiness as an unlink to everyone else.
  *
  * Volumes are the union of the existing index and the installed volumes, keyed
  * by `volume_uuid` with local winning — a device only ever knows about its own
@@ -105,26 +140,28 @@ export function buildSeriesFile(args: {
 }): SeriesFile | undefined {
   const { seriesTitle, meta, localVolumes, existing, cloudVolumeTitles } = args;
 
+  const local = meta ? localFacts(meta) : undefined;
+  const existingHasFacts = !!existing && hasFacts(existing);
+  // A local record wins only when it actually carries facts AND its facts clock is
+  // at least as new as the file's. Equality keeps local (that is the same link
+  // round-tripping back through `upsertFromSeriesFile`).
+  const keepExisting =
+    !local || (existingHasFacts && (!hasFacts(local) || existing!.updated_at > local.updated_at));
+  const source = keepExisting ? existing : local;
+
   const external_ids: SeriesExternalIds = {};
   const titles: SeriesTitles = {};
   let synonyms: string[] = [];
   let tag: string | undefined;
   let updated_at: string;
 
-  if (meta) {
+  if (source) {
     for (const k of ID_KEYS)
-      if (meta.external_ids?.[k] != null) external_ids[k] = meta.external_ids[k];
-    for (const k of TITLE_KEYS) if (meta.titles?.[k]) titles[k] = meta.titles[k];
-    synonyms = [...(meta.synonyms ?? [])];
-    tag = meta.tag?.trim() || undefined;
-    updated_at = normalizeUpdatedAt(meta.updated_at) ?? new Date().toISOString();
-  } else if (existing) {
-    for (const k of ID_KEYS)
-      if (existing.external_ids?.[k] != null) external_ids[k] = existing.external_ids[k];
-    for (const k of TITLE_KEYS) if (existing.titles?.[k]) titles[k] = existing.titles[k];
-    synonyms = [...(existing.synonyms ?? [])];
-    tag = existing.tag?.trim() || undefined;
-    updated_at = existing.updated_at;
+      if (source.external_ids?.[k] != null) external_ids[k] = source.external_ids[k];
+    for (const k of TITLE_KEYS) if (source.titles?.[k]) titles[k] = source.titles[k];
+    synonyms = [...(source.synonyms ?? [])];
+    tag = source.tag?.trim() || undefined;
+    updated_at = source.updated_at;
   } else {
     updated_at = new Date().toISOString();
   }

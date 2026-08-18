@@ -57,6 +57,12 @@ describe('volumeToIndexEntry', () => {
     });
   });
 
+  it('omits a zero or non-finite spine_width so build → parse stays an identity', () => {
+    expect('spine_width' in volumeToIndexEntry(volume({ spine_width: 0 }))).toBe(false);
+    expect('spine_width' in volumeToIndexEntry(volume({ spine_width: NaN }))).toBe(false);
+    expect('spine_width' in volumeToIndexEntry(volume({ spine_width: -3 }))).toBe(false);
+  });
+
   it('omits spine_width when the volume has none and never carries local-only fields', () => {
     const entry = volumeToIndexEntry(
       volume({
@@ -144,26 +150,95 @@ describe('buildSeriesFile', () => {
     expect(file.updated_at).toBe('2026-01-01T00:00:00.000Z');
   });
 
-  it('lets a newer unlinked local record clear the facts written before', () => {
+  it('never lets a factless local record overwrite the facts already published', () => {
+    // The catalog writes spine offsets/read counts on records that were never
+    // linked here; those writes bump `updated_at`, which must not read as
+    // "this series was just unlinked" on every other device.
     const existing: SeriesFile = {
       version: 2,
       series_title: 'One Piece',
       external_ids: { anilist: 30013 },
       titles: { english: 'One Piece' },
       synonyms: [],
+      tag: '[color]',
       updated_at: '2026-01-01T00:00:00.000Z',
       volumes: []
     };
     const file = buildSeriesFile({
       seriesTitle: 'One Piece',
-      meta: createEmptySeriesMetadata('One Piece', '2026-02-01T00:00:00.000Z'),
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
+        spine_offset: 12,
+        read_count: 2
+      },
       localVolumes: [volume()],
       existing
     })!;
-    expect(file.external_ids).toEqual({});
-    expect(file.titles).toEqual({});
-    expect('tag' in file).toBe(false);
-    expect(file.updated_at).toBe('2026-02-01T00:00:00.000Z');
+    expect(file.external_ids).toEqual({ anilist: 30013 });
+    expect(file.titles).toEqual({ english: 'One Piece' });
+    expect(file.tag).toBe('[color]');
+    expect(file.updated_at).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('stamps the file with the facts clock, not the record clock', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: {
+        ...linkedMeta(),
+        // linked at 08-16, then a per-user write bumped the record on 09-01
+        updated_at: '2026-09-01T00:00:00.000Z',
+        facts_updated_at: '2026-08-16T00:00:00.000Z'
+      },
+      localVolumes: []
+    })!;
+    expect(file.updated_at).toBe('2026-08-16T00:00:00.000Z');
+  });
+
+  it('keeps the newer side when both the record and the file carry facts', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: { anilist: 111 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-05-01T00:00:00.000Z',
+      volumes: []
+    };
+    // local facts are older → the file's facts survive
+    const stale = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: { ...linkedMeta(), facts_updated_at: '2026-04-01T00:00:00.000Z' },
+      localVolumes: [],
+      existing
+    })!;
+    expect(stale.external_ids).toEqual({ anilist: 111 });
+    expect(stale.updated_at).toBe('2026-05-01T00:00:00.000Z');
+
+    // local facts are newer → they win, including a deliberate unlink
+    const fresh = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: { ...linkedMeta(), facts_updated_at: '2026-06-01T00:00:00.000Z' },
+      localVolumes: [],
+      existing
+    })!;
+    expect(fresh.external_ids).toEqual({ anilist: 30013, mal: 13 });
+    expect(fresh.updated_at).toBe('2026-06-01T00:00:00.000Z');
+  });
+
+  it('re-publishes the same facts unchanged when the file round-trips back', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: []
+    })!;
+    // stamps are equal (the record was written from this very file) → local wins
+    const again = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [],
+      existing: file
+    })!;
+    expect(again).toEqual(file);
   });
 
   it('unions volumes by uuid with local winning, and sorts naturally', () => {
@@ -394,7 +469,8 @@ describe('parseSeriesFile', () => {
       meta: linkedMeta(),
       localVolumes: [
         volume({ spine_width: 17 }),
-        volume({ volume_uuid: 'vol-2', volume_title: 'Vol 2' })
+        volume({ volume_uuid: 'vol-2', volume_title: 'Vol 2' }),
+        volume({ volume_uuid: 'vol-3', volume_title: 'Vol 3', spine_width: 0 })
       ]
     })!;
     expect(parseSeriesFile(JSON.parse(JSON.stringify(built)))).toEqual(built);

@@ -54,8 +54,19 @@ export interface SeriesMetadata {
   read_count: number;
   reread_prompt_suppressed?: boolean;
   tracking?: SeriesTracking;
-  /** ISO timestamp — merge key */
+  /** ISO timestamp — merge key for the record as a whole (root series-metadata.json) */
   updated_at: string;
+  /**
+   * ISO timestamp of the last change to the shareable *facts*
+   * (`external_ids`/`titles`/`synonyms`/`tag`) — the merge key for `series.json`.
+   *
+   * Split from `updated_at` because every per-user write (spine offsets, read_count,
+   * tracking, title_preference) bumps `updated_at`: publishing that stamp with the
+   * facts would let a device that has never linked the series present its empty
+   * facts as "newer" and unlink it everywhere. Absent on legacy records — readers
+   * fall back to `updated_at`.
+   */
+  facts_updated_at?: string;
   linked_at?: string;
 }
 

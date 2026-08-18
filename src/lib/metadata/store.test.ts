@@ -160,6 +160,79 @@ describe('series metadata store', () => {
     expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
 
+  it('moves facts_updated_at only when a shareable fact actually changes', async () => {
+    const linked = await updateSeriesMetadata('One Piece', {
+      external_ids: { anilist: 30013 },
+      titles: { english: 'One Piece' }
+    });
+    expect(linked.facts_updated_at).toBe(linked.updated_at);
+
+    // A catalog spine nudge / reread / tracking push is per-user state: it bumps
+    // the record, but publishing that stamp with the facts would unlink the series
+    // on every other device.
+    const nudged = await updateSeriesMetadata('One Piece', { spine_offset: 12, read_count: 1 });
+    expect(nudged.updated_at > linked.updated_at).toBe(true);
+    expect(nudged.facts_updated_at).toBe(linked.facts_updated_at);
+
+    // Re-writing the same facts is not a change either.
+    const rewritten = await updateSeriesMetadata('One Piece', {
+      external_ids: { anilist: 30013 },
+      titles: { english: 'One Piece' }
+    });
+    expect(rewritten.facts_updated_at).toBe(linked.facts_updated_at);
+
+    const tagged = await updateSeriesMetadata('One Piece', { tag: '[color]' });
+    expect(tagged.facts_updated_at).toBe(tagged.updated_at);
+
+    const unlinked = await unlinkSeries('One Piece');
+    expect(unlinked.facts_updated_at).toBe(unlinked.updated_at);
+    expect(unlinked.spine_offset).toBe(12); // per-user state survives an unlink
+  });
+
+  it('upsertFromSeriesFile compares against facts_updated_at, not the record stamp', async () => {
+    // Linked on 2026-02-01, then a per-user write bumped the record to 2026-09-01.
+    await replaceAllSeriesMetadata({
+      'one piece': {
+        ...createEmptySeriesMetadata('One Piece', '2026-09-01T00:00:00.000Z'),
+        external_ids: { anilist: 30013 },
+        facts_updated_at: '2026-02-01T00:00:00.000Z',
+        spine_offset: 12
+      }
+    });
+
+    // Older than the facts stamp → ignored.
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 111 },
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-01-01T00:00:00.000Z'
+      })
+    );
+    expect((await getSeriesMetadataForTitle('One Piece'))?.external_ids).toEqual({
+      anilist: 30013
+    });
+
+    // Newer than the facts stamp (but older than the record stamp) → applied.
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 99999 },
+        titles: { romaji: 'Some Oneshot' },
+        synonyms: [],
+        updated_at: '2026-03-01T00:00:00.000Z'
+      })
+    );
+    const meta = await getSeriesMetadataForTitle('One Piece');
+    expect(meta?.external_ids).toEqual({ anilist: 99999 });
+    expect(meta?.facts_updated_at).toBe('2026-03-01T00:00:00.000Z');
+    // The record stamp never moves backwards, or the root series-metadata.json
+    // merge would hand the win back to a pre-link copy on another device.
+    expect(meta?.updated_at).toBe('2026-09-01T00:00:00.000Z');
+    expect(meta?.spine_offset).toBe(12);
+  });
+
   it('upsertFromSeriesFile writes when local is missing or older, ignores when local is newer', async () => {
     await upsertFromSeriesFile(
       'One Piece',
