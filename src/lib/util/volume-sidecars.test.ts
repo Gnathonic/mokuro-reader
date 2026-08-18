@@ -16,7 +16,6 @@ vi.mock('$lib/catalog/db', async () => {
 
 import { db } from '$lib/catalog/db';
 import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
-import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -67,30 +66,12 @@ describe('buildSeriesFileForExport', () => {
 });
 
 describe('loadVolumeSidecars', () => {
-  it('offers series.json next to the .mokuro when asked for it', async () => {
-    const sidecars = await loadVolumeSidecars('volume-uuid', { seriesFile: true });
-
-    expect(sidecars.mokuroFile?.name).toBe('Vol 1.mokuro');
-    expect(sidecars.seriesFile?.name).toBe('series.json');
-    expect(sidecars.seriesFile?.type).toBe('application/json');
-
-    const parsed = parseSeriesFile(JSON.parse(await sidecars.seriesFile!.text()));
-    expect(parsed?.external_ids).toEqual({ anilist: 30013 });
-    expect(parsed?.volumes).toHaveLength(2);
-  });
-
-  it('builds no series file unless the caller asks (the per-volume export loop)', async () => {
+  it('carries the volume sidecars only — never the series file', async () => {
+    // Building the series file reads the whole volumes table, so the per-volume
+    // export loop must not trigger it once per volume.
     const sidecars = await loadVolumeSidecars('volume-uuid');
+
     expect(sidecars.mokuroFile?.name).toBe('Vol 1.mokuro');
-    expect(sidecars.seriesFile).toBeNull();
-  });
-
-  it('offers no series.json when the series has no facts and no volumes', async () => {
-    await db.volumes.clear();
-    await db.series_metadata.clear();
-    await db.volumes.put({ ...volume, isPlaceholder: true });
-
-    const sidecars = await loadVolumeSidecars('volume-uuid', { seriesFile: true });
-    expect(sidecars.seriesFile).toBeNull();
+    expect(Object.keys(sidecars).sort()).toEqual(['mokuroFile', 'thumbnailFile']);
   });
 });

@@ -2,19 +2,13 @@ import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { SERIES_FILE_NAME, buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
+import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 import { buildMokuroMetadata } from './mokuro-metadata';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
   thumbnailFile: File | null;
-  /**
-   * The series' `series.json`, and only when `loadVolumeSidecars` was asked for
-   * it: building it reads the whole volumes table, which a per-volume caller
-   * (the multi-volume export loop) must not pay N times for one series.
-   */
-  seriesFile: File | null;
 }
 
 /**
@@ -40,15 +34,6 @@ export async function buildSeriesFileForExport(
   return buildSeriesFileFrom({ seriesTitle, meta, volumes, existing: cached?.file });
 }
 
-/** The same file as a downloadable/embeddable sidecar, or `null`. */
-export async function loadSeriesFileSidecar(seriesTitle: string): Promise<File | null> {
-  const file = await buildSeriesFileForExport(seriesTitle);
-  if (!file) return null;
-  return new File([JSON.stringify(file, null, 2)], SERIES_FILE_NAME, {
-    type: 'application/json'
-  });
-}
-
 function extensionFromMimeType(contentType: string): string {
   const value = contentType.toLowerCase();
   if (value.includes('webp')) return 'webp';
@@ -60,13 +45,12 @@ function extensionFromMimeType(contentType: string): string {
 }
 
 /**
- * @param options.seriesFile Also build the series' `series.json` (off by default
- *   — see `VolumeSidecarFiles.seriesFile`).
+ * The per-VOLUME sidecars. The series' `series.json` is deliberately not one of
+ * them: building it reads the whole volumes table, which a per-volume caller
+ * (the export loop) must not pay once per volume — `loadSeriesFileSidecar` is
+ * called once per series instead.
  */
-export async function loadVolumeSidecars(
-  volumeUuid: string,
-  options: { seriesFile?: boolean } = {}
-): Promise<VolumeSidecarFiles> {
+export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
@@ -92,9 +76,7 @@ export async function loadVolumeSidecars(
     });
   }
 
-  const seriesFile = options.seriesFile ? await loadSeriesFileSidecar(volume.series_title) : null;
-
-  return { mokuroFile, thumbnailFile, seriesFile };
+  return { mokuroFile, thumbnailFile };
 }
 
 export function downloadFileBlob(file: File): void {
