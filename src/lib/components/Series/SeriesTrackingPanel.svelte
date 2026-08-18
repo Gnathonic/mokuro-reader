@@ -34,9 +34,21 @@
   // (`restartSeries` does the same) — filtering here keeps "Read N times" and
   // the Restart button in step with what actually gets pushed.
   let localVolumes = $derived(volumes.filter((v) => !v.isPlaceholder));
-  // One computation for the whole page — never per volume card.
-  let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, meta));
-  let readCount = $derived(meta?.read_count ?? 0);
+  let storedCount = $derived(meta?.read_count ?? 0);
+  /**
+   * `seriesMetadataMap` is a liveQuery and lags a write by a round-trip, so two
+   * fast clicks would both read the pre-click count — the second would write a
+   * value it wrongly believes is new and push it to AniList. This holds what we
+   * last wrote, and falls away by itself as soon as the stored value stops being
+   * the one it was written from (the write landed, another device changed it, or
+   * the panel moved to another series).
+   */
+  let optimisticCount = $state<{ key: string; from: number; to: number } | null>(null);
+  let readCount = $derived(
+    optimisticCount?.key === seriesKey && optimisticCount.from === storedCount
+      ? optimisticCount.to
+      : storedCount
+  );
   let linked = $derived(!!meta?.external_ids?.anilist);
   let lastPushed = $derived(meta?.tracking?.last_pushed);
   // Volumes or chapters is a fact about the archives, not a preference: detected
@@ -44,6 +56,10 @@
   // unless somebody has corrected it on the record.
   let unitState = $derived(resolveTrackingUnit(meta, volumes));
   let resolvedUnit = $derived(unitState.unit);
+  // One computation for the whole page — never per volume card. The unit is
+  // handed over rather than re-detected: it was resolved above from the FULL
+  // volume list, which is what the tracker pushes by.
+  let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, meta, resolvedUnit));
   // What detection says on its own, so the "Auto" option can name it even while
   // an override is in force.
   let detectedUnit = $derived(
@@ -91,14 +107,23 @@
   }
 
   async function setReadCount(delta: number) {
-    // The − button is disabled at 0; this keeps a stray click from spending a
-    // write (and an `updated_at` bump the cloud would then sync) on a no-op.
-    if (delta < 0 && readCount === 0) return;
+    const before = readCount;
+    const next = Math.max(0, before + delta);
+    // The − button is disabled at 0, and a second fast click lands here too:
+    // either way a no-op must not spend a write (and the `updated_at` bump the
+    // cloud would then sync) or a push.
+    if (next === before) return;
+    optimisticCount = { key: seriesKey, from: storedCount, to: next };
+    // Still a functional patch: `restartSeries` bumps `read_count` from another
+    // module, so the delta has to be applied to the record as stored.
     const saved = await write(
       (current) => ({ read_count: Math.max(0, (current.read_count ?? 0) + delta) }),
       "Couldn't save the read count"
     );
-    if (!saved) return;
+    if (!saved) {
+      optimisticCount = null;
+      return;
+    }
     // "Read N times" is AniList's repeat count. Nothing else pushes it — a
     // correction here is deliberate, so it travels in both directions.
     onReadCountChanged(seriesKey)
@@ -208,7 +233,9 @@
         />
         <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->
         {#if lastPushed}
-          {#key lastPushed.at}
+          <!-- The unit is part of the key: a correction rewrites this line, and
+               Migaku would otherwise keep showing the old label in place. -->
+          {#key `${lastPushed.at}|${lastPushed.n}|${resolvedUnit}`}
             <span class="text-xs text-gray-500 dark:text-gray-400">
               Last pushed {resolvedUnit === 'chapters' ? 'ch.' : 'vol.'}
               {lastPushed.n} · {formatPushedAt(lastPushed.at)}

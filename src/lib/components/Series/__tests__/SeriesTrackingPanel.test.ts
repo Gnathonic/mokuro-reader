@@ -270,11 +270,22 @@ describe('SeriesTrackingPanel', () => {
       expect(onReadCountChanged).not.toHaveBeenCalled();
     });
 
-    it('does not push a click the − button ignored at 0', async () => {
+    it('offers no − at 0', () => {
       setMeta(meta({ read_count: 0 }));
       const { getByLabelText } = renderPanel();
-      await fireEvent.click(getByLabelText('Decrease read count').closest('button')!);
-      expect(onReadCountChanged).not.toHaveBeenCalled();
+      expect((getByLabelText('Decrease read count') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('ignores the second of two rapid − clicks instead of re-writing 0', async () => {
+      // The store lags the first write, so the second click still sees 1 unless
+      // the panel remembers what it just wrote.
+      setMeta(meta({ read_count: 1 }));
+      const { getByLabelText } = renderPanel();
+      const decrease = getByLabelText('Decrease read count');
+      await Promise.all([fireEvent.click(decrease), fireEvent.click(decrease)]);
+      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(0));
+      expect(updateSeriesMetadata).toHaveBeenCalledTimes(1);
+      expect(onReadCountChanged).toHaveBeenCalledTimes(1);
     });
 
     it('surfaces a rejected push', async () => {
