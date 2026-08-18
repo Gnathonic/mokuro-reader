@@ -841,7 +841,7 @@ class UnifiedCloudManager {
     if (!cloudFile) return cached?.file;
 
     const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
-    if (!indexNeedsRefresh(cached, stamp)) return cached?.file;
+    if (!indexNeedsRefresh(cached, stamp, providerType)) return cached?.file;
 
     const fresh = await this.readCloudSeriesFile(cloudFile);
     if (!fresh) {

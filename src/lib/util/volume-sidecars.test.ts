@@ -67,8 +67,8 @@ describe('buildSeriesFileForExport', () => {
 });
 
 describe('loadVolumeSidecars', () => {
-  it('offers series.json next to the .mokuro', async () => {
-    const sidecars = await loadVolumeSidecars('volume-uuid');
+  it('offers series.json next to the .mokuro when asked for it', async () => {
+    const sidecars = await loadVolumeSidecars('volume-uuid', { seriesFile: true });
 
     expect(sidecars.mokuroFile?.name).toBe('Vol 1.mokuro');
     expect(sidecars.seriesFile?.name).toBe('series.json');
@@ -79,12 +79,18 @@ describe('loadVolumeSidecars', () => {
     expect(parsed?.volumes).toHaveLength(2);
   });
 
+  it('builds no series file unless the caller asks (the per-volume export loop)', async () => {
+    const sidecars = await loadVolumeSidecars('volume-uuid');
+    expect(sidecars.mokuroFile?.name).toBe('Vol 1.mokuro');
+    expect(sidecars.seriesFile).toBeNull();
+  });
+
   it('offers no series.json when the series has no facts and no volumes', async () => {
     await db.volumes.clear();
     await db.series_metadata.clear();
     await db.volumes.put({ ...volume, isPlaceholder: true });
 
-    const sidecars = await loadVolumeSidecars('volume-uuid');
+    const sidecars = await loadVolumeSidecars('volume-uuid', { seriesFile: true });
     expect(sidecars.seriesFile).toBeNull();
   });
 });

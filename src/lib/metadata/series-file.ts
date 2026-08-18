@@ -1,5 +1,6 @@
 import { sortVolumes } from '$lib/catalog/sort-volumes';
 import type { VolumeMetadata } from '$lib/types';
+import { normalizeSeriesKey } from './series-key';
 import {
   ID_KEYS,
   TITLE_KEYS,
@@ -220,6 +221,56 @@ export function buildSeriesFile(args: {
   };
   if (tag) file.tag = tag;
   return file;
+}
+
+/**
+ * `buildSeriesFile` for callers holding the WHOLE volumes table: selects this
+ * series' volumes by normalized key (the same grouping the catalog uses) and
+ * builds the file.
+ *
+ * Pure, so both readers of the table share it — the main thread
+ * (`volume-sidecars.ts`) and the export Worker (`compress-volume.ts`), which
+ * has its own Dexie handle and cannot import the app's.
+ */
+export function buildSeriesFileFrom(args: {
+  seriesTitle: string;
+  meta: SeriesMetadata | undefined;
+  /** Every installed volume; entries of other series are ignored. */
+  volumes: VolumeMetadata[];
+  existing?: SeriesFile;
+}): SeriesFile | undefined {
+  const { seriesTitle, meta, volumes, existing } = args;
+  const key = normalizeSeriesKey(seriesTitle);
+  if (!key) return undefined;
+
+  const localVolumes = volumes.filter((v) => normalizeSeriesKey(v.series_title) === key);
+  return buildSeriesFile({ seriesTitle, meta, localVolumes, existing });
+}
+
+/**
+ * Merge a `series.json` that arrived out of band (an import) over the copy this
+ * device already cached: the volume entries are unioned by uuid with the
+ * arriving file winning, so caching an import can never shrink an index fetched
+ * from the cloud, and the facts follow the same newest-`updated_at`-wins rule as
+ * `upsertFromSeriesFile`. `series_title` is stamped with the title the record is
+ * filed under, keeping the file's own name and its key in step.
+ */
+export function mergeSeriesFileForCache(
+  seriesTitle: string,
+  file: SeriesFile,
+  cached: SeriesFile | undefined
+): SeriesFile {
+  if (!cached) return { ...file, series_title: seriesTitle };
+
+  const byUuid = new Map<string, SeriesFileVolume>();
+  for (const entry of cached.volumes) byUuid.set(entry.volume_uuid, entry);
+  for (const entry of file.volumes) byUuid.set(entry.volume_uuid, entry);
+
+  const base = file.updated_at >= cached.updated_at ? file : cached;
+  const volumes = [...byUuid.values()].sort(compareEntries);
+  const merged: SeriesFile = { ...base, series_title: seriesTitle, volumes };
+  if (!base.tag) delete merged.tag;
+  return merged;
 }
 
 function isNonNegativeInt(value: unknown): value is number {

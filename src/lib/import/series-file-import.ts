@@ -14,10 +14,16 @@
  * volumes still import.
  */
 
-import { putSeriesIndex } from '$lib/metadata/series-index';
+import { db } from '$lib/catalog/db';
+import { getSeriesIndex, putSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { SERIES_FILE_NAME, parseSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
-import { upsertFromSeriesFile } from '$lib/metadata/store';
+import {
+  SERIES_FILE_NAME,
+  mergeSeriesFileForCache,
+  parseSeriesFile,
+  type SeriesFile
+} from '$lib/metadata/series-file';
+import { getSeriesMetadataForTitle, upsertFromSeriesFile } from '$lib/metadata/store';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 
 /** A validated `series.json` waiting for the batch's volumes to be saved. */
@@ -123,29 +129,50 @@ export function resetImportedSeriesFiles(): void {
   importedTitles.clear();
 }
 
+/** Does this library already hold the series the file names, under that name? */
+async function seriesExistsLocally(seriesTitle: string): Promise<boolean> {
+  if (!normalizeSeriesKey(seriesTitle)) return false;
+  try {
+    if (await getSeriesMetadataForTitle(seriesTitle)) return true;
+    return (await db.volumes.where('series_title').equalsIgnoreCase(seriesTitle).count()) > 0;
+  } catch (error) {
+    // A lookup failure must not turn into a mis-keyed write: treat it as "yes,
+    // it exists elsewhere", which only ever makes the fallback more cautious.
+    console.warn(`[Import] Could not check whether '${seriesTitle}' is already installed:`, error);
+    return true;
+  }
+}
+
 /**
  * Which series does this file belong to?
  *
  * The file's own `series_title` decides whenever it names one of the series
  * just imported — that is what keeps a multi-series drop straight. When it
- * names none of them, a single-series batch is unambiguous anyway (the sidecar
- * was exported before the series was renamed here), and anything else is a
- * guess we refuse to make.
+ * names none of them, a lone file in a single-series batch is taken to be that
+ * series' sidecar written before it was renamed here — unless the name it does
+ * carry is a series this library already has under that very name, in which
+ * case the file belongs to that one and applying it here would graft one
+ * series' identity onto another. Anything else is a guess we refuse to make.
  */
-function resolveSeriesTitle(
+async function resolveSeriesTitle(
   entry: PendingSeriesFile,
   titlesByKey: Map<string, string>,
   pendingCount: number
-): string | undefined {
-  const ownKey = normalizeSeriesKey(sanitizeTitleSegment(entry.file.series_title));
-  const named = titlesByKey.get(ownKey);
+): Promise<string | undefined> {
+  const ownTitle = sanitizeTitleSegment(entry.file.series_title);
+  const named = titlesByKey.get(normalizeSeriesKey(ownTitle));
   if (named) return named;
-  if (pendingCount === 1 && titlesByKey.size === 1) return [...titlesByKey.values()][0];
+
+  if (pendingCount === 1 && titlesByKey.size === 1) {
+    if (await seriesExistsLocally(ownTitle)) return undefined;
+    return [...titlesByKey.values()][0];
+  }
   return undefined;
 }
 
 /**
- * Apply and drain the batch. Facts merge through `upsertFromSeriesFile` (strictly
+ * Apply and drain the batch — the drain happens even when nothing could be
+ * applied, so a batch never leaks into the next import. Facts merge through `upsertFromSeriesFile` (strictly
  * newer wins), and the file is cached in `series_index` so this device reports
  * the same index as the one that wrote it — even though every volume of the
  * batch is installed locally and needs nothing from it.
@@ -160,7 +187,7 @@ export async function applyImportedSeriesFiles(): Promise<void> {
   for (const title of titles) titlesByKey.set(normalizeSeriesKey(title), title);
 
   for (const entry of entries) {
-    const seriesTitle = resolveSeriesTitle(entry, titlesByKey, entries.length);
+    const seriesTitle = await resolveSeriesTitle(entry, titlesByKey, entries.length);
     if (!seriesTitle) {
       console.warn(
         `[Import] Could not tell which series the ${SERIES_FILE_NAME} at '${entry.path}' belongs to; ignoring it`
@@ -170,10 +197,15 @@ export async function applyImportedSeriesFiles(): Promise<void> {
 
     try {
       await upsertFromSeriesFile(seriesTitle, entry.file);
+      const key = normalizeSeriesKey(seriesTitle);
+      // Merge over whatever is cached: an imported file only knows the volumes
+      // of the library that exported it, so caching it as-is would drop the
+      // entries a cloud fetch had already collected for this series.
+      const cached = await getSeriesIndex(key);
       await putSeriesIndex({
-        series_key: normalizeSeriesKey(seriesTitle),
+        series_key: key,
         series_title: seriesTitle,
-        file: entry.file,
+        file: mergeSeriesFileForCache(seriesTitle, entry.file, cached?.file),
         source: {
           provider: 'import',
           path: entry.path,

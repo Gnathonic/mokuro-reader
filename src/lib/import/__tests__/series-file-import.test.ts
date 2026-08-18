@@ -54,7 +54,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 
 import { db } from '$lib/catalog/db';
 import { compressVolume } from '$lib/util/compress-volume';
-import { importFiles } from '../import-service';
+import { cancelQueuedImports, importFiles, importQueue } from '../import-service';
 import {
   applyImportedSeriesFiles,
   parseImportedSeriesFile,
@@ -250,7 +250,65 @@ describe('importing a volume archive that carries series.json', () => {
     expect((await db.series_metadata.get('one piece'))?.external_ids).toEqual({ anilist: 30013 });
   });
 
-  it('ignores a series.json dropped next to the archive without breaking pairing', async () => {
+  it('applies the sidecar even while a failed item is pinned in the queue', async () => {
+    importQueue.set([
+      {
+        id: 'stuck',
+        source: {} as never,
+        provider: 'local-import',
+        status: 'error',
+        progress: 0,
+        displayTitle: 'An earlier import that failed',
+        errorMessage: 'boom'
+      }
+    ]);
+
+    const archive = await buildVolumeArchive('Vol 1.cbz', mokuroText, [
+      { path: 'series.json', text: JSON.stringify(seriesFileFor('One Piece')) }
+    ]);
+
+    await importFiles([archive]);
+
+    expect((await db.series_metadata.get('one piece'))?.external_ids).toEqual({ anilist: 30013 });
+    importQueue.set([]);
+  });
+
+  it('merges the imported index over the cached one instead of shrinking it', async () => {
+    await db.series_index.put({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: {
+        ...seriesFileFor('One Piece'),
+        volumes: [
+          {
+            volume_uuid: 'cloud-only-uuid',
+            volume_title: 'Vol 9',
+            page_count: 2,
+            character_count: 7,
+            page_char_counts: [3, 7],
+            mokuro_version: '0.2.1'
+          }
+        ]
+      },
+      source: { provider: 'mega', path: 'One Piece/series.json', size: 5, modifiedTime: 'x' },
+      fetched_at: '2026-08-16T00:00:00.000Z'
+    });
+
+    const archive = await buildVolumeArchive('Vol 1.cbz', mokuroText, [
+      { path: 'series.json', text: JSON.stringify(seriesFileFor('One Piece')) }
+    ]);
+
+    await importFiles([archive]);
+
+    const index = await db.series_index.get('one piece');
+    expect(index?.file.volumes.map((v) => v.volume_uuid).sort()).toEqual([
+      'cloud-only-uuid',
+      'volume-uuid'
+    ]);
+    expect(index?.source.provider).toBe('import');
+  });
+
+  it('does not break pairing when a series.json is dropped next to the archive', async () => {
     const file = seriesFileFor('One Piece');
     const archive = await buildVolumeArchive('Vol 1.cbz', mokuroText);
     const sidecar = new File([JSON.stringify(file)], 'series.json', {
@@ -353,6 +411,29 @@ describe('keying a series.json to a series of the batch', () => {
     const stored = await db.series_metadata.get('new title');
     expect(stored?.external_ids).toEqual({ anilist: 30013 });
     expect((await db.series_index.get('new title'))?.series_title).toBe('New Title');
+  });
+
+  it('refuses the single-series fallback when the file names a series we already have', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.volumes.put({ ...volume, series_title: 'Bleach', volume_uuid: 'bleach-vol' });
+    record('Bleach');
+    recordImportedSeriesTitle('One Piece');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.get('one piece')).toBeUndefined();
+    expect(await db.series_index.count()).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelling the queue drops the pending files', async () => {
+    record('One Piece');
+    cancelQueuedImports();
+    recordImportedSeriesTitle('One Piece');
+
+    await applyImportedSeriesFiles();
+
+    expect(await db.series_metadata.count()).toBe(0);
   });
 
   it('drains the batch so a later import cannot reuse it', async () => {

@@ -2,14 +2,18 @@ import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { SERIES_FILE_NAME, buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { SERIES_FILE_NAME, buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 import { buildMokuroMetadata } from './mokuro-metadata';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
   thumbnailFile: File | null;
-  /** The series' `series.json` — one per series, not per volume. */
+  /**
+   * The series' `series.json`, and only when `loadVolumeSidecars` was asked for
+   * it: building it reads the whole volumes table, which a per-volume caller
+   * (the multi-volume export loop) must not pay N times for one series.
+   */
   seriesFile: File | null;
 }
 
@@ -27,16 +31,13 @@ export async function buildSeriesFileForExport(
   const key = normalizeSeriesKey(seriesTitle);
   if (!key) return undefined;
 
-  const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
-  const localVolumes = allVolumes.filter(
-    (volume) => normalizeSeriesKey(volume.series_title) === key
-  );
-  const [meta, cached] = await Promise.all([
+  const [volumes, meta, cached] = await Promise.all([
+    db.volumes.toArray() as Promise<VolumeMetadata[]>,
     getSeriesMetadataForTitle(seriesTitle),
     getSeriesIndex(key)
   ]);
 
-  return buildSeriesFile({ seriesTitle, meta, localVolumes, existing: cached?.file });
+  return buildSeriesFileFrom({ seriesTitle, meta, volumes, existing: cached?.file });
 }
 
 /** The same file as a downloadable/embeddable sidecar, or `null`. */
@@ -58,7 +59,14 @@ function extensionFromMimeType(contentType: string): string {
   return 'webp';
 }
 
-export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
+/**
+ * @param options.seriesFile Also build the series' `series.json` (off by default
+ *   — see `VolumeSidecarFiles.seriesFile`).
+ */
+export async function loadVolumeSidecars(
+  volumeUuid: string,
+  options: { seriesFile?: boolean } = {}
+): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
@@ -84,7 +92,7 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
     });
   }
 
-  const seriesFile = await loadSeriesFileSidecar(volume.series_title);
+  const seriesFile = options.seriesFile ? await loadSeriesFileSidecar(volume.series_title) : null;
 
   return { mokuroFile, thumbnailFile, seriesFile };
 }

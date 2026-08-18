@@ -182,6 +182,24 @@ describe('series index store', () => {
       ).toBe(true);
     });
 
+    it('is true when the record was cached from another source than this provider', () => {
+      const rec = record({
+        source: {
+          provider: 'import',
+          path: 'series.json',
+          size: 100,
+          modifiedTime: '2026-08-17T00:00:00.000Z'
+        }
+      });
+      const stamp = { size: 100, modifiedTime: '2026-08-17T00:00:00.000Z' };
+
+      // An import-sourced (or other-provider) record never saw this cloud file.
+      expect(indexNeedsRefresh(rec, stamp, 'mega')).toBe(true);
+      expect(indexNeedsRefresh(rec, stamp, 'import')).toBe(false);
+      // No provider given: the stamp alone decides, as before.
+      expect(indexNeedsRefresh(rec, stamp)).toBe(false);
+    });
+
     it('is false when size and modifiedTime (normalized) match', () => {
       const rec = record({
         source: { provider: 'mega', path: 'x', size: 100, modifiedTime: '2026-08-17T00:00:00.000Z' }

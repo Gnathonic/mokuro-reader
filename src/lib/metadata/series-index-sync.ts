@@ -213,7 +213,7 @@ async function runRefresh(
     if (!isIndexable(folder)) continue;
     const sidecar = folder.sidecar!;
     const stamp = { size: sidecar.size ?? 0, modifiedTime: sidecar.modifiedTime ?? '' };
-    if (!indexNeedsRefresh(cachedByKey.get(key), stamp)) continue;
+    if (!indexNeedsRefresh(cachedByKey.get(key), stamp, provider.type)) continue;
     tasks.push({ key, title: folder.title, sidecar, stamp });
   }
 

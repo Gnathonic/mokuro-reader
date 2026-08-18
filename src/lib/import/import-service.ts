@@ -14,7 +14,8 @@ import {
   applyImportedSeriesFiles,
   collectSeriesFileFromBytes,
   collectSeriesFileFromFile,
-  recordImportedSeriesTitle
+  recordImportedSeriesTitle,
+  resetImportedSeriesFiles
 } from './series-file-import';
 import { isSeriesFilePath } from '$lib/metadata/series-file';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
@@ -151,6 +152,18 @@ function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolea
 
 function getThumbnailCandidatePaths(basePath: string): string[] {
   return [`${basePath}.webp`];
+}
+
+/**
+ * Is work still outstanding in the queue?
+ *
+ * Deliberately NOT `queue.length === 0`: failed items stay in the store until
+ * the user clears them, and a pinned `error` item must not stop later imports
+ * from applying their `series.json` (the pending files would then sit in the
+ * batch and risk being keyed to an unrelated import).
+ */
+function hasUnfinishedImports(): boolean {
+  return get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing');
 }
 
 /**
@@ -1083,7 +1096,7 @@ export async function importArchiveWithOptionalMokuro(
   } finally {
     isImporting.set(false);
     currentImport.set(null);
-    if (get(importQueue).length === 0) {
+    if (!hasUnfinishedImports()) {
       await applyImportedSeriesFiles();
     }
   }
@@ -1099,7 +1112,7 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
     // that are not saved yet, so its `series.json` files wait for the queue to
     // drain — `processQueue` applies them there, once every volume of the batch
     // has a stored title to key them to.
-    if (get(importQueue).length === 0) {
+    if (!hasUnfinishedImports()) {
       await applyImportedSeriesFiles();
     }
   }
@@ -1292,4 +1305,7 @@ export function clearCompletedImports(): void {
  */
 export function cancelQueuedImports(): void {
   importQueue.update((q) => q.filter((item) => item.status === 'processing'));
+  // The volumes those items would have saved are never coming, so any
+  // `series.json` still waiting for them has nothing left to key onto.
+  resetImportedSeriesFiles();
 }

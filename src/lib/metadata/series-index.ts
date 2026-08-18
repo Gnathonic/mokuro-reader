@@ -102,7 +102,8 @@ function toEpoch(value: string): number | undefined {
 /**
  * Should this series' `series.json` be re-downloaded?
  *
- * True when there is no cached record, or when the cloud file's `size` or
+ * True when there is no cached record, when the record was cached from another
+ * source than `provider` (see below), or when the cloud file's `size` or
  * `modifiedTime` differs from what the cached record was fetched at.
  * `modifiedTime` is compared as parsed instants (epoch ms), not strings, so
  * e.g. `2026-08-17T00:00:00.000Z` and `2026-08-17T00:00:00+00:00` — the same
@@ -115,9 +116,14 @@ function toEpoch(value: string): number | undefined {
  */
 export function indexNeedsRefresh(
   rec: SeriesIndexRecord | undefined,
-  cloud: { size: number; modifiedTime: string }
+  cloud: { size: number; modifiedTime: string },
+  provider?: string
 ): boolean {
   if (!rec) return true;
+  // A record cached from somewhere else — a local import, or another provider's
+  // account — says nothing about THIS provider's copy, whose size/mtime it never
+  // saw. Treat it as stale so the cloud file is actually fetched.
+  if (provider !== undefined && rec.source.provider !== provider) return true;
   if (rec.source.size !== cloud.size) return true;
 
   const cachedEpoch = toEpoch(rec.source.modifiedTime);

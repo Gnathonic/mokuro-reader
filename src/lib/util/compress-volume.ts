@@ -1,7 +1,7 @@
 import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
 import type { VolumeMetadata } from '$lib/types';
-import { SERIES_FILE_NAME, buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { SERIES_FILE_NAME, buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 
@@ -235,16 +235,18 @@ async function buildSeriesFileFromDb(
   const key = normalizeSeriesKey(seriesTitle);
   if (!key) return undefined;
 
-  const [meta, cached, allVolumes] = await Promise.all([
+  const [meta, cached, volumes] = await Promise.all([
     db.table('series_metadata').get(key),
     db.table('series_index').get(key),
     db.table('volumes').toArray()
   ]);
-  const localVolumes = (allVolumes as VolumeMetadata[]).filter(
-    (volume) => normalizeSeriesKey(volume.series_title) === key
-  );
 
-  return buildSeriesFile({ seriesTitle, meta, localVolumes, existing: cached?.file });
+  return buildSeriesFileFrom({
+    seriesTitle,
+    meta,
+    volumes: volumes as VolumeMetadata[],
+    existing: cached?.file
+  });
 }
 
 /**
