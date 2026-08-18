@@ -141,6 +141,23 @@ describe('detectTrackingUnit', () => {
     expect(detectTrackingUnit(['Series 300'], { total_volumes: 20 })).toBe('chapters');
   });
 
+  it('does not read an edition year as a chapter number', () => {
+    // 2016 > 41 volumes would otherwise "prove" this folder is chapters.
+    expect(detectTrackingUnit(['Berserk 2016'], { total_volumes: 41 })).toBe('volumes');
+    expect(
+      detectTrackingUnit(['Akira 1988', 'Akira 1990'], { total_volumes: 6, total_chapters: 120 })
+    ).toBe('volumes');
+    // …unless the title says chapter outright, where the number is meant.
+    expect(detectTrackingUnit(['Chapter 1988'], { total_volumes: 6, total_chapters: 2000 })).toBe(
+      'chapters'
+    );
+  });
+
+  it('needs a known volume count before reading numbers as chapters', () => {
+    // total_chapters alone says nothing about whether the FILES are chapters.
+    expect(detectTrackingUnit(['Series 300'], { total_chapters: 900 })).toBe('volumes');
+  });
+
   it('defaults to volumes with no titles, no numbers, or no totals', () => {
     expect(detectTrackingUnit([])).toBe('volumes');
     expect(detectTrackingUnit(['Extras', 'Omake'])).toBe('volumes');

@@ -91,6 +91,15 @@ export function extractVolumeNumber(volumeTitle: string, unit: TrackingUnit): nu
  * 3. Otherwise volumes — the common case and the safer default (AniList's
  *    `progressVolumes` is the field a manga reader expects to move).
  */
+/**
+ * A bare number that is far more likely to be the edition's year than its
+ * position — "Berserk 2016", "Akira (1988)". Only trusted as a number when the
+ * title also names a chapter outright.
+ */
+function isYearLike(n: number): boolean {
+  return n >= 1900 && n <= 2100;
+}
+
 export function detectTrackingUnit(
   volumeTitles: string[],
   totals?: { total_volumes?: number; total_chapters?: number }
@@ -102,13 +111,17 @@ export function detectTrackingUnit(
   for (const raw of volumeTitles) {
     const title = (raw ?? '').trim();
     if (!title) continue;
+    const chapterMarked = CHAPTER_MARKERS.some((pattern) => pattern.test(title));
     if (VOLUME_MARKERS.some((pattern) => pattern.test(title))) volumeVotes++;
-    else if (CHAPTER_MARKERS.some((pattern) => pattern.test(title))) chapterVotes++;
+    else if (chapterMarked) chapterVotes++;
     // Whichever unit can read the title's number: the volume reader stops at 3
     // digits (so it never mistakes a year for a number), and a four-digit
-    // chapter folder is exactly the case step 2 exists to catch.
+    // chapter folder is exactly the case step 2 exists to catch — but a bare
+    // year must not be read as a four-digit chapter number.
     const n = extractVolumeNumber(title, 'volumes') ?? extractVolumeNumber(title, 'chapters');
-    if (n !== undefined) largestBare = Math.max(largestBare, n);
+    if (n === undefined) continue;
+    if (isYearLike(n) && !chapterMarked) continue;
+    largestBare = Math.max(largestBare, n);
   }
 
   if (chapterVotes > volumeVotes) return 'chapters';
