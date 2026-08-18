@@ -4,45 +4,52 @@ import { tick } from 'svelte';
 
 // vi.hoisted: the vi.mock factories below are hoisted above this module's imports, so the
 // stores/spies they close over must be built here (same pattern as CatalogItem.shortcut.test.ts).
-const { updateSeriesMetadata, emitSeriesMetadata, seriesMetadataMap, catalogSettings } = vi.hoisted(
-  () => {
-    type Row = Record<string, unknown>;
-    const subscribers = new Set<(v: Map<string, Row>) => void>();
-    let value = new Map<string, Row>();
-    function createStore<T>(initial: T) {
-      let current = initial;
-      const subs = new Set<(v: T) => void>();
-      return {
-        subscribe(fn: (v: T) => void) {
-          subs.add(fn);
-          fn(current);
-          return () => subs.delete(fn);
-        },
-        set(v: T) {
-          current = v;
-          subs.forEach((fn) => fn(current));
-        }
-      };
-    }
+const {
+  updateSeriesMetadata,
+  emitSeriesMetadata,
+  seriesMetadataMap,
+  catalogSettings,
+  compositeCanvasProps
+} = vi.hoisted(() => {
+  type Row = Record<string, unknown>;
+  const subscribers = new Set<(v: Map<string, Row>) => void>();
+  let value = new Map<string, Row>();
+  function createStore<T>(initial: T) {
+    let current = initial;
+    const subs = new Set<(v: T) => void>();
     return {
-      updateSeriesMetadata: vi.fn(
-        async (_seriesTitle: string, _patch: unknown): Promise<unknown> => undefined
-      ),
-      emitSeriesMetadata: (next: Map<string, Row>) => {
-        value = next;
-        for (const fn of subscribers) fn(value);
+      subscribe(fn: (v: T) => void) {
+        subs.add(fn);
+        fn(current);
+        return () => subs.delete(fn);
       },
-      seriesMetadataMap: {
-        subscribe(fn: (v: Map<string, Row>) => void) {
-          subscribers.add(fn);
-          fn(value);
-          return () => subscribers.delete(fn);
-        }
-      },
-      catalogSettings: createStore<Record<string, unknown> | undefined>({ horizontalStep: 11 })
+      set(v: T) {
+        current = v;
+        subs.forEach((fn) => fn(current));
+      }
     };
   }
-);
+  return {
+    updateSeriesMetadata: vi.fn(
+      async (_seriesTitle: string, _patch: unknown): Promise<unknown> => undefined
+    ),
+    emitSeriesMetadata: (next: Map<string, Row>) => {
+      value = next;
+      for (const fn of subscribers) fn(value);
+    },
+    seriesMetadataMap: {
+      subscribe(fn: (v: Map<string, Row>) => void) {
+        subscribers.add(fn);
+        fn(value);
+        return () => subscribers.delete(fn);
+      }
+    },
+    catalogSettings: createStore<Record<string, unknown> | undefined>({ horizontalStep: 11 }),
+    // Props CompositeCanvas was last mounted with — real drawing is a canvas no-op in
+    // jsdom, so this is the only way to see what the showcase actually asked it to draw.
+    compositeCanvasProps: [] as Record<string, unknown>[]
+  };
+});
 
 // The real spine-offsets module stays in play (debounce, clamps, patch building); only the
 // Dexie-backed store underneath it is stubbed.
@@ -52,6 +59,19 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: vi.fn(async () => null),
   getCachedCloudThumbnail: vi.fn(() => undefined)
 }));
+// Transparent pass-through wrapper — records the props each mount receives, then delegates
+// to the real component so rendering/behavior is untouched.
+vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
+  return {
+    ...actual,
+    default: (anchor: unknown, props: Record<string, unknown>) => {
+      compositeCanvasProps.push(props);
+      return Real(anchor, props);
+    }
+  };
+});
 
 import SeriesSpineShowcase from '../SeriesSpineShowcase.svelte';
 import type { VolumeMetadata } from '$lib/types';
@@ -59,11 +79,13 @@ import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites } from '$lib/metadata/spine-offsets';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 
-// Geometry the component renders with: a 250×360 thumbnail drawn at a uniform 200px tall
-// spine is 138.89px wide, and the default 11 % step puts spine i at i × 15.28px. So
-// x = 150 is past volume 0's right edge but still inside volume 1's — the deterministic
-// way to hover a specific spine in jsdom (where layout is all zeroes).
-const HIT_VOLUME_1_X = 150;
+// Geometry the component renders with: at the default 1× zoom, a 250×360 thumbnail is
+// drawn a full 250px wide (card scale), and the default 11 % step only moves spine i by
+// i × 27.5px — nowhere near enough to clear the spine ahead of it. So volume 0's band is
+// [0, 250] and volume 1's is [27.5, 277.5]: x = 260 is past volume 0's right edge but
+// still inside volume 1's — the deterministic way to hover a specific spine in jsdom
+// (where layout is all zeroes).
+const HIT_VOLUME_1_X = 260;
 
 class IntersectionObserverStub {
   observe() {}
@@ -134,15 +156,23 @@ function wheel(
     deltaY = 0,
     deltaX = 0,
     shiftKey = false,
-    altKey = false
-  }: { deltaY?: number; deltaX?: number; shiftKey?: boolean; altKey?: boolean } = {}
+    altKey = false,
+    ctrlKey = false
+  }: {
+    deltaY?: number;
+    deltaX?: number;
+    shiftKey?: boolean;
+    altKey?: boolean;
+    ctrlKey?: boolean;
+  } = {}
 ): Event {
   const e = new Event('wheel', { bubbles: true, cancelable: true });
   Object.defineProperties(e, {
     deltaY: { value: deltaY },
     deltaX: { value: deltaX },
     shiftKey: { value: shiftKey },
-    altKey: { value: altKey }
+    altKey: { value: altKey },
+    ctrlKey: { value: ctrlKey }
   });
   el.dispatchEvent(e);
   return e;
@@ -192,6 +222,7 @@ describe('SeriesSpineShowcase', () => {
     vi.mocked(fetchCloudThumbnail).mockClear();
     catalogSettings.set({ horizontalStep: 11 });
     emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
   });
 
   afterEach(async () => {
@@ -429,5 +460,106 @@ describe('SeriesSpineShowcase', () => {
     const { queryByText } = renderShowcase();
     await tick();
     expect(queryByText(/Showing first/)).toBeNull();
+  });
+
+  it('never asks CompositeCanvas to draw a drop shadow', async () => {
+    renderShowcase();
+    await tick();
+
+    expect(compositeCanvasProps.at(-1)?.dropShadow).toBe(false);
+  });
+
+  it('renders spines at 1× card scale by default', async () => {
+    const { strip } = renderShowcase([volume({ volume_uuid: 'uuid-0' })]);
+    await tick();
+
+    const canvasWrap = strip.querySelector('div.relative') as HTMLElement;
+    expect(canvasWrap.style.width).toBe('250px');
+    expect(canvasWrap.style.height).toBe('360px');
+  });
+
+  it('zoom + widens the spine by ×1.25', async () => {
+    const { strip, getByLabelText, getByText } = renderShowcase([
+      volume({ volume_uuid: 'uuid-0' })
+    ]);
+    await tick();
+
+    await fireEvent.click(getByLabelText('Zoom in'));
+    await tick();
+
+    const canvasWrap = strip.querySelector('div.relative') as HTMLElement;
+    expect(canvasWrap.style.width).toBe('312.5px');
+    expect(getByText('125%')).toBeTruthy();
+  });
+
+  it('zoom + clamps at 3×', async () => {
+    const { getByLabelText, getByText } = renderShowcase();
+    await tick();
+
+    const zoomIn = getByLabelText('Zoom in');
+    for (let i = 0; i < 10; i++) await fireEvent.click(zoomIn);
+
+    expect(getByText('300%')).toBeTruthy();
+  });
+
+  it('zoom − clamps at 0.5×', async () => {
+    const { getByLabelText, getByText } = renderShowcase();
+    await tick();
+
+    const zoomOut = getByLabelText('Zoom out');
+    for (let i = 0; i < 10; i++) await fireEvent.click(zoomOut);
+
+    expect(getByText('50%')).toBeTruthy();
+  });
+
+  it('"Reset zoom" and double-clicking the readout both return to 1×', async () => {
+    const { getByLabelText, getByText } = renderShowcase();
+    await tick();
+
+    await fireEvent.click(getByLabelText('Zoom in'));
+    await tick();
+    expect(getByText('125%')).toBeTruthy();
+
+    await fireEvent.click(getByText('Reset zoom'));
+    await tick();
+    expect(getByText('100%')).toBeTruthy();
+
+    await fireEvent.click(getByLabelText('Zoom in'));
+    await tick();
+    expect(getByText('125%')).toBeTruthy();
+
+    await fireEvent.dblClick(getByText('125%'));
+    await tick();
+    expect(getByText('100%')).toBeTruthy();
+  });
+
+  it('ctrl+wheel zooms the shelf and prevents the default (page) zoom', async () => {
+    const { strip, getByText } = renderShowcase();
+    await tick();
+
+    const e = wheel(strip, { deltaY: -1, ctrlKey: true });
+    await tick();
+
+    expect(e.defaultPrevented).toBe(true);
+    expect(getByText('125%')).toBeTruthy();
+  });
+
+  it('keeps volume nudges in card px no matter the zoom level', async () => {
+    const { strip, getByLabelText } = renderShowcase();
+    await tick();
+
+    // Zoom in first: the +1 px nudge below must still land in storage as 1, not scaled.
+    await fireEvent.click(getByLabelText('Zoom in'));
+    await tick();
+
+    // Geometry at 1.25× zoom: spine width 312.5, 11% step -> 34.375px/volume. Volume 0's
+    // band is [0, 312.5] and volume 1's is [34.375, 346.875] — 320 clears volume 0 but is
+    // still inside volume 1.
+    pointer(strip, 'pointermove', { clientX: 320 });
+    const e = wheel(strip, { deltaY: -1, shiftKey: true, altKey: true });
+    await flushSpineOffsetWrites();
+
+    expect(e.defaultPrevented).toBe(true);
+    expect(resolvePatch(0)).toEqual({ volume_offsets: { 'uuid-1': 1 } });
   });
 });

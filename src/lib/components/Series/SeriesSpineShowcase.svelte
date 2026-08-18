@@ -50,14 +50,12 @@
    */
   const MAX_SHOWCASE_VOLUMES = 60;
 
-  // Card-space geometry (what the offsets are expressed in) and the scale this strip
+  // Card-space geometry (what the offsets are expressed in) and the zoom this strip
   // draws at. Per-volume nudges are stored in card pixels, so they are scaled here too:
-  // the strip is a zoomed-out view of the card's stack, not a different layout.
+  // the strip is a zoomed view of the card's stack, not a different layout. Zoom 1×
+  // means "card scale" — a spine is drawn exactly `BASE_WIDTH` px wide.
   const BASE_WIDTH = 250;
   const BASE_HEIGHT = 360;
-  const SPINE_HEIGHT = 200;
-  const SCALE = SPINE_HEIGHT / BASE_HEIGHT;
-  const SPINE_WIDTH = BASE_WIDTH * SCALE;
 
   const ADJUST_STEP = 0.25; // % of the horizontal step, per wheel tick
   const VOLUME_ADJUST_STEP = 1; // card px, per wheel tick
@@ -68,6 +66,41 @@
    * full range for anyone who wants it (both paths clamp to the storable limit).
    */
   const SLIDER_LIMIT = Math.min(25, SPINE_OFFSET_LIMIT);
+
+  // ── Zoom: a device-local, session-only render scale ────────────────────────────────────
+  // Not persisted anywhere (not synced, not in miscSettings) — it resets to 1× every time
+  // the showcase mounts. Offsets are unaffected: they stay in card px and only the drawing
+  // scales, so a +1 px nudge remains +1 px in storage no matter the zoom.
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3;
+  const ZOOM_STEP_IN = 1.25;
+  const ZOOM_STEP_OUT = 0.8;
+  const ZOOM_DEFAULT = 1;
+
+  let zoom = $state(ZOOM_DEFAULT);
+
+  function clampZoom(z: number): number {
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  }
+
+  function setZoom(next: number) {
+    zoom = clampZoom(next);
+  }
+
+  function zoomIn() {
+    setZoom(zoom * ZOOM_STEP_IN);
+  }
+
+  function zoomOut() {
+    setZoom(zoom * ZOOM_STEP_OUT);
+  }
+
+  function resetZoom() {
+    zoom = ZOOM_DEFAULT;
+  }
+
+  let spineWidth = $derived(BASE_WIDTH * zoom);
+  let spineHeight = $derived(BASE_HEIGHT * zoom);
 
   let sortedVolumes = $derived([...volumes].sort(sortVolumes).slice(0, MAX_SHOWCASE_VOLUMES));
 
@@ -124,7 +157,7 @@
     const dims = thumbnailDimensions.get(volumeUuid);
     if (!dims) return null;
     const aspectRatio = dims.width / dims.height;
-    return { width: Math.min(SPINE_HEIGHT * aspectRatio, SPINE_WIDTH), height: SPINE_HEIGHT };
+    return { width: Math.min(spineHeight * aspectRatio, spineWidth), height: spineHeight };
   }
 
   // ── Offsets: optimistic local state over the synced record ────────────────────────────
@@ -207,7 +240,7 @@
 
   // ── Layout ────────────────────────────────────────────────────────────────────────────
   let horizontalStepPx = $derived(
-    (SPINE_WIDTH * (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust)) / 100
+    (spineWidth * (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust)) / 100
   );
   let stepSizes = $derived({
     horizontal: horizontalStepPx,
@@ -219,19 +252,19 @@
     new Map(
       [...volumeOffsetsByIndex(showcaseVolumes, volumeOffsetsByUuid)].map(([index, px]) => [
         index,
-        px * SCALE
+        px * zoom
       ])
     )
   );
   let layout = $derived(
     computeStackLayout({
       count: showcaseVolumes.length,
-      baseWidth: SPINE_WIDTH,
+      baseWidth: spineWidth,
       horizontalStepPx,
       volumeOffsetsByIndex: scaledVolumeOffsets
     })
   );
-  let canvasWidth = $derived(Math.max(SPINE_WIDTH, layout.totalWidth));
+  let canvasWidth = $derived(Math.max(spineWidth, layout.totalWidth));
   /**
    * CompositeCanvas right-aligns the last spine to `canvasWidth`; mirror that shift here so
    * the hit test agrees with what is actually painted (it is 0 whenever the last volume is
@@ -281,7 +314,7 @@
     const x = clientX - rect.left + el.scrollLeft - alignShift;
     // Past every spine's right edge means the empty tail of the strip: keep the back-most
     // volume targeted, the same fallback the catalog card uses.
-    hoveredIndex = hitTestStack(layout, x, SPINE_WIDTH) ?? count - 1;
+    hoveredIndex = hitTestStack(layout, x, spineWidth) ?? count - 1;
   }
 
   function stripOverflows(): boolean {
@@ -293,6 +326,15 @@
     // Holding shift makes some browsers (Chrome) report a vertical wheel as deltaX, so the
     // gesture's direction has to come from whichever axis actually carries it.
     const delta = e.deltaY || e.deltaX;
+
+    if (e.ctrlKey) {
+      // Browsers report both Ctrl+wheel and trackpad pinch as a wheel event with ctrlKey
+      // set, specifically so pages can treat them as zoom instead of scroll — preventDefault
+      // here also stops the browser's own page-zoom from firing alongside ours.
+      e.preventDefault();
+      setZoom(zoom * (delta > 0 ? ZOOM_STEP_OUT : ZOOM_STEP_IN));
+      return;
+    }
 
     if (e.shiftKey && e.altKey && hoveredVolume) {
       e.preventDefault();
@@ -411,11 +453,26 @@
     <Button size="xs" color="alternative" onclick={resetAllVolumeOffsets}>
       Reset all volume offsets
     </Button>
+
+    <span class="mx-1 h-4 w-px bg-gray-300 dark:bg-gray-700" aria-hidden="true"></span>
+
+    <span class="text-xs text-gray-500 dark:text-gray-400">Zoom</span>
+    <Button size="xs" color="alternative" aria-label="Zoom out" onclick={zoomOut}>−</Button>
+    <button
+      type="button"
+      class="w-12 text-right font-mono text-xs text-gray-600 dark:text-gray-300"
+      ondblclick={resetZoom}
+      title="Double-click to reset zoom"
+    >
+      {Math.round(zoom * 100)}%
+    </button>
+    <Button size="xs" color="alternative" aria-label="Zoom in" onclick={zoomIn}>+</Button>
+    <Button size="xs" color="alternative" onclick={resetZoom}>Reset zoom</Button>
   </div>
 
   <p class="text-xs text-gray-500 dark:text-gray-400">
     Shift+scroll: series offset · Alt+Shift+scroll over a volume: nudge that volume ·
-    Alt+Shift+right-click: reset it
+    Alt+Shift+right-click: reset it · Ctrl+scroll: zoom the shelf
   </p>
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -425,7 +482,7 @@
     class="spine-strip overflow-x-auto overflow-y-hidden rounded-lg bg-gray-100 dark:bg-gray-900"
     class:cursor-grabbing={dragging}
     class:cursor-grab={!dragging}
-    style="height: {SPINE_HEIGHT + 18}px; touch-action: pan-x;"
+    style="height: {spineHeight + 18}px; touch-action: pan-x;"
     role="group"
     aria-label="Spine shelf"
     tabindex="0"
@@ -441,15 +498,16 @@
     oncontextmenu={handleContextMenu}
     onkeydown={handleKeydown}
   >
-    <div class="relative" style="width: {canvasWidth}px; height: {SPINE_HEIGHT}px;">
+    <div class="relative" style="width: {canvasWidth}px; height: {spineHeight}px;">
       <CompositeCanvas
         volumes={showcaseVolumes}
         {canvasWidth}
-        canvasHeight={SPINE_HEIGHT}
+        canvasHeight={spineHeight}
         {getCanvasDimensions}
         {stepSizes}
         volumeOffsets={scaledVolumeOffsets}
         highlightIndex={hoveredIndex}
+        dropShadow={false}
       />
     </div>
   </div>
