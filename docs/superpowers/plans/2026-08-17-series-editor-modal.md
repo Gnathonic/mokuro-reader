@@ -107,6 +107,35 @@
 
 - [ ] Steps: failing tests (prefill from meta; blur saves the patch with blank keys omitted; synonyms parsed/deduped; typing then an external meta emission does not clobber the draft) → run → implement → mount in the modal → run + `npm run check` + prettier → commit `feat(series): manual alt titles and synonyms in the series editor`.
 
+### Task 7: Persist spine offsets per series (synced) and make the catalog card read/write them
+
+**Files:**
+
+- Modify: `src/lib/metadata/types.ts` (`SeriesMetadata.spine_offset?: number` — series horizontal-step adjust in percent, replaces the card's in-memory `hOffsetAdjust`; `SeriesMetadata.volume_offsets?: Record<string, number>` — per-volume horizontal nudge in px keyed by `volume_uuid`), `src/lib/metadata/sanitize.ts` + `merge.ts` (cloud boundary: finite numbers, clamp `spine_offset` to [-50, 50], `volume_offsets` values to [-500, 500], drop non-string keys)
+- Create: `src/lib/metadata/spine-offsets.ts` (+ test): `getSpineOffsets(meta) → { spineOffset: number; volumeOffsets: Record<string, number> }`; `scheduleSpineOffsetWrite(seriesTitle, patch: { spineOffset?: number; volumeOffsets?: Record<string, number> })` — coalesces wheel ticks per series (300 ms trailing debounce) into ONE `updateSeriesMetadata` functional patch (`(existing) => ({ spine_offset, volume_offsets: {...existing.volume_offsets, ...} })`; a value of `0` deletes the volume key; a full reset passes `volume_offsets: {}`); `flushSpineOffsetWrites()` for tests/unmount
+- Modify: `src/lib/components/CatalogItem.svelte`: replace the in-memory `hOffsetAdjust`/index-keyed `volumeOffsets` with values derived from `$seriesMetadataMap.get(seriesKey)` via `getSpineOffsets` (convert the uuid map to the index map the canvas expects for the current `stackedVolumes` order — one small `$derived`), and write back through `scheduleSpineOffsetWrite` on shift+wheel / alt+shift+wheel / the two right-click resets. Keep a local optimistic copy so the wheel feels instant while the debounced write lands (mirror the pattern already used for drafts: local `$state` seeded from the store, resynced when the store emits and no write is pending).
+- Tests: `spine-offsets.test.ts` (debounce coalescing, zero deletes key, reset clears map, functional patch preserves other fields); `merge.test.ts` (sanitiser); `CatalogItem` test (shift+wheel → scheduled write with new spineOffset; alt+shift+wheel over volume index 1 → volume_offsets keyed by that volume's uuid).
+
+**Interfaces (Produces):** the two `SeriesMetadata` fields above; `getSpineOffsets`, `scheduleSpineOffsetWrite`, `flushSpineOffsetWrites`; the index-map conversion `volumeOffsetsByIndex(volumes: VolumeMetadata[], byUuid: Record<string, number>): Map<number, number>` (pure, exported from `spine-offsets.ts`).
+
+- [ ] Steps: failing tests → implement → full suite + `npm run check` + prettier → commit `feat(catalog): persist per-series spine offsets (series % and per-volume px) in synced metadata`.
+
+### Task 8: `SeriesSpineShowcase` in the series editor
+
+**Files:**
+
+- Create: `src/lib/util/spine-stack-layout.ts` (+ test): extract from `CatalogItem.svelte` the PURE geometry it needs shared — `computeStackLayout({ count, baseWidth, horizontalStepPx, volumeOffsetsByIndex }) → { lefts: number[]; totalWidth: number }` and `hitTestStack(layout, x, baseWidth) → index | null` (front-to-back as today). Behaviour-preserving: `CatalogItem` switches its `handleMouseMove` hit test to `hitTestStack` with identical results (existing behaviour unchanged).
+- Create: `src/lib/components/Series/SeriesSpineShowcase.svelte` (+ test): props `{ seriesTitle: string; volumes: VolumeMetadata[] }`. Renders ALL volumes (local + cloud placeholders, sorted with `sortVolumes`; placeholders enriched with `fetchCloudThumbnail` like the card, capped at 60 to bound memory) through `CompositeCanvas` in spine mode (vertical step 0, uniform height, `stackCount` ignored — all volumes), inside a horizontally scrollable strip (`overflow-x-auto`, min-height fixed). Controls above the strip: series offset `Range` slider (−25 … 25 %, step 0.25) + numeric readout + "Reset"; "Reset all volume offsets" button; hint text "Shift+scroll: series offset · Alt+Shift+scroll over a volume: nudge that volume · Alt+Shift+right-click: reset it". Wheel handling on the strip (non-passive): shift+wheel → series offset ±0.25 % (`preventDefault`); alt+shift+wheel over a hovered volume → that volume ±1 px; plain wheel → default (no preventDefault; horizontal trackpad pans the strip). Alt+shift+right-click over a volume → reset that volume; shift+right-click → reset series offset. Hovered volume gets `highlightIndex` + a small caption "Vol N · +4 px". All writes via `scheduleSpineOffsetWrite`; local optimistic state as in Task 7.
+- Modify: `src/lib/components/Series/SeriesEditorModal.svelte` (mount the showcase as its own section "Shelf" between "Titles & AniList" and "Tracking"; inside `{#key seriesTitle}`), `SeriesEditorModal.test.ts` (mock the showcase's heavy deps or assert it mounts).
+- Tests: `spine-stack-layout.test.ts` (lefts/totalWidth with and without offsets; hit test edges; identical to the card's previous inline math for a fixture); `SeriesSpineShowcase.test.ts` (mock `CompositeCanvas`, `cloud-thumbnails`, `spine-offsets`; assert: slider change → `scheduleSpineOffsetWrite({spineOffset})`; shift+wheel → ±0.25; alt+shift+wheel over index 1 (stub hit test) → volume write; resets; plain wheel not prevented).
+
+- [ ] Steps: failing tests → implement → full suite + `npm run check` + prettier → commit `feat(series): scrollable spine showcase with series/volume offset controls in the editor`.
+
+### Task 9: Verification for Tasks 7–8
+
+- [ ] Playwright (dedicated port, not 5173): import a 3-volume series; catalog card shift+scroll → reload → the offset persists (card and IndexedDB `series_metadata.spine_offset`); open the editor → "Shelf" shows 3 spines; slider to +5 → card updates live; alt+shift+wheel over volume 2 → `volume_offsets[uuid]` written; "Reset all volume offsets" clears; Escape/close keeps values; record observed values + screenshots under `scratchpad/verify-e/`. Suite/check/prettier tails.
+- [ ] Commit any doc line: CHANGELOG `- Series editor: spine shelf with persistent series/volume offsets` (terse), `docs: spine showcase`.
+
 ### Task 5: End-to-end verification + docs touch-up
 
 - [ ] `npx vitest run && npm run check && npx prettier --check src README.md CHANGELOG.md docs` all green.
