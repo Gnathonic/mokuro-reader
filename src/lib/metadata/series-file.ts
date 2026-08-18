@@ -310,6 +310,10 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   if (!isNonNegativeInt(page_count) || !isNonNegativeInt(character_count)) return undefined;
   if (!Array.isArray(page_char_counts) || !page_char_counts.every(isNonNegativeInt))
     return undefined;
+  // A short array is normal (an image-only volume carries none); more counts
+  // than pages means the entry contradicts itself, and a placeholder built from
+  // it would report characters for pages that do not exist.
+  if (page_char_counts.length > page_count) return undefined;
   if (typeof mokuro_version !== 'string') return undefined;
 
   const entry: SeriesFileVolume = {

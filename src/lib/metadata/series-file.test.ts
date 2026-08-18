@@ -584,6 +584,28 @@ describe('parseSeriesFile', () => {
     ]);
   });
 
+  it('rejects an entry with more page_char_counts than pages, keeping the rest', () => {
+    // The two disagree, so the entry describes no real volume: a placeholder
+    // built from it would report characters for pages that do not exist.
+    const parsed = parseSeriesFile({
+      ...valid,
+      volumes: [
+        { ...valid.volumes[0], volume_uuid: 'overrun', page_count: 1, page_char_counts: [10, 20] },
+        valid.volumes[0]
+      ]
+    })!;
+    expect(parsed.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1']);
+  });
+
+  it('keeps an entry whose page_char_counts are short (image-only volumes carry none)', () => {
+    const parsed = parseSeriesFile({
+      ...valid,
+      volumes: [{ ...valid.volumes[0], page_count: 9, page_char_counts: [] }]
+    })!;
+    expect(parsed.volumes).toHaveLength(1);
+    expect(parsed.volumes[0].page_char_counts).toEqual([]);
+  });
+
   it('treats a non-array volumes field as an empty index', () => {
     expect(parseSeriesFile({ ...valid, volumes: 'nope' })?.volumes).toEqual([]);
   });
