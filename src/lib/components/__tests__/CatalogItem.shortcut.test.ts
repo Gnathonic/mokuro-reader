@@ -256,6 +256,19 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     expect(resolvePatch(0)).toEqual({ spine_offset: 0.75 });
   });
 
+  it('takes the wheel direction from deltaX when shift moved it there', async () => {
+    // Chrome reports a shift+wheel as horizontal scrolling: deltaY is 0 and the whole
+    // gesture arrives on deltaX.
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaX: 1, deltaY: 0 });
+    await flushSpineOffsetWrites();
+
+    expect(resolvePatch(0)).toEqual({ spine_offset: -0.25 });
+  });
+
   it('seeds the series offset from the stored record', async () => {
     emitSeriesMetadata(meta({ spine_offset: 4 }));
     const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });

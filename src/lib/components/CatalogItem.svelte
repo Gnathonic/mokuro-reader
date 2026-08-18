@@ -226,17 +226,21 @@
     if (!isHovered) return;
     updateModifierState(e);
 
+    // Holding shift makes some browsers (Chrome) report a vertical wheel as deltaX, so the
+    // gesture's direction has to come from whichever axis actually carries it.
+    const wheelDelta = e.deltaY || e.deltaX;
+
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+Scroll: adjust individual volume
       const target = stackedVolumes[hoveredVolumeIndex];
       if (!target) return;
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
+      const delta = wheelDelta > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
       setVolumeOffset(target.volume_uuid, (volumeOffsetsByUuid[target.volume_uuid] ?? 0) + delta);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+Scroll: adjust series offset
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP;
+      const delta = wheelDelta > 0 ? -ADJUST_STEP : ADJUST_STEP;
       // Clamped with the same rule the writer applies, so the stack never shows a value
       // that storage would refuse.
       hOffsetAdjust = clampSpineOffset(hOffsetAdjust + delta);

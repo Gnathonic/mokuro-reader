@@ -130,12 +130,17 @@ function renderShowcase(volumes = threeVolumes()) {
 /** jsdom has no WheelEvent init for deltas we control, so shape a plain Event. */
 function wheel(
   el: Element,
-  { deltaY = 0, shiftKey = false, altKey = false }: Partial<Record<string, unknown>> & object = {}
+  {
+    deltaY = 0,
+    deltaX = 0,
+    shiftKey = false,
+    altKey = false
+  }: { deltaY?: number; deltaX?: number; shiftKey?: boolean; altKey?: boolean } = {}
 ): Event {
   const e = new Event('wheel', { bubbles: true, cancelable: true });
   Object.defineProperties(e, {
     deltaY: { value: deltaY },
-    deltaX: { value: 0 },
+    deltaX: { value: deltaX },
     shiftKey: { value: shiftKey },
     altKey: { value: altKey }
   });
@@ -331,6 +336,50 @@ describe('SeriesSpineShowcase', () => {
     expect(strip.scrollLeft).toBe(120);
   });
 
+  it('lets the wheel through once the strip is clamped at an end', async () => {
+    // Otherwise the shelf traps the page scroll: the pointer sits over a strip that cannot
+    // move any further and the modal body never gets the wheel.
+    const { strip } = renderShowcase();
+    await tick();
+    makeScrollable(strip); // max scrollLeft = 800
+
+    expect(wheel(strip, { deltaY: -120 }).defaultPrevented).toBe(false); // already at 0
+    expect(wheel(strip, { deltaY: 400 }).defaultPrevented).toBe(true); // mid-strip: ours
+    expect(strip.scrollLeft).toBe(400);
+
+    wheel(strip, { deltaY: 900 }); // runs into the right end
+    expect(strip.scrollLeft).toBe(800);
+    expect(wheel(strip, { deltaY: 120 }).defaultPrevented).toBe(false);
+  });
+
+  it('reads the direction off deltaX when the browser puts a shifted wheel there', async () => {
+    const { strip } = renderShowcase();
+    await tick();
+
+    // Chrome delivers shift+wheel as horizontal scroll: deltaY is 0. A positive delta means
+    // "tighter", so reading the sign off deltaX is what distinguishes this from the old
+    // deltaY-only code (which saw 0 and always widened).
+    wheel(strip, { deltaX: 1, shiftKey: true });
+    await flushSpineOffsetWrites();
+
+    expect(resolvePatch(0)).toEqual({ spine_offset: -0.25 });
+  });
+
+  it('re-hits the spine under the cursor after a pan', async () => {
+    const { strip, getByText } = renderShowcase();
+    await tick();
+    makeScrollable(strip);
+
+    pointer(strip, 'pointermove', { clientX: HIT_VOLUME_1_X });
+    await tick();
+    expect(getByText('Vol 2 · 0 px')).toBeTruthy();
+
+    // The shelf slides under a stationary cursor; the hovered spine must follow.
+    wheel(strip, { deltaY: 120 });
+    await tick();
+    expect(getByText('Vol 3 · 0 px')).toBeTruthy();
+  });
+
   it('pans the strip by dragging', async () => {
     const { strip } = renderShowcase();
     await tick();
@@ -369,9 +418,16 @@ describe('SeriesSpineShowcase', () => {
         cloudThumbnailFileId: `file-${i}`
       })
     );
-    renderShowcase(many);
+    const { getByText } = renderShowcase(many);
     await tick();
 
     expect(vi.mocked(fetchCloudThumbnail)).toHaveBeenCalledTimes(60);
+    expect(getByText('Showing first 60 of 70 volumes')).toBeTruthy();
+  });
+
+  it('says nothing about a cap it did not hit', async () => {
+    const { queryByText } = renderShowcase();
+    await tick();
+    expect(queryByText(/Showing first/)).toBeNull();
   });
 });

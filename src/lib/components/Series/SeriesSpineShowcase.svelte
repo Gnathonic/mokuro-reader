@@ -250,6 +250,13 @@
   let dragState: { pointerId: number; startX: number; startScroll: number } | null = null;
   let dragging = $state(false);
 
+  /**
+   * Where the cursor last was, in viewport coordinates. Panning moves the shelf UNDER a
+   * stationary cursor, so the hit test has to be re-run after a wheel/key pan or the next
+   * alt+shift+wheel would nudge whichever spine used to be there.
+   */
+  let lastPointerX: number | null = null;
+
   let hoveredVolume = $derived(hoveredIndex === null ? undefined : showcaseVolumes[hoveredIndex]);
   let hoveredOffsetPx = $derived(
     hoveredVolume ? (volumeOffsetsByUuid[hoveredVolume.volume_uuid] ?? 0) : 0
@@ -283,23 +290,33 @@
   }
 
   function handleWheel(e: WheelEvent) {
+    // Holding shift makes some browsers (Chrome) report a vertical wheel as deltaX, so the
+    // gesture's direction has to come from whichever axis actually carries it.
+    const delta = e.deltaY || e.deltaX;
+
     if (e.shiftKey && e.altKey && hoveredVolume) {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
-      setVolumeOffset(hoveredVolume.volume_uuid, hoveredOffsetPx + delta);
+      const step = delta > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
+      setVolumeOffset(hoveredVolume.volume_uuid, hoveredOffsetPx + step);
       return;
     }
     if (e.shiftKey && !e.altKey) {
       e.preventDefault();
-      setSeriesOffset(hOffsetAdjust + (e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP));
+      setSeriesOffset(hOffsetAdjust + (delta > 0 ? -ADJUST_STEP : ADJUST_STEP));
       return;
     }
     // Plain wheel pans the shelf sideways — mouse users have no other way to reach the far
-    // end. Only claim the event when there is something to pan: otherwise the modal body
-    // (or the page) must keep its own scroll.
-    if (e.deltaY === 0 || !stripOverflows()) return;
+    // end. deltaX is left to the browser here: it already scrolls an overflow-x container
+    // natively, and panning it ourselves too would double the movement.
+    const el = stripEl;
+    if (e.deltaY === 0 || !el || !stripOverflows()) return;
+    const before = el.scrollLeft;
+    el.scrollLeft += e.deltaY;
+    // Clamped at this end already: the wheel did nothing here, so it must fall through to
+    // the modal body — otherwise the shelf traps the page scroll for the rest of the page.
+    if (el.scrollLeft === before) return;
     e.preventDefault();
-    stripEl!.scrollLeft += e.deltaY;
+    rehoverAfterPan();
   }
 
   function handleContextMenu(e: MouseEvent) {
@@ -325,11 +342,17 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
+    lastPointerX = e.clientX;
     if (dragState && stripEl) {
       stripEl.scrollLeft = dragState.startScroll - (e.clientX - dragState.startX);
       return;
     }
     updateHover(e.clientX);
+  }
+
+  /** The shelf moved under a stationary cursor: whatever is there now is the hovered spine. */
+  function rehoverAfterPan() {
+    if (lastPointerX !== null) updateHover(lastPointerX);
   }
 
   function endDrag() {
@@ -349,9 +372,11 @@
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
       stripEl.scrollLeft -= KEY_PAN_PX;
+      rehoverAfterPan();
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       stripEl.scrollLeft += KEY_PAN_PX;
+      rehoverAfterPan();
     }
   }
 
@@ -411,6 +436,7 @@
     onpointerleave={() => {
       endDrag();
       hoveredIndex = null;
+      lastPointerX = null;
     }}
     oncontextmenu={handleContextMenu}
     onkeydown={handleKeydown}
@@ -428,14 +454,23 @@
     </div>
   </div>
 
-  <!-- Fixed line so hovering a spine never reflows the modal. -->
-  <p class="h-4 text-xs text-gray-500 dark:text-gray-400">
+  <!-- Fixed single line so hovering a spine — or a long volume title — never reflows the
+       modal or wraps out of the section. -->
+  <p
+    class="h-4 truncate overflow-hidden text-xs whitespace-nowrap text-gray-500 dark:text-gray-400"
+  >
     {#if hoveredVolume}
       {hoveredVolume.volume_title || `Vol ${(hoveredIndex ?? 0) + 1}`} · {formatPx(hoveredOffsetPx)}
     {:else}
       &nbsp;
     {/if}
   </p>
+
+  {#if volumes.length > MAX_SHOWCASE_VOLUMES}
+    <p class="text-xs text-gray-500 dark:text-gray-400">
+      Showing first {MAX_SHOWCASE_VOLUMES} of {volumes.length} volumes
+    </p>
+  {/if}
 </div>
 
 <style>
