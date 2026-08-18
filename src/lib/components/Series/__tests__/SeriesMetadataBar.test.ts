@@ -93,7 +93,7 @@ describe('SeriesMetadataBar', () => {
       props: { seriesTitle: 'One Piece', volumes: [volume('Vol 1')] }
     });
     expect(queryByText('Tag')).toBeNull();
-    expect(container.querySelector('input[placeholder="[color]"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="color"]')).toBeNull();
     expect(queryByText('Link…')).toBeNull();
     expect(queryByText('Change')).toBeNull();
     expect(queryByText('Unlink')).toBeNull();

@@ -56,12 +56,12 @@ describe('deriveSeriesFromVolumes', () => {
     ]);
     const [s] = deriveSeriesFromVolumes([vol('One Piece', '1')], metaMap, 'english');
     expect(s.title).toBe('One Piece'); // identity untouched
-    expect(s.displayTitle).toBe('One Piece (en) [color]');
+    expect(s.displayTitle).toBe('One Piece (en) (color)');
     expect(s.searchTerms).toContain('ワンピース');
-    expect(s.searchTerms).toContain('one piece (en) [color]');
+    expect(s.searchTerms).toContain('one piece (en) (color)');
   });
 
-  it('per-series title_preference wins over the global preference', () => {
+  it('ignores a per-series title_preference override — title language is global-only', () => {
     const metaMap = new Map<string, SeriesMetadata>([
       [
         'one piece',
@@ -69,7 +69,7 @@ describe('deriveSeriesFromVolumes', () => {
       ]
     ]);
     const [s] = deriveSeriesFromVolumes([vol('One Piece', '1')], metaMap, 'english');
-    expect(s.displayTitle).toBe('N');
+    expect(s.displayTitle).toBe('E');
   });
 
   it('sorts series by displayTitle', () => {

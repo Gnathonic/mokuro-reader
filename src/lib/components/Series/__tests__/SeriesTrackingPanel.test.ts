@@ -407,7 +407,7 @@ describe('SeriesTrackingPanel', () => {
       const { getByText } = renderPanel();
       await fireEvent.click(getByText('Restart series…'));
       expect(promptConfirmation).toHaveBeenCalledWith(
-        expect.stringContaining('Restart One Piece (en) [color]?'),
+        expect.stringContaining('Restart One Piece (en) (color)?'),
         expect.any(Function)
       );
       await vi.mocked(promptConfirmation).mock.calls[0][1]!();

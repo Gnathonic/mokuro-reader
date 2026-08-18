@@ -1,12 +1,33 @@
-import { isDisplayTitleLanguage } from './sanitize';
 import type { DisplayTitleLanguage, SeriesMetadata, SeriesTitles } from './types';
 
 /** Fallback order when the requested language is missing (spec: english → romaji → native → folder). */
 const FALLBACK_ORDER: Array<keyof SeriesTitles> = ['english', 'romaji', 'native'];
 
+/** Matching bracket pairs stripped from a tag before it is wrapped in `(…)` for display. */
+const BRACKET_PAIRS: Array<[string, string]> = [
+  ['(', ')'],
+  ['[', ']'],
+  ['（', '）'],
+  ['【', '】']
+];
+
 function nonBlank(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Strip a single pair of surrounding brackets (`()`, `[]`, `（）`, `【】`) from a tag
+ * before it is wrapped for display, so `[color]`, `(color)` and `color` all render the
+ * same way. Only ever affects the DISPLAY string — the stored/embedded tag stays raw.
+ */
+function stripOuterBracketPair(value: string): string {
+  for (const [open, close] of BRACKET_PAIRS) {
+    if (value.startsWith(open) && value.endsWith(close) && value.length > open.length) {
+      return value.slice(open.length, value.length - close.length).trim();
+    }
+  }
+  return value;
 }
 
 /**
@@ -16,26 +37,21 @@ function nonBlank(value: string | undefined): string | undefined {
  * `SeriesMetadataBar`) compare against this, not against `resolveDisplayTitle`, whose
  * trailing tag would never match a stored language title.
  *
- *   pref = meta.title_preference ?? globalPref   (an unknown stored value = no override)
+ * Title language is a GLOBAL-ONLY setting (Catalog settings): `meta.title_preference`
+ * is a legacy/synced field kept for compat and is intentionally never consulted here —
+ * a series can no longer override the language on its own.
+ *
  *   'imported'  → seriesTitle
- *   otherwise   → titles[pref], falling back english → romaji → native → seriesTitle
+ *   otherwise   → titles[globalPref], falling back english → romaji → native → seriesTitle
  */
 export function resolveDisplayBase(
   seriesTitle: string,
   meta: SeriesMetadata | undefined,
   globalPref: DisplayTitleLanguage
 ): string {
-  // A `title_preference` that survived an old build or a hand-edited/foreign
-  // series-metadata.json must not silently mean "some language" — fall back to the
-  // global preference exactly as if the series had no override at all.
-  const override = isDisplayTitleLanguage(meta?.title_preference)
-    ? meta?.title_preference
-    : undefined;
-  const pref: DisplayTitleLanguage = override ?? globalPref;
+  if (globalPref === 'imported' || !meta) return seriesTitle;
 
-  if (pref === 'imported' || !meta) return seriesTitle;
-
-  const requested = nonBlank(meta.titles?.[pref]);
+  const requested = nonBlank(meta.titles?.[globalPref]);
   if (requested) return requested;
 
   for (const lang of FALLBACK_ORDER) {
@@ -46,10 +62,13 @@ export function resolveDisplayBase(
 }
 
 /**
- * Resolve the human-facing title for a series: `resolveDisplayBase` + the tag.
+ * Resolve the human-facing title for a series: `resolveDisplayBase` + the tag, wrapped
+ * in parentheses — e.g. `Title (color)`. A raw tag of `[color]`, `(color)` or `color`
+ * all render identically: one surrounding pair of `()`/`[]`/`（）`/`【】` is stripped
+ * before wrapping. The STORED/embedded tag (`meta.tag`) is never rewritten — this is a
+ * pure presentation overlay, same as the title language above.
  *
- * Never changes the stored `series_title` (folder name / grouping key / route key):
- * this is a pure presentation overlay.
+ * Never changes the stored `series_title` (folder name / grouping key / route key).
  */
 export function resolveDisplayTitle(
   seriesTitle: string,
@@ -57,8 +76,10 @@ export function resolveDisplayTitle(
   globalPref: DisplayTitleLanguage
 ): string {
   const base = resolveDisplayBase(seriesTitle, meta, globalPref);
-  const tag = nonBlank(meta?.tag);
-  return tag ? `${base} ${tag}` : base;
+  const rawTag = nonBlank(meta?.tag);
+  if (!rawTag) return base;
+  const tag = stripOuterBracketPair(rawTag);
+  return tag ? `${base} (${tag})` : base;
 }
 
 /**

@@ -30,14 +30,14 @@ describe('resolveDisplayTitle', () => {
     expect(resolveDisplayTitle('One Piece', meta(), 'english')).toBe('One Piece (en)');
   });
 
-  it('per-series title_preference overrides the global preference', () => {
+  it('ignores a per-series title_preference override — title language is global-only', () => {
     const m = meta({ title_preference: 'native' });
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('ONE PIECE');
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
   });
 
-  it("per-series 'imported' override beats a global language preference", () => {
+  it("ignores a per-series 'imported' override the same way", () => {
     const m = meta({ title_preference: 'imported' });
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece');
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
   });
 
   it('falls back english → romaji → native → folder title when the requested language is missing', () => {
@@ -61,12 +61,26 @@ describe('resolveDisplayTitle', () => {
     ).toBe('R');
   });
 
-  it('appends the tag with a single space, verbatim', () => {
+  it('wraps the tag in parentheses, stripping a single pair of surrounding brackets', () => {
+    // bracketed, parenthesized and bare tags all render identically
     expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'imported')).toBe(
-      'One Piece [color]'
+      'One Piece (color)'
+    );
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '(color)' }), 'imported')).toBe(
+      'One Piece (color)'
+    );
+    expect(resolveDisplayTitle('One Piece', meta({ tag: 'color' }), 'imported')).toBe(
+      'One Piece (color)'
+    );
+    // full-width bracket pairs are stripped too
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '（color）' }), 'imported')).toBe(
+      'One Piece (color)'
+    );
+    expect(resolveDisplayTitle('One Piece', meta({ tag: '【color】' }), 'imported')).toBe(
+      'One Piece (color)'
     );
     expect(resolveDisplayTitle('One Piece', meta({ tag: '[color]' }), 'english')).toBe(
-      'One Piece (en) [color]'
+      'One Piece (en) (color)'
     );
   });
 
@@ -75,13 +89,19 @@ describe('resolveDisplayTitle', () => {
     expect(resolveDisplayTitle('One Piece', meta({ tag: '   ' }), 'imported')).toBe('One Piece');
   });
 
-  it('trims surrounding whitespace from the tag but keeps inner spacing', () => {
+  it('trims surrounding whitespace from the tag and keeps inner spacing', () => {
     expect(resolveDisplayTitle('One Piece', meta({ tag: '  bw scans ' }), 'imported')).toBe(
-      'One Piece bw scans'
+      'One Piece (bw scans)'
     );
   });
 
-  it('treats an unknown stored title_preference as no override (uses the global preference)', () => {
+  it('keeps the raw tag verbatim for storage — only the DISPLAY string gets parens', () => {
+    const m = meta({ tag: '[color]' });
+    expect(m.tag).toBe('[color]');
+    expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece (color)');
+  });
+
+  it('ignores a title_preference of any value, known or not — title language is global-only', () => {
     // e.g. a hand-edited or foreign series-metadata.json that reached the store
     const m = meta({ title_preference: 'klingon' as never });
     expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
@@ -93,19 +113,19 @@ describe('resolveDisplayBase', () => {
   it('is resolveDisplayTitle without the tag', () => {
     const m = meta({ tag: '[color]' });
     expect(resolveDisplayBase('One Piece', m, 'english')).toBe('One Piece (en)');
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) [color]');
+    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) (color)');
   });
 
-  it('follows the same preference, fallback and imported rules', () => {
+  it('follows the same global preference and fallback rules; ignores title_preference', () => {
     expect(resolveDisplayBase('One Piece', meta(), 'imported')).toBe('One Piece');
     expect(resolveDisplayBase('One Piece', meta({ title_preference: 'native' }), 'english')).toBe(
-      'ONE PIECE'
+      'One Piece (en)'
     );
     expect(resolveDisplayBase('folder', meta({ titles: { native: 'N' } }), 'romaji')).toBe('N');
     expect(resolveDisplayBase('folder', undefined, 'english')).toBe('folder');
   });
 
-  it('treats an unknown stored title_preference as no override', () => {
+  it('ignores title_preference regardless of its stored value', () => {
     const m = meta({ title_preference: '' as never });
     expect(resolveDisplayBase('One Piece', m, 'romaji')).toBe('ONE PIECE (romaji)');
   });
@@ -116,7 +136,7 @@ describe('seriesSearchTerms', () => {
     expect(seriesSearchTerms('One Piece', undefined)).toEqual(['one piece']);
   });
 
-  it('includes folder title, all language titles, synonyms and tag, lowercased and de-duplicated', () => {
+  it('includes folder title, all language titles, synonyms and the raw tag, lowercased and de-duplicated', () => {
     const terms = seriesSearchTerms('One Piece', meta({ tag: '[Color]' }));
     expect(new Set(terms)).toEqual(
       new Set(['one piece', 'one piece (romaji)', 'one piece (en)', 'ワンピース', 'op', '[color]'])

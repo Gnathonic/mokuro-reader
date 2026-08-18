@@ -7,9 +7,10 @@
 - Link a series to AniList; alt titles, link-out chips, free-text tag
 - Series facts + tag embedded in exported/backed-up `.mokuro` files
 - `series-metadata.json` synced across devices; "Update cloud sidecars" action
-- Show series titles in your preferred language (native/romaji/english) with a per-series override
+- Show series titles in your preferred language (native/romaji/english)
 - Push read progress and re-reads to AniList (per-series opt-in)
 - Restart series: archive a finished read; reader offers it on re-open
+- Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
 
 ## [1.8.2] - 2026-07-09
 

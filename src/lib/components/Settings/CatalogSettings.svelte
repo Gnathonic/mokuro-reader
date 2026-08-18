@@ -10,12 +10,20 @@
   } from '$lib/settings/settings';
   import { nav } from '$lib/util/hash-router';
   import { isCatalog } from '$lib/util';
+  import type { DisplayTitleLanguage } from '$lib/metadata/types';
 
   const presetOptions = [
     { value: 'compact', name: 'Compact' },
     { value: 'default', name: 'Default' },
     { value: 'spine', name: 'Spine Showcase' },
     { value: 'custom', name: 'Custom' }
+  ];
+
+  const titleLanguageOptions: { value: DisplayTitleLanguage; name: string }[] = [
+    { value: 'imported', name: 'As imported (folder name)' },
+    { value: 'native', name: 'Native (日本語)' },
+    { value: 'romaji', name: 'Romaji' },
+    { value: 'english', name: 'English' }
   ];
 
   // Preset configurations
@@ -242,6 +250,23 @@
         {/if}
       </div>
     {/if}
+
+    <div>
+      <Label class="mb-2 text-sm font-medium">Preferred series title</Label>
+      <Select
+        items={titleLanguageOptions}
+        value={$catalogSettings?.preferredTitleLanguage ?? 'imported'}
+        onchange={(e) =>
+          updateCatalogSetting(
+            'preferredTitleLanguage',
+            e.currentTarget.value as DisplayTitleLanguage
+          )}
+      />
+      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        Applies to series linked to AniList. Folder names are never changed; when a language is
+        missing the reader falls back to English → Romaji → Native → folder name.
+      </p>
+    </div>
 
     <div class="flex flex-col gap-2">
       <Button onclick={() => nav.toMergeSeries()} outline color="blue">Merge series</Button>

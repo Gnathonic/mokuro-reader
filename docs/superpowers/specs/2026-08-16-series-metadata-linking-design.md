@@ -210,10 +210,13 @@ is the pure mapper. `link-targets.ts` builds `https://anilist.co/manga/{id}` and
 
 - New synced setting `catalogSettings.preferredTitleLanguage: DisplayTitleLanguage`
   (default `'imported'`), added to `defaultSettings` and `migrateProfiles`.
-- `resolveDisplayTitle(seriesTitle, meta, globalPref)`:
-  `pref = meta?.title_preference ?? globalPref`; `imported` → `seriesTitle`; otherwise the
-  requested language, falling back `english → romaji → native → seriesTitle` when missing;
-  then `+ ' ' + meta.tag` if the tag is non-empty. Pure, unit-tested.
+- `resolveDisplayTitle(seriesTitle, meta, globalPref)`: title language is global-only —
+  `meta.title_preference` is never consulted (kept on the type/sanitizer for synced-data
+  compat only). `imported` → `seriesTitle`; otherwise the requested language, falling
+  back `english → romaji → native → seriesTitle` when missing; then
+  `+ ' (' + tag + ')'` if the tag is non-empty, stripping one surrounding pair of
+  `()`/`[]`/`（）`/`【】` from the raw tag first so `[color]`, `(color)` and `color` all
+  render as `Title (color)`. Pure, unit-tested.
 - Applied wherever a **series** title is displayed (Catalog card, SeriesView header,
   reader/volume headers found by grep). Grouping, routes, cloud paths keep `series_title`.
   Catalog sort uses the display title; catalog search matches `series_title`, all `titles`,
