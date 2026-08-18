@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { createEmptySeriesMetadata, type SeriesMetadata } from '$lib/metadata/types';
 
@@ -154,6 +154,18 @@ describe('SeriesTitlesEditor', () => {
     });
   });
 
+  it('also splits synonyms on full-width Japanese commas (\u3001 and \uff0c)', async () => {
+    const { getByLabelText } = renderEditor();
+    const synonyms = getByLabelText('Synonyms') as HTMLTextAreaElement;
+    await fireEvent.input(synonyms, {
+      target: { value: '\u30ef\u30f3\u30d4\u30fc\u30b9\u3001OP\uff0cMugiwara' }
+    });
+    await fireEvent.blur(synonyms);
+    expect(h.updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
+      synonyms: ['\u30ef\u30f3\u30d4\u30fc\u30b9', 'OP', 'Mugiwara']
+    });
+  });
+
   it('does not write synonyms on an unchanged blur', async () => {
     setMeta(meta({ synonyms: ['OP', 'Mugiwara'] }));
     const { getByLabelText } = renderEditor();
@@ -184,8 +196,75 @@ describe('SeriesTitlesEditor', () => {
     const native = getByLabelText('Native') as HTMLInputElement;
     await fireEvent.input(native, { target: { value: 'ワンピース' } });
     await fireEvent.blur(native);
+    await waitFor(() => expect(h.updateSeriesMetadata).toHaveBeenCalled());
     setMeta(meta({ titles: { native: 'ワンピース' } }));
-    await tick();
-    expect(native.value).toBe('ワンピース');
+    await waitFor(() => expect(native.value).toBe('ワンピース'));
+  });
+
+  it('keeps the NEW value in a title field while its write is still in flight, instead of reverting to the old value first', async () => {
+    // Regression: `nativeDirty` used to clear BEFORE the `await updateSeriesMetadata(...)`,
+    // so the resync effect fired immediately and snapped the field back to the OLD stored
+    // value the instant the write started, then jumped to the new value once the write's
+    // own echo landed. The dirty flag must stay set for the whole time the write is pending.
+    setMeta(meta({ titles: { native: 'Old' } }));
+    let resolveWrite!: () => void;
+    h.updateSeriesMetadata.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveWrite = () => resolve(undefined);
+        })
+    );
+    const { getByLabelText } = renderEditor();
+    const native = getByLabelText('Native') as HTMLInputElement;
+    await fireEvent.input(native, { target: { value: 'New' } });
+    await fireEvent.blur(native);
+
+    // The write is still pending here — must NOT have reverted to 'Old'.
+    expect(native.value).toBe('New');
+
+    // The write lands and the liveQuery echoes the new value back.
+    resolveWrite();
+    setMeta(meta({ titles: { native: 'New' } }));
+    await waitFor(() => expect(native.value).toBe('New'));
+  });
+
+  it('keeps the NEW value in the synonyms field while its write is still in flight', async () => {
+    setMeta(meta({ synonyms: ['Old'] }));
+    let resolveWrite!: () => void;
+    h.updateSeriesMetadata.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveWrite = () => resolve(undefined);
+        })
+    );
+    const { getByLabelText } = renderEditor();
+    const synonyms = getByLabelText('Synonyms') as HTMLTextAreaElement;
+    await fireEvent.input(synonyms, { target: { value: 'New' } });
+    await fireEvent.blur(synonyms);
+
+    expect(synonyms.value).toBe('New');
+
+    resolveWrite();
+    setMeta(meta({ synonyms: ['New'] }));
+    await waitFor(() => expect(synonyms.value).toBe('New'));
+  });
+
+  it('leaves a title field dirty (draft preserved) when the write rejects', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setMeta(meta({ titles: { native: 'Old' } }));
+      h.updateSeriesMetadata.mockRejectedValueOnce(new Error('dexie is out'));
+      const { getByLabelText } = renderEditor();
+      const native = getByLabelText('Native') as HTMLInputElement;
+      await fireEvent.input(native, { target: { value: 'New' } });
+      await fireEvent.blur(native);
+      await waitFor(() => expect(consoleError).toHaveBeenCalled());
+
+      // Still 'New': the failed write must not have cleared nativeDirty and let the resync
+      // effect fall back to the stored 'Old' value.
+      expect(native.value).toBe('New');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

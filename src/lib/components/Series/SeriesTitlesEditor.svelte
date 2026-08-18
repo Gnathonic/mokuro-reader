@@ -9,7 +9,11 @@
    *
    * Same draft/dirty pattern as the tag field in SeriesLinkControls: each field keeps its
    * own draft + dirty flag so a liveQuery emission mid-edit doesn't clobber unsaved typing,
-   * and each saves on blur/Enter only when its value actually changed.
+   * and each saves on blur/Enter only when its value actually changed. Like `saveTag`, the
+   * dirty flag is cleared only AFTER the write resolves — clearing it before the `await`
+   * would let the resync effect below snap the field back to the OLD stored value the
+   * instant the flag flips, before the write's own echo lands (visible as a revert-then-
+   * jump flicker on a slow write). On failure the flag is left dirty so the edit isn't lost.
    */
   import { Label } from 'flowbite-svelte';
   import { seriesMetadataMap, updateSeriesMetadata } from '$lib/metadata/store';
@@ -60,9 +64,6 @@
    * value of all three, with blank ones omitted (blank all three -> `titles: {}`).
    */
   async function saveTitles() {
-    nativeDirty = false;
-    romajiDirty = false;
-    englishDirty = false;
     const titles: SeriesTitles = {};
     const native = nativeDraft.trim();
     const romaji = romajiDraft.trim();
@@ -70,8 +71,22 @@
     if (native) titles.native = native;
     if (romaji) titles.romaji = romaji;
     if (english) titles.english = english;
-    if (titlesEqual(titles, meta?.titles ?? {})) return;
-    await updateSeriesMetadata(seriesTitle, { titles });
+    if (titlesEqual(titles, meta?.titles ?? {})) {
+      nativeDirty = false;
+      romajiDirty = false;
+      englishDirty = false;
+      return;
+    }
+    try {
+      await updateSeriesMetadata(seriesTitle, { titles });
+      nativeDirty = false;
+      romajiDirty = false;
+      englishDirty = false;
+    } catch (err) {
+      // Leave the fields dirty so the resync effect doesn't fall back to the stale stored
+      // value and silently discard the edit; the draft stays on screen to retry.
+      console.error('Failed to save series titles:', err);
+    }
   }
 
   /** Enter commits the field like the tag field does, without adding a form submit. */
@@ -81,10 +96,14 @@
     (e.currentTarget as HTMLInputElement).blur();
   }
 
+  // Comma/newline plus the full-width variants (、 U+3001, ， U+FF0C) that Japanese IMEs
+  // and pasted Japanese text commonly use as separators.
+  const SYNONYM_SEPARATORS = /[\n,、，]+/;
+
   function parseSynonyms(text: string): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const raw of text.split(/[\n,]+/)) {
+    for (const raw of text.split(SYNONYM_SEPARATORS)) {
       const trimmed = raw.trim();
       if (!trimmed || seen.has(trimmed)) continue;
       seen.add(trimmed);
@@ -98,18 +117,26 @@
   }
 
   async function saveSynonyms() {
-    synonymsDirty = false;
     const synonyms = parseSynonyms(synonymsDraft);
-    if (synonymsEqual(synonyms, meta?.synonyms ?? [])) return;
-    await updateSeriesMetadata(seriesTitle, { synonyms });
+    if (synonymsEqual(synonyms, meta?.synonyms ?? [])) {
+      synonymsDirty = false;
+      return;
+    }
+    try {
+      await updateSeriesMetadata(seriesTitle, { synonyms });
+      synonymsDirty = false;
+    } catch (err) {
+      console.error('Failed to save series synonyms:', err);
+    }
   }
 </script>
 
 <div class="flex flex-col gap-2">
   <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
     <div class="flex flex-col gap-1">
-      <Label class="text-xs text-gray-500 uppercase">Native</Label>
+      <Label for="series-titles-native" class="text-xs text-gray-500 uppercase">Native</Label>
       <input
+        id="series-titles-native"
         type="text"
         aria-label="Native"
         value={nativeDraft}
@@ -123,8 +150,9 @@
       />
     </div>
     <div class="flex flex-col gap-1">
-      <Label class="text-xs text-gray-500 uppercase">Romaji</Label>
+      <Label for="series-titles-romaji" class="text-xs text-gray-500 uppercase">Romaji</Label>
       <input
+        id="series-titles-romaji"
         type="text"
         aria-label="Romaji"
         value={romajiDraft}
@@ -138,8 +166,9 @@
       />
     </div>
     <div class="flex flex-col gap-1">
-      <Label class="text-xs text-gray-500 uppercase">English</Label>
+      <Label for="series-titles-english" class="text-xs text-gray-500 uppercase">English</Label>
       <input
+        id="series-titles-english"
         type="text"
         aria-label="English"
         value={englishDraft}
@@ -155,8 +184,9 @@
   </div>
 
   <div class="flex flex-col gap-1">
-    <Label class="text-xs text-gray-500 uppercase">Synonyms</Label>
+    <Label for="series-titles-synonyms" class="text-xs text-gray-500 uppercase">Synonyms</Label>
     <textarea
+      id="series-titles-synonyms"
       aria-label="Synonyms"
       rows="2"
       value={synonymsDraft}
