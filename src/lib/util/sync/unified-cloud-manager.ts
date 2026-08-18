@@ -10,6 +10,24 @@ import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
+import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '$lib/types';
+import {
+  SERIES_FILE_NAME,
+  buildSeriesFile,
+  isSeriesFilePath,
+  parseSeriesFile,
+  type SeriesFile
+} from '$lib/metadata/series-file';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+import {
+  deleteSeriesIndex,
+  getSeriesIndex,
+  indexNeedsRefresh,
+  moveSeriesIndexKey,
+  putSeriesIndex
+} from '$lib/metadata/series-index';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -282,10 +300,13 @@ class UnifiedCloudManager {
     cache?.add?.(updatedFile.path, updatedFile);
   }
 
-  private getManagedCloudFilesForVolume(
-    seriesTitle: string,
-    volumeTitle: string
-  ): CloudFileMetadata[] {
+  /**
+   * The cloud files belonging to ONE volume: `<Series>/<Volume Title>.<ext>`.
+   * `<Series>/series.json` never matches — it is the series folder's own
+   * sidecar, not any volume's (its basename is not a volume title, and `.json`
+   * is not a managed volume extension).
+   */
+  getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
     const basePath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}`);
     return this.getCloudVolumesBySeries(seriesTitle).filter(
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
@@ -610,6 +631,9 @@ class UnifiedCloudManager {
       const cloudOnlyBases = [
         ...new Set(
           existingFiles
+            // The series' own sidecar belongs to no volume — it is rewritten at
+            // the new title below, so it must not read as a cloud-only volume.
+            .filter((file) => !isSeriesFilePath(file.path))
             .map((file) => stripManagedFileExtension(normalizeCloudPath(file.path)))
             .filter((base) => !knownBases.has(base))
         )
@@ -644,6 +668,12 @@ class UnifiedCloudManager {
         }
       }
 
+      // The series sidecar follows the volumes, once, after the fan-out: it
+      // describes the folder, not any single volume.
+      if (result.renamedVolumeUuids.length > 0) {
+        await this.moveSeriesFileAfterRename(oldSeriesTitle, newSeriesTitle);
+      }
+
       // ONE prune attempt after the whole fan-out (not per volume): the
       // provider server-checks emptiness, so this is safe even when some
       // volumes failed and their files still occupy the old directory.
@@ -657,6 +687,14 @@ class UnifiedCloudManager {
     // Legacy path (no volume list, e.g. an image-only series): no .mokuro to
     // regenerate, so a provider-optimized bulk folder move is correct.
     const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
+
+    // A folder move carries `series.json` along with everything else — only the
+    // cached index, which is keyed by series title, has to follow.
+    try {
+      await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
+    } catch (error) {
+      console.warn(`Failed to move the cached series index to '${newSeriesTitle}':`, error);
+    }
 
     const cache = cacheManager.getCache(provider.type);
     if (cache?.removeById && cache?.add) {
@@ -672,84 +710,208 @@ class UnifiedCloudManager {
   }
 
   /**
-   * Regenerate ONE backed-up volume's .mokuro from the DB (embedding current
-   * series metadata) and overwrite it in place. Assumes the caller refreshed
-   * the cache and checked write access. Legacy `.mokuro.gz` sidecars are
-   * replaced by the fresh `.mokuro` (upload first, delete stale last).
+   * The `<Series>/series.json` entry of a series folder's cached listing, if any.
+   * The NEWEST one when several are cached: providers whose overwrite is really
+   * "delete + upload" (MEGA) mint a new file id, so the previous entry can
+   * linger in the cache until the next full fetch.
    */
-  async refreshVolumeSidecar(
-    seriesTitle: string,
-    volumeTitle: string,
-    volumeUuid: string
-  ): Promise<void> {
-    const provider = this.getActiveProvider();
-    if (!provider) {
-      throw new Error('No cloud provider authenticated');
-    }
-    this.assertWritable(provider);
+  private getCloudSeriesFile(seriesTitle: string): CloudFileMetadata | undefined {
+    const candidates = this.getCloudVolumesBySeries(seriesTitle).filter((file) =>
+      isSeriesFilePath(file.path)
+    );
+    return candidates.reduce<CloudFileMetadata | undefined>(
+      (newest, file) =>
+        !newest || (file.modifiedTime ?? '') > (newest.modifiedTime ?? '') ? file : newest,
+      undefined
+    );
+  }
 
-    const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
-    if (!sidecars.mokuro) {
-      throw new ProviderError(
-        'Cannot refresh sidecar: the OCR sidecar could not be regenerated (volume_ocr data missing)',
-        provider.type,
-        'SIDECAR_REGEN_FAILED'
-      );
-    }
-
-    const targetPath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}.mokuro`);
-    await this.uploadFile(targetPath, sidecars.mokuro.blob);
-
-    // Destructive last: drop stale sidecars at OTHER paths (e.g. `.mokuro.gz`).
-    for (const file of this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle)) {
-      if (!isMokuroSidecarPath(file.path)) continue;
-      if (normalizeCloudPath(file.path) === targetPath) continue;
-      await this.deleteFileIdempotent(file);
+  /** Download + validate a cloud `series.json`. Returns `undefined` for junk content. */
+  private async readCloudSeriesFile(file: CloudFileMetadata): Promise<SeriesFile | undefined> {
+    const blob = await this.downloadFile(file);
+    try {
+      return parseSeriesFile(JSON.parse(await blob.text()));
+    } catch {
+      // Not JSON at all (hand-edited, truncated upload). Same outcome as a file
+      // that fails validation: it carries no usable state, so it gets replaced.
+      return undefined;
     }
   }
 
   /**
-   * Refresh the .mokuro of every BACKED-UP volume of a series (volumes with no
-   * backed-up .mokuro — e.g. image-only volumes stored as cbz+cover only —
-   * are skipped, not failed: there is nothing to refresh). Per-volume
-   * failures are counted, not thrown; pre-flight gates (no provider /
-   * read-only) throw.
+   * The index copy to merge on top of: the cached one, unless the cloud listing
+   * shows a different (size, modifiedTime) — then another device wrote it after
+   * our last fetch and we re-read it first, so the union keeps that device's
+   * volumes and its facts still get to win the newest-wins comparison.
+   *
+   * Throws when the re-read fails: writing on top of a copy we could not read
+   * would silently clobber it.
    */
-  async refreshSeriesSidecars(
+  private async resolveExistingSeriesFile(
+    seriesKey: string,
     seriesTitle: string,
-    volumes: { volumeUuid: string; volumeTitle: string }[]
-  ): Promise<{ succeeded: number; failed: number; skipped: number }> {
-    const provider = this.getActiveProvider();
-    if (!provider) {
-      throw new Error('No cloud provider authenticated');
-    }
-    await this.fetchAllCloudVolumes();
-    this.assertWritable(provider);
+    providerType: ProviderType
+  ): Promise<SeriesFile | undefined> {
+    const cached = await getSeriesIndex(seriesKey);
+    const cloudFile = this.getCloudSeriesFile(seriesTitle);
+    if (!cloudFile) return cached?.file;
 
-    let succeeded = 0;
-    let failed = 0;
-    let skipped = 0;
-    for (const volume of volumes) {
-      const managed = this.getManagedCloudFilesForVolume(seriesTitle, volume.volumeTitle);
-      if (!managed.some((file) => isMokuroSidecarPath(file.path))) {
-        skipped++;
-        continue;
-      }
-      try {
-        await this.refreshVolumeSidecar(seriesTitle, volume.volumeTitle, volume.volumeUuid);
-        succeeded++;
-      } catch (error) {
-        console.error(`Failed to refresh sidecar for ${seriesTitle}/${volume.volumeTitle}:`, error);
-        failed++;
-      }
+    const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
+    if (!indexNeedsRefresh(cached, stamp)) return cached?.file;
+
+    const fresh = await this.readCloudSeriesFile(cloudFile);
+    if (!fresh) return undefined; // unreadable content → this write replaces it
+    await putSeriesIndex({
+      series_key: seriesKey,
+      series_title: seriesTitle,
+      file: fresh,
+      source: {
+        provider: providerType,
+        path: normalizeCloudPath(cloudFile.path),
+        size: stamp.size,
+        modifiedTime: stamp.modifiedTime
+      },
+      fetched_at: new Date().toISOString()
+    });
+    return fresh;
+  }
+
+  /** Volume titles the cloud listing shows as `.cbz` archives in a series folder. */
+  private cloudVolumeTitles(seriesTitle: string): Set<string> {
+    const titles = new Set<string>();
+    for (const file of this.getCloudVolumesBySeries(seriesTitle)) {
+      const path = normalizeCloudPath(file.path);
+      if (!path.toLowerCase().endsWith('.cbz')) continue;
+      const basename = path.split('/').pop();
+      if (basename) titles.add(basename.slice(0, -4));
     }
-    return { succeeded, failed, skipped };
+    return titles;
+  }
+
+  /**
+   * Write `<Series Title>/series.json` — the shareable series facts plus the
+   * unauthoritative index of the series' volumes.
+   *
+   * Merge before write (see `buildSeriesFile`): the copy already in the cloud
+   * contributes the volumes of devices that are not this one, and its facts win
+   * when they are newer. Installed volumes always override their index entry;
+   * placeholders never contribute (their uuids and counts are derived).
+   *
+   * A cloud copy we cannot read is reported as `'skipped'` rather than
+   * overwritten blind; a failed upload throws to the (background) caller, which
+   * logs it — a series.json write must never surface in a reading flow.
+   *
+   * `options.localSeriesTitle` reads the installed volumes under a DIFFERENT
+   * title than the one being written: during a series rename the cloud move
+   * gates the local commit, so the DB still holds the old title while the file
+   * must already be written under the new one.
+   */
+  async writeSeriesFile(
+    seriesTitle: string,
+    options?: { localSeriesTitle?: string }
+  ): Promise<'written' | 'skipped' | 'read-only'> {
+    const provider = this.getActiveProvider();
+    if (!provider) return 'skipped';
+    if (provider.getStatus().isReadOnly) return 'read-only';
+
+    const seriesKey = normalizeSeriesKey(seriesTitle);
+    if (!seriesKey) return 'skipped';
+
+    const localKey = normalizeSeriesKey(options?.localSeriesTitle ?? seriesTitle);
+    const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
+    const localVolumes = allVolumes.filter(
+      (volume) => normalizeSeriesKey(volume.series_title) === localKey && !volume.isPlaceholder
+    );
+
+    // Same reason as `localSeriesTitle` above: mid-rename the series_metadata
+    // record is still filed under the old title, and dropping its facts here
+    // would publish a file that unlinks the series everywhere else.
+    const meta =
+      (await getSeriesMetadataForTitle(seriesTitle)) ??
+      (options?.localSeriesTitle
+        ? await getSeriesMetadataForTitle(options.localSeriesTitle)
+        : undefined);
+
+    let existing: SeriesFile | undefined;
+    try {
+      existing = await this.resolveExistingSeriesFile(seriesKey, seriesTitle, provider.type);
+    } catch (error) {
+      console.warn(`Could not read the cloud series.json for '${seriesTitle}':`, error);
+      return 'skipped';
+    }
+
+    // An empty listing means "not fetched", not "the cloud folder is empty":
+    // pruning against it would delete every entry this device does not have.
+    const cloudTitles = this.cloudVolumeTitles(seriesTitle);
+
+    const file = buildSeriesFile({
+      seriesTitle,
+      meta,
+      localVolumes,
+      existing,
+      cloudVolumeTitles: cloudTitles.size > 0 ? cloudTitles : undefined
+    });
+    if (!file) return 'skipped';
+
+    const path = normalizeCloudPath(`${seriesTitle}/${SERIES_FILE_NAME}`);
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
+    await this.uploadFile(path, blob);
+
+    // Stamp the cache with what we just uploaded (the same values `uploadFile`
+    // wrote into the file cache) so a listing that still reports our own write
+    // does not trigger a re-download. Providers that stamp their own
+    // modifiedTime cost at most one extra refresh.
+    const now = new Date().toISOString();
+    await putSeriesIndex({
+      series_key: seriesKey,
+      series_title: seriesTitle,
+      file,
+      source: { provider: provider.type, path, size: blob.size, modifiedTime: now },
+      fetched_at: now
+    });
+    return 'written';
+  }
+
+  /**
+   * Carry a series' `series.json` to a renamed folder: write it at the new
+   * title (merging whatever the old cached/cloud copy held) and drop the stale
+   * file. Best-effort — the volumes are already renamed at this point, and the
+   * index is a rebuildable convenience.
+   */
+  private async moveSeriesFileAfterRename(
+    oldSeriesTitle: string,
+    newSeriesTitle: string
+  ): Promise<void> {
+    const staleFile = this.getCloudSeriesFile(oldSeriesTitle);
+    try {
+      // Move the cache first so the write below merges the OLD index instead of
+      // starting from an empty one.
+      await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
+      await this.writeSeriesFile(newSeriesTitle, { localSeriesTitle: oldSeriesTitle });
+      if (staleFile) await this.deleteFileIdempotent(staleFile);
+    } catch (error) {
+      console.warn(`Failed to move series.json to '${newSeriesTitle}':`, error);
+    }
   }
 
   /**
    * Delete an entire series folder (all volumes in the series)
    */
   async deleteSeriesFolder(seriesTitle: string): Promise<{ succeeded: number; failed: number }> {
+    const result = await this.deleteSeriesFolderFiles(seriesTitle);
+    // The cached index describes a folder that no longer exists. Dropping it is
+    // safe either way: it is a download cache, re-fetched if the folder returns.
+    try {
+      await deleteSeriesIndex(normalizeSeriesKey(seriesTitle));
+    } catch (error) {
+      console.warn(`Failed to drop the cached series index for '${seriesTitle}':`, error);
+    }
+    return result;
+  }
+
+  private async deleteSeriesFolderFiles(
+    seriesTitle: string
+  ): Promise<{ succeeded: number; failed: number }> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');

@@ -3,6 +3,7 @@ import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manag
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
+import { isSeriesFilePath } from '$lib/metadata/series-file';
 
 /**
  * Extract series title from description field
@@ -137,6 +138,10 @@ export function generatePlaceholders(
   const coverExtRegex = /\.(webp|jpe?g)$/i;
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
+      // The per-series index is a sidecar of the FOLDER, not of any volume:
+      // it must never reach the cbz bucket (a placeholder built from it would
+      // be an undownloadable "series.json" volume in the catalog).
+      if (isSeriesFilePath(file.path)) continue;
       const lowerPath = file.path.toLowerCase();
       const coverMatch = file.path.match(coverExtRegex);
       if (coverMatch) {

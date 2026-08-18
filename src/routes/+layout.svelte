@@ -24,6 +24,7 @@
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
+  import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -96,6 +97,9 @@
 
     // AniList progress push: completion listener + pending-queue flush
     initProgressTracker();
+
+    // Debounced <Series>/series.json writes after local series-metadata edits
+    initSeriesFileSync();
 
     // Initialize service worker update detection
     initSwUpdateDetection();

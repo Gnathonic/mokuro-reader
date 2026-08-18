@@ -97,6 +97,37 @@ function changesFacts(existing: SeriesMetadata, patch: SeriesMetadataPatch): boo
   return FACT_KEYS.some((key) => key in patch && !sameValue(patch[key], existing[key]));
 }
 
+type FactsChangeListener = (seriesTitle: string) => void;
+const factsChangeListeners = new Set<FactsChangeListener>();
+
+/**
+ * Called after a *local fact edit* commits — a link, an unlink, a title,
+ * synonyms or the tag actually changing value. Never for per-user writes
+ * (spine offsets, rereads, tracking) and never for `upsertFromSeriesFile`,
+ * which applies what a sidecar already says: re-publishing that would be a
+ * write loop between devices.
+ *
+ * A registration hook rather than a direct call so this module stays free of
+ * the cloud layer (`series-file-sync` → `unified-cloud-manager` → this store
+ * would be a cycle). Returns an unregister function.
+ */
+export function registerFactsChangeListener(fn: FactsChangeListener): () => void {
+  factsChangeListeners.add(fn);
+  return () => {
+    factsChangeListeners.delete(fn);
+  };
+}
+
+function notifyFactsChanged(seriesTitle: string): void {
+  for (const fn of factsChangeListeners) {
+    try {
+      fn(seriesTitle);
+    } catch (error) {
+      console.warn('[series-metadata] facts-change listener failed:', error);
+    }
+  }
+}
+
 export async function getSeriesMetadata(seriesKey: string): Promise<SeriesMetadata | undefined> {
   return db.series_metadata.get(seriesKey);
 }
@@ -131,12 +162,14 @@ export async function updateSeriesMetadata(
     console.warn('updateSeriesMetadata: ignoring a write with a blank series title');
     return createEmptySeriesMetadata(seriesTitle);
   }
-  return db.transaction('rw', db.series_metadata, async () => {
+  let factsChanged = false;
+  const next = await db.transaction('rw', db.series_metadata, async () => {
     const stored = await db.series_metadata.get(key);
     const updated_at = nextTimestamp(stored?.updated_at);
     const existing = stored ?? createEmptySeriesMetadata(seriesTitle, updated_at);
     const resolved = typeof patch === 'function' ? patch(existing) : patch;
-    const next = stripUndefined<SeriesMetadata>({
+    factsChanged = changesFacts(existing, resolved);
+    const written = stripUndefined<SeriesMetadata>({
       ...existing,
       ...resolved,
       series_key: key,
@@ -144,15 +177,15 @@ export async function updateSeriesMetadata(
       updated_at,
       // A fact edit — including an unlink, which empties the facts deliberately —
       // is the only thing that may move this clock.
-      facts_updated_at: changesFacts(existing, resolved)
-        ? updated_at
-        : stored
-          ? factsStamp(stored)
-          : undefined
+      facts_updated_at: factsChanged ? updated_at : stored ? factsStamp(stored) : undefined
     });
-    await db.series_metadata.put(next);
-    return next;
+    await db.series_metadata.put(written);
+    return written;
   });
+
+  // After the commit, so a listener that reads the record back sees this write.
+  if (factsChanged) notifyFactsChanged(seriesTitle);
+  return next;
 }
 
 /** Remove the external link + fetched facts; keep user preferences/tag/read_count/tracking. */

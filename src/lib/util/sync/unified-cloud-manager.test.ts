@@ -35,6 +35,35 @@ vi.mock('$lib/util/compress-volume', () => ({
   generateVolumeSidecarsFromDb: (...args: unknown[]) => generateSidecars(...args)
 }));
 
+const localVolumes = vi.fn(async (): Promise<unknown[]> => []);
+vi.mock('$lib/catalog/db', () => ({
+  db: { volumes: { toArray: () => localVolumes() } }
+}));
+
+const getSeriesMetadataForTitle = vi.fn(async (_title: string): Promise<unknown> => undefined);
+vi.mock('$lib/metadata/store', () => ({
+  getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title)
+}));
+
+const getSeriesIndex = vi.fn(async (_key: string): Promise<unknown> => undefined);
+const putSeriesIndex = vi.fn(async (_rec: unknown) => {});
+const deleteSeriesIndex = vi.fn(async (_key: string) => {});
+const moveSeriesIndexKey = vi.fn(async (_old: string, _next: string) => {});
+vi.mock('$lib/metadata/series-index', async () => {
+  const actual = await vi.importActual<typeof import('$lib/metadata/series-index')>(
+    '$lib/metadata/series-index'
+  );
+  return {
+    // indexNeedsRefresh stays REAL — the size/mtime comparison is the thing
+    // deciding whether a write re-reads the cloud copy first.
+    indexNeedsRefresh: actual.indexNeedsRefresh,
+    getSeriesIndex: (key: string) => getSeriesIndex(key),
+    putSeriesIndex: (rec: unknown) => putSeriesIndex(rec),
+    deleteSeriesIndex: (key: string) => deleteSeriesIndex(key),
+    moveSeriesIndexKey: (o: string, n: string) => moveSeriesIndexKey(o, n)
+  };
+});
+
 /** A writable provider mock exposing every primitive renameVolume composes. */
 function makeRenameProvider(overrides: Record<string, unknown> = {}) {
   return {
@@ -47,6 +76,7 @@ function makeRenameProvider(overrides: Record<string, unknown> = {}) {
       path: newPath
     })),
     deleteFile: vi.fn(async () => {}),
+    downloadFile: vi.fn(async () => new Blob(['{}'])),
     removeDirectoryIfEmpty: vi.fn(async () => {}),
     ...overrides
   };
@@ -764,94 +794,337 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
   });
 });
 
-describe('UnifiedCloudManager sidecar refresh', () => {
-  beforeEach(() => vi.clearAllMocks());
+describe('UnifiedCloudManager.writeSeriesFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    getSeriesIndex.mockResolvedValue(undefined);
+  });
 
-  it('re-uploads a regenerated .mokuro in place for backed-up volumes and skips un-backed-up ones', async () => {
+  /** A local (installed) volume — only the index fields matter here. */
+  function volume(seriesTitle: string, volumeTitle: string, overrides: object = {}) {
+    return {
+      volume_uuid: `uuid-${volumeTitle}`,
+      series_uuid: 'series-uuid',
+      series_title: seriesTitle,
+      volume_title: volumeTitle,
+      mokuro_version: '0.4.11',
+      page_count: 2,
+      character_count: 20,
+      page_char_counts: [10, 20],
+      ...overrides
+    };
+  }
+
+  function cloudFile(path: string, overrides: Partial<CloudFileMetadata> = {}): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size: 100,
+      ...overrides
+    };
+  }
+
+  /** The JSON body of the `series.json` upload. */
+  async function uploadedSeriesFile(provider: { uploadFile: ReturnType<typeof vi.fn> }) {
+    const call = provider.uploadFile.mock.calls.find(
+      (args: unknown[]) => typeof args[0] === 'string' && args[0].endsWith('series.json')
+    );
+    expect(call).toBeTruthy();
+    return JSON.parse(await (call![1] as Blob).text());
+  }
+
+  function seriesFileJson(volumes: Array<{ uuid: string; title: string }>, updated_at: string) {
+    return JSON.stringify({
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at,
+      volumes: volumes.map((v) => ({
+        volume_uuid: v.uuid,
+        volume_title: v.title,
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1],
+        mokuro_version: '0.4.11'
+      }))
+    });
+  }
+
+  it('uploads the index at <Series>/series.json and caches what it wrote', async () => {
     const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider();
-    const files = oldSeriesFiles(); // Old Series/Volume 1.{cbz,mokuro,webp}
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
-    generateSidecars.mockResolvedValue({
-      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
-    });
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
-      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
-      { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' } // not in cloud
-    ]);
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
-    expect(generateSidecars).toHaveBeenCalledTimes(1);
-    expect(generateSidecars).toHaveBeenCalledWith('uuid-1');
     expect(provider.uploadFile).toHaveBeenCalledWith(
-      'Old Series/Volume 1.mokuro',
+      'One Piece/series.json',
       expect.any(Blob),
       undefined,
       undefined
     );
-    expect(provider.renameFile).not.toHaveBeenCalled();
-    expect(provider.deleteFile).not.toHaveBeenCalled(); // same path → nothing stale
-    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 1 });
+    const file = await uploadedSeriesFile(provider);
+    expect(file.version).toBe(2);
+    expect(file.series_title).toBe('One Piece');
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({ volume_uuid: 'uuid-Volume 1', page_count: 2 });
+
+    // The cache learns the new file (overwrite → one entry, at the same path)
+    expect(cache.add).toHaveBeenCalledWith(
+      'One Piece/series.json',
+      expect.objectContaining({
+        path: 'One Piece/series.json'
+      })
+    );
+    // …and the local index cache is stamped with what we uploaded, so the next
+    // listing does not re-download our own write.
+    expect(putSeriesIndex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        source: expect.objectContaining({ provider: 'webdav', path: 'One Piece/series.json' })
+      })
+    );
   });
 
-  it('replaces a legacy .mokuro.gz sidecar with the fresh .mokuro', async () => {
+  it('overwrites an existing cloud copy at the same path (no delete/rename dance)', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
     const provider = makeRenameProvider();
-    const files: CloudFileMetadata[] = [
-      { provider: 'webdav', fileId: 'cbz', path: 'S/V.cbz', modifiedTime: 't', size: 1 },
-      { provider: 'webdav', fileId: 'gz', path: 'S/V.mokuro.gz', modifiedTime: 't', size: 1 }
-    ];
+    const existingCloud = cloudFile('One Piece/series.json', { fileId: 'sj', size: 42 });
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
-    generateSidecars.mockResolvedValue({
-      mokuro: { filename: 'V.mokuro', blob: new Blob(['{}']) }
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz'), existingCloud]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    // Cached record matches the listing stamp → nothing to re-download.
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: JSON.parse(seriesFileJson([], '2026-01-01T00:00:00.000Z')),
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 42,
+        modifiedTime: '2026-08-17T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-17T00:00:00.000Z'
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await unifiedCloudManager.refreshVolumeSidecar('S', 'V', 'u');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
     expect(provider.uploadFile).toHaveBeenCalledWith(
-      'S/V.mokuro',
+      'One Piece/series.json',
       expect.any(Blob),
       undefined,
       undefined
     );
-    expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
   });
 
-  it('throws READ_ONLY on a read-only provider before touching the cloud', async () => {
+  it('re-reads a cloud copy the cache has not seen and unions its volumes with the local ones', async () => {
+    // Another device wrote the file after our last fetch (different size), so the
+    // cached copy is stale: writing straight from it would drop that device's
+    // volumes from the index.
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(
+        async () =>
+          new Blob([
+            seriesFileJson([{ uuid: 'uuid-remote', title: 'Volume 2' }], '2026-08-16T00:00:00.000Z')
+          ])
+      )
+    });
+    const remoteFile = cloudFile('One Piece/series.json', { fileId: 'sj', size: 999 });
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/Volume 2.cbz'),
+      remoteFile
+    ]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: JSON.parse(seriesFileJson([], '2026-01-01T00:00:00.000Z')),
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 1,
+        modifiedTime: '2026-08-01T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-01T00:00:00.000Z'
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+
+    expect(provider.downloadFile).toHaveBeenCalledTimes(1);
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes.map((v: { volume_uuid: string }) => v.volume_uuid).sort()).toEqual([
+      'uuid-Volume 1',
+      'uuid-remote'
+    ]);
+  });
+
+  it('prunes index entries for volumes that are neither in the cloud listing nor installed', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/series.json', { fileId: 'sj', size: 42 })
+    ]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: JSON.parse(
+        seriesFileJson(
+          [
+            { uuid: 'uuid-Volume 1', title: 'Volume 1' },
+            { uuid: 'uuid-deleted', title: 'Volume 9' }
+          ],
+          '2026-01-01T00:00:00.000Z'
+        )
+      ),
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 42,
+        modifiedTime: '2026-08-17T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-17T00:00:00.000Z'
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.writeSeriesFile('One Piece');
+
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes.map((v: { volume_title: string }) => v.volume_title)).toEqual(['Volume 1']);
+  });
+
+  it('does not prune when the listing shows no archives at all (cache not primed)', async () => {
+    // An empty/unfetched listing is "we don't know", not "the cloud is empty" —
+    // pruning against it would wipe every other device's entries.
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: JSON.parse(
+        seriesFileJson([{ uuid: 'uuid-remote', title: 'Volume 7' }], '2026-01-01T00:00:00.000Z')
+      ),
+      source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
+      fetched_at: '2026-08-17T00:00:00.000Z'
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.writeSeriesFile('One Piece');
+
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes.map((v: { volume_title: string }) => v.volume_title).sort()).toEqual([
+      'Volume 1',
+      'Volume 7'
+    ]);
+  });
+
+  it('skips a read-only provider without touching the cloud', async () => {
     const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockReturnValue(oldSeriesFiles());
     getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await expect(
-      unifiedCloudManager.refreshSeriesSidecars('Old Series', [
-        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
-      ])
-    ).rejects.toMatchObject({ code: 'READ_ONLY' });
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('read-only');
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('skips when there is nothing worth publishing (no facts, no volumes)', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getBySeries.mockReturnValue([]);
+    localVolumes.mockResolvedValue([]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
   });
 
-  it('counts a per-volume failure and keeps going', async () => {
-    const provider = makeRenameProvider();
-    const files = oldSeriesFiles();
-    getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
-    generateSidecars.mockResolvedValue({}); // no OCR → cannot regenerate
+  it('skips when no provider is connected', async () => {
+    getActiveProvider.mockReturnValue(null);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
-      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
-    ]);
-    expect(result).toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+    expect(putSeriesIndex).not.toHaveBeenCalled();
   });
 
-  it('skips an image-only volume backed up as cbz+webp with no cloud .mokuro (not a failure)', async () => {
+  it('ignores a placeholder (cloud-only) volume — its uuid and counts are derived', async () => {
     const provider = makeRenameProvider();
-    const files: CloudFileMetadata[] = [
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1', { isPlaceholder: true })]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('skips the write when the cloud copy exists but cannot be re-read', async () => {
+    // A refresh we cannot perform means we do not know what is out there —
+    // overwriting blind could clobber another device's newer facts, so skip.
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => {
+        throw new Error('offline');
+      })
+    });
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/series.json', { fileId: 'sj', size: 999 })
+    ]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('UnifiedCloudManager series.json on rename and delete', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    getSeriesIndex.mockResolvedValue(undefined);
+  });
+
+  it('writes the index at the new title, drops the old file and moves the cached record', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
       {
         provider: 'webdav',
         fileId: 'cbz-1',
@@ -861,23 +1134,84 @@ describe('UnifiedCloudManager sidecar refresh', () => {
       },
       {
         provider: 'webdav',
-        fileId: 'thumb-1',
-        path: 'Old Series/Volume 1.webp',
+        fileId: 'sj',
+        path: 'Old Series/series.json',
         modifiedTime: 't',
-        size: 5
+        size: 20
       }
     ];
     getActiveProvider.mockReturnValue(provider);
-    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({});
+    // The DB still holds the OLD title while the cloud rename gates the local commit.
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const result = await unifiedCloudManager.refreshSeriesSidecars('Old Series', [
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
 
-    expect(result).toEqual({ succeeded: 0, failed: 0, skipped: 1 });
-    expect(generateSidecars).not.toHaveBeenCalled();
-    expect(provider.uploadFile).not.toHaveBeenCalled();
+    // The sidecar is NOT a volume: it must not trip the cloud-only-volumes gate.
+    expect(result.failures).toEqual([]);
+    expect(result.renamedVolumeUuids).toEqual(['uuid-1']);
+
+    expect(moveSeriesIndexKey).toHaveBeenCalledWith('Old Series', 'New Series');
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'New Series/series.json',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.deleteFile).toHaveBeenCalledWith(state[1]);
+  });
+
+  it('deletes the sidecar with the series folder and drops the cached index', async () => {
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const deleted: string[] = [];
+    const provider = {
+      type: 'webdav',
+      getStatus: vi.fn(() => ({ isReadOnly: false })),
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        deleted.push(file.path);
+      })
+    };
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'One Piece/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'sj',
+        path: 'One Piece/series.json',
+        modifiedTime: 't',
+        size: 20
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('One Piece');
+
+    expect(deleted).toContain('One Piece/series.json');
+    expect(result.failed).toBe(0);
+    expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
   });
 });

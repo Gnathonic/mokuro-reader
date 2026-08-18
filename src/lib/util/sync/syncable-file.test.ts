@@ -14,6 +14,14 @@ describe('syncable-file', () => {
     expect(isSyncableFile('Series/Vol 1.JPEG')).toBe(true);
   });
 
+  it('accepts the per-series sidecar <Series>/series.json', () => {
+    expect(isSyncableFile('Series/series.json')).toBe(true);
+    expect(isSyncableFile('Series/SERIES.JSON')).toBe(true);
+    expect(isSidecarFile('series.json')).toBe(true);
+    // It is a SERIES sidecar, not a per-account root config.
+    expect(isRootConfigFile('series.json')).toBe(false);
+  });
+
   it('accepts the root config files', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
@@ -30,6 +38,12 @@ describe('syncable-file', () => {
     expect(isSyncableFile('Series/notes.txt')).toBe(false);
     expect(isSyncableFile('Series/random.json')).toBe(false);
     expect(isSyncableFile('desktop.ini')).toBe(false);
+  });
+
+  it('does not accept a .json that merely ENDS with series.json', () => {
+    // Basename equality only — `my-series.json` is somebody else's file.
+    expect(isSidecarFile('my-series.json')).toBe(false);
+    expect(isSyncableFile('Series/my-series.json')).toBe(false);
   });
 
   it('is case-insensitive and uses the basename only', () => {

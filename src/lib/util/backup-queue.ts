@@ -286,6 +286,32 @@ function handleBackupError(item: BackupQueueItem, processId: string, errorMessag
 }
 
 /**
+ * Series that got at least one volume uploaded in this run. Their
+ * `<Series>/series.json` index is written ONCE at the end of the run rather
+ * than per volume: the index lists every volume, so a per-volume write would
+ * re-upload the whole file for each archive.
+ */
+const seriesNeedingIndexWrite = new Set<string>();
+
+/**
+ * Write the per-series index for every series this run backed up. Runs after
+ * the cache refresh so the file is built from the server's real listing (which
+ * is also what prunes entries for volumes that are no longer in the cloud).
+ * Non-fatal: a failed index write never fails a backup that succeeded.
+ */
+async function writeSeriesIndexesForRun(): Promise<void> {
+  const seriesTitles = [...seriesNeedingIndexWrite];
+  seriesNeedingIndexWrite.clear();
+  for (const seriesTitle of seriesTitles) {
+    try {
+      await unifiedCloudManager.writeSeriesFile(seriesTitle);
+    } catch (error) {
+      console.warn(`[Backup Queue] Failed to write series.json for '${seriesTitle}':`, error);
+    }
+  }
+}
+
+/**
  * Check if queue is empty and release shared pool if so
  */
 async function checkAndTerminatePool(): Promise<void> {
@@ -299,6 +325,8 @@ async function checkAndTerminatePool(): Promise<void> {
     console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
     await unifiedCloudManager.fetchAllCloudVolumes();
     console.log('[Backup Queue] Cloud cache refreshed with server data');
+
+    await writeSeriesIndexesForRun();
   }
 }
 
@@ -473,6 +501,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               });
             }
 
+            seriesNeedingIndexWrite.add(item.seriesTitle);
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
@@ -543,6 +572,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
           const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
           addToCache(archivePath, uploadedFileId, data.size || 0);
+          seriesNeedingIndexWrite.add(item.seriesTitle);
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
