@@ -12,6 +12,8 @@
 
 ## Global Constraints
 
+- **External dependency (user decision 2026-08-17):** mokuro-bunko currently treats every `.json` as a user progress file. Keep the name `series.json`; bunko must be patched to partition by path (root-level `.json` = progress/profiles; nested `<Series>/series.json` = series metadata, served as a static sidecar) BEFORE this feature is used against a bunko-backed WebDAV library. Track it as a follow-up in the mokuro-bunko repo (deploy recipe in memory `project_mokuro_bunko_deploy.md`).
+
 - Worktree `/home/nathan/Projects/mokuro-reader-worktrees/feat/series-metadata`, branch `feat/series-metadata`.
 - File name exactly `series.json`, path `<Series Title>/series.json` (same folder as the volumes; the folder name IS the stored `series_title`, never derived).
 - File content = shareable facts + tag ONLY: `{ version: 1, series_title, external_ids, titles, synonyms, tag?, updated_at }` — never `tracking`, `read_count`, `title_preference`, `reread_prompt_suppressed`.
