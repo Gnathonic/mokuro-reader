@@ -152,6 +152,19 @@
 
 - [ ] Steps: failing tests → implement → suite/check/prettier → commit `feat(series): shelf renders larger without shadow; zoom control`.
 
+### Task 13: Shelf ↔ catalog card geometry parity (user amendment 2026-08-17)
+
+**Problem:** the shelf reuses `CompositeCanvas` and the horizontal-step formula, but not the card's full geometry. In the catalog's spine mode (`stackCount === 0`) the card draws every spine at a **uniform height = average of the stack's contain-fitted thumbnail heights** (`getRenderedDimensions` with `min(BASE_WIDTH/w, BASE_HEIGHT/h, 1)`, averaged over `stackedVolumes`), width = `min(uniformHeight × aspect, BASE_WIDTH)`, over the card's volume subset (`hideReadVolumes ? unread : local`; cloud placeholders capped at 25); the shelf used a fixed 360 px height over all volumes → a step that shows no gap on the card shows a gap in the editor and vice-versa.
+
+**Files:**
+
+- Create: `src/lib/util/spine-stack-geometry.ts` (+ test) — pure: `getRenderedDimensions(naturalW, naturalH, baseW, baseH)`, `computeUniformHeight(volumeDims[], baseW, baseH)` (average of contain-fitted heights, `null` when not in uniform mode), `getSpineCanvasDimensions(dims, uniformHeight, baseW, baseH)`, `computeStepSizes({ stackCountSetting, horizontalStepPct, verticalStepPct, hOffsetAdjust, centerHorizontal, actualCount, innerWidth, baseW, baseH, uniformHeight })` (the card's `stepSizes` rule incl. `leftOffset`/spread), and `selectCardStackVolumes({ localVolumes, unreadVolumes, placeholders, hideRead, stackCount, compactCloud, maxCloudStack })` (the card's `stackedVolumes` rule).
+- Modify: `src/lib/components/CatalogItem.svelte` — replace its inline `getRenderedDimensions`, `uniformHeight`, `getCanvasDimensions`, `stepSizes` and `stackedVolumes` bodies with calls to the shared module (behaviour-preserving; existing card tests green; add an oracle test comparing the module against the pre-refactor inline math for fixtures incl. mixed aspect ratios).
+- Modify: `src/lib/components/Series/SeriesSpineShowcase.svelte` — compute the shelf EXACTLY as the card would in spine mode: same volume subset (`selectCardStackVolumes` with `stackCount = 0` semantics: `hideRead ? unread : local`, cloud cap 25), same `uniformHeight`, same per-volume canvas dims, same step sizes (`hOffsetAdjust` = the persisted spine offset), all multiplied by `zoom` for rendering; a **"Show all volumes"** toggle (off by default) switches the subset to every volume (still using the card's dims/height rules and the SAME uniform height the card would use, so per-volume widths stay identical). Keep the strip's scrolling; keep no-shadow + zoom.
+- Tests: `spine-stack-geometry.test.ts` (fixtures: narrow spines, wide covers, mixed → uniform height, widths, steps; oracle equality); showcase test: at zoom 1 with a fixture, the shelf's `getCanvasDimensions` and `stepSizes.horizontal` equal the card's values for the same volumes/settings (import the shared module for the expected values); toggle changes the subset only.
+
+- [ ] Steps: failing tests → implement → full suite + `npm run check` + prettier → commit `fix(series): shelf uses the catalog card's exact spine geometry (uniform height, aspect widths, subset)`.
+
 ### Task 5: End-to-end verification + docs touch-up
 
 - [ ] `npx vitest run && npm run check && npx prettier --check src README.md CHANGELOG.md docs` all green.
