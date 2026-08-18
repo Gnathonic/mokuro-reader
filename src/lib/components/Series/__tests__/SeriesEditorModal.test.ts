@@ -430,6 +430,20 @@ describe('SeriesEditorModal', () => {
     }
   });
 
+  it('Escape closes a freshly opened editor while the folder-name input is focused and unedited', async () => {
+    // Regression: the field unconditionally swallowed Escape (revert + stopPropagation),
+    // so on a fresh, unedited field the first Escape press never reached the modal's own
+    // close handler at all.
+    const { getByDisplayValue } = await openFor('Berserk');
+    const input = getByDisplayValue('Berserk') as HTMLInputElement;
+    input.focus();
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await tick();
+
+    expect(get(seriesEditorModalStore)).toBeUndefined();
+  });
+
   it('feeds the series volumes from the catalog to the AniList controls', async () => {
     h.providerStatus.set({
       providers: {},

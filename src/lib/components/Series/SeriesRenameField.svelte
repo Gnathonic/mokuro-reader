@@ -86,7 +86,11 @@
       saveRename();
     } else if (event.key === 'Escape') {
       // Same as SeriesView's inline rename: Escape abandons the edit. Stop it here so it
-      // doesn't also close the surrounding modal — one Escape, one undo.
+      // doesn't also close the surrounding modal — one Escape, one undo. But only when
+      // there's actually a draft to abandon: on a freshly opened (unedited) field, Escape
+      // must fall through to the modal so it closes normally instead of eating the first
+      // press for nothing (see `data-escape-reverts` below).
+      if (!dirty) return;
       event.preventDefault();
       event.stopPropagation();
       resetRename();
@@ -103,7 +107,7 @@
       onkeydown={handleRenameKeydown}
       disabled={renameSaving}
       aria-label="Folder name"
-      data-escape-reverts
+      data-escape-reverts={dirty ? '' : undefined}
       class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
     />
     <!-- relative z-10: night-mode filter on <dialog> creates a stacking context -->

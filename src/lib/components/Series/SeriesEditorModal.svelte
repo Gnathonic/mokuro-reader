@@ -151,7 +151,10 @@
         e.stopPropagation();
         return;
       }
-      // A field that reverts its own draft on Escape (the folder name) gets first refusal.
+      // A field that reverts its own draft on Escape (the folder name) gets first refusal —
+      // but only while it actually carries an edit: the field only wears this attribute
+      // while dirty, so a freshly opened/unedited field falls straight through to the
+      // close below instead of swallowing the first Escape press.
       // This listener is capture-phase, so it must NOT stopPropagation here or the key would
       // never reach the field at all; the field stops it before the page sees it.
       if ((e.target as HTMLElement | null)?.closest?.('[data-escape-reverts]')) return;
@@ -208,7 +211,10 @@
             </Button>
           {/if}
         </div>
-        <Button color="alternative" onclick={handleClose}>Close</Button>
+        <!-- data-autofocus: without this, Flowbite's dialog autofocuses the first
+             input/button it finds — the folder-name rename field — landing the user in an
+             edit box the instant the modal opens. Close is the safest non-destructive spot. -->
+        <Button color="alternative" onclick={handleClose} data-autofocus>Close</Button>
       </div>
     </div>
   {/if}
