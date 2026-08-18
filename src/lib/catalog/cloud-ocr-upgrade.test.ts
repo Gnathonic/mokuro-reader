@@ -13,11 +13,6 @@ vi.mock('$lib/import/processing', () => ({
   parseMokuroFile: (...args: unknown[]) => parseMokuroFile(...args)
 }));
 
-const upsertFromEmbedded = vi.fn();
-vi.mock('$lib/metadata/store', () => ({
-  upsertFromEmbedded: (...args: unknown[]) => upsertFromEmbedded(...args)
-}));
-
 const downloadFile = vi.fn();
 const getActiveProvider = vi.fn();
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
@@ -27,14 +22,6 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 import { db } from '$lib/catalog/db';
 import { enqueueCloudOcrUpgrade } from './cloud-ocr-upgrade';
 import type { VolumeMetadata } from '$lib/types';
-
-const embedded = {
-  external_ids: { anilist: 30013 },
-  titles: { romaji: 'ONE PIECE' },
-  synonyms: [],
-  tag: '[color]',
-  updated_at: '2026-08-16T00:00:00.000Z'
-};
 
 const imageOnlyVolume = {
   volume_uuid: 'vol-1',
@@ -66,51 +53,20 @@ describe('cloud OCR upgrade', () => {
     parseMokuroFile.mockResolvedValue({
       version: '0.2.0',
       seriesUuid: 'series-1',
-      pages: [{ blocks: [{ lines: ['あ'] }] }],
-      seriesMetadata: embedded
+      pages: [{ blocks: [{ lines: ['あ'] }] }]
     });
   });
 
-  it('applies the sidecar series_metadata after upgrading an image-only volume', async () => {
+  it('upgrades an image-only volume with the cloud sidecar OCR', async () => {
     enqueueCloudOcrUpgrade(imageOnlyVolume, sidecar);
 
     await vi.waitFor(async () => {
       const upgraded = await (db as any).table('volumes').get('vol-1');
       expect(upgraded.mokuro_version).toBe('0.2.0');
+      expect(upgraded.page_count).toBe(1);
+      expect(upgraded.character_count).toBe(1);
     });
-    expect(upsertFromEmbedded).toHaveBeenCalledWith('One Piece', embedded);
-  });
-
-  it('keeps the OCR upgrade when applying the embedded metadata throws', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    upsertFromEmbedded.mockRejectedValueOnce(new Error('db is closed'));
-
-    enqueueCloudOcrUpgrade(
-      { ...imageOnlyVolume, volume_uuid: 'vol-1' },
-      { ...sidecar, fileId: 'file-2' }
-    );
-
-    await vi.waitFor(async () => {
-      const upgraded = await (db as any).table('volumes').get('vol-1');
-      expect(upgraded.mokuro_version).toBe('0.2.0');
-    });
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-    warn.mockRestore();
-  });
-
-  it('does nothing when the sidecar has no series_metadata', async () => {
-    parseMokuroFile.mockResolvedValue({
-      version: '0.2.0',
-      seriesUuid: 'series-1',
-      pages: []
-    });
-
-    enqueueCloudOcrUpgrade(imageOnlyVolume, { ...sidecar, fileId: 'file-3' });
-
-    await vi.waitFor(async () => {
-      const upgraded = await (db as any).table('volumes').get('vol-1');
-      expect(upgraded.mokuro_version).toBe('0.2.0');
-    });
-    expect(upsertFromEmbedded).not.toHaveBeenCalled();
+    const ocr = await (db as any).table('volume_ocr').get('vol-1');
+    expect(ocr.pages).toHaveLength(1);
   });
 });

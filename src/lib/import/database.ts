@@ -14,7 +14,6 @@ import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { ProcessedVolume } from './types';
 import type { VolumeMetadata } from '$lib/types';
 import { naturalSort } from '$lib/util/natural-sort';
-import { upsertFromEmbedded } from '$lib/metadata/store';
 
 /**
  * Check if a volume already exists in the database
@@ -127,16 +126,6 @@ export async function saveVolume(
       files: sortedFiles
     });
   });
-
-  // Series facts travel inside the .mokuro; apply them (newest wins) once the
-  // volume itself is committed. Never let this fail the import.
-  if (metadata.seriesMetadata) {
-    try {
-      await upsertFromEmbedded(volumeMetadata.series_title, metadata.seriesMetadata);
-    } catch (error) {
-      console.warn('Failed to apply embedded series metadata:', error);
-    }
-  }
 
   // Import-time thumbnail generation can fail for some files.
   // Trigger best-effort background recovery so UI placeholders resolve

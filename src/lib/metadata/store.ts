@@ -3,11 +3,8 @@ import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { ID_KEYS } from './sanitize';
 import { normalizeSeriesKey } from './series-key';
-import {
-  createEmptySeriesMetadata,
-  type EmbeddedSeriesMetadata,
-  type SeriesMetadata
-} from './types';
+import type { SeriesFile } from './series-file';
+import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 
 export type SeriesMetadataPatch = Partial<
   Omit<SeriesMetadata, 'series_key' | 'series_title' | 'updated_at'>
@@ -121,33 +118,32 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
 }
 
 /**
- * Apply facts read from a .mokuro `series_metadata` block. Newest wins: only
- * writes when there is no local record or the embed is strictly newer.
+ * Apply the metadata facts from a `series.json` sidecar. Newest wins: only
+ * writes when there is no local record or the file is strictly newer. The
+ * volume index is not touched here — it is cached separately and never
+ * overrides local volumes.
  *
- * The embed carries no fetched facts (`format`/`status`/totals/`cover_url`), so
+ * The file carries no fetched facts (`format`/`status`/totals/`cover_url`), so
  * when it points at a *different* external link than the local record those
  * facts describe the old link and are cleared — otherwise a re-link would keep
  * e.g. the previous series' `total_volumes` forever.
  */
-export async function upsertFromEmbedded(
-  seriesTitle: string,
-  embedded: EmbeddedSeriesMetadata
-): Promise<void> {
+export async function upsertFromSeriesFile(seriesTitle: string, file: SeriesFile): Promise<void> {
   const key = normalizeSeriesKey(seriesTitle);
   const existing = await db.series_metadata.get(key);
-  if (existing && existing.updated_at >= embedded.updated_at) return;
+  if (existing && existing.updated_at >= file.updated_at) return;
 
-  const base = existing ?? createEmptySeriesMetadata(seriesTitle, embedded.updated_at);
-  const linked = hasAnyId(embedded.external_ids);
-  const linkChanged = !sameExternalIds(base.external_ids, embedded.external_ids);
+  const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
+  const linked = hasAnyId(file.external_ids);
+  const linkChanged = !sameExternalIds(base.external_ids, file.external_ids);
   const next = stripUndefined<SeriesMetadata>({
     ...base,
     series_key: key,
     series_title: seriesTitle,
-    external_ids: { ...embedded.external_ids },
-    titles: { ...embedded.titles },
-    synonyms: [...embedded.synonyms],
-    tag: embedded.tag,
+    external_ids: { ...file.external_ids },
+    titles: { ...file.titles },
+    synonyms: [...file.synonyms],
+    tag: file.tag,
     ...(linkChanged
       ? {
           format: undefined,
@@ -157,11 +153,11 @@ export async function upsertFromEmbedded(
           cover_url: undefined
         }
       : {}),
-    updated_at: embedded.updated_at,
+    updated_at: file.updated_at,
     linked_at: linked
       ? linkChanged
-        ? embedded.updated_at
-        : (base.linked_at ?? embedded.updated_at)
+        ? file.updated_at
+        : (base.linked_at ?? file.updated_at)
       : undefined
   });
   await db.series_metadata.put(next);

@@ -25,7 +25,8 @@ export interface SeriesTracking {
 /**
  * Per-series metadata record. PK = normalizeSeriesKey(series_title).
  * Synced as series-metadata.json (newest updated_at wins per key).
- * Only the "facts" (external_ids/titles/synonyms/tag) are embedded in .mokuro.
+ * Only the "facts" (external_ids/titles/synonyms/tag) are shared publicly, via
+ * the per-series `series.json` sidecar (`series-file.ts`).
  */
 export interface SeriesMetadata {
   series_key: string;
@@ -33,7 +34,7 @@ export interface SeriesMetadata {
   external_ids: SeriesExternalIds;
   titles: SeriesTitles;
   synonyms: string[];
-  /** Free text appended to the display name; exported in .mokuro for mokuro-bunko */
+  /** Free text appended to the display name; shared in `series.json` for mokuro-bunko */
   tag?: string;
   format?: string;
   status?: string;
@@ -43,8 +44,8 @@ export interface SeriesMetadata {
   title_preference?: DisplayTitleLanguage;
   /**
    * Catalog spine stack: adjustment to the global horizontal step, in percent.
-   * Added to `catalogSettings.horizontalStep` for this series only. Not embedded
-   * in .mokuro — it describes this library's shelf, not the series.
+   * Added to `catalogSettings.horizontalStep` for this series only. Never shared
+   * in `series.json` — it describes this library's shelf, not the series.
    */
   spine_offset?: number;
   /** Catalog spine stack: per-volume horizontal nudge in px, keyed by `volume_uuid`. */
@@ -56,15 +57,6 @@ export interface SeriesMetadata {
   /** ISO timestamp — merge key */
   updated_at: string;
   linked_at?: string;
-}
-
-/** The subset written into a .mokuro file under `series_metadata`. */
-export interface EmbeddedSeriesMetadata {
-  external_ids: SeriesExternalIds;
-  titles: SeriesTitles;
-  synonyms: string[];
-  tag?: string;
-  updated_at: string;
 }
 
 export function createEmptySeriesMetadata(

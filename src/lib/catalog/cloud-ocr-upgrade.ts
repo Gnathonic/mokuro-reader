@@ -1,6 +1,5 @@
 import { db } from '$lib/catalog/db';
 import { parseMokuroFile } from '$lib/import/processing';
-import { upsertFromEmbedded } from '$lib/metadata/store';
 import type { VolumeMetadata } from '$lib/types';
 import {
   unifiedCloudManager,
@@ -146,17 +145,6 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
       page_char_counts: cumulative
     });
   });
-
-  // Series facts travel inside the .mokuro; apply them (newest wins) once the
-  // upgrade is committed. Same non-fatal pattern as saveVolume's import path —
-  // a metadata failure must never lose the OCR upgrade.
-  if (parsed.seriesMetadata) {
-    try {
-      await upsertFromEmbedded(existingVolume.series_title, parsed.seriesMetadata);
-    } catch (error) {
-      console.warn('[Cloud OCR Upgrade] Failed to apply embedded series metadata:', error);
-    }
-  }
 
   console.log(
     '[Cloud OCR Upgrade] Upgraded image-only volume:',

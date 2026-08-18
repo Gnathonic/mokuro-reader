@@ -35,11 +35,6 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
-const upsertFromEmbedded = vi.fn();
-vi.mock('$lib/metadata/store', () => ({
-  upsertFromEmbedded: (...args: unknown[]) => upsertFromEmbedded(...args)
-}));
-
 // Import the mocked db
 import { db } from '$lib/catalog/db';
 
@@ -293,22 +288,6 @@ describe('saveVolume', () => {
 
     const addCall = (db.volumes.add as any).mock.calls[0][0];
     expect(addCall.page_char_counts).toEqual([50, 150, 200]);
-  });
-
-  it('applies embedded series metadata after the volume is written', async () => {
-    const embedded = {
-      external_ids: { anilist: 30013 },
-      titles: {},
-      synonyms: [],
-      tag: '[color]',
-      updated_at: '2026-08-16T00:00:00.000Z'
-    };
-    const processed = createProcessedVolume({
-      metadata: { series: 'One Piece', seriesMetadata: embedded } as any
-    });
-    await saveVolume(processed);
-
-    expect(upsertFromEmbedded).toHaveBeenCalledWith('One Piece', embedded);
   });
 });
 

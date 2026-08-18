@@ -142,8 +142,8 @@ describe('parseMokuroFile', () => {
     await expect(parseMokuroFile(badFile)).rejects.toThrow(/missing required/i);
   });
 
-  it('extracts a valid series_metadata block and ignores a malformed one', async () => {
-    const good = new File(
+  it('ignores a legacy series_metadata block (series facts live in series.json now)', async () => {
+    const file = new File(
       [
         JSON.stringify({
           version: '0.2.1',
@@ -163,30 +163,9 @@ describe('parseMokuroFile', () => {
       ],
       'a.mokuro'
     );
-    const parsed = await parseMokuroFile(good);
-    expect(parsed.seriesMetadata).toEqual({
-      external_ids: { anilist: 30013 },
-      titles: { english: 'One Piece' },
-      synonyms: [],
-      tag: '[color]',
-      updated_at: '2026-08-16T00:00:00.000Z'
-    });
-
-    const bad = new File(
-      [
-        JSON.stringify({
-          version: '0.2.1',
-          title: 'X',
-          title_uuid: 's',
-          volume: 'V',
-          volume_uuid: 'v',
-          pages: [],
-          series_metadata: 'garbage'
-        })
-      ],
-      'b.mokuro'
-    );
-    expect((await parseMokuroFile(bad)).seriesMetadata).toBeUndefined();
+    const parsed = await parseMokuroFile(file);
+    expect(parsed.series).toBe('One Piece');
+    expect(Object.keys(parsed)).not.toContain('seriesMetadata');
   });
 });
 

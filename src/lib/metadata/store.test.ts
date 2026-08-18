@@ -14,13 +14,19 @@ import {
   getSeriesMetadataForTitle,
   updateSeriesMetadata,
   unlinkSeries,
-  upsertFromEmbedded,
+  upsertFromSeriesFile,
   moveSeriesMetadataKey,
   getAllSeriesMetadata,
   replaceAllSeriesMetadata
 } from './store';
 import { toSeriesMetadataPatch } from './providers/anilist';
+import type { SeriesFile } from './series-file';
 import { createEmptySeriesMetadata } from './types';
+
+/** A minimal series.json carrying only the facts the store reads. */
+function seriesFile(facts: Omit<SeriesFile, 'version' | 'series_title' | 'volumes'>): SeriesFile {
+  return { version: 2, series_title: 'One Piece', volumes: [], ...facts };
+}
 
 describe('series metadata store', () => {
   beforeEach(async () => {
@@ -154,37 +160,46 @@ describe('series metadata store', () => {
     expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
 
-  it('upsertFromEmbedded writes when local is missing or older, ignores when local is newer', async () => {
-    await upsertFromEmbedded('One Piece', {
-      external_ids: { anilist: 30013 },
-      titles: { romaji: 'ONE PIECE' },
-      synonyms: [],
-      tag: '[color]',
-      updated_at: '2026-02-01T00:00:00.000Z'
-    });
+  it('upsertFromSeriesFile writes when local is missing or older, ignores when local is newer', async () => {
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013 },
+        titles: { romaji: 'ONE PIECE' },
+        synonyms: [],
+        tag: '[color]',
+        updated_at: '2026-02-01T00:00:00.000Z'
+      })
+    );
     let meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 30013 });
     expect(meta?.tag).toBe('[color]');
     expect(meta?.updated_at).toBe('2026-02-01T00:00:00.000Z');
     expect(meta?.linked_at).toBe('2026-02-01T00:00:00.000Z');
 
-    // older embed → ignored
-    await upsertFromEmbedded('One Piece', {
-      external_ids: {},
-      titles: {},
-      synonyms: [],
-      updated_at: '2026-01-01T00:00:00.000Z'
-    });
+    // older file → ignored
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-01-01T00:00:00.000Z'
+      })
+    );
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 30013 });
 
-    // newer embed without ids → unlink propagates
-    await upsertFromEmbedded('One Piece', {
-      external_ids: {},
-      titles: {},
-      synonyms: [],
-      updated_at: '2026-03-01T00:00:00.000Z'
-    });
+    // newer file without ids → unlink propagates
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-03-01T00:00:00.000Z'
+      })
+    );
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({});
     expect(meta?.tag).toBeUndefined();
@@ -244,7 +259,7 @@ describe('series metadata store', () => {
     expect(meta.updated_at).toBe('2999-01-01T00:00:00.001Z');
   });
 
-  it('upsertFromEmbedded clears the previous link facts when the embed points elsewhere', async () => {
+  it('upsertFromSeriesFile clears the previous link facts when the file points elsewhere', async () => {
     await updateSeriesMetadata('One Piece', {
       external_ids: { anilist: 30013, mal: 13 },
       titles: { english: 'One Piece' },
@@ -256,24 +271,30 @@ describe('series metadata store', () => {
       linked_at: '2020-01-01T00:00:00.000Z'
     });
 
-    // Same link, newer embed → the fetched facts survive.
-    await upsertFromEmbedded('One Piece', {
-      external_ids: { anilist: 30013, mal: 13 },
-      titles: { english: 'One Piece' },
-      synonyms: [],
-      updated_at: '2999-01-01T00:00:00.000Z'
-    });
+    // Same link, newer file → the fetched facts survive.
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 30013, mal: 13 },
+        titles: { english: 'One Piece' },
+        synonyms: [],
+        updated_at: '2999-01-01T00:00:00.000Z'
+      })
+    );
     let meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.total_volumes).toBe(110);
     expect(meta?.linked_at).toBe('2020-01-01T00:00:00.000Z');
 
     // Different link → the old link's facts are dropped instead of being kept.
-    await upsertFromEmbedded('One Piece', {
-      external_ids: { anilist: 99999 },
-      titles: { romaji: 'Some Oneshot' },
-      synonyms: [],
-      updated_at: '2999-01-02T00:00:00.000Z'
-    });
+    await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: { anilist: 99999 },
+        titles: { romaji: 'Some Oneshot' },
+        synonyms: [],
+        updated_at: '2999-01-02T00:00:00.000Z'
+      })
+    );
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 99999 });
     expect(meta?.total_volumes).toBeUndefined();

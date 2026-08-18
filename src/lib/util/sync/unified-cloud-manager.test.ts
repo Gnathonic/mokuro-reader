@@ -775,7 +775,7 @@ describe('UnifiedCloudManager sidecar refresh', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({
-      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"series_metadata":{}}']) }
+      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');

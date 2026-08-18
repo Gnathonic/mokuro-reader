@@ -1,6 +1,5 @@
 import { db } from '$lib/catalog/db';
 import { buildMokuroMetadata } from './mokuro-metadata';
-import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
@@ -29,8 +28,7 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   if (hasMokuroVersion) {
     const volumeOcr = await db.volume_ocr.get(volumeUuid);
     if (volumeOcr?.pages) {
-      const seriesMetadata = await getSeriesMetadataForTitle(volume.series_title);
-      const metadata = buildMokuroMetadata(volume, volumeOcr.pages, { seriesMetadata });
+      const metadata = buildMokuroMetadata(volume, volumeOcr.pages);
       const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
       mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
     }

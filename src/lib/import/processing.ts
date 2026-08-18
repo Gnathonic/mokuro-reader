@@ -27,8 +27,6 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
-import { fromEmbedded } from '$lib/metadata/embed';
-import type { EmbeddedSeriesMetadata } from '$lib/metadata/types';
 
 // ============================================
 // TYPES
@@ -46,8 +44,6 @@ export interface ParsedMokuro {
   pages: MokuroPage[];
   chars: number;
   spineWidth?: number;
-  /** Reader extension: series facts + tag embedded by mokuro-reader / mokuro-bunko */
-  seriesMetadata?: EmbeddedSeriesMetadata;
 }
 
 /**
@@ -176,8 +172,6 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     throw new Error(`Invalid mokuro file: missing required fields: ${missingFields.join(', ')}`);
   }
 
-  const seriesMetadata = fromEmbedded(obj.series_metadata);
-
   return {
     version: obj.version as string,
     series: obj.title as string,
@@ -186,8 +180,7 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     volumeUuid: obj.volume_uuid as string,
     pages: obj.pages as MokuroPage[],
     chars: (obj.chars as number) ?? 0,
-    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
-    ...(seriesMetadata && { seriesMetadata })
+    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number })
   };
 }
 
@@ -693,8 +686,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     missingPagePaths: matchResult.missing.length > 0 ? matchResult.missing : undefined,
     imageOnly: isImageOnly,
     sourceType,
-    spineWidth: mokuroData?.spineWidth,
-    seriesMetadata: mokuroData?.seriesMetadata
+    spineWidth: mokuroData?.spineWidth
   };
 
   return {

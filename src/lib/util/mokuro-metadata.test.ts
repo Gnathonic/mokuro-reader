@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { buildMokuroMetadata } from './mokuro-metadata';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import type { VolumeMetadata } from '$lib/types';
 
 const volume: VolumeMetadata = {
@@ -33,6 +32,7 @@ describe('buildMokuroMetadata', () => {
       chars: 123,
       spine_width: 17
     });
+    // Series facts live in the per-series series.json sidecar, never in a .mokuro.
     expect('series_metadata' in meta).toBe(false);
   });
 
@@ -47,31 +47,5 @@ describe('buildMokuroMetadata', () => {
     expect(meta.volume).toBe('V2');
     expect(meta.title_uuid).toBe('series-uuid');
     expect(meta.volume_uuid).toBe('vol-uuid');
-  });
-
-  it('embeds series facts + tag when metadata is supplied', () => {
-    const seriesMetadata = {
-      ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
-      external_ids: { anilist: 30013, mal: 13 },
-      titles: { english: 'One Piece' },
-      tag: '[color]',
-      tracking: { enabled: true, unit: 'volumes' as const }
-    };
-    const meta = buildMokuroMetadata(volume, pages, { seriesMetadata });
-    expect(meta.series_metadata).toEqual({
-      external_ids: { anilist: 30013, mal: 13 },
-      titles: { english: 'One Piece' },
-      synonyms: [],
-      tag: '[color]',
-      updated_at: '2026-08-16T00:00:00.000Z'
-    });
-    expect(JSON.stringify(meta)).not.toContain('tracking');
-  });
-
-  it('skips the embed for an empty record', () => {
-    const meta = buildMokuroMetadata(volume, pages, {
-      seriesMetadata: createEmptySeriesMetadata('One Piece')
-    });
-    expect('series_metadata' in meta).toBe(false);
   });
 });

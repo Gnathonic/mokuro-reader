@@ -186,8 +186,6 @@ export interface ProcessedMetadata {
   sourceType?: 'local' | 'cloud';
   /** Spine width in pixels (from mokuro metadata) */
   spineWidth?: number;
-  /** Series facts + tag from the .mokuro `series_metadata` block (reader extension) */
-  seriesMetadata?: import('$lib/metadata/types').EmbeddedSeriesMetadata;
 }
 
 /**

@@ -1,8 +1,6 @@
 import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import type { SeriesMetadata } from '$lib/metadata/types';
 
 // Re-exported for existing importers (volume-sidecars, zip, tests).
 export type { MokuroMetadata } from './mokuro-metadata';
@@ -145,8 +143,8 @@ function getDatabase(): Dexie {
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid'
     });
-    // Must mirror CatalogDexieV3 version(2) (series_metadata is read to embed
-    // series facts into regenerated .mokuro sidecars).
+    // Must mirror CatalogDexieV3's schema: a worker that declared an older
+    // version than the one on disk would fail to open the database.
     workerDb.version(2).stores({
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
@@ -155,25 +153,6 @@ function getDatabase(): Dexie {
     });
   }
   return workerDb;
-}
-
-/**
- * Series record for the .mokuro embed. Looked up by the volume's CURRENT title
- * first (a rename moves the record only after the cloud rename succeeds), then
- * by the override title.
- */
-async function loadSeriesMetadataForEmbed(
-  db: Dexie,
-  currentSeriesTitle: string,
-  overrideSeriesTitle?: string
-): Promise<SeriesMetadata | null> {
-  const table = db.table<SeriesMetadata>('series_metadata');
-  const byCurrent = await table.get(normalizeSeriesKey(currentSeriesTitle));
-  if (byCurrent) return byCurrent;
-  if (overrideSeriesTitle && overrideSeriesTitle !== currentSeriesTitle) {
-    return (await table.get(normalizeSeriesKey(overrideSeriesTitle))) ?? null;
-  }
-  return null;
 }
 
 export async function generateVolumeSidecarsFromDb(
@@ -200,15 +179,9 @@ export async function generateVolumeSidecarsFromDb(
   if (hasMokuroVersion) {
     const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
     if (volumeOcr?.pages) {
-      const seriesMetadata = await loadSeriesMetadataForEmbed(
-        db,
-        volume.series_title,
-        overrides?.seriesTitle
-      );
       const metadata = buildMokuroMetadata(volume, volumeOcr.pages, {
         seriesTitle,
-        volumeTitle,
-        seriesMetadata
+        volumeTitle
       });
       sidecars.mokuro = {
         filename: `${volumeTitle}.mokuro`,
@@ -262,9 +235,7 @@ export async function compressVolumeFromDb(
   const isImageOnly = volume.mokuro_version === '';
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : buildMokuroMetadata(volume, volumeOcr?.pages || [], {
-        seriesMetadata: await loadSeriesMetadataForEmbed(db, volume.series_title)
-      });
+    : buildMokuroMetadata(volume, volumeOcr?.pages || []);
 
   // Get list of files, excluding placeholders
   const filenames = Object.keys(volumeFiles.files);
