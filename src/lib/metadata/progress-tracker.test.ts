@@ -958,6 +958,40 @@ describe('syncAllSeriesNow', () => {
     ).toEqual([30013, 30013, 30011]);
   });
 
+  it('waits the rate-limit gap before the second series', async () => {
+    vi.useFakeTimers();
+    addNaruto();
+    vi.mocked(anilistRequest).mockResolvedValue({
+      Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 9, repeat: 0 } }
+    });
+
+    const pending = syncAllSeriesNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(anilistRequest).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(anilistRequest).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(anilistRequest).toHaveBeenCalledTimes(2);
+    await pending;
+  });
+
+  it('answers for the whole library at once when the master switch is off', async () => {
+    // No requests, and no rate-limit gaps either: this resolves without a
+    // single timer having to run.
+    addNaruto();
+    h.settingsStore.set({ catalogSettings: { pushProgressToAniList: false } });
+
+    expect(await syncAllSeriesNow()).toEqual({
+      pushed: 0,
+      nothing: 0,
+      queued: 0,
+      failed: 0,
+      disabled: 2,
+      total: 2
+    });
+    expect(anilistRequest).not.toHaveBeenCalled();
+  });
+
   it('counts a queued series without stopping the pass', async () => {
     vi.useFakeTimers();
     addNaruto();

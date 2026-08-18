@@ -21,6 +21,7 @@
   // Viewer query that names the user, so it's the name label, not the
   // connected state, that additionally depends on `$anilistUser`.
   let connected = $derived($anilistConnected);
+  let pushAllowed = $derived($catalogSettings?.pushProgressToAniList ?? true);
   let syncingAll = $state(false);
 
   /** "Synced 12 series — 3 pushed, 8 up to date, 1 queued" (silent about zeroes). */
@@ -80,7 +81,12 @@
     <!-- relative z-10: the settings drawer can sit inside the night-mode filter's
          stacking context, where a scrollable sibling swallows clicks otherwise -->
     <div class="relative z-10 flex flex-wrap items-center gap-3">
-      <Button size="xs" color="alternative" onclick={syncAll} disabled={syncingAll || !connected}>
+      <Button
+        size="xs"
+        color="alternative"
+        onclick={syncAll}
+        disabled={syncingAll || !connected || !pushAllowed}
+      >
         Sync all linked series now
       </Button>
       {#if syncingAll}

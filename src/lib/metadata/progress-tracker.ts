@@ -554,11 +554,24 @@ export function syncAllSeriesNow(): Promise<SyncAllTally> {
     const records = Object.values(await getAllSeriesMetadata()).filter(
       (record) => !!record.external_ids?.anilist
     );
-    for (let i = 0; i < records.length; i++) {
-      if (i > 0) await sleep(SYNC_ALL_GAP_MS);
-      const outcome = await syncSeriesNow(records[i].series_key);
+
+    // With the master switch off every series would report `disabled` one by
+    // one; answer for the whole library at once instead of walking it.
+    if (get(settings)?.catalogSettings?.pushProgressToAniList === false) {
+      tally.disabled = records.length;
+      tally.total = records.length;
+      return tally;
+    }
+
+    let requested = false;
+    for (const record of records) {
+      // The gap only pays for AniList's rate limit, so it is charged after a
+      // series that actually reached the network — never after a `disabled`.
+      if (requested) await sleep(SYNC_ALL_GAP_MS);
+      const outcome = await syncSeriesNow(record.series_key);
       tally[outcome]++;
       tally.total++;
+      requested = outcome !== 'disabled';
     }
     return tally;
   };

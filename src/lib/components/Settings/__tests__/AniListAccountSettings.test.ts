@@ -199,6 +199,14 @@ describe('AniListAccountSettings — sync all', () => {
     ).toBe(true);
   });
 
+  it('cannot be clicked while the master switch is off', () => {
+    h.catalogSettings.set({ pushProgressToAniList: false });
+    const { getByText } = render(AniListAccountSettings);
+    expect(
+      (getByText('Sync all linked series now').closest('button') as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
   it('reports a thrown pass as an error', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
