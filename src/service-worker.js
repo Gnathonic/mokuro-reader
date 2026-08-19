@@ -44,6 +44,11 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Cross-origin hosts the service worker may still handle: small, fast
+// requests whose responses are worth keeping in the offline cache (the
+// Noto Sans JP webfont loaded from app.html).
+const CROSS_ORIGIN_CACHE_ALLOWLIST = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
+
 self.addEventListener('fetch', (event) => {
   // ignore POST requests etc
   if (event.request.method !== 'GET') return;
@@ -57,7 +62,9 @@ self.addEventListener('fetch', (event) => {
   // as "Error in input stream" / "A ServiceWorker intercepted the request and
   // encountered an unexpected error" (#177, #261). Not calling respondWith()
   // lets the browser perform the fetch natively with the SW out of the path.
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin && !CROSS_ORIGIN_CACHE_ALLOWLIST.includes(url.origin)) {
+    return;
+  }
 
   async function respond() {
     const cache = await caches.open(CACHE);

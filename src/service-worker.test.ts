@@ -60,6 +60,16 @@ describe('service worker fetch interception', () => {
     expect(respondWith).toHaveBeenCalledTimes(1);
   });
 
+  // Google Fonts requests are small and fast, and the font files were the one
+  // cross-origin resource the offline cache genuinely served — keep them.
+  it.each([
+    'https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap',
+    'https://fonts.gstatic.com/s/notosansjp/v53/abc.woff2'
+  ])('still handles allowlisted Google Fonts request %s', (url) => {
+    const respondWith = dispatch(url);
+    expect(respondWith).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores non-GET requests', () => {
     const respondWith = dispatch(`${self.location.origin}/api/x`, 'POST');
     expect(respondWith).not.toHaveBeenCalled();
