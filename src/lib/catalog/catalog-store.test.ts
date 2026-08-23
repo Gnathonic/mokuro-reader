@@ -16,6 +16,7 @@ const {
   cloudFiles,
   seriesMetadataMap,
   seriesIndexMap,
+  catalogIndexMap,
   routeParams,
   generatePlaceholders
 } = vi.hoisted(() => {
@@ -53,6 +54,7 @@ const {
     cloudFiles: createStore(new Map<string, unknown>()),
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
+    catalogIndexMap: createStore(new Map<string, unknown>()),
     routeParams: createStore({} as Record<string, string>),
     generatePlaceholders: vi.fn(() => [] as unknown[])
   };
@@ -83,6 +85,7 @@ vi.mock('$lib/util/download-volume-repair', () => ({
 }));
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
+vi.mock('$lib/metadata/catalog-index', () => ({ catalogIndexMap }));
 vi.mock('$lib/catalog/catalog', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/catalog/catalog')>();
   return { ...actual, deriveSeriesFromVolumes: vi.fn(actual.deriveSeriesFromVolumes) };
@@ -126,6 +129,51 @@ describe('catalog store recomputes', () => {
     expect(derive).toHaveBeenCalledTimes(2);
 
     unsubscribe();
+  });
+});
+
+/**
+ * The root `catalog.json` cache is joined into the same card list, so a series
+ * the backend knows about is browsable and searchable before anything of it has
+ * been fetched. A series that IS local must never also appear as a name card.
+ */
+describe('catalog store name-only cards', () => {
+  function catalogRow(title: string) {
+    return {
+      series_key: title.toLowerCase(),
+      series_title: title,
+      entry: {
+        series_title: title,
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '1970-01-01T00:00:00.000Z'
+      },
+      source: { provider: 'webdav', path: 'catalog.json', size: 1, modifiedTime: 'now' },
+      fetched_at: '2026-08-23T00:00:00.000Z'
+    };
+  }
+
+  it('appends catalog-only series and never duplicates a local one', () => {
+    let latest: Array<{ title: string; nameOnly?: true }> = [];
+    const unsubscribe = catalog.subscribe((value) => (latest = (value ?? []) as typeof latest));
+
+    expect(latest.map((s) => s.title)).toEqual(['One Piece']);
+
+    // 'One Piece' is already local; only 'Naruto' becomes a name-only card.
+    catalogIndexMap.set(
+      new Map([
+        ['one piece', catalogRow('One Piece')],
+        ['naruto', catalogRow('Naruto')]
+      ])
+    );
+
+    expect(latest.map((s) => s.title)).toEqual(['One Piece', 'Naruto']);
+    expect(latest.find((s) => s.title === 'One Piece')?.nameOnly).toBeUndefined();
+    expect(latest.find((s) => s.title === 'Naruto')?.nameOnly).toBe(true);
+
+    unsubscribe();
+    catalogIndexMap.set(new Map());
   });
 });
 

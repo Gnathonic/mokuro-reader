@@ -2,7 +2,7 @@ import { db } from '$lib/catalog/db';
 import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
-import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
+import { deriveNameOnlySeries, deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
@@ -15,6 +15,7 @@ import {
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { catalogIndexMap } from '$lib/metadata/catalog-index';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
@@ -171,17 +172,31 @@ export const volumesWithPlaceholders = derived(
 // emits a new object on every settings write (per-wheel-tick `pagedGap` included), which
 // would re-group, re-resolve and re-sort the whole library each time.
 export const catalog = derived(
-  [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage],
-  ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage]) => {
+  [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage, catalogIndexMap],
+  ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage, $catalogIndexMap]) => {
     // Return null while loading (before first data emission)
     if ($volumesWithPlaceholders === undefined) {
       return null;
     }
-    return deriveSeriesFromVolumes(
+    const withVolumes = deriveSeriesFromVolumes(
       Object.values($volumesWithPlaceholders),
       $seriesMetadataMap,
       $preferredTitleLanguage
     );
+    if ($catalogIndexMap.size === 0) return withVolumes;
+
+    // Catalog-only series: known by name from the root catalog.json, with
+    // nothing local yet. Opening one fetches its series.json (see series-open.ts).
+    const knownKeys = new Set(withVolumes.map((series) => normalizeSeriesKey(series.title)));
+    return [
+      ...withVolumes,
+      ...deriveNameOnlySeries(
+        [...$catalogIndexMap.values()],
+        knownKeys,
+        $seriesMetadataMap,
+        $preferredTitleLanguage
+      )
+    ];
   }
 );
 
