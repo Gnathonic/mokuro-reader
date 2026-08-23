@@ -6,24 +6,38 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * writes back.
  */
 
-const { calls, fetchAllCloudVolumes, writeSeriesFile, refreshSeriesIndexesInBackground } =
-  vi.hoisted(() => {
-    const calls: string[] = [];
-    return {
-      calls,
-      fetchAllCloudVolumes: vi.fn(async (options?: { refreshIndexes?: boolean }) => {
-        calls.push(`fetch:${options?.refreshIndexes === false ? 'no-index-refresh' : 'default'}`);
-      }),
-      writeSeriesFile: vi.fn(async (seriesTitle: string) => {
-        // Stands in for the `putSeriesIndex` a successful write ends with.
-        calls.push(`write:${seriesTitle}`);
-        return 'written' as const;
-      }),
-      refreshSeriesIndexesInBackground: vi.fn(() => {
-        calls.push('refresh');
-      })
-    };
-  });
+const {
+  calls,
+  fetchAllCloudVolumes,
+  writeSeriesFile,
+  refreshSeriesIndexesInBackground,
+  flushCatalogFileWrites,
+  markListingFresh
+} = vi.hoisted(() => {
+  const calls: string[] = [];
+  return {
+    calls,
+    fetchAllCloudVolumes: vi.fn(async (options?: { refreshIndexes?: boolean }) => {
+      calls.push(`fetch:${options?.refreshIndexes === false ? 'no-index-refresh' : 'default'}`);
+    }),
+    writeSeriesFile: vi.fn(async (seriesTitle: string) => {
+      // Stands in for the `putSeriesIndex` a successful write ends with.
+      calls.push(`write:${seriesTitle}`);
+      return 'written' as const;
+    }),
+    refreshSeriesIndexesInBackground: vi.fn(() => {
+      calls.push('refresh');
+    }),
+    // The real module self-gates to a no-op without a provider, so the wiring
+    // is only observable through a stand-in.
+    flushCatalogFileWrites: vi.fn(async () => {
+      calls.push('catalog');
+    }),
+    markListingFresh: vi.fn(() => {
+      calls.push('stamp');
+    })
+  };
+});
 
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -39,6 +53,9 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     getActiveProvider: () => null
   }
 }));
+
+vi.mock('$lib/metadata/catalog-file-sync', () => ({ flushCatalogFileWrites }));
+vi.mock('$lib/metadata/series-file-sync', () => ({ markListingFresh }));
 
 vi.mock('$lib/util/backup-ui', () => ({
   getBackupUiBridge: () => ({
@@ -72,7 +89,7 @@ describe('finishBackupRun', () => {
     vi.clearAllMocks();
   });
 
-  it('lists, writes the run’s indexes, and only then refreshes them', async () => {
+  it('lists, writes the run’s indexes and the catalog, and only then refreshes', async () => {
     noteSeriesNeedingIndexWrite('One Piece');
     noteSeriesNeedingIndexWrite('Berserk');
 
@@ -81,8 +98,37 @@ describe('finishBackupRun', () => {
     // The listing must not start the index refresh itself: it would race the
     // writes below and could cache the pre-upload copy of a file we just wrote.
     expect(calls[0]).toBe('fetch:no-index-refresh');
-    expect(calls.slice(1, 3).sort()).toEqual(['write:Berserk', 'write:One Piece']);
-    expect(calls[3]).toBe('refresh');
+    // That fetch IS the whole-account listing the metadata writers need, so it
+    // is stamped as fresh — otherwise every run pays for a second one.
+    expect(calls[1]).toBe('stamp');
+    expect(calls.slice(2, 4).sort()).toEqual(['write:Berserk', 'write:One Piece']);
+    // The catalog lists series FOLDERS, so it goes once per run and only after
+    // the per-series files this run published…
+    expect(calls[4]).toBe('catalog');
+    // …and strictly before the read-back, which the whole ordering exists for.
+    expect(calls[5]).toBe('refresh');
+    expect(calls).toHaveLength(6);
+  });
+
+  it('writes no catalog for a run that uploaded nothing (export-to-disk drains)', async () => {
+    // `finishBackupRun` also ends export-to-disk drains. Those touch no cloud
+    // file at all, and must not end in a catalog.json UPLOAD.
+    await finishBackupRun();
+
+    expect(calls).not.toContain('catalog');
+    expect(flushCatalogFileWrites).not.toHaveBeenCalled();
+    // The read side still runs: the listing is worth refreshing either way.
+    expect(calls).toEqual(['fetch:no-index-refresh', 'stamp', 'refresh']);
+  });
+
+  it('forgets the upload for the next run, so a later local drain stays local', async () => {
+    noteSeriesNeedingIndexWrite('One Piece');
+    await finishBackupRun();
+    expect(flushCatalogFileWrites).toHaveBeenCalledTimes(1);
+
+    await finishBackupRun();
+
+    expect(flushCatalogFileWrites).toHaveBeenCalledTimes(1);
   });
 
   it('drains the run so the next one does not rewrite the same indexes', async () => {

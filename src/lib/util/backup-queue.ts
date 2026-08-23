@@ -12,6 +12,7 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
+import { markListingFresh } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 export interface SidecarOptions {
@@ -308,8 +309,17 @@ function handleBackupError(item: BackupQueueItem, processId: string, errorMessag
  */
 const seriesNeedingIndexWrite = new Set<string>();
 
+/**
+ * Did this run put anything IN the cloud? `finishBackupRun` also ends
+ * export-to-disk drains, and a purely local download must not end in a
+ * `catalog.json` upload. Not derivable from the set above: that one is emptied
+ * by the index writes that run first.
+ */
+let uploadedThisRun = false;
+
 /** Note that this run uploaded a volume of `seriesTitle`. */
 export function noteSeriesNeedingIndexWrite(seriesTitle: string): void {
+  uploadedThisRun = true;
   if (seriesTitle) seriesNeedingIndexWrite.add(seriesTitle);
 }
 
@@ -344,11 +354,18 @@ async function writeSeriesIndexesForRun(): Promise<void> {
  * and starting it afterwards makes the run strictly write-then-read.
  */
 export async function finishBackupRun(): Promise<void> {
+  const uploaded = uploadedThisRun;
+  uploadedThisRun = false;
+
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
+  // That fetch IS the whole-account listing the metadata writers need. Stamping
+  // it makes them reuse it, instead of every run paying for a second one.
+  markListingFresh();
   await writeSeriesIndexesForRun();
   // The run may have created or removed whole series folders, which is exactly
-  // what the root catalog lists. One write for the whole run.
-  await flushCatalogFileWrites();
+  // what the root catalog lists. One write for the whole run — and none at all
+  // for a run that only wrote files to the user's disk.
+  if (uploaded) await flushCatalogFileWrites();
   unifiedCloudManager.refreshSeriesIndexesInBackground();
 }
 
