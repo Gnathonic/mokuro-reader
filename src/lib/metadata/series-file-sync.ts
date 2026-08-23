@@ -83,6 +83,20 @@ let lastListingAt = 0;
 export const LISTING_TTL_MS = 30_000;
 export const LISTING_TIMEOUT_MS = 60_000;
 
+/**
+ * Record that a whole-account listing just completed OUTSIDE this module, so
+ * `ensureFreshCloudListing()` reuses it for the rest of the TTL.
+ *
+ * The backup run fetches that listing itself before publishing its indexes;
+ * without this stamp the writes it triggers would immediately fetch the whole
+ * account a second time. Only for callers that really did fetch everything —
+ * the TTL still applies, so a stamp cannot license writes against an ancient
+ * view forever.
+ */
+export function markListingFresh(): void {
+  lastListingAt = Date.now();
+}
+
 /** Test hook: forget the last successful listing time and any in-flight refresh. */
 export function _resetListingRefreshForTests(): void {
   listingRefresh = null;

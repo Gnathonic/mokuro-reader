@@ -64,6 +64,7 @@ import {
   initSeriesFileSync,
   LISTING_TIMEOUT_MS,
   LISTING_TTL_MS,
+  markListingFresh,
   scheduleSeriesFileWrite
 } from './series-file-sync';
 import { updateSeriesMetadata, unlinkSeries, upsertFromSeriesFile } from './store';
@@ -209,6 +210,25 @@ describe('series-file-sync', () => {
     scheduleSeriesFileWrite('One Piece');
     await vi.advanceTimersByTimeAsync(2000);
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a listing another module already paid for, until the TTL runs out', async () => {
+    // The backup run fetches the whole-account listing itself before writing its
+    // indexes. Stamping it means the writes that follow reuse THAT listing
+    // instead of paying for a second whole-account fetch per run.
+    markListingFresh();
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+
+    // Still the same TTL as a refresh this module ran itself — a stamp is not a
+    // licence to write against an ancient view forever.
+    await vi.advanceTimersByTimeAsync(LISTING_TTL_MS);
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
   });
 
   it('gives up on a listing refresh that hangs, and the next flush tries again', async () => {
