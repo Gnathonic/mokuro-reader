@@ -199,20 +199,43 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     return button as HTMLElement;
   }
 
-  it('counts the volumes the section actually holds, moved ones included', async () => {
+  it('counts what the button will fetch, in either display mode', async () => {
     mixedCatalog();
     const { container } = render(Catalog);
 
-    // Mixed mode: only the cloud-only series is down there.
-    expect(breakdown(container)).toBe('1 Drive');
+    // Every volume that is off the device and has a cloud copy — the metadata-only ones
+    // included, wherever their card is currently filed.
+    expect(breakdown(container)).toBe('3 Drive');
 
     notOnDeviceDisplay.set('cloud-section');
     await tick();
-    // Now the two moved metadata-only volumes are in the section too.
     expect(breakdown(container)).toBe('3 Drive');
   });
 
-  it('queues every volume the section is offering', async () => {
+  it('queues every non-local volume in the library, not just the section’s own', async () => {
+    // A series that is partly here still has volumes that are not: "Download all" has
+    // always meant all of them, and a metadata-only row is one of them.
+    catalogStore.set([
+      series('Half', [
+        volume('Half'),
+        downloadable('Half', { volume_uuid: 'Half-2', isPlaceholder: true })
+      ]),
+      series('Gone', [downloadable('Gone', { metadata_only: true })]),
+      series('Cloud', [downloadable('Cloud', { isPlaceholder: true })])
+    ]);
+
+    const { container } = render(Catalog);
+    await fireEvent.click(downloadAll(container));
+
+    expect(queueSeriesVolumes).toHaveBeenCalledTimes(1);
+    expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_uuid)).toEqual([
+      'Cloud-1',
+      'Gone-1',
+      'Half-2'
+    ]);
+  });
+
+  it('queues the same set once the display setting has moved the cards around', async () => {
     mixedCatalog();
     const { container } = render(Catalog);
 
@@ -220,8 +243,6 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     await tick();
     await fireEvent.click(downloadAll(container));
 
-    expect(queueSeriesVolumes).toHaveBeenCalledTimes(1);
-    // The section's own order (its series are sorted), all of it, nothing else.
     expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_uuid)).toEqual([
       'Cloud-1',
       'Gone-1',
@@ -236,8 +257,6 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     ]);
     const { container } = render(Catalog);
 
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
     await fireEvent.click(downloadAll(container));
 
     expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_uuid)).toEqual([

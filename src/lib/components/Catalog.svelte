@@ -242,20 +242,23 @@
   let placeholderSeries = $derived(sections.cloudSeries);
   let nameOnlySeries = $derived(sections.nameOnlySeries);
 
-  // Everything the cloud section can actually fetch: the volumes of the series IT holds
-  // that are not on this device and have a cloud file to pull from — the same rule the
-  // series page's "Download all" uses. Filtering on `isPlaceholder` would count and queue
-  // only half of the section once metadata-only series have been moved into it.
-  let cloudSectionVolumes = $derived(
-    placeholderSeries.flatMap((series) =>
+  // Everything "Download all" fetches: every volume in the LIBRARY that is not on this
+  // device and has a cloud file to pull from — cloud-only placeholders and metadata-only
+  // rows alike, wherever their series card is currently filed. The button has always meant
+  // "get all the ones I don't have"; scoping it to the cloud section's own series dropped
+  // both the removed rows and the cloud volumes of a partly-downloaded series.
+  // Same rule as the series page's "Download all" (needsDownload + a cloud file id).
+  let downloadableVolumes = $derived(
+    sortedCatalog.flatMap((series) =>
       series.volumes.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol))
     )
   );
 
-  // Count the section's volumes by provider for UI display
+  // Provider breakdown OF THAT SET, so the line above the button counts what the button
+  // will actually queue.
   let placeholdersByProvider = $derived.by(() => {
     const counts: Record<string, number> = {};
-    for (const vol of cloudSectionVolumes) {
+    for (const vol of downloadableVolumes) {
       const provider = getCloudProvider(vol) || 'unknown';
       counts[provider] = (counts[provider] || 0) + 1;
     }
@@ -285,14 +288,14 @@
   });
 
   async function downloadAllPlaceholders() {
-    if (cloudSectionVolumes.length === 0) return;
+    if (downloadableVolumes.length === 0) return;
     if (!hasAuthenticatedProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
       return;
     }
 
     try {
-      queueSeriesVolumes(cloudSectionVolumes);
+      queueSeriesVolumes(downloadableVolumes);
     } catch (error) {
       console.error('Failed to queue placeholders for download:', error);
     }
@@ -378,7 +381,7 @@
                 {/key}
               {/if}
             </div>
-            {#if hasAuthenticatedProvider && cloudSectionVolumes.length > 0}
+            {#if hasAuthenticatedProvider && downloadableVolumes.length > 0}
               <Button size="sm" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
