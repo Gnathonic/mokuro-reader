@@ -2,29 +2,32 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const { catalogStore, notOnDeviceDisplay, miscSettings, queueSeriesVolumes } = vi.hoisted(() => {
-  function createStore<T>(initial: T) {
-    const subs = new Set<(v: T) => void>();
-    let current = initial;
+const { catalogStore, notOnDeviceDisplay, miscSettings, queueSeriesVolumes, readingVolumes } =
+  vi.hoisted(() => {
+    function createStore<T>(initial: T) {
+      const subs = new Set<(v: T) => void>();
+      let current = initial;
+      return {
+        subscribe(fn: (v: T) => void) {
+          subs.add(fn);
+          fn(current);
+          return () => subs.delete(fn);
+        },
+        set(v: T) {
+          current = v;
+          subs.forEach((fn) => fn(current));
+        }
+      };
+    }
     return {
-      subscribe(fn: (v: T) => void) {
-        subs.add(fn);
-        fn(current);
-        return () => subs.delete(fn);
-      },
-      set(v: T) {
-        current = v;
-        subs.forEach((fn) => fn(current));
-      }
+      queueSeriesVolumes: vi.fn(),
+      catalogStore: createStore<unknown[] | null>([]),
+      notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
+      miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' }),
+      // The reading record the smart sort reads completion and recency from.
+      readingVolumes: createStore<Record<string, unknown>>({})
     };
-  }
-  return {
-    queueSeriesVolumes: vi.fn(),
-    catalogStore: createStore<unknown[] | null>([]),
-    notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
-    miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' })
-  };
-});
+  });
 
 function emptyStore<T>(value: T) {
   return {
@@ -43,7 +46,7 @@ vi.mock('$lib/settings/settings', () => ({ notOnDeviceDisplay }));
 vi.mock('$lib/settings', () => ({
   miscSettings,
   updateMiscSetting: vi.fn(),
-  volumes: emptyStore<Record<string, unknown>>({}),
+  volumes: readingVolumes,
   progress: emptyStore<Record<string, number>>({})
 }));
 vi.mock('$lib/catalog/db', () => ({ isUpgrading: emptyStore(false) }));
@@ -254,5 +257,50 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     notOnDeviceDisplay.set('cloud-section');
     await tick();
     expect(heading()).toBe('Available in Drive (2 series)');
+  });
+});
+
+describe('Catalog smart-sorts an all-absent series by its read state', () => {
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'ASC' });
+    readingVolumes.set({});
+  });
+
+  it('sorts a finished absent series to the bottom, like any series with progress', async () => {
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'SMART' });
+    readingVolumes.set({
+      'Read-1': { completed: true, progress: 10, lastProgressUpdate: '2026-08-01T00:00:00.000Z' },
+      'Unread-1': { completed: false, progress: 4, lastProgressUpdate: '2026-08-20T00:00:00.000Z' }
+    });
+    catalogStore.set([
+      series('Read', [volume('Read', { metadata_only: true })]),
+      series('Cloud', [volume('Cloud', { isPlaceholder: true })]),
+      series('Unread', [volume('Unread', { metadata_only: true })])
+    ]);
+
+    const { container } = render(Catalog);
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+
+    // Read state, not absence, decides the order: most recently read first, finished last —
+    // the cloud-only series has no progress at all, so it lands between them.
+    expect(titlesIn(container, 'catalog-cloud')).toEqual(['Unread', 'Cloud', 'Read']);
+  });
+
+  it('keeps that order in mixed mode, where the same card sits in the library', async () => {
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'SMART' });
+    readingVolumes.set({
+      'Read-1': { completed: true, progress: 10, lastProgressUpdate: '2026-08-01T00:00:00.000Z' },
+      'Unread-1': { completed: false, progress: 4, lastProgressUpdate: '2026-08-20T00:00:00.000Z' }
+    });
+    catalogStore.set([
+      series('Read', [volume('Read', { metadata_only: true })]),
+      series('Unread', [volume('Unread', { metadata_only: true })])
+    ]);
+
+    const { container } = render(Catalog);
+    expect(titlesIn(container, 'catalog-library')).toEqual(['Unread', 'Read']);
   });
 });
