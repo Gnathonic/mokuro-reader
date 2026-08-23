@@ -760,24 +760,48 @@ describe('SeriesSpineShowcase marks the spines that are not on this device', () 
     expect(badges(container)).toHaveLength(0);
   });
 
+  /** A spine is only painted once it has pixels — see CompositeCanvas. */
+  const painted = (overrides: Partial<VolumeMetadata> = {}) =>
+    volume({ thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }), ...overrides });
+
   it('marks exactly the metadata-only and placeholder spines', async () => {
     const { container } = renderShowcase([
-      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
-      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true }),
-      volume({ volume_uuid: 'uuid-2', volume_title: 'Vol 3', isPlaceholder: true })
+      painted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      painted({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true }),
+      painted({ volume_uuid: 'uuid-2', volume_title: 'Vol 3', isPlaceholder: true })
     ]);
     await tick();
     expect(badges(container)).toHaveLength(2);
   });
 
+  it('marks nothing over a spine the canvas never painted', async () => {
+    // No thumbnail anywhere: CompositeCanvas skips these volumes, so a badge would float
+    // over blank strip.
+    const { container } = renderShowcase([
+      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1', metadata_only: true }),
+      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', isPlaceholder: true })
+    ]);
+    await tick();
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('marks only the absent spine that has pixels', async () => {
+    const { container } = renderShowcase([
+      painted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1', metadata_only: true }),
+      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
+    ]);
+    await tick();
+    expect(badges(container)).toHaveLength(1);
+  });
+
   it('overlays the strip without touching what the canvas was asked to draw', async () => {
     const marked = [
-      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
-      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
+      painted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      painted({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
     ];
     const plain = [
-      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
-      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2' })
+      painted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      painted({ volume_uuid: 'uuid-1', volume_title: 'Vol 2' })
     ];
 
     compositeCanvasProps.length = 0;

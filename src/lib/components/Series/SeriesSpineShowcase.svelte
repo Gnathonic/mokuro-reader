@@ -403,6 +403,9 @@
     for (let i = 0; i < showcaseVolumes.length; i++) {
       const vol = showcaseVolumes[i];
       if (!needsDownload(vol)) continue;
+      // CompositeCanvas paints nothing for a volume without pixels, so a mark here would
+      // float over blank strip. It appears with the cover, which is when it means something.
+      if (!vol.thumbnail) continue;
       const drawn = getCanvasDimensions(vol.volume_uuid);
       const width = drawn?.width ?? spineWidths[i] ?? spineWidth;
       const height = drawn?.height ?? spineHeight;

@@ -602,6 +602,23 @@
   }
 </script>
 
+<!-- Nothing of this series is here: the same mark every absent volume gets, on whichever
+     cover stack the card ended up drawing (real thumbnails, or the boxes it falls back to
+     while they are generated). Named for screen readers: on a card it is the only cue. -->
+{#snippet absentMark()}
+  {#if seriesNeedsDownload}
+    {#if isDownloading}
+      <div
+        class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
+      >
+        <Spinner size="4" color="blue" />
+      </div>
+    {:else}
+      <DownloadBadge class="right-2 bottom-8" label="Not on this device" />
+    {/if}
+  {/if}
+{/snippet}
+
 {#if volume}
   <a href="#/series/{encodeURIComponent(navId)}" onclick={handleClick}>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -646,18 +663,7 @@
               />
             {/key}
           </div>
-          {#if seriesNeedsDownload}
-            <!-- Nothing of this series is here: the same mark every absent volume gets. -->
-            {#if isDownloading}
-              <div
-                class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
-              >
-                <Spinner size="4" color="blue" />
-              </div>
-            {:else}
-              <DownloadBadge class="right-2 bottom-8" />
-            {/if}
-          {/if}
+          {@render absentMark()}
         </div>
       {:else if isPlaceholderOnly}
         <!-- Placeholder boxes (cloud thumbnails loading or unavailable) -->
@@ -728,6 +734,7 @@
               </div>
             {/each}
           </div>
+          {@render absentMark()}
         </div>
       {/if}
       <p class="line-clamp-2 font-semibold" style="width: {containerDimensions.outerWidth}px;">

@@ -565,6 +565,26 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     const badge = badges(container)[0] as HTMLElement;
     expect(badge.className).toContain('pointer-events-none');
   });
+
+  it('marks the card whose covers have not been generated yet', () => {
+    // No thumbnail dimensions: the card falls back to its "Generating…" boxes, and an
+    // absent series must still say so there.
+    const { container } = render(CatalogItem, {
+      props: { volumes: [localVolume({ metadata_only: true })] }
+    });
+    expect(container.textContent).toContain('Generating');
+    expect(badges(container)).toHaveLength(1);
+  });
+
+  it('names the mark for screen readers — on a card it is the only cue', () => {
+    const { container } = render(CatalogItem, {
+      props: { volumes: [cover({ metadata_only: true })] }
+    });
+    const badge = badges(container)[0] as HTMLElement;
+    expect(badge.querySelector('.sr-only')?.textContent).toBe('Not on this device');
+    expect(badge.getAttribute('aria-hidden')).toBeNull();
+    expect(badge.getAttribute('title')).toBeNull();
+  });
 });
 
 describe('CatalogItem hover + Delete raises the series removal dialog', () => {

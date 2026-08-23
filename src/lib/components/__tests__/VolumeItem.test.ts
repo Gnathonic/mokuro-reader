@@ -147,6 +147,16 @@ describe('VolumeItem "needs download" badge', () => {
         expect(badges(container)).toHaveLength(1);
       });
 
+      it('leaves the badge out of the accessibility tree — the row already says so', () => {
+        const { container } = render(VolumeItem, {
+          props: { volume: volume({ metadata_only: true }), variant }
+        });
+        const badge = badges(container)[0] as HTMLElement;
+        expect(badge.getAttribute('aria-hidden')).toBe('true');
+        expect(badge.getAttribute('title')).toBeNull();
+        expect(container.textContent).toContain('Not on this device');
+      });
+
       it('never intercepts pointer events', () => {
         const { container } = render(VolumeItem, {
           props: { volume: volume({ metadata_only: true }), variant }

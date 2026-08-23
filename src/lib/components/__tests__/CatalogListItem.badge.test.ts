@@ -59,6 +59,15 @@ describe('CatalogListItem marks a series whose volumes are all absent', () => {
     expect((badges(container)[0] as HTMLElement).className).toContain('pointer-events-none');
   });
 
+  it('names the mark for screen readers', () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ metadata_only: true })] }
+    });
+    const badge = badges(container)[0] as HTMLElement;
+    expect(badge.querySelector('.sr-only')?.textContent).toBe('Not on this device');
+    expect(badge.getAttribute('title')).toBeNull();
+  });
+
   it('draws the badge for a cloud-only (placeholder) series', () => {
     const { container } = render(CatalogListItem, {
       props: { volumes: [volume({ isPlaceholder: true })] }

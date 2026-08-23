@@ -21,21 +21,25 @@
     style?: string;
     /** `sm` for spines and 50×70 covers, `md` for full-size covers. */
     size?: 'sm' | 'md';
-    title?: string;
+    /**
+     * Screen-reader name for the mark. Pass it ONLY where the badge is the sole cue —
+     * a catalog card. A volume row already spells "Not on this device" out in a text
+     * badge beside it, and a second announcement of the same fact is noise.
+     */
+    label?: string;
   }
 
   let {
     class: className = 'right-1 bottom-1',
     style = undefined,
     size = 'md',
-    title = 'Not on this device'
+    label = undefined
   }: Props = $props();
 </script>
 
 <div
   data-testid="download-badge"
-  {title}
-  aria-hidden="true"
+  aria-hidden={label ? undefined : 'true'}
   {style}
   class="pointer-events-none absolute z-10 flex items-center justify-center rounded-full bg-gray-900/80 ring-1 ring-white/80 {size ===
   'sm'
@@ -43,4 +47,5 @@
     : 'h-6 w-6'} {className}"
 >
   <DownloadSolid class="{size === 'sm' ? 'h-2.5 w-2.5' : 'h-3.5 w-3.5'} text-blue-300" />
+  {#if label}<span class="sr-only">{label}</span>{/if}
 </div>

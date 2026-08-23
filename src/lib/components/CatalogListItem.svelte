@@ -173,7 +173,7 @@
               </div>
             {/if}
             {#if seriesNeedsDownload && !isDownloading}
-              <DownloadBadge size="sm" class="right-0.5 bottom-0.5" />
+              <DownloadBadge size="sm" class="right-0.5 bottom-0.5" label="Not on this device" />
             {/if}
           </div>
         </div>
