@@ -7,6 +7,7 @@
     parseHtmlDownloadRequest
   } from '$lib/import';
   import { db } from '$lib/catalog/db';
+  import { installedUuids, pickCoverTarget } from '$lib/import/cover-sidecar';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { requestPersistentStorage } from '$lib/util/upload';
@@ -16,10 +17,6 @@
 
   const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);
   const request = parseHtmlDownloadRequest(uploadParams);
-
-  function normalizeTitle(value: string): string {
-    return normalizeFilename(value).trim().toLowerCase();
-  }
 
   async function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
     return await new Promise((resolve, reject) => {
@@ -44,28 +41,18 @@
 
   async function applyDownloadedCoverSidecar(
     coverFile: File,
-    existingUuids: Set<string>,
+    installedBefore: Set<string>,
     requestVolume: string
   ): Promise<void> {
     const allVolumes = await db.volumes.toArray();
-    const importedVolumes = allVolumes.filter((volume) => !existingUuids.has(volume.volume_uuid));
+    const targetVolume = pickCoverTarget(allVolumes, installedBefore, requestVolume);
 
-    if (importedVolumes.length === 0) {
+    if (!targetVolume) {
       console.warn(
         '[HTML Download] Cover sidecar downloaded but no newly imported volume was found'
       );
       return;
     }
-
-    const normalizedRequestVolume = normalizeTitle(requestVolume);
-    const targetVolume =
-      importedVolumes.find(
-        (volume) => normalizeTitle(volume.volume_title) === normalizedRequestVolume
-      ) ||
-      importedVolumes.find(
-        (volume) => normalizeTitle(volume.volume_uuid) === normalizedRequestVolume
-      ) ||
-      importedVolumes[0];
 
     let dims = { width: 1, height: 1 };
     try {
@@ -132,9 +119,9 @@
         progress: 95
       });
 
-      const existingUuids = new Set(
-        (await db.volumes.toArray()).map((volume) => volume.volume_uuid)
-      );
+      // Installed uuids, not all uuids: an import that fills a metadata-only row
+      // keeps that row's uuid, and it is one of this import's volumes.
+      const installedBefore = installedUuids(await db.volumes.toArray());
 
       // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
       // post-download pairing for archive+sidecar combinations.
@@ -146,7 +133,7 @@
       }
 
       if (downloaded.coverFile) {
-        await applyDownloadedCoverSidecar(downloaded.coverFile, existingUuids, normalizedVolume);
+        await applyDownloadedCoverSidecar(downloaded.coverFile, installedBefore, normalizedVolume);
       }
 
       progressTrackerStore.updateProcess(processId, {
