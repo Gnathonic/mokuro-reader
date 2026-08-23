@@ -405,7 +405,7 @@
     promptConfirmation(
       alreadyRemoved
         ? `Forget ${volName}? Its stats, progress and cover will be deleted.`
-        : `Remove ${volName} from this device?`,
+        : `Remove ${volName} from this device? Stats, progress and cover are kept.`,
       async (forget = false, deleteCloud = false) => {
         // Default: strip the pages, keep the volume. The row carries the read
         // history and the cover, and re-downloading fills it back in.

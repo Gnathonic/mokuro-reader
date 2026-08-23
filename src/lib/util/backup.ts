@@ -1,6 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
 import { driveApiClient, escapeNameForDriveQuery } from './sync/providers/google-drive/api-client';
-import { createArchiveBlob } from './zip';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { ProviderType } from './sync/provider-interface';
 
