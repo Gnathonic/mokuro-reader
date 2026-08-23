@@ -34,6 +34,7 @@ import { extractTitlesFromPath, generateDeterministicUUID } from './series-extra
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
+import { recordArchiveSize } from '$lib/catalog/archive-size';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -437,6 +438,11 @@ async function processVolumeData(
     await saveVolume(processedVolume, { preserveTitles: true });
     await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
   }
+
+  // How big the archive we just installed was. `saveVolume` writes the row with
+  // a `put`, so this has to come after it — and it is the size of the file the
+  // provider served, which is the same fact a backup upload records.
+  await recordArchiveSize(processedVolume.metadata.volumeUuid, getCloudSize(placeholder));
 
   // Update cloud file description if folder name doesn't match series title
   const cloudFileId = getCloudFileId(placeholder);

@@ -4,7 +4,7 @@ import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manag
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
-import { isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
+import { isArchiveSize, isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 
@@ -154,6 +154,15 @@ function createPlaceholder(
   };
 
   if (indexEntry?.spine_width !== undefined) placeholder.spine_width = indexEntry.spine_width;
+
+  // The listing measured THIS file just now; the index is what another device
+  // wrote about it, possibly before a re-OCR changed the archive. So the
+  // listing wins, and the index only fills a listing that reports no size.
+  if (isArchiveSize(cloudFile.size)) {
+    placeholder.archive_size = cloudFile.size;
+  } else if (isArchiveSize(indexEntry?.archive_size)) {
+    placeholder.archive_size = indexEntry.archive_size;
+  }
 
   return placeholder;
 }

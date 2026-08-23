@@ -132,6 +132,12 @@ export async function saveVolume(
         volumeMetadata.thumbnail_width = existingVolume.thumbnail_width;
         volumeMetadata.thumbnail_height = existingVolume.thumbnail_height;
       }
+      // Same rule for the archive size: a `put` replaces the whole row, and an
+      // import that does not know how big the `.cbz` was must not erase the
+      // size the row was already carrying.
+      if (!volumeMetadata.archive_size && existingVolume.archive_size) {
+        volumeMetadata.archive_size = existingVolume.archive_size;
+      }
       // `put` replaces the whole row, which is what clears `metadata_only`:
       // a row written together with its files is installed by definition.
       await db.volumes.put(volumeMetadata);

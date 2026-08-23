@@ -11,8 +11,9 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  *
  * This is what makes a cloud-only series a first-class citizen: the row carries
  * the volume's REAL uuid (so synced progress attaches to it), its counts, its
- * `mokuro_version` and its `spine_width`, so the catalog, the stats views and
- * the tracker all work before a single archive is downloaded. It replaces the
+ * `mokuro_version`, its `spine_width` and its `archive_size`, so the catalog,
+ * the stats views and the tracker all work before a single archive is
+ * downloaded. It replaces the
  * transient placeholder for that volume permanently — `generatePlaceholders`
  * already skips any path or uuid that has a local row.
  *
@@ -116,6 +117,11 @@ export async function materializeSeriesVolumes(args: {
         if (existing.spine_width === undefined && entry.spine_width !== undefined) {
           patch.spine_width = entry.spine_width;
         }
+        // Same gap rule: a size recorded here came from an upload or a download
+        // this device performed, which beats a copied claim.
+        if (existing.archive_size === undefined && entry.archive_size !== undefined) {
+          patch.archive_size = entry.archive_size;
+        }
         if (Object.keys(patch).length === 0) continue;
         await db.volumes.update(entry.volume_uuid, patch);
         changed += 1;
@@ -138,6 +144,7 @@ export async function materializeSeriesVolumes(args: {
         metadata_only: true
       };
       if (entry.spine_width !== undefined) row.spine_width = entry.spine_width;
+      if (entry.archive_size !== undefined) row.archive_size = entry.archive_size;
 
       await db.volumes.put(row);
       owners.set(row.volume_uuid, row);

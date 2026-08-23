@@ -152,6 +152,43 @@ describe('materializeSeriesVolumes', () => {
     expect(row?.spine_width).toBe(12);
   });
 
+  it('adopts the indexed archive size onto a new row', async () => {
+    await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [entry({ archive_size: 193_000_000 })],
+      cloudVolumeTitles: CLOUD
+    });
+    expect((await db.volumes.get('uuid-1'))?.archive_size).toBe(193_000_000);
+  });
+
+  it('fills a missing archive size but never replaces the one the row has', async () => {
+    await db.volumes.add({
+      volume_uuid: 'uuid-1',
+      series_uuid: 's',
+      series_title: 'Dr Stone',
+      volume_title: 'Volume 1',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      metadata_only: true
+    } as never);
+
+    await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [entry({ archive_size: 193_000_000 })],
+      cloudVolumeTitles: CLOUD
+    });
+    expect((await db.volumes.get('uuid-1'))?.archive_size).toBe(193_000_000);
+
+    await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [entry({ archive_size: 7 })],
+      cloudVolumeTitles: CLOUD
+    });
+    expect((await db.volumes.get('uuid-1'))?.archive_size).toBe(193_000_000);
+  });
+
   it('keeps an image-only mokuro_version of "" instead of overwriting it', async () => {
     await db.volumes.add({
       volume_uuid: 'uuid-1',

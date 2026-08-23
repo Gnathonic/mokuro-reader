@@ -122,6 +122,22 @@ describe('generatePlaceholders', () => {
     expect(placeholders[0].cloudThumbnailFileId).toBe('c-1');
     expect(placeholders[0].cloudThumbnailPath).toBe('ONE PIECE/VOLUME 1.webp');
   });
+
+  it('records the listed archive size as a fact of the volume', () => {
+    const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+      ['One Piece', [{ ...cloudFile('One Piece/Volume 1.cbz'), size: 193_000_000 }]]
+    ]);
+
+    expect(generatePlaceholders(cloudFiles, [])[0].archive_size).toBe(193_000_000);
+  });
+
+  it('records no archive size when the listing does not report one', () => {
+    const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+      ['One Piece', [{ ...cloudFile('One Piece/Volume 1.cbz'), size: 0 }]]
+    ]);
+
+    expect(generatePlaceholders(cloudFiles, [])[0].archive_size).toBeUndefined();
+  });
 });
 
 describe('generatePlaceholders with a series index', () => {
@@ -148,6 +164,36 @@ describe('generatePlaceholders with a series index', () => {
       isPlaceholder: true,
       cloudFileId: 'One Piece/Volume 1.cbz'
     });
+  });
+
+  it('prefers the listed archive size over the indexed one', () => {
+    // The listing is this file, measured now; the index is whatever another
+    // device wrote about it, possibly before a re-OCR changed the archive.
+    const listed = new Map<string, CloudVolumeWithProvider[]>([
+      ['One Piece', [{ ...cloudFile('One Piece/Volume 1.cbz'), size: 193_000_000 }]]
+    ]);
+
+    const placeholders = generatePlaceholders(
+      listed,
+      [],
+      indexMap('One Piece', [indexEntry({ archive_size: 12 })])
+    );
+
+    expect(placeholders[0].archive_size).toBe(193_000_000);
+  });
+
+  it('falls back to the indexed archive size when the listing has no size', () => {
+    const unsized = new Map<string, CloudVolumeWithProvider[]>([
+      ['One Piece', [{ ...cloudFile('One Piece/Volume 1.cbz'), size: 0 }]]
+    ]);
+
+    const placeholders = generatePlaceholders(
+      unsized,
+      [],
+      indexMap('One Piece', [indexEntry({ archive_size: 12 })])
+    );
+
+    expect(placeholders[0].archive_size).toBe(12);
   });
 
   it('matches the entry ignoring case and whitespace', () => {

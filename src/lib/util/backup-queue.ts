@@ -14,6 +14,7 @@ import { downloadFileBlob } from './volume-sidecars';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import { markListingFresh } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { recordArchiveSize } from '$lib/catalog/archive-size';
 
 export interface SidecarOptions {
   includeSidecars: boolean;
@@ -568,6 +569,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               });
             }
 
+            // The blob we just uploaded IS the archive, so its size is the one
+            // fact about it nobody has to guess. Recorded before the index
+            // write below, which reads the row to build the `series.json` entry.
+            await recordArchiveSize(item.volumeUuid, archiveBlob.size);
+
             noteSeriesNeedingIndexWrite(item.seriesTitle);
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
@@ -639,6 +645,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
           const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
           addToCache(archivePath, uploadedFileId, data.size || 0);
+          // Same fact the cache entry above carries: the bytes the worker sent.
+          await recordArchiveSize(item.volumeUuid, data.size);
           noteSeriesNeedingIndexWrite(item.seriesTitle);
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
