@@ -56,6 +56,7 @@
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
 
   interface Props {
     volume: VolumeMetadata;
@@ -113,10 +114,20 @@
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   });
 
-  let queueState = $state($downloadQueue);
-  $effect(() => downloadQueue.subscribe((value) => (queueState = value)));
-  let progressState = $state($progressTrackerStore);
-  $effect(() => progressTrackerStore.subscribe((value) => (progressState = value)));
+  // Subscribed to explicitly, not via `$store`: this component renders once per
+  // volume in the library, and `$downloadQueue` + an effect subscription would
+  // be TWO subscriptions per row to stores that emit throughout every download.
+  // Only volumes that can actually be downloaded need to watch them at all.
+  let queueState = $state(get(downloadQueue));
+  let progressState = $state(get(progressTrackerStore));
+  $effect(() => {
+    if (!isNotInstalled) return;
+    const unsubscribers = [
+      downloadQueue.subscribe((value) => (queueState = value)),
+      progressTrackerStore.subscribe((value) => (progressState = value))
+    ];
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+  });
   let downloadProcess = $derived(
     downloadFileId
       ? progressState.processes.find((p) => p.id === `download-${downloadFileId}`)
@@ -387,12 +398,18 @@
           ? 'MEGA'
           : 'cloud';
 
+    // Nothing left to remove from a volume whose pages are already gone: for it
+    // the dialog IS the forget action, with no checkbox to leave unticked.
+    const alreadyRemoved = isNotInstalled;
+
     promptConfirmation(
-      `Remove ${volName} from this device?`,
-      async (deleteStats = false, deleteCloud = false) => {
+      alreadyRemoved
+        ? `Forget ${volName}? Its stats, progress and cover will be deleted.`
+        : `Remove ${volName} from this device?`,
+      async (forget = false, deleteCloud = false) => {
         // Default: strip the pages, keep the volume. The row carries the read
         // history and the cover, and re-downloading fills it back in.
-        if (deleteStats) {
+        if (forget || alreadyRemoved) {
           await deleteVolumeCompletely(volume.volume_uuid);
           deleteVolumeStats(volume.volume_uuid);
         } else {
@@ -423,11 +440,17 @@
         }
       },
       undefined,
-      {
-        label: 'Also forget stats, progress and cover?',
-        storageKey: 'deleteStatsPreference',
-        defaultValue: false
-      },
+      // A new storage key on purpose: the box used to mean "also delete the
+      // stats" on top of a full delete, and now decides whether the row, cover
+      // and history survive at all. A saved "yes" must not silently keep
+      // answering the new question.
+      alreadyRemoved
+        ? undefined
+        : {
+            label: 'Also forget stats, progress and cover?',
+            storageKey: 'forgetVolumePreference',
+            defaultValue: false
+          },
       // Don't show cloud delete option in read-only mode
       hasCloudBackup && !isReadOnlyMode
         ? {
@@ -641,7 +664,11 @@
               {#if isDownloading}
                 <Button color="light" disabled={true}>
                   <Spinner size="4" class="me-2" />
-                  {Math.round(downloadProgress)}%
+                  <!-- Keyed: a counter is exactly the kind of text Migaku
+                       rewrites and then holds stale (see CLAUDE.md). -->
+                  {#key downloadProgress}
+                    <span>{Math.round(downloadProgress)}%</span>
+                  {/key}
                 </Button>
               {:else if downloadFileId}
                 <Button color="blue" onclick={onDownloadClicked}>
@@ -814,7 +841,11 @@
               class="h-auto w-auto border border-gray-300 bg-gray-100 sm:max-h-[350px] sm:max-w-[250px] dark:border-gray-900 dark:bg-black"
             />
           {:else}
-            <PlaceholderThumbnail message="Generating thumbnail..." />
+            <!-- Nothing is generating one for a volume whose pages are gone
+                 (processThumbnails skips it), so don't promise it. -->
+            <PlaceholderThumbnail
+              message={isNotInstalled ? 'Not on this device' : 'Generating thumbnail...'}
+            />
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">
@@ -840,9 +871,13 @@
           {/if}
           {#if isNotInstalled}
             <Badge color="gray" class="w-fit text-xs">
-              {isDownloading
-                ? `Downloading ${Math.round(downloadProgress)}%`
-                : 'Not on this device'}
+              {#key downloadProgress}
+                <span>
+                  {isDownloading
+                    ? `Downloading ${Math.round(downloadProgress)}%`
+                    : 'Not on this device'}
+                </span>
+              {/key}
             </Badge>
           {/if}
         </div>

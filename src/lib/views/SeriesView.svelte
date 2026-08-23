@@ -34,7 +34,7 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { isMetadataOnly, isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
   import { getCloudFileId } from '$lib/util/cloud-fields';
   import { downloadQueue } from '$lib/util/download-queue';
 
@@ -378,7 +378,12 @@
     );
   });
 
-  async function confirmDelete(deleteStats = false, deleteCloud = false) {
+  // Every volume's pages are already gone: "remove from device" would do
+  // nothing, so the dialog becomes the forget action.
+  let allAlreadyRemoved = $derived(manga.length > 0 && manga.every(isMetadataOnly));
+
+  async function confirmDelete(forget = false, deleteCloud = false) {
+    const deleteStats = forget || allAlreadyRemoved;
     const seriesUuid = manga?.[0].series_uuid;
     if (seriesUuid) {
       await Promise.all(
@@ -463,14 +468,19 @@
     );
 
     promptConfirmation(
-      'Remove this manga from this device? Stats, progress and covers are kept.',
+      allAlreadyRemoved
+        ? 'Forget this manga? Its stats, progress and covers will be deleted.'
+        : 'Remove this manga from this device? Stats, progress and covers are kept.',
       confirmDelete,
       undefined,
-      {
-        label: 'Also forget stats, progress and covers?',
-        storageKey: 'deleteStatsPreference',
-        defaultValue: false
-      },
+      // New storage key on purpose — see VolumeItem: the box's meaning changed.
+      allAlreadyRemoved
+        ? undefined
+        : {
+            label: 'Also forget stats, progress and covers?',
+            storageKey: 'forgetVolumePreference',
+            defaultValue: false
+          },
       // Don't show cloud delete option in read-only mode
       hasCloudBackups && !isReadOnlyMode
         ? {
