@@ -233,3 +233,55 @@ describe('VolumeItem hover + Delete', () => {
     expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
   });
 });
+
+describe('VolumeItem archive size', () => {
+  afterEach(() => cleanup());
+
+  function sizeText(container: HTMLElement) {
+    return Array.from(container.querySelectorAll('[data-testid="archive-size"]')).map((el) =>
+      el.textContent?.trim()
+    );
+  }
+
+  for (const variant of ['list', 'grid'] as const) {
+    describe(`${variant} variant`, () => {
+      it('shows how big the download is for a volume that is not on the device', () => {
+        const { container } = render(VolumeItem, {
+          props: {
+            volume: volume({ metadata_only: true, archive_size: 193_000_000 }),
+            variant
+          }
+        });
+        expect(sizeText(container)).toEqual(['184 MB']);
+      });
+
+      it('prefers the size the connected provider is listing', () => {
+        const { container } = render(VolumeItem, {
+          props: {
+            volume: volume({
+              isPlaceholder: true,
+              cloudSize: 1_610_612_736,
+              archive_size: 193_000_000
+            }),
+            variant
+          }
+        });
+        expect(sizeText(container)).toEqual(['1.5 GB']);
+      });
+
+      it('says nothing when nobody has measured the archive', () => {
+        const { container } = render(VolumeItem, {
+          props: { volume: volume({ metadata_only: true }), variant }
+        });
+        expect(sizeText(container)).toEqual([]);
+      });
+
+      it('never shows a size for an installed volume — there is nothing to download', () => {
+        const { container } = render(VolumeItem, {
+          props: { volume: volume({ archive_size: 193_000_000 }), variant }
+        });
+        expect(sizeText(container)).toEqual([]);
+      });
+    });
+  }
+});

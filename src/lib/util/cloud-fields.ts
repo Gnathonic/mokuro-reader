@@ -1,5 +1,6 @@
 import type { VolumeMetadata } from '$lib/types';
 import { needsDownload } from '$lib/catalog/volume-state';
+import { isArchiveSize } from '$lib/metadata/series-file';
 import type { ProviderType } from './sync/provider-interface';
 
 /**
@@ -91,6 +92,23 @@ export function getCloudSize(volume: VolumeMetadata): number | null {
   }
 
   return null;
+}
+
+/**
+ * How big this volume's `.cbz` is, in bytes, or null when nobody has measured it.
+ *
+ * Two sources, in order: the CURRENT cloud listing (`cloudSize`, decorated onto
+ * the row for exactly as long as a provider is connected and reporting), then
+ * `archive_size` — the fact recorded by whichever upload, download or index
+ * last knew it, which survives disconnecting the provider.
+ *
+ * Unlike the helpers above this is not gated on `needsDownload`: the size of an
+ * installed volume's archive is just as true, it simply has nowhere to show yet.
+ */
+export function getArchiveSize(volume: VolumeMetadata): number | null {
+  const listed = getCloudSize(volume);
+  if (listed !== null && listed > 0) return listed;
+  return isArchiveSize(volume.archive_size) ? volume.archive_size : null;
 }
 
 /**

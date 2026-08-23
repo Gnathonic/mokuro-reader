@@ -7,11 +7,13 @@
   import { showSnackbar, promptConfirmation } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import {
+    getArchiveSize,
     getCloudFileId,
     getCloudProvider,
     getCloudSize,
     getCloudModifiedTime
   } from '$lib/util/cloud-fields';
+  import { formatArchiveSize } from '$lib/util/format-size';
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '$lib/util/sync/provider-display';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
@@ -31,12 +33,8 @@
   const cloudProvider = getCloudProvider(volume);
   const cloudSize = getCloudSize(volume);
 
-  // Format file size
-  let sizeDisplay = $derived.by(() => {
-    if (!cloudSize) return 'Unknown size';
-    const mb = (cloudSize / (1024 * 1024)).toFixed(1);
-    return `${mb} MB`;
-  });
+  // The download size, in the same words a real volume row uses.
+  let sizeDisplay = $derived(formatArchiveSize(getArchiveSize(volume) ?? 0) || 'Unknown size');
 
   const providerName = cloudProvider ? PROVIDER_SHORT_LABELS[cloudProvider] : 'Cloud';
   const badgeColor = cloudProvider ? PROVIDER_BADGE_COLORS[cloudProvider] : 'gray';
@@ -122,7 +120,9 @@
         <div>
           <p class="font-semibold text-gray-400">{volName}</p>
           <div class="flex items-center gap-2">
-            <p class="text-sm text-gray-500">In Cloud • {sizeDisplay}</p>
+            <p data-testid="archive-size" class="text-sm text-gray-500">
+              In Cloud • {sizeDisplay}
+            </p>
             <Badge color={badgeColor} class="text-xs">{providerName}</Badge>
           </div>
         </div>
@@ -165,7 +165,7 @@
       class="flex flex-wrap items-center justify-center gap-x-2 text-xs text-gray-500 dark:text-gray-400"
     >
       <Badge color={badgeColor} class="text-xs">{providerName}</Badge>
-      <span>{sizeDisplay}</span>
+      <span data-testid="archive-size">{sizeDisplay}</span>
     </div>
   </button>
 {/if}

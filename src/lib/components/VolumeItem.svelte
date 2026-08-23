@@ -49,7 +49,8 @@
   import { providerManager } from '$lib/util/sync';
   import { backupQueue } from '$lib/util/backup-queue';
   import { downloadQueue } from '$lib/util/download-queue';
-  import { getCloudFileId, getCloudSize } from '$lib/util/cloud-fields';
+  import { getArchiveSize, getCloudFileId } from '$lib/util/cloud-fields';
+  import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
@@ -111,11 +112,10 @@
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
   let downloadFileId = $derived(getCloudFileId(volume));
-  let cloudSizeDisplay = $derived.by(() => {
-    const size = getCloudSize(volume);
-    if (!size) return null;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  });
+  // How big the download is. `getArchiveSize` prefers the connected provider's
+  // listing and falls back to the size recorded on the row, so it still answers
+  // for a volume whose provider is not connected right now.
+  let archiveSizeDisplay = $derived(formatArchiveSize(getArchiveSize(volume) ?? 0));
 
   // Subscribed to explicitly, not via `$store`: this component renders once per
   // volume in the library, and `$downloadQueue` + an effect subscription would
@@ -658,8 +658,8 @@
               {#if statsDisplay}
                 <p class="text-sm opacity-80">{statsDisplay}</p>
               {/if}
-              {#if isNotInstalled && cloudSizeDisplay}
-                <p class="text-sm opacity-80">{cloudSizeDisplay}</p>
+              {#if isNotInstalled && archiveSizeDisplay}
+                <p data-testid="archive-size" class="text-sm opacity-80">{archiveSizeDisplay}</p>
               {/if}
             </div>
           </div>
@@ -898,6 +898,12 @@
           <span>{progressDisplay}</span>
           {#if statsDisplay}
             <span class="opacity-70">{statsDisplay}</span>
+          {/if}
+          {#if isNotInstalled && archiveSizeDisplay}
+            <!-- Beside the download badge on the cover above, not inside it:
+                 the badge is a mark, and a mark with a number in it stops
+                 reading as one. -->
+            <span data-testid="archive-size" class="opacity-70">{archiveSizeDisplay}</span>
           {/if}
         </div>
       </a>

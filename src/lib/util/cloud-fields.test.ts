@@ -4,6 +4,7 @@ import {
   getCloudFileId,
   getCloudModifiedTime,
   getCloudSize,
+  getArchiveSize,
   migrateToCloudFormat,
   createCloudFields,
   hasCloudMetadata
@@ -168,6 +169,38 @@ describe('getCloudSize', () => {
       driveSize: 1000000
     });
     expect(getCloudSize(volume)).toBe(2000000);
+  });
+});
+
+describe('getArchiveSize', () => {
+  it('prefers the size the current listing reports', () => {
+    const volume = createVolume({
+      isPlaceholder: true,
+      cloudSize: 2_000_000,
+      archive_size: 1_000_000
+    });
+    expect(getArchiveSize(volume)).toBe(2_000_000);
+  });
+
+  it('falls back to the recorded fact when no provider is listing the file', () => {
+    const volume = createVolume({ metadata_only: true, archive_size: 1_000_000 });
+    expect(getArchiveSize(volume)).toBe(1_000_000);
+  });
+
+  it('reads the recorded fact of an installed volume too', () => {
+    expect(getArchiveSize(createVolume({ archive_size: 1_000_000 }))).toBe(1_000_000);
+  });
+
+  it('treats a zero listed size as no size at all', () => {
+    const volume = createVolume({ isPlaceholder: true, cloudSize: 0, archive_size: 1_000_000 });
+    expect(getArchiveSize(volume)).toBe(1_000_000);
+    expect(getArchiveSize(createVolume({ isPlaceholder: true, cloudSize: 0 }))).toBeNull();
+  });
+
+  it('rejects a junk recorded size', () => {
+    expect(getArchiveSize(createVolume({ archive_size: -5 }))).toBeNull();
+    expect(getArchiveSize(createVolume({ archive_size: 1.5 }))).toBeNull();
+    expect(getArchiveSize(createVolume())).toBeNull();
   });
 });
 
