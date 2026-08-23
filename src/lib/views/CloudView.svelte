@@ -24,6 +24,7 @@
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
+  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -673,6 +674,12 @@
     const skippedCount = allVolumes.length - volumesToBackup.length;
 
     if (volumesToBackup.length === 0) {
+      // The archives are all up there, but the folders can still be missing the
+      // `series.json`/`catalog.json` that nothing ever wrote for them — an older
+      // build's upload, or facts set before this device was connected. The
+      // backup run is the only producer that would fix it, and it never starts
+      // from here, so back the metadata files off the current listing instead.
+      void reconcileMissingMetadataFiles();
       showSnackbar('All volumes already backed up');
       return;
     }

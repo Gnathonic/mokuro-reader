@@ -55,6 +55,7 @@ import {
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
+import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -220,6 +221,16 @@ class UnifiedCloudManager {
       // library, skipped entirely when its size/mtime has not moved.
       void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
         console.warn('Catalog index refresh failed:', error)
+      );
+      // The refreshes above READ the metadata files; this writes the ones that
+      // were never produced. A library uploaded by an older build (or whose
+      // facts were set before it was ever connected) has folders full of
+      // archives and no `series.json`, and no other path fixes it: the backup
+      // run only publishes indexes when it actually uploads something, and the
+      // facts listener only fires on a fresh edit. The listing in hand is
+      // exactly what the backfill needs, so it rides along here.
+      void Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
+        console.warn('Metadata backfill failed:', error)
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);

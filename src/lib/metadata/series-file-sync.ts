@@ -4,6 +4,10 @@ import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { isCbzFile } from '$lib/util/sync/syncable-file';
+import { isCatalogFilePath } from './catalog-file';
+import { scheduleCatalogFileWrite } from './catalog-file-sync';
+import { isSeriesFilePath } from './series-file';
 import { normalizeSeriesKey } from './series-key';
 import { registerFactsChangeListener } from './store';
 
@@ -186,6 +190,129 @@ export function scheduleSeriesFileWrite(seriesTitle: string): void {
     key,
     setTimeout(() => void runWrite(key), SERIES_FILE_WRITE_DEBOUNCE_MS)
   );
+}
+
+/**
+ * The reconcile pass currently running, so a second caller joins it instead of
+ * walking the same listing again.
+ */
+let reconcileInFlight: Promise<void> | null = null;
+
+/** Test hook: forget an in-flight reconcile pass. */
+export function _resetReconcileForTests(): void {
+  reconcileInFlight = null;
+}
+
+/** A cloud listing entry, narrowed to the only field this pass reads. */
+type ListedFile = { path: string };
+
+/** What the listing shows for one cloud folder. */
+interface FolderState {
+  /** The folder name exactly as the cloud spells it — never derived. */
+  title: string;
+  /** At least one `<folder>/*.cbz`: something is actually backed up here. */
+  hasArchive: boolean;
+  /** `<folder>/series.json` is already published. */
+  hasSidecar: boolean;
+}
+
+function walkListing(files: ListedFile[]): {
+  folders: Map<string, FolderState>;
+  hasCatalog: boolean;
+} {
+  const folders = new Map<string, FolderState>();
+  let hasCatalog = false;
+
+  for (const file of files) {
+    const path = (file?.path ?? '').replace(/^\/+|\/+$/g, '');
+    if (!path) continue;
+    if (isCatalogFilePath(path)) {
+      hasCatalog = true;
+      continue;
+    }
+
+    // Series folders are exactly one level deep, same rule the catalog writer
+    // uses to enumerate them (`cloudSeriesTitles`).
+    const parts = path.split('/');
+    if (parts.length !== 2) continue;
+    const [folder, basename] = parts;
+    const key = normalizeSeriesKey(folder);
+    if (!key || !basename) continue;
+
+    const state = folders.get(key) ?? { title: folder, hasArchive: false, hasSidecar: false };
+    if (isCbzFile(basename)) state.hasArchive = true;
+    else if (isSeriesFilePath(path)) state.hasSidecar = true;
+    folders.set(key, state);
+  }
+
+  return { folders, hasCatalog };
+}
+
+function runReconcile(files?: ListedFile[]): void {
+  const listing = files ?? (unifiedCloudManager.getAllCloudVolumes() as ListedFile[]);
+  // An empty listing means "not fetched" as often as "empty cloud", and every
+  // writer downstream refuses to publish against one. Nothing to reconcile.
+  if (!listing || listing.length === 0) return;
+
+  const { folders, hasCatalog } = walkListing(listing);
+
+  let seriesFolders = 0;
+  let scheduled = 0;
+  for (const state of folders.values()) {
+    if (!state.hasArchive) continue;
+    seriesFolders += 1;
+    if (state.hasSidecar) continue;
+    scheduleSeriesFileWrite(state.title);
+    scheduled += 1;
+  }
+
+  if (seriesFolders === 0) return;
+  // A missing root catalog is worth a write on its own — the per-series files
+  // can all be present while the index that lists them never got written. The
+  // catalog writer's content-equality skip absorbs the redundant case.
+  if (scheduled > 0 || !hasCatalog) scheduleCatalogFileWrite();
+}
+
+/**
+ * Backfill the metadata files a cloud folder should have but does not.
+ *
+ * The three producers of `series.json` / `catalog.json` all need an *event*: a
+ * backup run that actually uploads something, a local fact edit while
+ * connected, or a rename. A library whose volumes were uploaded by an older
+ * build — or whose facts were set before it was ever connected — therefore sits
+ * there with `.cbz`s and no index, and "Backup all series" cannot fix it
+ * because it early-returns when everything is already backed up.
+ *
+ * This pass closes that hole: every folder the listing shows with at least one
+ * archive and no `series.json` gets a write queued, and the catalog follows if
+ * anything was queued or the root `catalog.json` is missing outright.
+ *
+ * Idempotent by construction — a completed write shows up in the next listing
+ * and stops qualifying — and deliberately gate-free: `runWrite` still checks
+ * the writable provider, the fresh listing and the per-series backup, and
+ * `writeCatalogFile` still checks read-only / server-compiled / loaded cache.
+ * Duplicating any of that here would only let the two copies disagree.
+ *
+ * Fire-and-forget by contract: never throws, never surfaces UI.
+ */
+export function reconcileMissingMetadataFiles(files?: ListedFile[]): Promise<void> {
+  if (reconcileInFlight) return reconcileInFlight;
+
+  // Deferred to a microtask so the promise identity below exists before the
+  // body can settle.
+  const run = Promise.resolve().then(() => {
+    try {
+      runReconcile(files);
+    } catch (error) {
+      console.debug('[series-file-sync] could not reconcile the cloud metadata files:', error);
+    }
+  });
+
+  reconcileInFlight = run;
+  void run.finally(() => {
+    if (reconcileInFlight === run) reconcileInFlight = null;
+  });
+  return run;
 }
 
 /** Run every queued write now (cancelling its timer). For tests and teardown. */

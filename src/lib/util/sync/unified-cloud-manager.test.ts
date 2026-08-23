@@ -114,6 +114,11 @@ vi.mock('$lib/metadata/catalog-index-sync', () => ({
     refreshCatalogIndex(map, providerType)
 }));
 
+const reconcileMissingMetadataFiles = vi.fn(async (_files?: unknown) => {});
+vi.mock('$lib/metadata/series-file-sync', () => ({
+  reconcileMissingMetadataFiles: (files?: unknown) => reconcileMissingMetadataFiles(files)
+}));
+
 /**
  * A file cache whose fetch has COMPLETED. Every metadata write gates on
  * `isLoaded()`, because a listing that is merely non-empty can still be this
@@ -2385,5 +2390,56 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
     expect(unifiedCloudManager.cloudVolumeTitlesFor('One Piece')).toEqual(
       new Set(['Volume 1', 'Volume 2'])
     );
+  });
+});
+
+describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAllFiles.mockReturnValue([]);
+  });
+
+  function cloudFile(path: string): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size: 100
+    };
+  }
+
+  it('backfills the missing metadata files from the listing it just read', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    const files = [cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/Volume 1.mokuro')];
+    getAllFiles.mockReturnValue(files);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    // The same listing the index refreshes ride, not a second fetch.
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalledTimes(1);
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalledWith(files);
+  });
+
+  it('does not backfill without a provider or without a listing', async () => {
+    getActiveProvider.mockReturnValue(null);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+    expect(reconcileMissingMetadataFiles).not.toHaveBeenCalled();
+
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([]);
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+    expect(reconcileMissingMetadataFiles).not.toHaveBeenCalled();
+  });
+
+  it('survives a backfill that throws — the index refresh is fire-and-forget', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    reconcileMissingMetadataFiles.mockRejectedValueOnce(new Error('boom'));
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(() => unifiedCloudManager.refreshSeriesIndexesInBackground()).not.toThrow();
   });
 });

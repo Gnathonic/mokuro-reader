@@ -1,0 +1,254 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('$app/environment', () => ({ browser: true }));
+
+const providerStatus = vi.hoisted(() => {
+  let value = {
+    providers: {} as Record<string, { isReadOnly?: boolean } | null>,
+    hasAnyAuthenticated: true,
+    needsAttention: false,
+    currentProviderType: 'webdav' as string | null
+  };
+  const subs = new Set<(v: typeof value) => void>();
+  return {
+    subscribe(fn: (v: typeof value) => void) {
+      subs.add(fn);
+      fn(value);
+      return () => subs.delete(fn);
+    },
+    set(v: typeof value) {
+      value = v;
+      subs.forEach((fn) => fn(value));
+    }
+  };
+});
+
+vi.mock('$lib/util/sync/provider-manager', () => ({
+  providerManager: { status: providerStatus }
+}));
+
+const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
+const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
+const cloudListing = vi.hoisted(() => ({ files: [] as { path: string }[] }));
+const getAllCloudVolumes = vi.hoisted(() => vi.fn(() => cloudListing.files));
+// Every folder in the listing counts as backed up: this suite is about which
+// folders get a write queued, not about the per-series backup gate.
+const getManagedCloudFilesForVolume = vi.hoisted(() =>
+  vi.fn((series: string, volumeTitle: string) => [{ path: `${series}/${volumeTitle}.cbz` }])
+);
+
+vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+  unifiedCloudManager: {
+    writeSeriesFile,
+    getManagedCloudFilesForVolume,
+    fetchAllCloudVolumes,
+    getAllCloudVolumes
+  }
+}));
+
+const scheduleCatalogFileWrite = vi.hoisted(() => vi.fn());
+vi.mock('$lib/metadata/catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
+
+const { volumeRows } = vi.hoisted(() => ({ volumeRows: [] as Record<string, unknown>[] }));
+vi.mock('$lib/catalog/db', () => ({
+  db: {
+    volumes: { toArray: async () => [...volumeRows] },
+    series_metadata: { get: async () => undefined, put: async () => {} },
+    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
+  }
+}));
+
+import {
+  _resetListingRefreshForTests,
+  _resetReconcileForTests,
+  reconcileMissingMetadataFiles,
+  SERIES_FILE_WRITE_DEBOUNCE_MS
+} from './series-file-sync';
+
+function addVolume(seriesTitle: string, volumeTitle: string) {
+  volumeRows.push({
+    volume_uuid: `${seriesTitle}/${volumeTitle}`,
+    series_uuid: 's',
+    series_title: seriesTitle,
+    volume_title: volumeTitle,
+    mokuro_version: '0.4.11',
+    page_count: 1,
+    character_count: 1,
+    page_char_counts: [1]
+  });
+}
+
+/** Titles the debounced writer actually published. */
+function writtenTitles(): string[] {
+  return writeSeriesFile.mock.calls.map((args: unknown[]) => args[0] as string).sort();
+}
+
+describe('reconcileMissingMetadataFiles', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    _resetListingRefreshForTests();
+    _resetReconcileForTests();
+    writeSeriesFile.mockResolvedValue('written');
+    fetchAllCloudVolumes.mockResolvedValue(undefined);
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+    getAllCloudVolumes.mockImplementation(() => cloudListing.files);
+    providerStatus.set({
+      providers: {},
+      hasAnyAuthenticated: true,
+      needsAttention: false,
+      currentProviderType: 'webdav'
+    });
+    volumeRows.length = 0;
+    cloudListing.files = [];
+    addVolume('One Piece', 'Volume 1');
+    addVolume('Berserk', 'Volume 1');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('publishes series.json for a folder that has archives but no sidecar', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/Volume 1.mokuro' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual(['One Piece']);
+  });
+
+  it('leaves a folder alone when its series.json is already in the listing', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/series.json' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('ignores a folder whose only files are sidecars (nothing is backed up there)', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.mokuro' },
+      { path: 'One Piece/Volume 1.webp' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('backfills only the folders that are missing a sidecar', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/series.json' },
+      { path: 'Berserk/Volume 1.cbz' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual(['Berserk']);
+  });
+
+  it('queues the catalog when a series.json was queued', async () => {
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+
+    expect(scheduleCatalogFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues the catalog when the root catalog.json is absent, sidecars or not', async () => {
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'One Piece/series.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    // Nothing per-series to fix, but the library has no index at all.
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a nested catalog.json as the root one', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/series.json' },
+      { path: 'One Piece/catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+
+    expect(scheduleCatalogFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing at all for an empty or unfetched listing', async () => {
+    cloudListing.files = [];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the listing holds only root config files', async () => {
+    cloudListing.files = [{ path: 'volume-data.json' }, { path: 'profiles.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('accepts a listing passed by the caller instead of re-reading the cache', async () => {
+    cloudListing.files = [{ path: 'Berserk/Volume 1.cbz' }];
+
+    await reconcileMissingMetadataFiles([{ path: 'One Piece/Volume 1.cbz' }]);
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(getAllCloudVolumes).not.toHaveBeenCalled();
+    expect(writtenTitles()).toEqual(['One Piece']);
+  });
+
+  it('coalesces a second reconcile onto the one already running', async () => {
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }];
+
+    const first = reconcileMissingMetadataFiles();
+    const second = reconcileMissingMetadataFiles();
+    expect(second).toBe(first);
+
+    await first;
+    await second;
+    expect(getAllCloudVolumes).toHaveBeenCalledTimes(1);
+    expect(scheduleCatalogFileWrite).toHaveBeenCalledTimes(1);
+
+    // Once settled, a later reconcile runs for real again.
+    await reconcileMissingMetadataFiles();
+    expect(getAllCloudVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it('never throws out of the fire-and-forget call sites', async () => {
+    getAllCloudVolumes.mockImplementation(() => {
+      throw new Error('cache exploded');
+    });
+
+    await expect(reconcileMissingMetadataFiles()).resolves.toBeUndefined();
+  });
+});

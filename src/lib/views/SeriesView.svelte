@@ -32,6 +32,7 @@
   import { browser } from '$app/environment';
   import { preferredTitleLanguage } from '$lib/settings/settings';
   import { seriesMetadataMap } from '$lib/metadata/store';
+  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { openSeries } from '$lib/metadata/series-open';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
@@ -565,6 +566,10 @@
     );
 
     if (volumesToBackup.length === 0) {
+      // Same hole as the cloud screen's "backup all": nothing to upload means
+      // the backup run never starts, so the `series.json` this folder may never
+      // have had would stay missing. Back it off the current listing instead.
+      void reconcileMissingMetadataFiles();
       showSnackbar('All volumes already backed up');
       return;
     }
