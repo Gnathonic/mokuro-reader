@@ -43,6 +43,20 @@ export interface VolumeMetadata {
   // Placeholder fields for cloud-only volumes (not yet downloaded locally)
   isPlaceholder?: boolean;
 
+  /**
+   * This row is metadata only: the volume's OCR and image rows are not on this
+   * device (the user removed them to save space). Everything else — thumbnail,
+   * counts, and above all the `volume_uuid` the read history is keyed by —
+   * stays, so the volume still shows and still counts; it just cannot be
+   * opened until it is downloaded again. Absent on installed volumes, and
+   * never set on placeholders, which have no row at all.
+   *
+   * A state, like `mokuro_version === ''` for image-only volumes, not an event.
+   * Read it through `isVolumeInstalled`/`needsDownload`
+   * (`$lib/catalog/volume-state`) rather than testing the flag directly.
+   */
+  metadata_only?: true;
+
   // Generic cloud storage fields (new multi-provider format)
   cloudProvider?: ProviderType;
   cloudFileId?: string;
