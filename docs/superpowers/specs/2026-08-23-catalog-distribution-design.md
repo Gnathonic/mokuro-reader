@@ -37,9 +37,9 @@ Name-related data ONLY — everything needed to map and search, nothing more. No
 
 Entry = the FACTS subset of that series' `series.json` (same keys, same meaning, same facts stamp). Compact JSON. Factless series (no link/titles/tag) still get an entry carrying just `series_title` + stamp — the catalog must list them by folder name.
 
-### `series.json` (unchanged v2)
+### `series.json` (v2 + `archive_size`)
 
-Facts + volume index. Covers stay OUT of it — the existing per-volume cover sidecars (`<Series>/<Volume>.webp|jpg` next to the `.cbz`) remain the universal cover source; bunko generates missing ones.
+Facts + volume index. Volume entries MAY carry `archive_size` (bytes of the `.cbz`; optional, 2026-08-23): a fact of the archive like `spine_width`, compiled by bunko and recorded by clients wherever known (backup upload, cloud download, listing). Readers ignore it when absent. Covers stay OUT of it — the existing per-volume cover sidecars (`<Series>/<Volume>.webp|jpg` next to the `.cbz`) remain the universal cover source; bunko generates missing ones.
 
 ## Producers
 
@@ -50,7 +50,8 @@ Facts + volume index. Covers stay OUT of it — the existing per-volume cover si
 
 1. **Catalog open / provider connect**: fetch `catalog.json` when its size/mtime changed (same versioning discipline as `series_index`). Cache in a new Dexie table `catalog_index` (PK `series_key`, source stamp). Merge each entry's facts into `series_metadata` by facts stamp (the factless-file rules apply: a factless entry never creates a record and never unlinks). The catalog view lists catalog-only series as name-only cards (searchable via the same `seriesSearchTerms`); opening one triggers the series-open path.
 2. **Series open**: refresh that ONE series' `series.json` (size/mtime gated, event-driven — not waiting for a full listing pass), then **materialize** each cloud-only volume entry as a metadata-only `volumes` row: real uuid, counts, `mokuro_version`, `spine_width`, `metadata_only: true`. Fetch its cover sidecar lazily (bounded concurrency) and store it in the row's inlined `thumbnail`. Materialized rows shadow placeholders permanently; the placeholder fallback remains for entries without an index (bare shares) — the enrichment ladder is unchanged, materialization just promotes rung 2 into rung 1.
-3. **Hole patching**: synced progress referencing a series (by `series_title`/`series_uuid` on the progress record) that has no local rows and no cached index forces a pull of that series' `series.json` + materialization, so stats views never dangle.
+3. **Richer placeholders** (2026-08-23): a placeholder with index data renders with the same treatment as a metadata-only volume (progress, estimates, cover, download badge, `archive_size`); the minimal card remains only for bare-share entries with no index. `VolumeMetadata.archive_size?` is populated from the listing/index/upload/download and shown beside the download affordance.
+4. **Hole patching**: synced progress referencing a series (by `series_title`/`series_uuid` on the progress record) that has no local rows and no cached index forces a pull of that series' `series.json` + materialization, so stats views never dangle.
 
 ## Write tolerance
 
