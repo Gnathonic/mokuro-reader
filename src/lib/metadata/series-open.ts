@@ -13,13 +13,15 @@ import { normalizeSeriesKey } from './series-key';
  * rejects, never surfaces UI — a series that fails to load simply shows what the
  * device already had.
  *
- * The returned promise settles at MATERIALIZATION, not at the end of the pass.
- * That is the point the catalog has its rows and the view can render, whereas
- * cover install is one network round trip per volume behind it; a caller that
- * showed a spinner would otherwise hold it over I/O that changes nothing it is
- * waiting for. The cover step is still awaited INSIDE the pass, so its failures
- * stay contained here and the dedupe entry lives until it is genuinely done —
- * a second open during cover install joins instead of racing it.
+ * The returned promise settles at MATERIALIZATION, not at the end of the pass,
+ * and the dedupe entry is released at that same moment. That is the point the
+ * catalog has its rows and the view can render, whereas cover install is one
+ * network round trip per volume behind it: a caller showing a spinner would
+ * hold it over I/O it is not waiting for, and — worse — a cover phase that
+ * hangs would pin the series' dedupe entry, silently turning every later open
+ * into a no-op. Covers are still awaited INSIDE the pass so their failures stay
+ * contained here, but they are NOT part of what is deduped; owning a per-series
+ * in-flight guard is `installCoversForSeries`' own job.
  */
 const inFlight = new Map<string, Promise<void>>();
 
@@ -30,10 +32,21 @@ export function openSeries(seriesTitle: string): Promise<void> {
   const running = inFlight.get(key);
   if (running) return running;
 
-  let markMaterialized!: () => void;
+  let resolveMaterialized!: () => void;
   const materialized = new Promise<void>((resolve) => {
-    markMaterialized = resolve;
+    resolveMaterialized = resolve;
   });
+  // Releases the caller AND the dedupe entry together — the two share one
+  // moment, so nothing downstream of it can pin the series. Idempotent, because
+  // every path that ends the pass without materializing (no index, a throw)
+  // must still release both.
+  const finishMaterialization = () => {
+    // Only ever evict OUR OWN entry: once this pass has released the series, a
+    // later open owns the slot, and this pass's cover phase settling afterwards
+    // must not drop somebody else's dedupe.
+    if (inFlight.get(key) === materialized) inFlight.delete(key);
+    resolveMaterialized();
+  };
 
   void (async () => {
     try {
@@ -45,7 +58,7 @@ export function openSeries(seriesTitle: string): Promise<void> {
         entries: file.volumes,
         cloudVolumeTitles: unifiedCloudManager.cloudVolumeTitlesFor(seriesTitle)
       });
-      markMaterialized();
+      finishMaterialization();
 
       // Covers are installed even when nothing was materialized: rows from an
       // earlier open may still be missing theirs.
@@ -53,10 +66,7 @@ export function openSeries(seriesTitle: string): Promise<void> {
     } catch (error) {
       console.debug(`[series-open] could not load '${seriesTitle}':`, error);
     } finally {
-      // Idempotent: every path that ends the pass without materializing (no
-      // index, a throw) must still release the caller.
-      markMaterialized();
-      inFlight.delete(key);
+      finishMaterialization();
     }
   })();
 

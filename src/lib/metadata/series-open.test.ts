@@ -101,22 +101,46 @@ describe('openSeries', () => {
     releaseCovers(1);
   });
 
-  it('keeps deduping while the cover install is still running', async () => {
-    // The pass is not finished until the covers are in, so a second open must
-    // still join it rather than start a competing refresh.
+  it('is not pinned by a cover install that never settles', async () => {
+    // The dedupe entry covers the materialization window only. Cover install is
+    // per-volume network I/O that can hang for minutes; holding the entry over
+    // it would make every later open of this series a silent no-op, so the page
+    // would keep showing whatever it had. Task 9's installCoversForSeries owns
+    // its own per-series dedupe instead.
+    installCoversForSeries.mockReturnValue(new Promise<number>(() => {}));
+
+    await openSeries('Dr Stone');
+    await openSeries('Dr Stone');
+
+    expect(refreshSeriesIndexForSeries).toHaveBeenCalledTimes(2);
+    expect(materializeSeriesVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a late cover install evict a newer pass', async () => {
     let releaseCovers!: (installed: number) => void;
-    installCoversForSeries.mockReturnValue(
+    installCoversForSeries.mockReturnValueOnce(
       new Promise<number>((resolve) => {
         releaseCovers = resolve;
       })
     );
+    await openSeries('Dr Stone'); // pass A: materialized, covers still pending
 
-    await openSeries('Dr Stone');
-    await openSeries('Dr Stone');
+    let releaseRefresh!: (value: SeriesFile) => void;
+    refreshSeriesIndexForSeries.mockReturnValueOnce(
+      new Promise<SeriesFile>((resolve) => {
+        releaseRefresh = resolve;
+      })
+    );
+    const passB = openSeries('Dr Stone'); // owns the dedupe slot now
 
-    expect(refreshSeriesIndexForSeries).toHaveBeenCalledTimes(1);
-    expect(installCoversForSeries).toHaveBeenCalledTimes(1);
-    releaseCovers(1);
+    releaseCovers(1); // pass A ends here — it must not take B's slot with it
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const passC = openSeries('Dr Stone');
+    expect(refreshSeriesIndexForSeries).toHaveBeenCalledTimes(2); // C joined B
+
+    releaseRefresh(file);
+    await Promise.all([passB, passC]);
   });
 
   it('contains a cover-install failure', async () => {
