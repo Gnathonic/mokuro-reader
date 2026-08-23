@@ -79,7 +79,6 @@ vi.mock('$lib/metadata/series-index', async () => {
 });
 
 const catalogRows = vi.fn(async (): Promise<unknown[]> => []);
-const putCatalogIndexes = vi.fn(async (_recs: unknown[]) => {});
 const deleteCatalogIndexes = vi.fn(async (_keys: string[]) => {});
 const moveCatalogIndexKey = vi.fn(async (_old: string, _next: string) => {});
 const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: unknown[]) => {});
@@ -91,7 +90,7 @@ vi.mock('$lib/metadata/catalog-index', async () => {
     // The real size/mtime comparison decides whether the write re-reads first.
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
     listCatalogIndexes: () => catalogRows(),
-    putCatalogIndexes: (recs: unknown[]) => putCatalogIndexes(recs),
+
     deleteCatalogIndexes: (keys: string[]) => deleteCatalogIndexes(keys),
     replaceCatalogIndexesForProvider: (provider: string, recs: unknown[]) =>
       replaceCatalogIndexes(provider, recs),

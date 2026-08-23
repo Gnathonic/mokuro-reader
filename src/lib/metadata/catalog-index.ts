@@ -29,17 +29,7 @@ export async function listCatalogIndexes(): Promise<CatalogIndexRecord[]> {
   return db.catalog_index.toArray();
 }
 
-/**
- * Cache several rows at once. The table backs a liveQuery the catalog joins, so
- * a refresh that touched N series must emit ONE change, not N — each emission
- * re-derives the name-only card set for the whole library.
- */
-export async function putCatalogIndexes(records: CatalogIndexRecord[]): Promise<void> {
-  if (records.length === 0) return;
-  await db.catalog_index.bulkPut(records);
-}
-
-/** Drop rows in one write, for the same reason `putCatalogIndexes` batches. */
+/** Drop rows in one write — the table backs a liveQuery, so batch, never loop. */
 export async function deleteCatalogIndexes(seriesKeys: string[]): Promise<void> {
   if (seriesKeys.length === 0) return;
   await db.catalog_index.bulkDelete(seriesKeys);

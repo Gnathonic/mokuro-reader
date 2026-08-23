@@ -39,7 +39,8 @@ import { upsertFromSeriesFile } from './store';
  * - Cleanup only against a non-empty listing, and only for rows fetched from
  *   THIS provider — an empty listing means "not fetched" as often as it means
  *   "empty cloud".
- * - All rows are written in ONE `putCatalogIndexes`: the table feeds a liveQuery
+ * - All rows land in ONE `replaceCatalogIndexesForProvider` transaction (prune +
+ *   put together): the table feeds a liveQuery
  *   the catalog joins, so a write per series would rebuild the card set N times.
  */
 
