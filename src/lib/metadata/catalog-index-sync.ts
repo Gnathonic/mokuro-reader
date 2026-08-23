@@ -3,6 +3,7 @@ import type {
   ProviderType,
   SyncProvider
 } from '$lib/util/sync/provider-interface';
+import { db } from '$lib/catalog/db';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import {
   catalogNeedsRefresh,
@@ -16,6 +17,7 @@ import {
   parseCatalogFile,
   type CatalogFile
 } from './catalog-file';
+import type { SeriesFile } from './series-file';
 import { normalizeSeriesKey } from './series-key';
 import { upsertFromSeriesFile } from './store';
 
@@ -31,7 +33,9 @@ import { upsertFromSeriesFile } from './store';
  *   launch.
  * - Facts go through `upsertFromSeriesFile`, which applies only strictly newer
  *   facts, never creates a record from a factless entry, and never schedules a
- *   write — so a refresh can never ping-pong into an upload.
+ *   write — so a refresh can never ping-pong into an upload. All of them share
+ *   ONE transaction, so `series_metadata` emits once per refresh rather than
+ *   once per series.
  * - Everything is best-effort: junk content is dropped with one warning, a
  *   failed download is skipped, and the run never rejects.
  * - A run is BOUND to the provider whose listing produced it: between the fetch
@@ -124,6 +128,7 @@ async function runRefresh(
   };
 
   const records: CatalogIndexRecord[] = [];
+  const facts: Array<{ title: string; file: SeriesFile }> = [];
   for (const entry of parsed.series) {
     const key = normalizeSeriesKey(entry.series_title);
     if (!key) continue;
@@ -134,15 +139,30 @@ async function runRefresh(
       source,
       fetched_at: now
     });
-    try {
-      // Facts only, strictly-newer, factless entries never create or unlink.
-      await upsertFromSeriesFile(entry.series_title, catalogEntryToSeriesFile(entry));
-    } catch (error) {
-      console.warn(
-        `[catalog-index-sync] could not apply the facts for '${entry.series_title}':`,
-        error
-      );
-    }
+    facts.push({ title: entry.series_title, file: catalogEntryToSeriesFile(entry) });
+  }
+
+  try {
+    // ONE transaction for the whole catalog's facts. `upsertFromSeriesFile` opens
+    // its own `rw` transaction on this same table, which Dexie joins to this one
+    // as a sub-transaction — so `series_metadata` commits, and the liveQuery the
+    // catalog joins emits, ONCE per refresh instead of once per series. Each of
+    // those emissions re-derives the entire card set (display titles, search
+    // terms, sort), so a 1k-series catalog was doing that work 1k times.
+    await db.transaction('rw', db.series_metadata, async () => {
+      for (const { title, file } of facts) {
+        try {
+          // Facts only, strictly-newer, factless entries never create or unlink.
+          await upsertFromSeriesFile(title, file);
+        } catch (error) {
+          console.warn(`[catalog-index-sync] could not apply the facts for '${title}':`, error);
+        }
+      }
+    });
+  } catch (error) {
+    // Best-effort, exactly as before: the names still get cached below, and the
+    // next refresh re-applies the facts.
+    console.warn('[catalog-index-sync] could not apply the catalog facts:', error);
   }
 
   try {
