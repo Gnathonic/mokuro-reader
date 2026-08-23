@@ -1,6 +1,7 @@
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { volumes as progressStore } from '$lib/settings';
+import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { listSeriesIndexes } from './series-index';
 import { openSeries } from './series-open';
 import { normalizeSeriesKey } from './series-key';
@@ -43,13 +44,28 @@ export function resetHolePatchSessionForTests(): void {
  * local rows, one over the cached indexes, and zero network when nothing dangles.
  * Tombstones (`deletedOn`) are skipped — the user deleted those on purpose.
  *
- * Returns the series titles it actually pulled. Never rejects.
+ * Returns the series titles actually ATTEMPTED (via `openSeries`) while a
+ * provider was connected. `openSeries` resolving without throwing says
+ * nothing about network success on its own — a series can genuinely not
+ * exist in the cloud, in which case nothing is downloaded but nothing throws
+ * either — so this is "attempted", not "confirmed fetched". Never rejects.
  */
 export async function patchProgressHoles(options?: { limit?: number }): Promise<string[]> {
   const limit = options?.limit ?? MAX_HOLE_PATCHES_PER_RUN;
   const pulled: string[] = [];
 
   try {
+    // `openSeries` no-ops with zero I/O when no provider is connected (see
+    // `refreshSeriesIndexForSeries`: `if (!provider) return cached?.file`).
+    // CatalogView's onMount fires before `initializeProviders()`
+    // (fire-and-forget from +layout) has finished authenticating, so a run
+    // that started here would memoize every dangling title as "attempted"
+    // despite nothing having actually been tried — silently hiding the hole
+    // for the rest of the session. Bail before touching the session memory
+    // or doing any work; the hole is still there next time this runs with a
+    // provider connected.
+    if (!unifiedCloudManager.getActiveProvider()) return pulled;
+
     const progress = get(progressStore);
     const wanted = new Map<string, string>();
     for (const record of Object.values(progress ?? {})) {
@@ -71,6 +87,10 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     if (wanted.size === 0) return pulled;
 
     for (const [key, title] of [...wanted.entries()].slice(0, limit)) {
+      // Re-checked per attempt, not just once at entry: the provider can drop
+      // between awaits (e.g. a mid-pass logout). A title skipped here was
+      // never actually attempted, so it is left un-memoized for the next run.
+      if (!unifiedCloudManager.getActiveProvider()) break;
       attemptedThisSession.add(key);
       try {
         await openSeries(title);
