@@ -94,9 +94,14 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 vi.mock('../BackupButton.svelte', () => ({ default: () => ({}) }));
+vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+  fetchCloudThumbnail: vi.fn(async () => null),
+  getCachedCloudThumbnail: vi.fn(() => undefined)
+}));
 
 import VolumeItem from '../VolumeItem.svelte';
 import { promptConfirmation, showSnackbar } from '$lib/util';
+import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -284,4 +289,74 @@ describe('VolumeItem archive size', () => {
       });
     });
   }
+});
+
+describe('VolumeItem drawing a cloud-only placeholder', () => {
+  afterEach(() => {
+    cleanup();
+    vi.mocked(promptConfirmation).mockClear();
+    vi.mocked(showSnackbar).mockClear();
+    vi.mocked(fetchCloudThumbnail).mockClear();
+  });
+
+  function placeholder(overrides: Partial<VolumeMetadata> = {}) {
+    return volume({
+      isPlaceholder: true,
+      cloudProvider: 'webdav',
+      cloudFileId: 'file-1',
+      ...overrides
+    });
+  }
+
+  it('never raises the volume removal dialog — there is no row to remove', async () => {
+    const { container } = render(VolumeItem, {
+      props: { volume: placeholder(), variant: 'list' }
+    });
+    await fireEvent.mouseEnter(container.querySelector('div') as HTMLElement);
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    expect(showSnackbar).not.toHaveBeenCalled();
+  });
+
+  it('sends its delete button at the cloud copy, the only copy there is', async () => {
+    const { container } = render(VolumeItem, {
+      props: { volume: placeholder(), variant: 'list' }
+    });
+    const button = container.querySelector('[title="Delete from cloud"]') as HTMLElement;
+    expect(button).toBeTruthy();
+
+    await fireEvent.click(button);
+    // Not backed up as far as these stubs know, so it stops there — the point is
+    // that it went down the cloud path instead of deleting a row that is absent.
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
+  });
+
+  it('still fetches the cloud cover sidecar for its grid card', () => {
+    render(VolumeItem, {
+      props: {
+        volume: placeholder({ cloudThumbnailFileId: 'thumb-1', cloudThumbnailPath: 'S/V.webp' }),
+        variant: 'grid'
+      }
+    });
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetchCloudThumbnail).mock.calls[0][0]).toMatchObject({
+      volume_uuid: 'uuid-1',
+      cloudThumbnailFileId: 'thumb-1'
+    });
+  });
+
+  it('leaves the device-copy wording alone for a real row whose pages are gone', async () => {
+    const { container } = render(VolumeItem, {
+      props: { volume: volume({ metadata_only: true }), variant: 'list' }
+    });
+    await fireEvent.mouseEnter(container.querySelector('div') as HTMLElement);
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe(
+      'Forget Vol 1? Its stats, progress and cover will be deleted.'
+    );
+  });
 });

@@ -111,6 +111,12 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
+  // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
+  // no `volumes` row at all, so anything that deletes one is off. `dbVolume` is
+  // the live answer to "is there a row now" — the moment a download or a
+  // materialization writes one under this uuid, the card stops being a
+  // placeholder even before the catalog re-renders it.
+  let isPlaceholderRow = $derived(volume.isPlaceholder === true && !dbVolume);
   let downloadFileId = $derived(getCloudFileId(volume));
   // How big the download is. `getArchiveSize` prefers the connected provider's
   // listing and falls back to the size recorded on the row, so it still answers
@@ -228,10 +234,12 @@
   });
   let totalChars = $derived(metadataTotalChars ?? fallbackTotalChars);
 
-  // Fallback for legacy/partial metadata.
+  // Fallback for legacy/partial metadata. Never for a volume whose pages are
+  // not here: there is no OCR row to read (and for a placeholder, no row at
+  // all), so it would be one wasted query per card in a cloud-only series.
   $effect(() => {
     fallbackTotalChars = undefined;
-    if (metadataTotalChars && metadataTotalChars > 0) {
+    if ((metadataTotalChars && metadataTotalChars > 0) || needsDownload(liveVolume)) {
       return;
     }
 
@@ -390,6 +398,15 @@
   async function onDeleteClicked(e?: Event) {
     e?.stopPropagation();
 
+    // A placeholder has no row: nothing local to remove and no history to
+    // forget, so the volume dialog would be asking about something that does
+    // not exist. The only copy is the cloud one, which is exactly what the
+    // cloud-delete flow (and the minimal placeholder card) already offers.
+    if (isPlaceholderRow) {
+      await onCloudDeleteOnly();
+      return;
+    }
+
     // Check if volume is backed up to cloud
     const hasCloudBackup = hasAuthenticatedProvider && isBackedUp;
 
@@ -519,7 +536,10 @@
         e.preventDefault();
         if (e.shiftKey) {
           onCloudDeleteOnly();
-        } else {
+        } else if (!isPlaceholderRow) {
+          // Nothing on this device to delete. The cloud copy is deletable, but
+          // never from the shortcut that means "remove my local copy" —
+          // shift+Delete is the one that has always meant the cloud.
           onDeleteClicked();
         }
         return;
@@ -705,7 +725,15 @@
                 <EditOutline class="z-10 text-gray-400 hover:text-gray-300" />
               </button>
             {/if}
-            <button onclick={onDeleteClicked} class="flex items-center justify-center">
+            <button
+              onclick={onDeleteClicked}
+              class="flex items-center justify-center"
+              title={isPlaceholderRow
+                ? 'Delete from cloud'
+                : isNotInstalled
+                  ? 'Forget this volume'
+                  : 'Remove from this device'}
+            >
               <TrashBinSolid class="poin z-10 text-red-400 hover:text-red-500" />
             </button>
             <button
@@ -826,7 +854,7 @@
           class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
         >
           <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0" />
-          <span class="flex-1 text-left">Delete</span>
+          <span class="flex-1 text-left">{isPlaceholderRow ? 'Delete from cloud' : 'Delete'}</span>
         </DropdownItem>
       </Dropdown>
 
@@ -847,8 +875,11 @@
             />
           {:else}
             <!-- Nothing is generating one for a volume whose pages are gone
-                 (processThumbnails skips it), so don't promise it. -->
+                 (processThumbnails skips it), so don't promise it — but the
+                 cloud may still hold its cover sidecar, which this fetches
+                 lazily when the row carries one. -->
             <PlaceholderThumbnail
+              volume={isNotInstalled ? volume : undefined}
               message={isNotInstalled ? 'Not on this device' : 'Generating thumbnail...'}
             />
           {/if}

@@ -215,3 +215,62 @@ describe('SeriesView places not-on-device volumes by the display setting', () =>
     expect(pageOrder(container)).toEqual(['Available in Drive (1)', 'Vol 1']);
   });
 });
+
+describe('SeriesView draws a placeholder as richly as its data allows', () => {
+  beforeEach(() => {
+    localStorage.setItem('series-view-mode', 'list');
+  });
+  afterEach(() => cleanup());
+
+  /** A cloud-only volume with no `series.json` behind it: derived uuid, zero counts. */
+  function bareShare(title: string): VolumeMetadata {
+    return volume(title, {
+      isPlaceholder: true,
+      mokuro_version: 'unknown',
+      page_count: 0,
+      character_count: 0,
+      page_char_counts: [],
+      cloudProvider: 'webdav',
+      cloudFileId: `file-${title}`,
+      cloudSize: 193_000_000
+    });
+  }
+
+  /** The same file once its series' index has been read: real uuid, real counts. */
+  function indexed(title: string): VolumeMetadata {
+    return {
+      ...bareShare(title),
+      mokuro_version: '0.4.11',
+      page_count: 180,
+      character_count: 5000
+    };
+  }
+
+  it('gives an indexed placeholder the full volume row, size included', () => {
+    currentSeries.set([indexed('Vol 1')]);
+    const { container } = render(SeriesView);
+
+    expect(container.textContent).toContain('Not on this device');
+    expect(container.textContent).toContain('184 MB');
+    // The minimal card's wording — proof the thin fallback did not draw this row.
+    expect(container.textContent).not.toContain('In Cloud •');
+    expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(1);
+  });
+
+  it('keeps the minimal card for a bare share, which has nothing to fill a row with', () => {
+    currentSeries.set([bareShare('Vol 1')]);
+    const { container } = render(SeriesView);
+
+    expect(container.textContent).toContain('In Cloud •');
+    expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(1);
+  });
+
+  it('mixes both kinds under the cloud section of a series that is partly here', () => {
+    currentSeries.set([volume('Vol 1'), indexed('Vol 2'), bareShare('Vol 3')]);
+    const { container } = render(SeriesView);
+
+    expect(pageOrder(container)).toEqual(['Vol 1', 'Available in Drive (2)', 'Vol 2', 'Vol 3']);
+    expect(container.textContent).toContain('184 MB');
+    expect(container.textContent).toContain('In Cloud •');
+  });
+});

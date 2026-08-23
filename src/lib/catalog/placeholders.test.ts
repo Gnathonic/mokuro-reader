@@ -11,7 +11,8 @@ import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
   indexCloudFilesByPath,
-  indexCoverSidecarsByBasePath
+  indexCoverSidecarsByBasePath,
+  isIndexedPlaceholder
 } from './placeholders';
 
 function cloudFile(path: string, fileId = path): CloudVolumeWithProvider {
@@ -420,5 +421,35 @@ describe('indexCoverSidecarsByBasePath', () => {
       f('Dr Stone/series.json', 'b')
     ]);
     expect(index.size).toBe(0);
+  });
+});
+
+describe('isIndexedPlaceholder', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+  ]);
+
+  it('is true for a placeholder that adopted an index entry', () => {
+    const [adopted] = generatePlaceholders(cloudFiles, [], indexMap('One Piece', [indexEntry()]));
+    expect(isIndexedPlaceholder(adopted)).toBe(true);
+  });
+
+  it('is true for an indexed image-only volume, counts or not', () => {
+    const [adopted] = generatePlaceholders(
+      cloudFiles,
+      [],
+      indexMap('One Piece', [indexEntry({ mokuro_version: '', page_count: 0, character_count: 0 })])
+    );
+    expect(isIndexedPlaceholder(adopted)).toBe(true);
+  });
+
+  it('is false for a bare-share placeholder with nothing but a path', () => {
+    const [bare] = generatePlaceholders(cloudFiles, []);
+    expect(isIndexedPlaceholder(bare)).toBe(false);
+  });
+
+  it('is false for anything that is not a placeholder', () => {
+    expect(isIndexedPlaceholder(localVolume({ metadata_only: true } as never))).toBe(false);
+    expect(isIndexedPlaceholder(localVolume())).toBe(false);
   });
 });

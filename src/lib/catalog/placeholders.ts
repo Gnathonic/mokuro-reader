@@ -373,6 +373,25 @@ export function isPlaceholder(volume: VolumeMetadata): boolean {
 }
 
 /**
+ * Did this placeholder adopt a `series.json` entry?
+ *
+ * The difference is what it can be DRAWN as. An indexed placeholder carries the
+ * volume's real uuid, counts and version, so everything a metadata-only row
+ * shows works for it too — progress against synced history, a reading estimate,
+ * its cover sidecar, the not-on-device badge, the download size. A bare-share
+ * placeholder has a uuid derived from its path and zeroed counts, and a row
+ * claiming "0 pages, no progress" would be a worse card than a plain one.
+ *
+ * Read off the fallback values `createPlaceholder` uses when it has no entry —
+ * `'unknown'` is not a version anything writes, and an index entry always
+ * carries a real one (`''` for image-only volumes).
+ */
+export function isIndexedPlaceholder(volume: VolumeMetadata): boolean {
+  if (volume.isPlaceholder !== true) return false;
+  return volume.mokuro_version !== 'unknown' || volume.page_count > 0 || volume.character_count > 0;
+}
+
+/**
  * Index a cloud listing by archive path, lowercased.
  *
  * Built once per listing and shared by every lookup: a row whose files were

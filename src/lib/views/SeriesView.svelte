@@ -36,6 +36,7 @@
   import { openSeries } from '$lib/metadata/series-open';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
   import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
   import { downloadQueue } from '$lib/util/download-queue';
@@ -807,8 +808,16 @@
               <VolumeItem {volume} variant="list" />
             {/each}
           {/key}
+          <!-- A placeholder that adopted a `series.json` entry has a real uuid and real
+               counts, so it gets the SAME row a metadata-only volume gets: progress,
+               estimate, cover, badge, size. Only bare shares (derived uuid, zero
+               counts) keep the minimal card, which is all they can fill. -->
           {#each placeholders as placeholder (placeholder.volume_uuid)}
-            <PlaceholderVolumeItem volume={placeholder} variant="list" />
+            {#if isIndexedPlaceholder(placeholder)}
+              <VolumeItem volume={placeholder} variant="list" />
+            {:else}
+              <PlaceholderVolumeItem volume={placeholder} variant="list" />
+            {/if}
           {/each}
         {/if}
       </Listgroup>
@@ -843,7 +852,11 @@
               {/each}
             {/key}
             {#each placeholders as placeholder (placeholder.volume_uuid)}
-              <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+              {#if isIndexedPlaceholder(placeholder)}
+                <VolumeItem volume={placeholder} variant="grid" />
+              {:else}
+                <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+              {/if}
             {/each}
           </div>
         {/if}
@@ -922,13 +935,21 @@
     {#if viewMode === 'list'}
       <Listgroup active class="h-full w-full flex-1">
         {#each placeholders as placeholder (placeholder.volume_uuid)}
-          <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          {#if isIndexedPlaceholder(placeholder)}
+            <VolumeItem volume={placeholder} variant="list" />
+          {:else}
+            <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          {/if}
         {/each}
       </Listgroup>
     {:else}
       <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
         {#each placeholders as placeholder (placeholder.volume_uuid)}
-          <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+          {#if isIndexedPlaceholder(placeholder)}
+            <VolumeItem volume={placeholder} variant="grid" />
+          {:else}
+            <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+          {/if}
         {/each}
       </div>
     {/if}
