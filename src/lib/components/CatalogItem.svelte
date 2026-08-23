@@ -603,20 +603,34 @@
     };
   });
 
-  // Fetch cloud thumbnails for visible placeholder volumes
-  // Fetch targets are computed from stable inputs only (seriesVolumes, catalogSettings)
-  // to avoid a reactive cycle: thumbnails loaded → containerDimensions changed →
-  // placeholderStepSizes recomputed → effect re-triggered → cleanup resets data → loop
+  /**
+   * The covers to fetch: exactly the cloud-only volumes THE STACK WILL DRAW.
+   *
+   * Run over the RAW volumes, never the enriched ones — the selection rule is the single
+   * source of truth for what is drawn (cloud cap for an absent series, local rules for a
+   * partly-downloaded one), and reading the fetched data back in here would make each
+   * arriving cover re-run the fetch: thumbnails loaded → containerDimensions changed →
+   * placeholderStepSizes recomputed → effect re-triggered → loop.
+   *
+   * Slicing this list to the cloud cap independently is what left a 42-volume series with
+   * one local volume showing spines 1-25 and 42: the rest were in the stack with no cover
+   * ever requested, and CompositeCanvas paints nothing for a volume without pixels.
+   */
+  let cloudCoverTargets = $derived(
+    selectCardStackVolumes({
+      localVolumes: seriesNeedsDownload ? [] : localVolumes,
+      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
+      placeholders: cloudStackVolumes,
+      hideRead: $catalogSettings?.hideReadVolumes ?? true,
+      stackCount: $catalogSettings?.stackCount ?? 3,
+      compactCloud: useCompactForCloud,
+      compare: sortVolumes
+    }).filter((vol) => !vol.thumbnail && !!vol.cloudThumbnailFileId)
+  );
+
+  // Fetch cloud thumbnails for the volumes the stack is drawing.
   $effect(() => {
-    const stackCount = $catalogSettings?.stackCount ?? 3;
-    const maxCount = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
-    const count = useCompactForCloud ? 1 : maxCount;
-    // Whatever the cloud half of the stack can draw — an absent series' whole stack, or the
-    // cloud-only tail of a series that is partly here. A volume that already has its cover
-    // locally (a removed row keeps it) has nothing to fetch.
-    const vols = cloudStackVolumes
-      .filter((vol) => !vol.thumbnail && !!vol.cloudThumbnailFileId)
-      .slice(0, count);
+    const vols = cloudCoverTargets;
     if (vols.length === 0) return;
     let cancelled = false;
 

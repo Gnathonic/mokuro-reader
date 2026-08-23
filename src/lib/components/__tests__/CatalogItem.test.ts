@@ -1089,19 +1089,26 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     expect(drawnUuids()).toEqual(['v-1', 'c-2', 'v-3']);
   });
 
-  it('stacks every volume of a partly-here series, past the cloud cap', async () => {
-    // The 25-cover cap is for a series whose whole stack comes from the cloud; a series
-    // with volumes on this device is stacked by the local rules, all of it.
+  it('stacks AND paints every volume of a partly-here series, past the cloud cap', async () => {
+    // The user's own shelf: 42 volumes, only the last one downloaded. The 25-cover cap is
+    // for a series whose whole stack comes from the cloud; this one is stacked by the
+    // local rules, all of it — and a spine with no cover fetched for it is a spine the
+    // canvas never paints, so the covers have to be asked for too.
     const volumes = [
-      painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
-      ...Array.from({ length: 30 }, (_, i) =>
-        cloudOnly({ volume_uuid: `c-${i + 2}`, volume_title: `Vol ${i + 2}` })
-      )
+      ...Array.from({ length: 41 }, (_, i) =>
+        cloudOnly({ volume_uuid: `c-${i + 1}`, volume_title: `Vol ${i + 1}` })
+      ),
+      painted({ volume_uuid: 'v-42', volume_title: 'Vol 42' })
     ];
     render(CatalogItem, { props: { volumes } });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(41));
     await tick();
 
-    expect(drawnUuids()).toHaveLength(31);
+    expect(drawnUuids()).toHaveLength(42);
+    expect(drawnUuids().at(-1)).toBe('v-42');
+    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
+    // Every spine has pixels: nothing is silently trimmed out of the picture.
+    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
   });
 
   it('keeps the cloud tail inside the stack count', async () => {
