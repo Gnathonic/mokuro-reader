@@ -54,6 +54,7 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
@@ -604,21 +605,25 @@
       onmouseleave={() => (isHovered = false)}
     >
       <ListgroupItem onclick={onOpenClicked} class="py-4">
-        {#if thumbnailUrl}
-          <img
-            src={thumbnailUrl}
-            alt="img"
-            style="margin-right:10px;"
-            class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
-          />
-        {:else}
-          <div
-            style="margin-right:10px;"
-            class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
-          >
-            Cover
-          </div>
-        {/if}
+        <!-- Wrapper exists only to anchor the badge; the cover keeps its own box. -->
+        <div class="relative flex-shrink-0" style="margin-right:10px;">
+          {#if thumbnailUrl}
+            <img
+              src={thumbnailUrl}
+              alt="img"
+              class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
+            />
+          {:else}
+            <div
+              class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+            >
+              Cover
+            </div>
+          {/if}
+          {#if isNotInstalled}
+            <DownloadBadge size="sm" class="right-0.5 bottom-0.5" />
+          {/if}
+        </div>
         <div
           class:text-green-400={isComplete}
           class="flex w-full flex-row items-center justify-between gap-5"
@@ -833,7 +838,7 @@
         }}
         class="flex flex-col gap-2"
       >
-        <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
+        <div class="relative flex items-center justify-center sm:h-[350px] sm:w-[250px]">
           {#if thumbnailUrl}
             <img
               src={thumbnailUrl}
@@ -846,6 +851,9 @@
             <PlaceholderThumbnail
               message={isNotInstalled ? 'Not on this device' : 'Generating thumbnail...'}
             />
+          {/if}
+          {#if isNotInstalled}
+            <DownloadBadge class="right-1 bottom-1" />
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">

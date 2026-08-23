@@ -8,6 +8,8 @@
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
   import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
+  import { needsDownload } from '$lib/catalog/volume-state';
+  import DownloadBadge from './DownloadBadge.svelte';
   import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
@@ -34,6 +36,12 @@
   let liveVolume = $derived(volume ? ($catalogVolumes?.[volume.volume_uuid] ?? volume) : undefined);
   let isComplete = $derived(!firstUnreadVolume);
   let isPlaceholderOnly = $derived(volume?.isPlaceholder === true);
+
+  // Not one page of this series is on the device — cloud-only placeholders, rows whose
+  // files were removed, or both (see $lib/catalog/volume-state).
+  let seriesNeedsDownload = $derived(
+    sortedVolumes.length > 0 && sortedVolumes.every(needsDownload)
+  );
 
   // Track queue state
   let queueState = $state($downloadQueue);
@@ -132,27 +140,33 @@
               <span class="text-xs text-blue-400">In {providerName}</span>
             {/if}
           </div>
-          {#if isPlaceholderOnly}
-            <div class="flex h-[70px] w-[50px] items-center justify-center">
-              {#if isDownloading}
-                <Spinner size="12" color="blue" />
-              {:else}
-                <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
-              {/if}
-            </div>
-          {:else if thumbnailUrl}
-            <img
-              src={thumbnailUrl}
-              alt="img"
-              class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
-            />
-          {:else}
-            <div
-              class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
-            >
-              Cover
-            </div>
-          {/if}
+          <!-- Wrapper exists only to anchor the badge; the cover keeps its own box. -->
+          <div class="relative flex-shrink-0">
+            {#if isPlaceholderOnly}
+              <div class="flex h-[70px] w-[50px] items-center justify-center">
+                {#if isDownloading}
+                  <Spinner size="12" color="blue" />
+                {:else}
+                  <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
+                {/if}
+              </div>
+            {:else if thumbnailUrl}
+              <img
+                src={thumbnailUrl}
+                alt="img"
+                class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
+              />
+            {:else}
+              <div
+                class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+              >
+                Cover
+              </div>
+            {/if}
+            {#if seriesNeedsDownload && !isDownloading}
+              <DownloadBadge size="sm" class="right-0.5 bottom-0.5" />
+            {/if}
+          </div>
         </div>
       </a>
     </ListgroupItem>

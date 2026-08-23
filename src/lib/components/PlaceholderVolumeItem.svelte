@@ -15,6 +15,7 @@
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '$lib/util/sync/provider-display';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import DownloadBadge from './DownloadBadge.svelte';
 
   interface Props {
     volume: VolumeMetadata;
@@ -108,7 +109,15 @@
     class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
   >
     <ListgroupItem class="py-4 opacity-70">
-      <DownloadSolid class="mr-3 h-[70px] w-[50px] text-blue-400" />
+      <!-- Wrapper exists only to anchor the badge; the icon keeps its own box. A
+           placeholder wears the SAME mark as a metadata-only row, so the two absent
+           states read identically wherever they are listed side by side. -->
+      <div class="relative mr-3 flex-shrink-0">
+        <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
+        {#if !isDownloading}
+          <DownloadBadge size="sm" class="right-0.5 bottom-0.5" />
+        {/if}
+      </div>
       <div class="flex w-full flex-row items-center justify-between gap-5">
         <div>
           <p class="font-semibold text-gray-400">{volName}</p>
@@ -145,7 +154,12 @@
     class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 border-transparent p-3 text-center opacity-70 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
     class:cursor-not-allowed={isDownloading}
   >
-    <PlaceholderThumbnail {isDownloading} showDownloadUI={true} {volume} />
+    <div class="relative">
+      <PlaceholderThumbnail {isDownloading} showDownloadUI={true} {volume} />
+      {#if !isDownloading}
+        <DownloadBadge class="right-1 bottom-1" />
+      {/if}
+    </div>
     <p class="line-clamp-2 font-semibold sm:w-[250px]">{volName}</p>
     <div
       class="flex flex-wrap items-center justify-center gap-x-2 text-xs text-gray-500 dark:text-gray-400"

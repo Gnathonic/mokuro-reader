@@ -31,6 +31,8 @@
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
+  import DownloadBadge from './DownloadBadge.svelte';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import {
     fetchCloudThumbnail,
     getCachedCloudThumbnail,
@@ -64,6 +66,13 @@
   // UI state flags
   let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
   let isPlaceholderOnly = $derived(!hasLocalVolumes);
+
+  // Not one page of this series is on the device: cloud-only placeholders, rows whose
+  // files were removed, or a mix of the two. `needsDownload` covers both absent states —
+  // never `isPlaceholder` on its own (see $lib/catalog/volume-state).
+  let seriesNeedsDownload = $derived(
+    seriesVolumes.length > 0 && seriesVolumes.every(needsDownload)
+  );
 
   // Enrich cloud placeholders with fetched thumbnail data so they render via CompositeCanvas.
   // Includes ALL target volumes (not just those with loaded thumbnails) so that
@@ -339,7 +348,7 @@
 
   // Check if this series is downloading or queued
   let isDownloading = $derived(
-    isPlaceholderOnly && volume
+    seriesNeedsDownload && volume
       ? $downloadQueue.some((item) => item.seriesTitle === volume.series_title)
       : false
   );
@@ -623,15 +632,17 @@
               />
             {/key}
           </div>
-          {#if isPlaceholderOnly}
-            <!-- Download overlay for cloud series -->
-            <div class="absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5">
-              {#if isDownloading}
+          {#if seriesNeedsDownload}
+            <!-- Nothing of this series is here: the same mark every absent volume gets. -->
+            {#if isDownloading}
+              <div
+                class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
+              >
                 <Spinner size="4" color="blue" />
-              {:else}
-                <DownloadSolid class="h-4 w-4 text-blue-400" />
-              {/if}
-            </div>
+              </div>
+            {:else}
+              <DownloadBadge class="right-2 bottom-8" />
+            {/if}
           {/if}
         </div>
       {:else if isPlaceholderOnly}

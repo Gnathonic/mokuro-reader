@@ -21,12 +21,17 @@ vi.mock('$lib/metadata/series-index', () => ({
 const openSeries = vi.fn(async (_title: string) => {});
 vi.mock('$lib/metadata/series-open', () => ({ openSeries: (t: string) => openSeries(t) }));
 
-// Connected by default so the existing behavioural tests don't need to know
-// about the provider gate; the provider-absent tests flip it to null.
+// Connected + loaded by default so the existing behavioural tests don't need
+// to know about the listing gate; the gate-specific tests flip these.
 let activeProvider: { type: string } | null = { type: 'google-drive' };
 const getActiveProvider = vi.fn(() => activeProvider);
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { getActiveProvider: () => getActiveProvider() }
+}));
+
+let cacheLoaded = true;
+vi.mock('$lib/util/sync/cache-manager', () => ({
+  cacheManager: { getCache: () => ({ isLoaded: () => cacheLoaded }) }
 }));
 
 import { patchProgressHoles, resetHolePatchSessionForTests } from './hole-patch';
@@ -37,6 +42,7 @@ beforeEach(() => {
   localRows = [];
   indexes = [];
   activeProvider = { type: 'google-drive' };
+  cacheLoaded = true;
   resetHolePatchSessionForTests();
 });
 
@@ -132,6 +138,27 @@ describe('patchProgressHoles', () => {
     // still-dangling record must now be picked up, proving nothing was
     // memoized while the provider was absent.
     activeProvider = { type: 'google-drive' };
+    await expect(patchProgressHoles()).resolves.toEqual(['Dr Stone']);
+    expect(openSeries).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op and memoizes nothing when the provider is connected but its listing has not loaded yet, then pulls once the listing loads', async () => {
+    // Mirrors initializeCurrentProvider() flipping the provider non-null
+    // before fetchAllCloudVolumes() resolves: getActiveProvider() is already
+    // truthy here, but the cache reports not-yet-loaded — the SAME window
+    // where refreshSeriesIndexForSeries's own `cloudVolumeTitlesFor(...).size
+    // === 0` early return would make openSeries a silent no-op if the run
+    // weren't gated on the listing itself.
+    cacheLoaded = false;
+    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
+
+    await expect(patchProgressHoles()).resolves.toEqual([]);
+    expect(openSeries).not.toHaveBeenCalled();
+
+    // Listing finishes loading (fetchAllCloudVolumes() resolves); the same
+    // still-dangling record must now be picked up, proving nothing was
+    // memoized while the listing was unloaded.
+    cacheLoaded = true;
     await expect(patchProgressHoles()).resolves.toEqual(['Dr Stone']);
     expect(openSeries).toHaveBeenCalledTimes(1);
   });

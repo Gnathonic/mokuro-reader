@@ -726,3 +726,82 @@ describe('SeriesSpineShowcase', () => {
     expect(resolvePatch(0)).toEqual({ volume_offsets: { 'uuid-1': 1 } });
   });
 });
+
+describe('SeriesSpineShowcase marks the spines that are not on this device', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  function badges(container: HTMLElement) {
+    return container.querySelectorAll('[data-testid="download-badge"]');
+  }
+
+  /** What the strip last asked CompositeCanvas to draw — the geometry the badge may not move. */
+  function lastCanvasProps() {
+    const props = compositeCanvasProps.at(-1);
+    if (!props) throw new Error('CompositeCanvas was never mounted');
+    return props as {
+      canvasWidth: number;
+      canvasHeight: number;
+      stepSizes: { horizontal: number; vertical: number };
+    };
+  }
+
+  it('draws nothing over a shelf of installed volumes', async () => {
+    const { container } = renderShowcase();
+    await tick();
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('marks exactly the metadata-only and placeholder spines', async () => {
+    const { container } = renderShowcase([
+      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true }),
+      volume({ volume_uuid: 'uuid-2', volume_title: 'Vol 3', isPlaceholder: true })
+    ]);
+    await tick();
+    expect(badges(container)).toHaveLength(2);
+  });
+
+  it('overlays the strip without touching what the canvas was asked to draw', async () => {
+    const marked = [
+      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
+    ];
+    const plain = [
+      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2' })
+    ];
+
+    compositeCanvasProps.length = 0;
+    const withBadges = renderShowcase(marked);
+    await tick();
+    const badged = lastCanvasProps();
+    const badgedGeometry = {
+      canvasWidth: badged.canvasWidth,
+      canvasHeight: badged.canvasHeight,
+      stepSizes: badged.stepSizes
+    };
+    const badge = badges(withBadges.container)[0] as HTMLElement;
+    expect(badge.className).toContain('pointer-events-none');
+    expect(badge.className).toContain('absolute');
+    cleanup();
+
+    compositeCanvasProps.length = 0;
+    renderShowcase(plain);
+    await tick();
+    const plainProps = lastCanvasProps();
+    expect(badgedGeometry).toEqual({
+      canvasWidth: plainProps.canvasWidth,
+      canvasHeight: plainProps.canvasHeight,
+      stepSizes: plainProps.stepSizes
+    });
+  });
+});

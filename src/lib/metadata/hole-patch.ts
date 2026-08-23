@@ -2,6 +2,7 @@ import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { volumes as progressStore } from '$lib/settings';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { cacheManager } from '$lib/util/sync/cache-manager';
 import { listSeriesIndexes } from './series-index';
 import { openSeries } from './series-open';
 import { normalizeSeriesKey } from './series-key';
@@ -31,6 +32,22 @@ export function resetHolePatchSessionForTests(): void {
 }
 
 /**
+ * Is there a COMPLETE cloud listing to check `openSeries` against right now?
+ *
+ * A non-null `getActiveProvider()` is not enough: `initializeCurrentProvider()`
+ * flips the provider non-null before `fetchAllCloudVolumes()` has resolved, and
+ * in that window `refreshSeriesIndexForSeries`'s OWN early return —
+ * `cloudVolumeTitlesFor(seriesTitle).size === 0` — makes `openSeries` a silent,
+ * zero-I/O no-op for every title, same as the no-provider case. Only the cache
+ * itself knows whether it has been filled (same discipline `writeCatalogFile` /
+ * `writeSeriesFile` use before pruning against a listing).
+ */
+function listingIsLoaded(): boolean {
+  const provider = unifiedCloudManager.getActiveProvider();
+  return !!provider && !!cacheManager.getCache(provider.type)?.isLoaded();
+}
+
+/**
  * Patch the holes synced progress leaves behind.
  *
  * `catalog.json` carries names only, so a device that has read a volume on
@@ -55,16 +72,20 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
   const pulled: string[] = [];
 
   try {
-    // `openSeries` no-ops with zero I/O when no provider is connected (see
-    // `refreshSeriesIndexForSeries`: `if (!provider) return cached?.file`).
-    // CatalogView's onMount fires before `initializeProviders()`
-    // (fire-and-forget from +layout) has finished authenticating, so a run
-    // that started here would memoize every dangling title as "attempted"
-    // despite nothing having actually been tried — silently hiding the hole
-    // for the rest of the session. Bail before touching the session memory
-    // or doing any work; the hole is still there next time this runs with a
-    // provider connected.
-    if (!unifiedCloudManager.getActiveProvider()) return pulled;
+    // `openSeries` no-ops with zero I/O both when no provider is connected
+    // (`refreshSeriesIndexForSeries`: `if (!provider) return cached?.file`) AND
+    // when a provider is connected but its listing hasn't finished loading yet
+    // (the SAME function's next early return: `cloudVolumeTitlesFor(seriesTitle)
+    // .size === 0 → cached?.file` — an unloaded cache reports every series as
+    // having zero cloud volumes). CatalogView's onMount fires before
+    // `initializeProviders()` (fire-and-forget from +layout) has finished
+    // `initializeCurrentProvider()` AND `fetchAllCloudVolumes()`, so a run that
+    // started here can land in EITHER window and memoize every dangling title
+    // as "attempted" despite nothing having actually been tried — silently
+    // hiding the hole for the rest of the session. Bail before touching the
+    // session memory or doing any work; the hole is still there next time this
+    // runs once the listing has loaded. See `listingIsLoaded`.
+    if (!listingIsLoaded()) return pulled;
 
     const progress = get(progressStore);
     const wanted = new Map<string, string>();
@@ -87,10 +108,11 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     if (wanted.size === 0) return pulled;
 
     for (const [key, title] of [...wanted.entries()].slice(0, limit)) {
-      // Re-checked per attempt, not just once at entry: the provider can drop
-      // between awaits (e.g. a mid-pass logout). A title skipped here was
-      // never actually attempted, so it is left un-memoized for the next run.
-      if (!unifiedCloudManager.getActiveProvider()) break;
+      // Re-checked per attempt, not just once at entry: the provider or its
+      // listing can drop between awaits (e.g. a logout, or a provider switch
+      // clearing the cache). A title skipped here was never actually
+      // attempted, so it is left un-memoized for the next run.
+      if (!listingIsLoaded()) break;
       attemptedThisSession.add(key);
       try {
         await openSeries(title);

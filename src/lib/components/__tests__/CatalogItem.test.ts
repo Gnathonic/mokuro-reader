@@ -489,3 +489,74 @@ describe('CatalogItem spine offset resync is stable', () => {
     expect(updateSeriesMetadata).not.toHaveBeenCalled();
   });
 });
+
+describe('CatalogItem marks a series whose volumes are all absent', () => {
+  // The badge rides on the drawn cover stack, which needs thumbnail dimensions and a
+  // (no-op) IntersectionObserver for CompositeCanvas — same setup as the offset suites.
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  function cover(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return localVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+  }
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  function badges(container: HTMLElement) {
+    return container.querySelectorAll('[data-testid="download-badge"]');
+  }
+
+  it('draws no badge while any volume is installed', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [cover(), cover({ volume_uuid: 'uuid-2', metadata_only: true })]
+      }
+    });
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('draws one badge when every volume is metadata-only', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          cover({ metadata_only: true }),
+          cover({ volume_uuid: 'uuid-2', metadata_only: true })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(1);
+  });
+
+  it('draws one badge for a cloud-only (placeholder) series, as before', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [placeholderVolume({ thumbnail_width: 250, thumbnail_height: 360 })]
+      }
+    });
+    expect(badges(container)).toHaveLength(1);
+  });
+
+  it('never intercepts the card click', () => {
+    const { container } = render(CatalogItem, {
+      props: { volumes: [cover({ metadata_only: true })] }
+    });
+    const badge = badges(container)[0] as HTMLElement;
+    expect(badge.className).toContain('pointer-events-none');
+  });
+});
