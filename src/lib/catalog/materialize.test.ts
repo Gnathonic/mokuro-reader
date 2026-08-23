@@ -173,6 +173,70 @@ describe('materializeSeriesVolumes', () => {
     expect((await db.volumes.get('uuid-1'))?.mokuro_version).toBe('');
   });
 
+  it('never touches an installed row of ANOTHER series holding the same uuid', async () => {
+    // uuids are title-independent, so the same uuid can legitimately name a row
+    // filed under a differently-punctuated series ('Dr. Stone' vs 'Dr Stone').
+    // Writing the index entry over it would wipe a measured, installed volume
+    // and orphan its OCR/files rows.
+    await db.volumes.add({
+      volume_uuid: 'uuid-1',
+      series_uuid: 'other-series',
+      series_title: 'Dr. Stone',
+      volume_title: 'Volume 7',
+      mokuro_version: '0.4.11',
+      page_count: 999,
+      character_count: 999,
+      page_char_counts: [1, 2, 3]
+    } as never);
+
+    expect(
+      await materializeSeriesVolumes({
+        seriesTitle: 'Dr Stone',
+        entries: [entry()],
+        cloudVolumeTitles: CLOUD
+      })
+    ).toBe(0);
+
+    const row = await db.volumes.get('uuid-1');
+    expect(row).toMatchObject({
+      series_title: 'Dr. Stone',
+      volume_title: 'Volume 7',
+      page_count: 999
+    });
+    expect(row?.metadata_only).toBeUndefined();
+    // And no duplicate was minted for the entry either.
+    expect(await db.volumes.count()).toBe(1);
+  });
+
+  it('treats a whitespace-variant series title as the same series', async () => {
+    // The indexed `equalsIgnoreCase` lookup misses 'Dr  Stone', but the uuid
+    // collision guard finds the row and normalizeSeriesKey says it is ours.
+    await db.volumes.add({
+      volume_uuid: 'uuid-1',
+      series_uuid: 's',
+      series_title: 'Dr  Stone',
+      volume_title: 'Volume 1',
+      mokuro_version: 'unknown',
+      page_count: 0,
+      character_count: 0,
+      page_char_counts: [],
+      metadata_only: true
+    } as never);
+
+    expect(
+      await materializeSeriesVolumes({
+        seriesTitle: 'Dr Stone',
+        entries: [entry()],
+        cloudVolumeTitles: CLOUD
+      })
+    ).toBe(1);
+
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.page_count).toBe(200);
+    expect(row?.series_title).toBe('Dr  Stone'); // its own spelling is left alone
+    expect(await db.volumes.count()).toBe(1);
+  });
+
   it('skips entries whose archive the cloud listing does not show', async () => {
     expect(
       await materializeSeriesVolumes({

@@ -16,8 +16,18 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  * transient placeholder for that volume permanently — `generatePlaceholders`
  * already skips any path or uuid that has a local row.
  *
- * The index stays UNAUTHORITATIVE, so three rules are absolute:
+ * The index stays UNAUTHORITATIVE, so four rules are absolute:
  *
+ * 0. A row this series does not own is never written, full stop. `volume_uuid`
+ *    is the whole table's primary key and is title-independent, so an index
+ *    entry can name a uuid that already belongs to an INSTALLED volume of a
+ *    DIFFERENT series ('Dr. Stone' and 'Dr Stone' group as different series
+ *    here, and a re-OCR elsewhere can mint the same uuid under either). A blind
+ *    `put` would replace that row wholesale — thumbnail and counts wiped, its
+ *    `volume_ocr`/`volume_files` rows orphaned behind a metadata-only shell. So
+ *    every uuid is looked up across the WHOLE table first, and an entry whose
+ *    uuid belongs to another series is skipped entirely: not written, and not
+ *    given a duplicate row under this series either.
  * 1. An INSTALLED row is never touched. Its data was measured, the index's was
  *    copied.
  * 2. A volume title a local row already owns is never given a second row, even
@@ -27,7 +37,11 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  *    the duplicate `stranded-rows.ts` exists to clean up after a download.
  * 3. An existing metadata-only row is only ever FILLED, never downgraded: a
  *    zero count or the `'unknown'` placeholder version is a gap, any other
- *    local value wins.
+ *    local value wins. A known consequence: counts are frozen at first
+ *    materialization, so a later index that CORRECTS them cannot apply. Telling
+ *    "filled from an index, never verified" apart from "measured locally" would
+ *    need a provenance marker on the row; that is deliberately not implemented,
+ *    because fill-never-downgrade is exactly what keeps local authoritative.
  *
  * Gated on `cloudVolumeTitles` — the `.cbz` titles the current listing shows in
  * the folder — so a stale index cannot resurrect a deleted volume. An empty set
@@ -50,12 +64,24 @@ export async function materializeSeriesVolumes(args: {
   const cloudTitleKeys = new Set([...cloudVolumeTitles].map((t) => normalizeSeriesKey(t)));
 
   return db.transaction('rw', db.volumes, async () => {
-    const siblings = (await db.volumes
+    // Indexed lookup of the series' rows. `equalsIgnoreCase` is case- but not
+    // whitespace-insensitive, so it is re-filtered by the catalog's own grouping
+    // key: a row is a sibling only when it normalizes to this series.
+    const fetched = (await db.volumes
       .where('series_title')
       .equalsIgnoreCase(seriesTitle)
       .toArray()) as VolumeMetadata[];
+    const siblings = fetched.filter((row) => normalizeSeriesKey(row.series_title) === seriesKey);
 
-    const byUuid = new Map(siblings.map((row) => [row.volume_uuid, row]));
+    // Rule 0: the uuids in play may belong to rows the indexed lookup above
+    // cannot see — another series entirely, or this series under a
+    // whitespace-variant spelling that `equalsIgnoreCase` misses. The primary
+    // key is global, so resolve them globally before writing anything.
+    const owners = new Map<string, VolumeMetadata>();
+    for (const row of await db.volumes.bulkGet(entries.map((e) => e.volume_uuid))) {
+      if (row) owners.set(row.volume_uuid, row as VolumeMetadata);
+    }
+
     const titlesTaken = new Map(siblings.map((row) => [normalizeSeriesKey(row.volume_title), row]));
     const seriesUuid = siblings[0]?.series_uuid ?? generateDeterministicUUID(seriesTitle);
 
@@ -64,8 +90,11 @@ export async function materializeSeriesVolumes(args: {
       const titleKey = normalizeSeriesKey(entry.volume_title);
       if (!titleKey || !cloudTitleKeys.has(titleKey)) continue;
 
-      const existing = byUuid.get(entry.volume_uuid);
+      const existing = owners.get(entry.volume_uuid);
       if (existing) {
+        // Rule 0: someone else's row. Leave it alone and mint nothing for it —
+        // a duplicate here could never be downloaded onto that uuid anyway.
+        if (normalizeSeriesKey(existing.series_title) !== seriesKey) continue;
         // Rule 1: an installed row was measured; the index was copied.
         if (isVolumeInstalled(existing)) continue;
         // Rule 3: fill gaps only.
@@ -106,7 +135,7 @@ export async function materializeSeriesVolumes(args: {
       if (entry.spine_width !== undefined) row.spine_width = entry.spine_width;
 
       await db.volumes.put(row);
-      byUuid.set(row.volume_uuid, row);
+      owners.set(row.volume_uuid, row);
       titlesTaken.set(titleKey, row);
       changed += 1;
     }
