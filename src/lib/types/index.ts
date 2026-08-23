@@ -74,6 +74,20 @@ export interface VolumeMetadata {
 
   // Spine width in pixels (from mokuro metadata, used for catalog stacking)
   spine_width?: number;
+
+  /**
+   * Bytes of this volume's `.cbz`.
+   *
+   * A permanent fact about the archive, like `spine_width` — not per-user state
+   * and not a cloud field: it is recorded wherever the size is cheaply known
+   * (backup upload, cloud download, a cloud listing, a `series.json` entry) and
+   * kept afterwards, so a volume whose pages are not on this device can still
+   * say how big the download is even with no provider connected.
+   *
+   * Absent means "nobody has told us yet", never "zero bytes". Read it through
+   * `getArchiveSize` (`$lib/util/cloud-fields`), which prefers a live listing.
+   */
+  archive_size?: number;
 }
 
 // v3 table: volume_ocr

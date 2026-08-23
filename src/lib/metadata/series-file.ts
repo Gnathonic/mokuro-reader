@@ -45,6 +45,13 @@ export interface SeriesFileVolume {
   /** `''` for image-only volumes. */
   mokuro_version: string;
   spine_width?: number;
+  /**
+   * Bytes of the volume's `.cbz` — a fact of the archive, like `spine_width`,
+   * so a reader can show the download size before fetching anything. Optional
+   * everywhere: older files and factless writers simply omit it, and readers
+   * ignore its absence.
+   */
+  archive_size?: number;
 }
 
 /**
@@ -74,6 +81,17 @@ function isSpineWidth(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
+/**
+ * A usable archive size: a positive whole number of bytes.
+ *
+ * The one definition every writer and the parser share, so a junk or zero size
+ * is "no size" on both sides and build → JSON → parse stays an identity. An
+ * empty `.cbz` is not a thing, so 0 is a gap rather than a measurement.
+ */
+export function isArchiveSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
 /** Project a local volume onto its index entry (index fields only). */
 export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
   const entry: SeriesFileVolume = {
@@ -86,6 +104,7 @@ export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
   // Same rule as the parser, so build → JSON → parse is an identity: a 0 or junk
   // width is "no width", not a width of zero.
   if (isSpineWidth(volume.spine_width)) entry.spine_width = volume.spine_width;
+  if (isArchiveSize(volume.archive_size)) entry.archive_size = volume.archive_size;
   return entry;
 }
 
@@ -352,6 +371,7 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   };
   const spine = value.spine_width;
   if (typeof spine === 'number' && Number.isFinite(spine) && spine > 0) entry.spine_width = spine;
+  if (isArchiveSize(value.archive_size)) entry.archive_size = value.archive_size;
   return entry;
 }
 

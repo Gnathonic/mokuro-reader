@@ -64,6 +64,18 @@ describe('volumeToIndexEntry', () => {
     expect('spine_width' in volumeToIndexEntry(volume({ spine_width: -3 }))).toBe(false);
   });
 
+  it('copies the archive size when the row knows it', () => {
+    expect(volumeToIndexEntry(volume({ archive_size: 193_000_000 })).archive_size).toBe(
+      193_000_000
+    );
+  });
+
+  it('omits a junk archive_size so build → parse stays an identity', () => {
+    for (const size of [0, -1, 1.5, NaN, Infinity]) {
+      expect('archive_size' in volumeToIndexEntry(volume({ archive_size: size }))).toBe(false);
+    }
+  });
+
   it('omits spine_width when the volume has none and never carries local-only fields', () => {
     const entry = volumeToIndexEntry(
       volume({
@@ -73,6 +85,7 @@ describe('volumeToIndexEntry', () => {
       })
     );
     expect('spine_width' in entry).toBe(false);
+    expect('archive_size' in entry).toBe(false);
     expect(Object.keys(entry).sort()).toEqual([
       'character_count',
       'mokuro_version',
@@ -578,7 +591,8 @@ describe('parseSeriesFile', () => {
         page_count: 2,
         character_count: 123,
         mokuro_version: '0.2.1',
-        spine_width: 17
+        spine_width: 17,
+        archive_size: 193_000_000
       }
     ]
   };
@@ -674,6 +688,21 @@ describe('parseSeriesFile', () => {
     ]);
   });
 
+  it('drops an archive_size that is not a positive whole number of bytes', () => {
+    for (const size of [0, -1, 1.5, Infinity, '184MB', null]) {
+      const parsed = parseSeriesFile({
+        ...valid,
+        volumes: [{ ...valid.volumes[0], archive_size: size }]
+      })!;
+      expect('archive_size' in parsed.volumes[0]).toBe(false);
+    }
+    const kept = parseSeriesFile({
+      ...valid,
+      volumes: [{ ...valid.volumes[0], archive_size: 1 }]
+    })!;
+    expect(kept.volumes[0].archive_size).toBe(1);
+  });
+
   it('ignores a legacy page_char_counts array instead of carrying it into the cache', () => {
     const parsed = parseSeriesFile({
       ...valid,
@@ -692,9 +721,9 @@ describe('parseSeriesFile', () => {
       seriesTitle: 'One Piece',
       meta: linkedMeta(),
       localVolumes: [
-        volume({ spine_width: 17 }),
+        volume({ spine_width: 17, archive_size: 193_000_000 }),
         volume({ volume_uuid: 'vol-2', volume_title: 'Vol 2' }),
-        volume({ volume_uuid: 'vol-3', volume_title: 'Vol 3', spine_width: 0 })
+        volume({ volume_uuid: 'vol-3', volume_title: 'Vol 3', spine_width: 0, archive_size: 0 })
       ]
     })!;
     expect(parseSeriesFile(JSON.parse(JSON.stringify(built)))).toEqual(built);
