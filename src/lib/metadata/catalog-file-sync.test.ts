@@ -97,6 +97,28 @@ describe('scheduleCatalogFileWrite', () => {
     expect(writeCatalogFile).not.toHaveBeenCalled();
   });
 
+  it('never overlaps two writes — a flush waits for the one in flight', async () => {
+    // The write is read-merge-upload against the cloud copy. A second one
+    // starting mid-flight merges the copy the first is about to replace, so the
+    // later upload silently drops whatever the earlier one added.
+    let active = 0;
+    let maxActive = 0;
+    writeCatalogFile.mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return 'written' as const;
+    });
+
+    await Promise.all([flushCatalogFileWrites(), flushCatalogFileWrites()]);
+
+    expect(maxActive).toBe(1);
+    expect(writeCatalogFile).toHaveBeenCalledTimes(2);
+    writeCatalogFile.mockReset();
+    writeCatalogFile.mockResolvedValue('written');
+  });
+
   it('never rejects when the write throws', async () => {
     writeCatalogFile.mockRejectedValueOnce(new Error('403 Forbidden'));
     scheduleCatalogFileWrite();

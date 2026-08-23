@@ -20,6 +20,9 @@ import { registerFactsChangeListener } from './store';
  * - Preceded by the shared listing refresh, because the write merges and prunes
  *   against that listing — and skipped outright when the refresh fails, rather
  *   than publishing a catalog built from a view we know may be hours old.
+ * - Serialized: the write is read-merge-upload against the cloud copy, so a
+ *   second one starting mid-flight would merge the copy the first is about to
+ *   replace and drop whatever it added.
  *
  * Failures are logged at debug and dropped: the next fact edit or backup run
  * rewrites the file. Nothing here ever surfaces UI.
@@ -29,6 +32,8 @@ import { registerFactsChangeListener } from './store';
 export const CATALOG_FILE_WRITE_DEBOUNCE_MS = 5000;
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** The write currently running, so the next one queues behind it. */
+let inFlight: Promise<void> | null = null;
 
 /** A connected provider that can be written to AND does not compile the file itself. */
 function canProduceCatalog(): boolean {
@@ -43,7 +48,6 @@ function canProduceCatalog(): boolean {
 }
 
 async function runWrite(): Promise<void> {
-  timer = null;
   try {
     if (!canProduceCatalog()) return;
     if (!(await ensureFreshCloudListing())) return;
@@ -57,22 +61,40 @@ async function runWrite(): Promise<void> {
   }
 }
 
+/** Start a write, or queue it behind the one already running. */
+function chainWrite(): Promise<void> {
+  const previous = inFlight ?? Promise.resolve();
+  let next: Promise<void>;
+  next = previous.then(runWrite).finally(() => {
+    if (inFlight === next) inFlight = null;
+  });
+  inFlight = next;
+  return next;
+}
+
 /**
  * Queue a `catalog.json` write, coalescing anything already queued. Safe to call
  * from any edit path — the gates are evaluated when the timer fires, not now.
  */
 export function scheduleCatalogFileWrite(): void {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => void runWrite(), CATALOG_FILE_WRITE_DEBOUNCE_MS);
+  timer = setTimeout(() => {
+    timer = null;
+    void chainWrite();
+  }, CATALOG_FILE_WRITE_DEBOUNCE_MS);
 }
 
-/** Run a queued write now (cancelling its timer). For tests, teardown and backup runs. */
+/**
+ * Run a queued write now (cancelling its timer) and wait for it. For tests,
+ * teardown and backup runs. Waits out a write already in flight rather than
+ * racing it.
+ */
 export async function flushCatalogFileWrites(): Promise<void> {
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
-  await runWrite();
+  await chainWrite();
 }
 
 let teardown: (() => void) | null = null;
