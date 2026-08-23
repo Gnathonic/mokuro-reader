@@ -116,6 +116,24 @@ export type VolumeDefaults = {
 
 export type CatalogStackingPreset = 'compact' | 'default' | 'spine' | 'custom';
 
+/**
+ * Where volumes and series whose pages are NOT on this device are drawn.
+ *
+ * - `mixed` — in place, among the library (what the catalog has always done).
+ * - `cloud-section` — grouped into the "Available in <provider>" section instead, so the
+ *   library reads as "what is actually here".
+ *
+ * Display only: it moves nothing, downloads nothing and deletes nothing. The rows keep
+ * their real data and actions wherever they are drawn.
+ */
+export type NotOnDeviceDisplay = 'mixed' | 'cloud-section';
+
+const NOT_ON_DEVICE_DISPLAYS: NotOnDeviceDisplay[] = ['mixed', 'cloud-section'];
+
+export function isNotOnDeviceDisplay(value: unknown): value is NotOnDeviceDisplay {
+  return NOT_ON_DEVICE_DISPLAYS.includes(value as NotOnDeviceDisplay);
+}
+
 export type CatalogSettings = {
   stackingPreset: CatalogStackingPreset;
   horizontalStep: number;
@@ -130,6 +148,8 @@ export type CatalogSettings = {
   preferredTitleLanguage: DisplayTitleLanguage;
   /** Master switch for pushing completions to AniList (per-series tracking must also be on). */
   pushProgressToAniList: boolean;
+  /** Where not-on-this-device volumes and series are drawn. Display only. */
+  notOnDeviceDisplay: NotOnDeviceDisplay;
 };
 
 export type Settings = {
@@ -354,7 +374,8 @@ const defaultSettings: Settings = {
     compactCloudSeries: false,
     dropShadow: true,
     preferredTitleLanguage: 'imported',
-    pushProgressToAniList: true
+    pushProgressToAniList: true,
+    notOnDeviceDisplay: 'mixed'
   }
 };
 
@@ -485,6 +506,12 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // Same guard the cloud-metadata boundary uses, so one list defines the languages.
     if (!isDisplayTitleLanguage(migratedProfile.catalogSettings.preferredTitleLanguage)) {
       migratedProfile.catalogSettings.preferredTitleLanguage = 'imported';
+    }
+
+    // Validate notOnDeviceDisplay (added 2026-08 with the not-on-device affordances).
+    // An unknown stored value must fall back to the rendering the catalog has always had.
+    if (!isNotOnDeviceDisplay(migratedProfile.catalogSettings.notOnDeviceDisplay)) {
+      migratedProfile.catalogSettings.notOnDeviceDisplay = 'mixed';
     }
 
     // Validate pushProgressToAniList (added 2026-08 with series metadata tracking).
@@ -629,6 +656,18 @@ export const catalogSettings = derived(settings, ($settings) => $settings?.catal
 export const preferredTitleLanguage: Readable<DisplayTitleLanguage> = derived(
   settings,
   ($settings) => $settings?.catalogSettings?.preferredTitleLanguage ?? 'imported'
+);
+
+/**
+ * Where not-on-this-device volumes/series are drawn, on its own.
+ *
+ * A primitive for the same reason as `preferredTitleLanguage` above: the catalog and the
+ * series page group on this value, and joining the whole `catalogSettings` object would
+ * re-group the library on every unrelated settings write.
+ */
+export const notOnDeviceDisplay: Readable<NotOnDeviceDisplay> = derived(
+  settings,
+  ($settings) => $settings?.catalogSettings?.notOnDeviceDisplay ?? 'mixed'
 );
 
 // A store that updates every minute to trigger schedule checks

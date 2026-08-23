@@ -5,6 +5,7 @@ import {
   migrateProfiles,
   grayscaleActive,
   imageFilter,
+  notOnDeviceDisplay,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -183,5 +184,52 @@ describe('pushProgressToAniList migration', () => {
       Default: { catalogSettings: { pushProgressToAniList: 'false' } }
     } as any);
     expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
+  });
+});
+
+describe('notOnDeviceDisplay migration', () => {
+  it('defaults to mixed for profiles saved before the setting existed', () => {
+    const out = migrateProfiles({ Test: { catalogSettings: { stackCount: 2 } } as any });
+    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('mixed');
+  });
+
+  it('preserves an explicit choice', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { notOnDeviceDisplay: 'cloud-section' } } as any
+    });
+    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('cloud-section');
+  });
+
+  it('coerces an unknown value back to mixed', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { notOnDeviceDisplay: 'sideways' } } as any
+    });
+    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('mixed');
+  });
+});
+
+describe('notOnDeviceDisplay store', () => {
+  afterEach(() => {
+    updateCatalogSetting('notOnDeviceDisplay', 'mixed');
+  });
+
+  it('emits only when the placement itself changes', () => {
+    // Joined as a primitive for the same reason as preferredTitleLanguage: the catalog
+    // must not re-group on every unrelated settings write.
+    const seen: string[] = [];
+    const unsubscribe = notOnDeviceDisplay.subscribe((value) => seen.push(value));
+    expect(seen).toEqual(['mixed']);
+
+    updateSetting('pagedGap', 7);
+    updateCatalogSetting('stackCount', 4);
+    expect(seen).toEqual(['mixed']);
+
+    updateCatalogSetting('notOnDeviceDisplay', 'cloud-section');
+    expect(seen).toEqual(['mixed', 'cloud-section']);
+
+    updateCatalogSetting('notOnDeviceDisplay', 'cloud-section');
+    expect(seen).toEqual(['mixed', 'cloud-section']);
+
+    unsubscribe();
   });
 });
