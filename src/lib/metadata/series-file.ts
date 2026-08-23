@@ -1,4 +1,5 @@
 import { sortVolumes } from '$lib/catalog/sort-volumes';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
 import { normalizeSeriesKey } from './series-key';
 import {
@@ -159,15 +160,25 @@ function localFacts(meta: SeriesMetadata): SeriesFacts {
  *   already published is carried through untouched, and with nothing published
  *   either the file is index-only and stamped `FACTLESS_UPDATED_AT`.
  *
- * Volumes are the union of the existing index and the installed volumes, keyed
- * by `volume_uuid` with local winning — a device only ever knows about its own
- * volumes, so it must not delete entries written by another device. Passing
- * `cloudVolumeTitles` (the titles the current cloud listing shows for this
- * series) additionally prunes entries whose volume is neither in the cloud nor
- * installed here, which is how a deleted volume eventually leaves the index.
+ * Volumes are the union of the existing index and the local rows, keyed by
+ * `volume_uuid` — a device only ever knows about its own volumes, so it must not
+ * delete entries written by another device. Local rows rank by how much they
+ * prove:
  *
- * Placeholders are excluded: they are the cloud's own volumes reflected back,
- * and their uuids/counts are derived, not measured.
+ * - INSTALLED — measured here, archive present: overrides the published entry,
+ *   and its uuid is exempt from the listing prune (a volume not backed up yet is
+ *   local-only, not deleted).
+ * - metadata-only (including rows materialized from an index) — a copy of
+ *   somebody else's claim: FILLS an entry the file is missing, but never
+ *   overrides the published one (which may describe a re-OCR this device has
+ *   never seen) and never exempts it from the prune (keeping a history row is
+ *   not evidence the archive still exists).
+ * - placeholder — the cloud's own volumes reflected back, uuids and counts
+ *   derived rather than measured: excluded entirely.
+ *
+ * Passing `cloudVolumeTitles` (the titles the current cloud listing shows for
+ * this series) prunes entries whose volume is neither in the cloud nor installed
+ * here, which is how a deleted volume eventually leaves the index.
  *
  * Returns `undefined` when there is nothing worth uploading (no facts, no volumes).
  */
@@ -213,11 +224,24 @@ export function buildSeriesFile(args: {
   // index-only and must not be able to outrank anybody's facts.
   const updated_at = source?.updated_at ?? FACTLESS_UPDATED_AT;
 
-  const installed = localVolumes.filter((v) => !v.isPlaceholder);
+  // Only an INSTALLED volume is evidence: its counts were measured here and its
+  // archive is on this device. A metadata-only row (including one this device
+  // materialized from an index) is a copy of somebody else's claim, so it ranks
+  // below both the installed set and whatever is already published.
+  const installed = localVolumes.filter(isVolumeInstalled);
   const localUuids = new Set(installed.map((v) => v.volume_uuid));
 
   const byUuid = new Map<string, SeriesFileVolume>();
   for (const entry of existing?.volumes ?? []) byUuid.set(entry.volume_uuid, entry);
+  // Non-installed rows FILL a missing entry only: they never override the
+  // published copy (which may describe a re-OCR this device has not seen), and
+  // they are absent from `localUuids`, so they never exempt an entry from the
+  // listing prune — a volume deleted from the cloud must not be re-added by a
+  // device that merely kept its history row.
+  for (const volume of localVolumes) {
+    if (volume.isPlaceholder || isVolumeInstalled(volume)) continue;
+    if (!byUuid.has(volume.volume_uuid)) byUuid.set(volume.volume_uuid, volumeToIndexEntry(volume));
+  }
   for (const volume of installed) byUuid.set(volume.volume_uuid, volumeToIndexEntry(volume));
 
   let volumes = [...byUuid.values()];

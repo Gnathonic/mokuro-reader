@@ -380,6 +380,54 @@ describe('buildSeriesFile', () => {
     expect(file.volumes.map((v) => v.volume_uuid)).toEqual(['vol-2']);
   });
 
+  it('lets the published entry win over a metadata-only row for the same uuid', () => {
+    // A volume re-OCR'd on another device: its entry in the cloud file is newer
+    // than the row this device kept when it removed the files. A materialized or
+    // metadata-only row was never measured against THIS content, so it may fill
+    // a gap but must never override what is published.
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 300,
+          character_count: 9000,
+          mokuro_version: '0.4.12'
+        }
+      ]
+    };
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ metadata_only: true })],
+      existing
+    })!;
+    expect(file.volumes).toEqual(existing.volumes);
+  });
+
+  it('does not re-add a pruned volume from a metadata-only row', () => {
+    // The volume was deleted from the cloud. This device still holds its
+    // metadata-only row (that is the point of the state — the history survives),
+    // but the row is not evidence the archive exists, so it must not exempt the
+    // entry from the listing prune the way an installed volume does.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [
+        volume(),
+        volume({ volume_uuid: 'vol-9', volume_title: 'Vol 9', metadata_only: true })
+      ],
+      cloudVolumeTitles: new Set(['Vol 1'])
+    })!;
+    expect(file.volumes.map((v) => v.volume_title)).toEqual(['Vol 1']);
+  });
+
   it('prunes entries the cloud no longer lists unless they are installed locally', () => {
     const existing: SeriesFile = {
       version: 2,
