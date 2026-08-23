@@ -263,6 +263,17 @@ describe('a metadata-only row and the cloud', () => {
     expect(placeholders).toEqual([]);
   });
 
+  it('shadows it even when the cloud filename differs only by case', () => {
+    // The cloud-field lookup folds case, so a case-sensitive shadow check here
+    // would emit BOTH the row and a placeholder for the same archive.
+    const placeholders = generatePlaceholders(
+      new Map([['One Piece', [cloudFile('one piece/VOLUME 1.cbz', 'file-1')]]]),
+      [localVolume({ metadata_only: true })]
+    );
+
+    expect(placeholders).toEqual([]);
+  });
+
   it('gets the cloud fields the placeholder would have carried', () => {
     const index = indexCloudFilesByPath(cloudFiles);
 

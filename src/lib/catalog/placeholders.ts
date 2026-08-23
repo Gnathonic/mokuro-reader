@@ -139,9 +139,13 @@ export function generatePlaceholders(
     return [];
   }
 
-  // Create a set of local volume paths for fast lookup
+  // Create a set of local volume paths for fast lookup. Lowercased, like
+  // `localVolumeByPath` below and the cloud-field lookup a metadata-only row is
+  // decorated with: a casing difference between the stored title and the cloud
+  // filename must not make the same volume appear twice — once as its own row
+  // and once as a placeholder of the same file.
   const localPaths = new Set(
-    localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`)
+    localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`.toLowerCase())
   );
   // …and of local uuids. A placeholder that adopts an indexed uuid can collide
   // with an installed volume the path check misses (renamed locally, or filed
@@ -212,7 +216,7 @@ export function generatePlaceholders(
   }
 
   // Find cloud-only files
-  const cloudOnlyFiles = cloudFiles.filter((file) => !localPaths.has(file.path));
+  const cloudOnlyFiles = cloudFiles.filter((file) => !localPaths.has(file.path.toLowerCase()));
 
   // Generate placeholders
   const placeholders: VolumeMetadata[] = [];

@@ -32,6 +32,7 @@ import {
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 
 export interface QueueItem {
@@ -363,6 +364,7 @@ async function entriesToDecompressedVolume(
  * Process downloaded volume data using unified import system
  * Handles missing pages, image-only volumes, and all other import scenarios
  */
+
 async function processVolumeData(
   entries: DecompressedEntry[],
   placeholder: VolumeMetadata
@@ -433,6 +435,7 @@ async function processVolumeData(
     // reads as un-backed-up, renames miss its files). Legacy titles are
     // sanitized at rename time instead, when the cloud files move with them.
     await saveVolume(processedVolume, { preserveTitles: true });
+    await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
   }
 
   // Update cloud file description if folder name doesn't match series title
