@@ -12,10 +12,17 @@
 - Restart series: archive a finished read; reader offers it on re-open
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
 - Series editor: spine shelf with persistent series/volume offsets
+- Browse a cloud library's whole series list before downloading
+- Opening a series installs its volume list, stats and covers
+- Not-on-device volumes show a download badge and file size
+- Hover a series card and press Delete to remove it
+- Catalog setting groups not-on-device volumes into their own section
+- Already-uploaded libraries backfill their series.json and catalog.json
 
 ### Changed
 
 - Removing a volume from device keeps thumbnails, stats and history
+- Metadata sync failures no longer switch a server to read-only
 
 ## [1.8.2] - 2026-07-09
 

@@ -130,7 +130,7 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie schema **version 3** (`db-v3.ts`; version 2 added `series_metadata`, version 3 added `series_index` — both additive, no data migration). Volume data is split across three tables for performance, alongside per-series metadata and index tables:
+The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie schema **version 4** (`db-v3.ts`; version 2 added `series_metadata`, version 3 added `series_index`, version 4 added `catalog_index` — all additive, no data migration). Volume data is split across three tables for performance, alongside per-series metadata and index tables:
 
 | Table             | Primary Key   | Indexed Fields                | Purpose                                                                           |
 | ----------------- | ------------- | ----------------------------- | --------------------------------------------------------------------------------- |
@@ -139,6 +139,7 @@ The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie 
 | `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                        |
 | `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)  |
 | `series_index`    | `series_key`  | —                             | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative) |
+| `catalog_index`   | `series_key`  | —                             | Cached root `catalog.json` entry per series (names/facts only, download cache)    |
 
 **Key Types:**
 
@@ -209,6 +210,18 @@ upgrades, thumbnail generation, the cloud rename's sidecar regeneration) must
 skip volumes that are not installed; anything about the volume as a volume
 (stats, progress, `series.json`, series metadata) keeps counting them.
 
+A per-profile catalog setting, `notOnDeviceDisplay` (`'mixed' | 'cloud-section'`,
+`catalogSettings` in `settings.ts`), controls how not-on-device volumes are
+grouped in the catalog and series views — woven into natural reading order, or
+collected into their own trailing section. Display only: it never touches the
+rows above, downloads nothing, and every volume keeps its progress and actions
+either way.
+
+**Catalog card shortcuts**: hovering a card and pressing `E` opens the series
+editor (`series-editor-shortcut.ts`); hovering and pressing `Delete` raises the
+series removal dialog (`delete-shortcut.ts`). Both are document-level `keydown`
+listeners gated on hover + no modal open + focus not on a typing target.
+
 ## Important Patterns
 
 ### Mokuro File Format
@@ -254,7 +267,8 @@ series' volumes:
     page_count: number,
     character_count: number,
     mokuro_version: string,
-    spine_width?: number
+    spine_width?: number,
+    archive_size?: number         // bytes of the .cbz; optional, like spine_width
   }[]
 }
 ```
@@ -278,6 +292,12 @@ Rules:
   folder. Gated on a writable connected provider and ≥1 backed-up volume;
   read-only providers skip silently. There is no UI button. Facts arriving _from_
   a sidecar never schedule a write (no ping-pong).
+- **Backfill.** Every cloud listing also reconciles: a folder with at least one
+  `.cbz`, no `series.json`, and at least one non-placeholder local row (counts
+  even if its files were removed from this device) gets a write queued the same
+  way (`reconcileMissingMetadataFiles`) — closes the hole left by libraries
+  uploaded before this feature existed, or connected before their facts were
+  ever set. The root `catalog.json` gets the same treatment when missing outright.
 - **Cached** in the `series_index` Dexie table with the cloud file's
   `size`/`modifiedTime`. After every cloud listing, `series-index-sync.ts`
   re-downloads only the files whose (`size`, `modifiedTime`, provider) differ
@@ -286,9 +306,74 @@ Rules:
 - **Import/export**: a `series.json` in an imported ZIP (or file selection) is
   applied after the volumes save; series ZIP and single-volume ZIP/CBZ exports
   include one built from the local volumes.
-- **mokuro-bunko note**: bunko treats every `.json` as a progress file — it must
-  partition by path (root `.json` = progress/profiles, `<Series>/series.json` =
-  static series sidecar) before this is used against a bunko-backed library.
+- **mokuro-bunko**: bunko compiles `series.json` and `catalog.json` itself and is
+  their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
+  it must partition metadata files out of progress handling (root `.json` =
+  progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
+  A scoped user's `series.json` PUT is accepted as an update REQUEST.
+
+### Root `catalog.json`
+
+The library's name/mapping/search data in one root file, next to
+`series-metadata.json`. It joins the same root-config allowlist as
+`volume-data.json`/`profiles.json`/`series-metadata.json` (`isRootConfigFile`
+in `syncable-file.ts`) — every provider lists, caches and syncs it the same
+way — but for writes it is one of the two best-effort compiled files, along
+with `series.json` (see Best-effort writes below).
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-08-23T00:00:00.000Z",
+  "series": [
+    {
+      "series_title": "Dr Stone (HD Scan)",
+      "titles": { "native": "Dr.STONE", "romaji": "Dr. STONE", "english": "Dr. STONE" },
+      "synonyms": [],
+      "tag": "HD Scan",
+      "unit": "volumes",
+      "external_ids": { "anilist": 98416 },
+      "updated_at": "2026-08-18T19:36:24.324Z"
+    }
+  ]
+}
+```
+
+Rules:
+
+- **Names only.** Each entry is the FACTS subset of that series' `series.json` —
+  same keys, same meaning, same facts stamp. No counts, no covers, no volume
+  lists: those live in `series.json` and arrive when the series is opened. A
+  series with no facts still gets an entry carrying just `series_title` and
+  `FACTLESS_UPDATED_AT`, so the catalog can list every folder by name.
+- **Load schedule.** Catalog open / provider connect → fetch `catalog.json` when
+  its size/mtime changed (`catalog-index-sync.ts`), cache the entries in
+  `catalog_index`, apply each entry's facts through `upsertFromSeriesFile` (so
+  the factless rules apply unchanged). Series open → refresh that ONE
+  `series.json` and materialize its volumes (`series-open.ts`).
+- **Name-only cards.** A series in `catalog_index` with nothing local yet renders
+  as a name-only catalog card, searchable through the same `seriesSearchTerms`.
+  Opening it runs the series-open path.
+- **Materialization.** Series open promotes each index entry into a real
+  `volumes` row in the metadata-only state (real uuid, counts, `mokuro_version`,
+  `spine_width`), so progress attaches and stats count before anything is
+  downloaded. It never overwrites an installed row, never gives a volume title a
+  second row, and only ever FILLS gaps on an existing metadata-only row — the
+  index stays unauthoritative (local wins). Covers come from the existing
+  per-volume sidecars (`cover-install.ts`), never from the metadata files.
+- **Produced by the client** for plain storage backends (Drive/MEGA/WebDAV/
+  OneDrive/Local Folder): debounced globally after a fact edit and once per
+  backup run, union-by-key with the cloud copy (newest facts stamp wins), pruned
+  against the listing, never written from a stale listing. Never produced when
+  the provider reports `serverCompilesMetadata` (mokuro-bunko compiles both files
+  itself and is their sole producer).
+- **Best-effort writes.** A failed `series.json` or `catalog.json` write logs at
+  debug and changes nothing else: no read-only fallback, no cleared credentials,
+  no snackbar (`isBestEffortMetadataPath`). A server that rejects metadata writes
+  while serving reads is a first-class configuration.
+- **Hole patching.** Synced progress referencing a series with no local rows and
+  no cached index pulls that series' `series.json` and materializes it
+  (`hole-patch.ts`), so stats views never dangle.
 
 ### Settings Architecture
 
