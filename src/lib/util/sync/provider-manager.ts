@@ -1,4 +1,4 @@
-import { writable, type Readable } from 'svelte/store';
+import { derived, writable, type Readable } from 'svelte/store';
 import type { SyncProvider, ProviderType, ProviderStatus } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
@@ -242,3 +242,19 @@ class ProviderManager {
 }
 
 export const providerManager = new ProviderManager();
+
+/**
+ * The active provider's type on its own.
+ *
+ * `status` emits a fresh OBJECT on every auth-state change, so anything joined on
+ * it recomputes constantly; deriving the primitive lets Svelte's `safe_not_equal`
+ * dedupe by value (same reasoning as `preferredTitleLanguage` in settings.ts).
+ *
+ * The catalog joins this to decide whose cached `catalog.json` names may be
+ * shown: only one provider is ever connected, so rows fetched from another
+ * account name series this device cannot fetch.
+ */
+export const activeProviderType: Readable<ProviderType | null> = derived(
+  providerManager.status,
+  ($status) => $status.currentProviderType
+);

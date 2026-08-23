@@ -17,6 +17,7 @@ const {
   seriesMetadataMap,
   seriesIndexMap,
   catalogIndexMap,
+  activeProviderType,
   routeParams,
   generatePlaceholders
 } = vi.hoisted(() => {
@@ -55,6 +56,7 @@ const {
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
     catalogIndexMap: createStore(new Map<string, unknown>()),
+    activeProviderType: createStore<string | null>('webdav'),
     routeParams: createStore({} as Record<string, string>),
     generatePlaceholders: vi.fn(() => [] as unknown[])
   };
@@ -86,6 +88,7 @@ vi.mock('$lib/util/download-volume-repair', () => ({
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
 vi.mock('$lib/metadata/catalog-index', () => ({ catalogIndexMap }));
+vi.mock('$lib/util/sync/provider-manager', () => ({ activeProviderType }));
 vi.mock('$lib/catalog/catalog', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/catalog/catalog')>();
   return { ...actual, deriveSeriesFromVolumes: vi.fn(actual.deriveSeriesFromVolumes) };
@@ -138,7 +141,7 @@ describe('catalog store recomputes', () => {
  * been fetched. A series that IS local must never also appear as a name card.
  */
 describe('catalog store name-only cards', () => {
-  function catalogRow(title: string) {
+  function catalogRow(title: string, provider = 'webdav') {
     return {
       series_key: title.toLowerCase(),
       series_title: title,
@@ -149,7 +152,7 @@ describe('catalog store name-only cards', () => {
         synonyms: [],
         updated_at: '1970-01-01T00:00:00.000Z'
       },
-      source: { provider: 'webdav', path: 'catalog.json', size: 1, modifiedTime: 'now' },
+      source: { provider, path: 'catalog.json', size: 1, modifiedTime: 'now' },
       fetched_at: '2026-08-23T00:00:00.000Z'
     };
   }
@@ -173,6 +176,35 @@ describe('catalog store name-only cards', () => {
     expect(latest.find((s) => s.title === 'Naruto')?.nameOnly).toBe(true);
 
     unsubscribe();
+    catalogIndexMap.set(new Map());
+  });
+
+  it('shows only the ACTIVE provider’s names, keeping the others cached', () => {
+    // Connect Drive, then switch to WebDAV: the Drive rows stay in the table so
+    // reconnecting does not re-download its catalog, but surfacing them here
+    // would list Drive series under the WebDAV heading with no way to fetch them.
+    catalogIndexMap.set(
+      new Map([
+        ['naruto', catalogRow('Naruto', 'webdav')],
+        ['bleach', catalogRow('Bleach', 'google-drive')]
+      ])
+    );
+
+    let latest: Array<{ title: string }> = [];
+    const unsubscribe = catalog.subscribe((value) => (latest = (value ?? []) as typeof latest));
+
+    expect(latest.map((s) => s.title)).toEqual(['One Piece', 'Naruto']);
+
+    // Switching accounts swaps which names surface — no table write involved.
+    activeProviderType.set('google-drive');
+    expect(latest.map((s) => s.title)).toEqual(['One Piece', 'Bleach']);
+
+    // Disconnected: no provider owns the view, so no remote names at all.
+    activeProviderType.set(null);
+    expect(latest.map((s) => s.title)).toEqual(['One Piece']);
+
+    unsubscribe();
+    activeProviderType.set('webdav');
     catalogIndexMap.set(new Map());
   });
 });

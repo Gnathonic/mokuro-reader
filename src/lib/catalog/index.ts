@@ -7,6 +7,7 @@ import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
+import { activeProviderType } from '$lib/util/sync/provider-manager';
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
@@ -172,8 +173,20 @@ export const volumesWithPlaceholders = derived(
 // emits a new object on every settings write (per-wheel-tick `pagedGap` included), which
 // would re-group, re-resolve and re-sort the whole library each time.
 export const catalog = derived(
-  [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage, catalogIndexMap],
-  ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage, $catalogIndexMap]) => {
+  [
+    volumesWithPlaceholders,
+    seriesMetadataMap,
+    preferredTitleLanguage,
+    catalogIndexMap,
+    activeProviderType
+  ],
+  ([
+    $volumesWithPlaceholders,
+    $seriesMetadataMap,
+    $preferredTitleLanguage,
+    $catalogIndexMap,
+    $activeProviderType
+  ]) => {
     // Return null while loading (before first data emission)
     if ($volumesWithPlaceholders === undefined) {
       return null;
@@ -183,19 +196,24 @@ export const catalog = derived(
       $seriesMetadataMap,
       $preferredTitleLanguage
     );
-    if ($catalogIndexMap.size === 0) return withVolumes;
+    if ($catalogIndexMap.size === 0 || !$activeProviderType) return withVolumes;
+
+    // Rows are cached PER PROVIDER and deliberately survive a switch, so
+    // reconnecting an account does not re-download its whole catalog. But only
+    // one provider is ever connected: another account's rows would list series
+    // this device cannot fetch, under the connected provider's heading. Show
+    // only the active provider's names.
+    const rows = [...$catalogIndexMap.values()].filter(
+      (row) => row.source.provider === $activeProviderType
+    );
+    if (rows.length === 0) return withVolumes;
 
     // Catalog-only series: known by name from the root catalog.json, with
     // nothing local yet. Opening one fetches its series.json (see series-open.ts).
     const knownKeys = new Set(withVolumes.map((series) => normalizeSeriesKey(series.title)));
     return [
       ...withVolumes,
-      ...deriveNameOnlySeries(
-        [...$catalogIndexMap.values()],
-        knownKeys,
-        $seriesMetadataMap,
-        $preferredTitleLanguage
-      )
+      ...deriveNameOnlySeries(rows, knownKeys, $seriesMetadataMap, $preferredTitleLanguage)
     ];
   }
 );
