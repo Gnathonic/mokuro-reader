@@ -155,6 +155,7 @@ interface VolumeMetadata {
   thumbnail?: File;
   thumbnail_width?: number;
   thumbnail_height?: number;
+  metadata_only?: true; // pages removed from this device — see below
 }
 
 interface VolumeOCR {
@@ -183,6 +184,30 @@ const files = await db.volume_files.get(volume_uuid);
 ```
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
+
+**Volume states** (`$lib/catalog/volume-state.ts` — always test them through
+`isVolumeInstalled(v)` / `needsDownload(v)`, never the raw flags):
+
+| State         | Row? | `volume_ocr` / `volume_files` | Marked by             |
+| ------------- | ---- | ----------------------------- | --------------------- |
+| installed     | yes  | yes                           | —                     |
+| metadata only | yes  | no                            | `metadata_only: true` |
+| placeholder   | no   | no                            | `isPlaceholder: true` |
+
+"Remove from device" (`removeVolumeFiles`) deletes only the OCR and image rows
+and flags the `volumes` row `metadata_only`. The row keeps the thumbnail and,
+crucially, the `volume_uuid` the read history is keyed by, so stats, progress
+and the catalog cover survive; a re-download or re-import fills the same row
+(`saveVolume` clears the flag). `deleteVolumeCompletely` is the real delete,
+used when the user also asks to forget the stats. Placeholders therefore exist
+only for volumes this device has NEVER installed — a metadata-only row shadows
+the placeholder its cloud file would produce, and the catalog join decorates it
+with that file's id/provider so it can be downloaded again.
+
+Anything that reads a volume's pages (exports, backups, the reader, OCR
+upgrades, thumbnail generation, the cloud rename's sidecar regeneration) must
+skip volumes that are not installed; anything about the volume as a volume
+(stats, progress, `series.json`, series metadata) keeps counting them.
 
 ## Important Patterns
 

@@ -13,6 +13,10 @@
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
 - Series editor: spine shelf with persistent series/volume offsets
 
+### Changed
+
+- Removing a volume from device keeps thumbnails, stats and history
+
 ## [1.8.2] - 2026-07-09
 
 ### Fixed
