@@ -8,6 +8,8 @@
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
   import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
+  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
   import DownloadBadge from './DownloadBadge.svelte';
   import { onDestroy } from 'svelte';
@@ -110,9 +112,16 @@
   let isHovered = $state(false);
 
   function handleKeydown(e: KeyboardEvent) {
-    if (!shouldOpenSeriesEditor(e, isHovered, document.activeElement)) return;
-    e.preventDefault();
-    if (volume) promptSeriesEditor(volume.series_title);
+    if (shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
+      e.preventDefault();
+      if (volume) promptSeriesEditor(volume.series_title);
+      return;
+    }
+    // Hover + Delete raises the series page's own "Remove manga" dialog (see CatalogItem).
+    if (!e.shiftKey && shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) {
+      e.preventDefault();
+      void promptSeriesRemoval(sortedVolumes);
+    }
   }
 
   $effect(() => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, fireEvent, cleanup } from '@testing-library/svelte';
 
 // VolumeItem sits on top of the whole app (Dexie, the sync stack, the download queue,
 // the reading-speed model). None of that decides whether the "not on this device" badge
@@ -96,6 +96,7 @@ vi.mock('$lib/util/progress-tracker', () => ({
 vi.mock('../BackupButton.svelte', () => ({ default: () => ({}) }));
 
 import VolumeItem from '../VolumeItem.svelte';
+import { promptConfirmation, showSnackbar } from '$lib/util';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -151,4 +152,84 @@ describe('VolumeItem "needs download" badge', () => {
       });
     });
   }
+});
+
+describe('VolumeItem hover + Delete', () => {
+  afterEach(() => {
+    cleanup();
+    document.querySelectorAll('dialog').forEach((el) => el.remove());
+    vi.mocked(promptConfirmation).mockClear();
+    vi.mocked(showSnackbar).mockClear();
+  });
+
+  async function hover(variant: 'list' | 'grid' = 'list', props: Partial<VolumeMetadata> = {}) {
+    const { container } = render(VolumeItem, { props: { volume: volume(props), variant } });
+    const row = container.querySelector('div') as HTMLElement;
+    await fireEvent.mouseEnter(row);
+    return container;
+  }
+
+  it('raises this volume’s own removal dialog', async () => {
+    await hover();
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe(
+      'Remove Vol 1 from this device? Stats, progress and cover are kept.'
+    );
+  });
+
+  it('asks the forget question for a volume whose pages are already gone', async () => {
+    await hover('grid', { metadata_only: true });
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe(
+      'Forget Vol 1? Its stats, progress and cover will be deleted.'
+    );
+  });
+
+  it('ignores key repeats', async () => {
+    await hover();
+    await fireEvent.keyDown(window, { key: 'Delete' });
+    await fireEvent.keyDown(window, { key: 'Delete', repeat: true });
+
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire while a modal is already open', async () => {
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    document.body.appendChild(dialog);
+
+    await hover();
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('does not fire while a text field has focus', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+
+    await hover();
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it('does not fire when the row is not hovered', async () => {
+    render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    await fireEvent.keyDown(window, { key: 'Delete' });
+    expect(promptConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('keeps shift+Delete on the cloud copy, never the device copy', async () => {
+    await hover();
+    await fireEvent.keyDown(window, { key: 'Delete', shiftKey: true });
+
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
+  });
 });

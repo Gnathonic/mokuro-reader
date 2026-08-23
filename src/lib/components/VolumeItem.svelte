@@ -56,6 +56,8 @@
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
 
@@ -503,33 +505,31 @@
   // Keyboard shortcuts when hovering over a volume
   let isHovered = $state(false);
 
-  function isTypingInInput(): boolean {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-    if (document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable)
-      return true;
-    return false;
-  }
-
   $effect(() => {
     if (!isHovered) return;
 
     function handleKeydown(e: KeyboardEvent) {
-      if (isTypingInInput()) return;
+      if (isTypingTarget(document.activeElement)) return;
+
+      // Delete goes through the shared rule (auto-repeat and already-open modals are what
+      // would otherwise stack a second confirmation behind the first). Shift still means
+      // "the cloud copy only", exactly as before.
+      if (e.key === 'Delete') {
+        if (!shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) return;
+        e.preventDefault();
+        if (e.shiftKey) {
+          onCloudDeleteOnly();
+        } else {
+          onDeleteClicked();
+        }
+        return;
+      }
 
       switch (e.key) {
         case 'e':
           e.preventDefault();
           // The editor reads pages and rewrites OCR; there are none here.
           if (!isNotInstalled) onEditClicked();
-          break;
-        case 'Delete':
-          e.preventDefault();
-          if (e.shiftKey) {
-            onCloudDeleteOnly();
-          } else {
-            onDeleteClicked();
-          }
           break;
         case 'c':
           e.preventDefault();

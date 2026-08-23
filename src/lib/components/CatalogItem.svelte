@@ -5,6 +5,8 @@
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
   import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
+  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import {
@@ -230,6 +232,18 @@
     if (e.type === 'keydown' && shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
       e.preventDefault();
       if (volume) promptSeriesEditor(volume.series_title);
+      return;
+    }
+    // Hover + Delete raises the series page's own "Remove manga" dialog — the same
+    // prompt, with the same forget/cloud checkboxes. Shift is left alone: the card has
+    // no cloud-only delete to map it to.
+    if (
+      e.type === 'keydown' &&
+      !e.shiftKey &&
+      shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())
+    ) {
+      e.preventDefault();
+      void promptSeriesRemoval(seriesVolumes);
       return;
     }
     updateModifierState(e);

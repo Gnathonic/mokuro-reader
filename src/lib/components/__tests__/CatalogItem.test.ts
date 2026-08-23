@@ -3,8 +3,14 @@ import { render, fireEvent, cleanup } from '@testing-library/svelte';
 
 // vi.hoisted: the vi.mock factories below run before this module's own imports, so the
 // spy they close over has to be created here rather than via a later top-level const.
-const { promptSeriesEditor } = vi.hoisted(() => ({ promptSeriesEditor: vi.fn() }));
-vi.mock('$lib/util/modals', () => ({ promptSeriesEditor }));
+const { promptSeriesEditor, promptSeriesRemoval } = vi.hoisted(() => ({
+  promptSeriesEditor: vi.fn(),
+  promptSeriesRemoval: vi.fn(async (_volumes: unknown[], _options?: unknown) => true)
+}));
+vi.mock('$lib/util/modals', () => ({ promptSeriesEditor, promptConfirmation: vi.fn() }));
+// The removal flow itself is tested in $lib/catalog/series-delete.test.ts; the card's job
+// is to hand it this series' volumes and nothing else.
+vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval }));
 
 // Stub the download-queue and cloud-thumbnails modules so this test doesn't drag in
 // their real dependency graph (Dexie/db, google-drive api client, unified-cloud-manager,
@@ -558,5 +564,80 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     });
     const badge = badges(container)[0] as HTMLElement;
     expect(badge.className).toContain('pointer-events-none');
+  });
+});
+
+describe('CatalogItem hover + Delete raises the series removal dialog', () => {
+  beforeEach(() => {
+    promptSeriesRemoval.mockClear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.querySelectorAll('dialog').forEach((el) => el.remove());
+  });
+
+  it('removes the hovered series, handing over its volumes', async () => {
+    const volumes = [localVolume(), localVolume({ volume_uuid: 'uuid-2' })];
+    const { container } = render(CatalogItem, { props: { volumes } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptSeriesRemoval).toHaveBeenCalledTimes(1);
+    expect(promptSeriesRemoval.mock.calls[0][0]).toEqual(volumes);
+  });
+
+  it('does nothing when the card is not hovered', async () => {
+    render(CatalogItem, { props: { volumes: [localVolume()] } });
+    await fireEvent.keyDown(window, { key: 'Delete' });
+    expect(promptSeriesRemoval).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while a search input has focus', async () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+
+    const { container } = render(CatalogItem, { props: { volumes: [localVolume()] } });
+    await fireEvent.mouseEnter(getCard(container));
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptSeriesRemoval).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it('ignores key repeats, so holding Delete cannot stack dialogs', async () => {
+    const { container } = render(CatalogItem, { props: { volumes: [localVolume()] } });
+    await fireEvent.mouseEnter(getCard(container));
+
+    await fireEvent.keyDown(window, { key: 'Delete' });
+    await fireEvent.keyDown(window, { key: 'Delete', repeat: true });
+
+    expect(promptSeriesRemoval).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire while a modal is already open', async () => {
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    document.body.appendChild(dialog);
+
+    const { container } = render(CatalogItem, { props: { volumes: [localVolume()] } });
+    await fireEvent.mouseEnter(getCard(container));
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptSeriesRemoval).not.toHaveBeenCalled();
+  });
+
+  it('stops listening once the mouse leaves the card', async () => {
+    const { container } = render(CatalogItem, { props: { volumes: [localVolume()] } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.mouseLeave(card);
+    await fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(promptSeriesRemoval).not.toHaveBeenCalled();
   });
 });

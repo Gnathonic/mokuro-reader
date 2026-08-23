@@ -7,9 +7,7 @@
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import type { VolumeMetadata } from '$lib/types';
-  import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
-  import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
+  import { volumes, progress, settings } from '$lib/settings';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -36,7 +34,8 @@
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { openSeries } from '$lib/metadata/series-open';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
-  import { isMetadataOnly, isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
   import { downloadQueue } from '$lib/util/download-queue';
 
@@ -400,70 +399,6 @@
     );
   });
 
-  // Every volume's pages are already gone: "remove from device" would do
-  // nothing, so the dialog becomes the forget action.
-  let allAlreadyRemoved = $derived(manga.length > 0 && manga.every(isMetadataOnly));
-
-  async function confirmDelete(forget = false, deleteCloud = false) {
-    const deleteStats = forget || allAlreadyRemoved;
-    const seriesUuid = manga?.[0].series_uuid;
-    if (seriesUuid) {
-      await Promise.all(
-        (manga || []).map(async (vol) => {
-          // Default: strip the pages, keep the rows — they carry the read
-          // history and the covers (see removeVolumeFiles).
-          if (deleteStats) {
-            await deleteVolumeCompletely(vol.volume_uuid);
-            deleteVolumeStats(vol.volume_uuid);
-          } else {
-            await removeVolumeFiles(vol.volume_uuid);
-          }
-        })
-      );
-
-      // Delete from cloud if checkbox checked
-      if (deleteCloud && hasAnyProvider && manga) {
-        await deleteSeriesFromCloud(manga);
-      }
-
-      nav.toCatalog();
-    }
-  }
-
-  async function deleteSeriesFromCloudByTitle(seriesTitle: string) {
-    if (!seriesTitle) return;
-
-    // Check if any volumes are backed up (efficient O(1) Map lookup)
-    const backedUpVolumes = cloudFiles.get(seriesTitle) || [];
-
-    if (backedUpVolumes.length === 0) {
-      showSnackbar(`No volumes found in ${providerDisplayName}`);
-      return;
-    }
-
-    try {
-      // Use the new deleteSeriesFolder method which deletes the entire folder
-      // The unified manager automatically updates its cache, so no need to fetch again
-      const result = await unifiedCloudManager.deleteSeriesFolder(seriesTitle);
-
-      if (result.failed === 0) {
-        showSnackbar(`Deleted ${result.succeeded} volume(s) from ${providerDisplayName}`);
-      } else {
-        showSnackbar(`Deleted ${result.succeeded} volume(s), ${result.failed} failed`);
-      }
-    } catch (error) {
-      console.error(`Failed to delete series from ${providerDisplayName}:`, error);
-      showSnackbar(`Failed to delete from ${providerDisplayName}`);
-      // Refresh cache to restore correct state on error
-      await unifiedCloudManager.fetchAllCloudVolumes();
-    }
-  }
-
-  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
-    if (!volumes || volumes.length === 0) return;
-    await deleteSeriesFromCloudByTitle(volumes[0].series_title);
-  }
-
   async function onDeleteFromCloud() {
     if (!hasAnyProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
@@ -484,34 +419,10 @@
     });
   }
 
+  // The dialog itself lives in $lib/catalog/series-delete so the catalog's hover +
+  // Delete shortcut raises exactly this one, checkboxes and all.
   function onDelete() {
-    const hasCloudBackups = manga?.some((vol) =>
-      unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
-    );
-
-    promptConfirmation(
-      allAlreadyRemoved
-        ? 'Forget this manga? Its stats, progress and covers will be deleted.'
-        : 'Remove this manga from this device? Stats, progress and covers are kept.',
-      confirmDelete,
-      undefined,
-      // New storage key on purpose — see VolumeItem: the box's meaning changed.
-      allAlreadyRemoved
-        ? undefined
-        : {
-            label: 'Also forget stats, progress and covers?',
-            storageKey: 'forgetVolumePreference',
-            defaultValue: false
-          },
-      // Don't show cloud delete option in read-only mode
-      hasCloudBackups && !isReadOnlyMode
-        ? {
-            label: `Also delete from ${providerDisplayName}?`,
-            storageKey: 'deleteCloudPreference',
-            defaultValue: false
-          }
-        : undefined
-    );
+    void promptSeriesRemoval(manga, { onRemoved: () => nav.toCatalog() });
   }
 
   async function onExtract() {

@@ -2,7 +2,8 @@
 // Kept separate from CatalogItem.svelte / CatalogListItem.svelte so it can be unit
 // tested without pulling in either component's (heavy) import graph.
 
-function isTypingTarget(el: Element | null): boolean {
+/** Is focus somewhere that swallows keys — a field, or any contentEditable? */
+export function isTypingTarget(el: Element | null): boolean {
   if (!el) return false;
   const tag = el.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
