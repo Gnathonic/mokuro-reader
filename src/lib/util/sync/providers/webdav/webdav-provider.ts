@@ -213,6 +213,8 @@ export class WebDAVProvider implements SyncProvider {
         case 'authenticated':
           // Permissions come straight from the server - skip OPTIONS guessing
           this._capabilities = identity.permissions;
+          // The endpoint answered in bunko's contract shape, so bunko compiles
+          // series.json/catalog.json itself and this client must not.
           this._serverCompilesMetadata = true;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
@@ -238,6 +240,12 @@ export class WebDAVProvider implements SyncProvider {
           // Generic WebDAV server (or older mokuro-bunko): keep the existing
           // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
           this._capabilities = null;
+          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
+          // is unreachable, so a bunko server behind a flaky hop degrades to
+          // client-compiled. Safe in that direction: the resulting PUT is
+          // best-effort (see `isBestEffortMetadataPath`), so at worst bunko
+          // regenerates the file — whereas defaulting the other way would leave
+          // a plain WebDAV share with no catalog at all.
           this._serverCompilesMetadata = false;
 
           // Ensure mokuro folder exists

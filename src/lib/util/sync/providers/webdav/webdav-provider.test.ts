@@ -84,6 +84,8 @@ describe('WebDAVProvider login()', () => {
     // registered (canWriteProgress) => NOT read-only
     expect(provider.isReadOnly).toBe(false);
     expect(provider.getStatus().needsAttention).toBe(false);
+    // The endpoint answered in bunko's shape: bunko compiles the metadata files.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
     // checkWritePermissions would have used global fetch - it must not run
     expect(fetchMock).not.toHaveBeenCalled();
     // credentials persisted as plain strings (C6: format unchanged)
@@ -137,6 +139,8 @@ describe('WebDAVProvider login()', () => {
     expect(fetchMock).toHaveBeenCalled();
     // fail-open heuristics => writable
     expect(provider.isReadOnly).toBe(false);
+    // No identity endpoint (or an unreachable one): this client is the producer.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
   });
 
   it('classifies a 401-bearing FOLDER_ERROR on the unsupported path as an auth-typed LOGIN_FAILED', async () => {
@@ -167,6 +171,8 @@ describe('WebDAVProvider login()', () => {
     expect(identityMock).toHaveBeenCalledWith('https://host', undefined, undefined);
     expect(provider.isReadOnly).toBe(true);
     expect(provider.getStatus().needsAttention).toBe(false);
+    // An anonymous answer still proves the endpoint spoke bunko's contract.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
     // no folder creation / write attempts for read-only anonymous sessions
     expect(mockClient.exists).not.toHaveBeenCalled();
     expect(mockClient.createDirectory).not.toHaveBeenCalled();
