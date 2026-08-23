@@ -51,9 +51,13 @@ vi.mock('$lib/catalog/db', () => ({
 
 const getSeriesMetadataForTitle = vi.fn(async (_title: string): Promise<unknown> => undefined);
 const getAllSeriesMetadata = vi.fn(async (): Promise<Record<string, unknown>> => ({}));
+const upsertFromSeriesFile = vi.fn(
+  async (_title: string, _file: unknown): Promise<boolean> => true
+);
 vi.mock('$lib/metadata/store', () => ({
   getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title),
-  getAllSeriesMetadata: () => getAllSeriesMetadata()
+  getAllSeriesMetadata: () => getAllSeriesMetadata(),
+  upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
 }));
 
 const getSeriesIndex = vi.fn(async (_key: string): Promise<unknown> => undefined);
@@ -2195,5 +2199,191 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     ];
     expect(providerType).toBe('webdav');
     expect(recs.map((r) => r.series_key)).not.toContain('gone');
+  });
+});
+
+describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesIndex.mockResolvedValue(undefined);
+    getAllFiles.mockReturnValue([]);
+  });
+
+  const SERIES_JSON = {
+    version: 2,
+    series_title: 'One Piece',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at: '2026-08-18T00:00:00.000Z',
+    volumes: [
+      {
+        volume_uuid: 'uuid-1',
+        volume_title: 'Volume 1',
+        page_count: 200,
+        character_count: 5000,
+        mokuro_version: '0.4.11'
+      }
+    ]
+  };
+
+  function cloudFile(path: string, overrides: Partial<CloudFileMetadata> = {}): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size: 100,
+      ...overrides
+    };
+  }
+
+  /** A series folder holding one archive and its sidecar. */
+  function listSeriesFolder(
+    files: CloudFileMetadata[] = [
+      cloudFile('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      cloudFile('One Piece/series.json', { fileId: 'sj' })
+    ]
+  ) {
+    getBySeries.mockImplementation((series: string) =>
+      files.filter((f) => f.path.startsWith(`${series}/`))
+    );
+    return files;
+  }
+
+  /** The cached record matching the listing stamp exactly. */
+  function cachedRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: { ...SERIES_JSON, updated_at: '2026-01-01T00:00:00.000Z' },
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 100,
+        modifiedTime: '2026-08-17T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-17T01:00:00.000Z',
+      ...overrides
+    };
+  }
+
+  it('does not download when the cloud stamp matches the cache', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesFolder();
+    const cached = cachedRecord();
+    getSeriesIndex.mockResolvedValue(cached);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
+
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(upsertFromSeriesFile).not.toHaveBeenCalled();
+    // The freshest copy this device has is still returned, so the caller can
+    // materialize from it without a round trip.
+    expect(result).toBe(cached.file);
+  });
+
+  it('downloads, caches and applies the facts when the stamp moved', async () => {
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => new Blob([JSON.stringify(SERIES_JSON)]))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesFolder();
+    getSeriesIndex.mockResolvedValue(
+      cachedRecord({ source: { ...cachedRecord().source, size: 42 } })
+    );
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
+
+    expect(provider.downloadFile).toHaveBeenCalledTimes(1);
+    expect(result?.volumes).toEqual(SERIES_JSON.volumes);
+    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndex.mock.calls[0][0]).toMatchObject({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 100,
+        modifiedTime: '2026-08-17T00:00:00.000Z'
+      }
+    });
+    expect(upsertFromSeriesFile).toHaveBeenCalledWith('One Piece', result);
+  });
+
+  it('re-fetches when the cached stamp came from another provider', async () => {
+    // Same size and mtime, different provider — the cached source never saw
+    // THIS provider's copy, so it says nothing about it.
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => new Blob([JSON.stringify(SERIES_JSON)]))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesFolder();
+    getSeriesIndex.mockResolvedValue(
+      cachedRecord({ source: { ...cachedRecord().source, provider: 'gdrive' } })
+    );
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
+
+    expect(provider.downloadFile).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves with the cached copy when the download throws', async () => {
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => {
+        throw new Error('offline');
+      })
+    });
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesFolder();
+    const cached = cachedRecord({ source: { ...cachedRecord().source, size: 42 } });
+    getSeriesIndex.mockResolvedValue(cached);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.refreshSeriesIndexForSeries('One Piece')).resolves.toBe(
+      cached.file
+    );
+    expect(putSeriesIndex).not.toHaveBeenCalled();
+  });
+
+  it('ignores an orphan series.json in a folder with no archive', async () => {
+    // Same contract as the listing-wide pass: a sidecar whose volumes are gone
+    // must not seed an index or a series_metadata row, and must not be
+    // re-downloaded on every open.
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => new Blob([JSON.stringify(SERIES_JSON)]))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesFolder([cloudFile('One Piece/series.json', { fileId: 'sj' })]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
+
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndex).not.toHaveBeenCalled();
+    expect(upsertFromSeriesFile).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it('cloudVolumeTitlesFor lists the .cbz titles of the folder', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    listSeriesFolder([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/Volume 2.cbz'),
+      cloudFile('One Piece/Volume 1.mokuro'),
+      cloudFile('One Piece/series.json')
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.cloudVolumeTitlesFor('One Piece')).toEqual(
+      new Set(['Volume 1', 'Volume 2'])
+    );
   });
 });

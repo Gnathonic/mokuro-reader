@@ -42,7 +42,8 @@ import {
   getSeriesIndex,
   indexNeedsRefresh,
   moveSeriesIndexKey,
-  putSeriesIndex
+  putSeriesIndex,
+  type SeriesIndexRecord
 } from '$lib/metadata/series-index';
 import {
   catalogNeedsRefresh,
@@ -975,10 +976,21 @@ class UnifiedCloudManager {
     const seriesKey = normalizeSeriesKey(seriesTitle);
     if (!seriesKey) return undefined;
 
-    const cached = await getSeriesIndex(seriesKey);
+    // Every read is inside the try, including the cache lookup: this is called
+    // from a view's load path and its contract is that it never rejects.
+    let cached: SeriesIndexRecord | undefined;
     try {
+      cached = await getSeriesIndex(seriesKey);
+
       const provider = this.getActiveProvider();
       if (!provider) return cached?.file;
+
+      // Same contract as the listing-wide pass (`series-index-sync.ts`): the
+      // index belongs to a folder of volumes. An orphan sidecar left behind by
+      // a deleted series must not seed a cache record or a series_metadata row
+      // — and bailing before the stamp check also stops it being re-downloaded
+      // on every single open, since nothing would ever cache its stamp.
+      if (this.cloudVolumeTitlesFor(seriesTitle).size === 0) return cached?.file;
 
       const cloudFile = this.getCloudSeriesFile(seriesTitle);
       if (!cloudFile) return cached?.file;
