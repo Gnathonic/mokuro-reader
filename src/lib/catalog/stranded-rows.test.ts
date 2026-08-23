@@ -62,6 +62,19 @@ describe('dropStrandedMetadataOnlyRow', () => {
     expect(await db.volumes.get('uuid-old')).toBeUndefined();
   });
 
+  it('matches the series title case-insensitively too', async () => {
+    // preserveTitles imports can store a casing that differs from the cloud
+    // path the stranded row was created from.
+    await db.volumes.bulkAdd([
+      row() as never,
+      row({ volume_uuid: 'uuid-old', series_title: 'ONE PIECE', metadata_only: true }) as never
+    ]);
+
+    await dropStrandedMetadataOnlyRow('uuid-new');
+
+    expect(await db.volumes.get('uuid-old')).toBeUndefined();
+  });
+
   it('never touches another volume of the same series', async () => {
     await db.volumes.bulkAdd([
       row() as never,

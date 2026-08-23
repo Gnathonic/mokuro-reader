@@ -22,7 +22,13 @@ export async function dropStrandedMetadataOnlyRow(savedUuid: string): Promise<vo
     if (!saved) return;
 
     const sameTitle = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
-    const siblings = await db.volumes.where('series_title').equals(saved.series_title).toArray();
+    // equalsIgnoreCase: cloud/legacy paths can differ from stored titles in
+    // case only (preserveTitles imports), and a case-missed sibling would be
+    // exactly the permanent duplicate this function exists to prevent.
+    const siblings = await db.volumes
+      .where('series_title')
+      .equalsIgnoreCase(saved.series_title)
+      .toArray();
     for (const row of siblings) {
       if (row.volume_uuid === savedUuid) continue;
       if (!isMetadataOnly(row)) continue;
