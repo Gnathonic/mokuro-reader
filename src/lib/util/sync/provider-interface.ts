@@ -116,6 +116,13 @@ export interface ProviderStatus {
   statusMessage: string;
   /** Whether the provider is in read-only mode (e.g., WebDAV without write permissions) */
   isReadOnly?: boolean;
+  /**
+   * The server compiles `series.json` and `catalog.json` itself (mokuro-bunko).
+   * Clients must not produce those files for it: bunko is the sole producer, and
+   * a client write would race its regeneration. Absent/false = a plain storage
+   * backend, where the client is the producer.
+   */
+  serverCompilesMetadata?: boolean;
 }
 
 /**

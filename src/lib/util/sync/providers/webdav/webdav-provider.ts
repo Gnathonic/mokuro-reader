@@ -46,6 +46,8 @@ export class WebDAVProvider implements SyncProvider {
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
   /** Server-reported permissions (mokuro-bunko identity endpoint); null = unknown/generic server */
   private _capabilities: ServerPermissions | null = null;
+  /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
+  private _serverCompilesMetadata = false;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Whether the current session was established with a password */
@@ -131,7 +133,8 @@ export class WebDAVProvider implements SyncProvider {
         : hasCredentials
           ? 'Configured (not connected)'
           : 'Not configured',
-      isReadOnly: this._isReadOnly
+      isReadOnly: this._isReadOnly,
+      serverCompilesMetadata: this._serverCompilesMetadata
     };
   }
 
@@ -210,6 +213,7 @@ export class WebDAVProvider implements SyncProvider {
         case 'authenticated':
           // Permissions come straight from the server - skip OPTIONS guessing
           this._capabilities = identity.permissions;
+          this._serverCompilesMetadata = true;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -226,6 +230,7 @@ export class WebDAVProvider implements SyncProvider {
             canModifyDelete: false
           };
           this._isReadOnly = true;
+          this._serverCompilesMetadata = true;
           break;
 
         case 'unsupported':
@@ -233,6 +238,7 @@ export class WebDAVProvider implements SyncProvider {
           // Generic WebDAV server (or older mokuro-bunko): keep the existing
           // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
           this._capabilities = null;
+          this._serverCompilesMetadata = false;
 
           // Ensure mokuro folder exists
           await this.ensureMokuroFolder();
@@ -340,6 +346,7 @@ export class WebDAVProvider implements SyncProvider {
     this.client = null;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
+    this._serverCompilesMetadata = false;
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
