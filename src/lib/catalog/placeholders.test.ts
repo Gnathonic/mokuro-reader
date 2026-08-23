@@ -104,6 +104,24 @@ describe('generatePlaceholders', () => {
 
     expect(generatePlaceholders(cloudFiles, [])).toEqual([]);
   });
+
+  it('decorates a placeholder with its cover sidecar, whatever the filename casing', () => {
+    // The only thing that makes a cloud-only card show a picture. Keyed through
+    // the shared cover index, so a folder whose `.webp` disagrees with its
+    // `.cbz` about casing must still pair with it.
+    const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+      [
+        'One Piece',
+        [cloudFile('One Piece/Volume 1.cbz', 'cbz-1'), cloudFile('ONE PIECE/VOLUME 1.webp', 'c-1')]
+      ]
+    ]);
+
+    const placeholders = generatePlaceholders(cloudFiles, []);
+
+    expect(placeholders).toHaveLength(1);
+    expect(placeholders[0].cloudThumbnailFileId).toBe('c-1');
+    expect(placeholders[0].cloudThumbnailPath).toBe('ONE PIECE/VOLUME 1.webp');
+  });
 });
 
 describe('generatePlaceholders with a series index', () => {
