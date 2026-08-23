@@ -153,6 +153,10 @@ function createPlaceholder(
     cloudPath: cloudFile.path // Store path for series extraction during download
   };
 
+  // Where this volume's identity came from, recorded at the one moment it is
+  // known for certain (see `isIndexedPlaceholder`).
+  if (indexEntry) placeholder.indexed = true;
+
   if (indexEntry?.spine_width !== undefined) placeholder.spine_width = indexEntry.spine_width;
 
   // The listing measured THIS file just now; the index is what another device
@@ -388,6 +392,12 @@ export function isPlaceholder(volume: VolumeMetadata): boolean {
  */
 export function isIndexedPlaceholder(volume: VolumeMetadata): boolean {
   if (volume.isPlaceholder !== true) return false;
+  if (volume.indexed) return true;
+  // Fall-through for a placeholder built before the flag existed (one already
+  // in a cached listing when the tab reloaded its code): the fallback values
+  // `createPlaceholder` writes when it has no entry — `'unknown'` is not a
+  // version anything publishes, and an index entry always carries a real one
+  // (`''` for image-only volumes).
   return volume.mokuro_version !== 'unknown' || volume.page_count > 0 || volume.character_count > 0;
 }
 

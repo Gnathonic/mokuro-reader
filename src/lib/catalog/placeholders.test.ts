@@ -443,6 +443,29 @@ describe('isIndexedPlaceholder', () => {
     expect(isIndexedPlaceholder(adopted)).toBe(true);
   });
 
+  it('is marked at construction, not sniffed from the values it happened to get', () => {
+    // An index entry that says nothing useful is still an index entry: this
+    // volume's uuid came from the file another device wrote, which is the whole
+    // reason it can be drawn as a real row.
+    const [adopted] = generatePlaceholders(
+      cloudFiles,
+      [],
+      indexMap('One Piece', [
+        indexEntry({ mokuro_version: 'unknown', page_count: 0, character_count: 0 })
+      ])
+    );
+    expect(adopted.indexed).toBe(true);
+    expect(isIndexedPlaceholder(adopted)).toBe(true);
+  });
+
+  it('still recognises a placeholder built before the flag existed', () => {
+    const legacy = {
+      ...localVolume({ isPlaceholder: true, indexed: undefined } as never),
+      indexed: undefined
+    } as VolumeMetadata;
+    expect(isIndexedPlaceholder(legacy)).toBe(true);
+  });
+
   it('is false for a bare-share placeholder with nothing but a path', () => {
     const [bare] = generatePlaceholders(cloudFiles, []);
     expect(isIndexedPlaceholder(bare)).toBe(false);

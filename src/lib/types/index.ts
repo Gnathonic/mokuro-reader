@@ -44,6 +44,16 @@ export interface VolumeMetadata {
   isPlaceholder?: boolean;
 
   /**
+   * Placeholders only, and never stored: this placeholder was built from a
+   * `series.json` entry, so its uuid and counts are the volume's real ones
+   * rather than derived from its path. Set at construction
+   * (`createPlaceholder`) because it is a fact about where the data came from,
+   * which no later inspection of the values can recover. Read it through
+   * `isIndexedPlaceholder` (`$lib/catalog/placeholders`).
+   */
+  indexed?: true;
+
+  /**
    * This row is metadata only: the volume's OCR and image rows are not on this
    * device (the user removed them to save space). Everything else — thumbnail,
    * counts, and above all the `volume_uuid` the read history is keyed by —
