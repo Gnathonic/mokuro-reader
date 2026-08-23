@@ -4,36 +4,43 @@ import { tick } from 'svelte';
 
 // SeriesView sits on top of the whole app; everything below the placement decision is
 // stubbed. What is under test is where a volume whose pages are gone gets DRAWN.
-const { currentSeries, notOnDeviceDisplay, routeParams, providerStatus, queueSeriesVolumes } =
-  vi.hoisted(() => {
-    function createStore<T>(initial: T) {
-      const subs = new Set<(v: T) => void>();
-      let current = initial;
-      return {
-        subscribe(fn: (v: T) => void) {
-          subs.add(fn);
-          fn(current);
-          return () => subs.delete(fn);
-        },
-        set(v: T) {
-          current = v;
-          subs.forEach((fn) => fn(current));
-        }
-      };
-    }
+const {
+  currentSeries,
+  notOnDeviceDisplay,
+  routeParams,
+  providerStatus,
+  queueSeriesVolumes,
+  readingProgress
+} = vi.hoisted(() => {
+  function createStore<T>(initial: T) {
+    const subs = new Set<(v: T) => void>();
+    let current = initial;
     return {
-      queueSeriesVolumes: vi.fn(),
-      providerStatus: createStore({
-        hasAnyAuthenticated: false,
-        currentProviderType: null as string | null,
-        providers: {} as Record<string, unknown>,
-        needsAttention: false
-      }),
-      currentSeries: createStore<unknown[]>([]),
-      notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
-      routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
+      subscribe(fn: (v: T) => void) {
+        subs.add(fn);
+        fn(current);
+        return () => subs.delete(fn);
+      },
+      set(v: T) {
+        current = v;
+        subs.forEach((fn) => fn(current));
+      }
     };
-  });
+  }
+  return {
+    queueSeriesVolumes: vi.fn(),
+    readingProgress: createStore<Record<string, number>>({}),
+    providerStatus: createStore({
+      hasAnyAuthenticated: false,
+      currentProviderType: null as string | null,
+      providers: {} as Record<string, unknown>,
+      needsAttention: false
+    }),
+    currentSeries: createStore<unknown[]>([]),
+    notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
+    routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
+  };
+});
 
 function emptyStore<T>(value: T) {
   return {
@@ -56,7 +63,7 @@ vi.mock('$lib/settings/settings', () => ({
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   volumes: emptyStore<Record<string, unknown>>({ 'uuid-1': { progress: 1 } }),
-  progress: emptyStore<Record<string, number>>({}),
+  progress: readingProgress,
   settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
@@ -410,5 +417,82 @@ describe('SeriesView downloads every volume of the series that is not here', () 
     expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_title)).toEqual([
       'Vol 2'
     ]);
+  });
+});
+
+describe('SeriesView keeps a partly-downloaded series whole', () => {
+  beforeEach(() => {
+    localStorage.setItem('series-view-mode', 'list');
+  });
+
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+  });
+
+  const mixedSeries = () => [
+    volume('Vol 1'),
+    volume('Vol 2', { metadata_only: true }),
+    volume('Vol 3', { isPlaceholder: true, cloudFileId: 'file-3', cloudProvider: 'google-drive' })
+  ];
+
+  it('lists every volume in mixed mode', () => {
+    currentSeries.set(mixedSeries());
+    const { container } = render(SeriesView);
+
+    expect(pageOrder(container)).toEqual([
+      'Vol 1',
+      'Vol 2',
+      'Available in Drive (1)',
+      // The cloud-only volume keeps its own row under the section heading.
+      'Vol 3'
+    ]);
+  });
+
+  it('lists every volume in cloud-section mode too', async () => {
+    currentSeries.set(mixedSeries());
+    const { container } = render(SeriesView);
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+
+    expect(pageOrder(container)).toEqual(['Vol 1', 'Available in Drive (2)', 'Vol 2', 'Vol 3']);
+  });
+});
+
+describe('SeriesView orders a cloud-only series by volume, not by page count', () => {
+  beforeEach(() => {
+    localStorage.setItem('series-view-mode', 'list');
+    localStorage.setItem('series-sort-mode', 'unread-first');
+  });
+
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+  });
+
+  /** A bare share: nothing is known about it until it is downloaded. */
+  const bare = (title: string) =>
+    volume(title, { isPlaceholder: true, page_count: 0, character_count: 0 });
+  /** A placeholder that adopted a series.json entry: real counts. */
+  const indexed = (title: string) =>
+    volume(title, { isPlaceholder: true, indexed: true, page_count: 180 });
+
+  it('keeps bare shares in volume order beside indexed ones', () => {
+    currentSeries.set([indexed('Vol 2'), bare('Vol 3'), bare('Vol 1')]);
+    const { container } = render(SeriesView);
+
+    // A volume with no page count is not a volume you finished — reading "0 pages, at
+    // page 0" as complete used to sort every bare share to the end of the series.
+    expect(pageOrder(container)).toEqual(['Vol 1', 'Vol 2', 'Vol 3']);
+  });
+
+  it('still sorts unread before finished for volumes that have progress', () => {
+    currentSeries.set([volume('Vol 1', { page_count: 10 }), volume('Vol 2', { page_count: 10 })]);
+    readingProgress.set({ 'uuid-Vol-1': 10 });
+    const { container } = render(SeriesView);
+
+    expect(pageOrder(container)).toEqual(['Vol 2', 'Vol 1']);
+    readingProgress.set({});
   });
 });

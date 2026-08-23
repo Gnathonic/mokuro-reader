@@ -36,6 +36,7 @@
   import { openSeries } from '$lib/metadata/series-open';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { sortVolumes } from '$lib/catalog/sort-volumes';
   import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
   import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
@@ -198,6 +199,21 @@
           : 'unread-first';
   }
 
+  /**
+   * Has this volume been read to the end?
+   *
+   * Read off the current page, the source of truth — but a volume nobody has opened is
+   * not finished, and neither is one whose page count is unknown. A bare cloud share
+   * reports `page_count: 0` until it is downloaded, and comparing that to a page 0 read
+   * as "complete", which sorted every un-indexed placeholder to the end of its series
+   * while its indexed neighbours stayed in volume order.
+   */
+  function isReadThrough(vol: { volume_uuid: string; page_count: number }): boolean {
+    const currentPage = $progress?.[vol.volume_uuid] || 0;
+    if (!vol.page_count || currentPage <= 0) return false;
+    return currentPage === vol.page_count || currentPage === vol.page_count - 1;
+  }
+
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
   // Returns null while loading, undefined if series not found, array if found
   let allVolumes = $derived.by(() => {
@@ -211,29 +227,20 @@
 
     volumesToSort.sort((a, b) => {
       if (sortMode === 'unread-first') {
-        // Get completion status from current page position only (source of truth)
-        const aCurrentPage = $progress?.[a.volume_uuid] || 0;
-        const bCurrentPage = $progress?.[b.volume_uuid] || 0;
-
-        const aComplete = aCurrentPage === a.page_count || aCurrentPage === a.page_count - 1;
-        const bComplete = bCurrentPage === b.page_count || bCurrentPage === b.page_count - 1;
+        const aComplete = isReadThrough(a);
+        const bComplete = isReadThrough(b);
 
         // Sort unread first, then by title
         if (aComplete !== bComplete) {
           return aComplete ? 1 : -1; // Unread (false) comes before complete (true)
         }
       } else if (sortMode === 'reverse-alphabetical') {
-        return b.volume_title.localeCompare(a.volume_title, undefined, {
-          numeric: true,
-          sensitivity: 'base'
-        });
+        return -sortVolumes(a, b);
       }
 
-      // Within same completion status (or alphabetical mode), sort alphabetically
-      return a.volume_title.localeCompare(b.volume_title, undefined, {
-        numeric: true,
-        sensitivity: 'base'
-      });
+      // Within same completion status (or alphabetical mode), the catalog's own natural
+      // volume order — one collator for every list of volumes in the app.
+      return sortVolumes(a, b);
     });
 
     return volumesToSort;
