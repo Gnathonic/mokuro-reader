@@ -55,7 +55,7 @@ import {
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
-import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -228,7 +228,10 @@ class UnifiedCloudManager {
       // archives and no `series.json`, and no other path fixes it: the backup
       // run only publishes indexes when it actually uploads something, and the
       // facts listener only fires on a fresh edit. The listing in hand is
-      // exactly what the backfill needs, so it rides along here.
+      // exactly what the backfill needs, so it rides along here — stamped
+      // first, because the writes it queues are 2 s out and would each open
+      // with a second whole-account fetch of the listing already in hand.
+      markListingFresh();
       void Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
         console.warn('Metadata backfill failed:', error)
       );
@@ -1115,6 +1118,13 @@ class UnifiedCloudManager {
     });
     if (!file) return 'skipped';
 
+    // No content-equality skip here, unlike `writeCatalogFile`. That is
+    // deliberate: on a bunko-backed library a `series.json` PUT is an update
+    // *request* the server folds into its own compilation, so a file identical
+    // to the one already in the cloud still carries information (this device
+    // vouching for it) and re-publishing costs one small upload. The catalog is
+    // the opposite case — one big file every device re-downloads whenever its
+    // stamp moves — which is why the skip lives there and not here.
     const path = normalizeCloudPath(`${seriesTitle}/${SERIES_FILE_NAME}`);
     const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
     await this.uploadFile(path, blob);

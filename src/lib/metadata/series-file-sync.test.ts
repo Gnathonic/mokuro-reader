@@ -60,6 +60,7 @@ vi.mock('$lib/catalog/db', () => ({
 
 import {
   _resetListingRefreshForTests,
+  _resetWriteSlotsForTests,
   flushSeriesFileWrites,
   initSeriesFileSync,
   LISTING_TIMEOUT_MS,
@@ -90,6 +91,7 @@ describe('series-file-sync', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     _resetListingRefreshForTests();
+    _resetWriteSlotsForTests();
     writeSeriesFile.mockResolvedValue('written');
     fetchAllCloudVolumes.mockResolvedValue(undefined);
     getManagedCloudFilesForVolume.mockImplementation((_s: string, volumeTitle: string) => [
@@ -322,6 +324,34 @@ describe('series-file-sync', () => {
     // No unhandled rejection, no throw out of the timer callback.
     await vi.advanceTimersByTimeAsync(2000);
     expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps the fan-out at two writes in flight, however many series come due', async () => {
+    // The debounce is per series, so a burst — a reconcile pass over a big
+    // library, an import batch, a tagging spree — puts every timer on the SAME
+    // 2000 ms mark. Uncapped that is N whole-table scans and N PUTs at once.
+    const titles = ['A', 'B', 'C', 'D', 'E'];
+    for (const title of titles) addVolume(title, 'Volume 1');
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+
+    let inFlight = 0;
+    let peak = 0;
+    writeSeriesFile.mockImplementation(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      inFlight -= 1;
+      return 'written';
+    });
+
+    for (const title of titles) scheduleSeriesFileWrite(title);
+    await vi.advanceTimersByTimeAsync(2000 + 25 * titles.length + 25);
+
+    expect(peak).toBe(2);
+    // Capped, not dropped: every series still gets its write.
+    expect(writeSeriesFile.mock.calls.map((args: unknown[]) => args[0]).sort()).toEqual(titles);
   });
 
   it('flush writes everything pending immediately', async () => {

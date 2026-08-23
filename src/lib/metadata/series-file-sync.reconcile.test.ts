@@ -49,10 +49,18 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 const scheduleCatalogFileWrite = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
 
-const { volumeRows } = vi.hoisted(() => ({ volumeRows: [] as Record<string, unknown>[] }));
+const { volumeRows, dbScans } = vi.hoisted(() => ({
+  volumeRows: [] as Record<string, unknown>[],
+  dbScans: { count: 0 }
+}));
 vi.mock('$lib/catalog/db', () => ({
   db: {
-    volumes: { toArray: async () => [...volumeRows] },
+    volumes: {
+      toArray: async () => {
+        dbScans.count += 1;
+        return [...volumeRows];
+      }
+    },
     series_metadata: { get: async () => undefined, put: async () => {} },
     transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
@@ -61,11 +69,13 @@ vi.mock('$lib/catalog/db', () => ({
 import {
   _resetListingRefreshForTests,
   _resetReconcileForTests,
+  _resetWriteSlotsForTests,
+  markListingFresh,
   reconcileMissingMetadataFiles,
   SERIES_FILE_WRITE_DEBOUNCE_MS
 } from './series-file-sync';
 
-function addVolume(seriesTitle: string, volumeTitle: string) {
+function addVolume(seriesTitle: string, volumeTitle: string, extra: object = {}) {
   volumeRows.push({
     volume_uuid: `${seriesTitle}/${volumeTitle}`,
     series_uuid: 's',
@@ -74,7 +84,8 @@ function addVolume(seriesTitle: string, volumeTitle: string) {
     mokuro_version: '0.4.11',
     page_count: 1,
     character_count: 1,
-    page_char_counts: [1]
+    page_char_counts: [1],
+    ...extra
   });
 }
 
@@ -89,6 +100,7 @@ describe('reconcileMissingMetadataFiles', () => {
     vi.clearAllMocks();
     _resetListingRefreshForTests();
     _resetReconcileForTests();
+    _resetWriteSlotsForTests();
     writeSeriesFile.mockResolvedValue('written');
     fetchAllCloudVolumes.mockResolvedValue(undefined);
     getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
@@ -102,6 +114,7 @@ describe('reconcileMissingMetadataFiles', () => {
       currentProviderType: 'webdav'
     });
     volumeRows.length = 0;
+    dbScans.count = 0;
     cloudListing.files = [];
     addVolume('One Piece', 'Volume 1');
     addVolume('Berserk', 'Volume 1');
@@ -242,6 +255,114 @@ describe('reconcileMissingMetadataFiles', () => {
     // Once settled, a later reconcile runs for real again.
     await reconcileMissingMetadataFiles();
     expect(getAllCloudVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a folder this device holds no installed volume for', async () => {
+    // A second device that has never imported this series can never publish its
+    // index: `hasBackedUpVolume` looks for a local row and finds none. Queuing
+    // it anyway would re-fire — and re-scan the whole volumes table — on every
+    // single listing, forever, without ever converging.
+    volumeRows.length = 0;
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('skips a folder whose only local rows are metadata-only', async () => {
+    volumeRows.length = 0;
+    addVolume('One Piece', 'Volume 1', { metadata_only: true });
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('skips a folder whose only local rows are cloud placeholders', async () => {
+    volumeRows.length = 0;
+    addVolume('One Piece', 'Volume 1', { isPlaceholder: true });
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('still schedules when only SOME of the local rows are installed', async () => {
+    volumeRows.length = 0;
+    addVolume('One Piece', 'Volume 1', { metadata_only: true });
+    addVolume('One Piece', 'Volume 2');
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/Volume 2.cbz' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual(['One Piece']);
+  });
+
+  it('reads the volumes table once for the whole pass, not once per folder', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'Berserk/Volume 1.cbz' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+
+    // Before the writes fire — those scan again, by design, on the fresh view.
+    expect(dbScans.count).toBe(1);
+  });
+
+  it('does not touch the volumes table when every folder already has a sidecar', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/series.json' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+
+    expect(dbScans.count).toBe(0);
+  });
+
+  it('keys folders verbatim, so a case-variant sibling cannot vouch for one', async () => {
+    // `cloudSeriesTitles` treats these as two folders (they ARE two folders on
+    // any case-sensitive backend); folding them together here would let the
+    // sidecar in one suppress the write the other needs.
+    cloudListing.files = [
+      { path: 'Berserk/Volume 1.cbz' },
+      { path: 'berserk/series.json' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual(['Berserk']);
+  });
+
+  it('reuses a listing the caller already stamped instead of refetching it', async () => {
+    // `refreshSeriesIndexesInBackground` stamps the listing it just fetched
+    // before handing it here; without that the write 2 s later would open with
+    // a second whole-account fetch.
+    markListingFresh();
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
   });
 
   it('never throws out of the fire-and-forget call sites', async () => {

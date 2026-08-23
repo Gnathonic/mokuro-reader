@@ -115,8 +115,10 @@ vi.mock('$lib/metadata/catalog-index-sync', () => ({
 }));
 
 const reconcileMissingMetadataFiles = vi.fn(async (_files?: unknown) => {});
+const markListingFresh = vi.fn();
 vi.mock('$lib/metadata/series-file-sync', () => ({
-  reconcileMissingMetadataFiles: (files?: unknown) => reconcileMissingMetadataFiles(files)
+  reconcileMissingMetadataFiles: (files?: unknown) => reconcileMissingMetadataFiles(files),
+  markListingFresh: () => markListingFresh()
 }));
 
 /**
@@ -2420,6 +2422,18 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     // The same listing the index refreshes ride, not a second fetch.
     expect(reconcileMissingMetadataFiles).toHaveBeenCalledTimes(1);
     expect(reconcileMissingMetadataFiles).toHaveBeenCalledWith(files);
+  });
+
+  it('stamps the listing it just read so the backfill does not refetch it', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    // Without the stamp the debounced write opens 2 s later with a second
+    // whole-account fetch of the listing that is already in hand.
+    expect(markListingFresh).toHaveBeenCalledTimes(1);
   });
 
   it('does not backfill without a provider or without a listing', async () => {

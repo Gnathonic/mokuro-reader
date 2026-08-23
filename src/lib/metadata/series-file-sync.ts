@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -8,7 +9,7 @@ import { isCbzFile } from '$lib/util/sync/syncable-file';
 import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
 import { isSeriesFilePath } from './series-file';
-import { normalizeSeriesKey } from './series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { registerFactsChangeListener } from './store';
 
 /**
@@ -152,12 +153,53 @@ export function ensureFreshCloudListing(): Promise<boolean> {
   return refresh;
 }
 
+/**
+ * How many series writes may be in flight at once.
+ *
+ * The debounce is per series but not staggered, so a burst puts every timer on
+ * the SAME 2000 ms mark and they all come due together: a reconcile pass over a
+ * 200-folder library, an import batch, a tagging spree. Uncapped that is 200
+ * concurrent `db.volumes.toArray()` scans and 200 concurrent PUTs at a provider
+ * that will rate-limit or simply fall over. Two keeps the pipe busy across the
+ * round trip without becoming a stampede.
+ */
+const WRITE_CONCURRENCY = 2;
+let activeWrites = 0;
+const waitingWrites: Array<() => void> = [];
+
+function acquireWriteSlot(): Promise<void> {
+  if (activeWrites < WRITE_CONCURRENCY) {
+    activeWrites += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    waitingWrites.push(() => {
+      activeWrites += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseWriteSlot(): void {
+  activeWrites -= 1;
+  waitingWrites.shift()?.();
+}
+
+/** Test hook: drop the write-concurrency bookkeeping. */
+export function _resetWriteSlotsForTests(): void {
+  activeWrites = 0;
+  waitingWrites.length = 0;
+}
+
 async function runWrite(seriesKey: string): Promise<void> {
   timers.delete(seriesKey);
   const seriesTitle = pendingTitles.get(seriesKey);
   pendingTitles.delete(seriesKey);
   if (!seriesTitle) return;
 
+  // Taken around the WHOLE body, gates included: the volume scan costs as much
+  // as the upload on a large library, and both are what must not fan out.
+  await acquireWriteSlot();
   try {
     if (!hasWritableProvider()) return;
     // Both gates below read the listing, so refresh it first — and skip the
@@ -171,6 +213,8 @@ async function runWrite(seriesKey: string): Promise<void> {
     // rejects the write by design, and the next fact edit or backup rewrites
     // the file anyway. Never a warning, never UI.
     console.debug(`[series-file-sync] could not write series.json for '${seriesTitle}':`, error);
+  } finally {
+    releaseWriteSlot();
   }
 }
 
@@ -193,8 +237,9 @@ export function scheduleSeriesFileWrite(seriesTitle: string): void {
 }
 
 /**
- * The reconcile pass currently running, so a second caller joins it instead of
- * walking the same listing again.
+ * The reconcile pass currently running. Not the dedupe that matters — the
+ * per-key debounce already collapses repeat schedules for the same folder — it
+ * just stops two overlapping listings from each paying for the volumes scan.
  */
 let reconcileInFlight: Promise<void> | null = null;
 
@@ -208,14 +253,18 @@ type ListedFile = { path: string };
 
 /** What the listing shows for one cloud folder. */
 interface FolderState {
-  /** The folder name exactly as the cloud spells it — never derived. */
-  title: string;
   /** At least one `<folder>/*.cbz`: something is actually backed up here. */
   hasArchive: boolean;
   /** `<folder>/series.json` is already published. */
   hasSidecar: boolean;
 }
 
+/**
+ * Group the listing by folder, keyed by the folder name VERBATIM — the same
+ * identity `cloudSeriesTitles` uses. Folding case/whitespace here would let
+ * `Berserk/series.json` vouch for a separate `berserk/` folder (they really are
+ * two folders on any case-sensitive backend) and suppress the write it needs.
+ */
 function walkListing(files: ListedFile[]): {
   folders: Map<string, FolderState>;
   hasCatalog: boolean;
@@ -236,19 +285,43 @@ function walkListing(files: ListedFile[]): {
     const parts = path.split('/');
     if (parts.length !== 2) continue;
     const [folder, basename] = parts;
-    const key = normalizeSeriesKey(folder);
-    if (!key || !basename) continue;
+    if (!folder || !basename) continue;
 
-    const state = folders.get(key) ?? { title: folder, hasArchive: false, hasSidecar: false };
+    const state = folders.get(folder) ?? { hasArchive: false, hasSidecar: false };
     if (isCbzFile(basename)) state.hasArchive = true;
     else if (isSeriesFilePath(path)) state.hasSidecar = true;
-    folders.set(key, state);
+    folders.set(folder, state);
   }
 
   return { folders, hasCatalog };
 }
 
-function runReconcile(files?: ListedFile[]): void {
+/**
+ * The series this device could actually publish an index for: at least one
+ * INSTALLED volume filed under that title.
+ *
+ * Without this the pass never converges. `runWrite` gates on
+ * `hasBackedUpVolume`, which needs a local row, so a folder no local row
+ * matches is scheduled, dropped, and scheduled again on the very next listing —
+ * forever, at one full volumes scan each time. That is the normal state of a
+ * second device, of a placeholder-only library, and of a library whose files
+ * were removed from this device.
+ *
+ * Folded with `normalizeVolumeTitleKey` rather than `normalizeSeriesKey`: the
+ * folder name comes off a filesystem and can arrive decomposed (NFD) while the
+ * local row stays composed, and the two spell the same series.
+ */
+async function locallyInstalledSeriesKeys(): Promise<Set<string>> {
+  const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
+  const keys = new Set<string>();
+  for (const volume of volumes) {
+    if (!isVolumeInstalled(volume)) continue;
+    keys.add(normalizeVolumeTitleKey(volume.series_title));
+  }
+  return keys;
+}
+
+async function runReconcile(files?: ListedFile[]): Promise<void> {
   const listing = files ?? (unifiedCloudManager.getAllCloudVolumes() as ListedFile[]);
   // An empty listing means "not fetched" as often as "empty cloud", and every
   // writer downstream refuses to publish against one. Nothing to reconcile.
@@ -257,16 +330,25 @@ function runReconcile(files?: ListedFile[]): void {
   const { folders, hasCatalog } = walkListing(listing);
 
   let seriesFolders = 0;
-  let scheduled = 0;
-  for (const state of folders.values()) {
+  const candidates: string[] = [];
+  for (const [title, state] of folders) {
     if (!state.hasArchive) continue;
     seriesFolders += 1;
-    if (state.hasSidecar) continue;
-    scheduleSeriesFileWrite(state.title);
-    scheduled += 1;
+    if (!state.hasSidecar) candidates.push(title);
+  }
+  if (seriesFolders === 0) return;
+
+  let scheduled = 0;
+  if (candidates.length > 0) {
+    // ONE scan for the whole pass, and only when something might be scheduled.
+    const localKeys = await locallyInstalledSeriesKeys();
+    for (const title of candidates) {
+      if (!localKeys.has(normalizeVolumeTitleKey(title))) continue;
+      scheduleSeriesFileWrite(title);
+      scheduled += 1;
+    }
   }
 
-  if (seriesFolders === 0) return;
   // A missing root catalog is worth a write on its own — the per-series files
   // can all be present while the index that lists them never got written. The
   // catalog writer's content-equality skip absorbs the redundant case.
@@ -284,14 +366,17 @@ function runReconcile(files?: ListedFile[]): void {
  * because it early-returns when everything is already backed up.
  *
  * This pass closes that hole: every folder the listing shows with at least one
- * archive and no `series.json` gets a write queued, and the catalog follows if
- * anything was queued or the root `catalog.json` is missing outright.
+ * archive, no `series.json`, and at least one INSTALLED local volume gets a
+ * write queued, and the catalog follows if anything was queued or the root
+ * `catalog.json` is missing outright.
  *
  * Idempotent by construction — a completed write shows up in the next listing
- * and stops qualifying — and deliberately gate-free: `runWrite` still checks
- * the writable provider, the fresh listing and the per-series backup, and
- * `writeCatalogFile` still checks read-only / server-compiled / loaded cache.
- * Duplicating any of that here would only let the two copies disagree.
+ * and stops qualifying — and convergent, because the local-volume test matches
+ * the gate `runWrite` will apply anyway (see `locallyInstalledSeriesKeys`).
+ * Otherwise deliberately gate-free: `runWrite` still checks the writable
+ * provider, the fresh listing and the per-series backup, and `writeCatalogFile`
+ * still checks read-only / server-compiled / loaded cache. Duplicating any of
+ * that here would only let the two copies disagree.
  *
  * Fire-and-forget by contract: never throws, never surfaces UI.
  */
@@ -300,13 +385,11 @@ export function reconcileMissingMetadataFiles(files?: ListedFile[]): Promise<voi
 
   // Deferred to a microtask so the promise identity below exists before the
   // body can settle.
-  const run = Promise.resolve().then(() => {
-    try {
-      runReconcile(files);
-    } catch (error) {
+  const run = Promise.resolve()
+    .then(() => runReconcile(files))
+    .catch((error) => {
       console.debug('[series-file-sync] could not reconcile the cloud metadata files:', error);
-    }
-  });
+    });
 
   reconcileInFlight = run;
   void run.finally(() => {
