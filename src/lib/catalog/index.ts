@@ -3,14 +3,22 @@ import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { generatePlaceholders } from '$lib/catalog/placeholders';
+import {
+  unifiedCloudManager,
+  type CloudVolumeWithProvider
+} from '$lib/util/sync/unified-cloud-manager';
+import {
+  cloudFieldsForRemovedVolume,
+  generatePlaceholders,
+  indexCloudFilesByPath
+} from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
+import { isMetadataOnly } from '$lib/catalog/volume-state';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([
@@ -101,6 +109,14 @@ let lastPlaceholderInputs: {
 } | null = null;
 let lastPlaceholders: VolumeMetadata[] = [];
 
+/**
+ * The listing's archives by path, rebuilt only when the listing itself changes.
+ * The catalog re-derives on every settings-adjacent emission; re-indexing a
+ * few thousand cloud files each time would be pure waste.
+ */
+let lastCloudFiles: unknown = null;
+let lastCloudIndex = new Map<string, CloudVolumeWithProvider>();
+
 // Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
   [volumes, unifiedCloudManager.cloudFiles, seriesIndexMap],
@@ -123,6 +139,23 @@ export const volumesWithPlaceholders = derived(
 
       for (const placeholder of lastPlaceholders) {
         combined[placeholder.volume_uuid] = placeholder;
+      }
+
+      // A metadata-only row shadows the placeholder its cloud file would have
+      // produced (a path with a local row is not "cloud only"), so it has to be
+      // given the same cloud fields here or there would be nothing to download
+      // it from. Decorating the copy in the catalog, never the stored row: the
+      // fileId belongs to the current listing, not to the volume.
+      if (localVolumes.some(isMetadataOnly)) {
+        if (lastCloudFiles !== $cloudFiles) {
+          lastCloudIndex = indexCloudFilesByPath($cloudFiles);
+          lastCloudFiles = $cloudFiles;
+        }
+        for (const vol of localVolumes) {
+          if (!isMetadataOnly(vol)) continue;
+          const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol);
+          if (cloudFields) combined[vol.volume_uuid] = { ...vol, ...cloudFields };
+        }
       }
     }
 

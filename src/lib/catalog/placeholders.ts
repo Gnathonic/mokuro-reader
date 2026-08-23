@@ -327,3 +327,54 @@ export function generatePlaceholders(
 export function isPlaceholder(volume: VolumeMetadata): boolean {
   return volume.isPlaceholder === true;
 }
+
+/**
+ * Index a cloud listing by archive path, lowercased.
+ *
+ * Built once per listing and shared by every lookup: a row whose files were
+ * removed needs the same cloud file a placeholder would have been built from,
+ * and scanning the listing per row would be O(rows × files).
+ */
+export function indexCloudFilesByPath(
+  cloudFilesMap: Map<string, CloudVolumeWithProvider[]>
+): Map<string, CloudVolumeWithProvider> {
+  const index = new Map<string, CloudVolumeWithProvider>();
+  for (const files of cloudFilesMap.values()) {
+    for (const file of files) {
+      if (!file.path.toLowerCase().endsWith('.cbz')) continue;
+      index.set(file.path.toLowerCase(), file);
+    }
+  }
+  return index;
+}
+
+/**
+ * The cloud fields a volume whose files were removed needs to be downloadable
+ * again, or `undefined` when the cloud no longer holds it.
+ *
+ * A retained row shadows the placeholder its cloud file would otherwise
+ * produce (`generatePlaceholders` skips paths that have a local row), so the
+ * download affordance has to come from somewhere — this is that somewhere, and
+ * it deliberately carries exactly the fields `cloud-fields.ts` reads.
+ *
+ * Matched by stored path, the same identity every other cloud lookup uses
+ * (`<series_title>/<volume_title>.cbz`), so a volume renamed locally without
+ * renaming the cloud file reads as "not in the cloud" here too rather than
+ * silently pointing at somebody else's archive.
+ */
+export function cloudFieldsForRemovedVolume(
+  cloudIndex: Map<string, CloudVolumeWithProvider>,
+  volume: VolumeMetadata
+): Partial<VolumeMetadata> | undefined {
+  const path = `${volume.series_title}/${volume.volume_title}.cbz`;
+  const file = cloudIndex.get(path.toLowerCase());
+  if (!file) return undefined;
+
+  return {
+    cloudProvider: file.provider,
+    cloudFileId: file.fileId,
+    cloudModifiedTime: file.modifiedTime,
+    cloudSize: file.size,
+    cloudPath: file.path
+  };
+}

@@ -32,6 +32,7 @@ import {
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -118,8 +119,10 @@ export function queueVolume(volume: VolumeMetadata): void {
   const cloudFileId = getCloudFileId(volume);
   const cloudProvider = getCloudProvider(volume);
 
-  if (!volume.isPlaceholder || !cloudFileId || !cloudProvider) {
-    console.warn('Can only queue placeholder volumes with cloud file IDs');
+  // Both flavours of not-installed volume are downloadable: a cloud-only
+  // placeholder, and a metadata-only row whose files were removed here.
+  if (!needsDownload(volume) || !cloudFileId || !cloudProvider) {
+    console.warn('Can only queue not-installed volumes with cloud file IDs');
     return;
   }
 
@@ -157,11 +160,11 @@ export function queueVolume(volume: VolumeMetadata): void {
 export function queueSeriesVolumes(volumes: VolumeMetadata[]): void {
   const placeholders = volumes.filter((v) => {
     const cloudFileId = getCloudFileId(v);
-    return v.isPlaceholder && cloudFileId;
+    return needsDownload(v) && cloudFileId;
   });
 
   if (placeholders.length === 0) {
-    console.warn('No placeholder volumes to queue');
+    console.warn('No downloadable volumes to queue');
     return;
   }
 
@@ -417,9 +420,10 @@ async function processVolumeData(
       processedVolume.metadata.mokuroVersion
     )
   ) {
-    if (existingVolume) {
-      // Replaced wholesale by the save below, so there is no history to keep
-      // on the old row — and a leftover `metadata_only` flag would be a lie.
+    // A metadata-only row is this volume's history: leave it for `saveVolume`
+    // to fill in place (same uuid, same cover). Any other stale row is replaced
+    // wholesale by the save below, so it can go.
+    if (existingVolume && !isMetadataOnly(existingVolume)) {
       await deleteVolumeCompletely(processedVolume.metadata.volumeUuid);
     }
 

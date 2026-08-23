@@ -71,7 +71,12 @@ vi.mock('dexie', () => ({
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { cloudFiles }
 }));
-vi.mock('$lib/catalog/placeholders', () => ({ generatePlaceholders }));
+// Only the cloud scan is stubbed; the path index and the cloud-field lookup a
+// metadata-only row is decorated with are the real ones.
+vi.mock('$lib/catalog/placeholders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/catalog/placeholders')>();
+  return { ...actual, generatePlaceholders };
+});
 vi.mock('$lib/util/hash-router', () => ({ routeParams }));
 vi.mock('$lib/util/download-volume-repair', () => ({
   getLegacyImageOnlyVolumeUuid: () => undefined
@@ -134,7 +139,18 @@ describe('catalog store recomputes', () => {
  */
 describe('volumesWithPlaceholders', () => {
   const cloudListing = new Map<string, unknown>([
-    ['One Piece', [{ provider: 'webdav', fileId: 'f1', path: 'One Piece/Volume 2.cbz' }]]
+    [
+      'One Piece',
+      [
+        {
+          provider: 'webdav',
+          fileId: 'f1',
+          path: 'One Piece/Volume 2.cbz',
+          modifiedTime: '2026-08-17T00:00:00.000Z',
+          size: 42
+        }
+      ]
+    ]
   ]);
 
   function indexRecord(fetched_at: string) {
@@ -182,6 +198,39 @@ describe('volumesWithPlaceholders', () => {
     expect(generate).toHaveBeenCalledTimes(3);
 
     unsubscribe();
+    cloudFiles.set(new Map());
+  });
+
+  it('decorates a metadata-only row with the cloud file it can be downloaded from', () => {
+    // The row shadows its own placeholder (generatePlaceholders skips a path
+    // that has a local row), so without this join there would be no fileId to
+    // download it with.
+    volumeRecord.v2 = {
+      volume_uuid: 'v2',
+      series_uuid: 's1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 2',
+      mokuro_version: '0.4.11',
+      page_count: 10,
+      character_count: 100,
+      page_char_counts: [],
+      metadata_only: true
+    };
+    cloudFiles.set(new Map(cloudListing));
+
+    let latest: Record<string, VolumeMetadata> = {};
+    const unsubscribe = volumesWithPlaceholders.subscribe((value) => (latest = value));
+
+    expect(latest.v2.cloudFileId).toBe('f1');
+    expect(latest.v2.cloudProvider).toBe('webdav');
+    expect(latest.v2.metadata_only).toBe(true);
+    // The stored row is never decorated — the fileId belongs to the listing.
+    expect(volumeRecord.v2).not.toHaveProperty('cloudFileId');
+    // An installed row is left exactly as it came out of the database.
+    expect(latest.v1).toBe(volumeRecord.v1);
+
+    unsubscribe();
+    delete volumeRecord.v2;
     cloudFiles.set(new Map());
   });
 });

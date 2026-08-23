@@ -7,7 +7,11 @@ import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manag
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ enqueueCloudOcrUpgrade: vi.fn() }));
 
-import { generatePlaceholders } from './placeholders';
+import {
+  cloudFieldsForRemovedVolume,
+  generatePlaceholders,
+  indexCloudFilesByPath
+} from './placeholders';
 
 function cloudFile(path: string, fileId = path): CloudVolumeWithProvider {
   return {
@@ -243,5 +247,67 @@ describe('generatePlaceholders with a series index', () => {
     );
 
     expect(placeholders.map((p) => p.volume_title)).toEqual(['Volume 1']);
+  });
+});
+
+describe('a metadata-only row and the cloud', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz', 'file-1')]]
+  ]);
+
+  it('shadows the placeholder its cloud file would have produced', () => {
+    // The row is still local, so the volume must appear once — as the row that
+    // holds the read history, not as a second cloud-only entry.
+    const placeholders = generatePlaceholders(cloudFiles, [localVolume({ metadata_only: true })]);
+
+    expect(placeholders).toEqual([]);
+  });
+
+  it('gets the cloud fields the placeholder would have carried', () => {
+    const index = indexCloudFilesByPath(cloudFiles);
+
+    const fields = cloudFieldsForRemovedVolume(index, localVolume({ metadata_only: true }));
+
+    expect(fields).toEqual({
+      cloudProvider: 'webdav',
+      cloudFileId: 'file-1',
+      cloudModifiedTime: '2026-08-17T00:00:00.000Z',
+      cloudSize: 10,
+      cloudPath: 'One Piece/Volume 1.cbz'
+    });
+  });
+
+  it('matches the archive case-insensitively', () => {
+    const index = indexCloudFilesByPath(
+      new Map([['One Piece', [cloudFile('one piece/volume 1.CBZ', 'file-1')]]])
+    );
+
+    expect(cloudFieldsForRemovedVolume(index, localVolume({ metadata_only: true }))).toMatchObject({
+      cloudFileId: 'file-1'
+    });
+  });
+
+  it('gets nothing when the cloud no longer holds the volume', () => {
+    const index = indexCloudFilesByPath(cloudFiles);
+
+    const fields = cloudFieldsForRemovedVolume(
+      index,
+      localVolume({ metadata_only: true, volume_title: 'Volume 2' })
+    );
+
+    expect(fields).toBeUndefined();
+  });
+
+  it('never indexes a sidecar as a downloadable archive', () => {
+    const index = indexCloudFilesByPath(
+      new Map([
+        [
+          'One Piece',
+          [cloudFile('One Piece/Volume 1.mokuro'), cloudFile('One Piece/Volume 1.webp')]
+        ]
+      ])
+    );
+
+    expect(index.size).toBe(0);
   });
 });

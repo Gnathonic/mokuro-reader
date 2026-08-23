@@ -14,6 +14,7 @@ import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { ProcessedVolume } from './types';
 import type { VolumeMetadata } from '$lib/types';
 import { naturalSort } from '$lib/util/natural-sort';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 /**
  * Is this volume already INSTALLED?
@@ -28,7 +29,7 @@ import { naturalSort } from '$lib/util/natural-sort';
  */
 export async function volumeExists(volumeUuid: string): Promise<boolean> {
   const existing = await db.volumes.get(volumeUuid);
-  return existing !== undefined && !existing.metadata_only;
+  return existing !== undefined && isVolumeInstalled(existing);
 }
 
 /**
@@ -108,9 +109,9 @@ export async function saveVolume(
       db.volume_files.get(canonicalVolumeUuid)
     ]);
 
-    // An INSTALLED row is a real duplicate. A row whose files were removed is
-    // not: this save is the reinstall, and it fills that row.
-    if (existingVolume && !existingVolume.metadata_only) {
+    // An INSTALLED row is a real duplicate. A metadata-only row is not: this
+    // save is the reinstall, and it fills that row.
+    if (existingVolume && isVolumeInstalled(existingVolume)) {
       throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
     }
 

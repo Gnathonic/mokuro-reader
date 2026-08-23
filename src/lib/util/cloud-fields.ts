@@ -1,10 +1,16 @@
 import type { VolumeMetadata } from '$lib/types';
+import { needsDownload } from '$lib/catalog/volume-state';
 import type { ProviderType } from './sync/provider-interface';
 
 /**
  * Cloud field helpers for VolumeMetadata
  *
- * Handles migration from legacy Drive-specific fields to generic cloud fields
+ * Handles migration from legacy Drive-specific fields to generic cloud fields.
+ *
+ * They answer "where would this volume be downloaded from", so they apply to
+ * both kinds of not-installed volume: a cloud placeholder, and a metadata-only
+ * row the catalog decorated with its cloud file (`cloudFieldsForRemovedVolume`).
+ * An installed volume has nothing to download and always reads as null.
  */
 
 /**
@@ -12,7 +18,7 @@ import type { ProviderType } from './sync/provider-interface';
  * Automatically migrates from legacy driveFileId format
  */
 export function getCloudProvider(volume: VolumeMetadata): ProviderType | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format: explicit cloudProvider
   if (volume.cloudProvider) {
@@ -32,7 +38,7 @@ export function getCloudProvider(volume: VolumeMetadata): ProviderType | null {
  * Automatically migrates from legacy driveFileId format
  */
 export function getCloudFileId(volume: VolumeMetadata): string | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format: explicit cloudFileId
   if (volume.cloudFileId) {
@@ -52,7 +58,7 @@ export function getCloudFileId(volume: VolumeMetadata): string | null {
  * Automatically migrates from legacy driveModifiedTime format
  */
 export function getCloudModifiedTime(volume: VolumeMetadata): string | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format
   if (volume.cloudModifiedTime) {
@@ -72,7 +78,7 @@ export function getCloudModifiedTime(volume: VolumeMetadata): string | null {
  * Automatically migrates from legacy driveSize format
  */
 export function getCloudSize(volume: VolumeMetadata): number | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format
   if (volume.cloudSize !== undefined) {
@@ -134,5 +140,5 @@ export function createCloudFields(
  * Check if a volume has cloud metadata (either new or legacy format)
  */
 export function hasCloudMetadata(volume: VolumeMetadata): boolean {
-  return !!(volume.isPlaceholder && (volume.cloudFileId || volume.driveFileId));
+  return !!(needsDownload(volume) && (volume.cloudFileId || volume.driveFileId));
 }
