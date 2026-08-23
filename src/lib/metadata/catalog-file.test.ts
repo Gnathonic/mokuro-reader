@@ -4,6 +4,7 @@ import type { SeriesMetadata } from './types';
 import {
   buildCatalogFile,
   catalogEntryFromMeta,
+  catalogSeriesEqual,
   catalogEntryFromSeriesFile,
   catalogEntryToSeriesFile,
   isCatalogFilePath,
@@ -329,5 +330,52 @@ describe('stringifyCatalogFile / isCatalogFilePath', () => {
     expect(isCatalogFilePath('CATALOG.JSON')).toBe(true);
     expect(isCatalogFilePath('Dr Stone/catalog.json')).toBe(false);
     expect(isCatalogFilePath('my-catalog.json')).toBe(false);
+  });
+});
+
+describe('catalogSeriesEqual', () => {
+  function entry(overrides: Partial<CatalogFileEntry> = {}): CatalogFileEntry {
+    return {
+      series_title: 'Dr Stone',
+      external_ids: { anilist: 98416 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-23T00:00:00.000Z',
+      ...overrides
+    };
+  }
+
+  it('is true for the same series, whatever order they are listed in', () => {
+    const a = [entry(), entry({ series_title: 'Other', external_ids: {} })];
+    expect(catalogSeriesEqual(a, [...a].reverse())).toBe(true);
+  });
+
+  it('ignores key order inside an entry (a parsed copy vs a rebuilt one)', () => {
+    // `parseCatalogFile` appends `tag` AFTER `updated_at`; a locally built entry
+    // puts it before. Same facts — a raw JSON.stringify would disagree.
+    const built = { ...entry(), tag: 'reading', updated_at: '2026-08-23T00:00:00.000Z' };
+    const parsed = JSON.parse(
+      JSON.stringify({
+        series_title: 'Dr Stone',
+        external_ids: { anilist: 98416 },
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-08-23T00:00:00.000Z',
+        tag: 'reading'
+      })
+    );
+    expect(catalogSeriesEqual([built], [parsed])).toBe(true);
+  });
+
+  it('is false when any fact, title, stamp or series differs', () => {
+    expect(catalogSeriesEqual([entry()], [entry({ external_ids: { anilist: 1 } })])).toBe(false);
+    expect(catalogSeriesEqual([entry()], [entry({ synonyms: ['Dr. Stone'] })])).toBe(false);
+    expect(catalogSeriesEqual([entry()], [entry({ tag: 'reading' })])).toBe(false);
+    expect(catalogSeriesEqual([entry()], [entry({ updated_at: FACTLESS_UPDATED_AT })])).toBe(false);
+    expect(catalogSeriesEqual([entry()], [entry(), entry({ series_title: 'Extra' })])).toBe(false);
+  });
+
+  it('treats a missing copy as unequal — there is nothing to compare against', () => {
+    expect(catalogSeriesEqual([entry()], undefined)).toBe(false);
   });
 });

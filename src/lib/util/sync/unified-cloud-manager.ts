@@ -25,6 +25,7 @@ import {
   CATALOG_FILE_NAME,
   buildCatalogFile,
   catalogEntryFromMeta,
+  catalogSeriesEqual,
   isCatalogFilePath,
   parseCatalogFile,
   stringifyCatalogFile,
@@ -1079,10 +1080,16 @@ class UnifiedCloudManager {
    * our last fetch, so we re-read it first and the union keeps that device's
    * series. Throws when the re-read fails: writing on top of a copy we could not
    * read would silently clobber it.
+   *
+   * `faithful` says whether the returned copy is known to be what the cloud file
+   * holds right now — true for a copy just downloaded, and for cached rows the
+   * listing stamp vouches for. It is false when there is no cloud file at all
+   * and when the cloud copy was junk, which is exactly when an identical rebuild
+   * must still be published rather than short-circuited as a no-op.
    */
   private async resolveExistingCatalogFile(
     providerType: ProviderType
-  ): Promise<CatalogFile | undefined> {
+  ): Promise<{ file: CatalogFile | undefined; faithful: boolean }> {
     const rows = await listCatalogIndexes();
     const cachedFile = (): CatalogFile | undefined =>
       rows.length === 0
@@ -1090,10 +1097,11 @@ class UnifiedCloudManager {
         : { version: 1, updated_at: new Date(0).toISOString(), series: rows.map((r) => r.entry) };
 
     const cloudFile = this.getCloudCatalogFile();
-    if (!cloudFile) return cachedFile();
+    if (!cloudFile) return { file: cachedFile(), faithful: false };
 
     const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
-    if (!catalogNeedsRefresh(rows, stamp, providerType)) return cachedFile();
+    if (!catalogNeedsRefresh(rows, stamp, providerType))
+      return { file: cachedFile(), faithful: true };
 
     const blob = await this.downloadFile(cloudFile);
     let fresh: CatalogFile | undefined;
@@ -1105,7 +1113,7 @@ class UnifiedCloudManager {
     // Junk in the cloud (hand-edited, truncated, a proxy error page): this write
     // replaces it, but the series other devices published are still known from
     // the last good fetch, so merge on top of the CACHE rather than nothing.
-    return fresh ?? cachedFile();
+    return fresh ? { file: fresh, faithful: true } : { file: cachedFile(), faithful: false };
   }
 
   /**
@@ -1142,8 +1150,9 @@ class UnifiedCloudManager {
     if (cloudTitles.size === 0) return 'skipped';
 
     let existing: CatalogFile | undefined;
+    let faithful = false;
     try {
-      existing = await this.resolveExistingCatalogFile(provider.type);
+      ({ file: existing, faithful } = await this.resolveExistingCatalogFile(provider.type));
     } catch (error) {
       console.debug('Could not read the cloud catalog.json:', error);
       return 'skipped';
@@ -1156,6 +1165,13 @@ class UnifiedCloudManager {
 
     const file = buildCatalogFile({ entries, existing, cloudSeriesTitles: cloudTitles });
     if (!file) return 'skipped';
+
+    // Nothing to say that the cloud copy does not already say. Publishing anyway
+    // would change only the build stamp — new bytes, new mtime — and that flips
+    // `catalogNeedsRefresh` on every other device, making them all re-download a
+    // file that did not change. Only sound when the copy we compared against is
+    // known to be the cloud's current content.
+    if (faithful && catalogSeriesEqual(file.series, existing?.series)) return 'skipped';
 
     const blob = new Blob([stringifyCatalogFile(file)], { type: 'application/json' });
     await this.uploadFile(CATALOG_FILE_NAME, blob);

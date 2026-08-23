@@ -1930,6 +1930,33 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     };
   }
 
+  /**
+   * A cached catalog row for a factless series, as the last fetch left it.
+   * `sourceOverrides` is how a test makes the cache look STALE against the
+   * listing, which is what sends the write down the re-read path.
+   */
+  function cachedRow(seriesTitle: string, sourceOverrides: Record<string, unknown> = {}) {
+    return {
+      series_key: seriesTitle.toLowerCase(),
+      series_title: seriesTitle,
+      entry: {
+        series_title: seriesTitle,
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '1970-01-01T00:00:00.000Z'
+      },
+      source: {
+        provider: 'webdav',
+        path: 'catalog.json',
+        size: 5,
+        modifiedTime: '2026-08-22T00:00:00.000Z',
+        ...sourceOverrides
+      },
+      fetched_at: '2026-08-22T00:00:00.000Z'
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     catalogRows.mockResolvedValue([]);
@@ -2007,6 +2034,78 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // The cache is stamped so the very next listing does not re-download our own write.
     const cached = putCatalogIndexes.mock.calls.at(-1)![0] as Array<{ series_key: string }>;
     expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
+  });
+
+  it('skips the upload when the rebuild says exactly what the cloud already says', async () => {
+    // A no-op rebuild used to publish anyway: identical entries, fresh build
+    // stamp, new bytes — which flips `catalogNeedsRefresh` on every other
+    // device and makes them all re-download a file that did not change.
+    const unchanged = {
+      version: 1,
+      updated_at: '2026-08-22T00:00:00.000Z',
+      series: [
+        {
+          series_title: 'Dr Stone',
+          external_ids: { anilist: 98416 },
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-23T00:00:00.000Z'
+        },
+        {
+          series_title: 'Other',
+          external_ids: { anilist: 1 },
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-22T00:00:00.000Z'
+        }
+      ]
+    };
+    const p = provider();
+    p.downloadFile = vi.fn(async () => new Blob([JSON.stringify(unchanged)]));
+    getActiveProvider.mockReturnValue(p);
+    getAllSeriesMetadata.mockResolvedValue({
+      'dr stone': {
+        series_key: 'dr stone',
+        series_title: 'Dr Stone',
+        external_ids: { anilist: 98416 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-23T00:00:00.000Z',
+        facts_updated_at: '2026-08-23T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('still publishes when the cloud has no catalog.json, however well the cache matches', async () => {
+    // `existing` comes from the CACHE here, and matching the cache says nothing
+    // about a cloud that has no such file at all.
+    getActiveProvider.mockReturnValue(provider());
+    getAllFiles.mockReturnValue(listing.filter((f) => f.path !== 'catalog.json'));
+    catalogRows.mockResolvedValue([cachedRow('Dr Stone'), cachedRow('Other')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
+    expect(uploadFile).toHaveBeenCalled();
+  });
+
+  it('republishes over a junk cloud copy even when the cache matches the rebuild', async () => {
+    // Hand-edited, truncated, or a proxy error page: the merge falls back to the
+    // cache, and the whole point of the write is to replace that junk.
+    const p = provider();
+    p.downloadFile = vi.fn(async () => new Blob(['<html>502</html>']));
+    getActiveProvider.mockReturnValue(p);
+    // Stale stamp, so the write re-reads the cloud copy and finds the junk.
+    const stale = { modifiedTime: '2026-08-01T00:00:00.000Z' };
+    catalogRows.mockResolvedValue([cachedRow('Dr Stone', stale), cachedRow('Other', stale)]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
+    expect(uploadFile).toHaveBeenCalled();
   });
 
   it('drops cached rows of THIS provider whose series left the catalog', async () => {

@@ -210,6 +210,38 @@ export function buildCatalogFile(args: {
   };
 }
 
+/** One entry as canonical text: fixed key order, empties omitted, facts only. */
+function canonicalEntry(entry: CatalogFileEntry): string {
+  return JSON.stringify({
+    series_title: entry.series_title,
+    ...factsOf(entry),
+    updated_at: entry.updated_at
+  });
+}
+
+/**
+ * Do these two catalog bodies say exactly the same thing?
+ *
+ * Compares the `series` arrays only — NEVER the file's own `updated_at`, which
+ * is a fresh build stamp on every rebuild and would make every no-op look like a
+ * change. Order-insensitive on both axes: entry key order differs between a
+ * parsed cloud copy and a locally built one, and a hand-written file need not be
+ * sorted.
+ *
+ * The point is the upload: republishing an identical catalog changes its
+ * size/mtime, which flips `catalogNeedsRefresh` on every other device and has
+ * them all re-download a file that did not change.
+ */
+export function catalogSeriesEqual(
+  a: CatalogFileEntry[],
+  b: CatalogFileEntry[] | undefined
+): boolean {
+  if (!b || a.length !== b.length) return false;
+  const left = a.map(canonicalEntry).sort();
+  const right = b.map(canonicalEntry).sort();
+  return left.every((entry, i) => entry === right[i]);
+}
+
 function parseEntry(value: unknown): CatalogFileEntry | undefined {
   if (!isRecord(value)) return undefined;
   const series_title = value.series_title;
