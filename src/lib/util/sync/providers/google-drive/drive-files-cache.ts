@@ -4,6 +4,7 @@ import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CloudCache } from '../../cloud-cache-interface';
 import type { DriveFileMetadata } from '../../provider-interface';
+import { isRootConfigFile } from '../../syncable-file';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -87,8 +88,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const typeCounts: Record<string, number> = {};
         const cbzFiles: any[] = [];
         const sidecarFiles: any[] = [];
-        const volumeDataFiles: any[] = [];
-        const profilesFiles: any[] = [];
+        const rootConfigFiles: any[] = [];
         const folderNames = new Map<string, string>();
         const foundFolderNames: string[] = [];
 
@@ -116,17 +116,19 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             /\.(webp|jpe?g)$/i.test(item.name)
           ) {
             sidecarFiles.push(item);
-          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
-            volumeDataFiles.push(item);
-          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
-            profilesFiles.push(item);
+          } else if (isRootConfigFile(item.name)) {
+            // volume-data.json, profiles.json, series-metadata.json, catalog.json
+            rootConfigFiles.push(item);
           }
         }
 
         // Log warning if duplicates found
-        if (volumeDataFiles.length > 1) {
+        const volumeDataCount = rootConfigFiles.filter(
+          (file) => file.name.toLowerCase() === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA
+        ).length;
+        if (volumeDataCount > 1) {
           console.warn(
-            `Found ${volumeDataFiles.length} volume-data.json files - duplicates will be merged and cleaned up during sync`
+            `Found ${volumeDataCount} volume-data.json files - duplicates will be merged and cleaned up during sync`
           );
         }
 
@@ -168,46 +170,44 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           }
         }
 
-        // Add volume-data.json files as an array
-        if (volumeDataFiles.length > 0) {
-          const volumeDataMetadata = volumeDataFiles.map((file) => {
-            console.log('Volume data file from API:', file);
-            const metadata: DriveFileMetadata = {
-              provider: 'google-drive',
-              fileId: file.id,
-              name: file.name,
-              modifiedTime: file.modifiedTime || new Date().toISOString(),
-              size: file.size ? parseInt(file.size) : 0,
-              path: file.name
-            };
-            return metadata;
-          });
+        // Add root config files, keyed by BASENAME (`get()`/`has()` derive the
+        // cache key from `path.split('/')[0]`, so `catalog.json` is its own key).
+        //
+        // One that lives in a SERIES folder is NOT a root file: cached at the bare
+        // name it would shadow the real root copy and readers would fetch the wrong
+        // file. Those keep their full `<Series>/<name>` path and are grouped with
+        // the series, exactly like the archives and sidecars above — the same guard
+        // MEGA applies with `isJson && pathParts.length === 0`.
+        for (const file of rootConfigFiles) {
+          const parentId = file.parents?.[0];
+          const parentName = parentId ? folderNames.get(parentId) : null;
+          const seriesFolder =
+            parentName && parentName !== GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER
+              ? parentName
+              : null;
 
-          console.log('Cached volume data metadata:', volumeDataMetadata);
-          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA, volumeDataMetadata);
-        }
+          const metadata: DriveFileMetadata = {
+            provider: 'google-drive',
+            fileId: file.id,
+            name: file.name,
+            modifiedTime: file.modifiedTime || new Date().toISOString(),
+            size: file.size ? parseInt(file.size) : 0,
+            path: seriesFolder ? `${seriesFolder}/${file.name}` : file.name,
+            description: file.description,
+            parentId
+          };
 
-        // Add profiles.json files as an array
-        if (profilesFiles.length > 0) {
-          const profilesMetadata = profilesFiles.map((file) => {
-            console.log('Profiles file from API:', file);
-            const metadata: DriveFileMetadata = {
-              provider: 'google-drive',
-              fileId: file.id,
-              name: file.name,
-              modifiedTime: file.modifiedTime || new Date().toISOString(),
-              size: file.size ? parseInt(file.size) : 0,
-              path: file.name
-            };
-            return metadata;
-          });
-
-          console.log('Cached profiles metadata:', profilesMetadata);
-          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES, profilesMetadata);
+          const key = seriesFolder ?? file.name.toLowerCase();
+          const existing = cacheMap.get(key);
+          if (existing) {
+            existing.push(metadata);
+          } else {
+            cacheMap.set(key, [metadata]);
+          }
         }
 
         console.log(
-          `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
+          `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${rootConfigFiles.length} root config file(s)`
         );
         this.cache.set(cacheMap);
         this.lastFetchTime = Date.now();
