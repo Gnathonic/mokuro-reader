@@ -46,6 +46,14 @@ export class FilesystemProvider implements SyncProvider {
       isAuthenticated: this.isAuthenticated(),
       hasStoredCredentials: this.hasStoredHandle,
       needsAttention: this.hasStoredHandle && !this.isAuthenticated(),
+      // Stated rather than omitted: the `series.json` / `catalog.json` writers
+      // gate on both, and an absent flag would pass those gates by accident
+      // instead of by decision. A connected folder is writable by construction
+      // — the picker asks for `readwrite` and `restoreHandle` only adopts a
+      // stored handle whose `readwrite` permission is already granted — and a
+      // local folder has no server to compile the metadata files for us.
+      isReadOnly: false,
+      serverCompilesMetadata: false,
       statusMessage: this.isAuthenticated()
         ? `Connected to folder "${this.rootHandle?.name ?? ''}"`
         : this.hasStoredHandle
