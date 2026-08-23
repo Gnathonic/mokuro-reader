@@ -15,6 +15,7 @@ import {
   deleteSeriesIndex,
   moveSeriesIndexKey,
   indexNeedsRefresh,
+  sourceStampChanged,
   seriesIndexMap,
   type SeriesIndexRecord
 } from './series-index';
@@ -248,5 +249,33 @@ describe('series index store', () => {
       });
       expect(indexNeedsRefresh(rec, { size: 100, modifiedTime: 'not-a-date' })).toBe(true);
     });
+  });
+});
+
+describe('sourceStampChanged', () => {
+  const cloud = { size: 10, modifiedTime: '2026-08-17T00:00:00.000Z' };
+
+  it('is true with no cached source at all', () => {
+    expect(sourceStampChanged(undefined, cloud, 'webdav')).toBe(true);
+  });
+
+  it('is false when provider, size and instant all match', () => {
+    expect(
+      sourceStampChanged(
+        { provider: 'webdav', size: 10, modifiedTime: '2026-08-17T00:00:00.000Z' },
+        cloud,
+        'webdav'
+      )
+    ).toBe(false);
+  });
+
+  it('is true when the cloud modifiedTime does not parse', () => {
+    expect(
+      sourceStampChanged(
+        { provider: 'webdav', size: 10, modifiedTime: '2026-08-17T00:00:00.000Z' },
+        { size: 10, modifiedTime: 'whenever' },
+        'webdav'
+      )
+    ).toBe(true);
   });
 });

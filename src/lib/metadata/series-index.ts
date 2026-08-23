@@ -100,35 +100,46 @@ function toEpoch(value: string): number | undefined {
 }
 
 /**
- * Should this series' `series.json` be re-downloaded?
+ * Has the cloud file changed since a cache record was fetched from `source`?
  *
- * True when there is no cached record, when the record was cached from another
- * source than `provider` (see below), or when the cloud file's `size` or
- * `modifiedTime` differs from what the cached record was fetched at.
- * `modifiedTime` is compared as parsed instants (epoch ms), not strings, so
- * e.g. `2026-08-17T00:00:00.000Z` and `2026-08-17T00:00:00+00:00` — the same
- * instant in different ISO representations, which different providers may
- * report — count as unchanged rather than triggering a spurious refetch. An
- * unparseable cloud `modifiedTime` fails open (treated as changed) since a
- * provider bug there shouldn't permanently pin a stale cache.
+ * Shared by every stamp-versioned download cache (`series_index`,
+ * `catalog_index`) so the comparison rules live in exactly one place:
  *
- * Pure — no I/O, so it is cheap to call for every series on every cloud listing.
+ * - no cached source → changed (nothing to compare against);
+ * - a source from ANOTHER provider says nothing about THIS provider's copy,
+ *   whose size/mtime it never saw → changed;
+ * - size differs → changed;
+ * - `modifiedTime` is compared as parsed instants (epoch ms), not strings, so
+ *   `2026-08-17T00:00:00.000Z` and `2026-08-17T00:00:00+00:00` — the same
+ *   instant in the different ISO forms providers report — count as unchanged;
+ * - an unparseable stamp on either side fails open (treated as changed) rather
+ *   than pinning a stale cache forever.
+ */
+export function sourceStampChanged(
+  source: { provider: string; size: number; modifiedTime: string } | undefined,
+  cloud: { size: number; modifiedTime: string },
+  provider?: string
+): boolean {
+  if (!source) return true;
+  if (provider !== undefined && source.provider !== provider) return true;
+  if (source.size !== cloud.size) return true;
+
+  const cachedEpoch = toEpoch(source.modifiedTime);
+  const cloudEpoch = toEpoch(cloud.modifiedTime);
+  if (cloudEpoch === undefined) return true;
+  if (cachedEpoch === undefined) return true;
+  return cachedEpoch !== cloudEpoch;
+}
+
+/**
+ * Should this series' `series.json` be re-downloaded? See `sourceStampChanged`
+ * for the rules. Pure — no I/O, so it is cheap to call for every series on every
+ * cloud listing.
  */
 export function indexNeedsRefresh(
   rec: SeriesIndexRecord | undefined,
   cloud: { size: number; modifiedTime: string },
   provider?: string
 ): boolean {
-  if (!rec) return true;
-  // A record cached from somewhere else — a local import, or another provider's
-  // account — says nothing about THIS provider's copy, whose size/mtime it never
-  // saw. Treat it as stale so the cloud file is actually fetched.
-  if (provider !== undefined && rec.source.provider !== provider) return true;
-  if (rec.source.size !== cloud.size) return true;
-
-  const cachedEpoch = toEpoch(rec.source.modifiedTime);
-  const cloudEpoch = toEpoch(cloud.modifiedTime);
-  if (cloudEpoch === undefined) return true;
-  if (cachedEpoch === undefined) return true;
-  return cachedEpoch !== cloudEpoch;
+  return sourceStampChanged(rec?.source, cloud, provider);
 }
