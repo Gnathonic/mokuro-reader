@@ -937,9 +937,15 @@ export class WebDAVProvider implements SyncProvider {
         throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
       }
 
-      const kind = classifyWriteError(errorMessage);
-      if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+      // Same best-effort contract as uploadFile: cleanupSeriesFileIfFolderEmptied()
+      // and moveSeriesFileAfterRename() DELETE `<Series>/series.json`, which a
+      // server that compiles it rejects by design. The callers swallow the throw,
+      // so an unguarded demotion here would flip the provider read-only silently.
+      if (!isBestEffortMetadataPath(file.path)) {
+        const kind = classifyWriteError(errorMessage);
+        if (kind !== 'other') {
+          this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+        }
       }
 
       throw new ProviderError(
