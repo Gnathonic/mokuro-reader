@@ -68,6 +68,7 @@ import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
 import { updateCatalogSetting } from '$lib/settings/settings';
+import { updateProgress } from '$lib/settings';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
@@ -567,14 +568,14 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     expect(badge.className).toContain('pointer-events-none');
   });
 
-  it('marks the card whose covers have not arrived', () => {
-    // No thumbnail dimensions: the card falls back to its download boxes, which must
-    // carry the mark too — it is not tied to the CompositeCanvas branch.
+  it('lets the download box speak for itself when no cover has arrived', () => {
+    // No thumbnail dimensions: the card falls back to its download boxes. The 64px icon
+    // and its caption ARE the mark — a corner badge on top would only repeat them.
     const { container } = render(CatalogItem, {
       props: { volumes: [localVolume({ metadata_only: true })] }
     });
     expect(container.textContent).toContain('Click to download');
-    expect(badges(container)).toHaveLength(1);
+    expect(badges(container)).toHaveLength(0);
   });
 
   it('names the mark for screen readers — on a card it is the only cue', () => {
@@ -697,6 +698,9 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
     return {
       dimmed: card.className.includes('opacity-70'),
       mutedTitle: title?.className.includes('text-gray-400') ?? false,
+      // The read marker: the one thing a series with history may say that a cloud-only
+      // one cannot. Tracked here so a refactor cannot quietly drop it.
+      greenTitle: card.className.includes('text-green-400'),
       chip: card.querySelector('p.text-xs')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
       badges: card.querySelectorAll('[data-testid="download-badge"]').length
     };
@@ -726,6 +730,7 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
     expect(placeholderIdentity).toEqual({
       dimmed: true,
       mutedTitle: true,
+      greenTitle: false,
       chip: '2 volumes in Drive',
       badges: 1
     });
@@ -738,9 +743,34 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
     expect(identity(container)).toEqual({
       dimmed: false,
       mutedTitle: false,
+      greenTitle: false,
       chip: null,
       badges: 0
     });
+  });
+
+  it('still shows the read marker on a removed series that was finished', () => {
+    // Exception #2 to the identity rule: progress is data, and a series whose pages are
+    // gone still knows it was read. The muted grey yields to the green.
+    updateProgress('m-1', 10, 0, true);
+    try {
+      const { container } = render(CatalogItem, {
+        props: {
+          volumes: [cover({ volume_uuid: 'm-1', metadata_only: true })],
+          providerName: 'Drive'
+        }
+      });
+
+      expect(identity(container)).toEqual({
+        dimmed: true,
+        mutedTitle: false,
+        greenTitle: true,
+        chip: '1 volume in Drive',
+        badges: 1
+      });
+    } finally {
+      updateProgress('m-1', 0, 0, false);
+    }
   });
 
   it('keeps the series editor shortcut and the link working on a removed series', async () => {
@@ -853,6 +883,12 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
 
     const marks = badges(container);
     expect(marks).toHaveLength(2);
+    // Named, and named for the right volume: on this card nothing else says so.
+    expect(marks.map((el) => el.querySelector('.sr-only')?.textContent)).toEqual([
+      'Vol 2 not on this device',
+      'Vol 3 not on this device'
+    ]);
+    expect(marks[0].getAttribute('aria-hidden')).toBeNull();
     // One per spine, at its own place in the stack.
     const lefts = marks.map((el) => el.style.left);
     expect(new Set(lefts).size).toBe(2);

@@ -20,7 +20,11 @@
     type SpineOffsetPatch,
     type SpineOffsets
   } from '$lib/metadata/spine-offsets';
-  import { computeStackLayout, hitTestStack } from '$lib/util/spine-stack-layout';
+  import {
+    computeStackLayout,
+    hitTestStack,
+    spineBadgePlacements
+  } from '$lib/util/spine-stack-layout';
   import {
     CARD_BASE_HEIGHT,
     CARD_BASE_WIDTH,
@@ -367,44 +371,31 @@
 
   /**
    * Where to mark the individual spines whose pages are not on this device, for a series
-   * that still has something to read. Read off the SAME numbers CompositeCanvas draws
-   * with — the cascading lefts, the right-align shift, `stepSizes` — so each mark rides
-   * its own spine. Overlays only: nothing here feeds back into the card's geometry.
+   * that still has something to read. The placement rule is shared with the series
+   * editor's spine shelf (`spineBadgePlacements`), so both ride the painted spines the
+   * same way, and it is overlays only — the card's geometry is untouched.
    *
    * Skipped entirely when the WHOLE series is absent: the card is then the cloud card,
    * which carries one mark of its own (see `absentMark`), and marking every spine on top
    * of it would say the same thing four times.
    */
-  const STACK_BADGE_PX = 16; // h-4/w-4, the `sm` badge
   let stackBadges = $derived.by(() => {
-    const marks: { uuid: string; left: number; top: number }[] = [];
-    const count = stackedVolumes.length;
-    if (seriesNeedsDownload || count === 0 || !hasRenderableThumbnails) return marks;
+    if (seriesNeedsDownload || !hasRenderableThumbnails) return [];
+    // Nothing in the drawn stack is absent: skip the placement pass entirely. In spine
+    // mode this derived re-runs on every wheel tick, over every card on screen.
+    if (!stackedVolumes.some(needsDownload)) return [];
 
-    // CompositeCanvas' own placement, mirrored (see its draw()).
-    const lefts: number[] = [];
-    let cumulative = 0;
-    for (let i = 0; i < count; i++) {
-      lefts[i] = i * stepSizes.horizontal + cumulative;
-      cumulative += volumeOffsets.get(i) ?? 0;
-    }
-    const lastWidth = getCanvasDimensions(stackedVolumes[count - 1].volume_uuid)?.width ?? 0;
-    const alignShift = containerDimensions.innerWidth - ((lefts[count - 1] ?? 0) + lastWidth);
-
-    for (let i = 0; i < count; i++) {
-      const vol = stackedVolumes[i];
-      if (!needsDownload(vol)) continue;
-      // No pixels means no painted spine to mark (the canvas skips it too).
-      if (!vol.thumbnail) continue;
-      const dims = getCanvasDimensions(vol.volume_uuid);
-      if (!dims) continue;
-      marks.push({
-        uuid: vol.volume_uuid,
-        left: lefts[i] + alignShift + dims.width - STACK_BADGE_PX - 2,
-        top: stepSizes.topOffset + i * stepSizes.vertical + dims.height - STACK_BADGE_PX - 2
-      });
-    }
-    return marks;
+    return spineBadgePlacements({
+      volumes: stackedVolumes,
+      // A volume with no pixels is not painted, so it has no corner to mark.
+      isMarked: (vol) => needsDownload(vol) && !!vol.thumbnail,
+      drawnSize: (vol) => getCanvasDimensions(vol.volume_uuid),
+      horizontalStepPx: stepSizes.horizontal,
+      verticalStepPx: stepSizes.vertical,
+      topOffsetPx: stepSizes.topOffset,
+      canvasWidth: containerDimensions.innerWidth,
+      volumeOffsetsByIndex: volumeOffsets
+    });
   });
 
   // Visual indicator state
@@ -716,8 +707,15 @@
                 highlightIndex={showVolumeIndicator ? hoveredVolumeIndex : null}
               />
             {/key}
-            {#each stackBadges as mark (mark.uuid)}
-              <DownloadBadge size="sm" class="" style="left: {mark.left}px; top: {mark.top}px;" />
+            {#each stackBadges as mark (stackedVolumes[mark.index].volume_uuid)}
+              <!-- Named: on a card that is otherwise a normal library card, this badge is
+                   the only thing that says the volume under it is not here. -->
+              <DownloadBadge
+                size="sm"
+                class=""
+                style="left: {mark.left}px; top: {mark.top}px;"
+                label="{stackedVolumes[mark.index].volume_title} not on this device"
+              />
             {/each}
           </div>
           {@render absentMark()}
@@ -761,7 +759,8 @@
               </div>
             {/each}
           </div>
-          {@render absentMark()}
+          <!-- No badge here: the 64px download icon and "Click to download" under it ARE
+               the mark, and a second glyph in the corner only repeats them. -->
         </div>
       {:else if stackedVolumes.length > 0}
         <!-- Local volumes exist, but thumbnails are not ready yet -->
