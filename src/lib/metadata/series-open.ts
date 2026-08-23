@@ -12,6 +12,14 @@ import { normalizeSeriesKey } from './series-key';
  * hole patch arriving together cost one pass. Best-effort throughout: never
  * rejects, never surfaces UI — a series that fails to load simply shows what the
  * device already had.
+ *
+ * The returned promise settles at MATERIALIZATION, not at the end of the pass.
+ * That is the point the catalog has its rows and the view can render, whereas
+ * cover install is one network round trip per volume behind it; a caller that
+ * showed a spinner would otherwise hold it over I/O that changes nothing it is
+ * waiting for. The cover step is still awaited INSIDE the pass, so its failures
+ * stay contained here and the dedupe entry lives until it is genuinely done —
+ * a second open during cover install joins instead of racing it.
  */
 const inFlight = new Map<string, Promise<void>>();
 
@@ -22,7 +30,12 @@ export function openSeries(seriesTitle: string): Promise<void> {
   const running = inFlight.get(key);
   if (running) return running;
 
-  const run = (async () => {
+  let markMaterialized!: () => void;
+  const materialized = new Promise<void>((resolve) => {
+    markMaterialized = resolve;
+  });
+
+  void (async () => {
     try {
       const file = await unifiedCloudManager.refreshSeriesIndexForSeries(seriesTitle);
       if (!file) return;
@@ -32,16 +45,21 @@ export function openSeries(seriesTitle: string): Promise<void> {
         entries: file.volumes,
         cloudVolumeTitles: unifiedCloudManager.cloudVolumeTitlesFor(seriesTitle)
       });
+      markMaterialized();
+
       // Covers are installed even when nothing was materialized: rows from an
       // earlier open may still be missing theirs.
       await installCoversForSeries(seriesTitle);
     } catch (error) {
       console.debug(`[series-open] could not load '${seriesTitle}':`, error);
     } finally {
+      // Idempotent: every path that ends the pass without materializing (no
+      // index, a throw) must still release the caller.
+      markMaterialized();
       inFlight.delete(key);
     }
   })();
 
-  inFlight.set(key, run);
-  return run;
+  inFlight.set(key, materialized);
+  return materialized;
 }

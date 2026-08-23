@@ -47,6 +47,9 @@ beforeEach(() => {
   refreshSeriesIndexForSeries.mockResolvedValue(file);
   cloudVolumeTitlesFor.mockReturnValue(new Set(['Volume 1']));
   materializeSeriesVolumes.mockResolvedValue(1);
+  // clearAllMocks keeps implementations, so restore the default explicitly —
+  // the cover tests below install a deliberately pending one.
+  installCoversForSeries.mockResolvedValue(1);
 });
 
 describe('openSeries', () => {
@@ -79,6 +82,46 @@ describe('openSeries', () => {
     const b = openSeries('dr  stone');
     await Promise.all([a, b]);
     expect(refreshSeriesIndexForSeries).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves once the volumes are materialized, without waiting on covers', async () => {
+    // The view clears its spinner on this promise, and cover install is network
+    // I/O for every volume — the spinner must not span it.
+    let releaseCovers!: (installed: number) => void;
+    installCoversForSeries.mockReturnValue(
+      new Promise<number>((resolve) => {
+        releaseCovers = resolve;
+      })
+    );
+
+    await openSeries('Dr Stone');
+
+    expect(materializeSeriesVolumes).toHaveBeenCalled();
+    expect(installCoversForSeries).toHaveBeenCalledWith('Dr Stone');
+    releaseCovers(1);
+  });
+
+  it('keeps deduping while the cover install is still running', async () => {
+    // The pass is not finished until the covers are in, so a second open must
+    // still join it rather than start a competing refresh.
+    let releaseCovers!: (installed: number) => void;
+    installCoversForSeries.mockReturnValue(
+      new Promise<number>((resolve) => {
+        releaseCovers = resolve;
+      })
+    );
+
+    await openSeries('Dr Stone');
+    await openSeries('Dr Stone');
+
+    expect(refreshSeriesIndexForSeries).toHaveBeenCalledTimes(1);
+    expect(installCoversForSeries).toHaveBeenCalledTimes(1);
+    releaseCovers(1);
+  });
+
+  it('contains a cover-install failure', async () => {
+    installCoversForSeries.mockRejectedValueOnce(new Error('boom'));
+    await expect(openSeries('Dr Stone')).resolves.toBeUndefined();
   });
 
   it('never rejects', async () => {

@@ -165,15 +165,21 @@
 
   // Series open is a load step: refresh this series' series.json, materialize
   // its volumes, install covers. Keyed on the route param so navigating between
-  // series re-runs it; `openSeries` itself dedupes and never rejects.
+  // series re-runs it; `openSeries` itself dedupes, never rejects, and settles
+  // once the rows exist rather than waiting on the cover downloads behind them.
   let seriesOpenPending = $state(false);
+  // Only the newest run may clear the flag. Series A settling after a
+  // navigation to B would otherwise drop B's spinner and flash "Series not
+  // found" over a series still being materialized.
+  let seriesOpenRun = 0;
 
   $effect(() => {
     const title = $routeParams.manga;
     if (!browser || !title) return;
+    const run = ++seriesOpenRun;
     seriesOpenPending = true;
     openSeries(title).finally(() => {
-      seriesOpenPending = false;
+      if (run === seriesOpenRun) seriesOpenPending = false;
     });
   });
 
