@@ -803,3 +803,137 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
     expect(container.textContent).not.toContain('Generating');
   });
 });
+
+describe('CatalogItem marks the absent volumes inside a mostly-local stack', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  /** A volume the card's canvas actually paints: real dimensions AND pixels. */
+  const painted = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }),
+      ...overrides
+    });
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  function badges(container: HTMLElement) {
+    return [...container.querySelectorAll('[data-testid="download-badge"]')] as HTMLElement[];
+  }
+
+  it('badges only the spines whose volumes are not on this device', () => {
+    // Volume 1 is here, 2 and 3 are not — the user's own example.
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+          painted({ volume_uuid: 'v-2', volume_title: 'Vol 2', metadata_only: true }),
+          painted({ volume_uuid: 'v-3', volume_title: 'Vol 3', metadata_only: true })
+        ]
+      }
+    });
+
+    const marks = badges(container);
+    expect(marks).toHaveLength(2);
+    // One per spine, at its own place in the stack.
+    const lefts = marks.map((el) => el.style.left);
+    expect(new Set(lefts).size).toBe(2);
+    for (const mark of marks) {
+      expect(mark.className).toContain('pointer-events-none');
+      expect(mark.style.top).not.toBe('');
+    }
+  });
+
+  it('leaves an all-local stack unmarked', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1' }),
+          painted({ volume_uuid: 'v-2' }),
+          painted({ volume_uuid: 'v-3' })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('does not double-mark: an all-absent series keeps the one card-level mark', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1', metadata_only: true }),
+          painted({ volume_uuid: 'v-2', metadata_only: true }),
+          painted({ volume_uuid: 'v-3', metadata_only: true })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(1);
+  });
+
+  it('marks only what the stack actually shows', () => {
+    // Default stack count is 3, so volumes 4 and 5 are not drawn — and an undrawn volume
+    // gets no mark.
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1' }),
+          painted({ volume_uuid: 'v-2' }),
+          painted({ volume_uuid: 'v-3' }),
+          painted({ volume_uuid: 'v-4', metadata_only: true }),
+          painted({ volume_uuid: 'v-5', metadata_only: true })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('marks nothing for a cloud-only volume, which a part-local card never stacks', () => {
+    // selectCardStackVolumes stacks the local volumes of a series that has any; a
+    // cloud-only volume of such a series is not drawn, so there is no spine to mark.
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1' }),
+          painted({ volume_uuid: 'v-2', isPlaceholder: true })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('marks nothing over a spine the canvas never painted', () => {
+    const { container } = render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1' }),
+          // Dimensions but no pixels: CompositeCanvas skips it, so a mark would float.
+          localVolume({
+            volume_uuid: 'v-2',
+            thumbnail_width: 250,
+            thumbnail_height: 360,
+            metadata_only: true
+          })
+        ]
+      }
+    });
+    expect(badges(container)).toHaveLength(0);
+  });
+});

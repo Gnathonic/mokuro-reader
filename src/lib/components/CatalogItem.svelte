@@ -365,6 +365,48 @@
     `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}-${($catalogSettings?.compactCloudSeries ?? false) ? 'compact' : 'full'}-${showDropShadow}-${hOffsetAdjust}-${volumeOffsetsKey}`
   );
 
+  /**
+   * Where to mark the individual spines whose pages are not on this device, for a series
+   * that still has something to read. Read off the SAME numbers CompositeCanvas draws
+   * with — the cascading lefts, the right-align shift, `stepSizes` — so each mark rides
+   * its own spine. Overlays only: nothing here feeds back into the card's geometry.
+   *
+   * Skipped entirely when the WHOLE series is absent: the card is then the cloud card,
+   * which carries one mark of its own (see `absentMark`), and marking every spine on top
+   * of it would say the same thing four times.
+   */
+  const STACK_BADGE_PX = 16; // h-4/w-4, the `sm` badge
+  let stackBadges = $derived.by(() => {
+    const marks: { uuid: string; left: number; top: number }[] = [];
+    const count = stackedVolumes.length;
+    if (seriesNeedsDownload || count === 0 || !hasRenderableThumbnails) return marks;
+
+    // CompositeCanvas' own placement, mirrored (see its draw()).
+    const lefts: number[] = [];
+    let cumulative = 0;
+    for (let i = 0; i < count; i++) {
+      lefts[i] = i * stepSizes.horizontal + cumulative;
+      cumulative += volumeOffsets.get(i) ?? 0;
+    }
+    const lastWidth = getCanvasDimensions(stackedVolumes[count - 1].volume_uuid)?.width ?? 0;
+    const alignShift = containerDimensions.innerWidth - ((lefts[count - 1] ?? 0) + lastWidth);
+
+    for (let i = 0; i < count; i++) {
+      const vol = stackedVolumes[i];
+      if (!needsDownload(vol)) continue;
+      // No pixels means no painted spine to mark (the canvas skips it too).
+      if (!vol.thumbnail) continue;
+      const dims = getCanvasDimensions(vol.volume_uuid);
+      if (!dims) continue;
+      marks.push({
+        uuid: vol.volume_uuid,
+        left: lefts[i] + alignShift + dims.width - STACK_BADGE_PX - 2,
+        top: stepSizes.topOffset + i * stepSizes.vertical + dims.height - STACK_BADGE_PX - 2
+      });
+    }
+    return marks;
+  });
+
   // Visual indicator state
   let showSeriesIndicator = $derived(isHovered && modifierState === 'shift');
   let showVolumeIndicator = $derived(isHovered && modifierState === 'alt-shift');
@@ -674,6 +716,9 @@
                 highlightIndex={showVolumeIndicator ? hoveredVolumeIndex : null}
               />
             {/key}
+            {#each stackBadges as mark (mark.uuid)}
+              <DownloadBadge size="sm" class="" style="left: {mark.left}px; top: {mark.top}px;" />
+            {/each}
           </div>
           {@render absentMark()}
         </div>
