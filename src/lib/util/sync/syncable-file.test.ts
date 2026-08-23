@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isSyncableFile, isCbzFile, isSidecarFile, isRootConfigFile } from './syncable-file';
+import {
+  isBestEffortMetadataPath,
+  isSyncableFile,
+  isCbzFile,
+  isSidecarFile,
+  isRootConfigFile
+} from './syncable-file';
 
 describe('syncable-file', () => {
   it('accepts cbz, mokuro, mokuro.gz anywhere in the tree', () => {
@@ -58,5 +64,30 @@ describe('syncable-file', () => {
     expect(isSidecarFile('v.cbz')).toBe(false);
     expect(isRootConfigFile('profiles.json')).toBe(true);
     expect(isRootConfigFile('v.cbz')).toBe(false);
+  });
+});
+
+describe('catalog.json', () => {
+  it('is a root config file so every provider lists it', () => {
+    expect(isRootConfigFile('catalog.json')).toBe(true);
+    expect(isRootConfigFile('CATALOG.JSON')).toBe(true);
+    expect(isSyncableFile('catalog.json')).toBe(true);
+  });
+});
+
+describe('isBestEffortMetadataPath', () => {
+  it('covers the two compiled metadata files', () => {
+    expect(isBestEffortMetadataPath('catalog.json')).toBe(true);
+    expect(isBestEffortMetadataPath('/catalog.json')).toBe(true);
+    expect(isBestEffortMetadataPath('Dr Stone/series.json')).toBe(true);
+    expect(isBestEffortMetadataPath('series.json')).toBe(true);
+  });
+
+  it('does NOT cover progress, profiles or archives', () => {
+    expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
+    expect(isBestEffortMetadataPath('profiles.json')).toBe(false);
+    expect(isBestEffortMetadataPath('series-metadata.json')).toBe(false);
+    expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
+    expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
   });
 });

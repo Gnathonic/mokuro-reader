@@ -8,7 +8,7 @@
  *   and the per-series index `<Series Title>/series.json`
  * - Root config files: volume-data.json (read progress), profiles.json
  *   (settings profiles), series-metadata.json (per-series AniList link,
- *   titles, tag, tracking)
+ *   titles, tag, tracking) and catalog.json (the compiled library index)
  *
  * `series.json` is a sidecar of the SERIES FOLDER, not of a volume: it is the
  * only sidecar whose basename does not start with a volume title, so anything
@@ -20,12 +20,14 @@
  * keep ignoring them.
  */
 
-import { SERIES_FILE_NAME } from '$lib/metadata/series-file';
+import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
+import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
   'profiles.json',
-  'series-metadata.json'
+  'series-metadata.json',
+  CATALOG_FILE_NAME
 ]);
 const SIDECAR_IMAGE_RE = /\.(webp|jpe?g)$/i;
 
@@ -55,4 +57,23 @@ export function isRootConfigFile(basename: string): boolean {
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
   return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
+}
+
+/**
+ * Is this path one of the COMPILED metadata files — `<Series>/series.json` or
+ * the root `catalog.json`?
+ *
+ * Writing them is best-effort by contract: on a bunko-backed library the server
+ * compiles both, a scoped user's `catalog.json` PUT is rejected outright and a
+ * `series.json` PUT is an update *request*. A rejection there says nothing about
+ * whether the account can write progress or upload archives, so it must never
+ * demote the provider to read-only, never clear stored credentials and never
+ * surface UI. Progress (`volume-data.json`), profiles and `series-metadata.json`
+ * are deliberately NOT in this set: those are the user's own state, and a
+ * silent failure there really is a problem worth surfacing.
+ *
+ * `catalog.json` only counts at the ROOT — a nested one is somebody else's file.
+ */
+export function isBestEffortMetadataPath(path: string): boolean {
+  return isSeriesFilePath(path) || isCatalogFilePath(path);
 }
