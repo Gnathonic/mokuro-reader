@@ -1,7 +1,7 @@
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
@@ -61,7 +61,7 @@ export async function materializeSeriesVolumes(args: {
   const seriesKey = normalizeSeriesKey(seriesTitle);
   if (!seriesKey) return 0;
 
-  const cloudTitleKeys = new Set([...cloudVolumeTitles].map((t) => normalizeSeriesKey(t)));
+  const cloudTitleKeys = new Set([...cloudVolumeTitles].map(normalizeVolumeTitleKey));
 
   return db.transaction('rw', db.volumes, async () => {
     // Indexed lookup of the series' rows. `equalsIgnoreCase` is case- but not
@@ -82,12 +82,14 @@ export async function materializeSeriesVolumes(args: {
       if (row) owners.set(row.volume_uuid, row as VolumeMetadata);
     }
 
-    const titlesTaken = new Map(siblings.map((row) => [normalizeSeriesKey(row.volume_title), row]));
+    const titlesTaken = new Map(
+      siblings.map((row) => [normalizeVolumeTitleKey(row.volume_title), row])
+    );
     const seriesUuid = siblings[0]?.series_uuid ?? generateDeterministicUUID(seriesTitle);
 
     let changed = 0;
     for (const entry of entries) {
-      const titleKey = normalizeSeriesKey(entry.volume_title);
+      const titleKey = normalizeVolumeTitleKey(entry.volume_title);
       if (!titleKey || !cloudTitleKeys.has(titleKey)) continue;
 
       const existing = owners.get(entry.volume_uuid);

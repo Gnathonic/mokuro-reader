@@ -1,7 +1,7 @@
 import { sortVolumes } from '$lib/catalog/sort-volumes';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
-import { normalizeSeriesKey } from './series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import {
   ID_KEYS,
   TITLE_KEYS,
@@ -246,8 +246,14 @@ export function buildSeriesFile(args: {
 
   let volumes = [...byUuid.values()];
   if (cloudVolumeTitles) {
+    // Folded on both sides: the listing's titles are cloud filenames, the
+    // entries' are whatever wrote the file, and case/whitespace/unicode-form
+    // drift between them must not read as "deleted from the cloud".
+    const cloudKeys = new Set([...cloudVolumeTitles].map(normalizeVolumeTitleKey));
     volumes = volumes.filter(
-      (entry) => cloudVolumeTitles.has(entry.volume_title) || localUuids.has(entry.volume_uuid)
+      (entry) =>
+        cloudKeys.has(normalizeVolumeTitleKey(entry.volume_title)) ||
+        localUuids.has(entry.volume_uuid)
     );
   }
   volumes.sort(compareEntries);

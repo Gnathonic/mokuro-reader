@@ -428,6 +428,39 @@ describe('buildSeriesFile', () => {
     expect(file.volumes.map((v) => v.volume_title)).toEqual(['Vol 1']);
   });
 
+  it('matches the cloud listing on a folded volume title, not an exact string', () => {
+    // The listing's titles come from cloud FILENAMES; the entry's come from
+    // whoever wrote the file. Case, run-together whitespace and unicode
+    // composition all drift between the two, and an exact-string membership
+    // test would read that drift as "deleted from the cloud" and prune a volume
+    // that is sitting right there. Same fold materialization matches on.
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Caf\u00e9  Vol 1', // NFC, doubled space, mixed case
+          page_count: 1,
+          character_count: 1,
+          mokuro_version: '0.2.1'
+        }
+      ]
+    };
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [],
+      existing,
+      cloudVolumeTitles: new Set(['cafe\u0301 vol 1']) // NFD, single space, lowercase
+    })!;
+    expect(file.volumes.map((v) => v.volume_title)).toEqual(['Caf\u00e9  Vol 1']);
+  });
+
   it('prunes entries the cloud no longer lists unless they are installed locally', () => {
     const existing: SeriesFile = {
       version: 2,
