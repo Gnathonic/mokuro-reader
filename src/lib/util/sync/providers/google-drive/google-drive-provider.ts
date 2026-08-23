@@ -203,6 +203,7 @@ class GoogleDriveProvider implements SyncProvider {
       );
 
       // Build folder map (folder ID -> folder name)
+      const READER_FOLDER_NAME = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
       const folderNames = new Map<string, string>();
       const cbzFiles: any[] = [];
       const sidecarFiles: any[] = [];
@@ -267,16 +268,24 @@ class GoogleDriveProvider implements SyncProvider {
         });
       }
 
-      // Add JSON files (no parent folder in path, just filename)
+      // Add JSON files. Root config files are keyed by BASENAME alone, so one
+      // living in a SERIES folder (a nested catalog.json, say) must keep its
+      // full path — cached at the bare name it would shadow the real root file
+      // and readers would fetch the wrong one. Matches MEGA's
+      // `isJson && pathParts.length === 0` guard.
       for (const file of jsonFiles) {
+        const parentId = file.parents?.[0];
+        const parentName = parentId ? folderNames.get(parentId) : undefined;
+        const isInSeriesFolder = !!parentName && parentName !== READER_FOLDER_NAME;
+
         cloudVolumes.push({
           provider: 'google-drive',
           fileId: file.id,
-          path: file.name, // Just the filename for JSON files
+          path: isInSeriesFolder ? `${parentName}/${file.name}` : file.name,
           modifiedTime: file.modifiedTime || new Date().toISOString(),
           size: file.size ? parseInt(file.size) : 0,
           description: file.description,
-          parentId: file.parents?.[0],
+          parentId,
           name: file.name
         });
       }

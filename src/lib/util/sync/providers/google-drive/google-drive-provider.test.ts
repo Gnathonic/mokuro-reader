@@ -40,6 +40,7 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const JSON_MIME = 'application/json';
 
 /**
  * Route the two live queries removeDirectoryIfEmpty makes:
@@ -111,5 +112,48 @@ describe('GoogleDriveProvider.removeDirectoryIfEmpty()', () => {
     await expect(googleDriveProvider.removeDirectoryIfEmpty('Old Series')).resolves.toBeUndefined();
     expect(driveApiClient.listFiles).not.toHaveBeenCalled();
     expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('GoogleDriveProvider.listCloudVolumes() — root config paths', () => {
+  /**
+   * Root-config JSON is keyed by BASENAME alone, so a nested `<Series>/catalog.json`
+   * (or any other root-config name a user happens to keep in a series folder) must
+   * not be cached at the root key — Task 4's reader would download the wrong file.
+   * Same guard MEGA applies with `isJson && pathParts.length === 0`.
+   */
+  beforeEach(() => {
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) => {
+      if (!query.startsWith("'me' in owners")) return [];
+      return [
+        { id: 'reader-root', name: 'mokuro-reader', mimeType: FOLDER_MIME },
+        { id: 'series-1', name: 'Dr Stone', mimeType: FOLDER_MIME, parents: ['reader-root'] },
+        { id: 'root-catalog', name: 'catalog.json', mimeType: JSON_MIME, parents: ['reader-root'] },
+        { id: 'nested-catalog', name: 'catalog.json', mimeType: JSON_MIME, parents: ['series-1'] },
+        {
+          id: 'root-progress',
+          name: 'volume-data.json',
+          mimeType: JSON_MIME,
+          parents: ['reader-root']
+        }
+      ];
+    });
+  });
+
+  it('keeps the ROOT catalog.json at the root key', async () => {
+    const files = await googleDriveProvider.listCloudVolumes();
+
+    const atRootKey = files.filter((f) => f.path === 'catalog.json');
+    expect(atRootKey).toHaveLength(1);
+    expect(atRootKey[0].fileId).toBe('root-catalog');
+    expect(files.find((f) => f.path === 'volume-data.json')?.fileId).toBe('root-progress');
+  });
+
+  it('never collides a NESTED catalog.json with the root one', async () => {
+    const files = await googleDriveProvider.listCloudVolumes();
+
+    const nested = files.find((f) => f.fileId === 'nested-catalog');
+    // Either dropped or kept under its full path — never at the bare root key.
+    expect(nested?.path).not.toBe('catalog.json');
   });
 });
