@@ -1,4 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
+import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
@@ -71,6 +72,42 @@ function findIndexEntry(
 
   const wanted = normalizeSeriesKey(volumeTitle);
   return record.file.volumes.find((entry) => normalizeSeriesKey(entry.volume_title) === wanted);
+}
+
+/** Every file of a listing, flattened. */
+function* allListedFiles(
+  cloudFilesMap: Map<string, CloudVolumeWithProvider[]>
+): Generator<CloudVolumeWithProvider> {
+  for (const files of cloudFilesMap.values()) yield* files;
+}
+
+/** The extensions a per-volume cover sidecar can have. */
+const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
+
+/**
+ * Index the per-volume cover sidecars of a listing by their base path
+ * (`<Series>/<Volume>`), LOWERCASED so a casing difference between a stored
+ * title and the cloud filename still matches — the same rule every other cloud
+ * lookup here uses. `.webp` wins over `.jpg`/`.jpeg` for the same volume.
+ *
+ * The universal cover source: placeholders read it to decorate a cloud-only
+ * volume, and `cover-install.ts` reads it to inline a cover onto a materialized
+ * row. One definition, so the two can never disagree about which file is a
+ * volume's cover.
+ */
+export function indexCoverSidecarsByBasePath(
+  files: Iterable<CloudFileMetadata>
+): Map<string, { fileId: string; path: string }> {
+  const index = new Map<string, { fileId: string; path: string }>();
+  for (const file of files) {
+    if (isSeriesFilePath(file.path)) continue;
+    const match = file.path.match(COVER_EXT_REGEX);
+    if (!match) continue;
+    const key = file.path.slice(0, -match[0].length).toLowerCase();
+    const isWebp = match[1].toLowerCase() === 'webp';
+    if (!index.has(key) || isWebp) index.set(key, { fileId: file.fileId, path: file.path });
+  }
+  return index;
 }
 
 /**
@@ -179,28 +216,22 @@ export function generatePlaceholders(
     }
   }
 
-  // Flatten Map values into a single array and split out cover sidecars
+  // basePath (lowercased) -> cover sidecar info, from the shared indexer.
+  const thumbnailMap = indexCoverSidecarsByBasePath(allListedFiles(cloudFilesMap));
+
+  // Flatten Map values into a single array, keeping sidecars out of the cbz bucket
   const cloudFiles: CloudVolumeWithProvider[] = [];
-  const thumbnailMap = new Map<string, { fileId: string; path: string }>(); // basePath -> sidecar info
   const mokuroMap = new Map<string, CloudVolumeWithProvider>(); // basePath -> sidecar metadata
-  const coverExtRegex = /\.(webp|jpe?g)$/i;
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
       // The per-series index is a sidecar of the FOLDER, not of any volume:
       // it must never reach the cbz bucket (a placeholder built from it would
       // be an undownloadable "series.json" volume in the catalog).
       if (isSeriesFilePath(file.path)) continue;
+      // Covers are already indexed above; they are not archives either.
+      if (COVER_EXT_REGEX.test(file.path)) continue;
       const lowerPath = file.path.toLowerCase();
-      const coverMatch = file.path.match(coverExtRegex);
-      if (coverMatch) {
-        const basePath = file.path.slice(0, -coverMatch[0].length);
-        // Prefer .webp over .jpg/.jpeg when both exist for the same base.
-        const existing = thumbnailMap.get(basePath);
-        const isWebp = coverMatch[1].toLowerCase() === 'webp';
-        if (!existing || isWebp) {
-          thumbnailMap.set(basePath, { fileId: file.fileId, path: file.path });
-        }
-      } else if (lowerPath.endsWith('.mokuro.gz')) {
+      if (lowerPath.endsWith('.mokuro.gz')) {
         const basePath = file.path.replace(/\.mokuro\.gz$/i, '');
         // Prefer plain .mokuro over .mokuro.gz when both exist.
         if (!mokuroMap.has(basePath)) {
@@ -255,7 +286,7 @@ export function generatePlaceholders(
       }
       emittedUuids.add(placeholder.volume_uuid);
 
-      const basePath = cloudFile.path.replace(/\.cbz$/i, '');
+      const basePath = cloudFile.path.replace(/\.cbz$/i, '').toLowerCase();
       const thumbnailInfo = thumbnailMap.get(basePath);
       if (thumbnailInfo) {
         placeholder.cloudThumbnailFileId = thumbnailInfo.fileId;

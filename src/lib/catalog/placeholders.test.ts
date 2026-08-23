@@ -10,7 +10,8 @@ vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ enqueueCloudOcrUpgrade: vi.fn
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
-  indexCloudFilesByPath
+  indexCloudFilesByPath,
+  indexCoverSidecarsByBasePath
 } from './placeholders';
 
 function cloudFile(path: string, fileId = path): CloudVolumeWithProvider {
@@ -319,6 +320,41 @@ describe('a metadata-only row and the cloud', () => {
       ])
     );
 
+    expect(index.size).toBe(0);
+  });
+});
+
+describe('indexCoverSidecarsByBasePath', () => {
+  const f = (path: string, fileId: string) =>
+    ({ provider: 'webdav', fileId, path, modifiedTime: '', size: 1 }) as never;
+
+  it('keys covers by lowercased base path', () => {
+    const index = indexCoverSidecarsByBasePath([f('Dr Stone/Volume 1.webp', 'c1')]);
+    expect(index.get('dr stone/volume 1')).toEqual({
+      fileId: 'c1',
+      path: 'Dr Stone/Volume 1.webp'
+    });
+  });
+
+  it('prefers .webp over .jpg for the same volume', () => {
+    const index = indexCoverSidecarsByBasePath([
+      f('Dr Stone/Volume 1.jpg', 'jpg'),
+      f('Dr Stone/Volume 1.webp', 'webp')
+    ]);
+    expect(index.get('dr stone/volume 1')?.fileId).toBe('webp');
+
+    const reversed = indexCoverSidecarsByBasePath([
+      f('Dr Stone/Volume 1.webp', 'webp'),
+      f('Dr Stone/Volume 1.jpg', 'jpg')
+    ]);
+    expect(reversed.get('dr stone/volume 1')?.fileId).toBe('webp');
+  });
+
+  it('ignores archives and the series sidecar', () => {
+    const index = indexCoverSidecarsByBasePath([
+      f('Dr Stone/Volume 1.cbz', 'a'),
+      f('Dr Stone/series.json', 'b')
+    ]);
     expect(index.size).toBe(0);
   });
 });
