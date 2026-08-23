@@ -15,7 +15,8 @@
    - Parse; validate ONLY the facts fields (`external_ids` ints, `titles`/`synonyms` strings, `tag` string, `unit` ∈ {volumes, chapters}, `updated_at` ISO). The `volumes` array and unknown keys are IGNORED (the client's index is unauthoritative; bunko's own compilation wins).
    - Merge newest-facts-stamp-wins against bunko's stored facts for that series, within the user's permission scope. A factless PUT with epoch stamp never clears facts (mirror of the reader's factless rules); a factless PUT with a strictly newer stamp is an explicit unlink.
    - On accept: persist facts, regenerate that `series.json` + `catalog.json`, respond success. On validation failure: reject; the client will silently retry later — idempotency required.
-7. **Covers.** Per-volume cover sidecar (`<Series>/<Volume>.webp`) generated from the archive's first page when missing; scoped users cannot overwrite them.
+7. **Compilation advertisement.** The identity endpoint (already consumed by the reader's `webdav/identity.ts`) is the signal that this server compiles metadata: any in-contract answer (`authenticated` or `anonymous`) makes the client set `serverCompilesMetadata` and disable its own `series.json`/`catalog.json` production. Generic WebDAV servers (no identity endpoint) keep client-side production.
+8. **Covers.** Per-volume cover sidecar (`<Series>/<Volume>.webp`) generated from the archive's first page when missing; scoped users cannot overwrite them.
 
 ## Tasks (bunko repo)
 
