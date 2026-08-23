@@ -9,7 +9,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { VolumeMetadata } from '$lib/types';
   import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
-  import { deleteVolume as deleteStoredVolume } from '$lib/import';
+  import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -373,10 +373,13 @@
     if (seriesUuid) {
       await Promise.all(
         (manga || []).map(async (vol) => {
-          await deleteStoredVolume(vol.volume_uuid);
-
+          // Default: strip the pages, keep the rows — they carry the read
+          // history and the covers (see removeVolumeFiles).
           if (deleteStats) {
+            await deleteVolumeCompletely(vol.volume_uuid);
             deleteVolumeStats(vol.volume_uuid);
+          } else {
+            await removeVolumeFiles(vol.volume_uuid);
           }
         })
       );
@@ -450,11 +453,11 @@
     );
 
     promptConfirmation(
-      'Are you sure you want to delete this manga?',
+      'Remove this manga from this device? Stats, progress and covers are kept.',
       confirmDelete,
       undefined,
       {
-        label: 'Also delete stats and progress?',
+        label: 'Also forget stats, progress and covers?',
         storageKey: 'deleteStatsPreference',
         defaultValue: false
       },

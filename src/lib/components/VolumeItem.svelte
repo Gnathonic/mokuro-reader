@@ -40,7 +40,7 @@
   } from 'flowbite-svelte-icons';
   import { promptVolumeEditor } from '$lib/util/modals';
   import { db } from '$lib/catalog/db';
-  import { deleteVolume as deleteStoredVolume } from '$lib/import';
+  import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
   import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
   import BackupButton from './BackupButton.svelte';
@@ -337,13 +337,15 @@
           : 'cloud';
 
     promptConfirmation(
-      `Delete ${volName}?`,
+      `Remove ${volName} from this device?`,
       async (deleteStats = false, deleteCloud = false) => {
-        await deleteStoredVolume(volume.volume_uuid);
-
-        // Only delete stats and progress if the checkbox is checked
+        // Default: strip the pages, keep the volume. The row carries the read
+        // history and the cover, and re-downloading fills it back in.
         if (deleteStats) {
+          await deleteVolumeCompletely(volume.volume_uuid);
           deleteVolumeStats(volume.volume_uuid);
+        } else {
+          await removeVolumeFiles(volume.volume_uuid);
         }
 
         // Delete from cloud if checkbox checked (archive + sidecars)
@@ -371,7 +373,7 @@
       },
       undefined,
       {
-        label: 'Also delete stats and progress?',
+        label: 'Also forget stats, progress and cover?',
         storageKey: 'deleteStatsPreference',
         defaultValue: false
       },

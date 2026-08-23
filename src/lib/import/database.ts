@@ -16,14 +16,19 @@ import type { VolumeMetadata } from '$lib/types';
 import { naturalSort } from '$lib/util/natural-sort';
 
 /**
- * Check if a volume already exists in the database
+ * Is this volume already INSTALLED?
+ *
+ * The import's duplicate check, so a row whose files were removed from the
+ * device does not count: re-importing that volume is exactly how the user gets
+ * its pages back, and the save fills the retained row (same uuid, so the read
+ * history stays attached) instead of adding a second one.
  *
  * @param volumeUuid - The volume UUID to check
- * @returns True if the volume exists
+ * @returns True if the volume exists with its files
  */
 export async function volumeExists(volumeUuid: string): Promise<boolean> {
   const existing = await db.volumes.get(volumeUuid);
-  return existing !== undefined;
+  return existing !== undefined && !existing.metadata_only;
 }
 
 /**
@@ -103,7 +108,9 @@ export async function saveVolume(
       db.volume_files.get(canonicalVolumeUuid)
     ]);
 
-    if (existingVolume) {
+    // An INSTALLED row is a real duplicate. A row whose files were removed is
+    // not: this save is the reinstall, and it fills that row.
+    if (existingVolume && !existingVolume.metadata_only) {
       throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
     }
 
@@ -116,8 +123,20 @@ export async function saveVolume(
       await db.volume_files.delete(canonicalVolumeUuid);
     }
 
-    // Write metadata
-    await db.volumes.add(volumeMetadata);
+    if (existingVolume) {
+      // Reinstall: the retained cover is already the right one, so keep it when
+      // the archive did not bring its own rather than re-deriving it from page 1.
+      if (!volumeMetadata.thumbnail && existingVolume.thumbnail) {
+        volumeMetadata.thumbnail = existingVolume.thumbnail;
+        volumeMetadata.thumbnail_width = existingVolume.thumbnail_width;
+        volumeMetadata.thumbnail_height = existingVolume.thumbnail_height;
+      }
+      // `put` replaces the whole row, which is what clears `metadata_only`:
+      // a row written together with its files is installed by definition.
+      await db.volumes.put(volumeMetadata);
+    } else {
+      await db.volumes.add(volumeMetadata);
+    }
 
     // Write OCR data (strip cumulativeChars as it's stored in page_char_counts)
     const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
@@ -148,13 +167,37 @@ export async function saveVolume(
 }
 
 /**
- * Delete a volume from the database
+ * Remove a volume's files from this device, keeping the volume.
  *
- * Removes all data for a volume from all three tables atomically.
+ * The heavy rows (OCR and images) go; the `volumes` row stays, flagged
+ * `metadata_only`. That row is the volume's history: the read state, the
+ * re-read count and the AniList push bookkeeping are all keyed by
+ * `volume_uuid`, and the thumbnail lives inline on it, so keeping it is what
+ * makes "remove from device" cost only disk — the catalog still shows the
+ * cover, the stats still count, and re-downloading fills the same row.
+ *
+ * @param volumeUuid - The volume UUID whose files to remove
+ */
+export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
+  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
+    await db.volume_ocr.delete(volumeUuid);
+    await db.volume_files.delete(volumeUuid);
+    await db.volumes.update(volumeUuid, { metadata_only: true });
+  });
+}
+
+/**
+ * Delete a volume from the database entirely
+ *
+ * Removes all data for a volume from all three tables atomically — the row
+ * included, so nothing is left to attach history to. Used by the delete
+ * confirmations when the user also asked to forget the stats, and by the
+ * download queue's replace-before-resave (which writes a fresh row straight
+ * afterwards).
  *
  * @param volumeUuid - The volume UUID to delete
  */
-export async function deleteVolume(volumeUuid: string): Promise<void> {
+export async function deleteVolumeCompletely(volumeUuid: string): Promise<void> {
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
     await db.volumes.delete(volumeUuid);
     await db.volume_ocr.delete(volumeUuid);

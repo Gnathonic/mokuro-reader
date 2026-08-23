@@ -26,7 +26,7 @@ import {
   isImageExtension,
   processVolume,
   saveVolume,
-  deleteVolume as deleteStoredVolume,
+  deleteVolumeCompletely,
   isSystemFile
 } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
@@ -418,7 +418,9 @@ async function processVolumeData(
     )
   ) {
     if (existingVolume) {
-      await deleteStoredVolume(processedVolume.metadata.volumeUuid);
+      // Replaced wholesale by the save below, so there is no history to keep
+      // on the old row — and a leftover `metadata_only` flag would be a lie.
+      await deleteVolumeCompletely(processedVolume.metadata.volumeUuid);
     }
 
     // Save using unified database function. preserveTitles: the titles here
