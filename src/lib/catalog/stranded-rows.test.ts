@@ -51,6 +51,38 @@ describe('dropStrandedMetadataOnlyRow', () => {
     expect(await db.volumes.get('uuid-new')).toBeTruthy();
   });
 
+  it('drops a stranded row filed under a whitespace-variant series title', async () => {
+    // materializeSeriesVolumes treats 'Dr  Stone' and 'Dr Stone' as one series
+    // (normalizeSeriesKey collapses the run), so it can fill a row under either
+    // spelling. The indexed equalsIgnoreCase lookup cannot see across them, and
+    // a missed row here is precisely the permanent duplicate this exists to
+    // prevent.
+    await db.volumes.bulkAdd([
+      row({ series_title: 'Dr Stone' }) as never,
+      row({
+        volume_uuid: 'uuid-old',
+        series_title: 'Dr  Stone',
+        metadata_only: true
+      }) as never
+    ]);
+
+    await dropStrandedMetadataOnlyRow('uuid-new');
+
+    expect(await db.volumes.get('uuid-old')).toBeUndefined();
+    expect(await db.volumes.get('uuid-new')).toBeTruthy();
+  });
+
+  it('leaves a genuinely different series alone', async () => {
+    await db.volumes.bulkAdd([
+      row({ series_title: 'Dr Stone' }) as never,
+      row({ volume_uuid: 'uuid-other', series_title: 'Dr. Stone', metadata_only: true }) as never
+    ]);
+
+    await dropStrandedMetadataOnlyRow('uuid-new');
+
+    expect(await db.volumes.get('uuid-other')).toBeTruthy();
+  });
+
   it('matches the volume title case-insensitively', async () => {
     await db.volumes.bulkAdd([
       row() as never,

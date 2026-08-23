@@ -1028,8 +1028,11 @@ class UnifiedCloudManager {
    *
    * Merge before write (see `buildSeriesFile`): the copy already in the cloud
    * contributes the volumes of devices that are not this one, and its facts win
-   * when they are newer. Installed volumes always override their index entry;
-   * placeholders never contribute (their uuids and counts are derived).
+   * when they are newer. Local rows rank in three tiers, not two: INSTALLED
+   * volumes override their index entry and are exempt from the listing prune;
+   * metadata-only rows (including ones materialized from an index) only FILL an
+   * entry the file lacks, never overriding and never exempting; placeholders
+   * never contribute at all, their uuids and counts being derived.
    *
    * A folder the listing shows no `.cbz` in is `'skipped'`: the index belongs
    * to a folder of volumes, never to an empty one. A cloud copy we cannot read

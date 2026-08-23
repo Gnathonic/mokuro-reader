@@ -1,6 +1,7 @@
 import { db } from '$lib/catalog/db';
 import { deleteVolumeCompletely } from '$lib/import/database';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
 /**
  * After a download lands: drop the metadata-only row this volume used to occupy
@@ -13,25 +14,29 @@ import { isMetadataOnly } from '$lib/catalog/volume-state';
  * would sit in the catalog forever as a second, permanently "Not on this
  * device" copy of the same volume.
  *
- * Scoped to the series through the `series_title` index rather than scanning
- * the whole table: every row carries an inline thumbnail blob.
+ * Candidates are found with a full-table scan, then filtered by the catalog's
+ * own grouping key. The `series_title` index would be cheaper, but
+ * `equalsIgnoreCase` is case- but not whitespace-insensitive, so it cannot see
+ * a row filed under 'Dr  Stone' when the download landed under 'Dr Stone' —
+ * and `materializeSeriesVolumes` groups those as ONE series, so it can create
+ * exactly that row. A sibling missed here is the permanent duplicate this
+ * function exists to prevent, which outweighs the scan: it runs once per
+ * completed download, and `writeSeriesFile` already reads the table whole.
  */
 export async function dropStrandedMetadataOnlyRow(savedUuid: string): Promise<void> {
   try {
     const saved = await db.volumes.get(savedUuid);
     if (!saved) return;
 
-    const sameTitle = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
-    // equalsIgnoreCase: cloud/legacy paths can differ from stored titles in
-    // case only (preserveTitles imports), and a case-missed sibling would be
-    // exactly the permanent duplicate this function exists to prevent.
-    const siblings = await db.volumes
-      .where('series_title')
-      .equalsIgnoreCase(saved.series_title)
-      .toArray();
+    const sameTitle = (a: string, b: string) =>
+      normalizeVolumeTitleKey(a) === normalizeVolumeTitleKey(b);
+    const savedSeriesKey = normalizeSeriesKey(saved.series_title);
+
+    const siblings = await db.volumes.toArray();
     for (const row of siblings) {
       if (row.volume_uuid === savedUuid) continue;
       if (!isMetadataOnly(row)) continue;
+      if (normalizeSeriesKey(row.series_title) !== savedSeriesKey) continue;
       if (!sameTitle(row.volume_title, saved.volume_title)) continue;
       console.log('[Download Queue] Dropping the stranded metadata-only row for', row.volume_title);
       await deleteVolumeCompletely(row.volume_uuid);

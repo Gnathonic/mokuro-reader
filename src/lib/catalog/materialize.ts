@@ -34,7 +34,10 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  *    when the index lists a different uuid for it (a volume re-OCR'd elsewhere,
  *    or a row created from a path-derived placeholder uuid). That second row
  *    could never be downloaded and would sit in the catalog forever — exactly
- *    the duplicate `stranded-rows.ts` exists to clean up after a download.
+ *    the duplicate `stranded-rows.ts` cleans up after a download, which is the
+ *    safety net behind this rule and folds titles and series identically (it
+ *    scans the whole table for that reason: this function can create a row
+ *    under a whitespace-variant series title that an index lookup would miss).
  * 3. An existing metadata-only row is only ever FILLED, never downgraded: a
  *    zero count or the `'unknown'` placeholder version is a gap, any other
  *    local value wins. A known consequence: counts are frozen at first
