@@ -19,7 +19,8 @@
   import { isUpgrading } from '$lib/catalog/db';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { queueSeriesVolumes } from '$lib/util/download-queue';
-  import { getCloudProvider } from '$lib/util/cloud-fields';
+  import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import { showSnackbar } from '$lib/util';
   import type { ProviderType } from '$lib/util/sync/provider-interface';
 
@@ -241,15 +242,20 @@
   let placeholderSeries = $derived(sections.cloudSeries);
   let nameOnlySeries = $derived(sections.nameOnlySeries);
 
-  // Collect all placeholder volumes from the entire catalog
-  let allPlaceholderVolumes = $derived(
-    sortedCatalog.flatMap((series) => series.volumes.filter((vol) => vol.isPlaceholder))
+  // Everything the cloud section can actually fetch: the volumes of the series IT holds
+  // that are not on this device and have a cloud file to pull from — the same rule the
+  // series page's "Download all" uses. Filtering on `isPlaceholder` would count and queue
+  // only half of the section once metadata-only series have been moved into it.
+  let cloudSectionVolumes = $derived(
+    placeholderSeries.flatMap((series) =>
+      series.volumes.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol))
+    )
   );
 
-  // Count placeholders by provider for UI display
+  // Count the section's volumes by provider for UI display
   let placeholdersByProvider = $derived.by(() => {
     const counts: Record<string, number> = {};
-    for (const vol of allPlaceholderVolumes) {
+    for (const vol of cloudSectionVolumes) {
       const provider = getCloudProvider(vol) || 'unknown';
       counts[provider] = (counts[provider] || 0) + 1;
     }
@@ -279,14 +285,14 @@
   });
 
   async function downloadAllPlaceholders() {
-    if (!allPlaceholderVolumes || allPlaceholderVolumes.length === 0) return;
+    if (cloudSectionVolumes.length === 0) return;
     if (!hasAuthenticatedProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
       return;
     }
 
     try {
-      queueSeriesVolumes(allPlaceholderVolumes);
+      queueSeriesVolumes(cloudSectionVolumes);
     } catch (error) {
       console.error('Failed to queue placeholders for download:', error);
     }
@@ -359,14 +365,20 @@
         <div class="mt-8" data-testid="catalog-cloud">
           <div class="mb-4 flex items-center justify-between px-4">
             <div>
+              <!-- Keyed: counts are exactly the text Migaku rewrites and then holds
+                   stale, and these two change under the display setting (see CLAUDE.md). -->
               <h4 class="text-lg font-semibold text-gray-400">
-                Available in {providerDisplayName} ({placeholderSeries.length} series)
+                Available in {providerDisplayName}
+                {#key placeholderSeries.length}<span>({placeholderSeries.length} series)</span
+                  >{/key}
               </h4>
               {#if providerBreakdown}
-                <p class="mt-1 text-sm text-gray-500">{providerBreakdown}</p>
+                {#key providerBreakdown}
+                  <p class="mt-1 text-sm text-gray-500">{providerBreakdown}</p>
+                {/key}
               {/if}
             </div>
-            {#if hasAuthenticatedProvider && allPlaceholderVolumes.length > 0}
+            {#if hasAuthenticatedProvider && cloudSectionVolumes.length > 0}
               <Button size="sm" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all

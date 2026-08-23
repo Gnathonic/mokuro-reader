@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const { catalogStore, notOnDeviceDisplay, miscSettings } = vi.hoisted(() => {
+const { catalogStore, notOnDeviceDisplay, miscSettings, queueSeriesVolumes } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     const subs = new Set<(v: T) => void>();
     let current = initial;
@@ -19,6 +19,7 @@ const { catalogStore, notOnDeviceDisplay, miscSettings } = vi.hoisted(() => {
     };
   }
   return {
+    queueSeriesVolumes: vi.fn(),
     catalogStore: createStore<unknown[] | null>([]),
     notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
     miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' })
@@ -53,7 +54,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 vi.mock('$lib/util/download-queue', () => ({
-  queueSeriesVolumes: vi.fn(),
+  queueSeriesVolumes,
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -80,6 +81,15 @@ function volume(series: string, overrides: Partial<VolumeMetadata> = {}): Volume
     isPlaceholder: false,
     ...overrides
   } as VolumeMetadata;
+}
+
+/** A volume that is absent AND has somewhere to download from. */
+function downloadable(series: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+  return volume(series, {
+    cloudFileId: `file-${series}-${overrides.volume_uuid ?? '1'}`,
+    cloudProvider: 'google-drive',
+    ...overrides
+  });
 }
 
 function series(title: string, volumes: VolumeMetadata[]) {
@@ -150,5 +160,99 @@ describe('Catalog groups not-on-device series by the display setting', () => {
     await tick();
     expect(titlesIn(container, 'catalog-library')).toEqual(['Half']);
     expect(titlesIn(container, 'catalog-cloud')).toEqual([]);
+  });
+});
+
+describe('Catalog cloud section counts and queues everything it holds', () => {
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+    queueSeriesVolumes.mockClear();
+  });
+
+  /** A metadata-only series (2 volumes) plus a cloud-only one (1 volume). */
+  function mixedCatalog() {
+    catalogStore.set([
+      series('Here', [volume('Here')]),
+      series('Gone', [
+        downloadable('Gone', { metadata_only: true }),
+        downloadable('Gone', { volume_uuid: 'Gone-2', metadata_only: true })
+      ]),
+      series('Cloud', [downloadable('Cloud', { isPlaceholder: true })])
+    ]);
+  }
+
+  function breakdown(container: HTMLElement): string {
+    const region = container.querySelector('[data-testid="catalog-cloud"]');
+    return region?.querySelector('p.text-sm')?.textContent?.trim() ?? '';
+  }
+
+  function downloadAll(container: HTMLElement): HTMLElement {
+    const region = container.querySelector('[data-testid="catalog-cloud"]');
+    const button = [...(region?.querySelectorAll('button') ?? [])].find((el) =>
+      el.textContent?.includes('Download all')
+    );
+    if (!button) throw new Error('Download all button not found');
+    return button as HTMLElement;
+  }
+
+  it('counts the volumes the section actually holds, moved ones included', async () => {
+    mixedCatalog();
+    const { container } = render(Catalog);
+
+    // Mixed mode: only the cloud-only series is down there.
+    expect(breakdown(container)).toBe('1 Drive');
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+    // Now the two moved metadata-only volumes are in the section too.
+    expect(breakdown(container)).toBe('3 Drive');
+  });
+
+  it('queues every volume the section is offering', async () => {
+    mixedCatalog();
+    const { container } = render(Catalog);
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+    await fireEvent.click(downloadAll(container));
+
+    expect(queueSeriesVolumes).toHaveBeenCalledTimes(1);
+    // The section's own order (its series are sorted), all of it, nothing else.
+    expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_uuid)).toEqual([
+      'Cloud-1',
+      'Gone-1',
+      'Gone-2'
+    ]);
+  });
+
+  it('never offers a volume with nowhere to download from', async () => {
+    catalogStore.set([
+      series('Orphan', [volume('Orphan', { metadata_only: true })]),
+      series('Cloud', [downloadable('Cloud', { isPlaceholder: true })])
+    ]);
+    const { container } = render(Catalog);
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+    await fireEvent.click(downloadAll(container));
+
+    expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_uuid)).toEqual([
+      'Cloud-1'
+    ]);
+    expect(breakdown(container)).toBe('1 Drive');
+  });
+
+  it('keeps the section heading count fresh across a live flip', async () => {
+    mixedCatalog();
+    const { container } = render(Catalog);
+    const heading = () =>
+      container.querySelector('[data-testid="catalog-cloud"] h4')?.textContent?.trim() ?? '';
+
+    expect(heading()).toBe('Available in Drive (1 series)');
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+    expect(heading()).toBe('Available in Drive (2 series)');
   });
 });
