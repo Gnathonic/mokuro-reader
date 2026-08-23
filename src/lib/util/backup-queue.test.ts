@@ -121,6 +121,22 @@ describe('finishBackupRun', () => {
     expect(calls).toEqual(['fetch:no-index-refresh', 'stamp', 'refresh']);
   });
 
+  it('keeps the catalog pending when the listing fetch throws', async () => {
+    // The run's series stay queued in `seriesNeedingIndexWrite` when the fetch
+    // fails; the intent to publish the catalog has to survive the same way, or a
+    // transient offline moment loses it for good.
+    noteSeriesNeedingIndexWrite('One Piece');
+    fetchAllCloudVolumes.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(finishBackupRun()).rejects.toThrow('offline');
+    expect(flushCatalogFileWrites).not.toHaveBeenCalled();
+
+    await finishBackupRun();
+
+    expect(flushCatalogFileWrites).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
   it('forgets the upload for the next run, so a later local drain stays local', async () => {
     noteSeriesNeedingIndexWrite('One Piece');
     await finishBackupRun();

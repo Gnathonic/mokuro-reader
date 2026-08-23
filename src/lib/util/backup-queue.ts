@@ -354,9 +354,6 @@ async function writeSeriesIndexesForRun(): Promise<void> {
  * and starting it afterwards makes the run strictly write-then-read.
  */
 export async function finishBackupRun(): Promise<void> {
-  const uploaded = uploadedThisRun;
-  uploadedThisRun = false;
-
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
   // That fetch IS the whole-account listing the metadata writers need. Stamping
   // it makes them reuse it, instead of every run paying for a second one.
@@ -365,7 +362,16 @@ export async function finishBackupRun(): Promise<void> {
   // The run may have created or removed whole series folders, which is exactly
   // what the root catalog lists. One write for the whole run — and none at all
   // for a run that only wrote files to the user's disk.
-  if (uploaded) await flushCatalogFileWrites();
+  //
+  // Read and cleared HERE rather than at the top of the run: everything above
+  // can throw, and the intent to publish has to survive that for the next run,
+  // exactly like the series still queued in `seriesNeedingIndexWrite` do.
+  // Cleared before the await, so an upload finishing during the write still
+  // arms the following run.
+  if (uploadedThisRun) {
+    uploadedThisRun = false;
+    await flushCatalogFileWrites();
+  }
   unifiedCloudManager.refreshSeriesIndexesInBackground();
 }
 
