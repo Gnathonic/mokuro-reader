@@ -54,7 +54,7 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
-  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import { onDestroy } from 'svelte';
 
   interface Props {
@@ -496,7 +496,8 @@
       switch (e.key) {
         case 'e':
           e.preventDefault();
-          onEditClicked();
+          // The editor reads pages and rewrites OCR; there are none here.
+          if (!isNotInstalled) onEditClicked();
           break;
         case 'Delete':
           e.preventDefault();
@@ -508,7 +509,8 @@
           break;
         case 'c':
           e.preventDefault();
-          onChangeCover();
+          // Picking a cover means picking a page. Same reason.
+          if (!isNotInstalled) onChangeCover();
           break;
       }
     }

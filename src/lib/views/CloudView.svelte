@@ -3,6 +3,7 @@
 
   import { promptConfirmation, showSnackbar, showWebDAVError } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+  import { isVolumeInstalled } from '$lib/catalog/volume-state';
   import {
     ProviderError,
     type ProviderType,
@@ -660,9 +661,13 @@
       return;
     }
 
-    // Filter out already backed up volumes
+    // Filter out already backed up volumes — and volumes with nothing to
+    // upload (cloud placeholders and metadata-only rows), so the count the
+    // snackbar reports matches what the queue actually took.
     const volumesToBackup = allVolumes.filter(
-      (vol) => !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
+      (vol) =>
+        isVolumeInstalled(vol) &&
+        !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
     const skippedCount = allVolumes.length - volumesToBackup.length;
