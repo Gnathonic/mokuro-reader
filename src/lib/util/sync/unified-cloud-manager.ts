@@ -1171,22 +1171,42 @@ class UnifiedCloudManager {
     // `catalogNeedsRefresh` on every other device, making them all re-download a
     // file that did not change. Only sound when the copy we compared against is
     // known to be the cloud's current content.
-    if (faithful && catalogSeriesEqual(file.series, existing?.series)) return 'skipped';
+    if (faithful && catalogSeriesEqual(file.series, existing?.series)) {
+      // Still stamp the cache. The content is known-good — freshly downloaded,
+      // or cached rows the listing stamp vouches for — and without the stamp
+      // `catalogNeedsRefresh` stays true forever, so every later write would
+      // re-download catalog.json just to reach this same conclusion.
+      await this.stampCatalogCache(provider.type, file);
+      return 'skipped';
+    }
 
     const blob = new Blob([stringifyCatalogFile(file)], { type: 'application/json' });
     await this.uploadFile(CATALOG_FILE_NAME, blob);
+    await this.stampCatalogCache(provider.type, file, blob.size);
+    return 'written';
+  }
 
-    // Stamp the cache with EXACTLY what the file cache now holds for this path
-    // (read back rather than re-derived), same reason as `writeSeriesFile`: a
-    // second `new Date()` here would differ from the entry `uploadFile` just
-    // added and make the very next listing re-download our own write.
-    const uploaded = this.getCloudCatalogFile();
+  /**
+   * Point the `catalog_index` cache at what the cloud's `catalog.json` holds
+   * right now: `file`, stamped with the listing entry for that path.
+   *
+   * The stamp is read back from the file cache rather than re-derived, same
+   * reason as `writeSeriesFile`: a second `new Date()` would differ from the
+   * entry `uploadFile` just added and make the very next listing re-download our
+   * own write. `fallbackSize` covers a provider whose cache has no entry yet.
+   */
+  private async stampCatalogCache(
+    providerType: ProviderType,
+    file: CatalogFile,
+    fallbackSize = 0
+  ): Promise<void> {
+    const cloudFile = this.getCloudCatalogFile();
     const now = new Date().toISOString();
     const source = {
-      provider: provider.type,
+      provider: providerType,
       path: CATALOG_FILE_NAME,
-      size: uploaded?.size ?? blob.size,
-      modifiedTime: uploaded?.modifiedTime ?? now
+      size: cloudFile?.size ?? fallbackSize,
+      modifiedTime: cloudFile?.modifiedTime ?? now
     };
     const records: CatalogIndexRecord[] = file.series.map((entry) => ({
       series_key: normalizeSeriesKey(entry.series_title),
@@ -1197,11 +1217,10 @@ class UnifiedCloudManager {
     }));
     const keep = new Set(records.map((r) => r.series_key));
     const stale = (await listCatalogIndexes())
-      .filter((row) => row.source.provider === provider.type && !keep.has(row.series_key))
+      .filter((row) => row.source.provider === providerType && !keep.has(row.series_key))
       .map((row) => row.series_key);
     await deleteCatalogIndexes(stale);
     await putCatalogIndexes(records);
-    return 'written';
   }
 
   /**

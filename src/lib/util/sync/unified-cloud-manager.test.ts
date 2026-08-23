@@ -2036,10 +2036,11 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
   });
 
-  it('skips the upload when the rebuild says exactly what the cloud already says', async () => {
-    // A no-op rebuild used to publish anyway: identical entries, fresh build
-    // stamp, new bytes — which flips `catalogNeedsRefresh` on every other
-    // device and makes them all re-download a file that did not change.
+  /**
+   * A provider whose cloud copy already says exactly what this device would
+   * rebuild: same two series, same facts, same stamps.
+   */
+  function noOpRebuildProvider() {
     const unchanged = {
       version: 1,
       updated_at: '2026-08-22T00:00:00.000Z',
@@ -2062,7 +2063,6 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     };
     const p = provider();
     p.downloadFile = vi.fn(async () => new Blob([JSON.stringify(unchanged)]));
-    getActiveProvider.mockReturnValue(p);
     getAllSeriesMetadata.mockResolvedValue({
       'dr stone': {
         series_key: 'dr stone',
@@ -2075,10 +2075,55 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
         facts_updated_at: '2026-08-23T00:00:00.000Z'
       }
     });
+    return p;
+  }
+
+  it('skips the upload when the rebuild says exactly what the cloud already says', async () => {
+    // A no-op rebuild used to publish anyway: identical entries, fresh build
+    // stamp, new bytes — which flips `catalogNeedsRefresh` on every other
+    // device and makes them all re-download a file that did not change.
+    getActiveProvider.mockReturnValue(noOpRebuildProvider());
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('stamps the cache on that skip, so the next no-op write re-downloads nothing', async () => {
+    // Skipping without stamping leaves `catalogNeedsRefresh` true for good: the
+    // cache never learns what the cloud holds, so EVERY later write downloads
+    // catalog.json again just to reach the same conclusion.
+    const p = noOpRebuildProvider();
+    getActiveProvider.mockReturnValue(p);
+
+    // The real `catalog_index` table is stateful, and that is the whole point
+    // here — the second attempt must see what the first one wrote.
+    const rows: Array<{ series_key: string }> = [];
+    catalogRows.mockImplementation(async () => [...rows]);
+    putCatalogIndexes.mockImplementation(async (recs: unknown[]) => {
+      rows.push(...(recs as Array<{ series_key: string }>));
+    });
+    deleteCatalogIndexes.mockImplementation(async (keys: string[]) => {
+      for (const key of keys) {
+        const at = rows.findIndex((row) => row.series_key === key);
+        if (at >= 0) rows.splice(at, 1);
+      }
+    });
+
+    try {
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+      await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
+      expect(p.downloadFile).toHaveBeenCalledTimes(1);
+      expect(rows.map((row) => row.series_key)).toEqual(['dr stone', 'other']);
+
+      await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
+      expect(p.downloadFile).toHaveBeenCalledTimes(1);
+      expect(uploadFile).not.toHaveBeenCalled();
+    } finally {
+      putCatalogIndexes.mockImplementation(async () => {});
+      deleteCatalogIndexes.mockImplementation(async () => {});
+    }
   });
 
   it('still publishes when the cloud has no catalog.json, however well the cache matches', async () => {
