@@ -747,6 +747,40 @@ class UnifiedCloudManager {
         );
       }
 
+      // GATE (before any remote write): a metadata-only volume that has OCR and
+      // a `.mokuro` in the cloud cannot have that sidecar regenerated here —
+      // its `volume_ocr` row is not on this device. Left to the fan-out it
+      // would fail AFTER its siblings had already moved, splitting the series
+      // across two cloud folders while `moveSeriesMetadataKey` carried the
+      // series record to the new title, and no retry could ever converge. Same
+      // answer as a cloud-only volume: download it first, nothing renamed.
+      const localRows = await Promise.all(volumes.map((v) => db.volumes.get(v.volumeUuid)));
+      const strandedTitles = volumes
+        .filter((volume, index) => {
+          const row = localRows[index];
+          if (!row || !isMetadataOnly(row)) return false;
+          // Image-only volumes have no sidecar to regenerate — they move fine.
+          if (!row.mokuro_version?.trim()) return false;
+          const base = normalizeCloudPath(`${oldSeriesTitle}/${volume.volumeTitle}`);
+          return existingFiles.some(
+            (file) =>
+              isMokuroSidecarPath(file.path) &&
+              stripManagedFileExtension(normalizeCloudPath(file.path)) === base
+          );
+        })
+        .map((volume) => volume.volumeTitle);
+      if (strandedTitles.length > 0) {
+        const shown =
+          strandedTitles.slice(0, 3).join(', ') + (strandedTitles.length > 3 ? ', …' : '');
+        throw new ProviderError(
+          `Series not renamed: ${strandedTitles.length} volume(s) in this series are not on ` +
+            `this device (${shown}), so their text data cannot be rewritten with the new name. ` +
+            `Download them first, then rename the series.`,
+          provider.type,
+          'CLOUD_ONLY_VOLUMES'
+        );
+      }
+
       const result: SeriesRenameResult = { changed: 0, renamedVolumeUuids: [], failures: [] };
       for (const { volumeUuid, volumeTitle } of volumes) {
         try {
