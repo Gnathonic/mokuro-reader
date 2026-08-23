@@ -102,6 +102,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 import VolumeItem from '../VolumeItem.svelte';
 import { promptConfirmation, showSnackbar } from '$lib/util';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
+import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -326,7 +327,42 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     await fireEvent.keyDown(window, { key: 'Delete' });
 
     expect(promptConfirmation).not.toHaveBeenCalled();
-    expect(showSnackbar).not.toHaveBeenCalled();
+    // Silence would read as a broken shortcut; say which key does mean the cloud copy.
+    expect(showSnackbar).toHaveBeenCalledWith(
+      'Nothing on this device to remove — shift+Delete deletes the cloud copy'
+    );
+  });
+
+  it('deletes the cloud copy even when the listing files it under another folder', async () => {
+    // A `Series:` description renames the series for display, so the row's
+    // series_title is not the cloud folder and the by-folder listing lookup
+    // misses. The volume still carries the file id it was built from.
+    vi.mocked(unifiedCloudManager.deleteFile).mockClear();
+    const { container } = render(VolumeItem, {
+      props: {
+        volume: placeholder({
+          series_title: 'Renamed By Description',
+          cloudPath: 'Cloud Folder/Vol 1.cbz',
+          cloudModifiedTime: '2026-08-17T00:00:00.000Z'
+        }),
+        variant: 'list'
+      }
+    });
+
+    await fireEvent.click(container.querySelector('[title="Delete from cloud"]') as HTMLElement);
+
+    expect(showSnackbar).not.toHaveBeenCalledWith('Volume is not backed up to cloud');
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
+
+    await (vi.mocked(promptConfirmation).mock.calls[0][1] as () => Promise<void>)();
+    expect(unifiedCloudManager.deleteFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'webdav',
+        fileId: 'file-1',
+        path: 'Cloud Folder/Vol 1.cbz'
+      })
+    );
   });
 
   it('sends its delete button at the cloud copy, the only copy there is', async () => {
@@ -337,10 +373,9 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     expect(button).toBeTruthy();
 
     await fireEvent.click(button);
-    // Not backed up as far as these stubs know, so it stops there — the point is
-    // that it went down the cloud path instead of deleting a row that is absent.
-    expect(promptConfirmation).not.toHaveBeenCalled();
-    expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
+    // The cloud dialog, never the "remove from this device"/"forget" one: there
+    // is no row here to remove and no history to forget.
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
   });
 
   it('still fetches the cloud cover sidecar for its grid card', () => {

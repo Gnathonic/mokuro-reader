@@ -49,7 +49,13 @@
   import { providerManager } from '$lib/util/sync';
   import { backupQueue } from '$lib/util/backup-queue';
   import { downloadQueue } from '$lib/util/download-queue';
-  import { getArchiveSize, getCloudFileId } from '$lib/util/cloud-fields';
+  import {
+    getArchiveSize,
+    getCloudFileId,
+    getCloudModifiedTime,
+    getCloudProvider
+  } from '$lib/util/cloud-fields';
+  import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
@@ -497,20 +503,45 @@
     promptVolumeEditor(volume_uuid, { openCoverPicker: true });
   }
 
+  /**
+   * The cloud file to delete, from the listing when it is there and from the
+   * volume's own cloud fields when it is not.
+   *
+   * The listing lookup is by FOLDER name and exact title, which a placeholder
+   * built from a `Series:` description does not match: its `series_title` is the
+   * display name the description gave it, not the folder the file lives in. That
+   * volume still knows exactly which file it came from — provider, id, path —
+   * so it is deletable, the same way the minimal placeholder card has always
+   * deleted it. `cloudPath` is the path the listing reported, preferred over a
+   * path rebuilt from titles for the providers that address files by path.
+   */
+  let deletableCloudFile = $derived.by((): CloudFileMetadata | undefined => {
+    if (cloudFile) return cloudFile;
+
+    const fileId = getCloudFileId(volume);
+    const provider = getCloudProvider(volume);
+    if (!fileId || !provider) return undefined;
+
+    return {
+      provider,
+      fileId,
+      path: volume.cloudPath || `${volume.series_title}/${volume.volume_title}.cbz`,
+      modifiedTime: getCloudModifiedTime(volume) || new Date().toISOString(),
+      size: getArchiveSize(volume) ?? 0
+    };
+  });
+
   async function onCloudDeleteOnly() {
-    if (!isBackedUp || !cloudFile || isReadOnlyMode) {
+    const target = deletableCloudFile;
+    if (!target || isReadOnlyMode) {
       showSnackbar('Volume is not backed up to cloud');
       return;
     }
     const providerName =
-      cloudFile.provider === 'google-drive'
-        ? 'Drive'
-        : cloudFile.provider === 'mega'
-          ? 'MEGA'
-          : 'cloud';
+      target.provider === 'google-drive' ? 'Drive' : target.provider === 'mega' ? 'MEGA' : 'cloud';
     promptConfirmation(`Delete ${volName} from ${providerName}?`, async () => {
       try {
-        await unifiedCloudManager.deleteFile(cloudFile!);
+        await unifiedCloudManager.deleteFile(target);
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Failed to delete from cloud:', error);
@@ -536,10 +567,12 @@
         e.preventDefault();
         if (e.shiftKey) {
           onCloudDeleteOnly();
-        } else if (!isPlaceholderRow) {
+        } else if (isPlaceholderRow) {
           // Nothing on this device to delete. The cloud copy is deletable, but
-          // never from the shortcut that means "remove my local copy" —
-          // shift+Delete is the one that has always meant the cloud.
+          // never from the shortcut that means "remove my local copy" — say
+          // which key does mean it rather than swallowing the press.
+          showSnackbar('Nothing on this device to remove — shift+Delete deletes the cloud copy');
+        } else {
           onDeleteClicked();
         }
         return;
