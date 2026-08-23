@@ -28,6 +28,26 @@ function sortByDisplayTitle(a: Series, b: Series) {
 }
 
 /**
+ * The presentation half of a card: the human-facing title and the lowercased
+ * terms the search box matches it by, the display title included (it may be a
+ * language title plus a tag, which no single stored field carries).
+ *
+ * Shared by both derivations so a series is titled and found identically whether
+ * its volumes are here or it is still just a name in the root catalog.
+ */
+function resolveCardTitles(
+  seriesTitle: string,
+  meta: SeriesMetadata | undefined,
+  pref: DisplayTitleLanguage
+): { displayTitle: string; searchTerms: string[] } {
+  const displayTitle = resolveDisplayTitle(seriesTitle, meta, pref);
+  const searchTerms = seriesSearchTerms(seriesTitle, meta);
+  const displayLower = displayTitle.toLowerCase();
+  if (!searchTerms.includes(displayLower)) searchTerms.push(displayLower);
+  return { displayTitle, searchTerms };
+}
+
+/**
  * Group volumes into series (by normalized folder title) and attach display
  * titles. Display titles are computed HERE, once per recompute — never in
  * per-card `$derived` (see CLAUDE.md "Svelte 5 Reactive Performance").
@@ -44,11 +64,11 @@ export function deriveSeriesFromVolumes(
     const key = normalizeSeriesKey(entry.series_title);
     let series = titleMap.get(key);
     if (series === undefined) {
-      const meta = metaMap?.get(key);
-      const displayTitle = resolveDisplayTitle(entry.series_title, meta, pref);
-      const searchTerms = seriesSearchTerms(entry.series_title, meta);
-      const displayLower = displayTitle.toLowerCase();
-      if (!searchTerms.includes(displayLower)) searchTerms.push(displayLower);
+      const { displayTitle, searchTerms } = resolveCardTitles(
+        entry.series_title,
+        metaMap?.get(key),
+        pref
+      );
 
       series = {
         title: entry.series_title,
@@ -97,11 +117,11 @@ export function deriveNameOnlySeries(
   for (const row of rows) {
     if (knownKeys.has(row.series_key)) continue;
 
-    const meta = metaMap?.get(row.series_key);
-    const displayTitle = resolveDisplayTitle(row.series_title, meta, pref);
-    const searchTerms = seriesSearchTerms(row.series_title, meta);
-    const displayLower = displayTitle.toLowerCase();
-    if (!searchTerms.includes(displayLower)) searchTerms.push(displayLower);
+    const { displayTitle, searchTerms } = resolveCardTitles(
+      row.series_title,
+      metaMap?.get(row.series_key),
+      pref
+    );
 
     out.push({
       title: row.series_title,
