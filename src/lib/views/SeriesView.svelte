@@ -262,12 +262,6 @@
     placeholders.length +
       ($notOnDeviceDisplay === 'cloud-section' ? sectionVolumes.length : notInstalled.length)
   );
-  // Never hide a row: a removed volume with no cloud file left is not in `notInstalled`,
-  // but once it has moved down here the section is the only place it is drawn.
-  let showCloudSection = $derived(
-    sectionVolumes.length > 0 || placeholders.length > 0 || notInstalled.length > 0
-  );
-
   // Raw folder title (identity) and its human-facing overlay. The overlay is
   // presentation only: rename/cloud/delete flows below keep using seriesTitle.
   let seriesTitle = $derived(manga[0]?.series_title || placeholders[0]?.series_title || '');
@@ -352,6 +346,18 @@
     });
   });
   let hasAnyProvider = $derived(providerStatus.hasAnyAuthenticated);
+
+  // Never hide a row: a removed volume with no cloud file left is not in `notInstalled`,
+  // but once it has moved down here (see `sectionVolumes` above) the section is the only
+  // place it is drawn. The rows still up in the list (mixed mode) only justify a section
+  // when there is a provider to fetch them from — otherwise an offer of "available in
+  // <cloud>" would head an empty section built from a cached cloud id nothing can act on.
+  // Declared here because it reads `hasAnyProvider`, which the provider block above sets up.
+  let showCloudSection = $derived(
+    sectionVolumes.length > 0 ||
+      placeholders.length > 0 ||
+      (notInstalled.length > 0 && hasAnyProvider)
+  );
   let isCloudReady = $derived(hasAnyProvider && cacheHasLoaded);
 
   // Check if current provider is WebDAV and in read-only mode
@@ -791,8 +797,11 @@
 
         {#if showCloudSection}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
+            <!-- Keyed: a live-flipping count is exactly the text Migaku rewrites and then
+                 holds stale (see CLAUDE.md). -->
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({cloudSectionCount})
+              Available in {providerDisplayName}
+              {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
             {#if hasAnyProvider}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
@@ -834,8 +843,10 @@
 
         {#if showCloudSection}
           <div class="flex items-center justify-between px-2 pt-4">
+            <!-- Keyed for the same reason as the list view's heading above. -->
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({cloudSectionCount})
+              Available in {providerDisplayName}
+              {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
             {#if hasAnyProvider}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>

@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 
 // SeriesView sits on top of the whole app; everything below the placement decision is
 // stubbed. What is under test is where a volume whose pages are gone gets DRAWN.
-const { currentSeries, notOnDeviceDisplay, routeParams } = vi.hoisted(() => {
+const { currentSeries, notOnDeviceDisplay, routeParams, providerStatus } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
     const subs = new Set<(v: T) => void>();
     let current = initial;
@@ -21,6 +21,12 @@ const { currentSeries, notOnDeviceDisplay, routeParams } = vi.hoisted(() => {
     };
   }
   return {
+    providerStatus: createStore({
+      hasAnyAuthenticated: false,
+      currentProviderType: null as string | null,
+      providers: {} as Record<string, unknown>,
+      needsAttention: false
+    }),
     currentSeries: createStore<unknown[]>([]),
     notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
     routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
@@ -99,16 +105,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     deleteFile: vi.fn()
   }
 }));
-vi.mock('$lib/util/sync', () => ({
-  providerManager: {
-    status: emptyStore({
-      hasAnyAuthenticated: false,
-      currentProviderType: null,
-      providers: {},
-      needsAttention: false
-    })
-  }
-}));
+vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
 vi.mock('$lib/util/backup-queue', () => ({
   backupQueue: { queueVolumeForBackup: vi.fn(), queueSeriesVolumesForBackup: vi.fn() }
 }));
@@ -171,6 +168,12 @@ describe('SeriesView places not-on-device volumes by the display setting', () =>
   afterEach(() => {
     cleanup();
     notOnDeviceDisplay.set('mixed');
+    providerStatus.set({
+      hasAnyAuthenticated: false,
+      currentProviderType: null,
+      providers: {},
+      needsAttention: false
+    });
   });
 
   it('lists a removed volume in place, with no section of its own, in mixed mode', () => {
@@ -272,5 +275,66 @@ describe('SeriesView draws a placeholder as richly as its data allows', () => {
     expect(pageOrder(container)).toEqual(['Vol 1', 'Available in Drive (2)', 'Vol 2', 'Vol 3']);
     expect(container.textContent).toContain('184 MB');
     expect(container.textContent).toContain('In Cloud •');
+  });
+});
+
+describe('SeriesView only offers a cloud section there is something to offer in', () => {
+  beforeEach(() => {
+    localStorage.setItem('series-view-mode', 'grid');
+  });
+
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+    providerStatus.set({
+      hasAnyAuthenticated: false,
+      currentProviderType: null,
+      providers: {},
+      needsAttention: false
+    });
+  });
+
+  function heading(container: HTMLElement): string | null {
+    return container.querySelector('h4')?.textContent?.trim() ?? null;
+  }
+
+  /** A removed row still carrying the cloud id of its last known backup. */
+  const removedWithCachedId = () =>
+    volume('Vol 1', {
+      metadata_only: true,
+      cloudFileId: 'file-1',
+      cloudProvider: 'google-drive'
+    });
+
+  it('draws no empty section in mixed mode with no provider connected', () => {
+    currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
+    const { container } = render(SeriesView);
+
+    expect(heading(container)).toBeNull();
+  });
+
+  it('draws it again once a provider is connected', async () => {
+    currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
+    const { container } = render(SeriesView);
+
+    providerStatus.set({
+      hasAnyAuthenticated: true,
+      currentProviderType: 'google-drive',
+      providers: {},
+      needsAttention: false
+    });
+    await tick();
+
+    expect(heading(container)).toBe('Available in Drive (1)');
+  });
+
+  it('still shows the section for a moved row with no provider — it is the only place it is drawn', async () => {
+    currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
+    const { container } = render(SeriesView);
+
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+
+    expect(heading(container)).toBe('Available in Drive (1)');
   });
 });
