@@ -13,6 +13,7 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { needsDownload } from '$lib/catalog/volume-state';
 
   let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);
@@ -267,6 +268,19 @@
           </p>
         </div>
       </div>
+    </div>
+  </div>
+{:else if volume && needsDownload(volume)}
+  <!-- The row is real but its OCR is not on this device, so `currentVolumeData`
+       never resolves: without this the spinner below would spin forever. -->
+  <div class="flex h-screen w-screen items-center justify-center">
+    <div class="text-center">
+      <p class="text-gray-600 dark:text-gray-400">This volume is not on this device.</p>
+      <p class="mt-1 text-sm text-gray-500">Download it again to read its text.</p>
+      <Button class="mt-4" color="alternative" onclick={goBackToSeries}>
+        <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
+        Back to Series
+      </Button>
     </div>
   </div>
 {:else if !volume || !volumeData}
