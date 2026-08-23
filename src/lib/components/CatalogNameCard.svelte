@@ -1,5 +1,6 @@
 <script lang="ts">
   import { nav } from '$lib/util/hash-router';
+  import { CARD_BASE_HEIGHT, CARD_BASE_WIDTH } from '$lib/util/spine-stack-geometry';
   import { ListgroupItem } from 'flowbite-svelte';
   import { CloudArrowUpOutline } from 'flowbite-svelte-icons';
 
@@ -32,7 +33,8 @@
 {:else}
   <button
     type="button"
-    class="flex h-[297px] w-[210px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 p-3 text-center hover:border-gray-400 hover:bg-gray-50 dark:border-gray-600 dark:hover:border-gray-500 dark:hover:bg-gray-800"
+    class="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 p-3 text-center hover:border-gray-400 hover:bg-gray-50 dark:border-gray-600 dark:hover:border-gray-500 dark:hover:bg-gray-800"
+    style="width: {CARD_BASE_WIDTH}px; height: {CARD_BASE_HEIGHT}px;"
     onclick={() => nav.toSeries(title)}
   >
     <CloudArrowUpOutline class="h-8 w-8 text-gray-400" />
