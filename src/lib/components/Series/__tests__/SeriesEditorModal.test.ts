@@ -303,6 +303,31 @@ describe('SeriesEditorModal', () => {
     expect(getByText(/Next unlinked series/)).toBeTruthy();
   });
 
+  it('never walks into a name-only card', async () => {
+    // Catalog-only names (from the backend's catalog.json) are unlinked and
+    // untitled by definition, so a 1k-series backend would hand every "next"
+    // click a remote name and bury the local series these loops exist to curate.
+    h.catalog.set([
+      series('Akira'),
+      { ...series('Remote Series', []), nameOnly: true },
+      series('Berserk')
+    ]);
+    h.seriesMetadataMap.set(new Map<string, unknown>([['akira', linkedMeta('Akira')]]));
+
+    const { getByText, queryByText } = await openFor('Akira');
+
+    // 'Remote Series' sits between Akira and Berserk in catalog order and is
+    // both unlinked and untitled — it is skipped for the real local series.
+    await fireEvent.click(getByText(/Next series without titles/));
+    await tick();
+    expect(get(seriesEditorModalStore)?.seriesTitle).toBe('Berserk');
+
+    // From Berserk the ONLY remaining candidate is the name-only card, so both
+    // walks are exhausted rather than offering it.
+    expect(queryByText(/Next series without titles/)).toBeNull();
+    expect(queryByText(/Next unlinked series/)).toBeNull();
+  });
+
   it('hides "Next unlinked series" when every other series is linked', async () => {
     h.catalog.set([series('Akira'), series('Berserk')]);
     h.seriesMetadataMap.set(new Map<string, unknown>([['akira', linkedMeta('Akira')]]));

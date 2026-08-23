@@ -90,6 +90,10 @@
     for (let step = 1; step <= list.length; step++) {
       const candidate = list[(currentIndex + step + list.length) % list.length];
       if (!candidate || normalizeSeriesKey(candidate.title) === key) continue;
+      // Name-only cards are remote names with nothing local behind them. These
+      // loops curate THIS library, and a 1k-series backend's unlinked names
+      // would bury the handful of local series that actually need a touch-up.
+      if (candidate.nameOnly) continue;
       if (needsWork(metaMap.get(normalizeSeriesKey(candidate.title)))) return candidate;
     }
     return undefined;
