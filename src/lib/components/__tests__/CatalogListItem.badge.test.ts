@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
 // Same stubs the shortcut suite uses: the row's dependency graph (Dexie, the sync stack)
@@ -73,5 +73,90 @@ describe('CatalogListItem marks a series whose volumes are all absent', () => {
       props: { volumes: [volume({ isPlaceholder: true })] }
     });
     expect(badges(container)).toHaveLength(1);
+  });
+});
+
+describe('CatalogListItem gives an all-absent series the placeholder identity', () => {
+  beforeAll(() => {
+    // jsdom has no object URLs; the row needs one to render a cover at all.
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:test');
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => cleanup());
+
+  const withCover = (overrides: Partial<VolumeMetadata> = {}) =>
+    volume({ thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }), ...overrides });
+
+  /** The cues that say WHAT KIND of series this row is. */
+  function identity(container: HTMLElement) {
+    const row = container.querySelector('div') as HTMLElement;
+    const title = row.querySelector('p.font-semibold') as HTMLElement | null;
+    const chip = [...row.querySelectorAll('span')]
+      .map((el) => el.textContent?.trim() ?? '')
+      .find((text) => text.startsWith('In '));
+    return {
+      dimmed: row.className.includes('opacity-70'),
+      mutedTitle: title?.className.includes('text-gray-400') ?? false,
+      greenTitle: title?.className.includes('text-green-400') ?? false,
+      chip: chip ?? null,
+      badges: row.querySelectorAll('[data-testid="download-badge"]').length
+    };
+  }
+
+  it('reads exactly like a cloud-only series', () => {
+    const cloud = render(CatalogListItem, {
+      props: { volumes: [volume({ isPlaceholder: true })], providerName: 'Drive' }
+    });
+    const placeholderIdentity = identity(cloud.container);
+    cleanup();
+
+    const removed = render(CatalogListItem, {
+      props: { volumes: [volume({ metadata_only: true })], providerName: 'Drive' }
+    });
+
+    expect(identity(removed.container)).toEqual(placeholderIdentity);
+    expect(placeholderIdentity).toEqual({
+      dimmed: true,
+      mutedTitle: true,
+      // A series with nothing here is not a series you finished.
+      greenTitle: false,
+      chip: 'In Drive',
+      badges: 1
+    });
+  });
+
+  it('leaves a series with something to read alone', () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume(), volume({ volume_uuid: 'uuid-2', metadata_only: true })] }
+    });
+    expect(identity(container)).toEqual({
+      dimmed: false,
+      mutedTitle: false,
+      greenTitle: false,
+      chip: null,
+      badges: 0
+    });
+  });
+
+  it('shows the cover it has, whichever kind of absent series it is', () => {
+    const cloud = render(CatalogListItem, {
+      props: { volumes: [withCover({ isPlaceholder: true })] }
+    });
+    expect(cloud.container.querySelector('img')).not.toBeNull();
+    cleanup();
+
+    const removed = render(CatalogListItem, {
+      props: { volumes: [withCover({ metadata_only: true })] }
+    });
+    expect(removed.container.querySelector('img')).not.toBeNull();
+  });
+
+  it('falls back to the download icon — never a blank "Cover" box — with no cover', () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ metadata_only: true })] }
+    });
+    expect(container.textContent).not.toContain('Cover');
+    expect(container.querySelector('svg')).not.toBeNull();
   });
 });

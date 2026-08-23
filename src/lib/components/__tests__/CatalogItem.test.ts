@@ -67,6 +67,7 @@ import CatalogItem from '../CatalogItem.svelte';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
+import { updateCatalogSetting } from '$lib/settings/settings';
 
 function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
@@ -566,13 +567,13 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     expect(badge.className).toContain('pointer-events-none');
   });
 
-  it('marks the card whose covers have not been generated yet', () => {
-    // No thumbnail dimensions: the card falls back to its "Generating…" boxes, and an
-    // absent series must still say so there.
+  it('marks the card whose covers have not arrived', () => {
+    // No thumbnail dimensions: the card falls back to its download boxes, which must
+    // carry the mark too — it is not tied to the CompositeCanvas branch.
     const { container } = render(CatalogItem, {
       props: { volumes: [localVolume({ metadata_only: true })] }
     });
-    expect(container.textContent).toContain('Generating');
+    expect(container.textContent).toContain('Click to download');
     expect(badges(container)).toHaveLength(1);
   });
 
@@ -659,5 +660,146 @@ describe('CatalogItem hover + Delete raises the series removal dialog', () => {
     await fireEvent.keyDown(window, { key: 'Delete' });
 
     expect(promptSeriesRemoval).not.toHaveBeenCalled();
+  });
+});
+
+describe('CatalogItem gives an all-absent series the placeholder identity', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  const cover = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+  const cloudCover = (overrides: Partial<VolumeMetadata> = {}) =>
+    placeholderVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  /** The cues that say WHAT KIND of series this card is (not what data it happens to hold). */
+  function identity(container: HTMLElement) {
+    const card = getCard(container);
+    const title = card.querySelector('p.line-clamp-2') as HTMLElement | null;
+    return {
+      dimmed: card.className.includes('opacity-70'),
+      mutedTitle: title?.className.includes('text-gray-400') ?? false,
+      chip: card.querySelector('p.text-xs')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+      badges: card.querySelectorAll('[data-testid="download-badge"]').length
+    };
+  }
+
+  it('reads exactly like a cloud-only series of the same size', () => {
+    const cloud = render(CatalogItem, {
+      props: {
+        volumes: [cloudCover({ volume_uuid: 'p-1' }), cloudCover({ volume_uuid: 'p-2' })],
+        providerName: 'Drive'
+      }
+    });
+    const placeholderIdentity = identity(cloud.container);
+    cleanup();
+
+    const removed = render(CatalogItem, {
+      props: {
+        volumes: [
+          cover({ volume_uuid: 'm-1', metadata_only: true }),
+          cover({ volume_uuid: 'm-2', metadata_only: true })
+        ],
+        providerName: 'Drive'
+      }
+    });
+
+    expect(identity(removed.container)).toEqual(placeholderIdentity);
+    expect(placeholderIdentity).toEqual({
+      dimmed: true,
+      mutedTitle: true,
+      chip: '2 volumes in Drive',
+      badges: 1
+    });
+  });
+
+  it('leaves a series with something to read alone', () => {
+    const { container } = render(CatalogItem, {
+      props: { volumes: [cover(), cover({ volume_uuid: 'm-2', metadata_only: true })] }
+    });
+    expect(identity(container)).toEqual({
+      dimmed: false,
+      mutedTitle: false,
+      chip: null,
+      badges: 0
+    });
+  });
+
+  it('keeps the series editor shortcut and the link working on a removed series', async () => {
+    const { container } = render(CatalogItem, {
+      props: { volumes: [cover({ metadata_only: true })] }
+    });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.keyDown(window, { key: 'e' });
+
+    expect(promptSeriesEditor).toHaveBeenCalledWith('One Piece');
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('#/series/One%20Piece');
+  });
+
+  /** The width the card sized its cover stack to — the shape of the stacking treatment. */
+  function stackWidth(container: HTMLElement): string {
+    const el = container.querySelector('div.overflow-hidden');
+    if (!el) throw new Error('stack container not found');
+    return (el as HTMLElement).style.width;
+  }
+
+  it('stacks like a cloud series, compact-cloud setting included', () => {
+    // "Compact cloud-only series" collapses a cloud card to a single cover. A series with
+    // nothing on the device IS a cloud series, so it must collapse identically.
+    updateCatalogSetting('compactCloudSeries', true);
+    try {
+      const cloud = render(CatalogItem, {
+        props: {
+          volumes: [
+            cloudCover({ volume_uuid: 'p-1' }),
+            cloudCover({ volume_uuid: 'p-2' }),
+            cloudCover({ volume_uuid: 'p-3' })
+          ]
+        }
+      });
+      const cloudWidth = stackWidth(cloud.container);
+      cleanup();
+
+      const removed = render(CatalogItem, {
+        props: {
+          volumes: [
+            cover({ volume_uuid: 'm-1', metadata_only: true }),
+            cover({ volume_uuid: 'm-2', metadata_only: true }),
+            cover({ volume_uuid: 'm-3', metadata_only: true })
+          ]
+        }
+      });
+      expect(stackWidth(removed.container)).toBe(cloudWidth);
+    } finally {
+      updateCatalogSetting('compactCloudSeries', false);
+    }
+  });
+
+  it('offers the download boxes, not "Generating…", when no cover has arrived', () => {
+    const { container } = render(CatalogItem, {
+      props: { volumes: [localVolume({ metadata_only: true })] }
+    });
+    expect(container.textContent).toContain('Click to download');
+    expect(container.textContent).not.toContain('Generating');
   });
 });

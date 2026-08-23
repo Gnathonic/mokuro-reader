@@ -36,9 +36,9 @@
 
   let volume = $derived(firstUnreadVolume ?? firstVolume);
   let liveVolume = $derived(volume ? ($catalogVolumes?.[volume.volume_uuid] ?? volume) : undefined);
-  let isComplete = $derived(!firstUnreadVolume);
-  let isPlaceholderOnly = $derived(volume?.isPlaceholder === true);
-
+  // A series with no rows on this device is not a series you finished — it has no
+  // progress at all. Mirrors the grid card's rule.
+  let isComplete = $derived(localVolumes.length > 0 && !firstUnreadVolume);
   // Not one page of this series is on the device — cloud-only placeholders, rows whose
   // files were removed, or both (see $lib/catalog/volume-state).
   let seriesNeedsDownload = $derived(
@@ -55,7 +55,7 @@
 
   // Check if this series is downloading or queued
   let isDownloading = $derived.by(() => {
-    if (!volume || !isPlaceholderOnly) return false;
+    if (!volume || !seriesNeedsDownload) return false;
 
     const status = downloadQueue.getSeriesQueueStatus(volume.series_title);
     return status.hasQueued || status.hasDownloading;
@@ -134,7 +134,7 @@
 {#if volume}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class:opacity-70={isPlaceholderOnly}
+    class:opacity-70={seriesNeedsDownload}
     onmouseenter={() => (isHovered = true)}
     onmouseleave={() => (isHovered = false)}
   >
@@ -142,22 +142,26 @@
       <a href="#/series/{encodeURIComponent(navId)}" class="h-full w-full" onclick={handleClick}>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <p class:text-green-400={isComplete} class="font-semibold">
+            <!-- Muted while the series is not here; green still means "finished". -->
+            <p
+              class:text-green-400={isComplete}
+              class:text-gray-400={seriesNeedsDownload && !isComplete}
+              class="font-semibold"
+            >
               {displayTitle ?? volume.series_title}
             </p>
-            {#if isPlaceholderOnly}
+            {#if seriesNeedsDownload}
               <span class="text-xs text-blue-400">In {providerName}</span>
             {/if}
           </div>
           <!-- Wrapper exists only to anchor the badge; the cover keeps its own box. -->
           <div class="relative flex-shrink-0">
-            {#if isPlaceholderOnly}
+            <!-- The cover comes first whichever kind of series this is: a removed row and
+                 an indexed placeholder can both have one, and that is the enriched half.
+                 Only with nothing to show does an absent series fall back to the icon. -->
+            {#if isDownloading}
               <div class="flex h-[70px] w-[50px] items-center justify-center">
-                {#if isDownloading}
-                  <Spinner size="12" color="blue" />
-                {:else}
-                  <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
-                {/if}
+                <Spinner size="12" color="blue" />
               </div>
             {:else if thumbnailUrl}
               <img
@@ -165,6 +169,10 @@
                 alt="img"
                 class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
               />
+            {:else if seriesNeedsDownload}
+              <div class="flex h-[70px] w-[50px] items-center justify-center">
+                <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
+              </div>
             {:else}
               <div
                 class="flex h-[70px] w-[50px] items-center justify-center border border-gray-300 bg-gray-200 text-[10px] text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"

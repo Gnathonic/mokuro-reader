@@ -65,9 +65,10 @@
   // Display volume: first unread, or first local, or first placeholder
   let volume = $derived(unreadVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
 
-  // UI state flags
+  // UI state flag. Completion is the ONE thing a series with rows can say that a cloud-only
+  // one cannot: it has read history. Everything else about an absent series' card is the
+  // cloud treatment (see `seriesNeedsDownload` below).
   let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
-  let isPlaceholderOnly = $derived(!hasLocalVolumes);
 
   // Not one page of this series is on the device: cloud-only placeholders, rows whose
   // files were removed, or a mix of the two. `needsDownload` covers both absent states —
@@ -76,13 +77,16 @@
     seriesVolumes.length > 0 && seriesVolumes.every(needsDownload)
   );
 
-  // Enrich cloud placeholders with fetched thumbnail data so they render via CompositeCanvas.
+  // The cover stack of a series with nothing on the device, cloud-only or removed alike:
+  // its volumes, each carrying whatever cover has been found for it. A cloud placeholder's
+  // arrives from the fetch below; a removed row already has one, which is the whole of the
+  // difference between the two (it paints immediately instead of popping in).
   // Includes ALL target volumes (not just those with loaded thumbnails) so that
   // stackedVolumes.length is stable. CompositeCanvas skips volumes without thumbnail,
   // so positions are pre-allocated: each thumbnail pops into its fixed slot without
   // shifting existing ones.
   let enrichedPlaceholders = $derived.by(() => {
-    if (!isPlaceholderOnly) return [];
+    if (!seriesNeedsDownload) return [];
     return seriesVolumes.map((vol) => {
       const ct = cloudThumbnailData[vol.volume_uuid];
       if (ct) {
@@ -99,16 +103,21 @@
 
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
-    isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
+    seriesNeedsDownload && ($catalogSettings?.compactCloudSeries ?? false)
   );
 
   // Get volumes for stacked thumbnail based on settings.
   // The rule itself lives in $lib/util/spine-stack-geometry so the series editor's spine
   // shelf stacks EXACTLY the same volumes (cloud placeholders capped there too).
+  //
+  // A series with nothing on the device goes down the CLOUD path of that rule even when
+  // its volumes are real rows: `localVolumes` is what the selector reads as "there is
+  // something to read here", and a removed series has to stack, cap and collapse exactly
+  // like a cloud one — same treatment, only the covers arrive sooner.
   let stackedVolumes = $derived(
     selectCardStackVolumes({
-      localVolumes,
-      unreadVolumes,
+      localVolumes: seriesNeedsDownload ? [] : localVolumes,
+      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
       placeholders: enrichedPlaceholders,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
@@ -517,7 +526,7 @@
     }
 
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const maxCount = isPlaceholderOnly
+    const maxCount = seriesNeedsDownload
       ? stackCountSetting === 0
         ? MAX_CLOUD_STACK
         : Math.min(stackCountSetting, MAX_CLOUD_STACK)
@@ -551,7 +560,7 @@
   // to avoid a reactive cycle: thumbnails loaded → containerDimensions changed →
   // placeholderStepSizes recomputed → effect re-triggered → cleanup resets data → loop
   $effect(() => {
-    if (!isPlaceholderOnly) return;
+    if (!seriesNeedsDownload) return;
 
     const stackCount = $catalogSettings?.stackCount ?? 3;
     const maxCount = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
@@ -560,6 +569,9 @@
     let cancelled = false;
 
     for (const vol of vols) {
+      // Already has its cover locally (a removed row keeps it): nothing to fetch. This is
+      // the ONLY thing the two kinds of absent series do differently.
+      if (vol.thumbnail) continue;
       if (!vol.cloudThumbnailFileId) continue;
 
       // Check synchronous cache first
@@ -625,12 +637,12 @@
     <div
       bind:this={outerEl}
       class:text-green-400={isComplete}
-      class:opacity-70={isPlaceholderOnly}
+      class:opacity-70={seriesNeedsDownload}
       class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
       class:border-transparent={!showSeriesIndicator}
       class:border-blue-400={showSeriesIndicator}
       class:border-dashed={showSeriesIndicator}
-      class:cursor-pointer={isPlaceholderOnly}
+      class:cursor-pointer={seriesNeedsDownload}
       onmouseenter={() => (isHovered = true)}
       onmouseleave={() => {
         isHovered = false;
@@ -665,8 +677,9 @@
           </div>
           {@render absentMark()}
         </div>
-      {:else if isPlaceholderOnly}
-        <!-- Placeholder boxes (cloud thumbnails loading or unavailable) -->
+      {:else if seriesNeedsDownload}
+        <!-- Nothing here to draw a cover from: the download boxes. Not "Generating…" —
+             nothing is generating a cover for a series whose pages are all gone. -->
         <div
           class="relative pt-4 pb-6"
           style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
@@ -703,6 +716,7 @@
               </div>
             {/each}
           </div>
+          {@render absentMark()}
         </div>
       {:else if stackedVolumes.length > 0}
         <!-- Local volumes exist, but thumbnails are not ready yet -->
@@ -734,16 +748,26 @@
               </div>
             {/each}
           </div>
-          {@render absentMark()}
+          <!-- No mark here: this branch is only reached by a series with pages on the
+               device, whose covers are still being generated. -->
         </div>
       {/if}
-      <p class="line-clamp-2 font-semibold" style="width: {containerDimensions.outerWidth}px;">
+      <!-- Muted while the series is not here — the same grey the cloud series page titles
+           itself in. A series you finished keeps its green: that is progress, not identity. -->
+      <p
+        class="line-clamp-2 font-semibold"
+        class:text-gray-400={seriesNeedsDownload && !isComplete}
+        style="width: {containerDimensions.outerWidth}px;"
+      >
         {displayTitle ?? volume.series_title}
       </p>
-      {#if isPlaceholderOnly}
-        <p class="text-xs text-blue-400">
-          {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerName}
-        </p>
+      {#if seriesNeedsDownload}
+        <!-- Keyed: a count is exactly the text Migaku rewrites and then holds stale. -->
+        {#key seriesVolumes.length}
+          <p class="text-xs text-blue-400">
+            {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerName}
+          </p>
+        {/key}
       {/if}
     </div>
   </a>
