@@ -102,6 +102,15 @@ vi.mock('$lib/metadata/series-index-sync', () => ({
     refreshSeriesIndexes(map, providerType)
 }));
 
+/**
+ * A file cache whose fetch has COMPLETED. Every metadata write gates on
+ * `isLoaded()`, because a listing that is merely non-empty can still be this
+ * device's own uploads mid-`fetchAll()` — see `writeSeriesFile`.
+ */
+function loadedCache(overrides: object = {}) {
+  return { removeById: vi.fn(), add: vi.fn(), isLoaded: () => true, ...overrides };
+}
+
 /** A writable provider mock exposing every primitive renameVolume composes. */
 function makeRenameProvider(overrides: Record<string, unknown> = {}) {
   return {
@@ -152,7 +161,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('regenerates the .mokuro at the new path, moves cbz+cover, and deletes the stale .mokuro', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files = oldSeriesFiles();
 
@@ -201,7 +210,7 @@ describe('UnifiedCloudManager rename operations', () => {
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(
@@ -218,7 +227,7 @@ describe('UnifiedCloudManager rename operations', () => {
     const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
     getActiveProvider.mockReturnValue(provider);
     getBySeries.mockReturnValue([]);
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(
@@ -227,7 +236,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('image-only volume (no OCR): just moves files, no mokuro upload/delete', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files: CloudFileMetadata[] = [
       {
@@ -269,7 +278,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // mokuro_version set but volume_ocr missing → generateSidecars yields no
     // mokuro while a stale .mokuro exists in the cloud. Moving it would
     // silently revert the rename, so we must throw before mutating anything.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files = oldSeriesFiles(); // includes a .mokuro
     getActiveProvider.mockReturnValue(provider);
@@ -291,7 +300,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // Its OCR is not on this device, so the sidecar cannot be rebuilt with the
     // new names — and moving the stale one would revert the rename on the next
     // download. Same gate, a message that says what to do about it.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files = oldSeriesFiles(); // includes a .mokuro
     getActiveProvider.mockReturnValue(provider);
@@ -329,7 +338,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // already-moved file is absent from the fresh source listing and never
     // reaches the move loop. Swallowing it here would delete the stale
     // .mokuro and report success while the cbz is stranded or gone.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider({
       renameFile: vi.fn(async (file: CloudFileMetadata) => {
         if (file.fileId === 'cbz-1') throw new Error('Request failed with status 404 Not Found');
@@ -358,7 +367,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // the new path; only the stale .mokuro remains at the old path. The retry
     // must not re-move anything (and must not read the moved files as a
     // TARGET_EXISTS collision — collisions require the SOURCE to still exist).
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const state: CloudFileMetadata[] = [
       {
@@ -403,7 +412,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // exists. Step 1's .mokuro upload is an overwrite on every provider, so
     // the gate must fire BEFORE it — otherwise the occupant's sidecar is
     // corrupted before the cbz move could fail.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const state: CloudFileMetadata[] = [
       ...oldSeriesFiles(),
@@ -440,7 +449,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('overwrite option deletes the occupant first, then renames cleanly', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const occupantCbz: CloudFileMetadata = {
       provider: 'webdav',
@@ -487,7 +496,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // local cache is never consulted, because a debounced provider-event
     // rebuild can transiently repopulate old-path entries mid-rename and a
     // cache gate then skips real prunes.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
@@ -510,7 +519,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('does not prune when only the volume title changed (same series)', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const files = oldSeriesFiles();
     getActiveProvider.mockReturnValue(provider);
@@ -597,7 +606,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('renames an OCR series via the per-volume path so each .mokuro is regenerated', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -651,7 +660,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // Left to the fan-out this volume fails AFTER its siblings moved, splitting
     // the series across two cloud folders with no retry that can converge — so
     // it is a pre-flight rejection, before anything is touched.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -705,7 +714,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('renames an image-only volume that is not on this device (no sidecar to rewrite)', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -743,7 +752,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('collects a per-volume failure — with no remote writes for it — when a sidecar cannot be regenerated', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -790,7 +799,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // The gate fires before any remote write.
     // (Proper fix — downloading .mokuro/metadata without the full volume —
     // is blocked on the metadata-persistence data update.)
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -837,7 +846,7 @@ describe('UnifiedCloudManager rename operations', () => {
   });
 
   it('continues past a failed volume and reports per-volume outcomes', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
       {
         provider: 'webdav',
@@ -1026,7 +1035,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   }
 
   it('uploads the index at <Series>/series.json and caches what it wrote', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
     getCache.mockReturnValue(cache);
@@ -1067,7 +1076,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   });
 
   it('overwrites an existing cloud copy at the same path (no delete/rename dance)', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     const existingCloud = cloudFile('One Piece/series.json', { fileId: 'sj', size: 42 });
     getActiveProvider.mockReturnValue(provider);
@@ -1105,7 +1114,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     // Another device wrote the file after our last fetch (different size), so the
     // cached copy is stale: writing straight from it would drop that device's
     // volumes from the index.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider({
       downloadFile: vi.fn(
         async () =>
@@ -1148,7 +1157,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   });
 
   it('prunes index entries for volumes that are neither in the cloud listing nor installed', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
     getCache.mockReturnValue(cache);
@@ -1190,7 +1199,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     // folder" means the folder holds no volumes — writing would conjure
     // `<Series>/series.json` (and the folder) out of thin air for a series
     // that is only local, or resurrect one whose volumes were all deleted.
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
     getCache.mockReturnValue(cache);
@@ -1214,7 +1223,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   });
 
   it('skips a folder holding only an orphaned series.json (no volumes left)', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
     getCache.mockReturnValue(cache);
@@ -1230,7 +1239,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   it('skips a read-only provider without touching the cloud', async () => {
     const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
     getActiveProvider.mockReturnValue(provider);
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
@@ -1243,7 +1252,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   it('skips when there is nothing worth publishing (no facts, no volumes)', async () => {
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
     getBySeries.mockReturnValue([]);
     localVolumes.mockResolvedValue([]);
 
@@ -1264,13 +1273,31 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
   it('ignores a placeholder (cloud-only) volume — its uuid and counts are derived', async () => {
     const provider = makeRenameProvider();
     getActiveProvider.mockReturnValue(provider);
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1', { isPlaceholder: true })]);
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('skips while the provider cache is still filling', async () => {
+    // Identical exposure to the catalog write: a folder listing that is not
+    // empty is still not COMPLETE while `fetchAll()` runs, because `uploadFile`
+    // adds every upload to the cache. Pruning `<Series>/series.json` against a
+    // listing holding only this device's uploads drops the volumes every other
+    // device published.
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(loadedCache({ isLoaded: () => false }));
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(putSeriesIndex).not.toHaveBeenCalled();
   });
 
   it('skips the write when the cloud copy exists but cannot be re-read', async () => {
@@ -1282,7 +1309,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       })
     });
     getActiveProvider.mockReturnValue(provider);
-    getCache.mockReturnValue({ removeById: vi.fn(), add: vi.fn() });
+    getCache.mockReturnValue(loadedCache());
     getBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 1.cbz'),
       cloudFile('One Piece/series.json', { fileId: 'sj', size: 999 })
@@ -1313,7 +1340,8 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }),
       add: vi.fn((path: string, meta: CloudFileMetadata) => {
         state.push({ ...meta, path, fileId: meta.fileId ?? path });
-      })
+      }),
+      isLoaded: () => true
     };
     getCache.mockReturnValue(cache);
     return cache;
@@ -1520,7 +1548,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
   });
 
   it('deletes the sidecar with the series folder and drops the cached index', async () => {
-    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const cache = loadedCache();
     const deleted: string[] = [];
     const provider = {
       type: 'webdav',
@@ -1602,7 +1630,8 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       }),
       add: vi.fn((path: string, meta: CloudFileMetadata) => {
         state.push({ ...meta, path, fileId: meta.fileId ?? path, ...addOverrides });
-      })
+      }),
+      isLoaded: () => true
     };
     getCache.mockReturnValue(cache);
     return cache;
@@ -1906,7 +1935,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     catalogRows.mockResolvedValue([]);
     getAllSeriesMetadata.mockResolvedValue({});
     getAllFiles.mockReturnValue(listing);
-    getCache.mockReturnValue({ isLoaded: () => true });
+    getCache.mockReturnValue(loadedCache());
   });
 
   it('skips entirely on a server-compiled provider', async () => {
@@ -1937,7 +1966,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // leaves a listing holding this device's own uploads and nothing else.
     // Pruning the catalog against that blanks the library for every other device.
     getActiveProvider.mockReturnValue(provider());
-    getCache.mockReturnValue({ isLoaded: () => false });
+    getCache.mockReturnValue(loadedCache({ isLoaded: () => false }));
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();

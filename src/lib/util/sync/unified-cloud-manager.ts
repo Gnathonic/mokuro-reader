@@ -991,12 +991,19 @@ class UnifiedCloudManager {
         ? await getSeriesMetadataForTitle(options.localSeriesTitle)
         : undefined);
 
+    // Both gates below need a COMPLETE listing, and only the cache knows it has
+    // one: `uploadFile` adds every upload to it, so mid-`fetchAll()` the folder
+    // lists this device's own uploads and nothing else — non-empty, and pruning
+    // `buildSeriesFile` against it drops the volumes every other device
+    // published. Callers prime the listing before writing, but priming is not
+    // the same as finished.
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.isLoaded()) return 'skipped';
+
     // The index describes a folder of volumes: with no `.cbz` in it there is
     // nothing to index, and writing would create `<Series>/series.json` (and
     // the folder itself) for a series the cloud does not hold — a local-only
-    // series, or one whose volumes have all been deleted. Every caller primes
-    // the listing immediately before writing, so an empty result here really
-    // is an empty folder rather than an unfetched cache.
+    // series, or one whose volumes have all been deleted.
     const cloudTitles = this.cloudVolumeTitles(seriesTitle);
     if (cloudTitles.size === 0) return 'skipped';
 
