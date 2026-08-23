@@ -366,9 +366,15 @@ async function entriesToDecompressedVolume(
  * Handles missing pages, image-only volumes, and all other import scenarios
  */
 
-async function processVolumeData(
+export async function processVolumeData(
   entries: DecompressedEntry[],
-  placeholder: VolumeMetadata
+  placeholder: VolumeMetadata,
+  /**
+   * Bytes of the archive that actually arrived, as measured by the worker.
+   * Undefined when nothing measured it — the listing's claim is NOT a
+   * substitute: it is what the cloud says about a file, not what we received.
+   */
+  archiveBytes?: number
 ): Promise<void> {
   // Use the original cloud path for basePath to get proper series extraction
   // Falls back to volume_title if cloudPath not available (older placeholders)
@@ -437,12 +443,13 @@ async function processVolumeData(
     // sanitized at rename time instead, when the cloud files move with them.
     await saveVolume(processedVolume, { preserveTitles: true });
     await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
-  }
 
-  // How big the archive we just installed was. `saveVolume` writes the row with
-  // a `put`, so this has to come after it — and it is the size of the file the
-  // provider served, which is the same fact a backup upload records.
-  await recordArchiveSize(processedVolume.metadata.volumeUuid, getCloudSize(placeholder));
+    // How big the archive we just installed was — inside this branch on
+    // purpose: a download that decided to leave the existing row alone did not
+    // put those bytes on it, so it has no business restamping its size.
+    // `saveVolume` writes the row with a `put`, so this has to come after it.
+    await recordArchiveSize(processedVolume.metadata.volumeUuid, archiveBytes);
+  }
 
   // Update cloud file description if folder name doesn't match series title
   const cloudFileId = getCloudFileId(placeholder);
@@ -717,7 +724,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             '[Download Queue] Sidecar entries merged:',
             sidecarEntries.map((entry) => entry.filename)
           );
-          await processVolumeData(allEntries, item.volumeMetadata);
+          await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
 
           progressTrackerStore.updateProcess(processId, {
             progress: 100,
@@ -820,7 +827,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
         const sidecarEntries = await downloadSidecarEntries(item.volumeMetadata);
         const allEntries =
           sidecarEntries.length > 0 ? [...data.entries, ...sidecarEntries] : data.entries;
-        await processVolumeData(allEntries, item.volumeMetadata);
+        await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
         progressTrackerStore.updateProcess(processId, {
           progress: 100,
           status: 'Download complete'

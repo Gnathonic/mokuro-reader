@@ -154,6 +154,8 @@ interface DownloadCompleteMessage {
   fileName: string;
   data: ArrayBuffer;
   entries: DecompressedEntry[];
+  /** Bytes of the archive that was actually fetched/read, before decompression. */
+  archiveSize?: number;
   metadata?: VolumeMetadata;
   bundle?: {
     archive: { url: string; data: ArrayBuffer; contentType?: string };
@@ -441,6 +443,11 @@ ctx.addEventListener('message', async (event) => {
 
       console.log(`Worker: Download complete for ${fileName}`);
 
+      // Measured before decompression hands the buffer away: this is the size
+      // of the archive itself, the one fact the main thread cannot re-derive
+      // from the extracted entries.
+      const archiveSize = arrayBuffer.byteLength;
+
       // Decompress the ArrayBuffer
       const entries = await decompressCbz(arrayBuffer);
 
@@ -451,6 +458,7 @@ ctx.addEventListener('message', async (event) => {
         fileName,
         data: new ArrayBuffer(0),
         entries,
+        archiveSize,
         metadata
       };
 
@@ -476,6 +484,8 @@ ctx.addEventListener('message', async (event) => {
         fileName,
         data: new ArrayBuffer(0),
         entries,
+        // The blob the main thread handed over IS the archive.
+        archiveSize: blob?.size,
         metadata
       };
 
