@@ -35,6 +35,8 @@
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { getCloudFileId } from '$lib/util/cloud-fields';
+  import { downloadQueue } from '$lib/util/download-queue';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -219,8 +221,11 @@
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
   // Rows kept for their history whose pages are gone. They stay in `manga` —
   // they are real volumes with real stats — but they are downloadable, not
-  // readable, and nothing may try to read their files.
-  let notInstalled = $derived(manga.filter(needsDownload));
+  // readable, and nothing may try to read their files. Only the ones the
+  // catalog could match to a cloud file are counted as "available": a volume
+  // whose backup is gone too has nowhere to download from, and counting it
+  // would promise a "Download all" that silently does nothing.
+  let notInstalled = $derived(manga.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol)));
 
   // Raw folder title (identity) and its human-facing overlay. The overlay is
   // presentation only: rename/cloud/delete flows below keep using seriesTitle.
@@ -553,7 +558,11 @@
 
     try {
       const { queueSeriesVolumes } = await import('$lib/util/download-queue');
+      const before = get(downloadQueue).length;
       queueSeriesVolumes(toDownload);
+      if (get(downloadQueue).length === before) {
+        showSnackbar('Nothing to download — these volumes are already queued or unavailable');
+      }
     } catch (error) {
       console.error('Failed to download volumes:', error);
     }

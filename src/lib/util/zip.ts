@@ -29,12 +29,17 @@ export async function zipManga(
 
   // Metadata-only volumes have no pages to write. Dropped here rather than
   // failing per volume deep inside the writer, so exporting a part-installed
-  // series still produces the archives it can.
-  const skipped = manga.length;
+  // series still produces the archives it can — but never silently: a missing
+  // volume in an export is exactly the kind of thing noticed months later.
+  const requested = manga.length;
   manga = manga.filter(isVolumeInstalled);
+  const skipped = requested - manga.length;
   if (manga.length === 0) {
     if (skipped > 0) showSnackbar('Download those volumes to this device before exporting them');
     return false;
+  }
+  if (skipped > 0) {
+    showSnackbar(`Skipped ${skipped} volume(s) that are not on this device`);
   }
 
   if (individualVolumes) {

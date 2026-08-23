@@ -156,7 +156,11 @@ describe('Series rename cloud propagation', () => {
     expect(updateVolumeSeriesTitle).toHaveBeenCalledTimes(1);
     expect(updateVolumeSeriesTitle).toHaveBeenCalledWith('vol-2', 'New Series');
     expect(result.renamedCount).toBe(1);
-    expect(result.failures).toEqual([{ volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }]);
+    // The reason travels with the failure: some of them ("not on this device")
+    // cannot be fixed by the retry the UI otherwise suggests.
+    expect(result.failures).toEqual([
+      { volumeUuid: 'vol-1', volumeTitle: 'Volume 1', reason: 'network' }
+    ]);
   });
 
   it('sanitizes the new series title before cloud rename and DB write', async () => {

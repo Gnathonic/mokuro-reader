@@ -40,8 +40,10 @@ export interface RenameSeriesResult {
   /** Volumes fully renamed (cloud + local). */
   renamedCount: number;
   /** Volumes that keep the old title everywhere because their cloud rename
-   * failed. Retrying the same rename converges: it picks up just these. */
-  failures: Array<{ volumeUuid: string; volumeTitle: string }>;
+   * failed. Retrying the same rename converges: it picks up just these —
+   * except when `reason` says otherwise (e.g. the volume is not on this
+   * device), which is why the reason is carried to the UI rather than logged. */
+  failures: Array<{ volumeUuid: string; volumeTitle: string; reason?: string }>;
 }
 
 /**
@@ -252,7 +254,11 @@ export async function executeRenameSeries(
     return {
       finalTitle: newTitle,
       renamedCount: cloud.renamedVolumeUuids.length,
-      failures: cloud.failures.map(({ volumeUuid, volumeTitle }) => ({ volumeUuid, volumeTitle }))
+      failures: cloud.failures.map(({ volumeUuid, volumeTitle, error }) => ({
+        volumeUuid,
+        volumeTitle,
+        reason: error instanceof Error ? error.message : undefined
+      }))
     };
   } catch (error) {
     console.error('Error executing series rename:', error);

@@ -85,8 +85,13 @@
       // just the stragglers.
       const failedNames = result.failures.map((f) => f.volumeTitle);
       const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ', …' : '');
+      // The per-volume reason ("download it first", a provider error) only ever
+      // reached the console, so "rename again to retry" was the only advice the
+      // user got — for failures retrying cannot fix.
+      const reason = result.failures[0]?.reason ?? '';
       renameError =
         `Renamed ${result.renamedCount} volume(s), but ${result.failures.length} failed (${shown}). ` +
+        (reason ? `${reason} ` : '') +
         `Failed volumes keep the old name in both your library and the cloud — ` +
         `rename again to retry just those.`;
     } catch (err) {
