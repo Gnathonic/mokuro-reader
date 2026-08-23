@@ -28,7 +28,8 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
+  import { notOnDeviceDisplay, preferredTitleLanguage } from '$lib/settings/settings';
+  import { partitionSeriesVolumes } from '$lib/catalog/catalog';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
@@ -247,6 +248,24 @@
   // whose backup is gone too has nowhere to download from, and counting it
   // would promise a "Download all" that silently does nothing.
   let notInstalled = $derived(manga.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol)));
+
+  // Where the rows whose pages are gone are DRAWN (display only — they keep their data,
+  // their progress and every action they had). In mixed mode `absent` is empty and the
+  // main list is exactly `manga`, as it has always been.
+  let volumeSections = $derived(partitionSeriesVolumes(manga, $notOnDeviceDisplay));
+  let listedVolumes = $derived(volumeSections.listed);
+  let sectionVolumes = $derived(volumeSections.absent);
+  // The header counts what the section is offering: the rows it now holds in
+  // cloud-section mode, the downloadable rows still up in the list in mixed mode.
+  let cloudSectionCount = $derived(
+    placeholders.length +
+      ($notOnDeviceDisplay === 'cloud-section' ? sectionVolumes.length : notInstalled.length)
+  );
+  // Never hide a row: a removed volume with no cloud file left is not in `notInstalled`,
+  // but once it has moved down here the section is the only place it is drawn.
+  let showCloudSection = $derived(
+    sectionVolumes.length > 0 || placeholders.length > 0 || notInstalled.length > 0
+  );
 
   // Raw folder title (identity) and its human-facing overlay. The overlay is
   // presentation only: rename/cloud/delete flows below keep using seriesTitle.
@@ -764,15 +783,15 @@
         {/if}
 
         {#key volumeListRenderKey}
-          {#each manga as volume (volume.volume_uuid)}
+          {#each listedVolumes as volume (volume.volume_uuid)}
             <VolumeItem {volume} variant="list" />
           {/each}
         {/key}
 
-        {#if placeholders.length > 0 || notInstalled.length > 0}
+        {#if showCloudSection}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length + notInstalled.length})
+              Available in {providerDisplayName} ({cloudSectionCount})
             </h4>
             {#if hasAnyProvider}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
@@ -781,6 +800,13 @@
               </Button>
             {/if}
           </div>
+          <!-- Real rows, drawn here rather than up in the list: still VolumeItem, so the
+               download fills the row and hover + Delete still removes it. -->
+          {#key volumeListRenderKey}
+            {#each sectionVolumes as volume (volume.volume_uuid)}
+              <VolumeItem {volume} variant="list" />
+            {/each}
+          {/key}
           {#each placeholders as placeholder (placeholder.volume_uuid)}
             <PlaceholderVolumeItem volume={placeholder} variant="list" />
           {/each}
@@ -791,23 +817,31 @@
       <div class="flex flex-col gap-4">
         <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
           {#key volumeListRenderKey}
-            {#each manga as volume (volume.volume_uuid)}
+            {#each listedVolumes as volume (volume.volume_uuid)}
               <VolumeItem {volume} variant="grid" />
             {/each}
           {/key}
         </div>
 
-        {#if (placeholders.length > 0 || notInstalled.length > 0) && hasAnyProvider}
+        {#if showCloudSection}
           <div class="flex items-center justify-between px-2 pt-4">
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length + notInstalled.length})
+              Available in {providerDisplayName} ({cloudSectionCount})
             </h4>
-            <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
-              <DownloadSolid class="me-1 h-3 w-3" />
-              Download all
-            </Button>
+            {#if hasAnyProvider}
+              <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
+                <DownloadSolid class="me-1 h-3 w-3" />
+                Download all
+              </Button>
+            {/if}
           </div>
           <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
+            <!-- Real rows (see the list view above): same component, same actions. -->
+            {#key volumeListRenderKey}
+              {#each sectionVolumes as volume (volume.volume_uuid)}
+                <VolumeItem {volume} variant="grid" />
+              {/each}
+            {/key}
             {#each placeholders as placeholder (placeholder.volume_uuid)}
               <PlaceholderVolumeItem volume={placeholder} variant="grid" />
             {/each}

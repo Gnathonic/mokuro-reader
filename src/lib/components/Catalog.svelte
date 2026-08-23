@@ -13,6 +13,8 @@
     UploadSolid
   } from 'flowbite-svelte-icons';
   import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
+  import { notOnDeviceDisplay } from '$lib/settings/settings';
+  import { partitionCatalogSeries } from '$lib/catalog/catalog';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -231,26 +233,13 @@
       });
   });
 
-  // Catalog-only series (name known, nothing local). Split out FIRST: with no
-  // volumes at all they would satisfy `every(isPlaceholder)` and reach
-  // CatalogItem, which reads volumes[0].
-  let nameOnlySeries = $derived(sortedCatalog.filter((series) => series.nameOnly));
-
-  // Separate local series from placeholder-only series
-  let localSeries = $derived(
-    sortedCatalog.filter(
-      (series) => !series.nameOnly && series.volumes.some((vol) => !vol.isPlaceholder)
-    )
-  );
-
-  let placeholderSeries = $derived(
-    sortedCatalog.filter(
-      (series) =>
-        !series.nameOnly &&
-        series.volumes.length > 0 &&
-        series.volumes.every((vol) => vol.isPlaceholder)
-    )
-  );
+  // The three regions, decided in ONE pass over the sorted catalog (never per card).
+  // `$notOnDeviceDisplay` only moves series with nothing readable here; it is joined as a
+  // primitive so an unrelated settings write cannot re-group the library.
+  let sections = $derived(partitionCatalogSeries(sortedCatalog, $notOnDeviceDisplay));
+  let localSeries = $derived(sections.localSeries);
+  let placeholderSeries = $derived(sections.cloudSeries);
+  let nameOnlySeries = $derived(sections.nameOnlySeries);
 
   // Collect all placeholder volumes from the entire catalog
   let allPlaceholderVolumes = $derived(
@@ -348,7 +337,10 @@
       </div>
     {:else}
       <!-- Local series -->
-      <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
+      <div
+        data-testid="catalog-library"
+        class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
+      >
         {#if $miscSettings.galleryLayout === 'grid'}
           {#each localSeries as { title, displayTitle, volumes } (title)}
             <CatalogItem {volumes} {displayTitle} providerName={providerDisplayName} />
@@ -364,7 +356,7 @@
 
       <!-- Placeholder series (Cloud providers) -->
       {#if placeholderSeries && placeholderSeries.length > 0}
-        <div class="mt-8">
+        <div class="mt-8" data-testid="catalog-cloud">
           <div class="mb-4 flex items-center justify-between px-4">
             <div>
               <h4 class="text-lg font-semibold text-gray-400">

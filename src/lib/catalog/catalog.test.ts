@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
-import { deriveNameOnlySeries, deriveSeriesFromVolumes } from './catalog';
+import {
+  deriveNameOnlySeries,
+  deriveSeriesFromVolumes,
+  partitionCatalogSeries,
+  partitionSeriesVolumes,
+  type Series
+} from './catalog';
 
 function vol(series: string, volume: string): VolumeMetadata {
   return {
@@ -170,5 +176,99 @@ describe('deriveNameOnlySeries', () => {
       'imported'
     );
     expect(out.map((s) => s.title)).toEqual(['Alpha', 'Zeta']);
+  });
+});
+
+describe('partitionCatalogSeries', () => {
+  function series(title: string, volumes: VolumeMetadata[], nameOnly?: true): Series {
+    return {
+      title,
+      displayTitle: title,
+      searchTerms: [title.toLowerCase()],
+      series_uuid: `uuid-${title}`,
+      volumes,
+      ...(nameOnly ? { nameOnly } : {})
+    };
+  }
+
+  const installed = () => vol('Here', '1');
+  const removed = (): VolumeMetadata => ({ ...vol('Gone', '1'), metadata_only: true });
+  const cloudOnly = (): VolumeMetadata => ({ ...vol('Cloud', '1'), isPlaceholder: true });
+
+  const local = series('Here', [installed()]);
+  const absent = series('Gone', [removed()]);
+  const half = series('Half', [installed(), removed()]);
+  const placeholders = series('Cloud', [cloudOnly()]);
+  const nameOnly = series('Named', [], true);
+  const all = [local, absent, half, placeholders, nameOnly];
+
+  it('keeps metadata-only series in the library in mixed mode', () => {
+    const { localSeries, cloudSeries, nameOnlySeries } = partitionCatalogSeries(all, 'mixed');
+    expect(localSeries.map((s) => s.title)).toEqual(['Here', 'Gone', 'Half']);
+    expect(cloudSeries.map((s) => s.title)).toEqual(['Cloud']);
+    expect(nameOnlySeries.map((s) => s.title)).toEqual(['Named']);
+  });
+
+  it('groups fully-absent series with the cloud ones in cloud-section mode', () => {
+    const { localSeries, cloudSeries, nameOnlySeries } = partitionCatalogSeries(
+      all,
+      'cloud-section'
+    );
+    // "Half" still has a volume on the device, so it stays in the library.
+    expect(localSeries.map((s) => s.title)).toEqual(['Here', 'Half']);
+    expect(cloudSeries.map((s) => s.title)).toEqual(['Gone', 'Cloud']);
+    expect(nameOnlySeries.map((s) => s.title)).toEqual(['Named']);
+  });
+
+  it('groups a series that mixes removed rows with cloud-only volumes', () => {
+    const mixedAbsence = series('Mixed', [removed(), cloudOnly()]);
+    expect(partitionCatalogSeries([mixedAbsence], 'mixed').localSeries).toHaveLength(1);
+    expect(partitionCatalogSeries([mixedAbsence], 'cloud-section').cloudSeries).toHaveLength(1);
+  });
+
+  it('never puts an empty non-catalog series anywhere', () => {
+    const empty = series('Empty', []);
+    for (const mode of ['mixed', 'cloud-section'] as const) {
+      const sections = partitionCatalogSeries([empty], mode);
+      expect(sections.localSeries).toEqual([]);
+      expect(sections.cloudSeries).toEqual([]);
+      expect(sections.nameOnlySeries).toEqual([]);
+    }
+  });
+
+  it('preserves the order it was handed', () => {
+    const a = series('B', [installed()]);
+    const b = series('A', [installed()]);
+    expect(partitionCatalogSeries([a, b], 'mixed').localSeries.map((s) => s.title)).toEqual([
+      'B',
+      'A'
+    ]);
+  });
+});
+
+describe('partitionSeriesVolumes', () => {
+  const installed = vol('Series', '1');
+  const removed: VolumeMetadata = { ...vol('Series', '2'), metadata_only: true };
+
+  it('lists every row in the main list in mixed mode', () => {
+    const { listed, absent } = partitionSeriesVolumes([installed, removed], 'mixed');
+    expect(listed).toEqual([installed, removed]);
+    expect(absent).toEqual([]);
+  });
+
+  it('moves rows whose pages are gone to the cloud section in cloud-section mode', () => {
+    const { listed, absent } = partitionSeriesVolumes([installed, removed], 'cloud-section');
+    expect(listed).toEqual([installed]);
+    expect(absent).toEqual([removed]);
+  });
+
+  it('keeps the given order within each half', () => {
+    const removedFirst: VolumeMetadata = { ...vol('Series', '0'), metadata_only: true };
+    const { listed, absent } = partitionSeriesVolumes(
+      [removedFirst, installed, removed],
+      'cloud-section'
+    );
+    expect(listed.map((v) => v.volume_title)).toEqual(['1']);
+    expect(absent.map((v) => v.volume_title)).toEqual(['0', '2']);
   });
 });
