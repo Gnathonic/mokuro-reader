@@ -829,3 +829,123 @@ describe('SeriesSpineShowcase marks the spines that are not on this device', () 
     });
   });
 });
+
+describe('SeriesSpineShowcase shows a series that is only partly on this device', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  const cover = new File([], 'cover.jpg', { type: 'image/jpeg' });
+
+  /** 2 local volumes and 2 cloud-only ones, all with covers to draw. */
+  const mixed = () => [
+    volume({ volume_uuid: 'v-1', volume_title: 'Vol 1', thumbnail: cover }),
+    volume({ volume_uuid: 'v-2', volume_title: 'Vol 2', thumbnail: cover }),
+    volume({
+      volume_uuid: 'c-3',
+      volume_title: 'Vol 3',
+      isPlaceholder: true,
+      thumbnail: cover,
+      thumbnail_width: 250,
+      thumbnail_height: 180
+    }),
+    volume({
+      volume_uuid: 'c-4',
+      volume_title: 'Vol 4',
+      isPlaceholder: true,
+      thumbnail: cover,
+      thumbnail_width: 250,
+      thumbnail_height: 180
+    })
+  ];
+
+  function lastProps() {
+    const props = compositeCanvasProps.at(-1);
+    if (!props) throw new Error('CompositeCanvas was never mounted');
+    return props as {
+      volumes: VolumeMetadata[];
+      getCanvasDimensions: (uuid: string) => { width: number; height: number } | null;
+    };
+  }
+
+  it('draws every volume of the series, the cloud-only ones included', async () => {
+    renderShowcase(mixed());
+    await tick();
+
+    expect(lastProps().volumes.map((vol) => vol.volume_uuid)).toEqual(['v-1', 'v-2', 'c-3', 'c-4']);
+  });
+
+  it('marks the cloud-only spines and leaves the local ones alone', async () => {
+    const { container } = renderShowcase(mixed());
+    await tick();
+
+    expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(2);
+  });
+
+  it('measures the card’s stack once per volume, not the locals twice', async () => {
+    renderShowcase(mixed());
+    await tick();
+
+    // The card's stack for this series is its 2 local volumes plus its 2 cloud-only ones;
+    // counting the locals again (once as "local", once as "placeholder") would pull the
+    // uniform height up from 270 to 300 and draw every spine at the wrong size.
+    const expected = computeUniformHeight({
+      dims: [
+        { width: 250, height: 360 },
+        { width: 250, height: 360 },
+        { width: 250, height: 180 },
+        { width: 250, height: 180 }
+      ],
+      verticalStepPct: 5,
+      stackCountSetting: 0
+    });
+    expect(expected).toBeCloseTo(270, 10);
+    expect(lastProps().getCanvasDimensions('v-1')).toEqual(
+      getSpineCanvasDimensions({ width: 250, height: 360 }, expected)
+    );
+  });
+});
+
+describe('SeriesSpineShowcase shelves a cloud-only series in volume order', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  const cover = new File([], 'cover.jpg', { type: 'image/jpeg' });
+  const cloud = (title: string) =>
+    volume({
+      volume_uuid: `u-${title}`,
+      volume_title: title,
+      isPlaceholder: true,
+      thumbnail: cover
+    });
+
+  function drawnTitles() {
+    const props = compositeCanvasProps.at(-1);
+    if (!props) throw new Error('CompositeCanvas was never mounted');
+    return (props as { volumes: VolumeMetadata[] }).volumes.map((vol) => vol.volume_title);
+  }
+
+  it('sorts placeholders naturally, whatever order the listing handed them over in', async () => {
+    renderShowcase([cloud('Vol 3'), cloud('Vol 10'), cloud('Vol 1'), cloud('Vol 2')]);
+    await tick();
+
+    expect(drawnTitles()).toEqual(['Vol 1', 'Vol 2', 'Vol 3', 'Vol 10']);
+  });
+});

@@ -233,8 +233,16 @@ export interface CardStackSelectionInput<T> {
   localVolumes: T[];
   /** The subset of `localVolumes` that is not finished. */
   unreadVolumes: T[];
-  /** Cloud-only volumes, used when nothing is local. */
+  /**
+   * Cloud-only volumes: the whole stack when nothing is local, and the rest of the series
+   * when only part of it is here.
+   */
   placeholders: T[];
+  /**
+   * Natural volume order, for merging the two halves of a partly-downloaded series. Without
+   * it the cloud-only volumes simply follow the local ones.
+   */
+  compare?: (a: T, b: T) => number;
   /** `catalogSettings.hideReadVolumes`. */
   hideRead: boolean;
   /** `catalogSettings.stackCount`; 0 means "all volumes". */
@@ -251,6 +259,16 @@ export interface CardStackSelectionInput<T> {
  * "Hide read" only applies while something is still unread — a finished series keeps
  * showing its covers rather than emptying the card.
  */
+/**
+ * The two halves of a partly-downloaded series, back in volume order. Sorting the merged
+ * list keeps volume 3 between 2 and 4 whether or not it is the one that is missing;
+ * without a comparator the absent tail simply follows what is here.
+ */
+function mergeInVolumeOrder<T>(local: T[], cloud: T[], compare?: (a: T, b: T) => number): T[] {
+  const merged = [...local, ...cloud];
+  return compare ? merged.sort(compare) : merged;
+}
+
 export function selectCardStackVolumes<T>({
   localVolumes,
   unreadVolumes,
@@ -258,11 +276,24 @@ export function selectCardStackVolumes<T>({
   hideRead,
   stackCount,
   compactCloud,
+  compare,
   maxCloudStack = MAX_CLOUD_STACK
 }: CardStackSelectionInput<T>): T[] {
   if (localVolumes.length > 0) {
     const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
-    return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
+    // A series can be only PARTLY here. Its cloud-only volumes are part of it and belong
+    // on the shelf — marked as not-on-device, never dropped — after the ones that are.
+    //
+    // The cloud rules below (the thumbnail-cache cap, the compact collapse) do NOT apply
+    // to them: those exist for a series that is ENTIRELY absent, where the whole stack
+    // would otherwise be fetched from the cloud. A series with volumes on this device is
+    // stacked by the local rules, all of it. `hideRead` still applies to the local half
+    // only: a volume that is not here has nothing read to hide.
+    const stack =
+      placeholders.length > 0
+        ? mergeInVolumeOrder(sourceVolumes, placeholders, compare)
+        : sourceVolumes;
+    return stackCount === 0 ? stack : stack.slice(0, stackCount);
   }
 
   if (compactCloud) return placeholders.slice(0, 1);

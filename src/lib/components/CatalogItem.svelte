@@ -39,6 +39,7 @@
   import CompositeCanvas from './CompositeCanvas.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { sortVolumes } from '$lib/catalog/sort-volumes';
   import {
     fetchCloudThumbnail,
     getCachedCloudThumbnail,
@@ -81,17 +82,28 @@
     seriesVolumes.length > 0 && seriesVolumes.every(needsDownload)
   );
 
-  // The cover stack of a series with nothing on the device, cloud-only or removed alike:
-  // its volumes, each carrying whatever cover has been found for it. A cloud placeholder's
-  // arrives from the fetch below; a removed row already has one, which is the whole of the
-  // difference between the two (it paints immediately instead of popping in).
-  // Includes ALL target volumes (not just those with loaded thumbnails) so that
+  /**
+   * What the CLOUD half of the stack rule draws.
+   *
+   * For a series with nothing on the device: every volume. For one that is only PARTLY
+   * here: its cloud-only volumes — they are part of the series and belong in the stack,
+   * marked, not dropped (the metadata-only rows are already among `localVolumes`, drawn
+   * from the covers they kept).
+   */
+  let cloudStackVolumes = $derived(
+    seriesNeedsDownload ? seriesVolumes : seriesVolumes.filter((vol) => vol.isPlaceholder)
+  );
+
+  // Those volumes, each carrying whatever cover has been found for it. A cloud
+  // placeholder's arrives from the fetch below; a removed row already has one, which is
+  // the whole of the difference between the two (it paints immediately instead of popping
+  // in). Includes ALL target volumes (not just those with loaded thumbnails) so that
   // stackedVolumes.length is stable. CompositeCanvas skips volumes without thumbnail,
   // so positions are pre-allocated: each thumbnail pops into its fixed slot without
   // shifting existing ones.
   let enrichedPlaceholders = $derived.by(() => {
-    if (!seriesNeedsDownload) return [];
-    return seriesVolumes.map((vol) => {
+    if (cloudStackVolumes.length === 0) return [];
+    return cloudStackVolumes.map((vol) => {
       const ct = cloudThumbnailData[vol.volume_uuid];
       if (ct) {
         return {
@@ -125,7 +137,10 @@
       placeholders: enrichedPlaceholders,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
-      compactCloud: useCompactForCloud
+      compactCloud: useCompactForCloud,
+      // Keeps a missing volume in its own place in the series rather than after the ones
+      // that are here.
+      compare: sortVolumes
     })
   );
 
@@ -593,20 +608,19 @@
   // to avoid a reactive cycle: thumbnails loaded → containerDimensions changed →
   // placeholderStepSizes recomputed → effect re-triggered → cleanup resets data → loop
   $effect(() => {
-    if (!seriesNeedsDownload) return;
-
     const stackCount = $catalogSettings?.stackCount ?? 3;
     const maxCount = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
-    const count = useCompactForCloud ? 1 : Math.min(seriesVolumes.length, maxCount);
-    const vols = seriesVolumes.slice(0, count);
+    const count = useCompactForCloud ? 1 : maxCount;
+    // Whatever the cloud half of the stack can draw — an absent series' whole stack, or the
+    // cloud-only tail of a series that is partly here. A volume that already has its cover
+    // locally (a removed row keeps it) has nothing to fetch.
+    const vols = cloudStackVolumes
+      .filter((vol) => !vol.thumbnail && !!vol.cloudThumbnailFileId)
+      .slice(0, count);
+    if (vols.length === 0) return;
     let cancelled = false;
 
     for (const vol of vols) {
-      // Already has its cover locally (a removed row keeps it): nothing to fetch. This is
-      // the ONLY thing the two kinds of absent series do differently.
-      if (vol.thumbnail) continue;
-      if (!vol.cloudThumbnailFileId) continue;
-
       // Check synchronous cache first
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
       if (cached) {

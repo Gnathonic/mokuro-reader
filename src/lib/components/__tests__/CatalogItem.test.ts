@@ -29,6 +29,23 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   getCachedCloudThumbnail: vi.fn(() => undefined)
 }));
 
+// What the card actually asked to be drawn. Transparent pass-through: records the props,
+// then renders the real component (same trick as the spine shelf's suite).
+const { compositeCanvasProps } = vi.hoisted(() => ({
+  compositeCanvasProps: [] as Record<string, unknown>[]
+}));
+vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const Real = actual.default as (anchor: unknown, props: Record<string, unknown>) => unknown;
+  return {
+    ...actual,
+    default: (anchor: unknown, props: Record<string, unknown>) => {
+      compositeCanvasProps.push(props);
+      return Real(anchor, props);
+    }
+  };
+});
+
 // The card reads/writes spine offsets through the series metadata store; stub the store
 // (not `spine-offsets`) so the real debounce + patch building are exercised, without
 // Dexie/liveQuery. `emitSeriesMetadata` plays the part of a liveQuery emission.
@@ -67,6 +84,7 @@ import CatalogItem from '../CatalogItem.svelte';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
+import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { updateCatalogSetting } from '$lib/settings/settings';
 import { updateProgress } from '$lib/settings';
 
@@ -941,18 +959,20 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
     expect(badges(container)).toHaveLength(0);
   });
 
-  it('marks nothing for a cloud-only volume, which a part-local card never stacks', () => {
-    // selectCardStackVolumes stacks the local volumes of a series that has any; a
-    // cloud-only volume of such a series is not drawn, so there is no spine to mark.
+  it('marks the cloud-only volume of a part-local series, which the card does stack', () => {
+    // The stack of a series that is only partly here includes its cloud-only volumes;
+    // each one carries the mark rather than being left out of the card.
     const { container } = render(CatalogItem, {
       props: {
         volumes: [
           painted({ volume_uuid: 'v-1' }),
-          painted({ volume_uuid: 'v-2', isPlaceholder: true })
+          painted({ volume_uuid: 'v-2', volume_title: 'Vol 2', isPlaceholder: true })
         ]
       }
     });
-    expect(badges(container)).toHaveLength(0);
+    const marks = badges(container);
+    expect(marks).toHaveLength(1);
+    expect(marks[0].querySelector('.sr-only')?.textContent).toBe('Vol 2 not on this device');
   });
 
   it('marks nothing over a spine the canvas never painted', () => {
@@ -971,5 +991,124 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
       }
     });
     expect(badges(container)).toHaveLength(0);
+  });
+});
+
+describe('CatalogItem stacks the volumes of a series that is only partly here', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  const painted = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }),
+      ...overrides
+    });
+
+  /** A cloud-only volume: no local pixels, but a cover sidecar to fetch. */
+  const cloudOnly = (overrides: Partial<VolumeMetadata> = {}) =>
+    placeholderVolume({
+      series_title: 'One Piece',
+      cloudThumbnailFileId: `thumb-${overrides.volume_uuid ?? 'c'}`,
+      ...overrides
+    });
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
+      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
+      width: 250,
+      height: 360
+    } as never);
+    updateCatalogSetting('stackCount', 0);
+  });
+
+  afterEach(() => {
+    cleanup();
+    updateCatalogSetting('stackCount', 3);
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  function drawnUuids(): string[] {
+    const props = compositeCanvasProps.at(-1);
+    if (!props) throw new Error('CompositeCanvas was never mounted');
+    return (props.volumes as VolumeMetadata[]).map((vol) => vol.volume_uuid);
+  }
+
+  const mixedSeries = () => [
+    painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+    painted({ volume_uuid: 'v-2', volume_title: 'Vol 2' }),
+    cloudOnly({ volume_uuid: 'c-3', volume_title: 'Vol 3' }),
+    cloudOnly({ volume_uuid: 'c-4', volume_title: 'Vol 4' })
+  ];
+
+  it('draws its cloud-only volumes alongside the ones it has', async () => {
+    render(CatalogItem, { props: { volumes: mixedSeries() } });
+    await tick();
+
+    expect(drawnUuids()).toEqual(['v-1', 'v-2', 'c-3', 'c-4']);
+  });
+
+  it('fetches the covers of those cloud-only volumes so they actually paint', async () => {
+    const { container } = render(CatalogItem, { props: { volumes: mixedSeries() } });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2));
+    await tick();
+
+    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
+    const cloudSpines = props.volumes.filter((vol) => vol.volume_uuid.startsWith('c-'));
+    expect(cloudSpines.every((vol) => !!vol.thumbnail)).toBe(true);
+    // …and once painted, each carries the not-on-device mark.
+    expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(2);
+  });
+
+  it('keeps a volume that is missing from the middle in its own place', async () => {
+    render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+          cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' }),
+          painted({ volume_uuid: 'v-3', volume_title: 'Vol 3' })
+        ]
+      }
+    });
+    await tick();
+
+    expect(drawnUuids()).toEqual(['v-1', 'c-2', 'v-3']);
+  });
+
+  it('stacks every volume of a partly-here series, past the cloud cap', async () => {
+    // The 25-cover cap is for a series whose whole stack comes from the cloud; a series
+    // with volumes on this device is stacked by the local rules, all of it.
+    const volumes = [
+      painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+      ...Array.from({ length: 30 }, (_, i) =>
+        cloudOnly({ volume_uuid: `c-${i + 2}`, volume_title: `Vol ${i + 2}` })
+      )
+    ];
+    render(CatalogItem, { props: { volumes } });
+    await tick();
+
+    expect(drawnUuids()).toHaveLength(31);
+  });
+
+  it('keeps the cloud tail inside the stack count', async () => {
+    updateCatalogSetting('stackCount', 3);
+    render(CatalogItem, { props: { volumes: mixedSeries() } });
+    await tick();
+
+    expect(drawnUuids()).toEqual(['v-1', 'v-2', 'c-3']);
   });
 });

@@ -133,17 +133,28 @@
    * Derived from props and settings only — never from the fetched thumbnails below, which
    * would turn the fetch effect into a loop.
    */
+  // Mirrors the card exactly (see CatalogItem): a series with nothing here goes down the
+  // cloud path, and a series that is only partly here stacks its local volumes plus its
+  // CLOUD-ONLY ones — passing every volume as "placeholders" would measure the locals
+  // twice and draw every spine at the wrong size.
+  let showcaseNeedsDownload = $derived(
+    sortedVolumes.length > 0 && sortedVolumes.every(needsDownload)
+  );
+  let cloudStackVolumes = $derived(
+    showcaseNeedsDownload ? sortedVolumes : sortedVolumes.filter((vol) => vol.isPlaceholder)
+  );
   let cardVolumes = $derived(
     selectCardStackVolumes({
-      localVolumes,
-      unreadVolumes,
-      placeholders: sortedVolumes,
+      localVolumes: showcaseNeedsDownload ? [] : localVolumes,
+      unreadVolumes: showcaseNeedsDownload ? [] : unreadVolumes,
+      placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       // The shelf IS spine mode: all of the subset, one row, no vertical step.
       stackCount: 0,
       // The card's compact cloud mode collapses to a single cover; a one-spine shelf could
       // not be spaced at all, so the shelf always measures the (capped) stack.
-      compactCloud: false
+      compactCloud: false,
+      compare: sortVolumes
     })
   );
 

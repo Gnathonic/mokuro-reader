@@ -692,6 +692,104 @@ describe('selectCardStackVolumes', () => {
     ).toEqual(['cloud-0']);
   });
 
+  it('keeps the cloud-only volumes of a series that is only partly here', () => {
+    // The regression this pins: a mixed series drew its local volumes and silently
+    // dropped the ones it has not downloaded, on the card and in "all volumes" alike.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['a', 'b'],
+        unreadVolumes: [],
+        placeholders: ['cloud-0', 'cloud-1'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['a', 'b', 'cloud-0', 'cloud-1']);
+  });
+
+  it('still hides the read volumes of a mixed series, and still shows the cloud ones', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: local,
+        unreadVolumes: unread,
+        placeholders: ['cloud-0'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual([...unread, 'cloud-0']);
+  });
+
+  it('counts the cloud volumes of a mixed series against the stack count', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['a', 'b'],
+        unreadVolumes: [],
+        placeholders: ['cloud-0', 'cloud-1'],
+        hideRead: false,
+        stackCount: 3,
+        compactCloud: false
+      })
+    ).toEqual(['a', 'b', 'cloud-0']);
+  });
+
+  it('never applies the cloud cap to a series that has volumes here', () => {
+    // The cap (and the compact collapse below it) exist for a series whose ENTIRE stack
+    // would come from the cloud. A series with something on the device is stacked by the
+    // local rules, all of it.
+    const stacked = selectCardStackVolumes({
+      localVolumes: ['a'],
+      unreadVolumes: [],
+      placeholders,
+      hideRead: false,
+      stackCount: 0,
+      compactCloud: false
+    });
+    expect(stacked).toHaveLength(1 + placeholders.length);
+    expect(stacked).toEqual(['a', ...placeholders]);
+  });
+
+  it('puts the missing volumes back where they belong when given the series order', () => {
+    // Volume 2 is the one that is not here: it belongs between 1 and 3, not after them.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['Vol 1', 'Vol 3'],
+        unreadVolumes: [],
+        placeholders: ['Vol 2'],
+        hideRead: false,
+        stackCount: 0,
+        compactCloud: false,
+        compare: (a, b) => a.localeCompare(b, undefined, { numeric: true })
+      })
+    ).toEqual(['Vol 1', 'Vol 2', 'Vol 3']);
+  });
+
+  it('never collapses a series that has volumes here, whatever compact-cloud says', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['a', 'b'],
+        unreadVolumes: [],
+        placeholders: ['cloud-0', 'cloud-1'],
+        hideRead: false,
+        stackCount: 0,
+        compactCloud: true
+      })
+    ).toEqual(['a', 'b', 'cloud-0', 'cloud-1']);
+  });
+
+  it('leaves an all-local series exactly as it was', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: local,
+        unreadVolumes: [],
+        placeholders: [],
+        hideRead: false,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(local);
+  });
+
   it('matches the card’s inline subset rule across the fixture matrix', () => {
     const localVols = volumesFor([WIDE_COVER, NARROW_SPINE, NARROW_SPINE, NARROW_SPINE]);
     const unreadVols = localVols.slice(2);
