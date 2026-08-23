@@ -4,19 +4,11 @@ import type { CatalogIndexRecord } from './catalog-index';
 
 const getActiveProvider = vi.fn();
 vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActiveProvider } }));
-// `db.transaction` is a spy that just runs the body: the facts pass wraps every
-// entry in one, and asserting on the call count is how "one emission per
-// refresh" is checked without a real IndexedDB.
-const transaction = vi.fn(async (_mode: string, _table: unknown, body: () => Promise<unknown>) =>
-  body()
-);
-vi.mock('$lib/catalog/db', () => ({
-  db: {
-    series_metadata: { name: 'series_metadata' },
-    transaction: (mode: string, table: unknown, body: () => Promise<unknown>) =>
-      transaction(mode, table, body)
-  }
-}));
+// Nothing in this file touches the database: the store and the index accessors
+// are both mocked below. The facts pass is exercised against a REAL Dexie in
+// `catalog-index-sync.facts.test.ts` instead — mocking `db.transaction` here
+// once hid a transaction-nesting bug precisely because the body never ran.
+vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
 const listCatalogIndexes = vi.fn(async (): Promise<CatalogIndexRecord[]> => []);
 const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: CatalogIndexRecord[]) => {});
@@ -121,32 +113,6 @@ describe('refreshCatalogIndex', () => {
       'Dr Stone (HD Scan)',
       expect.objectContaining({ version: 2, volumes: [], updated_at: '2026-08-18T19:36:24.324Z' })
     );
-  });
-
-  it('applies every entry inside ONE transaction', async () => {
-    // The catalog joins `series_metadata`'s liveQuery, which emits per COMMIT.
-    // A transaction per entry meant a 1k-series catalog re-derived the whole
-    // name-card set 1k times on a single refresh.
-    const { refreshCatalogIndex } = await load();
-    await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
-
-    expect(transaction).toHaveBeenCalledTimes(1);
-    expect(transaction.mock.calls[0][0]).toBe('rw');
-    expect(transaction.mock.calls[0][1]).toEqual({ name: 'series_metadata' });
-    // Both entries were applied, and from inside that one transaction.
-    expect(upsertFromSeriesFile).toHaveBeenCalledTimes(2);
-  });
-
-  it('still caches the names when the facts pass blows up', async () => {
-    const { refreshCatalogIndex } = await load();
-    transaction.mockRejectedValueOnce(new Error('transaction aborted'));
-    await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
-
-    expect(replaceCatalogIndexes).toHaveBeenCalledTimes(1);
-    expect(replaceCatalogIndexes.mock.calls[0][1].map((r) => r.series_key)).toEqual([
-      'dr stone (hd scan)',
-      'bare folder'
-    ]);
   });
 
   it('does nothing when the cached stamp already matches', async () => {
