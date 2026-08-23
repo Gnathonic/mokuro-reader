@@ -21,6 +21,12 @@ describe('formatArchiveSize', () => {
     expect(formatArchiveSize(1024 * 1024)).toBe('1.0 MB');
   });
 
+  it('climbs a unit when the rounding fills the one below', () => {
+    // 1023.99… MB must not print as "1024 MB".
+    expect(formatArchiveSize(1024 ** 3 - 1)).toBe('1.0 GB');
+    expect(formatArchiveSize(1023 * 1024 ** 2)).toBe('1023 MB');
+  });
+
   it('climbs to TB and stops there', () => {
     expect(formatArchiveSize(3 * 1024 ** 4)).toBe('3.0 TB');
     expect(formatArchiveSize(4096 * 1024 ** 4)).toBe('4096 TB');

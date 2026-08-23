@@ -18,7 +18,9 @@ export function formatArchiveSize(bytes: number): string {
 
   let value = bytes / 1024;
   let unit = 0;
-  while (value >= 1024 && unit < UNITS.length - 1) {
+  // `1023.5` rather than `1024`: anything from there up ROUNDS to 1024, which is
+  // not a number this scale prints — it is the next unit.
+  while (value >= 1023.5 && unit < UNITS.length - 1) {
     value /= 1024;
     unit += 1;
   }
