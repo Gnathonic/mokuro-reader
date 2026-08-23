@@ -30,7 +30,13 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     fetchAllCloudVolumes,
     writeSeriesFile,
     refreshSeriesIndexesInBackground,
-    getDefaultProvider: () => null
+    getDefaultProvider: () => null,
+    // Queueing a volume kicks off `processQueue` in the background. Without
+    // this the drain throws asynchronously, which vitest reports as an
+    // unhandled rejection and turns into a non-zero exit while every test
+    // still "passes". Returning null makes the drain take its own
+    // no-provider path and stop.
+    getActiveProvider: () => null
   }
 }));
 
