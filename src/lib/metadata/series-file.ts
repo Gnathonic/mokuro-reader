@@ -261,7 +261,20 @@ export function buildSeriesFile(args: {
     if (volume.isPlaceholder || isVolumeInstalled(volume)) continue;
     if (!byUuid.has(volume.volume_uuid)) byUuid.set(volume.volume_uuid, volumeToIndexEntry(volume));
   }
-  for (const volume of installed) byUuid.set(volume.volume_uuid, volumeToIndexEntry(volume));
+  for (const volume of installed) {
+    const entry = volumeToIndexEntry(volume);
+    // The one field an installed row can legitimately NOT know: a volume
+    // imported from disk was never uploaded or downloaded here, so nothing ever
+    // measured its archive. That is a gap in this device's knowledge, not a
+    // correction of what the device that DID upload it published, so the
+    // published size rides through instead of being erased. Everything else the
+    // installed row says still wins — it measured those itself.
+    const publishedSize = byUuid.get(volume.volume_uuid)?.archive_size;
+    if (entry.archive_size === undefined && publishedSize !== undefined) {
+      entry.archive_size = publishedSize;
+    }
+    byUuid.set(volume.volume_uuid, entry);
+  }
 
   let volumes = [...byUuid.values()];
   if (cloudVolumeTitles) {

@@ -575,6 +575,56 @@ describe('buildSeriesFile', () => {
   });
 });
 
+describe('buildSeriesFile and a published archive_size', () => {
+  function published(entry: Partial<import('./series-file').SeriesFileVolume> = {}): SeriesFile {
+    return {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-16T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 2,
+          character_count: 123,
+          mokuro_version: '0.2.1',
+          archive_size: 193_000_000,
+          ...entry
+        }
+      ]
+    };
+  }
+
+  it('keeps the size the file already carries when the local row has none', () => {
+    // A locally imported volume was never uploaded or downloaded here, so its
+    // row has no size — that is a gap, not a correction of what another device
+    // measured. The installed row still wins for everything it does know.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [volume({ character_count: 999 })],
+      existing: published()
+    })!;
+
+    expect(file.volumes[0].archive_size).toBe(193_000_000);
+    expect(file.volumes[0].character_count).toBe(999);
+  });
+
+  it('lets a measured size replace the published one', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [volume({ archive_size: 7 })],
+      existing: published()
+    })!;
+
+    expect(file.volumes[0].archive_size).toBe(7);
+  });
+});
+
 describe('parseSeriesFile', () => {
   const valid = {
     version: 2,
