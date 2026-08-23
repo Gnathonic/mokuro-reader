@@ -194,6 +194,39 @@ describe('refreshCatalogIndex', () => {
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
+  it('never lets a catalog that parses to zero entries wipe the cache', async () => {
+    // A truncated-but-valid file, a half-written upload, or a server that
+    // published an empty catalog says nothing about the library. Treating it as
+    // authoritative would delete every row for this provider AND store no stamp
+    // (an empty put is a no-op), leaving the cache empty and re-downloading on
+    // every listing forever. Keep the rows and retry on the next listing.
+    listCatalogIndexes.mockResolvedValue([
+      {
+        series_key: 'still here',
+        series_title: 'Still Here',
+        entry: {
+          series_title: 'Still Here',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '1970-01-01T00:00:00.000Z'
+        },
+        source: { provider: 'webdav', path: 'catalog.json', size: 9, modifiedTime: 'old' },
+        fetched_at: '2026-08-01T00:00:00.000Z'
+      }
+    ]);
+    downloadFile.mockResolvedValue(
+      new Blob([JSON.stringify({ version: 1, updated_at: '2026-08-23T00:00:00.000Z', series: [] })])
+    );
+
+    const { refreshCatalogIndex } = await load();
+    await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
+
+    expect(deleteCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndexes).not.toHaveBeenCalled();
+    expect(upsertFromSeriesFile).not.toHaveBeenCalled();
+  });
+
   it('does nothing when the listing has no catalog.json (a bare share)', async () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('Dr Stone/Volume 1.cbz')), 'webdav');

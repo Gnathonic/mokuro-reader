@@ -104,6 +104,16 @@ async function runRefresh(
 
   const parsed = await downloadCatalog(provider, cloudFile);
   if (!parsed) return;
+  // A catalog that parses to NOTHING is never authoritative — the same refusal
+  // `buildCatalogFile` makes when it declines to publish an empty file. A
+  // truncated upload, a half-written file or a server that published an empty
+  // catalog would otherwise delete every row for this provider, and because an
+  // empty `put` stores no stamp the cache would then re-download on every
+  // listing forever. Keep what this device knows and retry next listing.
+  if (parsed.series.length === 0) {
+    console.warn(`[catalog-index-sync] ignoring an empty catalog.json at '${cloudFile.path}'`);
+    return;
+  }
 
   const now = new Date().toISOString();
   const source = {
