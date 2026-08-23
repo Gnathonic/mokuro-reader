@@ -33,6 +33,7 @@
   import { preferredTitleLanguage } from '$lib/settings/settings';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { openSeries } from '$lib/metadata/series-open';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { isMetadataOnly, isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
   import { getCloudFileId } from '$lib/util/cloud-fields';
@@ -160,6 +161,20 @@
       localStorage.setItem('series-view-mode', viewMode);
       localStorage.setItem('series-sort-mode', sortMode);
     }
+  });
+
+  // Series open is a load step: refresh this series' series.json, materialize
+  // its volumes, install covers. Keyed on the route param so navigating between
+  // series re-runs it; `openSeries` itself dedupes and never rejects.
+  let seriesOpenPending = $state(false);
+
+  $effect(() => {
+    const title = $routeParams.manga;
+    if (!browser || !title) return;
+    seriesOpenPending = true;
+    openSeries(title).finally(() => {
+      seriesOpenPending = false;
+    });
   });
 
   function toggleViewMode() {
@@ -961,6 +976,10 @@
         {/each}
       </div>
     {/if}
+  </div>
+{:else if seriesOpenPending}
+  <div class="flex items-center justify-center p-16">
+    <Spinner size="12" />
   </div>
 {:else}
   <div class="flex flex-col items-center justify-center gap-4 p-16">
