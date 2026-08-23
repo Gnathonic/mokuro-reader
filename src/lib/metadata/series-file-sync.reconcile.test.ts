@@ -257,11 +257,11 @@ describe('reconcileMissingMetadataFiles', () => {
     expect(getAllCloudVolumes).toHaveBeenCalledTimes(2);
   });
 
-  it('skips a folder this device holds no installed volume for', async () => {
+  it('skips a folder this device holds no row for at all', async () => {
     // A second device that has never imported this series can never publish its
-    // index: `hasBackedUpVolume` looks for a local row and finds none. Queuing
-    // it anyway would re-fire — and re-scan the whole volumes table — on every
-    // single listing, forever, without ever converging.
+    // index: `hasBackedUpVolume` looks for a non-placeholder row and finds none.
+    // Queuing it anyway would re-fire — and re-scan the whole volumes table — on
+    // every single listing, forever, without ever converging.
     volumeRows.length = 0;
     cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
 
@@ -272,7 +272,12 @@ describe('reconcileMissingMetadataFiles', () => {
     expect(scheduleCatalogFileWrite).not.toHaveBeenCalled();
   });
 
-  it('skips a folder whose only local rows are metadata-only', async () => {
+  it('reconciles a folder whose only local rows are metadata-only', async () => {
+    // A library whose files were removed from this device keeps its rows, its
+    // uuids and its history — and `hasBackedUpVolume` accepts them, so the
+    // write really does go through. This is the flagship case for retained
+    // rows, not an edge: excluding it would leave exactly those libraries
+    // without an index forever.
     volumeRows.length = 0;
     addVolume('One Piece', 'Volume 1', { metadata_only: true });
     cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
@@ -280,10 +285,13 @@ describe('reconcileMissingMetadataFiles', () => {
     await reconcileMissingMetadataFiles();
     await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
 
-    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(writtenTitles()).toEqual(['One Piece']);
   });
 
   it('skips a folder whose only local rows are cloud placeholders', async () => {
+    // Placeholders are synthesised from the listing itself: no history, no
+    // uuids of our own, nothing local to publish. `hasBackedUpVolume` excludes
+    // them too, so scheduling one could never converge either.
     volumeRows.length = 0;
     addVolume('One Piece', 'Volume 1', { isPlaceholder: true });
     cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
@@ -294,7 +302,7 @@ describe('reconcileMissingMetadataFiles', () => {
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
-  it('still schedules when only SOME of the local rows are installed', async () => {
+  it('schedules on a mix of installed and metadata-only rows', async () => {
     volumeRows.length = 0;
     addVolume('One Piece', 'Volume 1', { metadata_only: true });
     addVolume('One Piece', 'Volume 2');

@@ -1,7 +1,6 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -298,24 +297,31 @@ function walkListing(files: ListedFile[]): {
 
 /**
  * The series this device could actually publish an index for: at least one
- * INSTALLED volume filed under that title.
+ * NON-PLACEHOLDER row filed under that title.
  *
- * Without this the pass never converges. `runWrite` gates on
- * `hasBackedUpVolume`, which needs a local row, so a folder no local row
- * matches is scheduled, dropped, and scheduled again on the very next listing —
- * forever, at one full volumes scan each time. That is the normal state of a
- * second device, of a placeholder-only library, and of a library whose files
- * were removed from this device.
+ * Deliberately the same test `hasBackedUpVolume` applies downstream, no
+ * stricter — metadata-only rows count. A library whose files were removed from
+ * this device keeps its rows, its uuids and its history, its archives are still
+ * in the cloud, and `writeSeriesFile` builds a perfectly good index from them;
+ * excluding it would leave exactly those libraries without one forever.
+ *
+ * The point of the test is convergence, not thrift. `runWrite` will drop a
+ * schedule whose series has no local row at all, so without the same test here
+ * such a folder is scheduled, dropped, and scheduled again on the very next
+ * listing — forever, at one full volumes scan each time. Those two classes are
+ * what it excludes: a device that has never imported the series, and a
+ * placeholder-only library (rows synthesised from the listing, no history, no
+ * local truth to publish).
  *
  * Folded with `normalizeVolumeTitleKey` rather than `normalizeSeriesKey`: the
  * folder name comes off a filesystem and can arrive decomposed (NFD) while the
  * local row stays composed, and the two spell the same series.
  */
-async function locallyInstalledSeriesKeys(): Promise<Set<string>> {
+async function locallyKnownSeriesKeys(): Promise<Set<string>> {
   const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
   const keys = new Set<string>();
   for (const volume of volumes) {
-    if (!isVolumeInstalled(volume)) continue;
+    if (volume.isPlaceholder) continue;
     keys.add(normalizeVolumeTitleKey(volume.series_title));
   }
   return keys;
@@ -341,7 +347,7 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
   let scheduled = 0;
   if (candidates.length > 0) {
     // ONE scan for the whole pass, and only when something might be scheduled.
-    const localKeys = await locallyInstalledSeriesKeys();
+    const localKeys = await locallyKnownSeriesKeys();
     for (const title of candidates) {
       if (!localKeys.has(normalizeVolumeTitleKey(title))) continue;
       scheduleSeriesFileWrite(title);
@@ -366,13 +372,13 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
  * because it early-returns when everything is already backed up.
  *
  * This pass closes that hole: every folder the listing shows with at least one
- * archive, no `series.json`, and at least one INSTALLED local volume gets a
+ * archive, no `series.json`, and at least one non-placeholder local row gets a
  * write queued, and the catalog follows if anything was queued or the root
  * `catalog.json` is missing outright.
  *
  * Idempotent by construction — a completed write shows up in the next listing
- * and stops qualifying — and convergent, because the local-volume test matches
- * the gate `runWrite` will apply anyway (see `locallyInstalledSeriesKeys`).
+ * and stops qualifying — and convergent, because the local-row test mirrors the
+ * gate `runWrite` applies anyway (see `locallyKnownSeriesKeys`).
  * Otherwise deliberately gate-free: `runWrite` still checks the writable
  * provider, the fresh listing and the per-series backup, and `writeCatalogFile`
  * still checks read-only / server-compiled / loaded cache. Duplicating any of
