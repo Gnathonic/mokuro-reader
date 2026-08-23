@@ -6,12 +6,15 @@ import type { VolumeMetadata } from '$lib/types';
  * here. Everything around it — the worker pool, the providers, the queue — is
  * plumbing and is stubbed.
  */
-const { volumesGet, volumesUpdate, saveVolume, processVolume } = vi.hoisted(() => ({
-  volumesGet: vi.fn(async () => undefined as VolumeMetadata | undefined),
-  volumesUpdate: vi.fn(async () => 1),
-  saveVolume: vi.fn(async () => {}),
-  processVolume: vi.fn()
-}));
+const { volumesGet, volumesUpdate, saveVolume, processVolume, deleteVolumeCompletely } = vi.hoisted(
+  () => ({
+    volumesGet: vi.fn(async () => undefined as VolumeMetadata | undefined),
+    volumesUpdate: vi.fn(async () => 1),
+    saveVolume: vi.fn(async () => {}),
+    processVolume: vi.fn(),
+    deleteVolumeCompletely: vi.fn(async () => {})
+  })
+);
 
 vi.mock('$lib/catalog/db', () => ({
   db: {
@@ -42,7 +45,7 @@ vi.mock('./sync/unified-cloud-manager', () => ({
 vi.mock('$lib/import', () => ({
   processVolume,
   saveVolume,
-  deleteVolumeCompletely: vi.fn(async () => {}),
+  deleteVolumeCompletely,
   isSystemFile: () => false,
   isImageExtension: () => true,
   getImageMimeType: () => 'image/jpeg'
@@ -89,11 +92,19 @@ function processed() {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.mocked(volumesUpdate).mockClear();
   vi.mocked(volumesGet).mockReset();
   vi.mocked(volumesGet).mockResolvedValue(undefined);
   vi.mocked(saveVolume).mockClear();
+  vi.mocked(deleteVolumeCompletely).mockClear();
+  // The OCR/file rows are what `shouldReplaceDownloadedVolume` reads: a test that seeds
+  // them must not decide the next test's install path.
+  const { db } = await import('$lib/catalog/db');
+  vi.mocked(db.volume_ocr.get).mockReset();
+  vi.mocked(db.volume_ocr.get).mockResolvedValue(undefined as never);
+  vi.mocked(db.volume_files.get).mockReset();
+  vi.mocked(db.volume_files.get).mockResolvedValue(undefined as never);
 });
 
 describe('installing a downloaded volume', () => {
@@ -130,5 +141,39 @@ describe('installing a downloaded volume', () => {
 
     expect(saveVolume).not.toHaveBeenCalled();
     expect(volumesUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('downloading a volume whose files were removed from this device', () => {
+  /** The row that survived the removal: history and cover, no pages. */
+  function metadataOnlyRow(): VolumeMetadata {
+    return {
+      volume_uuid: 'uuid-1',
+      series_uuid: 'series-uuid',
+      series_title: 'One Piece',
+      volume_title: 'Vol 1',
+      mokuro_version: '0.4.11',
+      page_count: 2,
+      character_count: 10,
+      page_char_counts: [10],
+      metadata_only: true
+    } as VolumeMetadata;
+  }
+
+  it('refills the row in place instead of treating it as already installed', async () => {
+    vi.mocked(volumesGet).mockResolvedValue(metadataOnlyRow());
+    vi.mocked(processVolume).mockResolvedValue(processed());
+
+    await processVolumeData(
+      [],
+      // The queued item is the metadata-only row itself, decorated with its cloud file.
+      placeholder({ isPlaceholder: false, metadata_only: true, volume_uuid: 'uuid-1' }),
+      123
+    );
+
+    // The pages arrive: saved onto the SAME uuid, and the row it is filling is never
+    // deleted first — that row is the read history and the cover.
+    expect(saveVolume).toHaveBeenCalledTimes(1);
+    expect(deleteVolumeCompletely).not.toHaveBeenCalled();
   });
 });

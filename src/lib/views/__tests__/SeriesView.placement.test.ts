@@ -1,37 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 // SeriesView sits on top of the whole app; everything below the placement decision is
 // stubbed. What is under test is where a volume whose pages are gone gets DRAWN.
-const { currentSeries, notOnDeviceDisplay, routeParams, providerStatus } = vi.hoisted(() => {
-  function createStore<T>(initial: T) {
-    const subs = new Set<(v: T) => void>();
-    let current = initial;
+const { currentSeries, notOnDeviceDisplay, routeParams, providerStatus, queueSeriesVolumes } =
+  vi.hoisted(() => {
+    function createStore<T>(initial: T) {
+      const subs = new Set<(v: T) => void>();
+      let current = initial;
+      return {
+        subscribe(fn: (v: T) => void) {
+          subs.add(fn);
+          fn(current);
+          return () => subs.delete(fn);
+        },
+        set(v: T) {
+          current = v;
+          subs.forEach((fn) => fn(current));
+        }
+      };
+    }
     return {
-      subscribe(fn: (v: T) => void) {
-        subs.add(fn);
-        fn(current);
-        return () => subs.delete(fn);
-      },
-      set(v: T) {
-        current = v;
-        subs.forEach((fn) => fn(current));
-      }
+      queueSeriesVolumes: vi.fn(),
+      providerStatus: createStore({
+        hasAnyAuthenticated: false,
+        currentProviderType: null as string | null,
+        providers: {} as Record<string, unknown>,
+        needsAttention: false
+      }),
+      currentSeries: createStore<unknown[]>([]),
+      notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
+      routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
     };
-  }
-  return {
-    providerStatus: createStore({
-      hasAnyAuthenticated: false,
-      currentProviderType: null as string | null,
-      providers: {} as Record<string, unknown>,
-      needsAttention: false
-    }),
-    currentSeries: createStore<unknown[]>([]),
-    notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
-    routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
-  };
-});
+  });
 
 function emptyStore<T>(value: T) {
   return {
@@ -114,7 +116,7 @@ vi.mock('$lib/util/download-queue', () => ({
     subscribe: (fn: (v: unknown[]) => void) => (fn([]), () => {}),
     queueVolume: vi.fn()
   },
-  queueSeriesVolumes: vi.fn()
+  queueSeriesVolumes
 }));
 vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: {
@@ -336,5 +338,77 @@ describe('SeriesView only offers a cloud section there is something to offer in'
     await tick();
 
     expect(heading(container)).toBe('Available in Drive (1)');
+  });
+});
+
+describe('SeriesView downloads every volume of the series that is not here', () => {
+  beforeEach(() => {
+    localStorage.setItem('series-view-mode', 'list');
+    queueSeriesVolumes.mockClear();
+    providerStatus.set({
+      hasAnyAuthenticated: true,
+      currentProviderType: 'google-drive',
+      providers: {},
+      needsAttention: false
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    notOnDeviceDisplay.set('mixed');
+    providerStatus.set({
+      hasAnyAuthenticated: false,
+      currentProviderType: null,
+      providers: {},
+      needsAttention: false
+    });
+  });
+
+  function downloadAll(container: HTMLElement): HTMLElement {
+    const button = [...container.querySelectorAll('button')].find((el) =>
+      el.textContent?.includes('Download all')
+    );
+    if (!button) throw new Error('Download all button not found');
+    return button as HTMLElement;
+  }
+
+  /** A row whose files were removed, still matched to its cloud archive. */
+  const removed = (title: string) =>
+    volume(title, {
+      metadata_only: true,
+      cloudFileId: `file-${title}`,
+      cloudProvider: 'google-drive'
+    });
+
+  it('queues the metadata-only rows, not just the cloud-only placeholders', async () => {
+    currentSeries.set([
+      volume('Vol 1'),
+      removed('Vol 2'),
+      volume('Vol 3', { isPlaceholder: true, cloudFileId: 'file-3', cloudProvider: 'google-drive' })
+    ]);
+
+    const { container } = render(SeriesView);
+    await fireEvent.click(downloadAll(container));
+    // The handler imports the queue module lazily; wait for that to land.
+    await vi.waitFor(() => expect(queueSeriesVolumes).toHaveBeenCalledTimes(1));
+
+    expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_title)).toEqual([
+      'Vol 2',
+      'Vol 3'
+    ]);
+  });
+
+  it('still queues them once the display setting has moved them into the section', async () => {
+    currentSeries.set([volume('Vol 1'), removed('Vol 2')]);
+
+    const { container } = render(SeriesView);
+    notOnDeviceDisplay.set('cloud-section');
+    await tick();
+    await fireEvent.click(downloadAll(container));
+    await vi.waitFor(() => expect(queueSeriesVolumes).toHaveBeenCalledTimes(1));
+
+    expect(queueSeriesVolumes.mock.calls[0][0].map((v: VolumeMetadata) => v.volume_title)).toEqual([
+      'Vol 2'
+    ]);
   });
 });
