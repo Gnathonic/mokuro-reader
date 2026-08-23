@@ -45,17 +45,13 @@
     sortedVolumes.length > 0 && sortedVolumes.every(needsDownload)
   );
 
-  // Track queue state
-  let queueState = $state($downloadQueue);
-  $effect(() => {
-    return downloadQueue.subscribe((value) => {
-      queueState = value;
-    });
-  });
-
-  // Check if this series is downloading or queued
+  // Is this series downloading or queued? `getSeriesQueueStatus` knows the semantics
+  // (queued vs actively downloading) but is a one-shot read, so the store itself is read
+  // here as well: without that dependency this never re-ran and the row's spinner never
+  // appeared or cleared.
   let isDownloading = $derived.by(() => {
     if (!volume || !seriesNeedsDownload) return false;
+    void $downloadQueue;
 
     const status = downloadQueue.getSeriesQueueStatus(volume.series_title);
     return status.hasQueued || status.hasDownloading;

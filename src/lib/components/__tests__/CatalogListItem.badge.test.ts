@@ -1,18 +1,36 @@
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { tick } from 'svelte';
 
 // Same stubs the shortcut suite uses: the row's dependency graph (Dexie, the sync stack)
 // has nothing to do with whether the "not on this device" badge is drawn.
 vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn(), promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/download-queue', () => ({
-  downloadQueue: {
-    subscribe: (fn: (v: unknown[]) => void) => {
-      fn([]);
-      return () => {};
+// A queue we can actually drive: the row is supposed to follow it.
+const { emitQueue, resetQueue, downloadQueue } = vi.hoisted(() => {
+  const subscribers = new Set<(v: unknown[]) => void>();
+  let queue: unknown[] = [];
+  let status = { hasQueued: false, hasDownloading: false };
+  return {
+    emitQueue(next: unknown[], nextStatus: { hasQueued: boolean; hasDownloading: boolean }) {
+      queue = next;
+      status = nextStatus;
+      for (const fn of subscribers) fn(queue);
     },
-    getSeriesQueueStatus: () => ({ hasQueued: false, hasDownloading: false })
-  }
-}));
+    resetQueue() {
+      queue = [];
+      status = { hasQueued: false, hasDownloading: false };
+    },
+    downloadQueue: {
+      subscribe(fn: (v: unknown[]) => void) {
+        subscribers.add(fn);
+        fn(queue);
+        return () => subscribers.delete(fn);
+      },
+      getSeriesQueueStatus: () => status
+    }
+  };
+});
+vi.mock('$lib/util/download-queue', () => ({ downloadQueue }));
 vi.mock('$lib/catalog', () => ({
   volumes: {
     subscribe: (fn: (v: Record<string, unknown>) => void) => {
@@ -158,5 +176,45 @@ describe('CatalogListItem gives an all-absent series the placeholder identity', 
     });
     expect(container.textContent).not.toContain('Cover');
     expect(container.querySelector('svg')).not.toBeNull();
+  });
+});
+
+describe('CatalogListItem follows the download queue', () => {
+  afterEach(() => {
+    cleanup();
+    resetQueue();
+  });
+
+  function spinners(container: HTMLElement) {
+    return container.querySelectorAll('.animate-spin');
+  }
+
+  it('shows the spinner when this series starts downloading, and drops the badge', async () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ isPlaceholder: true })] }
+    });
+    expect(spinners(container)).toHaveLength(0);
+    expect(badges(container)).toHaveLength(1);
+
+    emitQueue([{ seriesTitle: 'One Piece' }], { hasQueued: false, hasDownloading: true });
+    await tick();
+
+    expect(spinners(container)).toHaveLength(1);
+    expect(badges(container)).toHaveLength(0);
+  });
+
+  it('clears the spinner when the download leaves the queue', async () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ metadata_only: true })] }
+    });
+
+    emitQueue([{ seriesTitle: 'One Piece' }], { hasQueued: true, hasDownloading: false });
+    await tick();
+    expect(spinners(container)).toHaveLength(1);
+
+    emitQueue([], { hasQueued: false, hasDownloading: false });
+    await tick();
+    expect(spinners(container)).toHaveLength(0);
+    expect(badges(container)).toHaveLength(1);
   });
 });
