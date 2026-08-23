@@ -1196,7 +1196,14 @@ class UnifiedCloudManager {
       // Move the cache first so the write below merges the OLD index instead of
       // starting from an empty one.
       await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
-      await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
+      // Its own guard: the catalog cache is a disposable download cache, and an
+      // abort while moving its key must not skip the series.json carry-over
+      // below — the only step here that touches the cloud.
+      try {
+        await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
+      } catch (error) {
+        console.debug(`Could not move the cached catalog entry to '${newSeriesTitle}':`, error);
+      }
       const outcome = await this.writeSeriesFile(newSeriesTitle, {
         localSeriesTitle: oldSeriesTitle
       });

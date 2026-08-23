@@ -1374,6 +1374,59 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
   });
 
+  it('carries series.json across the rename even when the catalog cache move fails', async () => {
+    // The catalog cache is a disposable download cache. A Dexie abort while
+    // moving its key must not skip the series.json carry-over, which is the
+    // only step of the rename that touches the cloud.
+    const provider = makeRenameProvider();
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      sidecar
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache(state);
+    generateSidecars.mockResolvedValue({});
+    moveCatalogIndexKey.mockRejectedValueOnce(new Error('dexie transaction aborted'));
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'New Series/series.json',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
+  });
+
   it('does not create a series.json for a folder whose only file was an orphan sidecar', async () => {
     // Nothing is backed up under the old title but a stale `series.json`. The
     // rename must clean it up without minting `<new>/series.json` for a folder
