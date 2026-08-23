@@ -4,7 +4,7 @@ import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CloudCache } from '../../cloud-cache-interface';
 import type { DriveFileMetadata } from '../../provider-interface';
-import { isRootConfigFile } from '../../syncable-file';
+import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -110,11 +110,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
-          } else if (
-            item.name.endsWith('.mokuro') ||
-            item.name.endsWith('.mokuro.gz') ||
-            /\.(webp|jpe?g)$/i.test(item.name)
-          ) {
+          } else if (isSidecarFile(item.name)) {
+            // .mokuro / .mokuro.gz / cover images AND the per-series index
+            // `<Series>/series.json`. Hand-rolling this test is what made
+            // series.json invisible on Drive while every other provider listed
+            // it — the shared allowlist is the only definition.
             sidecarFiles.push(item);
           } else if (isRootConfigFile(item.name)) {
             // volume-data.json, profiles.json, series-metadata.json, catalog.json

@@ -147,3 +147,58 @@ describe('driveFilesCache root config classification', () => {
     expect(driveFilesCache.getVolumeDataFileId()).toBe('root-progress');
   });
 });
+
+/**
+ * `<Series>/series.json` is a sidecar of the SERIES FOLDER. Drive's cache is the
+ * only listing that hand-rolled its sidecar test, so the file was invisible here
+ * while every other provider listed it through the shared allowlist — the whole
+ * series-index read/refresh path was dead against Drive.
+ */
+describe('driveFilesCache series.json sidecar', () => {
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+  function listing(files: Array<Record<string, unknown>>) {
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'reader-root', name: 'mokuro-reader', mimeType: FOLDER_MIME },
+      { id: 'series-1', name: 'Dr Stone', mimeType: FOLDER_MIME, parents: ['reader-root'] },
+      ...files
+    ]);
+  }
+
+  it('caches <Series>/series.json under its series folder', async () => {
+    listing([
+      {
+        id: 'series-file-1',
+        name: 'series.json',
+        mimeType: 'application/json',
+        parents: ['series-1'],
+        modifiedTime: '2026-08-23T00:00:00.000Z',
+        size: '60'
+      }
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(driveFilesCache.get('Dr Stone/series.json')?.fileId).toBe('series-file-1');
+    expect(driveFilesCache.getBySeries('Dr Stone').map((f) => f.path)).toEqual([
+      'Dr Stone/series.json'
+    ]);
+  });
+
+  it('still ignores a .json that merely ENDS with series.json', async () => {
+    listing([
+      {
+        id: 'not-ours',
+        name: 'my-series.json',
+        mimeType: 'application/json',
+        parents: ['series-1'],
+        modifiedTime: '2026-08-23T00:00:00.000Z',
+        size: '60'
+      }
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(driveFilesCache.getAllFiles()).toEqual([]);
+  });
+});
