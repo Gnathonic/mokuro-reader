@@ -15,6 +15,13 @@ import { showSnackbar } from '$lib/util/snackbar';
 import { isMetadataOnly } from './volume-state';
 import type { VolumeMetadata } from '$lib/types';
 
+/**
+ * One prompt at a time. The cloud context is gathered across an `await`, so two Delete
+ * presses a frame apart would both get past `anyModalOpen()` (no dialog is up yet) and the
+ * second `promptConfirmation` would swap the first dialog out from under the user.
+ */
+let promptPending = false;
+
 export interface SeriesRemovalOptions {
   /** Run once the rows are gone — the series page uses it to leave the emptied page. */
   onRemoved?: () => void;
@@ -93,7 +100,22 @@ export async function promptSeriesRemoval(
 ): Promise<boolean> {
   const rows = volumes.filter((vol) => !vol.isPlaceholder);
   if (rows.length === 0) return false;
+  if (promptPending) return false;
+  promptPending = true;
 
+  try {
+    return await raisePrompt(rows, options);
+  } finally {
+    // Released as soon as the dialog is up — from there `anyModalOpen()` is what keeps a
+    // second one from opening, and a cancelled dialog must leave the next press free.
+    promptPending = false;
+  }
+}
+
+async function raisePrompt(
+  rows: VolumeMetadata[],
+  options: SeriesRemovalOptions
+): Promise<boolean> {
   const cloud = await readCloudContext(rows);
 
   // Every volume's pages are already gone: "remove from device" would do nothing, so the

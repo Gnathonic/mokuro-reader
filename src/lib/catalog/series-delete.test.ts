@@ -218,3 +218,34 @@ describe('promptSeriesRemoval', () => {
     expect(promptConfirmation).not.toHaveBeenCalled();
   });
 });
+
+describe('promptSeriesRemoval never stacks two dialogs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    existsInCloud.mockReturnValue(false);
+    getCloudVolumesBySeries.mockReturnValue([]);
+    providerStatus.value = {
+      hasAnyAuthenticated: false,
+      currentProviderType: null,
+      providers: {}
+    };
+  });
+
+  it('ignores a second press that lands while the first is still gathering', async () => {
+    // Both calls are made before either has crossed its cloud-context await, which is
+    // exactly what two quick Delete presses do (`anyModalOpen` cannot see a dialog yet).
+    const [first, second] = await Promise.all([
+      promptSeriesRemoval([volume()]),
+      promptSeriesRemoval([volume()])
+    ]);
+
+    expect([first, second]).toEqual([true, false]);
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it('is ready again for the next press', async () => {
+    await promptSeriesRemoval([volume()]);
+    expect(await promptSeriesRemoval([volume()])).toBe(true);
+    expect(promptConfirmation).toHaveBeenCalledTimes(2);
+  });
+});
