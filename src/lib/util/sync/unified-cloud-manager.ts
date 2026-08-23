@@ -32,7 +32,11 @@ import {
   type CatalogFile
 } from '$lib/metadata/catalog-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { getAllSeriesMetadata, getSeriesMetadataForTitle } from '$lib/metadata/store';
+import {
+  getAllSeriesMetadata,
+  getSeriesMetadataForTitle,
+  upsertFromSeriesFile
+} from '$lib/metadata/store';
 import {
   deleteSeriesIndex,
   getSeriesIndex,
@@ -950,6 +954,60 @@ class UnifiedCloudManager {
       if (basename) titles.add(basename.slice(0, -4));
     }
     return titles;
+  }
+
+  /** Volume titles the cloud listing shows as `.cbz` archives in a series folder. */
+  cloudVolumeTitlesFor(seriesTitle: string): Set<string> {
+    return this.cloudVolumeTitles(seriesTitle);
+  }
+
+  /**
+   * Re-read ONE series' `series.json`, event-driven.
+   *
+   * The listing-wide pass (`series-index-sync.ts`) is a background warm-up that
+   * may be minutes behind; opening a series must not wait for it. Same gate
+   * though — size/mtime against the cached record — so re-opening a series
+   * costs nothing, and same best-effort contract: never rejects, and returns the
+   * freshest copy this device has (the cached one when the cloud has not moved,
+   * `undefined` when there is no readable file at all).
+   */
+  async refreshSeriesIndexForSeries(seriesTitle: string): Promise<SeriesFile | undefined> {
+    const seriesKey = normalizeSeriesKey(seriesTitle);
+    if (!seriesKey) return undefined;
+
+    const cached = await getSeriesIndex(seriesKey);
+    try {
+      const provider = this.getActiveProvider();
+      if (!provider) return cached?.file;
+
+      const cloudFile = this.getCloudSeriesFile(seriesTitle);
+      if (!cloudFile) return cached?.file;
+
+      const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
+      if (!indexNeedsRefresh(cached, stamp, provider.type)) return cached?.file;
+
+      const fresh = await this.readCloudSeriesFile(cloudFile);
+      if (!fresh) return cached?.file;
+
+      await putSeriesIndex({
+        series_key: seriesKey,
+        series_title: seriesTitle,
+        file: fresh,
+        source: {
+          provider: provider.type,
+          path: normalizeCloudPath(cloudFile.path),
+          size: stamp.size,
+          modifiedTime: stamp.modifiedTime
+        },
+        fetched_at: new Date().toISOString()
+      });
+      // Facts only, strictly-newer, and never a write trigger.
+      await upsertFromSeriesFile(seriesTitle, fresh);
+      return fresh;
+    } catch (error) {
+      console.debug(`Could not refresh series.json for '${seriesTitle}':`, error);
+      return cached?.file;
+    }
   }
 
   /**
