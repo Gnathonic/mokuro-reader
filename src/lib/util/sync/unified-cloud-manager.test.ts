@@ -50,8 +50,10 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 const getSeriesMetadataForTitle = vi.fn(async (_title: string): Promise<unknown> => undefined);
+const getAllSeriesMetadata = vi.fn(async (): Promise<Record<string, unknown>> => ({}));
 vi.mock('$lib/metadata/store', () => ({
-  getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title)
+  getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title),
+  getAllSeriesMetadata: () => getAllSeriesMetadata()
 }));
 
 const getSeriesIndex = vi.fn(async (_key: string): Promise<unknown> => undefined);
@@ -64,12 +66,33 @@ vi.mock('$lib/metadata/series-index', async () => {
   );
   return {
     // indexNeedsRefresh stays REAL — the size/mtime comparison is the thing
-    // deciding whether a write re-reads the cloud copy first.
+    // deciding whether a write re-reads the cloud copy first. `catalog-index`
+    // (kept real for `catalogNeedsRefresh`) imports `sourceStampChanged` from
+    // here, so the mock must carry it too or that module fails to load.
     indexNeedsRefresh: actual.indexNeedsRefresh,
+    sourceStampChanged: actual.sourceStampChanged,
     getSeriesIndex: (key: string) => getSeriesIndex(key),
     putSeriesIndex: (rec: unknown) => putSeriesIndex(rec),
     deleteSeriesIndex: (key: string) => deleteSeriesIndex(key),
     moveSeriesIndexKey: (o: string, n: string) => moveSeriesIndexKey(o, n)
+  };
+});
+
+const catalogRows = vi.fn(async (): Promise<unknown[]> => []);
+const putCatalogIndexes = vi.fn(async (_recs: unknown[]) => {});
+const deleteCatalogIndexes = vi.fn(async (_keys: string[]) => {});
+const moveCatalogIndexKey = vi.fn(async (_old: string, _next: string) => {});
+vi.mock('$lib/metadata/catalog-index', async () => {
+  const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
+    '$lib/metadata/catalog-index'
+  );
+  return {
+    // The real size/mtime comparison decides whether the write re-reads first.
+    catalogNeedsRefresh: actual.catalogNeedsRefresh,
+    listCatalogIndexes: () => catalogRows(),
+    putCatalogIndexes: (recs: unknown[]) => putCatalogIndexes(recs),
+    deleteCatalogIndexes: (keys: string[]) => deleteCatalogIndexes(keys),
+    moveCatalogIndexKey: (o: string, n: string) => moveCatalogIndexKey(o, n)
   };
 });
 
@@ -1756,5 +1779,166 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
 
     expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
     expect(deleteSeriesIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe('UnifiedCloudManager.writeCatalogFile', () => {
+  const listing: CloudFileMetadata[] = [
+    {
+      provider: 'webdav',
+      fileId: 'f1',
+      path: 'Dr Stone/Volume 1.cbz',
+      size: 10,
+      modifiedTime: '2026-08-23T00:00:00.000Z'
+    },
+    {
+      provider: 'webdav',
+      fileId: 'f2',
+      path: 'Other/Volume 1.cbz',
+      size: 10,
+      modifiedTime: '2026-08-23T00:00:00.000Z'
+    },
+    {
+      provider: 'webdav',
+      fileId: 'cat',
+      path: 'catalog.json',
+      size: 5,
+      modifiedTime: '2026-08-22T00:00:00.000Z'
+    }
+  ];
+
+  const CLOUD_CATALOG = {
+    version: 1,
+    updated_at: '2026-08-22T00:00:00.000Z',
+    series: [
+      {
+        series_title: 'Other',
+        external_ids: { anilist: 1 },
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-08-22T00:00:00.000Z'
+      },
+      {
+        series_title: 'Gone',
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-08-22T00:00:00.000Z'
+      }
+    ]
+  };
+
+  let uploadFile: ReturnType<typeof vi.fn>;
+
+  function provider(statusOverrides: Record<string, unknown> = {}) {
+    uploadFile = vi.fn(async () => 'uploaded-fileid');
+    return {
+      type: 'webdav',
+      getStatus: vi.fn(() => ({
+        isAuthenticated: true,
+        hasStoredCredentials: true,
+        needsAttention: false,
+        statusMessage: 'Connected',
+        isReadOnly: false,
+        serverCompilesMetadata: false,
+        ...statusOverrides
+      })),
+      uploadFile,
+      downloadFile: vi.fn(async () => new Blob([JSON.stringify(CLOUD_CATALOG)]))
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    catalogRows.mockResolvedValue([]);
+    getAllSeriesMetadata.mockResolvedValue({});
+    getAllFiles.mockReturnValue(listing);
+    getCache.mockReturnValue(null);
+  });
+
+  it('skips entirely on a server-compiled provider', async () => {
+    getActiveProvider.mockReturnValue(provider({ serverCompilesMetadata: true }));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('server-compiled');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('skips on a read-only provider', async () => {
+    getActiveProvider.mockReturnValue(provider({ isReadOnly: true }));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('read-only');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('skips when the listing shows no series folders', async () => {
+    getActiveProvider.mockReturnValue(provider());
+    getAllFiles.mockReturnValue([]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('publishes compact JSON unioned with the cloud copy and pruned to the listing', async () => {
+    getActiveProvider.mockReturnValue(provider());
+    getAllSeriesMetadata.mockResolvedValue({
+      'dr stone': {
+        series_key: 'dr stone',
+        series_title: 'Dr Stone',
+        external_ids: { anilist: 98416 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-23T00:00:00.000Z',
+        facts_updated_at: '2026-08-23T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
+
+    const [path, blob] = uploadFile.mock.calls.at(-1)!;
+    expect(path).toBe('catalog.json');
+    const text = await (blob as Blob).text();
+    expect(text).not.toContain('\n'); // compact, never pretty-printed
+    const written = JSON.parse(text);
+    expect(written.version).toBe(1);
+    // 'Dr Stone' from this device, 'Other' carried through from the cloud copy,
+    // 'Gone' pruned because the listing has no such folder.
+    expect(written.series.map((s: { series_title: string }) => s.series_title)).toEqual([
+      'Dr Stone',
+      'Other'
+    ]);
+    expect(written.series[0].external_ids).toEqual({ anilist: 98416 });
+
+    // The cache is stamped so the very next listing does not re-download our own write.
+    const cached = putCatalogIndexes.mock.calls.at(-1)![0] as Array<{ series_key: string }>;
+    expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
+  });
+
+  it('drops cached rows of THIS provider whose series left the catalog', async () => {
+    getActiveProvider.mockReturnValue(provider());
+    catalogRows.mockResolvedValue([
+      {
+        series_key: 'gone',
+        series_title: 'Gone',
+        entry: {
+          series_title: 'Gone',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '1970-01-01T00:00:00.000Z'
+        },
+        source: {
+          provider: 'webdav',
+          path: 'catalog.json',
+          size: 5,
+          modifiedTime: '2026-08-22T00:00:00.000Z'
+        },
+        fetched_at: '2026-08-22T00:00:00.000Z'
+      }
+    ]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.writeCatalogFile();
+    expect(deleteCatalogIndexes).toHaveBeenCalledWith(['gone']);
   });
 });

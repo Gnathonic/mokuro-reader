@@ -21,8 +21,17 @@ import {
   type SeriesFile,
   stringifySeriesFile
 } from '$lib/metadata/series-file';
+import {
+  CATALOG_FILE_NAME,
+  buildCatalogFile,
+  catalogEntryFromMeta,
+  isCatalogFilePath,
+  parseCatalogFile,
+  stringifyCatalogFile,
+  type CatalogFile
+} from '$lib/metadata/catalog-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+import { getAllSeriesMetadata, getSeriesMetadataForTitle } from '$lib/metadata/store';
 import {
   deleteSeriesIndex,
   getSeriesIndex,
@@ -30,6 +39,14 @@ import {
   moveSeriesIndexKey,
   putSeriesIndex
 } from '$lib/metadata/series-index';
+import {
+  catalogNeedsRefresh,
+  deleteCatalogIndexes,
+  listCatalogIndexes,
+  moveCatalogIndexKey,
+  putCatalogIndexes,
+  type CatalogIndexRecord
+} from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
@@ -824,6 +841,7 @@ class UnifiedCloudManager {
     // cached index, which is keyed by series title, has to follow.
     try {
       await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
+      await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
     } catch (error) {
       console.warn(`Failed to move the cached series index to '${newSeriesTitle}':`, error);
     }
@@ -1026,6 +1044,134 @@ class UnifiedCloudManager {
     return 'written';
   }
 
+  /** The root `catalog.json` entry of the current listing, if any. */
+  private getCloudCatalogFile(): CloudFileMetadata | undefined {
+    const candidates = this.getAllCloudVolumes().filter((file) => isCatalogFilePath(file.path));
+    return candidates.reduce<CloudFileMetadata | undefined>(
+      (newest, file) =>
+        !newest || (file.modifiedTime ?? '') > (newest.modifiedTime ?? '') ? file : newest,
+      undefined
+    );
+  }
+
+  /** Every series FOLDER the current listing shows (folder name, never derived). */
+  private cloudSeriesTitles(): Set<string> {
+    const titles = new Set<string>();
+    for (const file of this.getAllCloudVolumes()) {
+      const parts = normalizeCloudPath(file.path).split('/');
+      if (parts.length !== 2) continue;
+      if (!parts[1].toLowerCase().endsWith('.cbz')) continue;
+      titles.add(parts[0]);
+    }
+    return titles;
+  }
+
+  /**
+   * The catalog copy to merge on top of: the cached rows, unless the listing
+   * shows a different (size, modifiedTime) — then another device wrote it after
+   * our last fetch, so we re-read it first and the union keeps that device's
+   * series. Throws when the re-read fails: writing on top of a copy we could not
+   * read would silently clobber it.
+   */
+  private async resolveExistingCatalogFile(
+    providerType: ProviderType
+  ): Promise<CatalogFile | undefined> {
+    const rows = await listCatalogIndexes();
+    const cachedFile = (): CatalogFile | undefined =>
+      rows.length === 0
+        ? undefined
+        : { version: 1, updated_at: new Date(0).toISOString(), series: rows.map((r) => r.entry) };
+
+    const cloudFile = this.getCloudCatalogFile();
+    if (!cloudFile) return cachedFile();
+
+    const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
+    if (!catalogNeedsRefresh(rows, stamp, providerType)) return cachedFile();
+
+    const blob = await this.downloadFile(cloudFile);
+    let fresh: CatalogFile | undefined;
+    try {
+      fresh = parseCatalogFile(JSON.parse(await blob.text()));
+    } catch {
+      fresh = undefined;
+    }
+    // Junk in the cloud (hand-edited, truncated, a proxy error page): this write
+    // replaces it, but the series other devices published are still known from
+    // the last good fetch, so merge on top of the CACHE rather than nothing.
+    return fresh ?? cachedFile();
+  }
+
+  /**
+   * Write the root `catalog.json` — the name/mapping/search data for every
+   * series folder the cloud holds.
+   *
+   * Union-by-key with the copy already in the cloud (newest facts stamp wins per
+   * series, `buildCatalogFile`) so a device that only holds part of the library
+   * cannot delete the rest, then pruned against the listing so a deleted folder
+   * drops out. Never written when the listing is empty: that means "not fetched"
+   * as often as "empty cloud", and publishing an empty catalog would blank every
+   * other device's view.
+   *
+   * `'server-compiled'` on a bunko-backed provider: bunko is the sole producer of
+   * this file, and a client write would race its regeneration.
+   */
+  async writeCatalogFile(): Promise<'written' | 'skipped' | 'read-only' | 'server-compiled'> {
+    const provider = this.getActiveProvider();
+    if (!provider) return 'skipped';
+    const status = provider.getStatus();
+    if (status.serverCompilesMetadata) return 'server-compiled';
+    if (status.isReadOnly) return 'read-only';
+
+    const cloudTitles = this.cloudSeriesTitles();
+    if (cloudTitles.size === 0) return 'skipped';
+
+    let existing: CatalogFile | undefined;
+    try {
+      existing = await this.resolveExistingCatalogFile(provider.type);
+    } catch (error) {
+      console.debug('Could not read the cloud catalog.json:', error);
+      return 'skipped';
+    }
+
+    const metaByKey = await getAllSeriesMetadata();
+    const entries = [...cloudTitles].map((title) =>
+      catalogEntryFromMeta(title, metaByKey[normalizeSeriesKey(title)])
+    );
+
+    const file = buildCatalogFile({ entries, existing, cloudSeriesTitles: cloudTitles });
+    if (!file) return 'skipped';
+
+    const blob = new Blob([stringifyCatalogFile(file)], { type: 'application/json' });
+    await this.uploadFile(CATALOG_FILE_NAME, blob);
+
+    // Stamp the cache with EXACTLY what the file cache now holds for this path
+    // (read back rather than re-derived), same reason as `writeSeriesFile`: a
+    // second `new Date()` here would differ from the entry `uploadFile` just
+    // added and make the very next listing re-download our own write.
+    const uploaded = this.getCloudCatalogFile();
+    const now = new Date().toISOString();
+    const source = {
+      provider: provider.type,
+      path: CATALOG_FILE_NAME,
+      size: uploaded?.size ?? blob.size,
+      modifiedTime: uploaded?.modifiedTime ?? now
+    };
+    const records: CatalogIndexRecord[] = file.series.map((entry) => ({
+      series_key: normalizeSeriesKey(entry.series_title),
+      series_title: entry.series_title,
+      entry,
+      source,
+      fetched_at: now
+    }));
+    const keep = new Set(records.map((r) => r.series_key));
+    const stale = (await listCatalogIndexes())
+      .filter((row) => row.source.provider === provider.type && !keep.has(row.series_key))
+      .map((row) => row.series_key);
+    await deleteCatalogIndexes(stale);
+    await putCatalogIndexes(records);
+    return 'written';
+  }
+
   /**
    * Carry a series' `series.json` to a renamed folder: write it at the new
    * title (merging whatever the old cached/cloud copy held) and drop the stale
@@ -1041,6 +1187,7 @@ class UnifiedCloudManager {
       // Move the cache first so the write below merges the OLD index instead of
       // starting from an empty one.
       await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
+      await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
       const outcome = await this.writeSeriesFile(newSeriesTitle, {
         localSeriesTitle: oldSeriesTitle
       });
@@ -1071,6 +1218,11 @@ class UnifiedCloudManager {
       await deleteSeriesIndex(normalizeSeriesKey(seriesTitle));
     } catch (error) {
       console.warn(`Failed to drop the cached series index for '${seriesTitle}':`, error);
+    }
+    try {
+      await deleteCatalogIndexes([normalizeSeriesKey(seriesTitle)]);
+    } catch (error) {
+      console.debug(`Could not drop the cached catalog entry for '${seriesTitle}':`, error);
     }
     return result;
   }
