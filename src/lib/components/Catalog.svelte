@@ -3,6 +3,7 @@
   import { catalog } from '$lib/catalog';
   import { Button, Listgroup, Search } from 'flowbite-svelte';
   import CatalogItem from './CatalogItem.svelte';
+  import CatalogNameCard from './CatalogNameCard.svelte';
   import Loader from './Loader.svelte';
   import {
     GridOutline,
@@ -230,13 +231,25 @@
       });
   });
 
+  // Catalog-only series (name known, nothing local). Split out FIRST: with no
+  // volumes at all they would satisfy `every(isPlaceholder)` and reach
+  // CatalogItem, which reads volumes[0].
+  let nameOnlySeries = $derived(sortedCatalog.filter((series) => series.nameOnly));
+
   // Separate local series from placeholder-only series
   let localSeries = $derived(
-    sortedCatalog.filter((series) => series.volumes.some((vol) => !vol.isPlaceholder))
+    sortedCatalog.filter(
+      (series) => !series.nameOnly && series.volumes.some((vol) => !vol.isPlaceholder)
+    )
   );
 
   let placeholderSeries = $derived(
-    sortedCatalog.filter((series) => series.volumes.every((vol) => vol.isPlaceholder))
+    sortedCatalog.filter(
+      (series) =>
+        !series.nameOnly &&
+        series.volumes.length > 0 &&
+        series.volumes.every((vol) => vol.isPlaceholder)
+    )
   );
 
   // Collect all placeholder volumes from the entire catalog
@@ -379,6 +392,32 @@
               <Listgroup active class="w-full">
                 {#each placeholderSeries as { title, displayTitle, volumes } (title)}
                   <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
+                {/each}
+              </Listgroup>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Catalog-only series (names from catalog.json) -->
+      {#if nameOnlySeries.length > 0}
+        <div class="mt-8">
+          <div class="mb-4 flex items-center justify-between px-4">
+            <h4 class="text-lg font-semibold text-gray-400">
+              In {providerDisplayName} ({nameOnlySeries.length} series)
+            </h4>
+          </div>
+          <div
+            class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
+          >
+            {#if $miscSettings.galleryLayout === 'grid'}
+              {#each nameOnlySeries as { title, displayTitle } (title)}
+                <CatalogNameCard {title} {displayTitle} variant="grid" />
+              {/each}
+            {:else}
+              <Listgroup active class="w-full">
+                {#each nameOnlySeries as { title, displayTitle } (title)}
+                  <CatalogNameCard {title} {displayTitle} variant="list" />
                 {/each}
               </Listgroup>
             {/if}
