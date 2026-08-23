@@ -217,7 +217,7 @@ collected into their own trailing section. Display only: it never touches the
 rows above, downloads nothing, and every volume keeps its progress and actions
 either way.
 
-**Catalog card shortcuts**: hovering a card and pressing `E` opens the series
+**Catalog card shortcuts** (installed/materialized series cards — name-only stub cards attach no key listener): hovering a card and pressing `E` opens the series
 editor (`series-editor-shortcut.ts`); hovering and pressing `Delete` raises the
 series removal dialog (`delete-shortcut.ts`). Both are document-level `keydown`
 listeners gated on hover + no modal open + focus not on a typing target.
