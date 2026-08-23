@@ -49,6 +49,7 @@ import {
   type CatalogIndexRecord
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
+import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -209,6 +210,11 @@ class UnifiedCloudManager {
       // makes these ids and paths meaningless.
       void Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
         console.warn('Series index refresh failed:', error)
+      );
+      // The root catalog rides the same listing: one download for the whole
+      // library, skipped entirely when its size/mtime has not moved.
+      void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
+        console.warn('Catalog index refresh failed:', error)
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);
