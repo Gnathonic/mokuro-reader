@@ -14,7 +14,7 @@ import { webdavAuthOptions } from '../../core/providers/webdav-auth';
 import { basicAuthHeader } from '$lib/util/base64';
 import { fetchServerIdentity, type ServerPermissions } from './identity';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
-import { isSyncableFile } from '../../syncable-file';
+import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -787,9 +787,15 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      const kind = classifyWriteError(errorMessage);
-      if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
+      // Compiled metadata files are best-effort: a server that compiles them
+      // itself (mokuro-bunko) rejects the write by design, and that says
+      // nothing about progress sync or archive uploads. Demoting the provider
+      // here would hide backup and upload for a perfectly writable account.
+      if (!isBestEffortMetadataPath(path)) {
+        const kind = classifyWriteError(errorMessage);
+        if (kind !== 'other') {
+          this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
+        }
       }
 
       throw new ProviderError(

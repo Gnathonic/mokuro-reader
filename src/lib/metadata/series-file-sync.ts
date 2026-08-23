@@ -144,7 +144,10 @@ async function runWrite(seriesKey: string): Promise<void> {
     if (!(await hasBackedUpVolume(seriesTitle))) return;
     await unifiedCloudManager.writeSeriesFile(seriesTitle);
   } catch (error) {
-    console.warn(`[series-file-sync] failed to write series.json for '${seriesTitle}':`, error);
+    // Best-effort by contract: a server that compiles series.json itself
+    // rejects the write by design, and the next fact edit or backup rewrites
+    // the file anyway. Never a warning, never UI.
+    console.debug(`[series-file-sync] could not write series.json for '${seriesTitle}':`, error);
   }
 }
 

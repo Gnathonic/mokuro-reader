@@ -325,7 +325,8 @@ async function writeSeriesIndexesForRun(): Promise<void> {
     try {
       await unifiedCloudManager.writeSeriesFile(seriesTitle);
     } catch (error) {
-      console.warn(`[Backup Queue] Failed to write series.json for '${seriesTitle}':`, error);
+      // Best-effort by contract: never fails a backup that succeeded.
+      console.debug(`[Backup Queue] could not write series.json for '${seriesTitle}':`, error);
     }
   }
 }
