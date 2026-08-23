@@ -6,9 +6,8 @@ import type {
 import { providerManager } from '$lib/util/sync/provider-manager';
 import {
   catalogNeedsRefresh,
-  deleteCatalogIndexes,
   listCatalogIndexes,
-  putCatalogIndexes,
+  replaceCatalogIndexesForProvider,
   type CatalogIndexRecord
 } from './catalog-index';
 import {
@@ -145,14 +144,14 @@ async function runRefresh(
     }
   }
 
-  const keep = new Set(records.map((r) => r.series_key));
-  const stale = cached
-    .filter((row) => row.source.provider === provider.type && !keep.has(row.series_key))
-    .map((row) => row.series_key);
-
   try {
-    await deleteCatalogIndexes(stale);
-    await putCatalogIndexes(records);
+    // One transaction, so the catalog's liveQuery sees the prune and the write
+    // as a single emission. Last writer wins against a concurrent
+    // `stampCatalogCache` (this device publishing its own catalog.json), and
+    // that is fine: both write the same shape, and whichever loses leaves a
+    // stamp that no longer matches the cloud file, so the very next listing
+    // re-reads and settles it.
+    await replaceCatalogIndexesForProvider(provider.type, records);
   } catch (error) {
     console.warn('[catalog-index-sync] could not store the refreshed catalog:', error);
   }

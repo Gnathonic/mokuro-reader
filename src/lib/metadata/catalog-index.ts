@@ -46,6 +46,37 @@ export async function deleteCatalogIndexes(seriesKeys: string[]): Promise<void> 
 }
 
 /**
+ * Point one provider's slice of the cache at exactly `records`: rows fetched
+ * from that provider which are no longer listed are dropped, everything else is
+ * written, and both happen in ONE transaction.
+ *
+ * The single transaction is the point. This table feeds a liveQuery the catalog
+ * joins, so a separate delete and put emit twice and rebuild the whole card set
+ * a second time — visible flicker on a big library. It also means a refresh can
+ * never be observed half-applied.
+ *
+ * Rows from OTHER providers are never touched: a listing from one account says
+ * nothing about another's. And an empty `records` is refused outright — a
+ * catalog that yielded nothing is never grounds for emptying the cache (see
+ * `catalog-index-sync.ts`, which declines to get this far).
+ */
+export async function replaceCatalogIndexesForProvider(
+  provider: string,
+  records: CatalogIndexRecord[]
+): Promise<void> {
+  if (records.length === 0) return;
+
+  await db.transaction('rw', db.catalog_index, async () => {
+    const keep = new Set(records.map((r) => r.series_key));
+    const stale = (await db.catalog_index.toArray())
+      .filter((row) => row.source.provider === provider && !keep.has(row.series_key))
+      .map((row) => row.series_key);
+    if (stale.length > 0) await db.catalog_index.bulkDelete(stale);
+    await db.catalog_index.bulkPut(records);
+  });
+}
+
+/**
  * After a series rename: carry the cached entry to the new key. Mirrors
  * `moveSeriesIndexKey` — on a collision the newer `fetched_at` wins rather than
  * the rows being merged, since this is a disposable cache: the loser is simply

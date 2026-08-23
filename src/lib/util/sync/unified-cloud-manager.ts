@@ -45,7 +45,7 @@ import {
   deleteCatalogIndexes,
   listCatalogIndexes,
   moveCatalogIndexKey,
-  putCatalogIndexes,
+  replaceCatalogIndexesForProvider,
   type CatalogIndexRecord
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
@@ -1221,12 +1221,9 @@ class UnifiedCloudManager {
       source,
       fetched_at: now
     }));
-    const keep = new Set(records.map((r) => r.series_key));
-    const stale = (await listCatalogIndexes())
-      .filter((row) => row.source.provider === providerType && !keep.has(row.series_key))
-      .map((row) => row.series_key);
-    await deleteCatalogIndexes(stale);
-    await putCatalogIndexes(records);
+    // Same accessor the read half uses, so the prune rule lives in one place and
+    // the catalog's liveQuery sees a single emission.
+    await replaceCatalogIndexesForProvider(providerType, records);
   }
 
   /**

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 
@@ -7,9 +7,19 @@ vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
+// The accessors below run against the app's `db` singleton, so it is pointed at
+// a throwaway fake-indexeddb database for this file.
+vi.mock('$lib/catalog/db', async () => {
+  const { default: Dexie } = await import('dexie');
+  const db = new Dexie('catalog-index-accessor-test');
+  db.version(1).stores({ catalog_index: 'series_key' });
+  return { db };
+});
+
 import { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import { db as appDb } from '$lib/catalog/db';
 import type { CatalogIndexRecord } from './catalog-index';
-import { catalogNeedsRefresh } from './catalog-index';
+import { catalogNeedsRefresh, replaceCatalogIndexesForProvider } from './catalog-index';
 
 const DB_NAME = 'mokuro_v3_catalog_index_test';
 let db: CatalogDexieV3 | null = null;
@@ -94,5 +104,55 @@ describe('catalogNeedsRefresh', () => {
       fetched_at: '2026-01-01T00:00:00.000Z'
     });
     expect(catalogNeedsRefresh([stale, record()], cloud, 'webdav')).toBe(false);
+  });
+});
+
+describe('replaceCatalogIndexesForProvider', () => {
+  const table = () => (appDb as unknown as CatalogDexieV3).catalog_index;
+
+  beforeEach(async () => {
+    await table().clear();
+  });
+
+  it('drops this provider rows that left the catalog and keeps the rest', async () => {
+    await table().bulkPut([
+      record({ series_key: 'gone', series_title: 'Gone' }),
+      record({ series_key: 'kept', series_title: 'Kept' }),
+      record({
+        series_key: 'other account',
+        series_title: 'Other Account',
+        source: { provider: 'mega', path: 'catalog.json', size: 9, modifiedTime: 'old' }
+      })
+    ]);
+
+    await replaceCatalogIndexesForProvider('webdav', [
+      record({ series_key: 'kept', series_title: 'Kept' }),
+      record({ series_key: 'fresh', series_title: 'Fresh' })
+    ]);
+
+    const keys = (await table().toArray()).map((r) => r.series_key).sort();
+    // 'gone' is this provider's and absent from the new set; 'other account' is
+    // another account's row, which this listing says nothing about.
+    expect(keys).toEqual(['fresh', 'kept', 'other account']);
+  });
+
+  it('refuses to empty the table when handed no records', async () => {
+    await table().bulkPut([record({ series_key: 'kept', series_title: 'Kept' })]);
+    await replaceCatalogIndexesForProvider('webdav', []);
+    expect(await table().count()).toBe(1);
+  });
+
+  it('writes the delete and the put in ONE transaction', async () => {
+    // The table feeds a liveQuery the catalog joins: two writes would emit twice
+    // and rebuild the whole card set a second time (visible flicker).
+    await table().bulkPut([record({ series_key: 'gone', series_title: 'Gone' })]);
+    const transaction = vi.spyOn(appDb, 'transaction');
+
+    await replaceCatalogIndexesForProvider('webdav', [
+      record({ series_key: 'fresh', series_title: 'Fresh' })
+    ]);
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    transaction.mockRestore();
   });
 });

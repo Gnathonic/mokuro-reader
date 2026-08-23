@@ -7,8 +7,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActive
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
 const listCatalogIndexes = vi.fn(async (): Promise<CatalogIndexRecord[]> => []);
-const putCatalogIndexes = vi.fn(async (_recs: CatalogIndexRecord[]) => {});
-const deleteCatalogIndexes = vi.fn(async (_keys: string[]) => {});
+const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: CatalogIndexRecord[]) => {});
 vi.mock('$lib/metadata/catalog-index', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
     '$lib/metadata/catalog-index'
@@ -16,8 +15,8 @@ vi.mock('$lib/metadata/catalog-index', async () => {
   return {
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
     listCatalogIndexes: () => listCatalogIndexes(),
-    putCatalogIndexes: (recs: CatalogIndexRecord[]) => putCatalogIndexes(recs),
-    deleteCatalogIndexes: (keys: string[]) => deleteCatalogIndexes(keys)
+    replaceCatalogIndexesForProvider: (provider: string, recs: CatalogIndexRecord[]) =>
+      replaceCatalogIndexes(provider, recs)
   };
 });
 
@@ -94,8 +93,9 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
 
-    expect(putCatalogIndexes).toHaveBeenCalledTimes(1);
-    const rows = putCatalogIndexes.mock.calls[0][0];
+    expect(replaceCatalogIndexes).toHaveBeenCalledTimes(1);
+    expect(replaceCatalogIndexes.mock.calls[0][0]).toBe('webdav');
+    const rows = replaceCatalogIndexes.mock.calls[0][1];
     expect(rows.map((r) => r.series_key)).toEqual(['dr stone (hd scan)', 'bare folder']);
     expect(rows[0].source).toEqual({
       provider: 'webdav',
@@ -135,10 +135,10 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
     expect(downloadFile).not.toHaveBeenCalled();
-    expect(putCatalogIndexes).not.toHaveBeenCalled();
+    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
   });
 
-  it('drops rows of THIS provider whose series left the catalog', async () => {
+  it('hands the prune the provider whose listing produced the run', async () => {
     listCatalogIndexes.mockResolvedValue([
       {
         series_key: 'deleted series',
@@ -169,7 +169,12 @@ describe('refreshCatalogIndex', () => {
     ]);
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
-    expect(deleteCatalogIndexes).toHaveBeenCalledWith(['deleted series']);
+    // Dropping 'deleted series' while leaving the mega row alone happens inside
+    // `replaceCatalogIndexesForProvider` (one transaction, tested in
+    // catalog-index.test.ts). This run's job is to bind it to THIS provider.
+    const [providerType, recs] = replaceCatalogIndexes.mock.calls.at(-1)!;
+    expect(providerType).toBe('webdav');
+    expect(recs.map((r) => r.series_key)).toEqual(['dr stone (hd scan)', 'bare folder']);
   });
 
   it('never cleans up against an empty listing', async () => {
@@ -190,7 +195,7 @@ describe('refreshCatalogIndex', () => {
     ]);
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(new Map(), 'webdav');
-    expect(deleteCatalogIndexes).not.toHaveBeenCalled();
+    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
@@ -222,8 +227,7 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
 
-    expect(deleteCatalogIndexes).not.toHaveBeenCalled();
-    expect(putCatalogIndexes).not.toHaveBeenCalled();
+    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
     expect(upsertFromSeriesFile).not.toHaveBeenCalled();
   });
 
@@ -231,7 +235,7 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('Dr Stone/Volume 1.cbz')), 'webdav');
     expect(downloadFile).not.toHaveBeenCalled();
-    expect(deleteCatalogIndexes).not.toHaveBeenCalled();
+    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
   });
 
   it('is dropped when the provider changed since the listing', async () => {
@@ -247,7 +251,7 @@ describe('refreshCatalogIndex', () => {
     await expect(
       refreshCatalogIndex(listing(file('catalog.json')), 'webdav')
     ).resolves.toBeUndefined();
-    expect(putCatalogIndexes).not.toHaveBeenCalled();
+    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
 
     downloadFile.mockRejectedValueOnce(new Error('network down'));
     await expect(

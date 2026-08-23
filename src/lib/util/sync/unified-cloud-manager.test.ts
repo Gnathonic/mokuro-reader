@@ -82,6 +82,7 @@ const catalogRows = vi.fn(async (): Promise<unknown[]> => []);
 const putCatalogIndexes = vi.fn(async (_recs: unknown[]) => {});
 const deleteCatalogIndexes = vi.fn(async (_keys: string[]) => {});
 const moveCatalogIndexKey = vi.fn(async (_old: string, _next: string) => {});
+const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: unknown[]) => {});
 vi.mock('$lib/metadata/catalog-index', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
     '$lib/metadata/catalog-index'
@@ -92,6 +93,8 @@ vi.mock('$lib/metadata/catalog-index', async () => {
     listCatalogIndexes: () => catalogRows(),
     putCatalogIndexes: (recs: unknown[]) => putCatalogIndexes(recs),
     deleteCatalogIndexes: (keys: string[]) => deleteCatalogIndexes(keys),
+    replaceCatalogIndexesForProvider: (provider: string, recs: unknown[]) =>
+      replaceCatalogIndexes(provider, recs),
     moveCatalogIndexKey: (o: string, n: string) => moveCatalogIndexKey(o, n)
   };
 });
@@ -2032,7 +2035,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     expect(written.series[0].external_ids).toEqual({ anilist: 98416 });
 
     // The cache is stamped so the very next listing does not re-download our own write.
-    const cached = putCatalogIndexes.mock.calls.at(-1)![0] as Array<{ series_key: string }>;
+    const cached = replaceCatalogIndexes.mock.calls.at(-1)![1] as Array<{ series_key: string }>;
     expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
   });
 
@@ -2100,14 +2103,9 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // here — the second attempt must see what the first one wrote.
     const rows: Array<{ series_key: string }> = [];
     catalogRows.mockImplementation(async () => [...rows]);
-    putCatalogIndexes.mockImplementation(async (recs: unknown[]) => {
+    replaceCatalogIndexes.mockImplementation(async (_provider: string, recs: unknown[]) => {
+      rows.length = 0;
       rows.push(...(recs as Array<{ series_key: string }>));
-    });
-    deleteCatalogIndexes.mockImplementation(async (keys: string[]) => {
-      for (const key of keys) {
-        const at = rows.findIndex((row) => row.series_key === key);
-        if (at >= 0) rows.splice(at, 1);
-      }
     });
 
     try {
@@ -2121,8 +2119,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
       expect(p.downloadFile).toHaveBeenCalledTimes(1);
       expect(uploadFile).not.toHaveBeenCalled();
     } finally {
-      putCatalogIndexes.mockImplementation(async () => {});
-      deleteCatalogIndexes.mockImplementation(async () => {});
+      replaceCatalogIndexes.mockImplementation(async () => {});
     }
   });
 
@@ -2177,6 +2174,14 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     ]);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await unifiedCloudManager.writeCatalogFile();
-    expect(deleteCatalogIndexes).toHaveBeenCalledWith(['gone']);
+    // The prune runs inside `replaceCatalogIndexesForProvider` (one transaction,
+    // tested in catalog-index.test.ts); what matters here is that the write
+    // hands it THIS provider and a set with no 'gone' in it.
+    const [providerType, recs] = replaceCatalogIndexes.mock.calls.at(-1)! as [
+      string,
+      Array<{ series_key: string }>
+    ];
+    expect(providerType).toBe('webdav');
+    expect(recs.map((r) => r.series_key)).not.toContain('gone');
   });
 });
