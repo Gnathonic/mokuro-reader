@@ -1853,7 +1853,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     catalogRows.mockResolvedValue([]);
     getAllSeriesMetadata.mockResolvedValue({});
     getAllFiles.mockReturnValue(listing);
-    getCache.mockReturnValue(null);
+    getCache.mockReturnValue({ isLoaded: () => true });
   });
 
   it('skips entirely on a server-compiled provider', async () => {
@@ -1873,6 +1873,18 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
   it('skips when the listing shows no series folders', async () => {
     getActiveProvider.mockReturnValue(provider());
     getAllFiles.mockReturnValue([]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('skips while the provider cache is still filling', async () => {
+    // A non-empty listing is NOT proof of a complete one: `uploadFile` adds every
+    // upload to the cache, so a backup that runs before `fetchAll()` finishes
+    // leaves a listing holding this device's own uploads and nothing else.
+    // Pruning the catalog against that blanks the library for every other device.
+    getActiveProvider.mockReturnValue(provider());
+    getCache.mockReturnValue({ isLoaded: () => false });
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();

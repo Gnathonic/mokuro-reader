@@ -1122,6 +1122,15 @@ class UnifiedCloudManager {
     if (status.serverCompilesMetadata) return 'server-compiled';
     if (status.isReadOnly) return 'read-only';
 
+    // The prune below is only sound against a COMPLETE listing, and a non-empty
+    // one is no proof of that: `uploadFile` adds every upload to the cache, so a
+    // backup running before `fetchAll()` finishes leaves a listing holding this
+    // device's own uploads and nothing else. Publishing then prunes every series
+    // this device has not seen out of the catalog — the whole library blanked
+    // for everyone else. Only the cache itself knows it has been filled.
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.isLoaded()) return 'skipped';
+
     const cloudTitles = this.cloudSeriesTitles();
     if (cloudTitles.size === 0) return 'skipped';
 
