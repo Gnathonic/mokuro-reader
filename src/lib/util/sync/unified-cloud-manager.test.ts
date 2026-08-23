@@ -105,6 +105,12 @@ vi.mock('$lib/metadata/series-index-sync', () => ({
     refreshSeriesIndexes(map, providerType)
 }));
 
+const refreshCatalogIndex = vi.fn(async (_map: unknown, _providerType?: string) => {});
+vi.mock('$lib/metadata/catalog-index-sync', () => ({
+  refreshCatalogIndex: (map: unknown, providerType: string) =>
+    refreshCatalogIndex(map, providerType)
+}));
+
 /**
  * A file cache whose fetch has COMPLETED. Every metadata write gates on
  * `isLoaded()`, because a listing that is merely non-empty can still be this
@@ -1653,6 +1659,11 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     expect(listing.get('One Piece')).toHaveLength(2);
     // Bound to the provider the listing came from, so a switch invalidates it.
     expect(refreshSeriesIndexes.mock.calls[0][1]).toBe('webdav');
+
+    // The root catalog rides the SAME listing — one listing, both refreshes.
+    expect(refreshCatalogIndex).toHaveBeenCalledTimes(1);
+    expect(refreshCatalogIndex.mock.calls[0][0]).toBe(listing);
+    expect(refreshCatalogIndex.mock.calls[0][1]).toBe('webdav');
   });
 
   it('does not refresh indexes from a pre-rename listing (volume move)', async () => {
@@ -1674,6 +1685,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
 
     expect(fetchAll).toHaveBeenCalled();
     expect(refreshSeriesIndexes).not.toHaveBeenCalled();
+    expect(refreshCatalogIndex).not.toHaveBeenCalled();
   });
 
   it('does not refresh indexes from a pre-rename listing (series rename)', async () => {
@@ -1694,6 +1706,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
 
     expect(fetchAll).toHaveBeenCalled();
     expect(refreshSeriesIndexes).not.toHaveBeenCalled();
+    expect(refreshCatalogIndex).not.toHaveBeenCalled();
   });
 
   it('keeps the cached entries when the cloud copy is unparsable junk', async () => {
