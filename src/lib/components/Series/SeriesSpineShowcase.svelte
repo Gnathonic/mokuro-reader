@@ -60,7 +60,11 @@
     type SpineOffsetPatch,
     type SpineOffsets
   } from '$lib/metadata/spine-offsets';
-  import { computeStackLayout, hitTestStack } from '$lib/util/spine-stack-layout';
+  import {
+    computeStackLayout,
+    hitTestStack,
+    spineBadgePlacements
+  } from '$lib/util/spine-stack-layout';
   import {
     CARD_BASE_HEIGHT,
     CARD_BASE_WIDTH,
@@ -392,31 +396,24 @@
 
   /**
    * Where to mark the spines whose pages are not on this device (metadata-only rows and
-   * cloud-only placeholders alike). Read off the SAME numbers the canvas draws with —
-   * `layout.lefts`, `alignShift`, `spineWidths`, `stepSizes` — so the marks ride exactly on
-   * the painted spines. Nothing here feeds back into the geometry: the badges are absolutely
-   * positioned overlays inside the strip, so a marked shelf measures like an unmarked one.
+   * cloud-only placeholders alike). Same shared placement rule the catalog card uses, fed
+   * the numbers this strip draws with, so the marks ride exactly on the painted spines
+   * without touching the geometry they sit over.
    */
-  const SPINE_BADGE_PX = 16; // h-4/w-4, the `sm` badge
-  let spineBadges = $derived.by(() => {
-    const marks: { uuid: string; left: number; top: number }[] = [];
-    for (let i = 0; i < showcaseVolumes.length; i++) {
-      const vol = showcaseVolumes[i];
-      if (!needsDownload(vol)) continue;
-      // CompositeCanvas paints nothing for a volume without pixels, so a mark here would
+  let spineBadges = $derived(
+    spineBadgePlacements({
+      volumes: showcaseVolumes,
+      // CompositeCanvas paints nothing for a volume without pixels, so a mark there would
       // float over blank strip. It appears with the cover, which is when it means something.
-      if (!vol.thumbnail) continue;
-      const drawn = getCanvasDimensions(vol.volume_uuid);
-      const width = drawn?.width ?? spineWidths[i] ?? spineWidth;
-      const height = drawn?.height ?? spineHeight;
-      marks.push({
-        uuid: vol.volume_uuid,
-        left: alignShift + (layout.lefts[i] ?? 0) + width - SPINE_BADGE_PX - 2,
-        top: stepSizes.topOffset + i * stepSizes.vertical + height - SPINE_BADGE_PX - 2
-      });
-    }
-    return marks;
-  });
+      isMarked: (vol) => needsDownload(vol) && !!vol.thumbnail,
+      drawnSize: (vol) => getCanvasDimensions(vol.volume_uuid),
+      horizontalStepPx,
+      verticalStepPx: stepSizes.vertical,
+      topOffsetPx: stepSizes.topOffset,
+      canvasWidth,
+      volumeOffsetsByIndex: scaledVolumeOffsets
+    })
+  );
 
   // ── Strip: hover, pan, gestures ───────────────────────────────────────────────────────
   let stripEl = $state<HTMLElement | null>(null);
@@ -655,7 +652,7 @@
         dropShadow={false}
         border={true}
       />
-      {#each spineBadges as mark (mark.uuid)}
+      {#each spineBadges as mark (showcaseVolumes[mark.index].volume_uuid)}
         <DownloadBadge size="sm" class="" style="left: {mark.left}px; top: {mark.top}px;" />
       {/each}
     </div>

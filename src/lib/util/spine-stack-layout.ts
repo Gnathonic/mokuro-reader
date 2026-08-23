@@ -72,3 +72,87 @@ export function hitTestStack(
   }
   return null;
 }
+
+export interface SpineBadgeInput<T> {
+  /** The stack, in draw order (index 0 on top), exactly as handed to CompositeCanvas. */
+  volumes: T[];
+  /** Which of them get a badge. */
+  isMarked: (volume: T, index: number) => boolean;
+  /**
+   * The box a volume is painted in, or `null` when the canvas paints nothing for it (no
+   * pixels yet) — an unpainted spine has no corner to mark.
+   */
+  drawnSize: (volume: T, index: number) => { width: number; height: number } | null;
+  /** Distance between consecutive spines, in px (already includes the series offset). */
+  horizontalStepPx: number;
+  /** Vertical step and top inset the canvas draws with. */
+  verticalStepPx: number;
+  topOffsetPx: number;
+  /** Width of the canvas the stack is right-aligned into. */
+  canvasWidth: number;
+  /** Per-index nudges in px; cascading, as everywhere else. */
+  volumeOffsetsByIndex?: Map<number, number>;
+  /** Size of the badge box in px (default 16 — the `sm` DownloadBadge). */
+  badgePx?: number;
+  /** Inset from the spine's bottom-right corner (default 2). */
+  insetPx?: number;
+}
+
+export interface SpineBadgePlacement {
+  /** Index in `volumes`, so the caller can key the badge and name it. */
+  index: number;
+  left: number;
+  top: number;
+}
+
+/**
+ * Where to put a badge on each marked spine of a stack — the catalog card's cover stack
+ * and the series editor's spine shelf both draw one.
+ *
+ * Positions are derived from the SAME numbers CompositeCanvas draws with: cascading lefts
+ * (`computeStackLayout`), then its right-alignment of the last spine to `canvasWidth`, then
+ * the vertical step. The badges are overlays; nothing here feeds back into the geometry, so
+ * a marked stack measures exactly like an unmarked one.
+ */
+export function spineBadgePlacements<T>({
+  volumes,
+  isMarked,
+  drawnSize,
+  horizontalStepPx,
+  verticalStepPx,
+  topOffsetPx,
+  canvasWidth,
+  volumeOffsetsByIndex,
+  badgePx = 16,
+  insetPx = 2
+}: SpineBadgeInput<T>): SpineBadgePlacement[] {
+  const placements: SpineBadgePlacement[] = [];
+  const count = volumes.length;
+  if (count === 0) return placements;
+
+  const lastWidth = drawnSize(volumes[count - 1], count - 1)?.width ?? 0;
+  const { lefts } = computeStackLayout({
+    count,
+    baseWidth: lastWidth,
+    horizontalStepPx,
+    volumeOffsetsByIndex
+  });
+  // CompositeCanvas pins the stack's right edge to the canvas rather than using the
+  // centering offset; mirror that or every badge drifts by the difference.
+  const alignShift = canvasWidth - ((lefts[count - 1] ?? 0) + lastWidth);
+  const inset = badgePx + insetPx;
+
+  for (let i = 0; i < count; i++) {
+    const volume = volumes[i];
+    if (!isMarked(volume, i)) continue;
+    const size = drawnSize(volume, i);
+    if (!size) continue;
+    placements.push({
+      index: i,
+      left: (lefts[i] ?? 0) + alignShift + size.width - inset,
+      top: topOffsetPx + i * verticalStepPx + size.height - inset
+    });
+  }
+
+  return placements;
+}

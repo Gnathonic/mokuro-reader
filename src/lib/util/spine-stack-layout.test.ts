@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeStackLayout, hitTestStack } from './spine-stack-layout';
+import { computeStackLayout, hitTestStack, spineBadgePlacements } from './spine-stack-layout';
 
 /**
  * The card's ORIGINAL inline math (CatalogItem.handleMouseMove, before the extraction),
@@ -188,5 +188,85 @@ describe('hitTestStack', () => {
         expect(hitTestStack({ lefts, totalWidth }, x, 250) ?? count - 1).toBe(expected);
       }
     }
+  });
+});
+
+describe('spineBadgePlacements', () => {
+  /** A stack of three 100×200 spines, stepped 30px apart inside a 160px canvas. */
+  const threeSpines = (marked: number[], sizes?: ({ width: number; height: number } | null)[]) => ({
+    volumes: [0, 1, 2],
+    isMarked: (i: number) => marked.includes(i),
+    drawnSize: (i: number) =>
+      sizes ? sizes[i] : ({ width: 100, height: 200 } as { width: number; height: number } | null),
+    horizontalStepPx: 30,
+    verticalStepPx: 0,
+    topOffsetPx: 0,
+    canvasWidth: 160
+  });
+
+  it('places nothing for an empty stack', () => {
+    expect(
+      spineBadgePlacements({
+        volumes: [],
+        isMarked: () => true,
+        drawnSize: () => ({ width: 10, height: 10 }),
+        horizontalStepPx: 0,
+        verticalStepPx: 0,
+        topOffsetPx: 0,
+        canvasWidth: 10
+      })
+    ).toEqual([]);
+  });
+
+  it('puts a badge in the bottom-right corner of each marked spine', () => {
+    // lefts are 0/30/60; the stack is right-aligned so its last spine ends at 160 —
+    // alignShift = 160 - (60 + 100) = 0. Badge sits 16 + 2 px in from the far corner.
+    expect(spineBadgePlacements(threeSpines([1, 2]))).toEqual([
+      { index: 1, left: 30 + 100 - 18, top: 200 - 18 },
+      { index: 2, left: 60 + 100 - 18, top: 200 - 18 }
+    ]);
+  });
+
+  it('marks nothing for a volume the canvas paints nothing for', () => {
+    const sizes = [{ width: 100, height: 200 }, null, { width: 100, height: 200 }];
+    expect(spineBadgePlacements(threeSpines([0, 1, 2], sizes)).map((p) => p.index)).toEqual([0, 2]);
+  });
+
+  it('follows the right-alignment CompositeCanvas draws with', () => {
+    // The last spine is half-width, so the whole stack shifts right by 50px to keep its
+    // right edge on the canvas — every badge moves with it.
+    const sizes = [
+      { width: 100, height: 200 },
+      { width: 100, height: 200 },
+      { width: 50, height: 200 }
+    ];
+    const placements = spineBadgePlacements(threeSpines([0, 2], sizes));
+    expect(placements).toEqual([
+      { index: 0, left: 0 + 50 + 100 - 18, top: 182 },
+      { index: 2, left: 60 + 50 + 50 - 18, top: 182 }
+    ]);
+  });
+
+  it('cascades the per-volume nudges, like the lefts they come from', () => {
+    const placements = spineBadgePlacements({
+      ...threeSpines([2]),
+      volumeOffsetsByIndex: new Map([[0, 10]])
+    });
+    // Volume 0's +10 pushes 1 and 2; the right-align then takes it back off the shift.
+    expect(placements[0].left).toBe(60 + 10 + (160 - (60 + 10 + 100)) + 100 - 18);
+  });
+
+  it('follows the vertical step and the stack top inset', () => {
+    const placements = spineBadgePlacements({
+      ...threeSpines([2]),
+      verticalStepPx: 12,
+      topOffsetPx: 5
+    });
+    expect(placements[0].top).toBe(5 + 2 * 12 + 200 - 18);
+  });
+
+  it('takes the badge size and inset from the caller', () => {
+    const placements = spineBadgePlacements({ ...threeSpines([0]), badgePx: 24, insetPx: 0 });
+    expect(placements[0]).toEqual({ index: 0, left: 100 - 24, top: 200 - 24 });
   });
 });
