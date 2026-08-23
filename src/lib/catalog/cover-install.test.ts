@@ -11,7 +11,7 @@ vi.mock('$lib/catalog/db', async () => {
   return { db: new CatalogDexieV3('mokuro_v3_cover_install_test') };
 });
 
-const getAllCloudVolumes = vi.fn(() => [
+const defaultListing = [
   {
     provider: 'webdav',
     fileId: 'cover-1',
@@ -20,7 +20,8 @@ const getAllCloudVolumes = vi.fn(() => [
     size: 1
   },
   { provider: 'webdav', fileId: 'cbz-1', path: 'Dr Stone/Volume 1.cbz', modifiedTime: '', size: 1 }
-]);
+];
+const getAllCloudVolumes = vi.fn(() => defaultListing);
 const getActiveProvider = vi.fn(() => ({ type: 'webdav' }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -43,8 +44,28 @@ import { installCoversForSeries } from './cover-install';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `clearAllMocks` clears call history, not implementations: re-pin the
+  // per-test defaults so a `mockReturnValue` in one test cannot leak into the next.
+  getAllCloudVolumes.mockReturnValue(defaultListing);
   getActiveProvider.mockReturnValue({ type: 'webdav' });
+  fetchCloudThumbnail.mockImplementation(async () => ({
+    file: new File(['img'], 'Volume 1.webp', { type: 'image/webp' }),
+    width: 210,
+    height: 297
+  }));
 });
+
+/** Hold the next cover download open, so a test can act mid-pass. */
+function deferFetch() {
+  let release!: () => void;
+  fetchCloudThumbnail.mockReturnValueOnce(
+    new Promise((resolve) => {
+      release = () =>
+        resolve({ file: new File(['img'], 'Volume 1.webp'), width: 210, height: 297 });
+    })
+  );
+  return { release: () => release() };
+}
 
 afterEach(async () => {
   await db.volumes.clear();
@@ -153,23 +174,97 @@ describe('installCoversForSeries', () => {
 
   it('coalesces concurrent passes over the same series', async () => {
     await addRow();
-    let release!: (value: { file: File; width: number; height: number }) => void;
-    fetchCloudThumbnail.mockReturnValueOnce(
-      new Promise((resolve) => {
-        release = resolve;
-      })
-    );
+    const pending = deferFetch();
 
     // `openSeries` releases its own dedupe at materialization, so a second open
     // during a slow cover phase reaches this function again: it must join the
     // running pass instead of downloading the same sidecar twice.
     const first = installCoversForSeries('Dr Stone');
     const second = installCoversForSeries('  DR  STONE ');
-    release({ file: new File(['img'], 'Volume 1.webp'), width: 210, height: 297 });
+    pending.release();
 
     expect(await first).toBe(1);
     expect(await second).toBe(1);
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches a series folder the provider spells decomposed', async () => {
+    // A provider that hands back NFD decomposes the WHOLE path, not just the
+    // filename: a Japanese series folder must still find its covers.
+    getAllCloudVolumes.mockReturnValueOnce([
+      {
+        provider: 'webdav',
+        fileId: 'cover-jp',
+        path: 'ドクターストーン/Volume 1.webp'.normalize('NFD'),
+        modifiedTime: '',
+        size: 1
+      }
+    ]);
+    await addRow({ series_title: 'ドクターストーン'.normalize('NFC') });
+
+    expect(await installCoversForSeries('ドクターストーン')).toBe(1);
+    expect(fetchCloudThumbnail).toHaveBeenCalledWith(
+      expect.objectContaining({ cloudThumbnailFileId: 'cover-jp' })
+    );
+  });
+
+  it('leaves a row that was downloaded while the pass was in flight', async () => {
+    await addRow();
+    const pending = deferFetch();
+
+    const pass = installCoversForSeries('Dr Stone');
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalled());
+
+    // The user downloaded the volume mid-pass: it is INSTALLED now, and its
+    // thumbnail was measured from its own pages. The snapshot this pass took is
+    // stale, and a blind write would clobber a real cover onto a real volume.
+    await addRow({
+      metadata_only: undefined,
+      thumbnail: new File(['pages'], 'page.webp'),
+      thumbnail_width: 999,
+      thumbnail_height: 999
+    });
+    pending.release();
+
+    expect(await pass).toBe(0);
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.thumbnail_width).toBe(999);
+    expect(row?.metadata_only).toBeUndefined();
+  });
+
+  it('picks up rows materialized after the pass took its snapshot', async () => {
+    getAllCloudVolumes.mockReturnValue([
+      {
+        provider: 'webdav',
+        fileId: 'cover-1',
+        path: 'Dr Stone/Volume 1.webp',
+        modifiedTime: '',
+        size: 1
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cover-2',
+        path: 'Dr Stone/Volume 2.webp',
+        modifiedTime: '',
+        size: 1
+      }
+    ]);
+    await addRow();
+    const pending = deferFetch();
+
+    const pass = installCoversForSeries('Dr Stone');
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalled());
+
+    // A second open materialized Volume 2 while this pass was downloading: the
+    // joiner is served the running pass, so that pass has to look again or the
+    // new card stays blank until the series is opened a third time.
+    await addRow({ volume_uuid: 'uuid-2', volume_title: 'Volume 2' });
+    const joiner = installCoversForSeries('Dr Stone');
+    pending.release();
+
+    expect(await pass).toBe(2);
+    expect(await joiner).toBe(2);
+    expect(await db.volumes.get('uuid-2')).toMatchObject({ thumbnail_width: 210 });
   });
 
   it('runs again once the previous pass has settled', async () => {

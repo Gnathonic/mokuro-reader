@@ -9,20 +9,28 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 /** Cover downloads started at once. `fetchCloudThumbnail` caps the network at 4 anyway. */
 const MAX_CONCURRENT_COVER_INSTALLS = 4;
 
-/** The running pass per normalized series key — see `installCoversForSeries`. */
-const inFlight = new Map<string, Promise<number>>();
+/**
+ * The running pass per normalized series key, plus whether a joiner arrived
+ * after it took its snapshot — see `installCoversForSeries`.
+ */
+const inFlight = new Map<string, { promise: Promise<number>; dirty: boolean }>();
 
 /**
  * The join key between a cover sidecar's path and a row: the volume's identity
- * as `<series>/<volume>`, folded the way the rest of the catalog folds each
- * half — `normalizeSeriesKey` for the series (the catalog's grouping key) and
- * `normalizeVolumeTitleKey` for the volume title, the ONE fold every
- * cross-source volume match uses. Both sides go through this function, so a
- * cloud filename that came back from a filesystem decomposed or double-spaced
- * still pairs with the composed title the index wrote onto the row.
+ * as `<series>/<volume>`, with BOTH halves through `normalizeVolumeTitleKey` —
+ * the catalog's fold (trim / collapse whitespace / lowercase) plus unicode
+ * composition. Both sides of the join go through this one function, so a path a
+ * provider hands back decomposed or double-spaced still pairs with the composed
+ * title the index wrote onto the row.
+ *
+ * The series half is NFC-folded too, unlike `normalizeSeriesKey` elsewhere,
+ * because a provider that decomposes decomposes the WHOLE path: a Japanese
+ * series folder would otherwise miss every one of its covers while a series
+ * named in ASCII matched fine. This key is private to this join and is never a
+ * series identity, so it owes `materializeSeriesVolumes` no consistency.
  */
 function coverKey(seriesTitle: string, volumeTitle: string): string {
-  return `${normalizeSeriesKey(seriesTitle)}/${normalizeVolumeTitleKey(volumeTitle)}`;
+  return `${normalizeVolumeTitleKey(seriesTitle)}/${normalizeVolumeTitleKey(volumeTitle)}`;
 }
 
 /** Re-key the listing's cover index (lowercased base paths) onto {@link coverKey}. */
@@ -65,6 +73,13 @@ function foldCoverIndex(
  * is the only thing standing between that and N concurrent passes over the same
  * sidecars.
  *
+ * A joiner also marks the pass DIRTY, and a dirty pass scans once more before
+ * it resolves. The reason is what a joiner usually means: another open just
+ * materialized rows this pass' snapshot could not see, and without the re-scan
+ * their cards stay blank until the series is opened a third time. Once more,
+ * never in a loop — a joiner during the re-scan is served the same promise and
+ * the series settles rather than chasing a moving listing forever.
+ *
  * Returns how many covers were installed. Never rejects.
  */
 export function installCoversForSeries(seriesTitle: string): Promise<number> {
@@ -72,21 +87,32 @@ export function installCoversForSeries(seriesTitle: string): Promise<number> {
   if (!key) return Promise.resolve(0);
 
   const running = inFlight.get(key);
-  if (running) return running;
+  if (running) {
+    running.dirty = true;
+    return running.promise;
+  }
 
-  const pass = runCoverInstall(seriesTitle)
-    .catch((error) => {
+  const state = { dirty: false } as { promise: Promise<number>; dirty: boolean };
+  state.promise = (async () => {
+    let installed = 0;
+    try {
+      installed = await runCoverInstall(seriesTitle);
+      if (state.dirty) {
+        state.dirty = false;
+        installed += await runCoverInstall(seriesTitle);
+      }
+    } catch (error) {
       console.debug(`[cover-install] pass over '${seriesTitle}' failed:`, error);
-      return 0;
-    })
-    .finally(() => {
+    } finally {
       // Only ever evict OUR OWN entry, so a pass settling late cannot drop the
       // dedupe of the pass that replaced it.
-      if (inFlight.get(key) === pass) inFlight.delete(key);
-    });
+      if (inFlight.get(key) === state) inFlight.delete(key);
+    }
+    return installed;
+  })();
 
-  inFlight.set(key, pass);
-  return pass;
+  inFlight.set(key, state);
+  return state.promise;
 }
 
 async function runCoverInstall(seriesTitle: string): Promise<number> {
@@ -129,12 +155,22 @@ async function runCoverInstall(seriesTitle: string): Promise<number> {
             cloudThumbnailPath: info.path
           });
           if (!result) continue;
-          await db.volumes.update(row.volume_uuid, {
-            thumbnail: result.file,
-            thumbnail_width: result.width,
-            thumbnail_height: result.height
+          // Re-check under a transaction: a download can finish while this
+          // cover is in flight, which INSTALLS the volume and gives it a
+          // thumbnail measured from its own pages. The snapshot above is that
+          // old by the time the network answers, so the row is re-read and the
+          // same two conditions re-tested against the write itself.
+          const wrote = await db.transaction('rw', db.volumes, async () => {
+            const fresh = (await db.volumes.get(row.volume_uuid)) as VolumeMetadata | undefined;
+            if (!fresh || !needsDownload(fresh) || fresh.thumbnail) return false;
+            await db.volumes.update(row.volume_uuid, {
+              thumbnail: result.file,
+              thumbnail_width: result.width,
+              thumbnail_height: result.height
+            });
+            return true;
           });
-          installed += 1;
+          if (wrote) installed += 1;
         } catch (error) {
           console.debug(
             `[cover-install] could not install a cover for '${row.volume_title}':`,
