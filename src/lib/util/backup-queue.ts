@@ -11,6 +11,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
+import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 export interface SidecarOptions {
@@ -345,6 +346,9 @@ async function writeSeriesIndexesForRun(): Promise<void> {
 export async function finishBackupRun(): Promise<void> {
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
   await writeSeriesIndexesForRun();
+  // The run may have created or removed whole series folders, which is exactly
+  // what the root catalog lists. One write for the whole run.
+  await flushCatalogFileWrites();
   unifiedCloudManager.refreshSeriesIndexesInBackground();
 }
 

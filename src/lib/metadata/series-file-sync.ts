@@ -89,8 +89,13 @@ export function _resetListingRefreshForTests(): void {
   lastListingAt = 0;
 }
 
-/** Refresh the cloud listing (coalesced, TTL-cached). `false` = the view is still stale. */
-function refreshCloudListing(): Promise<boolean> {
+/**
+ * Refresh the cloud listing (coalesced, TTL-cached). `false` = the view is still
+ * stale. Shared by both metadata writers (`series.json` and `catalog.json`):
+ * both merge and prune against the listing, and a burst of edits must cost at
+ * most one whole-account fetch.
+ */
+export function ensureFreshCloudListing(): Promise<boolean> {
   if (listingRefresh) return listingRefresh;
   if (lastListingAt && Date.now() - lastListingAt < LISTING_TTL_MS) return Promise.resolve(true);
 
@@ -140,7 +145,7 @@ async function runWrite(seriesKey: string): Promise<void> {
     // Both gates below read the listing, so refresh it first — and skip the
     // write entirely when that fails rather than publish a file built from a
     // view we know may be hours old.
-    if (!(await refreshCloudListing())) return;
+    if (!(await ensureFreshCloudListing())) return;
     if (!(await hasBackedUpVolume(seriesTitle))) return;
     await unifiedCloudManager.writeSeriesFile(seriesTitle);
   } catch (error) {

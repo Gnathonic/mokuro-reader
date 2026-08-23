@@ -25,6 +25,7 @@
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
+  import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -100,6 +101,9 @@
 
     // Debounced <Series>/series.json writes after local series-metadata edits
     initSeriesFileSync();
+
+    // Debounced root catalog.json writes for backends that don't compile it
+    initCatalogFileSync();
 
     // Initialize service worker update detection
     initSwUpdateDetection();
