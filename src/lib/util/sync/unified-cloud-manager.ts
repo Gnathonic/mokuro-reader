@@ -10,6 +10,7 @@ import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified
 import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
+import { isMetadataOnly } from '$lib/catalog/volume-state';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -515,7 +516,12 @@ class UnifiedCloudManager {
     // regenerate rather than move.
     const hasCloudMokuro = managedFiles.some((file) => isMokuroSidecarPath(file.path));
     let freshMokuroBlob: Blob | null = null;
-    if (volumeUuid) {
+    // A metadata-only volume has no OCR here to rebuild the sidecar from, so
+    // there is nothing to read and the gate below turns it into a clear error.
+    const volumeIsMetadataOnly = volumeUuid
+      ? isMetadataOnly((await db.volumes.get(volumeUuid)) ?? ({} as VolumeMetadata))
+      : false;
+    if (volumeUuid && !volumeIsMetadataOnly) {
       const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, {
         seriesTitle: newSeriesTitle,
         volumeTitle: newVolumeTitle
@@ -525,12 +531,15 @@ class UnifiedCloudManager {
 
     // GATE (before any remote write): an OCR volume that already has a .mokuro
     // in the cloud but whose sidecar we COULDN'T regenerate (e.g. volume_ocr
-    // row missing — a DB inconsistency) must not be renamed. Moving its stale
-    // sidecar would silently revert the rename on re-download — the exact bug
-    // this fixes — so fail loudly while nothing has changed.
+    // row missing — a DB inconsistency, or a metadata-only volume whose OCR is
+    // simply not on this device) must not be renamed. Moving its stale sidecar
+    // would silently revert the rename on re-download — the exact bug this
+    // fixes — so fail loudly while nothing has changed.
     if (volumeUuid && hasCloudMokuro && !freshMokuroBlob) {
       throw new ProviderError(
-        'Cannot rename: the OCR sidecar could not be regenerated (volume_ocr data missing)',
+        volumeIsMetadataOnly
+          ? 'Cannot rename: this volume is not on this device — download it first'
+          : 'Cannot rename: the OCR sidecar could not be regenerated (volume_ocr data missing)',
         provider.type,
         'SIDECAR_REGEN_FAILED'
       );

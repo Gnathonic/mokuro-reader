@@ -6,6 +6,7 @@ import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { naturalSort } from '$lib/util/natural-sort';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;
@@ -48,9 +49,15 @@ export class CatalogDexieV3 extends Dexie {
     const processId = 'thumbnail-generation';
 
     // Get volumes that need thumbnail generation/regeneration
-    // Missing any of thumbnail, width, or height indicates need for (re)generation
+    // Missing any of thumbnail, width, or height indicates need for (re)generation.
+    // Metadata-only rows are excluded: their images are not on this device, so
+    // there is nothing to generate from and every pass would retry them forever.
     const volumesNeedingThumbnails = await this.volumes
-      .filter((vol) => !vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+      .filter(
+        (vol) =>
+          isVolumeInstalled(vol) &&
+          (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+      )
       .primaryKeys();
 
     if (volumesNeedingThumbnails.length === 0) return;

@@ -2,6 +2,7 @@
   import { catalog } from '$lib/catalog';
   import { nav, routeParams } from '$lib/util/hash-router';
   import { db } from '$lib/catalog/db';
+  import { isVolumeInstalled } from '$lib/catalog/volume-state';
   import { getCharCount } from '$lib/util/count-chars';
   import { Button, Alert } from 'flowbite-svelte';
   import { ArrowLeftOutline, ClipboardOutline, CheckOutline } from 'flowbite-svelte-icons';
@@ -22,7 +23,8 @@
   );
   let volumes = $derived(
     seriesData?.volumes
-      .filter((v) => !v.isPlaceholder)
+      // Only volumes whose OCR is on this device have text to show.
+      .filter(isVolumeInstalled)
       .sort((a, b) =>
         a.volume_title.localeCompare(b.volume_title, undefined, {
           numeric: true,

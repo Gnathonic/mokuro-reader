@@ -24,7 +24,7 @@
   import { promptExtraction } from '$lib/util/modals';
   import { zipManga } from '$lib/util/zip';
   import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
-  import { ListgroupItem, Dropdown, DropdownItem, Badge } from 'flowbite-svelte';
+  import { ListgroupItem, Dropdown, DropdownItem, Badge, Button, Spinner } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
     CloseCircleOutline,
@@ -48,9 +48,13 @@
   import { PROVIDER_SHORT_LABELS } from '$lib/util/sync/provider-display';
   import { providerManager } from '$lib/util/sync';
   import { backupQueue } from '$lib/util/backup-queue';
+  import { downloadQueue } from '$lib/util/download-queue';
+  import { getCloudFileId, getCloudSize } from '$lib/util/cloud-fields';
+  import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
   import { onDestroy } from 'svelte';
 
   interface Props {
@@ -94,6 +98,51 @@
 
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');
+
+  // The pages are not on this device: everything that reads them (open, view
+  // text, extract, back up, edit) is replaced by a download. The row is still
+  // real — its progress, stats and cover are shown exactly as usual.
+  // Cloud fields are read from the `volume` prop: that is the catalog's copy,
+  // the one `volumesWithPlaceholders` decorated with the current listing, while
+  // `liveVolume` is the raw stored row.
+  let isNotInstalled = $derived(needsDownload(liveVolume));
+  let downloadFileId = $derived(getCloudFileId(volume));
+  let cloudSizeDisplay = $derived.by(() => {
+    const size = getCloudSize(volume);
+    if (!size) return null;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  });
+
+  let queueState = $state($downloadQueue);
+  $effect(() => downloadQueue.subscribe((value) => (queueState = value)));
+  let progressState = $state($progressTrackerStore);
+  $effect(() => progressTrackerStore.subscribe((value) => (progressState = value)));
+  let downloadProcess = $derived(
+    downloadFileId
+      ? progressState.processes.find((p) => p.id === `download-${downloadFileId}`)
+      : undefined
+  );
+  let isDownloading = $derived(
+    queueState.some((item) => item.volumeUuid === volume_uuid) || !!downloadProcess
+  );
+  let downloadProgress = $derived(downloadProcess?.progress || 0);
+
+  function onDownloadClicked(e?: Event) {
+    e?.stopPropagation();
+    if (!downloadFileId) {
+      showSnackbar(`${volName} is not in the connected cloud storage`);
+      return;
+    }
+    downloadQueue.queueVolume(volume);
+  }
+
+  function onOpenClicked() {
+    if (isNotInstalled) {
+      onDownloadClicked();
+      return;
+    }
+    if ($routeParams.manga) nav.toReader($routeParams.manga, volume_uuid);
+  }
 
   // Check if this volume has missing pages (imported with placeholders)
   let missingPages = $derived(volume.missing_pages);
@@ -198,9 +247,11 @@
   });
 
   // Some insert/update paths can miss live notifications for blob fields.
-  // While thumbnail is missing, poll this row until it appears.
+  // While thumbnail is missing, poll this row until it appears. Not for a
+  // volume that is not installed: nothing is generating one, so it would poll
+  // for the lifetime of the page.
   $effect(() => {
-    if (liveVolume.isPlaceholder || liveVolume.thumbnail) {
+    if (needsDownload(liveVolume) || liveVolume.thumbnail) {
       return;
     }
 
@@ -527,10 +578,7 @@
       onmouseenter={() => (isHovered = true)}
       onmouseleave={() => (isHovered = false)}
     >
-      <ListgroupItem
-        onclick={() => $routeParams.manga && nav.toReader($routeParams.manga, volume_uuid)}
-        class="py-4"
-      >
+      <ListgroupItem onclick={onOpenClicked} class="py-4">
         {#if thumbnailUrl}
           <img
             src={thumbnailUrl}
@@ -571,37 +619,58 @@
                   Missing {missingPages} page{missingPages > 1 ? 's' : ''}
                 </Badge>
               {/if}
+              {#if isNotInstalled}
+                <Badge color="gray" class="text-xs">Not on this device</Badge>
+              {/if}
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>
               {#if statsDisplay}
                 <p class="text-sm opacity-80">{statsDisplay}</p>
               {/if}
+              {#if isNotInstalled && cloudSizeDisplay}
+                <p class="text-sm opacity-80">{cloudSizeDisplay}</p>
+              {/if}
             </div>
           </div>
           <div class="flex items-center gap-2">
-            <BackupButton {volume} class="mr-2" />
-            <button
-              onclick={onViewTextClicked}
-              class="flex items-center justify-center"
-              title="View text only"
-            >
-              <FileLinesOutline class="z-10 text-blue-400 hover:text-blue-500" />
-            </button>
-            <button
-              onclick={onExtractClicked}
-              class="flex items-center justify-center"
-              title="Extract volume"
-            >
-              <DownloadSolid class="z-10 text-gray-400 hover:text-gray-300" />
-            </button>
-            <button
-              onclick={onEditClicked}
-              class="flex items-center justify-center"
-              title="Edit volume"
-            >
-              <EditOutline class="z-10 text-gray-400 hover:text-gray-300" />
-            </button>
+            {#if isNotInstalled}
+              <!-- No pages on this device: the only thing to do with it is get them back. -->
+              {#if isDownloading}
+                <Button color="light" disabled={true}>
+                  <Spinner size="4" class="me-2" />
+                  {Math.round(downloadProgress)}%
+                </Button>
+              {:else if downloadFileId}
+                <Button color="blue" onclick={onDownloadClicked}>
+                  <DownloadSolid class="me-2 h-4 w-4" />
+                  Download
+                </Button>
+              {/if}
+            {:else}
+              <BackupButton {volume} class="mr-2" />
+              <button
+                onclick={onViewTextClicked}
+                class="flex items-center justify-center"
+                title="View text only"
+              >
+                <FileLinesOutline class="z-10 text-blue-400 hover:text-blue-500" />
+              </button>
+              <button
+                onclick={onExtractClicked}
+                class="flex items-center justify-center"
+                title="Extract volume"
+              >
+                <DownloadSolid class="z-10 text-gray-400 hover:text-gray-300" />
+              </button>
+              <button
+                onclick={onEditClicked}
+                class="flex items-center justify-center"
+                title="Edit volume"
+              >
+                <EditOutline class="z-10 text-gray-400 hover:text-gray-300" />
+              </button>
+            {/if}
             <button onclick={onDeleteClicked} class="flex items-center justify-center">
               <TrashBinSolid class="poin z-10 text-red-400 hover:text-red-500" />
             </button>
@@ -648,28 +717,40 @@
         placement="bottom-end"
         bind:isOpen={menuOpen}
       >
-        <DropdownItem
-          onclick={onEditClicked}
-          class="flex w-full items-center text-gray-700 dark:text-gray-200"
-        >
-          <EditOutline class="me-2 h-5 w-5 flex-shrink-0" />
-          <span class="flex-1 text-left">Edit</span>
-        </DropdownItem>
-        <DropdownItem
-          onclick={onViewTextClicked}
-          class="flex w-full items-center text-gray-700 dark:text-gray-200"
-        >
-          <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
-          <span class="flex-1 text-left">View text</span>
-        </DropdownItem>
-        <DropdownItem
-          onclick={onExtractClicked}
-          class="flex w-full items-center text-gray-700 dark:text-gray-200"
-        >
-          <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
-          <span class="flex-1 text-left">Extract</span>
-        </DropdownItem>
-        {#if hasAuthenticatedProvider && !isReadOnlyMode}
+        {#if isNotInstalled}
+          {#if downloadFileId}
+            <DropdownItem
+              onclick={onDownloadClicked}
+              class="flex w-full items-center text-gray-700 dark:text-gray-200"
+            >
+              <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
+              <span class="flex-1 text-left">{isDownloading ? 'Downloading…' : 'Download'}</span>
+            </DropdownItem>
+          {/if}
+        {:else}
+          <DropdownItem
+            onclick={onEditClicked}
+            class="flex w-full items-center text-gray-700 dark:text-gray-200"
+          >
+            <EditOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Edit</span>
+          </DropdownItem>
+          <DropdownItem
+            onclick={onViewTextClicked}
+            class="flex w-full items-center text-gray-700 dark:text-gray-200"
+          >
+            <FileLinesOutline class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">View text</span>
+          </DropdownItem>
+          <DropdownItem
+            onclick={onExtractClicked}
+            class="flex w-full items-center text-gray-700 dark:text-gray-200"
+          >
+            <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
+            <span class="flex-1 text-left">Extract</span>
+          </DropdownItem>
+        {/if}
+        {#if !isNotInstalled && hasAuthenticatedProvider && !isReadOnlyMode}
           {#if isCloudLoading}
             <DropdownItem class="flex w-full items-center opacity-50" disabled>
               <span class="me-2 h-5 w-5 flex-shrink-0 animate-spin">⏳</span>
@@ -719,7 +800,7 @@
         href="#/reader/{$routeParams.manga}/{volume_uuid}"
         onclick={(e) => {
           e.preventDefault();
-          if ($routeParams.manga) nav.toReader($routeParams.manga, volume_uuid);
+          onOpenClicked();
         }}
         class="flex flex-col gap-2"
       >
@@ -753,6 +834,13 @@
             <Badge color="yellow" class="w-fit text-xs">
               <ExclamationCircleOutline class="me-1 inline h-3 w-3" />
               Missing {missingPages} page{missingPages > 1 ? 's' : ''}
+            </Badge>
+          {/if}
+          {#if isNotInstalled}
+            <Badge color="gray" class="w-fit text-xs">
+              {isDownloading
+                ? `Downloading ${Math.round(downloadProgress)}%`
+                : 'Not on this device'}
             </Badge>
           {/if}
         </div>

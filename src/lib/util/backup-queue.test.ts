@@ -51,7 +51,14 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
 
-import { finishBackupRun, noteSeriesNeedingIndexWrite } from './backup-queue';
+import type { VolumeMetadata } from '$lib/types';
+import {
+  backupQueue,
+  finishBackupRun,
+  noteSeriesNeedingIndexWrite,
+  queueVolumeForBackup,
+  queueVolumeForExport
+} from './backup-queue';
 
 describe('finishBackupRun', () => {
   beforeEach(() => {
@@ -92,5 +99,52 @@ describe('finishBackupRun', () => {
 
     expect(refreshSeriesIndexesInBackground).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+describe('queueing a volume that is not installed', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'uuid-1',
+      series_uuid: 'series-1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 1',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // A real provider, so the only thing that can reject the volume is its state.
+  const provider = { type: 'webdav', uploadConcurrencyLimit: 2 } as never;
+
+  it('does not back up a metadata-only volume — there are no pages to upload', () => {
+    queueVolumeForBackup(volume({ metadata_only: true }), provider);
+
+    expect(backupQueue.isVolumeInBackupQueue('uuid-1')).toBe(false);
+  });
+
+  it('does not back up a cloud placeholder either', () => {
+    queueVolumeForBackup(volume({ isPlaceholder: true }), provider);
+
+    expect(backupQueue.isVolumeInBackupQueue('uuid-1')).toBe(false);
+  });
+
+  it('does back up an installed volume (the guard is about state, not the provider)', () => {
+    queueVolumeForBackup(volume({ volume_uuid: 'installed-uuid' }), provider);
+
+    expect(backupQueue.isVolumeInBackupQueue('installed-uuid')).toBe(true);
+  });
+
+  it('does not export a metadata-only volume', () => {
+    queueVolumeForExport(volume({ metadata_only: true }), 'One Piece - Volume 1.cbz');
+
+    expect(backupQueue.isVolumeInBackupQueue('uuid-1')).toBe(false);
   });
 });

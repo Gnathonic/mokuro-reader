@@ -34,6 +34,7 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -216,6 +217,10 @@
   // Separate real volumes from placeholders
   let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
+  // Rows kept for their history whose pages are gone. They stay in `manga` —
+  // they are real volumes with real stats — but they are downloadable, not
+  // readable, and nothing may try to read their files.
+  let notInstalled = $derived(manga.filter(needsDownload));
 
   // Raw folder title (identity) and its human-facing overlay. The overlay is
   // presentation only: rename/cloud/delete flows below keep using seriesTitle.
@@ -518,7 +523,9 @@
     }
 
     const volumesToBackup = manga.filter(
-      (vol) => !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
+      // Metadata-only rows have no pages to upload.
+      (vol) =>
+        isVolumeInstalled(vol) && !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
     );
 
     if (volumesToBackup.length === 0) {
@@ -533,7 +540,10 @@
   }
 
   async function downloadAllPlaceholders() {
-    if (!placeholders || placeholders.length === 0) return;
+    // Both flavours of not-installed volume: cloud-only placeholders and rows
+    // whose files were removed from this device.
+    const toDownload = [...notInstalled, ...placeholders];
+    if (toDownload.length === 0) return;
 
     // Check if any cloud provider is authenticated
     if (!hasAnyProvider) {
@@ -542,11 +552,10 @@
     }
 
     try {
-      // Use the download queue to handle placeholders
       const { queueSeriesVolumes } = await import('$lib/util/download-queue');
-      queueSeriesVolumes(placeholders);
+      queueSeriesVolumes(toDownload);
     } catch (error) {
-      console.error('Failed to download placeholders:', error);
+      console.error('Failed to download volumes:', error);
     }
   }
 
@@ -804,10 +813,10 @@
           {/each}
         {/key}
 
-        {#if placeholders && placeholders.length > 0}
+        {#if placeholders.length > 0 || notInstalled.length > 0}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length})
+              Available in {providerDisplayName} ({placeholders.length + notInstalled.length})
             </h4>
             {#if hasAnyProvider}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
@@ -832,10 +841,10 @@
           {/key}
         </div>
 
-        {#if placeholders && placeholders.length > 0 && hasAnyProvider}
+        {#if (placeholders.length > 0 || notInstalled.length > 0) && hasAnyProvider}
           <div class="flex items-center justify-between px-2 pt-4">
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length})
+              Available in {providerDisplayName} ({placeholders.length + notInstalled.length})
             </h4>
             <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
               <DownloadSolid class="me-1 h-3 w-3" />

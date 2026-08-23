@@ -11,6 +11,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 export interface SidecarOptions {
   includeSidecars: boolean;
@@ -93,6 +94,13 @@ export function queueVolumeForBackup(
   providerInstance?: SyncProvider,
   sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
 ): void {
+  // Nothing to upload for a volume whose pages are not on this device (a
+  // metadata-only row, or a cloud placeholder that never was).
+  if (!isVolumeInstalled(volume)) {
+    console.warn('Skipping backup of a volume that is not installed:', volume.volume_title);
+    return;
+  }
+
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
   if (!targetProvider) {
@@ -139,6 +147,12 @@ export function queueVolumeForExport(
   extension: 'zip' | 'cbz' = 'cbz',
   sidecarOptions: SidecarOptions = { includeSidecars: false, embedSidecarsInArchive: false }
 ): void {
+  // Same rule as the backup queue: there are no pages to write out.
+  if (!isVolumeInstalled(volume)) {
+    console.warn('Skipping export of a volume that is not installed:', volume.volume_title);
+    return;
+  }
+
   const queue = get(queueStore);
 
   // Check for duplicates by volumeUuid

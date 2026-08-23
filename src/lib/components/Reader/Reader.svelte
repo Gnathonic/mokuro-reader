@@ -62,6 +62,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
@@ -1345,6 +1346,20 @@
   <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else if volume && needsDownload(volume)}
+  <!-- The row is real (its history is why it is kept) but its pages are not on
+       this device. Reachable by opening an old link or a bookmark; the catalog
+       offers a download instead of opening it. -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">This volume is not on this device</p>
+    <p class="text-sm text-gray-500">Download it again from the series page to read it.</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {:else}
   <!-- Volume not found or no data -->

@@ -5,6 +5,7 @@ import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { ProviderType } from '$lib/util/sync/provider-interface';
 
 /**
@@ -181,8 +182,11 @@ export function enqueueCloudOcrUpgrade(
   volume: VolumeMetadata,
   sidecar: CloudVolumeWithProvider
 ): void {
-  if (volume.isPlaceholder) {
-    console.log('[Cloud OCR Upgrade] Skip enqueue for placeholder volume:', volume.volume_uuid);
+  // Nothing to upgrade unless the pages are actually here: writing OCR onto a
+  // placeholder is meaningless, and writing it onto a metadata-only row would
+  // leave OCR without images and a row that still claims to be metadata only.
+  if (!isVolumeInstalled(volume)) {
+    console.log('[Cloud OCR Upgrade] Skip enqueue, volume not installed:', volume.volume_uuid);
     return;
   }
   const currentMokuroVersion =

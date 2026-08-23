@@ -38,7 +38,15 @@ vi.mock('$lib/util/compress-volume', () => ({
 
 const localVolumes = vi.fn(async (): Promise<unknown[]> => []);
 vi.mock('$lib/catalog/db', () => ({
-  db: { volumes: { toArray: () => localVolumes() } }
+  db: {
+    volumes: {
+      toArray: () => localVolumes(),
+      // The rename path reads the row to tell a metadata-only volume (no OCR
+      // here to rebuild its sidecar from) apart from a DB inconsistency.
+      get: async (uuid: string) =>
+        ((await localVolumes()) as { volume_uuid?: string }[]).find((v) => v.volume_uuid === uuid)
+    }
+  }
 }));
 
 const getSeriesMetadataForTitle = vi.fn(async (_title: string): Promise<unknown> => undefined);
@@ -254,6 +262,42 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.uploadFile).not.toHaveBeenCalled();
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses to rename a metadata-only volume that has a .mokuro in the cloud', async () => {
+    // Its OCR is not on this device, so the sidecar cannot be rebuilt with the
+    // new names — and moving the stale one would revert the rename on the next
+    // download. Same gate, a message that says what to do about it.
+    const cache = { removeById: vi.fn(), add: vi.fn() };
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles(); // includes a .mokuro
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        metadata_only: true
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toMatchObject({
+      code: 'SIDECAR_REGEN_FAILED',
+      message: expect.stringContaining('not on this device')
+    });
+    // The OCR is not here, so nothing even tried to read it.
+    expect(generateSidecars).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+
+    // `clearAllMocks` keeps implementations: put the shared table back.
+    localVolumes.mockResolvedValue([]);
   });
 
   it('aborts BEFORE the destructive delete when a move fails — even a 404', async () => {

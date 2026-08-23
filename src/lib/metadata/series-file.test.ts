@@ -368,6 +368,18 @@ describe('buildSeriesFile', () => {
     expect(file.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1']);
   });
 
+  it('keeps a metadata-only volume in the index — it is real, just not downloaded here', () => {
+    // The row exists with its real uuid and counts (measured when it WAS
+    // installed), which is exactly what the index is for: another device
+    // reading this file should still learn about the volume.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: linkedMeta(),
+      localVolumes: [volume({ volume_uuid: 'vol-2', volume_title: 'Vol 2', metadata_only: true })]
+    })!;
+    expect(file.volumes.map((v) => v.volume_uuid)).toEqual(['vol-2']);
+  });
+
   it('prunes entries the cloud no longer lists unless they are installed locally', () => {
     const existing: SeriesFile = {
       version: 2,

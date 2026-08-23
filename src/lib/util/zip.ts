@@ -7,6 +7,8 @@ import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
 import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
 import { SERIES_FILE_NAME, stringifySeriesFile } from '$lib/metadata/series-file';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { showSnackbar } from './snackbar';
 
 export interface ExportSidecarOptions {
   includeSidecars: boolean;
@@ -24,6 +26,16 @@ export async function zipManga(
   }
 ) {
   const extension = asCbz ? 'cbz' : 'zip';
+
+  // Metadata-only volumes have no pages to write. Dropped here rather than
+  // failing per volume deep inside the writer, so exporting a part-installed
+  // series still produces the archives it can.
+  const skipped = manga.length;
+  manga = manga.filter(isVolumeInstalled);
+  if (manga.length === 0) {
+    if (skipped > 0) showSnackbar('Download those volumes to this device before exporting them');
+    return false;
+  }
 
   if (individualVolumes) {
     // Queue each volume for export (non-blocking with progress tracking)
