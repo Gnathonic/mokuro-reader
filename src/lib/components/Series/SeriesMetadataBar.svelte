@@ -52,7 +52,8 @@
   let localVolumes = $derived(volumes.filter((v) => !v.isPlaceholder));
   // Resolved from every title on the page (placeholders included) and handed to
   // the pass-state helper, which would otherwise re-detect from the local subset.
-  let resolvedUnit = $derived(resolveTrackingUnit(meta, volumes).unit);
+  let unitState = $derived(resolveTrackingUnit(meta, volumes));
+  let resolvedUnit = $derived(unitState.unit);
   // The read count and the push bookkeeping are per-user state, so they come
   // from the reading-state store, not the (shared) series record.
   let state = $derived(readingStateFor($seriesReadingState, normalizeSeriesKey(seriesTitle)));
@@ -69,11 +70,18 @@
     if (!trackingLinked) return '';
     if (!pushOn) return 'Tracking off';
     if (!lastPushed) return 'Tracking on';
-    const unitLabel = resolvedUnit === 'chapters' ? 'ch.' : 'vol.';
+    // The figure is whatever the push sent, in the unit the push resolved — with
+    // AniList's totals, which this bar does not have. Unless a stated fact or a
+    // title marker settles the unit, the number is shown bare rather than
+    // labelled with a coin flip; the tooltip says why.
+    const unitLabel = unitState.confident ? (resolvedUnit === 'chapters' ? 'ch. ' : 'vol. ') : '';
     const date = new Date(lastPushed.at);
     const dateLabel = Number.isNaN(date.getTime()) ? lastPushed.at : date.toLocaleDateString();
-    return `Tracking on · last pushed ${unitLabel} ${lastPushed.n} · ${dateLabel}`;
+    return `Tracking on · last pushed ${unitLabel}${lastPushed.n} · ${dateLabel}`;
   });
+  let trackingHint = $derived(
+    lastPushed && !unitState.confident ? 'Determined at push time from AniList totals' : undefined
+  );
 </script>
 
 <div class="flex flex-col gap-2 px-2 text-sm">
@@ -100,7 +108,9 @@
     {/key}
     {#if trackingStatus}
       {#key trackingStatus}
-        <span class="text-xs text-gray-500 dark:text-gray-400">{trackingStatus}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400" title={trackingHint}
+          >{trackingStatus}</span
+        >
       {/key}
     {/if}
   </div>

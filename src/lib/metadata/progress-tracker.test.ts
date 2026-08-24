@@ -644,6 +644,106 @@ describe('completion fires are idempotent', () => {
     expect(trackedState().tracking?.last_pushed).toBeUndefined();
   });
 
+  it('pushes COMPLETED from a completion fire once the fetched totals say the pass is done', async () => {
+    const five = ['01', '02', '03', '04', '05'].map((n, i) => vol(`v${i}`, `Vol ${n}`));
+    h.dbVolumes.splice(0, h.dbVolumes.length, ...five);
+    h.volumesStore.set(Object.fromEntries(five.map((v) => [v.volume_uuid, { completed: true }])));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { volumes: 5, chapters: null, mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onVolumeCompleted('v4');
+    await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toMatchObject({
+      status: 'COMPLETED',
+      progressVolumes: 5
+    });
+  });
+
+  it('upgrades an already-pushed pass to COMPLETED when the totals arrive later', async () => {
+    // The last push went out before AniList carried a volume count, so it said
+    // CURRENT at 5 of an unknown total. The totals ride the next fetch — the
+    // replay must be made against them, not against the totals-blind state
+    // (which can never be `passComplete` and so would call this settled).
+    const five = ['01', '02', '03', '04', '05'].map((n, i) => vol(`v${i}`, `Vol ${n}`));
+    h.dbVolumes.splice(0, h.dbVolumes.length, ...five);
+    h.volumesStore.set(Object.fromEntries(five.map((v) => [v.volume_uuid, { completed: true }])));
+    updateSeriesReadingState('one piece', {
+      tracking: { last_pushed: { n: 5, status: 'CURRENT', at: '2026-08-01T00:00:00.000Z' } }
+    });
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          volumes: 5,
+          chapters: null,
+          mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 0 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onVolumeCompleted('v4');
+    await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'COMPLETED'
+    });
+  });
+
+  it('replays last_pushed in the unit the fetched totals resolved, not the totals-blind one', async () => {
+    // Bare-numbered chapter archives. Without AniList's totals the detector calls
+    // them volumes and reads their numbers off sort position (1), while
+    // `last_pushed.n` was recorded in chapters (1000) by an earlier push: a
+    // replay across those two scales says "nothing could have changed" and
+    // swallows every later completion until someone hits Sync by hand.
+    h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'One Piece 1050'));
+    h.volumesStore.set({ a: { completed: true } });
+    updateSeriesReadingState('one piece', {
+      tracking: { last_pushed: { n: 1000, status: 'CURRENT', at: '2026-08-01T00:00:00.000Z' } }
+    });
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({
+        Media: {
+          volumes: 108,
+          chapters: 1100,
+          mediaListEntry: { status: 'CURRENT', progress: 1000, progressVolumes: 0, repeat: 0 }
+        }
+      })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    onVolumeCompleted('a');
+    await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
+      mediaId: 30013,
+      status: 'CURRENT',
+      progress: 1050
+    });
+  });
+
+  it('still settles without a write when the replay agrees in the resolved unit', async () => {
+    // Same shape as above, but the chapter already pushed IS the newest one: the
+    // fetch happens (the replay needs the totals), and nothing is written.
+    h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'One Piece 1050'));
+    h.volumesStore.set({ a: { completed: true } });
+    updateSeriesReadingState('one piece', {
+      tracking: { last_pushed: { n: 1050, status: 'CURRENT', at: '2026-08-01T00:00:00.000Z' } }
+    });
+    vi.mocked(anilistRequest).mockResolvedValue({
+      Media: {
+        volumes: 108,
+        chapters: 1100,
+        mediaListEntry: { status: 'CURRENT', progress: 1050, progressVolumes: 0, repeat: 0 }
+      }
+    });
+
+    onVolumeCompleted('a');
+    await vi.waitFor(() => expect(anilistRequest).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(anilistRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('pushes again once local progress actually moves', async () => {
     h.volumesStore.set({ a: { completed: true } });
     vi.mocked(anilistRequest)

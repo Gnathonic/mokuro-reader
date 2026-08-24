@@ -100,10 +100,24 @@ function isYearLike(n: number): boolean {
   return n >= 1900 && n <= 2100;
 }
 
-export function detectTrackingUnit(
+/**
+ * A detection result, and how much it is worth.
+ *
+ * `markerDecided` is true only for step 1 — some title named its unit outright,
+ * so the answer stands on the archives' own evidence. Steps 2 and 3 (the
+ * bare-number overshoot rule, and the plain default) set it false: they are a
+ * guess until AniList's totals are in hand, and only the push ever has those.
+ * The UI reads this to decide whether it may name the unit at all.
+ */
+export interface UnitDetection {
+  unit: TrackingUnit;
+  markerDecided: boolean;
+}
+
+export function detectTrackingUnitDetailed(
   volumeTitles: string[],
   totals?: { total_volumes?: number; total_chapters?: number }
-): TrackingUnit {
+): UnitDetection {
   let chapterVotes = 0;
   let volumeVotes = 0;
   let largestBare = 0;
@@ -124,15 +138,23 @@ export function detectTrackingUnit(
     largestBare = Math.max(largestBare, n);
   }
 
-  if (chapterVotes > volumeVotes) return 'chapters';
-  if (volumeVotes > chapterVotes) return 'volumes';
+  if (chapterVotes > volumeVotes) return { unit: 'chapters', markerDecided: true };
+  if (volumeVotes > chapterVotes) return { unit: 'volumes', markerDecided: true };
 
   const { total_volumes: totalVolumes, total_chapters: totalChapters } = totals ?? {};
   const overshootsVolumes =
     typeof totalVolumes === 'number' && totalVolumes > 0 && largestBare > totalVolumes;
   const fitsChapters =
     typeof totalChapters !== 'number' || totalChapters <= 0 || largestBare <= totalChapters;
-  if (overshootsVolumes && fitsChapters) return 'chapters';
+  if (overshootsVolumes && fitsChapters) return { unit: 'chapters', markerDecided: false };
 
-  return 'volumes';
+  return { unit: 'volumes', markerDecided: false };
+}
+
+/** `detectTrackingUnitDetailed`'s answer on its own, for callers that only push. */
+export function detectTrackingUnit(
+  volumeTitles: string[],
+  totals?: { total_volumes?: number; total_chapters?: number }
+): TrackingUnit {
+  return detectTrackingUnitDetailed(volumeTitles, totals).unit;
 }

@@ -338,8 +338,24 @@ function passSignature(local: LocalPassState): string {
 }
 
 /**
- * True when this exact completion state cannot change anything on AniList, so
- * the remote read can be skipped entirely.
+ * The cheap half of the completion gate: this exact pass state was already acted
+ * on moments ago, so there is nothing to do and no request to spend.
+ *
+ * Both sides of the comparison are always taken BEFORE the fetch, from the
+ * totals-blind state, so they are on the same scale — see `runPush`.
+ */
+function recentlyHandled(seriesKey: string, local: LocalPassState): boolean {
+  const recent = recentCompletions.get(seriesKey);
+  return (
+    !!recent &&
+    recent.signature === passSignature(local) &&
+    Date.now() - recent.at < COMPLETION_DEBOUNCE_MS
+  );
+}
+
+/**
+ * True when the state we last pushed already covers this pass, so a completion
+ * fire has nothing to add.
  *
  * `last_pushed` is only written after a push that succeeded, and the plan it
  * carried always included the repeat count desired at that moment — and
@@ -349,21 +365,21 @@ function passSignature(local: LocalPassState): string {
  * state we last pushed, with repeat assumed caught up, is a faithful
  * "nothing could have changed" test. A remote edited by hand on anilist.co is
  * deliberately not detected here: that is what "Sync now" (`sync`) is for.
+ *
+ * It runs AFTER the fetch, deliberately, and that costs one GET per completion
+ * that turns out to be settled. `last_pushed.n` was recorded in the unit the
+ * push resolved WITH AniList's totals; replaying it against a pass measured
+ * without them compares two scales — a bare-numbered chapter folder records
+ * chapter 1050 and then re-reads as volume 1 (sort position), so every later
+ * completion looks settled until someone syncs by hand. Running it here also
+ * keeps the COMPLETED upgrade reachable from a completion fire: `passComplete`
+ * only exists once the totals are in hand.
  */
-function alreadySettled(
-  seriesKey: string,
+function settledByLastPush(
   local: LocalPassState,
   state: SeriesReadingState,
   unit: TrackingUnit
 ): boolean {
-  const recent = recentCompletions.get(seriesKey);
-  if (
-    recent &&
-    recent.signature === passSignature(local) &&
-    Date.now() - recent.at < COMPLETION_DEBOUNCE_MS
-  ) {
-    return true;
-  }
   const lastPushed = state.tracking?.last_pushed;
   if (!lastPushed) return false;
   const assumedRemote: RemoteEntry = {
@@ -428,14 +444,16 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
   // Volumes or chapters is a property of the archives, either stated on the
   // record (someone corrected it) or read off their titles.
   const { unit: detectedUnit, titles } = await resolveUnitForPush(seriesKey, meta, seriesVolumes);
-  // Without totals a pass is never "complete" — deliberately conservative: this
-  // pre-fetch state only feeds the completion debounce, where a false "nothing
-  // could have changed" would SKIP a real push and a false "something changed"
-  // costs one read.
+  // Without totals a pass is never "complete", so this state is only ever fed to
+  // the session debounce below, which compares it against another state measured
+  // exactly the same way. Everything that plans a write waits for the totals.
   const localBeforeFetch = computeLocalPassState(seriesVolumes, get(volumes), state, detectedUnit);
 
   if (event === 'completion') {
-    if (alreadySettled(seriesKey, localBeforeFetch, state, detectedUnit)) return 'nothing';
+    // The free half of the gate. The `last_pushed` replay is the other half and
+    // needs the totals, so it waits until after the fetch — one GET is the price
+    // of never swallowing a real push (see `settledByLastPush`).
+    if (recentlyHandled(seriesKey, localBeforeFetch)) return 'nothing';
     recentCompletions.set(seriesKey, {
       signature: passSignature(localBeforeFetch),
       at: Date.now()
@@ -453,6 +471,9 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     // tie-break usable, and what decides whether this pass is COMPLETED.
     const unit = titles.length > 0 ? resolveTrackingUnit(meta, titles, totals).unit : detectedUnit;
     const local = computeLocalPassState(seriesVolumes, get(volumes), state, unit, totals);
+    // Both sides of this replay are now on the same scale: the unit and the pass
+    // were resolved with the totals `last_pushed.n` was recorded under.
+    if (event === 'completion' && settledByLastPush(local, state, unit)) return 'nothing';
     const plan = planProgressPush(local, remote, unit, event);
     if (!plan) {
       clearPending(seriesKey);

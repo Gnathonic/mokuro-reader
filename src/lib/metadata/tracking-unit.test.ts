@@ -13,22 +13,26 @@ describe('resolveTrackingUnit', () => {
   it('uses the stored fact when someone has corrected it', () => {
     expect(resolveTrackingUnit(meta({ unit: 'chapters' }), [vol('Vol 01')])).toEqual({
       unit: 'chapters',
-      source: 'set'
+      source: 'set',
+      confident: true
     });
     expect(resolveTrackingUnit(meta({ unit: 'volumes' }), [vol('Chapter 1')])).toEqual({
       unit: 'volumes',
-      source: 'set'
+      source: 'set',
+      confident: true
     });
   });
 
   it('detects from the volume titles when the fact is unset', () => {
     expect(resolveTrackingUnit(meta(), [vol('Chapter 1'), vol('Chapter 2')])).toEqual({
       unit: 'chapters',
-      source: 'detected'
+      source: 'detected',
+      confident: true
     });
     expect(resolveTrackingUnit(meta(), [vol('Vol 01'), vol('Vol 02')])).toEqual({
       unit: 'volumes',
-      source: 'detected'
+      source: 'detected',
+      confident: true
     });
   });
 
@@ -47,24 +51,49 @@ describe('resolveTrackingUnit', () => {
     const titles = [vol('One Piece 1050'), vol('One Piece 1051')];
     expect(resolveTrackingUnit(meta(), titles, { volumes: 108, chapters: 1100 })).toEqual({
       unit: 'chapters',
-      source: 'detected'
+      source: 'detected',
+      // The totals decided it, not the titles: the answer is only as good as
+      // the totals, which nobody outside the push has.
+      confident: false
     });
-    expect(resolveTrackingUnit(meta(), titles)).toEqual({ unit: 'volumes', source: 'detected' });
+    expect(resolveTrackingUnit(meta(), titles)).toEqual({
+      unit: 'volumes',
+      source: 'detected',
+      confident: false
+    });
   });
 
   it('detects with no record at all', () => {
     expect(resolveTrackingUnit(undefined, [vol('第12話')])).toEqual({
       unit: 'chapters',
-      source: 'detected'
+      source: 'detected',
+      confident: true
     });
-    expect(resolveTrackingUnit(undefined, [])).toEqual({ unit: 'volumes', source: 'detected' });
+    expect(resolveTrackingUnit(undefined, [])).toEqual({
+      unit: 'volumes',
+      source: 'detected',
+      confident: false
+    });
+  });
+
+  it('is confident only when a fact or a title marker decided it', () => {
+    // A stored fact is somebody's deliberate answer; a title that names its unit
+    // stands on its own. A bare number needs the totals, so the UI (which has
+    // none) must not present that guess as an answer.
+    expect(resolveTrackingUnit(meta({ unit: 'volumes' }), [vol('One Piece 1050')]).confident).toBe(
+      true
+    );
+    expect(resolveTrackingUnit(meta(), [vol('Vol 01')]).confident).toBe(true);
+    expect(resolveTrackingUnit(meta(), [vol('One Piece 1050')]).confident).toBe(false);
+    expect(resolveTrackingUnit(meta(), []).confident).toBe(false);
   });
 
   it('ignores a junk stored unit and detects instead', () => {
     const junk = meta({ unit: 'tankobon' as never });
     expect(resolveTrackingUnit(junk, [vol('Chapter 1')])).toEqual({
       unit: 'chapters',
-      source: 'detected'
+      source: 'detected',
+      confident: true
     });
   });
 });

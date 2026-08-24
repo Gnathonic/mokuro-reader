@@ -212,10 +212,28 @@ describe('SeriesMetadataBar', () => {
     seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
     setReadingState({ tracking: { last_pushed: { n: 5, status: 'CURRENT', at } } });
     const { getByText } = render(SeriesMetadataBar, {
-      props: { seriesTitle: 'One Piece', volumes: [] }
+      props: { seriesTitle: 'One Piece', volumes: [volume('Vol 04'), volume('Vol 05')] }
     });
     const expectedDate = new Date(at).toLocaleDateString();
     expect(getByText(`Tracking on · last pushed vol. 5 · ${expectedDate}`)).toBeTruthy();
+  });
+
+  it('names no unit for the pushed figure when only the totals could decide one', () => {
+    const at = '2026-07-09T12:00:00.000Z';
+    // Bare-numbered archives: the push resolved the unit against AniList's
+    // totals, which this bar never sees. `vol. 1050` would be a coin flip, so the
+    // figure stands on its own with the reason in a tooltip.
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+    setReadingState({ tracking: { last_pushed: { n: 1050, status: 'CURRENT', at } } });
+    const { getByText } = render(SeriesMetadataBar, {
+      props: {
+        seriesTitle: 'One Piece',
+        volumes: [volume('One Piece 1049'), volume('One Piece 1050')]
+      }
+    });
+    const line = getByText(/last pushed 1050/);
+    expect(line.textContent).not.toMatch(/vol\.|ch\./);
+    expect(line.title).toBe('Determined at push time from AniList totals');
   });
 
   it('uses the chapters label when the archives are chapters', () => {

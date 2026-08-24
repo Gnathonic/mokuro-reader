@@ -57,13 +57,21 @@
   let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, state, resolvedUnit));
   // What detection says on its own, so the "Auto" option can name it even while
   // an override is in force.
-  let detectedUnit = $derived(
+  let detection = $derived(
     unitState.source === 'detected'
-      ? unitState.unit
-      : resolveTrackingUnit(meta ? { ...meta, unit: undefined } : undefined, volumes).unit
+      ? unitState
+      : resolveTrackingUnit(meta ? { ...meta, unit: undefined } : undefined, volumes)
+  );
+  // Only a title that names its unit outright earns the parenthetical. Anything
+  // else rests on AniList's totals, which this page never has and the push
+  // fetches for itself — promising "Auto (volumes)" over a push that writes
+  // chapters is worse than naming nothing.
+  let autoLabel = $derived(detection.confident ? `Auto (${detection.unit})` : 'Auto');
+  let unitHint = $derived(
+    detection.confident ? undefined : 'Determined at push time from AniList totals'
   );
   let unitOptions = $derived([
-    { value: '', name: `Auto (${detectedUnit})` },
+    { value: '', name: autoLabel },
     { value: 'volumes', name: 'Volumes' },
     { value: 'chapters', name: 'Chapters' }
   ]);
@@ -227,6 +235,7 @@
           placeholder=""
           value={unitState.source === 'set' ? resolvedUnit : ''}
           aria-label="Tracking unit"
+          title={unitHint}
           onchange={(e) => setUnit(e.currentTarget.value)}
         />
         <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->

@@ -386,6 +386,21 @@ describe('SeriesTrackingPanel', () => {
       ]);
       const select = getByLabelText('Tracking unit') as HTMLSelectElement;
       expect([...select.options][0].textContent?.trim()).toBe('Auto (chapters)');
+      // A title named the unit outright, so there is nothing left to explain.
+      expect(select.title).toBe('');
+    });
+
+    it('names no unit in the Auto option when only the totals could decide one', () => {
+      // Bare-numbered archives: which unit these are is settled at push time
+      // against AniList's totals, which this page does not have. Naming one here
+      // would put "Auto (volumes)" over a push that writes chapters.
+      const { getByLabelText } = renderPanel([
+        volume('a', 'One Piece 1050'),
+        volume('b', 'One Piece 1051')
+      ]);
+      const select = getByLabelText('Tracking unit') as HTMLSelectElement;
+      expect([...select.options][0].textContent?.trim()).toBe('Auto');
+      expect(select.title).toBe('Determined at push time from AniList totals');
     });
 
     it('writes a correction as a top-level fact, not into the tracking block', async () => {

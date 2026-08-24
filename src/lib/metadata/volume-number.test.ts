@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { detectTrackingUnit, extractVolumeNumber } from './volume-number';
+import {
+  detectTrackingUnit,
+  detectTrackingUnitDetailed,
+  extractVolumeNumber
+} from './volume-number';
 
 describe('extractVolumeNumber — volumes', () => {
   it.each([
@@ -163,5 +167,38 @@ describe('detectTrackingUnit', () => {
     expect(detectTrackingUnit(['Extras', 'Omake'])).toBe('volumes');
     expect(detectTrackingUnit(['Series 300'])).toBe('volumes');
     expect(detectTrackingUnit(['', '   '])).toBe('volumes');
+  });
+});
+
+describe('detectTrackingUnitDetailed', () => {
+  it('reports a marker-decided answer, whichever unit won', () => {
+    expect(detectTrackingUnitDetailed(['Vol 01', 'Vol 02'])).toEqual({
+      unit: 'volumes',
+      markerDecided: true
+    });
+    expect(detectTrackingUnitDetailed(['Chapter 1', '第2話'])).toEqual({
+      unit: 'chapters',
+      markerDecided: true
+    });
+    // A majority is still the markers deciding.
+    expect(detectTrackingUnitDetailed(['Chapter 1', 'Chapter 2', 'Vol 01']).markerDecided).toBe(
+      true
+    );
+  });
+
+  it('reports the bare-number, overshoot and default paths as undecided', () => {
+    // These are the answers that need AniList's totals to be worth anything —
+    // and nothing outside the push has them.
+    expect(detectTrackingUnitDetailed(['One Piece 1050'])).toEqual({
+      unit: 'volumes',
+      markerDecided: false
+    });
+    expect(
+      detectTrackingUnitDetailed(['One Piece 1050'], { total_volumes: 108, total_chapters: 1100 })
+    ).toEqual({ unit: 'chapters', markerDecided: false });
+    expect(detectTrackingUnitDetailed([])).toEqual({ unit: 'volumes', markerDecided: false });
+    expect(detectTrackingUnitDetailed(['Extras', 'Omake']).markerDecided).toBe(false);
+    // A tie is not a decision either.
+    expect(detectTrackingUnitDetailed(['Chapter 1', 'Vol 01']).markerDecided).toBe(false);
   });
 });
