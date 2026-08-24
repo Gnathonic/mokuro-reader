@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import {
-  detectTrackingUnit,
-  detectTrackingUnitDetailed,
-  extractVolumeNumber
-} from './volume-number';
+import { detectTrackingUnitDetailed, extractVolumeNumber } from './volume-number';
+
+/** The unit on its own — most of these cases are not about the confidence flag. */
+const detectTrackingUnit = (
+  titles: string[],
+  totals?: { total_volumes?: number; total_chapters?: number }
+) => detectTrackingUnitDetailed(titles, totals).unit;
 
 describe('extractVolumeNumber — volumes', () => {
   it.each([
@@ -87,7 +89,7 @@ describe('extractVolumeNumber — chapters', () => {
   });
 });
 
-describe('detectTrackingUnit', () => {
+describe('detectTrackingUnitDetailed — the unit it picks', () => {
   it('reads chapter-marked titles as chapters', () => {
     expect(detectTrackingUnit(['Chapter 1', 'Chapter 2', 'Chapter 3'])).toBe('chapters');
     expect(detectTrackingUnit(['第1話', '第2話'])).toBe('chapters');
@@ -170,7 +172,7 @@ describe('detectTrackingUnit', () => {
   });
 });
 
-describe('detectTrackingUnitDetailed', () => {
+describe('detectTrackingUnitDetailed — how much the answer is worth', () => {
   it('reports a marker-decided answer, whichever unit won', () => {
     expect(detectTrackingUnitDetailed(['Vol 01', 'Vol 02'])).toEqual({
       unit: 'volumes',

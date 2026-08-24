@@ -2,7 +2,7 @@ import type { TrackingUnit } from './types';
 
 // Titles that name a volume outright. Unambiguous, so a match here always wins
 // over the chapter veto below — "Vol 3 (Ch 21-30)" is volume 3, chapters 21-30 —
-// and it is these, not `#N`, that vote on the unit in `detectTrackingUnit`.
+// and it is these, not `#N`, that vote on the unit in `detectTrackingUnitDetailed`.
 const VOLUME_MARKERS: RegExp[] = [
   /第\s*(\d+)\s*巻/, // 第01巻
   /(?:^|[\s_\-–—([])(\d+)\s*巻/, // 3巻
@@ -75,23 +75,6 @@ export function extractVolumeNumber(volumeTitle: string, unit: TrackingUnit): nu
 }
 
 /**
- * Guess whether a series folder holds volumes or chapters, from the titles of
- * its archives.
- *
- * This is a statement about the files, not a user preference, so it is worth
- * getting right without asking: pushing chapter 1050 as volume 1050 (or the
- * reverse) is what a wrong answer costs on AniList.
- *
- * 1. Titles that name their unit outright vote: `Chapter 12` / `第12話` against
- *    `Vol 3` / `第3巻`. The majority wins. A title carrying both ("Vol 3 (Ch
- *    21-30)") votes volume, matching `extractVolumeNumber`'s own precedence.
- * 2. With no votes (or a tie), bare numbers decide against the known totals: a
- *    folder numbered past the series' volume count, but still inside its chapter
- *    count, is chapters.
- * 3. Otherwise volumes — the common case and the safer default (AniList's
- *    `progressVolumes` is the field a manga reader expects to move).
- */
-/**
  * A bare number that is far more likely to be the edition's year than its
  * position — "Berserk 2016", "Akira (1988)". Only trusted as a number when the
  * title also names a chapter outright.
@@ -114,6 +97,23 @@ export interface UnitDetection {
   markerDecided: boolean;
 }
 
+/**
+ * Guess whether a series folder holds volumes or chapters, from the titles of
+ * its archives.
+ *
+ * This is a statement about the files, not a user preference, so it is worth
+ * getting right without asking: pushing chapter 1050 as volume 1050 (or the
+ * reverse) is what a wrong answer costs on AniList.
+ *
+ * 1. Titles that name their unit outright vote: `Chapter 12` / `第12話` against
+ *    `Vol 3` / `第3巻`. The majority wins. A title carrying both ("Vol 3 (Ch
+ *    21-30)") votes volume, matching `extractVolumeNumber`'s own precedence.
+ * 2. With no votes (or a tie), bare numbers decide against the known totals: a
+ *    folder numbered past the series' volume count, but still inside its chapter
+ *    count, is chapters.
+ * 3. Otherwise volumes — the common case and the safer default (AniList's
+ *    `progressVolumes` is the field a manga reader expects to move).
+ */
 export function detectTrackingUnitDetailed(
   volumeTitles: string[],
   totals?: { total_volumes?: number; total_chapters?: number }
@@ -149,12 +149,4 @@ export function detectTrackingUnitDetailed(
   if (overshootsVolumes && fitsChapters) return { unit: 'chapters', markerDecided: false };
 
   return { unit: 'volumes', markerDecided: false };
-}
-
-/** `detectTrackingUnitDetailed`'s answer on its own, for callers that only push. */
-export function detectTrackingUnit(
-  volumeTitles: string[],
-  totals?: { total_volumes?: number; total_chapters?: number }
-): TrackingUnit {
-  return detectTrackingUnitDetailed(volumeTitles, totals).unit;
 }

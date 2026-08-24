@@ -67,8 +67,16 @@
   // fetches for itself — promising "Auto (volumes)" over a push that writes
   // chapters is worse than naming nothing.
   let autoLabel = $derived(detection.confident ? `Auto (${detection.unit})` : 'Auto');
+  // Explains whatever is actually in force: a stated fact needs no explaining,
+  // and neither does a marker-decided guess. It is the bare-number path — where
+  // only the totals the push fetches can settle it — that owes the user a word.
   let unitHint = $derived(
-    detection.confident ? undefined : 'Determined at push time from AniList totals'
+    unitState.confident ? undefined : 'Determined at push time from AniList totals'
+  );
+  // Same rule for the figure AniList last received: the number is what was sent,
+  // but labelling it `vol.`/`ch.` on an unconfident unit is a coin flip.
+  let pushedUnitLabel = $derived(
+    unitState.confident ? (resolvedUnit === 'chapters' ? 'ch. ' : 'vol. ') : ''
   );
   let unitOptions = $derived([
     { value: '', name: autoLabel },
@@ -240,12 +248,11 @@
         />
         <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->
         {#if lastPushed}
-          <!-- The unit is part of the key: a correction rewrites this line, and
-               Migaku would otherwise keep showing the old label in place. -->
-          {#key `${lastPushed.at}|${lastPushed.n}|${resolvedUnit}`}
-            <span class="text-xs text-gray-500 dark:text-gray-400">
-              Last pushed {resolvedUnit === 'chapters' ? 'ch.' : 'vol.'}
-              {lastPushed.n} · {formatPushedAt(lastPushed.at)}
+          <!-- The label is part of the key: a correction rewrites this line, and
+               Migaku would otherwise keep showing the old one in place. -->
+          {#key `${lastPushed.at}|${lastPushed.n}|${pushedUnitLabel}`}
+            <span class="text-xs text-gray-500 dark:text-gray-400" title={unitHint}>
+              Last pushed {pushedUnitLabel}{lastPushed.n} · {formatPushedAt(lastPushed.at)}
             </span>
           {/key}
         {/if}

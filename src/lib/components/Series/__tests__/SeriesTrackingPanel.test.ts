@@ -449,6 +449,22 @@ describe('SeriesTrackingPanel', () => {
       expect(getByText(/Last pushed ch\. 2 ·/)).toBeTruthy();
     });
 
+    it('names no unit for the pushed figure when only the totals could decide one', () => {
+      // Same rule as the Select above it: the number is what AniList actually
+      // received, but the unit it was sent in was resolved at push time against
+      // totals this page never sees.
+      setState({
+        tracking: { last_pushed: { n: 1050, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
+      });
+      const { getByText } = renderPanel([
+        volume('a', 'One Piece 1049'),
+        volume('b', 'One Piece 1050')
+      ]);
+      const line = getByText(/Last pushed 1050 ·/);
+      expect(line.textContent).not.toMatch(/vol\.|ch\./);
+      expect(line.title).toBe('Determined at push time from AniList totals');
+    });
+
     it('keeps the last pushed figure visible next to a hint', () => {
       h.anilistUser.set(null);
       h.auth.token = null;
