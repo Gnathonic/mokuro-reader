@@ -574,10 +574,10 @@ describe('series-file-sync', () => {
     expect(metaRows.get('one piece')?.facts_updated_at).toBeUndefined();
   });
 
-  it('does NOT fire for a per-user edit (preferences, reading state)', async () => {
-    // A per-user preference is neither a fact nor an index key (spine_offset,
-    // volume_offsets), so it publishes nothing…
-    await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+  it('does NOT fire for a per-user edit (link bookkeeping, reading state)', async () => {
+    // A write that is neither a fact nor an index key (spine_offset,
+    // volume_offsets) publishes nothing…
+    await updateSeriesMetadata('One Piece', { linked_at: '2026-01-01T00:00:00.000Z' });
     // …and the reading state cannot even reach this record: the type does not
     // admit it, and its own store has no listener into the sidecar writer.
     // @ts-expect-error read_count left SeriesMetadata for the reading-state store

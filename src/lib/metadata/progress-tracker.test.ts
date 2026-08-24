@@ -173,7 +173,7 @@ function resetWorld() {
   h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'Vol 01'), vol('b', 'Vol 02'));
   h.volumesStore.set({ a: { completed: true }, b: { completed: true } });
   h.metaByKey.clear();
-  h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+  h.metaByKey.set('one piece', meta());
   h.seriesIndex.clear();
   vi.mocked(getSeriesIndex).mockClear();
   h.settingsStore.set({ catalogSettings: { pushProgressToAniList: true } });
@@ -238,12 +238,53 @@ describe('computeLocalPassState', () => {
     expect(state).toEqual({
       passProgress: 3,
       allCompleted: true,
-      // Nothing here knows the series total: `passComplete` is decided by the
-      // push, against the totals it fetches with the list entry.
+      // No totals were supplied, and nothing stores them: `passComplete` is
+      // decided by the push, against the totals it fetches with the list entry.
       passComplete: false,
       timesRead: 1,
       rereading: false
     });
+  });
+
+  it('completes the pass against the totals the caller fetched', () => {
+    const state = computeLocalPassState(
+      series,
+      { a: { completed: true }, b: { completed: true }, c: { completed: true } },
+      undefined,
+      'volumes',
+      { volumes: 3, chapters: 900 }
+    );
+    expect(state).toMatchObject({ passProgress: 3, passComplete: true });
+
+    // One short of the total: complete locally, not complete on AniList.
+    expect(
+      computeLocalPassState(
+        series,
+        { a: { completed: true }, b: { completed: true }, c: { completed: true } },
+        undefined,
+        'volumes',
+        { volumes: 4 }
+      ).passComplete
+    ).toBe(false);
+  });
+
+  it('measures a chapters folder against the chapter total, and volumes against the volume total', () => {
+    const chapters = [vol('a', 'Chapter 1'), vol('b', 'Chapter 2')];
+    const completed = { a: { completed: true }, b: { completed: true } };
+    const totals = { volumes: 2, chapters: 900 };
+
+    // Read as chapters: 2 of 900, nowhere near done.
+    expect(
+      computeLocalPassState(chapters, completed, undefined, 'chapters', totals).passComplete
+    ).toBe(false);
+    // Chapter-titled files someone corrected to volumes: 2 of 2 is the whole series.
+    expect(
+      computeLocalPassState(chapters, completed, undefined, 'volumes', totals).passComplete
+    ).toBe(true);
+    // A total for the OTHER unit says nothing about this pass.
+    expect(
+      computeLocalPassState(chapters, completed, undefined, 'volumes', { chapters: 2 }).passComplete
+    ).toBe(false);
   });
   it('re-read in flight after a restart', () => {
     const state = computeLocalPassState(
@@ -315,6 +356,35 @@ describe('syncSeriesNow', () => {
     expect(readPendingPushes()).toEqual({});
   });
 
+  it('asks AniList for the series totals in the same request as the entry', async () => {
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { volumes: 5, chapters: 100, mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    await syncSeriesNow('one piece');
+
+    const query = String(vi.mocked(anilistRequest).mock.calls[0][0]);
+    expect(query).toContain('volumes');
+    expect(query).toContain('chapters');
+  });
+
+  it('marks a pass COMPLETED from the fetched totals, never from a stored count', async () => {
+    // Five volumes locally, all completed; AniList says the series has five.
+    const five = ['01', '02', '03', '04', '05'].map((n, i) => vol(`v${i}`, `Vol ${n}`));
+    h.dbVolumes.splice(0, h.dbVolumes.length, ...five);
+    h.volumesStore.set(Object.fromEntries(five.map((v) => [v.volume_uuid, { completed: true }])));
+    vi.mocked(anilistRequest)
+      .mockResolvedValueOnce({ Media: { volumes: 5, chapters: null, mediaListEntry: null } })
+      .mockResolvedValueOnce({ SaveMediaListEntry: {} });
+
+    await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
+
+    expect(vi.mocked(anilistRequest).mock.calls[1][1]).toMatchObject({
+      status: 'COMPLETED',
+      progressVolumes: 5
+    });
+  });
+
   it('is "nothing" when remote is already ahead', async () => {
     vi.mocked(anilistRequest).mockResolvedValueOnce({
       Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 0 } }
@@ -334,7 +404,7 @@ describe('syncSeriesNow', () => {
 
   it('pushes a linked series that has no tracking block at all', async () => {
     // There is no per-series opt-in any more: linking the series IS the opt-in.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     clearSeriesReadingState(); // never read, never pushed: no tracking block at all
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
@@ -361,12 +431,13 @@ describe('syncSeriesNow', () => {
     });
   });
 
-  it('detects the unit from the cloud index too, not just the installed volumes', async () => {
+  it('re-resolves the unit against the totals it fetched, over the cloud index too', async () => {
     // One chapter installed out of a thousand: detecting from `db.volumes`
-    // alone would call it volumes and push chapter 1 as volume 1.
+    // alone would call it volumes and push chapter 1 as volume 1. The 1050
+    // cloud titles overshoot AniList's 108 volumes and fit inside its 1100
+    // chapters — and those totals only exist because the push fetched them.
     h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'One Piece 0001'));
     h.volumesStore.set({ a: { completed: true } });
-    h.metaByKey.set('one piece', meta({ total_volumes: 108, total_chapters: 1100 }));
     h.seriesIndex.set('one piece', {
       file: {
         volumes: Array.from({ length: 1050 }, (_, i) => ({
@@ -377,7 +448,7 @@ describe('syncSeriesNow', () => {
     });
 
     vi.mocked(anilistRequest)
-      .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
+      .mockResolvedValueOnce({ Media: { volumes: 108, chapters: 1100, mediaListEntry: null } })
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
     await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
     expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
@@ -385,10 +456,13 @@ describe('syncSeriesNow', () => {
       status: 'CURRENT',
       progress: 1
     });
+    // The index was read once, before the request — the re-resolve reuses the
+    // titles it collected rather than reading it again.
+    expect(getSeriesIndex).toHaveBeenCalledTimes(1);
   });
 
   it('skips the index read when the unit is already a stated fact', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, unit: 'volumes' }));
+    h.metaByKey.set('one piece', meta({ unit: 'volumes' }));
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
@@ -403,7 +477,7 @@ describe('syncSeriesNow', () => {
       vol('a', 'One Piece Chapter 1'),
       vol('b', 'One Piece Chapter 2')
     );
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, unit: 'volumes' }));
+    h.metaByKey.set('one piece', meta({ unit: 'volumes' }));
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
@@ -611,7 +685,7 @@ describe('flushPendingPushes', () => {
     );
 
   it('replays a queued restart before the follow-up sync', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     seedPending('restart');
@@ -640,7 +714,7 @@ describe('flushPendingPushes', () => {
   });
 
   it('replays a queued read_count as a read_count, then syncs', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     h.volumesStore.set({});
     seedPending('read_count');
 
@@ -667,7 +741,7 @@ describe('flushPendingPushes', () => {
   it('replays a restart AND the read-count correction queued behind it', async () => {
     // Offline: the user restarts the series and then corrects "Read N times"
     // downwards. Collapsing both into one restart would lose the decrease.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     h.auth.token = null;
@@ -759,7 +833,7 @@ describe('onSeriesRestarted', () => {
   it('pushes a restart for a linked series that never had a tracking block', async () => {
     // The reported bug: re-reads never reached AniList because a per-series
     // toggle nobody had switched on gated every push.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     vi.mocked(anilistRequest)
@@ -783,7 +857,7 @@ describe('onSeriesRestarted', () => {
     // A restart queued while offline is replayed after the next pass already
     // started: the plan sends 0, so last_pushed must say 0 — recording the
     // local pass (1) would make the fast-path swallow the next completion.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({ a: { completed: true } });
     vi.mocked(anilistRequest)
@@ -813,7 +887,7 @@ describe('onReadCountChanged', () => {
   beforeEach(resetWorld);
 
   it('raises the repeat count without touching progress or status', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     updateSeriesReadingState('one piece', { read_count: 2 });
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
@@ -829,7 +903,7 @@ describe('onReadCountChanged', () => {
   });
 
   it('lowers the repeat count and records the progress AniList already holds', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    h.metaByKey.set('one piece', meta());
     h.volumesStore.set({});
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
@@ -998,7 +1072,6 @@ describe('syncAllSeriesNow', () => {
         series_key: 'naruto',
         series_title: 'Naruto',
         external_ids: { anilist: 30011 },
-        total_volumes: 72,
         ...over
       })
     );

@@ -44,6 +44,12 @@ export interface SeriesTracking {
  * is deliberately not here at all: it is per-user, and it lives in the
  * reading-state store (`$lib/settings/series-data`), which syncs through the
  * `series` section of `volume-data.json`.
+ *
+ * AniList's DISPLAY data (format, status, volume/chapter totals, cover art) is
+ * not here either: it belongs to AniList and it goes stale. The two places that
+ * want it have it already — the link picker reads it straight off the search
+ * result, and the tracker fetches the totals (`SeriesTotals`) in the request it
+ * makes anyway.
  */
 export interface SeriesMetadata {
   series_key: string;
@@ -53,11 +59,6 @@ export interface SeriesMetadata {
   synonyms: string[];
   /** Free text appended to the display name; shared in `series.json` for mokuro-bunko */
   tag?: string;
-  format?: string;
-  status?: string;
-  total_volumes?: number;
-  total_chapters?: number;
-  cover_url?: string;
   /**
    * Objective unit of the archives — are the files in this series folder volumes
    * or chapters? Not a preference: it is a property of the items themselves, so
@@ -65,7 +66,6 @@ export interface SeriesMetadata {
    * has corrected it, auto-detect from the volume titles (`tracking-unit.ts`).
    */
   unit?: TrackingUnit;
-  title_preference?: DisplayTitleLanguage;
   /**
    * Catalog spine stack: adjustment to the global horizontal step, in percent.
    * Added to `catalogSettings.horizontalStep` for this series only.
@@ -90,14 +90,24 @@ export interface SeriesMetadata {
    * ISO timestamp of the last change to the shareable *facts*
    * (`external_ids`/`titles`/`synonyms`/`tag`) — the merge key for `series.json`.
    *
-   * Split from `updated_at` because every per-user write (spine offsets,
-   * title_preference) bumps `updated_at`: publishing that stamp with the facts
+   * Split from `updated_at` because every non-fact write (the shelf alignment,
+   * link bookkeeping) bumps `updated_at`: publishing that stamp with the facts
    * would let a device that has never linked the series present its empty facts
    * as "newer" and unlink it everywhere. Absent on legacy records — readers fall
    * back to `updated_at`.
    */
   facts_updated_at?: string;
   linked_at?: string;
+}
+
+/**
+ * Series totals as AniList reports them. FETCHED, never stored: they belong to
+ * the external record, they go stale, and the one place that needs them (the
+ * push) already makes the request that carries them.
+ */
+export interface SeriesTotals {
+  volumes?: number;
+  chapters?: number;
 }
 
 export function createEmptySeriesMetadata(

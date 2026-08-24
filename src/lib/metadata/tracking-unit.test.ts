@@ -32,11 +32,23 @@ describe('resolveTrackingUnit', () => {
     });
   });
 
-  it('feeds the series totals into the detection', () => {
-    const titles = [vol('One Piece 1050'), vol('One Piece 1051')];
-    expect(resolveTrackingUnit(meta({ total_volumes: 108, total_chapters: 1100 }), titles)).toEqual(
-      { unit: 'chapters', source: 'detected' }
+  it('uses the overshoot rule only when the caller supplies totals', () => {
+    // Nothing stores the totals any more: only the push path has them (it fetches
+    // them with the list entry), so everywhere else detection is marker-based.
+    const titles = [vol('150')];
+
+    expect(resolveTrackingUnit(undefined, titles).unit).toBe('volumes');
+    expect(resolveTrackingUnit(undefined, titles, { volumes: 20, chapters: 900 }).unit).toBe(
+      'chapters'
     );
+  });
+
+  it('feeds the caller’s totals into the detection', () => {
+    const titles = [vol('One Piece 1050'), vol('One Piece 1051')];
+    expect(resolveTrackingUnit(meta(), titles, { volumes: 108, chapters: 1100 })).toEqual({
+      unit: 'chapters',
+      source: 'detected'
+    });
     expect(resolveTrackingUnit(meta(), titles)).toEqual({ unit: 'volumes', source: 'detected' });
   });
 

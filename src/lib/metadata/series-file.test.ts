@@ -27,6 +27,19 @@ function volume(partial: Partial<VolumeMetadata> = {}): VolumeMetadata {
   };
 }
 
+/**
+ * Display data and a per-series title preference, as an older version of the app
+ * stored them. No migration ran, so a record linked back then still carries these
+ * keys in IndexedDB — and none of them may reach the shared file.
+ */
+const LEGACY_RECORD_FIELDS = {
+  format: 'MANGA',
+  status: 'RELEASING',
+  total_volumes: 110,
+  cover_url: 'https://img/op.jpg',
+  title_preference: 'native'
+};
+
 function linkedMeta(): SeriesMetadata {
   return {
     ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
@@ -34,14 +47,10 @@ function linkedMeta(): SeriesMetadata {
     titles: { native: 'ONE PIECE', romaji: 'ONE PIECE', english: 'One Piece' },
     synonyms: ['ワンピース'],
     tag: '[color]',
-    format: 'MANGA',
-    status: 'RELEASING',
-    total_volumes: 110,
-    cover_url: 'https://img/op.jpg',
-    title_preference: 'native',
     spine_offset: 12,
-    volume_offsets: { 'vol-1': 4 }
-  };
+    volume_offsets: { 'vol-1': 4 },
+    ...LEGACY_RECORD_FIELDS
+  } as unknown as SeriesMetadata;
 }
 
 describe('volumeToIndexEntry', () => {

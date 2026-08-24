@@ -16,7 +16,7 @@ import type {
 
 export const TITLE_KEYS = ['native', 'romaji', 'english'] as const;
 export const ID_KEYS = ['anilist', 'mal'] as const;
-/** Every accepted `title_preference` / `preferredTitleLanguage` value. */
+/** Every accepted `preferredTitleLanguage` value. */
 export const DISPLAY_TITLE_LANGUAGES = ['imported', 'native', 'romaji', 'english'] as const;
 
 export function isDisplayTitleLanguage(value: unknown): value is DisplayTitleLanguage {

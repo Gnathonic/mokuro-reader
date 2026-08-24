@@ -179,25 +179,23 @@ export const anilistProvider: MetadataProvider = {
 };
 
 /**
- * Fields to write into the SeriesMetadata record when the user picks a result.
+ * Fields to write into the SeriesMetadata record when the user picks a result:
+ * the FACTS, and nothing else.
  *
- * Every optional fact is emitted explicitly — `undefined` when this result does
- * not carry it — because the patch is merged over the existing record and an
- * explicit `undefined` is what clears a key (`stripUndefined` in the store).
- * Omitting absent keys instead would leave the previous link's facts behind on
- * "Change" (e.g. `total_volumes: 110` surviving a re-link to a series with no
- * volume count, which Plan C's progress push then reads).
+ * Each one is written whole, so a "Change" over an existing record replaces the
+ * previous link's ids/titles/synonyms instead of merging into them.
+ *
+ * The display data a result also carries (`format`, `status`, volume/chapter
+ * totals, cover art) is deliberately not stored — it belongs to AniList, it goes
+ * stale, and the two places that want it have it already: the link picker shows
+ * it straight off the search result, and the tracker fetches the totals in the
+ * request it makes anyway.
  */
 export function toSeriesMetadataPatch(r: MetadataSearchResult): SeriesMetadataPatch {
   return {
     external_ids: r.idMal != null ? { anilist: r.id, mal: r.idMal } : { anilist: r.id },
     titles: { ...r.titles },
-    synonyms: [...r.synonyms],
-    format: r.format ?? undefined,
-    status: r.status ?? undefined,
-    total_volumes: r.volumes ?? undefined,
-    total_chapters: r.chapters ?? undefined,
-    cover_url: r.coverUrl ?? undefined
+    synonyms: [...r.synonyms]
   };
 }
 

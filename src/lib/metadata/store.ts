@@ -238,21 +238,17 @@ export async function updateSeriesMetadata(
 }
 
 /**
- * Remove the external link + fetched facts; keep user preferences and `tag`.
- * `unit` stays too: it describes the archives in the folder, not the link that
- * was just removed. (The reading state was never on this record — it lives in
- * `$lib/settings/series-data` — so unlinking cannot touch it.)
+ * Remove the external link and the facts it brought; keep everything this
+ * library owns — `tag`, the shelf alignment, `unit` (it describes the archives
+ * in the folder, not the link that was just removed). (The reading state was
+ * never on this record — it lives in `$lib/settings/series-data` — so unlinking
+ * cannot touch it.)
  */
 export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata> {
   return updateSeriesMetadata(seriesTitle, {
     external_ids: {},
     titles: {},
     synonyms: [],
-    format: undefined,
-    status: undefined,
-    total_volumes: undefined,
-    total_chapters: undefined,
-    cover_url: undefined,
     linked_at: undefined
   });
 }
@@ -301,11 +297,6 @@ function offsetsToFill(
  * series on the devices that DID link it. Against an existing record the same
  * file still has to win on a strictly-newer facts stamp, which is what makes a
  * deliberate unlink — a factless file carrying a real stamp — propagate.
- *
- * The file carries no fetched facts (`format`/`status`/totals/`cover_url`), so
- * when it points at a *different* external link than the local record those
- * facts describe the old link and are cleared — otherwise a re-link would keep
- * e.g. the previous series' `total_volumes` forever.
  *
  * Read and write share one `rw` transaction so a concurrent writer cannot slip
  * a `put` between them, same as `updateSeriesMetadata`.
@@ -378,15 +369,6 @@ export async function upsertFromSeriesFile(
             synonyms: [...file.synonyms],
             tag: file.tag,
             unit: file.unit,
-            ...(linkChanged
-              ? {
-                  format: undefined,
-                  status: undefined,
-                  total_volumes: undefined,
-                  total_chapters: undefined,
-                  cover_url: undefined
-                }
-              : {}),
             // The record's own stamp never moves backwards: `moveSeriesMetadataKey`
             // resolves a rename collision by it, and lowering it to an older file
             // stamp would let a pre-link copy of the record win that comparison.

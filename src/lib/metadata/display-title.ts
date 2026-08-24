@@ -30,9 +30,9 @@ function stripOuterBracketPair(value: string): string {
  * `SeriesMetadataBar`) compare against this, not against `resolveDisplayTitle`, whose
  * trailing tag would never match a stored language title.
  *
- * Title language is a GLOBAL-ONLY setting (Catalog settings): `meta.title_preference`
- * is a legacy/synced field kept for compat and is intentionally never consulted here —
- * a series can no longer override the language on its own.
+ * Title language is a GLOBAL-ONLY setting (Catalog settings): a series can no longer
+ * override the language on its own, and a legacy per-series preference left in an old
+ * record is never consulted.
  *
  *   'imported'  → seriesTitle
  *   otherwise   → titles[globalPref], falling back english → romaji → native → seriesTitle

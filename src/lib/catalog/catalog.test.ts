@@ -65,11 +65,16 @@ describe('deriveSeriesFromVolumes', () => {
     expect(s.searchTerms).toContain('one piece (en) (color)');
   });
 
-  it('ignores a per-series title_preference override — title language is global-only', () => {
+  it('ignores a legacy per-series title preference — title language is global-only', () => {
     const metaMap = new Map<string, SeriesMetadata>([
       [
         'one piece',
-        meta('One Piece', { titles: { english: 'E', native: 'N' }, title_preference: 'native' })
+        // No migration ran, so a record linked before the per-series preference
+        // was dropped still carries it in IndexedDB. It decides nothing.
+        {
+          ...meta('One Piece', { titles: { english: 'E', native: 'N' } }),
+          title_preference: 'native'
+        } as unknown as SeriesMetadata
       ]
     ]);
     const [s] = deriveSeriesFromVolumes([vol('One Piece', '1')], metaMap, 'english');

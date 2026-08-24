@@ -23,7 +23,7 @@ import { normalizeSeriesKey } from './series-key';
 import { getSeriesIndex } from './series-index';
 import { getAllSeriesMetadata, getSeriesMetadata } from './store';
 import { resolveTrackingUnit } from './tracking-unit';
-import type { SeriesMetadata, SeriesTracking, TrackingUnit } from './types';
+import type { SeriesMetadata, SeriesTotals, SeriesTracking, TrackingUnit } from './types';
 import { extractVolumeNumber } from './volume-number';
 
 const PENDING_KEY = 'anilist_pending_pushes';
@@ -92,12 +92,17 @@ export function volumeNumberFor(
  * `unit` is resolved by the caller — from the FULL title list (cloud
  * placeholders included), which this function's `seriesVolumes` deliberately is
  * not. `state` is the series' reading state; `undefined` means "never read".
+ *
+ * `totals` are AniList's, and nothing stores them: only the push path has them
+ * (it fetches them with the list entry), so everywhere else `passComplete` is
+ * false — a pass cannot be "complete" against a total nobody knows.
  */
 export function computeLocalPassState(
   seriesVolumes: VolumeMetadata[],
   volumesData: Record<string, Pick<VolumeData, 'completed'> | undefined>,
   state: SeriesReadingState | undefined,
-  unit: TrackingUnit
+  unit: TrackingUnit,
+  totals?: SeriesTotals
 ): LocalPassState {
   const sorted = [...seriesVolumes].sort(sortVolumes);
   let passProgress = 0;
@@ -110,12 +115,12 @@ export function computeLocalPassState(
     }
   }
   const readCount = state?.read_count ?? 0;
+  const total = unit === 'chapters' ? totals?.chapters : totals?.volumes;
+  const passComplete = typeof total === 'number' && total > 0 && passProgress >= total;
   return {
     passProgress,
     allCompleted,
-    // Totals are not stored anywhere; the push path fills this in from the
-    // AniList response (see `runPush`). Without them a pass is never "complete".
-    passComplete: false,
+    passComplete,
     timesRead: readCount + (allCompleted ? 1 : 0),
     rereading: readCount >= 1 && !allCompleted
   };
@@ -202,13 +207,21 @@ function clearPending(seriesKey: string): void {
 // ---------- AniList I/O ----------
 
 const REMOTE_QUERY =
-  'query ($id: Int) { Media(id: $id, type: MANGA) { mediaListEntry { status progress progressVolumes repeat } } }';
+  'query ($id: Int) { Media(id: $id, type: MANGA) { volumes chapters mediaListEntry { status progress progressVolumes repeat } } }';
 const SAVE_MUTATION =
   'mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int, $progressVolumes: Int, $repeat: Int) { SaveMediaListEntry(mediaId: $mediaId, status: $status, progress: $progress, progressVolumes: $progressVolumes, repeat: $repeat) { status progress progressVolumes repeat } }';
 
-async function fetchRemoteEntry(mediaId: number, token: string): Promise<RemoteEntry | null> {
+/** The list entry (or `null`) plus the series totals the same node carries. */
+interface RemoteState {
+  entry: RemoteEntry | null;
+  totals: SeriesTotals;
+}
+
+async function fetchRemoteEntry(mediaId: number, token: string): Promise<RemoteState> {
   const data = await anilistRequest<{
     Media: {
+      volumes: number | null;
+      chapters: number | null;
       mediaListEntry: {
         status: string | null;
         progress: number | null;
@@ -217,13 +230,23 @@ async function fetchRemoteEntry(mediaId: number, token: string): Promise<RemoteE
       } | null;
     } | null;
   }>(REMOTE_QUERY, { id: mediaId }, token);
-  const entry = data.Media?.mediaListEntry;
-  if (!entry) return null;
+
+  const media = data.Media;
+  const totals: SeriesTotals = {};
+  if (typeof media?.volumes === 'number' && media.volumes > 0) totals.volumes = media.volumes;
+  if (typeof media?.chapters === 'number' && media.chapters > 0) totals.chapters = media.chapters;
+
+  const entry = media?.mediaListEntry;
   return {
-    status: entry.status ?? null,
-    progress: entry.progress ?? 0,
-    progressVolumes: entry.progressVolumes ?? 0,
-    repeat: entry.repeat ?? 0
+    totals,
+    entry: entry
+      ? {
+          status: entry.status ?? null,
+          progress: entry.progress ?? 0,
+          progressVolumes: entry.progressVolumes ?? 0,
+          repeat: entry.repeat ?? 0
+        }
+      : null
   };
 }
 
@@ -248,13 +271,19 @@ async function getSeriesVolumesByKey(seriesKey: string): Promise<VolumeMetadata[
  * subset alone would let the UI say "Auto (chapters)" while the push writes
  * `progressVolumes`. The index is only read when detection actually has to run:
  * a stored `unit` fact answers on its own.
+ *
+ * The titles it collected come back with the answer, so the totals-aware
+ * re-resolve after the fetch (see `runPush`) costs no second read. They are
+ * empty when a stored fact answered — there is nothing left to re-resolve.
  */
 async function resolveUnitForPush(
   seriesKey: string,
   meta: SeriesMetadata | undefined,
   localVolumes: VolumeMetadata[]
-): Promise<TrackingUnit> {
-  if (meta?.unit === 'volumes' || meta?.unit === 'chapters') return meta.unit;
+): Promise<{ unit: TrackingUnit; titles: Pick<VolumeMetadata, 'volume_title'>[] }> {
+  if (meta?.unit === 'volumes' || meta?.unit === 'chapters') {
+    return { unit: meta.unit, titles: [] };
+  }
 
   const byUuid = new Map<string, { volume_title: string }>();
   for (const volume of localVolumes) {
@@ -269,7 +298,8 @@ async function resolveUnitForPush(
     // The cache is disposable; a read failure must not stop a push.
     console.warn('[progress-tracker] could not read the cached series index:', error);
   }
-  return resolveTrackingUnit(meta, [...byUuid.values()]).unit;
+  const titles = [...byUuid.values()];
+  return { unit: resolveTrackingUnit(meta, titles).unit, titles };
 }
 
 /**
@@ -397,12 +427,19 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
   const state = getSeriesReadingState(seriesKey);
   // Volumes or chapters is a property of the archives, either stated on the
   // record (someone corrected it) or read off their titles.
-  const unit = await resolveUnitForPush(seriesKey, meta, seriesVolumes);
-  const local = computeLocalPassState(seriesVolumes, get(volumes), state, unit);
+  const { unit: detectedUnit, titles } = await resolveUnitForPush(seriesKey, meta, seriesVolumes);
+  // Without totals a pass is never "complete" — deliberately conservative: this
+  // pre-fetch state only feeds the completion debounce, where a false "nothing
+  // could have changed" would SKIP a real push and a false "something changed"
+  // costs one read.
+  const localBeforeFetch = computeLocalPassState(seriesVolumes, get(volumes), state, detectedUnit);
 
   if (event === 'completion') {
-    if (alreadySettled(seriesKey, local, state, unit)) return 'nothing';
-    recentCompletions.set(seriesKey, { signature: passSignature(local), at: Date.now() });
+    if (alreadySettled(seriesKey, localBeforeFetch, state, detectedUnit)) return 'nothing';
+    recentCompletions.set(seriesKey, {
+      signature: passSignature(localBeforeFetch),
+      at: Date.now()
+    });
   }
 
   if (Date.now() < rateLimitedUntil) {
@@ -411,7 +448,11 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
   }
 
   try {
-    const remote = await fetchRemoteEntry(mediaId, token);
+    const { entry: remote, totals } = await fetchRemoteEntry(mediaId, token);
+    // The totals arrived with the entry: they are what makes the overshoot
+    // tie-break usable, and what decides whether this pass is COMPLETED.
+    const unit = titles.length > 0 ? resolveTrackingUnit(meta, titles, totals).unit : detectedUnit;
+    const local = computeLocalPassState(seriesVolumes, get(volumes), state, unit, totals);
     const plan = planProgressPush(local, remote, unit, event);
     if (!plan) {
       clearPending(seriesKey);

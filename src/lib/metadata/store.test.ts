@@ -122,18 +122,13 @@ describe('series metadata store', () => {
     expect(stored?.volume_offsets).toEqual({ a: 9, b: 3 });
   });
 
-  it('unlinkSeries clears link facts but keeps tag/preferences/shelf alignment', async () => {
+  it('unlinkSeries clears the link facts but keeps everything this library owns', async () => {
     await updateSeriesMetadata('One Piece', {
       external_ids: { anilist: 30013, mal: 13 },
       titles: { english: 'One Piece' },
       synonyms: ['ワンピース'],
-      format: 'MANGA',
-      status: 'RELEASING',
-      total_volumes: 100,
-      cover_url: 'https://x/y.jpg',
       linked_at: '2026-01-01T00:00:00.000Z',
       tag: '[bw]',
-      title_preference: 'native',
       unit: 'chapters',
       spine_offset: 12
     });
@@ -141,16 +136,12 @@ describe('series metadata store', () => {
     expect(meta.external_ids).toEqual({});
     expect(meta.titles).toEqual({});
     expect(meta.synonyms).toEqual([]);
-    expect(meta.format).toBeUndefined();
-    expect(meta.total_volumes).toBeUndefined();
-    expect(meta.cover_url).toBeUndefined();
     expect(meta.linked_at).toBeUndefined();
+    expect(Object.keys(meta)).not.toContain('linked_at'); // undefined keys stripped, not stored
     expect(meta.tag).toBe('[bw]');
-    expect(meta.title_preference).toBe('native');
     expect(meta.spine_offset).toBe(12);
     // The unit describes the archives in the folder, not the link that was removed.
     expect(meta.unit).toBe('chapters');
-    expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
 
   it('moves facts_updated_at only when a shareable fact actually changes', async () => {
@@ -197,8 +188,8 @@ describe('series metadata store', () => {
     expect(Object.keys(nudged)).not.toContain('facts_updated_at');
     expect(await getSeriesMetadataForTitle('One Piece')).toEqual(nudged);
 
-    const preference = await updateSeriesMetadata('One Piece', { title_preference: 'native' });
-    expect(preference.facts_updated_at).toBeUndefined();
+    const perVolume = await updateSeriesMetadata('One Piece', { volume_offsets: { 'vol-1': 4 } });
+    expect(perVolume.facts_updated_at).toBeUndefined();
 
     // An unlink IS a deliberate fact edit, even though it leaves the facts empty.
     await updateSeriesMetadata('One Piece', { external_ids: { anilist: 30013 } });
@@ -364,25 +355,27 @@ describe('series metadata store', () => {
     expect(meta?.tag).toBeUndefined();
   });
 
-  it('re-linking clears facts the new link does not have', async () => {
-    // "Change": link to a series with 110 volumes, then to one AniList has no counts for.
+  it('re-linking replaces the previous link’s facts instead of merging into them', async () => {
+    // "Change": link to One Piece, then to a one-shot with no MAL id and no
+    // synonyms — nothing of the first link may survive.
     await updateSeriesMetadata(
       'One Piece',
       toSeriesMetadataPatch({
         provider: 'anilist',
         id: 30013,
         idMal: 13,
-        titles: { english: 'One Piece' },
-        synonyms: [],
-        format: 'MANGA',
-        status: 'RELEASING',
+        titles: { english: 'One Piece', native: 'ONE PIECE' },
+        synonyms: ['ワンピース'],
         volumes: 110,
         chapters: 1100,
         coverUrl: 'https://img/op.jpg',
         siteUrl: 'https://anilist.co/manga/30013'
       })
     );
-    expect((await getSeriesMetadataForTitle('One Piece'))?.total_volumes).toBe(110);
+    expect((await getSeriesMetadataForTitle('One Piece'))?.external_ids).toEqual({
+      anilist: 30013,
+      mal: 13
+    });
 
     const meta = await updateSeriesMetadata(
       'One Piece',
@@ -395,12 +388,11 @@ describe('series metadata store', () => {
       })
     );
     expect(meta.external_ids).toEqual({ anilist: 99999 });
-    expect(meta.total_volumes).toBeUndefined();
-    expect(meta.total_chapters).toBeUndefined();
-    expect(meta.format).toBeUndefined();
-    expect(meta.status).toBeUndefined();
-    expect(meta.cover_url).toBeUndefined();
+    expect(meta.titles).toEqual({ romaji: 'Some Oneshot' });
+    expect(meta.synonyms).toEqual([]);
+    // AniList's display data was never stored, so a re-link has none to strand.
     expect(Object.keys(meta)).not.toContain('total_volumes');
+    expect(Object.keys(meta)).not.toContain('cover_url');
     expect(await getSeriesMetadataForTitle('One Piece')).toEqual(meta);
   });
 
@@ -418,33 +410,31 @@ describe('series metadata store', () => {
     expect(meta.updated_at).toBe('2999-01-01T00:00:00.001Z');
   });
 
-  it('upsertFromSeriesFile clears the previous link facts when the file points elsewhere', async () => {
+  it('upsertFromSeriesFile replaces the previous link when the file points elsewhere', async () => {
     await updateSeriesMetadata('One Piece', {
       external_ids: { anilist: 30013, mal: 13 },
       titles: { english: 'One Piece' },
-      format: 'MANGA',
-      status: 'RELEASING',
-      total_volumes: 110,
-      total_chapters: 1100,
-      cover_url: 'https://img/op.jpg',
+      synonyms: ['ワンピース'],
       linked_at: '2020-01-01T00:00:00.000Z'
     });
 
-    // Same link, newer file → the fetched facts survive.
+    // Same link, newer file → the link is the same one, so linked_at stands.
     await upsertFromSeriesFile(
       'One Piece',
       seriesFile({
         external_ids: { anilist: 30013, mal: 13 },
         titles: { english: 'One Piece' },
-        synonyms: [],
+        synonyms: ['ワンピース'],
         updated_at: '2999-01-01T00:00:00.000Z'
       })
     );
     let meta = await getSeriesMetadataForTitle('One Piece');
-    expect(meta?.total_volumes).toBe(110);
+    expect(meta?.external_ids).toEqual({ anilist: 30013, mal: 13 });
     expect(meta?.linked_at).toBe('2020-01-01T00:00:00.000Z');
 
-    // Different link → the old link's facts are dropped instead of being kept.
+    // Different link → the file's facts are written whole, and the link is new,
+    // so it is dated from the file. (There is no display data to strand any
+    // more: the totals and the cover were never stored in the first place.)
     await upsertFromSeriesFile(
       'One Piece',
       seriesFile({
@@ -456,13 +446,9 @@ describe('series metadata store', () => {
     );
     meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 99999 });
-    expect(meta?.total_volumes).toBeUndefined();
-    expect(meta?.total_chapters).toBeUndefined();
-    expect(meta?.format).toBeUndefined();
-    expect(meta?.status).toBeUndefined();
-    expect(meta?.cover_url).toBeUndefined();
+    expect(meta?.titles).toEqual({ romaji: 'Some Oneshot' });
+    expect(meta?.synonyms).toEqual([]);
     expect(meta?.linked_at).toBe('2999-01-02T00:00:00.000Z');
-    expect(Object.keys(meta!)).not.toContain('format');
   });
 
   it('moveSeriesMetadataKey moves the record; newer record wins on collision', async () => {
@@ -497,10 +483,12 @@ describe('series metadata store', () => {
     expect(meta?.series_title).toBe('One  Piece');
   });
 
-  it('clears title_preference when the patch sets it to undefined', async () => {
-    await updateSeriesMetadata('One Piece', { title_preference: 'native' });
-    await updateSeriesMetadata('One Piece', { title_preference: undefined });
-    expect((await getSeriesMetadataForTitle('One Piece'))?.title_preference).toBeUndefined();
+  it('clears a field when the patch sets it to undefined', async () => {
+    await updateSeriesMetadata('One Piece', { tag: '[color]' });
+    await updateSeriesMetadata('One Piece', { tag: undefined });
+    const meta = await getSeriesMetadataForTitle('One Piece');
+    expect(meta?.tag).toBeUndefined();
+    expect(Object.keys(meta!)).not.toContain('tag'); // stripped, not stored as undefined
   });
 
   it('getAll/replaceAll round-trip a record map', async () => {
@@ -701,8 +689,8 @@ describe('series metadata store', () => {
       expect(indexed).toEqual(['One Piece', 'One Piece']);
       expect(facts).toEqual(['One Piece']);
 
-      // A per-user preference is neither a fact nor an index key: quiet on both.
-      await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+      // Link bookkeeping is neither a fact nor an index key: quiet on both.
+      await updateSeriesMetadata('One Piece', { linked_at: '2026-01-01T00:00:00.000Z' });
 
       expect(indexed).toEqual(['One Piece', 'One Piece']);
       expect(facts).toEqual(['One Piece']);

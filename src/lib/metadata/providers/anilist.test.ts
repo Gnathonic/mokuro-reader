@@ -127,7 +127,7 @@ describe('anilist provider', () => {
     await expect(anilistRequest('{ x }')).rejects.toMatchObject({ code: 'GRAPHQL' });
   });
 
-  it('toSeriesMetadataPatch maps a result to record fields', () => {
+  it('toSeriesMetadataPatch maps a result to the FACTS only — display data is never stored', () => {
     const r = {
       provider: 'anilist' as const,
       id: 30013,
@@ -144,18 +144,17 @@ describe('anilist provider', () => {
     expect(toSeriesMetadataPatch(r)).toEqual({
       external_ids: { anilist: 30013, mal: 13 },
       titles: { english: 'One Piece' },
-      synonyms: ['ワンピース'],
-      format: 'MANGA',
-      status: 'RELEASING',
-      total_volumes: 110,
-      total_chapters: 1100,
-      cover_url: 'https://img/x.jpg'
+      synonyms: ['ワンピース']
     });
     const noMal = toSeriesMetadataPatch({ ...r, idMal: undefined });
-    expect(noMal.external_ids).toEqual({ anilist: 30013 });
+    expect(noMal).toEqual({
+      external_ids: { anilist: 30013 },
+      titles: { english: 'One Piece' },
+      synonyms: ['ワンピース']
+    });
   });
 
-  it('toSeriesMetadataPatch emits absent facts as explicit undefined so a re-link clears them', () => {
+  it('toSeriesMetadataPatch writes every fact whole, so a re-link keeps none of the old one', () => {
     const sparse = toSeriesMetadataPatch({
       provider: 'anilist' as const,
       id: 99999,
@@ -163,12 +162,14 @@ describe('anilist provider', () => {
       synonyms: [],
       siteUrl: 'https://anilist.co/manga/99999'
     });
-    // Keys must be present (value undefined) — an omitted key would merge over the
-    // previous link's record and leave its facts behind.
-    for (const k of ['format', 'status', 'total_volumes', 'total_chapters', 'cover_url']) {
-      expect(Object.keys(sparse)).toContain(k);
-      expect(sparse[k as keyof typeof sparse]).toBeUndefined();
-    }
+    // Three keys, always present: "Change" replaces the previous link's ids,
+    // titles and synonyms instead of merging into them.
+    expect(Object.keys(sparse).sort()).toEqual(['external_ids', 'synonyms', 'titles']);
+    expect(sparse).toEqual({
+      external_ids: { anilist: 99999 },
+      titles: { romaji: 'Some Oneshot' },
+      synonyms: []
+    });
   });
 
   it('parseAniListIdInput accepts a bare id or an anilist manga URL', () => {

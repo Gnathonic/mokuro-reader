@@ -19,6 +19,14 @@ function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
   };
 }
 
+/**
+ * A record as an older version of the app wrote it: no migration ran, so keys
+ * the type no longer admits are still there in IndexedDB. Nothing may read them.
+ */
+function legacyMeta(extra: Record<string, unknown>): SeriesMetadata {
+  return { ...meta(), ...extra } as unknown as SeriesMetadata;
+}
+
 describe('resolveDisplayTitle', () => {
   it('returns the folder title when there is no metadata', () => {
     expect(resolveDisplayTitle('One Piece', undefined, 'english')).toBe('One Piece');
@@ -34,14 +42,16 @@ describe('resolveDisplayTitle', () => {
     expect(resolveDisplayTitle('One Piece', meta(), 'english')).toBe('One Piece (en)');
   });
 
-  it('ignores a per-series title_preference override — title language is global-only', () => {
-    const m = meta({ title_preference: 'native' });
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
-  });
-
-  it("ignores a per-series 'imported' override the same way", () => {
-    const m = meta({ title_preference: 'imported' });
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
+  it('ignores a legacy per-series title preference — title language is global-only', () => {
+    // Nothing migrates the old records, so `title_preference` is still sitting in
+    // IndexedDB on any series linked before it was dropped. Whatever it says —
+    // a language, 'imported', or junk from a hand-edited sidecar — the global
+    // setting is the only thing that decides.
+    for (const stale of ['native', 'imported', 'klingon']) {
+      const m = legacyMeta({ title_preference: stale });
+      expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
+      expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece');
+    }
   });
 
   it('falls back english → romaji → native → folder title when the requested language is missing', () => {
@@ -115,13 +125,6 @@ describe('resolveDisplayTitle', () => {
     expect(m.tag).toBe('[color]');
     expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) (color)');
   });
-
-  it('ignores a title_preference of any value, known or not — title language is global-only', () => {
-    // e.g. a hand-edited or foreign sidecar whose value reached the store
-    const m = meta({ title_preference: 'klingon' as never });
-    expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
-    expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece');
-  });
 });
 
 describe('resolveDisplayBase', () => {
@@ -131,18 +134,19 @@ describe('resolveDisplayBase', () => {
     expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) (color)');
   });
 
-  it('follows the same global preference and fallback rules; ignores title_preference', () => {
+  it('follows the same global preference and fallback rules', () => {
     expect(resolveDisplayBase('One Piece', meta(), 'imported')).toBe('One Piece');
-    expect(resolveDisplayBase('One Piece', meta({ title_preference: 'native' }), 'english')).toBe(
-      'One Piece (en)'
-    );
     expect(resolveDisplayBase('folder', meta({ titles: { native: 'N' } }), 'romaji')).toBe('N');
     expect(resolveDisplayBase('folder', undefined, 'english')).toBe('folder');
   });
 
-  it('ignores title_preference regardless of its stored value', () => {
-    const m = meta({ title_preference: '' as never });
-    expect(resolveDisplayBase('One Piece', m, 'romaji')).toBe('ONE PIECE (romaji)');
+  it('ignores a legacy per-series title preference, whatever it holds', () => {
+    expect(
+      resolveDisplayBase('One Piece', legacyMeta({ title_preference: 'native' }), 'english')
+    ).toBe('One Piece (en)');
+    expect(resolveDisplayBase('One Piece', legacyMeta({ title_preference: '' }), 'romaji')).toBe(
+      'ONE PIECE (romaji)'
+    );
   });
 });
 
