@@ -89,9 +89,9 @@ function sameValue(a: unknown, b: unknown): boolean {
  * Does this patch actually change a shareable fact?
  *
  * Only a "yes" may move `facts_updated_at`. A spine-offset nudge, a finished
- * reread, a tracking push or a title-preference toggle all bump `updated_at`, and
- * publishing that stamp as the facts stamp would let a library that never linked
- * the series unlink it on every other device (`buildSeriesFile` compares stamps).
+ * reread or a tracking push all bump `updated_at`, and publishing that stamp as
+ * the facts stamp would let a library that never linked the series unlink it on
+ * every other device (`buildSeriesFile` compares stamps).
  */
 function changesFacts(existing: SeriesMetadata, patch: SeriesMetadataPatch): boolean {
   return FACT_KEYS.some((key) => key in patch && !sameValue(patch[key], existing[key]));
@@ -386,10 +386,9 @@ export async function upsertFromSeriesFile(
                   cover_url: undefined
                 }
               : {}),
-            // The record's own stamp never moves backwards: the root series-metadata.json
-            // merge is "newest updated_at wins", so lowering it to an older file stamp
-            // would let another device's pre-link copy of this record win and undo the
-            // facts we just applied (with the per-user state riding along).
+            // The record's own stamp never moves backwards: `moveSeriesMetadataKey`
+            // resolves a rename collision by it, and lowering it to an older file
+            // stamp would let a pre-link copy of the record win that comparison.
             updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
             facts_updated_at: file.updated_at,
             linked_at: linked

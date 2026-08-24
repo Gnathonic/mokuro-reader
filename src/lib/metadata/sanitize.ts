@@ -7,10 +7,11 @@ import type {
 } from './types';
 
 /**
- * Shared validation rules for untrusted series metadata. Both boundaries where
+ * Shared validation rules for untrusted series metadata. Every boundary where
  * foreign data enters the app — the per-series `series.json` sidecar
- * (`series-file.ts`) and the `series-metadata.json` cloud file (`merge.ts`) — use
- * these so a value that is rejected in one place cannot slip through the other.
+ * (`series-file.ts`), the root `catalog.json` (`catalog-file.ts`) and the
+ * `series` section of `volume-data.json` (`$lib/settings/series-data`) — uses
+ * these, so a value rejected in one place cannot slip through another.
  */
 
 export const TITLE_KEYS = ['native', 'romaji', 'english'] as const;
@@ -75,11 +76,6 @@ export function sanitizeSynonyms(value: unknown): string[] {
   return value.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
 }
 
-/** Keeps a known display language, else undefined (= no per-series override). */
-export function sanitizeTitlePreference(value: unknown): DisplayTitleLanguage | undefined {
-  return isDisplayTitleLanguage(value) ? value : undefined;
-}
-
 /**
  * Validates a `tracking` block from an untrusted source.
  *
@@ -141,23 +137,6 @@ function clamp(value: number, limit: number): number {
 export function sanitizeSpineOffset(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return clamp(value, SPINE_OFFSET_LIMIT);
-}
-
-/**
- * Keeps only non-empty string keys with finite numeric px values, clamped to
- * ±`VOLUME_OFFSET_LIMIT`. An empty result is `undefined` (= "no offsets"), so the
- * field disappears instead of being stored as `{}` — same shape as `sanitizeTracking`'s
- * `number_overrides`.
- */
-export function sanitizeVolumeOffsets(value: unknown): Record<string, number> | undefined {
-  if (!isRecord(value)) return undefined;
-  const out: Record<string, number> = {};
-  for (const [uuid, px] of Object.entries(value)) {
-    if (!uuid.trim()) continue;
-    if (typeof px !== 'number' || !Number.isFinite(px)) continue;
-    out[uuid] = clamp(px, VOLUME_OFFSET_LIMIT);
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

@@ -18,7 +18,7 @@ import {
 } from './sanitize';
 import type { SeriesExternalIds, SeriesMetadata, SeriesTitles, TrackingUnit } from './types';
 
-/** Basename of the root catalog file, stored next to `series-metadata.json`. */
+/** Basename of the root catalog file, stored at the root of the library folder. */
 export const CATALOG_FILE_NAME = 'catalog.json';
 
 /**
@@ -278,8 +278,8 @@ function parseEntry(value: unknown): CatalogFileEntry | undefined {
  * Validate an untrusted `catalog.json`.
  *
  * Everything here is foreign data — anyone with write access to the folder can
- * change it — so every field goes through the same sanitizers `series.json` and
- * `series-metadata.json` use, bad entries are dropped individually rather than
+ * change it — so every field goes through the same sanitizers `series.json`
+ * uses, bad entries are dropped individually rather than
  * failing the file, unknown keys never survive (they would let per-user state
  * ride along), and every stamp is normalized/clamped because it decides merges
  * by lexicographic comparison.

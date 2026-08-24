@@ -466,7 +466,7 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
  *
  * Everything here is foreign data — anyone with write access to the cloud folder
  * (or a text editor) can change it — so every field is re-validated with the
- * same helpers the `series-metadata.json` merge uses, bad volume entries are
+ * shared helpers in `sanitize.ts`, bad volume entries are
  * dropped individually rather than failing the file, and unknown keys are never
  * carried through (they would let per-user state ride along). `updated_at` is
  * normalised and clamped because it decides the facts merge by lexicographic

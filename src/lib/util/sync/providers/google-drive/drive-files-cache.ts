@@ -117,7 +117,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             // it — the shared allowlist is the only definition.
             sidecarFiles.push(item);
           } else if (isRootConfigFile(item.name)) {
-            // volume-data.json, profiles.json, series-metadata.json, catalog.json
+            // volume-data.json, profiles.json, catalog.json
             rootConfigFiles.push(item);
           }
         }

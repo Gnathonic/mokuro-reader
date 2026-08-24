@@ -322,8 +322,8 @@ describe('series metadata store', () => {
     const meta = await getSeriesMetadataForTitle('One Piece');
     expect(meta?.external_ids).toEqual({ anilist: 99999 });
     expect(meta?.facts_updated_at).toBe('2026-03-01T00:00:00.000Z');
-    // The record stamp never moves backwards, or the root series-metadata.json
-    // merge would hand the win back to a pre-link copy on another device.
+    // The record stamp never moves backwards, or `moveSeriesMetadataKey` would
+    // hand a rename collision back to a pre-link copy of the record.
     expect(meta?.updated_at).toBe('2026-09-01T00:00:00.000Z');
     expect(meta?.spine_offset).toBe(12);
   });

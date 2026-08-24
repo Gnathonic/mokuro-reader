@@ -791,7 +791,7 @@ describe('isSeriesFilePath', () => {
     expect(isSeriesFilePath('One Piece/series.json')).toBe(true);
     expect(isSeriesFilePath('mokuro/One Piece/Series.JSON')).toBe(true);
     expect(isSeriesFilePath('One Piece\\series.json')).toBe(true);
-    expect(isSeriesFilePath('One Piece/series-metadata.json')).toBe(false);
+    expect(isSeriesFilePath('One Piece/my-series.json')).toBe(false);
     expect(isSeriesFilePath('One Piece/series.json.bak')).toBe(false);
     expect(isSeriesFilePath('series.json/')).toBe(false);
     expect(isSeriesFilePath('')).toBe(false);

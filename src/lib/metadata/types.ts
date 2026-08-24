@@ -27,13 +27,15 @@ export interface SeriesTracking {
 
 /**
  * Per-series metadata record. PK = normalizeSeriesKey(series_title).
- * Synced as series-metadata.json (newest updated_at wins per key).
+ * LOCAL storage only — this table is never uploaded as a whole.
  *
  * Two kinds of field are shared publicly through the per-series `series.json`
- * sidecar (`series-file.ts`): the "facts" (external_ids/titles/synonyms/tag/unit),
- * which carry a facts clock and decide merges, and the shelf alignment
- * (spine_offset/volume_offsets), which is INDEX data — shared, but never a fact.
- * Everything else on this record is this library's own state.
+ * sidecar (`series-file.ts`, compiled into the root `catalog.json`): the "facts"
+ * (external_ids/titles/synonyms/tag/unit), which carry a facts clock and decide
+ * merges, and the shelf alignment (spine_offset/volume_offsets), which rides the
+ * same file as INDEX data — shared, but never a fact. Everything else on this
+ * record is this library's own state; the reading half of it syncs through the
+ * `series` section of `volume-data.json`.
  */
 export interface SeriesMetadata {
   series_key: string;
@@ -78,7 +80,7 @@ export interface SeriesMetadata {
   read_count: number;
   reread_prompt_suppressed?: boolean;
   tracking?: SeriesTracking;
-  /** ISO timestamp — merge key for the record as a whole (root series-metadata.json) */
+  /** ISO timestamp — merge key for the record as a whole (local rename collisions) */
   updated_at: string;
   /**
    * ISO timestamp of the last change to the shareable *facts*

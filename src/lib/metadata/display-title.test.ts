@@ -118,7 +118,7 @@ describe('resolveDisplayTitle', () => {
   });
 
   it('ignores a title_preference of any value, known or not — title language is global-only', () => {
-    // e.g. a hand-edited or foreign series-metadata.json that reached the store
+    // e.g. a hand-edited or foreign sidecar whose value reached the store
     const m = meta({ title_preference: 'klingon' as never });
     expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en)');
     expect(resolveDisplayTitle('One Piece', m, 'imported')).toBe('One Piece');
