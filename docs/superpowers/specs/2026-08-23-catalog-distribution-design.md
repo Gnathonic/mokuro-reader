@@ -61,7 +61,7 @@ All metadata writes (`series.json`, `catalog.json`) are best-effort: on failure,
 
 1. **Partitioning** (owed): `<Series>/series.json`, root `catalog.json`, root `series-metadata.json` are metadata files — never treated as user progress `.json`.
 2. **Blocking**: permission-scoped users' write attempts on archives/covers/catalog.json are rejected.
-3. **Intercepted PUT**: a scoped user's `series.json` PUT is accepted as an update REQUEST — bunko validates the facts fields only (ids/titles/synonyms/tag/unit + facts stamp; volume index and unknown keys ignored), merges newest-stamp-wins into its authoritative store scoped to that user's permissions, then regenerates `series.json` and `catalog.json`. The client needs no bunko-specific code path.
+3. **Intercepted PUT**: an authorized user's `series.json` PUT is accepted as an update REQUEST. (2026-08-24 ruling on who is authorized: `registered` never; `uploader` only for a series it owns outright; any modify/delete-tier role for any series; anonymous is 401 — see bunko's auth task.) Bunko validates the facts fields only (ids/titles/synonyms/tag/unit + facts stamp; volume index and unknown keys ignored), merges newest-stamp-wins into its authoritative store once the actor is authorized, then regenerates `series.json` and `catalog.json`. The client needs no bunko-specific code path.
 4. **Compilation**: bunko builds `series.json` (v2, compact) per series folder and root `catalog.json` from `.mokuro` data + accepted updates; regenerates on library change and on accepted updates; serves with accurate size/mtime.
 5. **Covers**: bunko generates missing per-volume cover sidecars.
 
