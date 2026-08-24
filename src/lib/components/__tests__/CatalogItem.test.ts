@@ -12,6 +12,37 @@ vi.mock('$lib/util/modals', () => ({ promptSeriesEditor, promptConfirmation: vi.
 // is to hand it this series' volumes and nothing else.
 vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval }));
 
+// The card imports `showSnackbar` off the `$lib/util` barrel, which also re-exports the
+// google-drive/backup/activity-tracker modules — mock it down to just that one export so
+// none of that graph loads for a test about hover shortcuts and spine offsets.
+const { showSnackbar } = vi.hoisted(() => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/util', () => ({ showSnackbar }));
+
+// No active provider by default — every existing test in this file relies on the spine
+// offset gestures staying unrestricted, which is `canEditSeriesMetadata`'s default in
+// that state. The gating describe block below overrides this per test.
+const { providerStatus } = vi.hoisted(() => {
+  function createStore<T>(initial: T) {
+    let value = initial;
+    return {
+      subscribe(fn: (v: T) => void) {
+        fn(value);
+        return () => {};
+      },
+      set(v: T) {
+        value = v;
+      }
+    };
+  }
+  return {
+    providerStatus: createStore({
+      providers: {} as Record<string, { metadataPermissions?: unknown } | null>,
+      currentProviderType: null as string | null
+    })
+  };
+});
+vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
+
 // Stub the download-queue and cloud-thumbnails modules so this test doesn't drag in
 // their real dependency graph (Dexie/db, google-drive api client, unified-cloud-manager,
 // the whole import/sync pipeline) — none of which matter for the keyboard shortcut.
@@ -413,6 +444,205 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     await flushSpineOffsetWrites();
 
     expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('CatalogItem spine-offset gestures respect the per-series metadata edit scope', () => {
+  // Same fixture shape as "CatalogItem spine offsets persist to the series metadata" —
+  // duplicated locally (not shared) so this describe's isolation doesn't depend on that
+  // one's ordering.
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  function withThumbnail(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return localVolume({
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
+  }
+
+  const twoVolumes = () => [
+    withThumbnail({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+    withThumbnail({ volume_uuid: 'uuid-1', volume_title: 'Vol 2' })
+  ];
+
+  /** The width the card sized its stack to — the visible effect of the series offset. */
+  function stackWidth(container: HTMLElement): string {
+    const el = container.querySelector('div.overflow-hidden');
+    if (!el) throw new Error('stack container not found');
+    return (el as HTMLElement).style.width;
+  }
+
+  function setScopeNone() {
+    providerStatus.set({
+      providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+      currentProviderType: 'webdav'
+    });
+  }
+
+  // The snackbar cooldown (see CatalogItem.svelte) lives in module scope, shared across
+  // every card instance and every test in this file — not reset between tests. Each test
+  // here anchors the fake clock at its OWN far-apart slot (well past the cooldown window
+  // either side) so one test's gated gesture can never suppress or be suppressed by
+  // another's, regardless of run order or real wall-clock speed.
+  const FAKE_TIME_SLOT_MS = 60_000; // » the 4s snackbar cooldown
+  let fakeTimeSlot = 0;
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    updateSeriesMetadata.mockClear();
+    showSnackbar.mockClear();
+    emitSeriesMetadata(new Map());
+    providerStatus.set({ providers: {}, currentProviderType: null });
+    vi.useFakeTimers();
+    fakeTimeSlot += 1;
+    vi.setSystemTime(new Date(2026, 0, 1).getTime() + fakeTimeSlot * FAKE_TIME_SLOT_MS);
+  });
+
+  afterEach(async () => {
+    cleanup();
+    await flushSpineOffsetWrites();
+    vi.useRealTimers();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  it('absent capabilities: shift+wheel still changes the offset (unchanged default behavior)', async () => {
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    expect(stackWidth(container)).not.toBe(before);
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).toHaveBeenCalledTimes(1);
+    expect(showSnackbar).not.toHaveBeenCalled();
+  });
+
+  it('scope "none": shift+wheel changes nothing locally and writes nothing', async () => {
+    setScopeNone();
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    // No local mutation: an offset applied only on this device, that can never publish,
+    // would silently diverge from the server (see checkSpineOffsetEditAllowed's docs).
+    expect(stackWidth(container)).toBe(before);
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it('scope "none": shift+wheel shows the reason via snackbar', async () => {
+    setScopeNone();
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    expect(showSnackbar).toHaveBeenCalledWith(
+      "This account can't edit series details on this server"
+    );
+  });
+
+  it('scope "none": debounces the snackbar across a wheel burst — once, not once per tick', async () => {
+    setScopeNone();
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    expect(showSnackbar).toHaveBeenCalledTimes(1);
+  });
+
+  it('scope "none": alt+shift+wheel over a volume is gated the same way', async () => {
+    setScopeNone();
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.mouseMove(card, { clientX: 4000, clientY: 10, shiftKey: true, altKey: true });
+    await fireEvent.wheel(card, { shiftKey: true, altKey: true, deltaY: -1 });
+
+    expect(stackWidth(container)).toBe(before);
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith(
+      "This account can't edit series details on this server"
+    );
+  });
+
+  it('scope "none": shift+right-click reset is gated the same way', async () => {
+    setScopeNone();
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.contextMenu(card, { shiftKey: true });
+
+    expect(stackWidth(container)).toBe(before);
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith(
+      "This account can't edit series details on this server"
+    );
+  });
+
+  it('scope "owned" without this series listed: gated, same as "none"', async () => {
+    providerStatus.set({
+      providers: {
+        webdav: { metadataPermissions: { scope: 'owned', ownedSeries: ['Some Other Series'] } }
+      },
+      currentProviderType: 'webdav'
+    });
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    expect(stackWidth(container)).toBe(before);
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it('scope "owned" WITH this series listed: allowed, same as absent capabilities', async () => {
+    providerStatus.set({
+      providers: {
+        webdav: { metadataPermissions: { scope: 'owned', ownedSeries: ['One Piece'] } }
+      },
+      currentProviderType: 'webdav'
+    });
+    const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
+    const card = getCard(container);
+    const before = stackWidth(container);
+
+    await fireEvent.mouseEnter(card);
+    await fireEvent.wheel(card, { shiftKey: true, deltaY: -1 });
+
+    expect(stackWidth(container)).not.toBe(before);
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).toHaveBeenCalledTimes(1);
+    expect(showSnackbar).not.toHaveBeenCalled();
   });
 });
 

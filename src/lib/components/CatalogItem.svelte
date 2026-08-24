@@ -1,3 +1,11 @@
+<script module lang="ts">
+  // Cooldown so a wheel/right-click burst against a blocked series doesn't spam the
+  // snackbar with a toast per tick — shared across every mounted card, not scoped to one
+  // instance, so gesturing across several cards in quick succession still only shows one.
+  const METADATA_GATE_SNACKBAR_COOLDOWN_MS = 4000;
+  let lastMetadataGateSnackbarAt = 0;
+</script>
+
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
   import { progress, catalogSettings } from '$lib/settings';
@@ -10,6 +18,8 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { seriesIndexMap } from '$lib/metadata/series-index';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { canEditSeriesMetadata } from '$lib/util/sync/metadata-permissions';
+  import { showSnackbar } from '$lib/util';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -252,6 +262,30 @@
       });
   }
 
+  /**
+   * Gate for the wheel/right-click spine-offset gestures below. Unlike SeriesSpineShowcase
+   * (inside the series editor modal, which has a persistent label to disable + explain), a
+   * catalog card has no such surface — a shift+wheel gesture is not discoverable UI to begin
+   * with, so "disable + label" here means: block the write, change NOTHING locally (an
+   * offset applied only on this device, that can never publish, would silently diverge from
+   * the server), and surface the reason once via a snackbar rather than every wheel tick.
+   * See $lib/util/sync/metadata-permissions.ts.
+   */
+  function checkSpineOffsetEditAllowed(): boolean {
+    const seriesTitle = volume?.series_title;
+    // No resolvable series title: `writeSpineOffsets` itself is a no-op in that case, so
+    // there's nothing to gate — let the existing dead-end behavior stand.
+    if (!seriesTitle) return true;
+    const gate = canEditSeriesMetadata(seriesTitle);
+    if (gate.allowed) return true;
+    const now = Date.now();
+    if (now - lastMetadataGateSnackbarAt > METADATA_GATE_SNACKBAR_COOLDOWN_MS) {
+      lastMetadataGateSnackbarAt = now;
+      showSnackbar(gate.reason ?? "This account can't edit series details on this server");
+    }
+    return false;
+  }
+
   // Index-keyed view of the offsets for the stack currently on screen. Keyed by uuid in
   // storage precisely because this list changes (hideReadVolumes, stackCount), so an
   // index-keyed record would drift onto the wrong volume.
@@ -337,14 +371,20 @@
       // Shift+Scroll: adjust series offset
       e.preventDefault();
       const delta = wheelDelta > 0 ? -ADJUST_STEP : ADJUST_STEP;
-      // Clamped with the same rule the writer applies, so the stack never shows a value
-      // that storage would refuse.
-      hOffsetAdjust = clampSpineOffset(hOffsetAdjust + delta);
-      writeSpineOffsets({ spineOffset: hOffsetAdjust });
+      setSeriesOffset(hOffsetAdjust + delta);
     }
   }
 
+  function setSeriesOffset(value: number) {
+    if (!checkSpineOffsetEditAllowed()) return;
+    // Clamped with the same rule the writer applies, so the stack never shows a value
+    // that storage would refuse.
+    hOffsetAdjust = clampSpineOffset(value);
+    writeSpineOffsets({ spineOffset: hOffsetAdjust });
+  }
+
   function setVolumeOffset(volumeUuid: string, value: number) {
+    if (!checkSpineOffsetEditAllowed()) return;
     const px = clampVolumeOffset(value);
     const next = { ...volumeOffsetsByUuid };
     if (px === 0) delete next[volumeUuid];
@@ -365,8 +405,7 @@
     } else if (e.shiftKey && !e.altKey) {
       // Shift+RMB: reset series offset
       e.preventDefault();
-      hOffsetAdjust = 0;
-      writeSpineOffsets({ spineOffset: 0 });
+      setSeriesOffset(0);
     }
   }
 
