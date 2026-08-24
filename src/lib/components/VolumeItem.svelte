@@ -105,7 +105,11 @@
   });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
-  let isComplete = $derived(isVolumeComplete(currentPage, volume.page_count));
+  // Completion reads the RAW page, not the display default of 1: "page 1 of 1" with no
+  // progress record at all is a volume nobody has opened (see isVolumeComplete).
+  let isComplete = $derived(
+    isVolumeComplete($progress?.[volume.volume_uuid] ?? 0, volume.page_count)
+  );
 
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');

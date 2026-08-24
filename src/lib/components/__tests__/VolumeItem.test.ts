@@ -405,3 +405,18 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     );
   });
 });
+
+describe('VolumeItem completion', () => {
+  afterEach(() => cleanup());
+
+  it('does not call a one-page volume nobody has opened read', () => {
+    // The progress store has no entry: the row displays "page 1", but page 1 of 1 with no
+    // record is a volume that has never been opened, not one that was finished.
+    const { container } = render(VolumeItem, {
+      props: { volume: volume({ page_count: 1 }), variant: 'list' }
+    });
+
+    expect(container.querySelector('[title="Mark as read"]')).not.toBeNull();
+    expect(container.querySelector('[title="Mark as unread"]')).toBeNull();
+  });
+});

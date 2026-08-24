@@ -19,7 +19,19 @@ describe('isVolumeComplete', () => {
 
   it('should handle single page volume', () => {
     expect(isVolumeComplete(1, 1)).toBe(true);
-    expect(isVolumeComplete(0, 1)).toBe(true); // 0 === 1-1
+  });
+
+  it('should not call a volume nobody has opened complete', () => {
+    // Page 0 is "never opened", not "one page from the end" — a one-page volume used to
+    // read as finished the moment it appeared (0 === 1-1), and so did a two-page one.
+    expect(isVolumeComplete(0, 1)).toBe(false);
+    expect(isVolumeComplete(0, 2)).toBe(false);
+  });
+
+  it('should not call a volume of unknown length complete', () => {
+    // A cloud share reports no page count until it is downloaded.
+    expect(isVolumeComplete(0, 0)).toBe(false);
+    expect(isVolumeComplete(1, 0)).toBe(false);
   });
 
   it('should handle two page volume', () => {

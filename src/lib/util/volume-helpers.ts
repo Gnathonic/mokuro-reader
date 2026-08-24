@@ -3,9 +3,20 @@
  */
 
 /**
- * Determines if a volume is complete based on current page and total page count
+ * Is this volume read through?
+ *
+ * The reader can settle on the second-to-last page (a spread shows the last two at once),
+ * so both of the last two pages count as finished. THE PAGE MUST BE A REAL ONE, though:
+ * page 0 means nobody has opened this volume, and a volume with no page count is one
+ * nothing is known about yet (a cloud share before it is downloaded). Without those two
+ * guards a one-page volume read as finished on sight (`0 === 1 - 1`), and every bare cloud
+ * placeholder sorted as if it had been read to the end.
+ *
+ * Callers pass the RAW current page — 0 when there is no progress record — not the
+ * display default of 1.
  */
 export function isVolumeComplete(currentPage: number, pageCount: number): boolean {
+  if (!pageCount || currentPage <= 0) return false;
   return currentPage === pageCount || currentPage === pageCount - 1;
 }
 

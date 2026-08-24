@@ -37,6 +37,7 @@
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
   import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
   import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
@@ -199,19 +200,9 @@
           : 'unread-first';
   }
 
-  /**
-   * Has this volume been read to the end?
-   *
-   * Read off the current page, the source of truth — but a volume nobody has opened is
-   * not finished, and neither is one whose page count is unknown. A bare cloud share
-   * reports `page_count: 0` until it is downloaded, and comparing that to a page 0 read
-   * as "complete", which sorted every un-indexed placeholder to the end of its series
-   * while its indexed neighbours stayed in volume order.
-   */
+  /** Read through? The app's one completion rule, over this list's raw progress. */
   function isReadThrough(vol: { volume_uuid: string; page_count: number }): boolean {
-    const currentPage = $progress?.[vol.volume_uuid] || 0;
-    if (!vol.page_count || currentPage <= 0) return false;
-    return currentPage === vol.page_count || currentPage === vol.page_count - 1;
+    return isVolumeComplete($progress?.[vol.volume_uuid] || 0, vol.page_count);
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
