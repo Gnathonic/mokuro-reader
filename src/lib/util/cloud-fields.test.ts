@@ -7,7 +7,8 @@ import {
   getArchiveSize,
   migrateToCloudFormat,
   createCloudFields,
-  hasCloudMetadata
+  hasCloudMetadata,
+  isCatalogVisible
 } from './cloud-fields';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -326,5 +327,37 @@ describe('hasCloudMetadata', () => {
       driveFileId: 'legacy-id'
     });
     expect(hasCloudMetadata(volume)).toBe(true);
+  });
+});
+
+describe('isCatalogVisible', () => {
+  it('installed volume is always visible', () => {
+    expect(isCatalogVisible(createVolume())).toBe(true);
+  });
+
+  it('placeholder with a cloud file is visible', () => {
+    const volume = createVolume({ isPlaceholder: true, cloudFileId: 'f1', cloudProvider: 'mega' });
+    expect(isCatalogVisible(volume)).toBe(true);
+  });
+
+  it('metadata-only row decorated with the active listing is visible', () => {
+    const volume = createVolume({ metadata_only: true, cloudFileId: 'f1', cloudProvider: 'mega' });
+    expect(isCatalogVisible(volume)).toBe(true);
+  });
+
+  it('metadata-only row with no cloud backing is hidden', () => {
+    const volume = createVolume({ metadata_only: true });
+    expect(isCatalogVisible(volume)).toBe(false);
+  });
+
+  it('metadata-only row with legacy drive fields is visible', () => {
+    const volume = createVolume({ metadata_only: true, driveFileId: 'legacy-id' });
+    expect(isCatalogVisible(volume)).toBe(true);
+  });
+
+  it('archive_size alone is not cloud backing', () => {
+    // A remembered size is a fact about a file nobody can currently reach.
+    const volume = createVolume({ metadata_only: true, archive_size: 1234567 });
+    expect(isCatalogVisible(volume)).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ import {
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { isCatalogVisible } from '$lib/util/cloud-fields';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
@@ -182,8 +183,15 @@ export const catalog = derived(
     // exist here or in the cloud listing — it never mints a card of its own
     // (a stale file would otherwise produce dead-end cards for deleted
     // folders).
+    //
+    // Same rule for retained rows: a metadata-only row the ACTIVE listing did
+    // not decorate has nowhere to be downloaded from — its cloud copy was
+    // deleted, or sits on a provider that is not connected. It keeps its DB
+    // row, thumbnail and history for the stats views, but the catalog does not
+    // seat it. The metadata writers are unaffected: they read `db.volumes`
+    // directly (series-file-sync.ts), never this display store.
     return deriveSeriesFromVolumes(
-      Object.values($volumesWithPlaceholders),
+      Object.values($volumesWithPlaceholders).filter(isCatalogVisible),
       $seriesMetadataMap,
       $preferredTitleLanguage
     );

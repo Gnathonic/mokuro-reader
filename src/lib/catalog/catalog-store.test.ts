@@ -234,3 +234,93 @@ describe('volumesWithPlaceholders', () => {
     cloudFiles.set(new Map());
   });
 });
+
+/**
+ * The catalog only shows what this device holds or the ACTIVE listing can deliver.
+ * A metadata-only row whose cloud file is gone — or lives on a provider that is
+ * not connected right now — keeps its DB row, its thumbnail and its history, but
+ * gets no card and no "Available in <provider>" seat: an offer nothing can honor
+ * is exactly the ghost-entry problem the placeholder pass already solved once.
+ */
+describe('catalog visibility', () => {
+  it('hides a metadata-only row the active listing cannot deliver', () => {
+    // One Piece v2 is backed by the listing; Ghost Series exists only as a
+    // retained row — its cloud copy was deleted (or lives on another provider).
+    volumeRecord.v2 = {
+      volume_uuid: 'v2',
+      series_uuid: 's1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 2',
+      mokuro_version: '0.4.11',
+      page_count: 10,
+      character_count: 100,
+      page_char_counts: [],
+      metadata_only: true
+    };
+    volumeRecord.g1 = {
+      volume_uuid: 'g1',
+      series_uuid: 's9',
+      series_title: 'Ghost Series',
+      volume_title: 'Ghost 1',
+      mokuro_version: '0.4.11',
+      page_count: 10,
+      character_count: 100,
+      page_char_counts: [],
+      metadata_only: true
+    };
+    cloudFiles.set(
+      new Map([
+        [
+          'One Piece',
+          [
+            {
+              provider: 'webdav',
+              fileId: 'f1',
+              path: 'One Piece/Volume 2.cbz',
+              modifiedTime: '2026-08-17T00:00:00.000Z',
+              size: 42
+            }
+          ]
+        ]
+      ])
+    );
+
+    let latest: Array<{ title: string; volumes: VolumeMetadata[] }> = [];
+    const unsubscribe = catalog.subscribe((value) => (latest = value as unknown as typeof latest));
+
+    const titles = latest.map((s) => s.title);
+    expect(titles).toContain('One Piece');
+    expect(titles).not.toContain('Ghost Series');
+    // The backed row kept its seat next to the installed one.
+    const onePiece = latest.find((s) => s.title === 'One Piece')!;
+    expect(onePiece.volumes.map((v) => v.volume_uuid).sort()).toEqual(['v1', 'v2']);
+
+    unsubscribe();
+    delete volumeRecord.v2;
+    delete volumeRecord.g1;
+    cloudFiles.set(new Map());
+  });
+
+  it('hides metadata-only rows entirely when no listing is loaded', () => {
+    volumeRecord.g1 = {
+      volume_uuid: 'g1',
+      series_uuid: 's9',
+      series_title: 'Ghost Series',
+      volume_title: 'Ghost 1',
+      mokuro_version: '0.4.11',
+      page_count: 10,
+      character_count: 100,
+      page_char_counts: [],
+      metadata_only: true
+    };
+    cloudFiles.set(new Map());
+
+    let latest: Array<{ title: string }> = [];
+    const unsubscribe = catalog.subscribe((value) => (latest = value as unknown as typeof latest));
+
+    expect(latest.map((s) => s.title)).toEqual(['One Piece']);
+
+    unsubscribe();
+    delete volumeRecord.g1;
+  });
+});

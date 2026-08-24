@@ -1,5 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
-import { needsDownload } from '$lib/catalog/volume-state';
+import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
 import { isArchiveSize } from '$lib/metadata/series-file';
 import type { ProviderType } from './sync/provider-interface';
 
@@ -159,4 +159,19 @@ export function createCloudFields(
  */
 export function hasCloudMetadata(volume: VolumeMetadata): boolean {
   return !!(needsDownload(volume) && (volume.cloudFileId || volume.driveFileId));
+}
+
+/**
+ * May the catalog show this volume? Installed pages always qualify; absent ones
+ * (placeholders and metadata-only rows) only when the ACTIVE listing carries the
+ * file to download them from — i.e. the placeholder pass minted them or the
+ * catalog decorated them (`cloudFieldsForRemovedVolume`) this session.
+ *
+ * A metadata-only row whose cloud copy is gone, or lives on a provider that is
+ * not connected right now, fails this check: its row, thumbnail and history stay
+ * in the database for the stats views, but it gets no card — a card would offer
+ * a download from a provider that does not have it.
+ */
+export function isCatalogVisible(volume: VolumeMetadata): boolean {
+  return isVolumeInstalled(volume) || hasCloudMetadata(volume);
 }

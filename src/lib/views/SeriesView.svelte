@@ -345,11 +345,12 @@
   });
   let hasAnyProvider = $derived(providerStatus.hasAnyAuthenticated);
 
-  // Never hide a row: a removed volume with no cloud file left is not in `notInstalled`,
-  // but once it has moved down here (see `sectionVolumes` above) the section is the only
-  // place it is drawn. The rows still up in the list (mixed mode) only justify a section
-  // when there is a provider to fetch them from — otherwise an offer of "available in
-  // <cloud>" would head an empty section built from a cached cloud id nothing can act on.
+  // Every absent row that reaches this view is one the active listing can deliver: the
+  // catalog store already dropped removed volumes with no current cloud file behind them
+  // (`isCatalogVisible`), so the section never seats an offer nothing can honor. The rows
+  // still up in the list (mixed mode) only justify a section when there is a provider to
+  // fetch them from — otherwise an offer of "available in <cloud>" would head an empty
+  // section built from a cached cloud id nothing can act on.
   // Declared here because it reads `hasAnyProvider`, which the provider block above sets up.
   let showCloudSection = $derived(
     sectionVolumes.length > 0 ||
