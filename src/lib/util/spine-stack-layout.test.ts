@@ -244,7 +244,31 @@ describe('spineBadgePlacements', () => {
 
   it('marks nothing for a volume the canvas paints nothing for', () => {
     const sizes = [{ width: 100, height: 200 }, null, { width: 100, height: 200 }];
-    expect(spineBadgePlacements(threeSpines([0, 1, 2], sizes)).map((p) => p.index)).toEqual([0, 2]);
+    const placements = spineBadgePlacements(threeSpines([0, 1, 2], sizes));
+    expect(placements.map((p) => p.index)).toEqual([0, 2]);
+    // …and the spine BEHIND the unpainted one is still covered by spine 0, which reaches
+    // 100: its visible strip is [100, 160], not the whole [60, 160] the gap suggests.
+    expect(placements[1].left).toBe((100 + 160) / 2 - 10);
+  });
+
+  it('looks past an unpainted neighbour to whatever is really covering the spine', () => {
+    // Spine 1 has no pixels, so spine 2 is covered by spine 0 (reaching 100) — reading only
+    // one spine back would centre the mark inside spine 0's territory.
+    const sizes = [{ width: 100, height: 200 }, null, { width: 100, height: 200 }];
+    const placements = spineBadgePlacements(threeSpines([2], sizes));
+    expect(placements[0].left).toBe((100 + 160) / 2 - 10);
+  });
+
+  it('takes the furthest-reaching painted spine in front, not just the nearest', () => {
+    // A wide spine 0 reaches 150 while the narrow spine 1 in front of it stops at 60:
+    // spine 2 shows [150, 160].
+    const sizes = [
+      { width: 150, height: 200 },
+      { width: 30, height: 200 },
+      { width: 100, height: 200 }
+    ];
+    const placements = spineBadgePlacements(threeSpines([2], sizes));
+    expect(placements[0].left).toBe((150 + 160) / 2 - 10);
   });
 
   it('follows the right-alignment CompositeCanvas draws with', () => {

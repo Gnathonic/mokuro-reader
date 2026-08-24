@@ -158,10 +158,16 @@ export function spineBadgePlacements<T>({
 
     const left = (lefts[i] ?? 0) + alignShift;
     const right = left + size.width;
-    // Whatever the spine in front leaves showing (nothing is in front of index 0).
-    const previous = i > 0 ? drawnSize(volumes[i - 1], i - 1) : null;
-    const coveredTo = previous ? (lefts[i - 1] ?? 0) + alignShift + previous.width : left;
-    const visibleLeft = Math.min(Math.max(left, coveredTo), right);
+    // Whatever the spines in FRONT leave showing. Every earlier index is painted over this
+    // one, so the cover reaches as far as the furthest of them — not just the nearest, which
+    // may be narrow, and not the one immediately before, which may not be painted at all.
+    let coveredTo = left;
+    for (let j = 0; j < i; j++) {
+      const front = drawnSize(volumes[j], j);
+      if (!front) continue;
+      coveredTo = Math.max(coveredTo, (lefts[j] ?? 0) + alignShift + front.width);
+    }
+    const visibleLeft = Math.min(coveredTo, right);
 
     placements.push({
       index: i,
