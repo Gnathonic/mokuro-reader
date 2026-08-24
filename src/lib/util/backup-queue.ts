@@ -12,7 +12,11 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
-import { markListingFresh, scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
+import {
+  cancelScheduledSeriesFileWrite,
+  markListingFresh,
+  scheduleSeriesFileWrite
+} from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
 
@@ -360,6 +364,13 @@ async function writeSeriesIndexesForRun(): Promise<void> {
   seriesNeedingIndexWrite.clear();
   for (const seriesTitle of seriesTitles) {
     try {
+      // The live per-completion write is very likely still pending for this
+      // exact series (2 s debounce, scheduled as its last volume finished).
+      // Cancel it FIRST: this pass writes the same file from the same builder,
+      // so letting the timer fire afterwards costs a duplicate PUT — new mtime,
+      // every other device re-downloading an unchanged file — and letting it
+      // fire DURING this write is a same-series race nothing serializes.
+      cancelScheduledSeriesFileWrite(seriesTitle);
       await unifiedCloudManager.writeSeriesFile(seriesTitle);
     } catch (error) {
       // Best-effort by contract: never fails a backup that succeeded.

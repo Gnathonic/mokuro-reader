@@ -14,6 +14,7 @@ const {
   flushCatalogFileWrites,
   markListingFresh,
   scheduleSeriesFileWrite,
+  cancelScheduledSeriesFileWrite,
   getActiveProvider,
   capturedTasks,
   addTaskMock
@@ -45,6 +46,9 @@ const {
     // success — a stand-in, so tests can assert IT was called (and with
     // what) without exercising the real 2s debounce.
     scheduleSeriesFileWrite: vi.fn(),
+    // The drain pass cancels whatever that schedule left pending before it
+    // writes the same series itself.
+    cancelScheduledSeriesFileWrite: vi.fn(),
     // A vi.fn() (not a plain arrow function) so individual tests can swap its
     // return value: most tests want the no-provider bail-out described
     // below, but the live-scheduling tests need a real provider to reach
@@ -74,7 +78,11 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 vi.mock('$lib/metadata/catalog-file-sync', () => ({ flushCatalogFileWrites }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ markListingFresh, scheduleSeriesFileWrite }));
+vi.mock('$lib/metadata/series-file-sync', () => ({
+  markListingFresh,
+  scheduleSeriesFileWrite,
+  cancelScheduledSeriesFileWrite
+}));
 
 // Best-effort and DB-backed in the real module; irrelevant to the scheduling
 // behavior under test here, so stubbed out rather than wired to a fake DB.
@@ -135,6 +143,27 @@ describe('finishBackupRun', () => {
     // …and strictly before the read-back, which the whole ordering exists for.
     expect(calls[5]).toBe('refresh');
     expect(calls).toHaveLength(6);
+  });
+
+  it('cancels each series’ pending live write before writing that series itself', async () => {
+    // The live per-completion schedule (2 s debounce) and this drain pass both
+    // target the same file. Left pending, the timer fires right after the drain
+    // wrote the index directly: a second PUT of byte-identical content, which
+    // moves the file's mtime and makes every other device re-download it — and
+    // the two writes for one series are not serialized against each other.
+    noteSeriesNeedingIndexWrite('One Piece');
+    noteSeriesNeedingIndexWrite('Berserk');
+
+    await finishBackupRun();
+
+    expect(
+      cancelScheduledSeriesFileWrite.mock.calls.map((args: unknown[]) => args[0]).sort()
+    ).toEqual(['Berserk', 'One Piece']);
+    // Cancelled BEFORE the direct write, not after: a timer that fires while the
+    // write is in flight is exactly the unserialized race.
+    expect(cancelScheduledSeriesFileWrite.mock.invocationCallOrder[0]).toBeLessThan(
+      writeSeriesFile.mock.invocationCallOrder[0]
+    );
   });
 
   it('writes no catalog for a run that uploaded nothing (export-to-disk drains)', async () => {

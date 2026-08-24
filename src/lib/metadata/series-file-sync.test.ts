@@ -61,6 +61,7 @@ vi.mock('$lib/catalog/db', () => ({
 import {
   _resetListingRefreshForTests,
   _resetWriteSlotsForTests,
+  cancelScheduledSeriesFileWrite,
   flushSeriesFileWrites,
   initSeriesFileSync,
   LISTING_TIMEOUT_MS,
@@ -420,6 +421,32 @@ describe('series-file-sync', () => {
     // The timer is cancelled, not merely fired early.
     await vi.advanceTimersByTimeAsync(2000);
     expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pending write for one series without touching the others', async () => {
+    // The drain pass writes the run's indexes directly. Whatever the live
+    // per-completion schedule left pending for the same series is now redundant:
+    // firing it too would be a second PUT of identical bytes (mtime churn on
+    // every other device) racing the direct write for the same file.
+    addVolume('Berserk', 'Volume 1');
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+
+    scheduleSeriesFileWrite('One Piece');
+    scheduleSeriesFileWrite('Berserk');
+    cancelScheduledSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile.mock.calls.map((args: unknown[]) => args[0])).toEqual(['Berserk']);
+  });
+
+  it('cancels by the same key the schedule used, whatever the caller spells it', async () => {
+    scheduleSeriesFileWrite('One Piece');
+    cancelScheduledSeriesFileWrite('  one   piece  ');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
   it('fires after a fact edit through the store', async () => {

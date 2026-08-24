@@ -303,6 +303,32 @@ export function scheduleSeriesFileWrite(seriesTitle: string, options?: ScheduleO
 }
 
 /**
+ * Drop a queued write for this series, timer and all.
+ *
+ * For a caller that is about to write the SAME file itself: the drain pass at
+ * the end of a backup run (`writeSeriesIndexesForRun`) writes every series the
+ * run backed up directly, and the live per-completion schedules are still
+ * pending for those very series. Left alone, each timer fires seconds later and
+ * PUTs byte-identical content — mtime churn that makes every other device
+ * re-download the file — and, worse, can land while the direct write for the
+ * same series is still in flight, which is the one write pair nothing
+ * serializes (the concurrency cap orders writes THROUGH this module only).
+ *
+ * A cancelled write is not a lost one: the caller is writing the same file with
+ * the same builder. Anything scheduled AFTER the cancel is a new edit and keeps
+ * its own timer.
+ */
+export function cancelScheduledSeriesFileWrite(seriesTitle: string): void {
+  const key = normalizeSeriesKey(seriesTitle);
+  if (!key) return;
+  const timer = timers.get(key);
+  if (timer) clearTimeout(timer);
+  timers.delete(key);
+  pendingTitles.delete(key);
+  pendingOptions.delete(key);
+}
+
+/**
  * The reconcile pass currently running. Not the dedupe that matters — the
  * per-key debounce already collapses repeat schedules for the same folder — it
  * just stops two overlapping listings from each paying for the volumes scan.
