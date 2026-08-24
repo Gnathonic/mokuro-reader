@@ -53,7 +53,12 @@ vi.mock('$lib/metadata/store', () => ({
 }));
 
 import { unifiedSyncService } from './unified-sync-service';
-import { seriesReadingState, setSeriesReadingStates, volumesWithTrash } from '$lib/settings';
+import {
+  seriesReadingState,
+  setSeriesReadingStates,
+  updateSeriesReadingState,
+  volumesWithTrash
+} from '$lib/settings';
 
 // downloadVolumeDataFile is private; these tests target it directly because it
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
@@ -81,6 +86,15 @@ function makeProvider(
     downloadFile: vi.fn(download),
     deleteFile: vi.fn(del)
   } as unknown as SyncProvider;
+}
+
+/**
+ * The store is typed as `VolumeData` instances; these fixtures are the plain
+ * JSON shape the sync layer round-trips (`parseVolumesFromJson` is mocked here,
+ * so nothing ever constructs an instance).
+ */
+function setLocalVolumes(volumes: Record<string, unknown>) {
+  volumesWithTrash.set(volumes as Parameters<typeof volumesWithTrash.set>[0]);
 }
 
 function stubCache(files: CloudFileMetadata[]) {
@@ -202,7 +216,7 @@ describe('the series section of volume-data.json', () => {
 
   beforeEach(() => {
     // Both halves are module-level stores shared across tests in this file.
-    volumesWithTrash.set({});
+    setLocalVolumes({});
     setSeriesReadingStates({});
   });
 
@@ -300,6 +314,127 @@ describe('the series section of volume-data.json', () => {
       lastProgressUpdate: '2026-01-02T00:00:00Z',
       progress: 5
     });
+  });
+
+  it('heals a future-stamped cloud section instead of re-clamping it forever', async () => {
+    // Regression for the clamp-poison hazard: `parseSeriesSection` clamps a
+    // `lastUpdated` more than five minutes ahead back to this device's `now`.
+    // Comparing the merge against the PARSED section made that clamped value
+    // look identical to the cloud's, so the poison was never written back —
+    // every device re-clamped it to a fresher `now` on every sync, so the
+    // poisoned entry outranked (and silently reverted) every honest edit to
+    // that series, permanently. Comparing against the RAW section heals it in
+    // one upload. Only `Date` is faked — a real Blob's `.text()` needs real
+    // timers under jsdom.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      setSeriesReadingStates({});
+      stubCache([fileMeta('only')]);
+      const uploads: Array<Record<string, any>> = [];
+      const downloadFile = vi.fn(async () =>
+        jsonBlob(
+          seriesJson({ 'one piece': { read_count: 2, lastUpdated: '2999-01-01T00:00:00.000Z' } })
+        )
+      );
+      const provider = {
+        type: 'mega',
+        downloadFile,
+        uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+          uploads.push(JSON.parse(await blob.text()));
+        })
+      } as unknown as SyncProvider;
+
+      await svc.syncVolumeData(provider);
+
+      // One upload, carrying the clamped stamp — the cloud is now healed.
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].series['one piece'].lastUpdated).toBe('2026-08-23T12:00:00.000Z');
+
+      // A minute later, an honest local edit wins the next merge instead of
+      // being reverted by a stamp that re-clamps to a fresher `now`.
+      vi.setSystemTime(new Date('2026-08-23T12:01:00.000Z'));
+      updateSeriesReadingState('one piece', { read_count: 3 });
+      const healed = uploads[0];
+      downloadFile.mockImplementation(async () => jsonBlob(healed));
+
+      await svc.syncVolumeData(provider);
+
+      expect(get(seriesReadingState)['one piece'].read_count).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('writes the fold back over the surviving copy even when local already matches it', async () => {
+    // Two copies; the one that survives the delete sweep holds the STALE
+    // series entry. Local already equals the fold, so only a comparison
+    // against the surviving copy's raw section can notice that the merged
+    // value still has to be written — otherwise the newer copy is deleted and
+    // its state is lost with it.
+    const volume = { 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } };
+    setLocalVolumes({ ...volume });
+    setSeriesReadingStates({
+      'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+    stubCache([fileMeta('first'), fileMeta('second')]);
+    const uploads: Array<Record<string, any>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async (file: CloudFileMetadata) =>
+        jsonBlob({
+          ...volume,
+          series:
+            file.fileId === 'first'
+              ? { 'one piece': { read_count: 1, lastUpdated: '2026-08-01T00:00:00.000Z' } }
+              : { 'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+        })
+      ),
+      deleteFile: vi.fn(async () => {}),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].series['one piece'].read_count).toBe(4);
+  });
+
+  it('does not re-upload a file whose state matches but whose key order differs', async () => {
+    // Two devices build the same maps in different insertion orders. Byte-order
+    // churn is not a change: no upload, no mtime bump, no ping-pong.
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+      'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 7 }
+    });
+    setSeriesReadingStates({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' },
+      'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+    stubCache([fileMeta('only')]);
+    const uploads: Array<Record<string, any>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({
+          'vol-2': { progress: 7, lastProgressUpdate: '2026-01-03T00:00:00Z' },
+          'vol-1': { progress: 5, lastProgressUpdate: '2026-01-02T00:00:00Z' },
+          series: {
+            'one piece': { lastUpdated: '2026-08-20T00:00:00.000Z', read_count: 2 },
+            berserk: { lastUpdated: '2026-08-22T00:00:00.000Z', read_count: 7 }
+          }
+        })
+      ),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(uploads).toEqual([]);
   });
 
   it('omits the section entirely when there is no series state at all', async () => {

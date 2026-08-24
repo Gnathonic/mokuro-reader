@@ -11,7 +11,8 @@ import {
   seriesReadingState,
   setSeriesReadingStates,
   SERIES_SECTION_KEY,
-  type SeriesReadingStates
+  type SeriesReadingStates,
+  type VolumeData
 } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
@@ -70,8 +71,23 @@ export interface SyncResult {
  * `lastUpdated`.
  */
 export interface CloudVolumeDataFile {
-  volumes: Record<string, any>;
+  volumes: Record<string, VolumeData>;
   series: SeriesReadingStates;
+  /**
+   * The `series` section exactly as the surviving cloud copy holds it —
+   * unparsed, unsanitized, undefined when the file has no section.
+   *
+   * The upload decision compares against THIS, never against `series`.
+   * `parseSeriesSection` rewrites what it reads: a `lastUpdated` more than five
+   * minutes in the future is clamped to the reading device's `now`. Comparing
+   * the merge against the parsed section would make the clamped value look
+   * identical to what the cloud already holds, so the poison would never be
+   * written back — and every device would re-clamp it to a fresher `now` on
+   * every sync, silently reverting every honest edit to that series, forever.
+   * Comparing against the raw section makes the first sync upload the healed
+   * value and converge. Same rule, same reason, as `syncSeriesMetadata`.
+   */
+  rawSeries?: unknown;
 }
 
 /**
@@ -366,12 +382,13 @@ class UnifiedSyncService {
         // server-side but still present in a stale provider cache — so a
         // not-found copy must not discard the readable copies with it.
         const downloads = await Promise.allSettled(
-          volumeDataFiles.map(async (file) => {
+          volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> => {
             const blob = await provider.downloadFile(file);
             const data = await this.blobToJson(blob);
             return {
               volumes: parseVolumesFromJson(JSON.stringify(data)),
-              series: parseSeriesSection(data?.[SERIES_SECTION_KEY])
+              series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
+              rawSeries: data?.[SERIES_SECTION_KEY]
             };
           })
         );
@@ -400,7 +417,7 @@ class UnifiedSyncService {
         }
 
         // Merge all readable copies (newest lastProgressUpdate wins per volume)
-        const merged: any = {};
+        const merged: Record<string, VolumeData> = {};
         let mergedSeries: SeriesReadingStates = {};
         for (const entry of readable) {
           for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
@@ -410,7 +427,7 @@ class UnifiedSyncService {
             } else {
               // Keep the volume with the most recent progress update
               const existingTime = new Date(existing.lastProgressUpdate || 0).getTime();
-              const newTime = new Date((volumeData as any).lastProgressUpdate || 0).getTime();
+              const newTime = new Date(volumeData.lastProgressUpdate || 0).getTime();
               if (newTime > existingTime) {
                 merged[volumeId] = volumeData;
               }
@@ -434,7 +451,14 @@ class UnifiedSyncService {
         }
 
         console.log(`✅ Merged ${readable.length} readable copies into 1`);
-        return { volumes: merged, series: mergedSeries };
+        // The raw section comes from the copy that SURVIVES the delete sweep —
+        // the fold is only durable once it is written back over that copy, so
+        // that copy is what the upload decision has to be measured against.
+        return {
+          volumes: merged,
+          series: mergedSeries,
+          rawSeries: readable[0].result.value.rawSeries
+        };
       }
 
       // Single file - download normally
@@ -442,7 +466,8 @@ class UnifiedSyncService {
       const data = await this.blobToJson(blob);
       return {
         volumes: parseVolumesFromJson(JSON.stringify(data)),
-        series: parseSeriesSection(data?.[SERIES_SECTION_KEY])
+        series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
+        rawSeries: data?.[SERIES_SECTION_KEY]
       };
     } catch (error) {
       // File not found is not an error
@@ -516,11 +541,20 @@ class UnifiedSyncService {
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
 
-    // Step 6: Upload if anything differs from what the cloud holds
+    // Step 6: Upload if anything differs from what the cloud actually holds.
+    //
+    // The series half is compared against the RAW cloud section, not the parsed
+    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
+    // sanitized value looks like a match and never heals. `stableStringify`
+    // sorts keys, so two devices whose maps hold identical state in different
+    // insertion orders stop re-uploading the same bytes at each other.
     const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
-    const cloudFile = this.composeVolumeDataFile(cloud?.volumes ?? {}, cloud?.series ?? {});
+    const cloudFile = this.composeVolumeDataFile(
+      cloud?.volumes ?? {},
+      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+    );
 
-    if (JSON.stringify(nextFile) !== JSON.stringify(cloudFile)) {
+    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
       await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
