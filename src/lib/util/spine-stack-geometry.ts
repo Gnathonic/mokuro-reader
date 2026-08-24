@@ -24,9 +24,21 @@ export const CARD_BASE_WIDTH = 250;
 export const CARD_BASE_HEIGHT = 360;
 
 /**
- * Cap for cloud thumbnail stacks, to limit memory and network use. Each decoded bitmap is
- * ~360KB (250×360×4 RGBA) against a 100MB cache, so an uncapped 100+ volume series thrashes
- * the cache in an evict/re-decode loop.
+ * Cap for the stack of a series with NOTHING on this device, to limit memory and network
+ * use. Each decoded bitmap is ~360KB (250×360×4 RGBA) against a 100MB cache, so an
+ * uncapped cloud-only library thrashes the cache in an evict/re-decode loop.
+ *
+ * It applies to that case ONLY. A series with volumes on this device is stacked by the
+ * local rules, all of it, cloud-only volumes included — user decision, 2026-08-23: a
+ * partly-downloaded series that silently drew 25 of its 42 volumes was worse than the
+ * memory it saved. That is bounded in practice rather than by a number here:
+ *
+ * - the card's canvas only loads while it is on screen (CompositeCanvas' own
+ *   IntersectionObserver), so the bitmaps in play are the visible cards' stacks;
+ * - the thumbnail cache is 100MB with LRU eviction, and a realistic long series (~213
+ *   volumes ≈ 77MB) fits inside it;
+ * - the cover fetch follows the same selection rule, so nothing is downloaded for a
+ *   volume the stack is not drawing.
  */
 export const MAX_CLOUD_STACK = 25;
 
@@ -231,7 +243,12 @@ export function computeStepSizes({
 export interface CardStackSelectionInput<T> {
   /** Volumes present on this device. */
   localVolumes: T[];
-  /** The subset of `localVolumes` that is not finished. */
+  /**
+   * The volumes of the series that are NOT finished — of BOTH kinds. "Hide read" is a rule
+   * about volumes, not about where their pages live, so a caller must count the cloud-only
+   * ones here too: a finished placeholder (progress synced against its adopted uuid) hides
+   * exactly like a finished local volume.
+   */
   unreadVolumes: T[];
   /**
    * Cloud-only volumes: the whole stack when nothing is local, and the rest of the series
@@ -280,19 +297,19 @@ export function selectCardStackVolumes<T>({
   maxCloudStack = MAX_CLOUD_STACK
 }: CardStackSelectionInput<T>): T[] {
   if (localVolumes.length > 0) {
-    const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
     // A series can be only PARTLY here. Its cloud-only volumes are part of it and belong
-    // on the shelf — marked as not-on-device, never dropped — after the ones that are.
+    // on the shelf — marked as not-on-device, never dropped.
     //
     // The cloud rules below (the thumbnail-cache cap, the compact collapse) do NOT apply
     // to them: those exist for a series that is ENTIRELY absent, where the whole stack
     // would otherwise be fetched from the cloud. A series with volumes on this device is
-    // stacked by the local rules, all of it. `hideRead` still applies to the local half
-    // only: a volume that is not here has nothing read to hide.
+    // stacked by the local rules, all of it — "hide read" included, over the whole series
+    // rather than half of it.
+    const everything = mergeInVolumeOrder(localVolumes, placeholders, compare);
     const stack =
-      placeholders.length > 0
-        ? mergeInVolumeOrder(sourceVolumes, placeholders, compare)
-        : sourceVolumes;
+      hideRead && unreadVolumes.length > 0
+        ? mergeInVolumeOrder(unreadVolumes, [], compare)
+        : everything;
     return stackCount === 0 ? stack : stack.slice(0, stackCount);
   }
 

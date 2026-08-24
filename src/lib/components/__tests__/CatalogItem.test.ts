@@ -548,16 +548,20 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     return container.querySelectorAll('[data-testid="download-badge"]');
   }
 
-  it('draws no badge while any volume is installed', () => {
+  function cloudMarks(container: HTMLElement) {
+    return container.querySelectorAll('[data-testid="cloud-card-mark"]');
+  }
+
+  it('draws no cloud mark while any volume is installed', () => {
     const { container } = render(CatalogItem, {
       props: {
         volumes: [cover(), cover({ volume_uuid: 'uuid-2', metadata_only: true })]
       }
     });
-    expect(badges(container)).toHaveLength(0);
+    expect(cloudMarks(container)).toHaveLength(0);
   });
 
-  it('draws one badge when every volume is metadata-only', () => {
+  it('draws the cloud mark when every volume is metadata-only', () => {
     const { container } = render(CatalogItem, {
       props: {
         volumes: [
@@ -566,33 +570,38 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
         ]
       }
     });
-    expect(badges(container)).toHaveLength(1);
+    // The cloud card's own mark, not the per-spine badge: an absent series is marked the
+    // way cloud series have always been marked.
+    expect(cloudMarks(container)).toHaveLength(1);
+    expect(badges(container)).toHaveLength(0);
   });
 
-  it('draws one badge for a cloud-only (placeholder) series, as before', () => {
+  it('draws the same mark for a cloud-only (placeholder) series, as before', () => {
     const { container } = render(CatalogItem, {
       props: {
         volumes: [placeholderVolume({ thumbnail_width: 250, thumbnail_height: 360 })]
       }
     });
-    expect(badges(container)).toHaveLength(1);
+    expect(cloudMarks(container)).toHaveLength(1);
+    expect(badges(container)).toHaveLength(0);
   });
 
   it('never intercepts the card click', () => {
     const { container } = render(CatalogItem, {
       props: { volumes: [cover({ metadata_only: true })] }
     });
-    const badge = badges(container)[0] as HTMLElement;
-    expect(badge.className).toContain('pointer-events-none');
+    const mark = cloudMarks(container)[0] as HTMLElement;
+    expect(mark.className).toContain('pointer-events-none');
   });
 
   it('lets the download box speak for itself when no cover has arrived', () => {
     // No thumbnail dimensions: the card falls back to its download boxes. The 64px icon
-    // and its caption ARE the mark — a corner badge on top would only repeat them.
+    // and its caption ARE the mark — a corner glyph on top would only repeat them.
     const { container } = render(CatalogItem, {
       props: { volumes: [localVolume({ metadata_only: true })] }
     });
     expect(container.textContent).toContain('Click to download');
+    expect(cloudMarks(container)).toHaveLength(0);
     expect(badges(container)).toHaveLength(0);
   });
 
@@ -600,10 +609,9 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
     const { container } = render(CatalogItem, {
       props: { volumes: [cover({ metadata_only: true })] }
     });
-    const badge = badges(container)[0] as HTMLElement;
-    expect(badge.querySelector('.sr-only')?.textContent).toBe('Not on this device');
-    expect(badge.getAttribute('aria-hidden')).toBeNull();
-    expect(badge.getAttribute('title')).toBeNull();
+    const mark = cloudMarks(container)[0] as HTMLElement;
+    expect(mark.querySelector('.sr-only')?.textContent).toBe('Not on this device');
+    expect(mark.getAttribute('aria-hidden')).toBeNull();
   });
 });
 
@@ -720,6 +728,7 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
       // one cannot. Tracked here so a refactor cannot quietly drop it.
       greenTitle: card.className.includes('text-green-400'),
       chip: card.querySelector('p.text-xs')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+      cloudMarks: card.querySelectorAll('[data-testid="cloud-card-mark"]').length,
       badges: card.querySelectorAll('[data-testid="download-badge"]').length
     };
   }
@@ -750,7 +759,8 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
       mutedTitle: true,
       greenTitle: false,
       chip: '2 volumes in Drive',
-      badges: 1
+      cloudMarks: 1,
+      badges: 0
     });
   });
 
@@ -763,6 +773,7 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
       mutedTitle: false,
       greenTitle: false,
       chip: null,
+      cloudMarks: 0,
       badges: 0
     });
   });
@@ -784,7 +795,8 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
         mutedTitle: false,
         greenTitle: true,
         chip: '1 volume in Drive',
-        badges: 1
+        cloudMarks: 1,
+        badges: 0
       });
     } finally {
       updateProgress('m-1', 0, 0, false);
@@ -929,7 +941,7 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
     expect(badges(container)).toHaveLength(0);
   });
 
-  it('does not double-mark: an all-absent series keeps the one card-level mark', () => {
+  it('does not double-mark: an all-absent series keeps the cloud card mark alone', () => {
     const { container } = render(CatalogItem, {
       props: {
         volumes: [
@@ -939,7 +951,8 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
         ]
       }
     });
-    expect(badges(container)).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="cloud-card-mark"]')).toHaveLength(1);
+    expect(badges(container)).toHaveLength(0);
   });
 
   it('marks only what the stack actually shows', () => {
@@ -1109,6 +1122,32 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
     // Every spine has pixels: nothing is silently trimmed out of the picture.
     expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+  });
+
+  it('hides a finished volume of either kind when "hide read" is on', async () => {
+    // Progress is keyed by uuid, and an indexed placeholder carries the volume's real one,
+    // so a cloud volume can be finished on another device. "Hide read" must treat it like
+    // any other finished volume.
+    updateProgress('v-1', 10, 0, true);
+    updateProgress('c-3', 10, 0, true);
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+            painted({ volume_uuid: 'v-2', volume_title: 'Vol 2' }),
+            cloudOnly({ volume_uuid: 'c-3', volume_title: 'Vol 3', page_count: 10 }),
+            cloudOnly({ volume_uuid: 'c-4', volume_title: 'Vol 4', page_count: 10 })
+          ]
+        }
+      });
+      await tick();
+
+      expect(drawnUuids()).toEqual(['v-2', 'c-4']);
+    } finally {
+      updateProgress('v-1', 0, 0, false);
+      updateProgress('c-3', 0, 0, false);
+    }
   });
 
   it('keeps the cloud tail inside the stack count', async () => {

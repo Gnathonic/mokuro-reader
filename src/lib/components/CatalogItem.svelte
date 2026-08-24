@@ -40,6 +40,7 @@
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
   import {
     fetchCloudThumbnail,
     getCachedCloudThumbnail,
@@ -62,18 +63,22 @@
   let localVolumes = $derived(seriesVolumes.filter((v) => !v.isPlaceholder));
   let hasLocalVolumes = $derived(localVolumes.length > 0);
 
-  // Find unread volumes (only among local volumes)
-  let unreadVolumes = $derived(
-    localVolumes.filter((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
-  );
+  /** Not read through, by the app's one completion rule (raw progress, no display default). */
+  function isUnread(vol: VolumeMetadata): boolean {
+    return !isVolumeComplete($progress?.[vol.volume_uuid] ?? 0, vol.page_count);
+  }
+
+  // Unread among the volumes that are HERE — what decides the card's "series finished"
+  // marker, which only a series with rows can claim.
+  let unreadLocalVolumes = $derived(localVolumes.filter(isUnread));
 
   // Display volume: first unread, or first local, or first placeholder
-  let volume = $derived(unreadVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
+  let volume = $derived(unreadLocalVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
 
   // UI state flag. Completion is the ONE thing a series with rows can say that a cloud-only
   // one cannot: it has read history. Everything else about an absent series' card is the
   // cloud treatment (see `seriesNeedsDownload` below).
-  let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
+  let isComplete = $derived(unreadLocalVolumes.length === 0 && hasLocalVolumes);
 
   // Not one page of this series is on the device: cloud-only placeholders, rows whose
   // files were removed, or a mix of the two. `needsDownload` covers both absent states —
@@ -116,6 +121,11 @@
       return vol;
     });
   });
+
+  // Unread across the WHOLE series — what "hide read" hides. Built from the same arrays the
+  // stack rule merges (raw rows, enriched cloud volumes) so the references match, and
+  // spanning both absent states: a finished cloud volume hides like any other.
+  let unreadVolumes = $derived([...localVolumes, ...enrichedPlaceholders].filter(isUnread));
 
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
@@ -675,20 +685,24 @@
   }
 </script>
 
-<!-- Nothing of this series is here: the same mark every absent volume gets, on whichever
-     cover stack the card ended up drawing (real thumbnails, or the boxes it falls back to
-     while they are generated). Named for screen readers: on a card it is the only cue. -->
+<!-- Nothing of this series is here. The mark is the cloud card's own, unchanged since
+     before the not-on-device work: a download glyph in the corner of the cover stack, the
+     design language people already read as "this one is in the cloud". Both absent kinds
+     get it — a series whose files were removed IS a cloud series (see `seriesNeedsDownload`).
+     Named for screen readers, since on a card it is the only cue. -->
 {#snippet absentMark()}
   {#if seriesNeedsDownload}
-    {#if isDownloading}
-      <div
-        class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
-      >
+    <div
+      data-testid="cloud-card-mark"
+      class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
+    >
+      {#if isDownloading}
         <Spinner size="4" color="blue" />
-      </div>
-    {:else}
-      <DownloadBadge class="right-2 bottom-8" label="Not on this device" />
-    {/if}
+      {:else}
+        <DownloadSolid class="h-4 w-4 text-blue-400" />
+      {/if}
+      <span class="sr-only">Not on this device</span>
+    </div>
   {/if}
 {/snippet}
 
@@ -739,7 +753,7 @@
               <!-- Named: on a card that is otherwise a normal library card, this badge is
                    the only thing that says the volume under it is not here. -->
               <DownloadBadge
-                size="sm"
+                size="spine"
                 class=""
                 style="left: {mark.left}px; top: {mark.top}px;"
                 label="{stackedVolumes[mark.index].volume_title} not on this device"

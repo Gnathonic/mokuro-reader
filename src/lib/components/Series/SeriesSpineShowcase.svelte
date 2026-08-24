@@ -78,6 +78,7 @@
   import CompositeCanvas from '../CompositeCanvas.svelte';
   import DownloadBadge from '../DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 
@@ -120,8 +121,10 @@
 
   let sortedVolumes = $derived([...volumes].sort(sortVolumes));
   let localVolumes = $derived(sortedVolumes.filter((v) => !v.isPlaceholder));
+  // Unread across the WHOLE series, both absent kinds included — the card hides read
+  // volumes by the same rule (see CatalogItem), and this subset only exists to agree with it.
   let unreadVolumes = $derived(
-    localVolumes.filter((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
+    sortedVolumes.filter((v) => !isVolumeComplete($progress?.[v.volume_uuid] ?? 0, v.page_count))
   );
 
   /**
@@ -177,12 +180,30 @@
     })
   );
 
-  // Fetch targets come from `displayedVolumes` (props/settings only), never from the
-  // enriched list: depending on `cloudThumbnailData` here would make each arriving
-  // thumbnail re-run the effect that fetches thumbnails.
+  /**
+   * Every volume this shelf needs a cover for: the ones it DRAWS (`displayedVolumes`, its
+   * 60-spine memory cap) plus the ones it MEASURES (`cardVolumes`, the card's own stack,
+   * which a partly-downloaded series can push past that window). Measuring is cheap —
+   * one image each, and the uniform height is an average over all of them — while drawing
+   * is what the cap exists for, so the two lists are allowed to differ.
+   *
+   * Props/settings only, never the enriched list: depending on `cloudThumbnailData` here
+   * would make each arriving thumbnail re-run the effect that fetches thumbnails.
+   */
+  let coverTargets = $derived.by(() => {
+    const seen = new Set<string>();
+    const targets: VolumeMetadata[] = [];
+    for (const vol of [...displayedVolumes, ...cardVolumes]) {
+      if (seen.has(vol.volume_uuid)) continue;
+      seen.add(vol.volume_uuid);
+      targets.push(vol);
+    }
+    return targets;
+  });
+
   $effect(() => {
     let cancelled = false;
-    for (const vol of displayedVolumes) {
+    for (const vol of coverTargets) {
       // Already have pixels locally, or nothing to fetch: leave it alone.
       if (vol.thumbnail || !vol.cloudThumbnailFileId) continue;
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
@@ -664,7 +685,7 @@
         border={true}
       />
       {#each spineBadges as mark (showcaseVolumes[mark.index].volume_uuid)}
-        <DownloadBadge size="sm" class="" style="left: {mark.left}px; top: {mark.top}px;" />
+        <DownloadBadge size="spine" class="" style="left: {mark.left}px; top: {mark.top}px;" />
       {/each}
     </div>
   </div>

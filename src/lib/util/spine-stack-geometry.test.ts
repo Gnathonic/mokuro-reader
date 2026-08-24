@@ -711,7 +711,9 @@ describe('selectCardStackVolumes', () => {
     expect(
       selectCardStackVolumes({
         localVolumes: local,
-        unreadVolumes: unread,
+        // The caller counts the unread volumes of the WHOLE series (see the type): the
+        // cloud-only one has no progress, so it is one of them.
+        unreadVolumes: [...unread, 'cloud-0'],
         placeholders: ['cloud-0'],
         hideRead: true,
         stackCount: 0,
@@ -747,6 +749,36 @@ describe('selectCardStackVolumes', () => {
     });
     expect(stacked).toHaveLength(1 + placeholders.length);
     expect(stacked).toEqual(['a', ...placeholders]);
+  });
+
+  it('hides the finished volumes of a mixed series, whichever kind they are', () => {
+    // "Hide read" is a rule about volumes, not about where their pages live: a finished
+    // cloud-only volume (progress synced against its adopted uuid) hides exactly like a
+    // finished local one.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['Vol 1', 'Vol 2'],
+        unreadVolumes: ['Vol 2', 'Vol 4'],
+        placeholders: ['Vol 3', 'Vol 4'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false,
+        compare: (a, b) => a.localeCompare(b, undefined, { numeric: true })
+      })
+    ).toEqual(['Vol 2', 'Vol 4']);
+  });
+
+  it('shows the whole mixed series once every volume is finished', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: ['Vol 1'],
+        unreadVolumes: [],
+        placeholders: ['Vol 2'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['Vol 1', 'Vol 2']);
   });
 
   it('puts the missing volumes back where they belong when given the series order', () => {
