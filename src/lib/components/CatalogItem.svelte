@@ -371,16 +371,27 @@
     const count = stackedVolumes.length;
 
     // Shared with the series editor's spine showcase so both agree on which spine a
-    // pointer is over. `leftOffset` is the stack's own inset, so the hit test runs in
-    // stack-local coordinates; past every spine's right edge falls back to the back-most
-    // volume (nothing is drawn there, but the nudge gesture still needs a target).
+    // pointer is over. The hit test runs in stack-local coordinates, so the pointer has to
+    // be shifted by whatever moved the stack — and the two branches move it differently:
+    // CompositeCanvas pins the stack's RIGHT edge to the container (`alignShift`, mirrored
+    // from the shelf and from `spineBadgePlacements`), while the placeholder boxes are
+    // drawn at the centering inset. Using `leftOffset` for both put the pointer up to a
+    // spine's width away from what was painted, so a nudge landed on the neighbour.
+    // Past every spine's right edge falls back to the back-most volume (nothing is drawn
+    // there, but the nudge gesture still needs a target).
     const layout = computeStackLayout({
       count,
       baseWidth: BASE_WIDTH,
       horizontalStepPx: sizes.horizontal,
       volumeOffsetsByIndex: volumeOffsets
     });
-    hoveredVolumeIndex = hitTestStack(layout, mouseX - sizes.leftOffset, BASE_WIDTH) ?? count - 1;
+    let shift = sizes.leftOffset;
+    if (hasRenderableThumbnails) {
+      // `?? 0` exactly like the canvas: a last spine with no pixels contributes no width.
+      const lastWidth = getCanvasDimensions(stackedVolumes[count - 1].volume_uuid)?.width ?? 0;
+      shift = containerDimensions.innerWidth - ((layout.lefts[count - 1] ?? 0) + lastWidth);
+    }
+    hoveredVolumeIndex = hitTestStack(layout, mouseX - shift, BASE_WIDTH) ?? count - 1;
   }
 
   $effect(() => {

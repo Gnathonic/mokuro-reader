@@ -350,6 +350,28 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     expect(resolvePatch(0)).toEqual({ volume_offsets: { 'uuid-1': 2 } });
   });
 
+  it('hit-tests where the canvas actually painted, not where centering would put it', async () => {
+    // The canvas pins the stack's RIGHT edge to the container (`alignShift`); the hit test
+    // used the centering inset instead. On a stack whose last spine is narrower than the
+    // first, the two are ~139px apart — the pointer sits over volume 1's cover and the
+    // nudge lands on volume 2.
+    const mixedWidths = [
+      withThumbnail({ volume_uuid: 'uuid-0', volume_title: 'Vol 1' }),
+      withThumbnail({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', thumbnail_width: 125 })
+    ];
+    const { container } = render(CatalogItem, { props: { volumes: mixedWidths } });
+    const card = getCard(container);
+
+    await fireEvent.mouseEnter(card);
+    // Inside the painted first spine (drawn from x=152.5 across 250px, on top of the
+    // narrower second one).
+    await fireEvent.mouseMove(card, { clientX: 290, clientY: 10, shiftKey: true, altKey: true });
+    await fireEvent.wheel(card, { shiftKey: true, altKey: true, deltaY: -1 });
+    await flushSpineOffsetWrites();
+
+    expect(resolvePatch(0)).toEqual({ volume_offsets: { 'uuid-0': 1 } });
+  });
+
   it('alt+shift+right-click over a volume clears that volume key only', async () => {
     emitSeriesMetadata(meta({ volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } }));
     const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
