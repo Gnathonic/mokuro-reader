@@ -32,9 +32,10 @@ import { upsertFromSeriesFile } from './store';
  *   download is skipped, and the whole run never rejects. It runs behind a
  *   reading flow and must never surface there.
  * - Facts go through `upsertFromSeriesFile`, which applies only strictly newer
- *   facts (and fills a missing shelf alignment, which is index data and follows
- *   no stamp) and never schedules a `series.json` write — so a refresh can never
- *   ping-pong into an upload (see `series-file-sync.ts`).
+ *   facts and never schedules a `series.json` write — so a refresh can never
+ *   ping-pong into an upload (see `series-file-sync.ts`). The shelf alignment in
+ *   the file is not applied to the record at all: the cached record IS how it
+ *   reaches the catalog (`getSpineOffsets` joins it at display time).
  * - A run is BOUND to the provider whose listing produced it. Between the fetch
  *   and the (background, possibly queued) run the user can switch accounts, and
  *   the listing's file ids, paths and folder set all belong to the old one:
@@ -152,9 +153,10 @@ async function refreshOne(
   };
 
   try {
-    // Facts (strictly-newer only) plus any shelf alignment this library is
-    // missing — offsets are index data, so they fill regardless of the stamp,
-    // and an offsets-only sidecar can create the record. Never a write trigger.
+    // Facts only, strictly-newer only, and never a write trigger. The shelf
+    // alignment is deliberately not applied: `record` above is what carries it
+    // to the catalog, joined at display time (`getSpineOffsets`), so it stays
+    // the publishing device's value rather than becoming ours.
     await upsertFromSeriesFile(task.title, parsed);
   } catch (error) {
     console.warn(`[series-index-sync] could not apply the sidecar for '${task.title}':`, error);

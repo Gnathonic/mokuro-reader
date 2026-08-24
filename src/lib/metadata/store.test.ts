@@ -500,7 +500,11 @@ describe('series metadata store', () => {
     expect((await getSeriesMetadataForTitle('B'))?.tag).toBe('22');
   });
 
-  it('fills missing spine offsets from a sidecar without touching the facts stamp', async () => {
+  it('never adopts a published offset into this library’s own record', async () => {
+    // Inheritance is a JOIN at display time (`getSpineOffsets` against the
+    // cached `series_index` file), never an adoption. Copying the published
+    // value in here would turn it into OUR value: we would republish it
+    // forever, and the device that measured it could never correct or reset it.
     await updateSeriesMetadata('One Piece', { external_ids: { anilist: 13 } });
     const before = (await getSeriesMetadataForTitle('One Piece'))!;
 
@@ -524,16 +528,18 @@ describe('series metadata store', () => {
       ]
     });
 
-    expect(applied).toBe(true);
+    // Nothing to apply: no facts, no clock to relay, and offsets are not ours.
+    expect(applied).toBe(false);
     const after = (await getSeriesMetadataForTitle('One Piece'))!;
-    expect(after.spine_offset).toBe(9);
-    expect(after.volume_offsets).toEqual({ 'vol-1': -20 });
-    // Index data, not facts: the link and its stamp are untouched.
+    expect(after.spine_offset).toBeUndefined();
+    expect(after.volume_offsets).toBeUndefined();
+    // The link and its stamp are untouched.
     expect(after.external_ids).toEqual({ anilist: 13 });
     expect(after.facts_updated_at).toBe(before.facts_updated_at);
+    expect(after.updated_at).toBe(before.updated_at);
   });
 
-  it('never overrides an offset this library already has', async () => {
+  it('leaves a local offset edit alone — it is ours, and it publishes', async () => {
     await updateSeriesMetadata('One Piece', {
       spine_offset: 3,
       volume_offsets: { 'vol-1': 7 }
@@ -569,10 +575,11 @@ describe('series metadata store', () => {
 
     const after = (await getSeriesMetadataForTitle('One Piece'))!;
     expect(after.spine_offset).toBe(3);
-    expect(after.volume_offsets).toEqual({ 'vol-1': 7, 'vol-2': 4 });
+    // `vol-2` is NOT pulled in: the record holds only what this user edited.
+    expect(after.volume_offsets).toEqual({ 'vol-1': 7 });
   });
 
-  it('creates a record from an offsets-only sidecar without giving it a facts clock', async () => {
+  it('creates no record at all from an offsets-only sidecar', async () => {
     const applied = await upsertFromSeriesFile('Berserk', {
       version: 2,
       series_title: 'Berserk',
@@ -584,10 +591,10 @@ describe('series metadata store', () => {
       volumes: []
     });
 
-    expect(applied).toBe(true);
-    const record = (await getSeriesMetadataForTitle('Berserk'))!;
-    expect(record.spine_offset).toBe(6);
-    expect(record.facts_updated_at).toBeUndefined();
+    // There is nothing this library owns in such a file — the alignment reaches
+    // the shelf from the cached index instead.
+    expect(applied).toBe(false);
+    expect(await getSeriesMetadataForTitle('Berserk')).toBeUndefined();
   });
 
   it('advances an EXISTING factless clock so a relayed unlink keeps propagating', async () => {
@@ -620,17 +627,9 @@ describe('series metadata store', () => {
   });
 
   it('mints no clock for a record that has never had an opinion', async () => {
-    // Created by an offsets-only sidecar: no facts, and no facts clock either.
-    await upsertFromSeriesFile('Berserk', {
-      version: 2,
-      series_title: 'Berserk',
-      external_ids: {},
-      titles: {},
-      synonyms: [],
-      updated_at: FACTLESS_UPDATED_AT,
-      spine_offset: 6,
-      volumes: []
-    });
+    // A local shelf nudge and nothing else: a record with no facts and no facts
+    // clock, whose `updated_at` only ever tracked per-user state.
+    await updateSeriesMetadata('Berserk', { spine_offset: 6 });
 
     // A factless file arrives. There is no local clock to advance, so there is
     // nothing to relay — minting one here would invent an opinion.
@@ -649,7 +648,7 @@ describe('series metadata store', () => {
     expect(Object.keys(record)).not.toContain('facts_updated_at');
   });
 
-  it('converges: re-reading an offsets-only sidecar applies nothing and mints no facts clock', async () => {
+  it('converges: an offsets-only sidecar applies nothing, on the first read and every one after', async () => {
     const file: SeriesFile = {
       version: 2,
       series_title: 'Berserk',
@@ -661,16 +660,13 @@ describe('series metadata store', () => {
       volumes: []
     };
 
-    expect(await upsertFromSeriesFile('Berserk', file)).toBe(true);
-    // Callers schedule a series.json write on `true`; a second read must not
-    // schedule another, or every cloud refresh would trigger an upload.
+    // Callers schedule a series.json write on `true`; such a file must never
+    // report one, or every cloud refresh would trigger an upload.
+    expect(await upsertFromSeriesFile('Berserk', file)).toBe(false);
     expect(await upsertFromSeriesFile('Berserk', file)).toBe(false);
 
-    const record = (await getSeriesMetadataForTitle('Berserk'))!;
-    expect(record.spine_offset).toBe(6);
-    // The file's epoch stamp is NOT a facts clock this library earned.
-    expect(record.facts_updated_at).toBeUndefined();
-    expect(Object.keys(record)).not.toContain('facts_updated_at');
+    // Not even a shell record: the alignment is displayed from the cached index.
+    expect(await getSeriesMetadataForTitle('Berserk')).toBeUndefined();
   });
 
   it('notifies index listeners for an offset edit and facts listeners for a fact edit', async () => {

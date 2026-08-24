@@ -42,6 +42,7 @@
   import { catalogSettings } from '$lib/settings/settings';
   import { progress } from '$lib/settings/volume-data';
   import { seriesMetadataMap } from '$lib/metadata/store';
+  import { seriesIndexMap } from '$lib/metadata/series-index';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import {
@@ -303,9 +304,12 @@
   }
 
   // ── Offsets: optimistic local state over the synced record ────────────────────────────
+  // The record holds only THIS user's edits; an alignment another device published is
+  // joined in from the cached `series.json` at read time (see `getSpineOffsets`).
   let seriesKey = $derived(normalizeSeriesKey(seriesTitle));
   let storedRecord = $derived($seriesMetadataMap.get(seriesKey));
-  let storedOffsets = $derived(getSpineOffsets(storedRecord));
+  let publishedIndex = $derived($seriesIndexMap.get(seriesKey)?.file);
+  let storedOffsets = $derived(getSpineOffsets(storedRecord, publishedIndex));
 
   let hOffsetAdjust = $state(0);
   let volumeOffsetsByUuid = $state<Record<string, number>>({});
@@ -351,7 +355,12 @@
     void scheduleSpineOffsetWrite(seriesTitle, patch)
       .then((written) => {
         if (written) {
-          awaitingEcho = { offsets: getSpineOffsets(written), updatedAt: written.updated_at };
+          // Joined the same way `storedOffsets` is, so the echo comparison is like
+          // for like — a write that stores nothing still displays the published value.
+          awaitingEcho = {
+            offsets: getSpineOffsets(written, publishedIndex),
+            updatedAt: written.updated_at
+          };
         }
       })
       .finally(() => {
@@ -375,9 +384,14 @@
   }
 
   function resetAllVolumeOffsets() {
+    // Everything currently nudged on screen, including the volumes whose nudge is
+    // inherited from the published series.json — the record holds no key to zero for
+    // those, and only a stored 0 suppresses a published value, so without them the
+    // shelf would spring straight back.
+    const onScreen = Object.keys(volumeOffsetsByUuid);
     volumeOffsetsByUuid = {};
     // An EMPTY map is the writer's "reset every volume offset for this series".
-    writeSpineOffsets({ volumeOffsets: {} });
+    writeSpineOffsets({ volumeOffsets: {}, inheritedUuids: onScreen });
   }
 
   // ── Layout ────────────────────────────────────────────────────────────────────────────

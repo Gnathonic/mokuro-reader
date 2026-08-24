@@ -1227,9 +1227,10 @@ class UnifiedCloudManager {
         },
         fetched_at: new Date().toISOString()
       });
-      // Facts (strictly-newer only) plus any shelf alignment this library is
-      // missing — offsets are index data, so they fill regardless of the stamp.
-      // Never a write trigger either way.
+      // Facts only, strictly-newer only, never a write trigger. The shelf
+      // alignment is not applied to the record — the `series_index` row cached
+      // just above is what carries it, joined at display time
+      // (`getSpineOffsets`), so it stays the publishing device's value.
       await upsertFromSeriesFile(folderTitle, fresh);
       return fresh;
     } catch (error) {

@@ -254,41 +254,12 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
 }
 
 /**
- * The offsets a sidecar can contribute: fill-only, so anything this library
- * already decided stays untouched. `undefined` = nothing to add.
- */
-function offsetsToFill(
-  existing: SeriesMetadata | undefined,
-  file: SeriesFile
-): Pick<SeriesMetadata, 'spine_offset' | 'volume_offsets'> | undefined {
-  const patch: Pick<SeriesMetadata, 'spine_offset' | 'volume_offsets'> = {};
-  let changed = false;
-
-  if (existing?.spine_offset === undefined && file.spine_offset !== undefined) {
-    patch.spine_offset = file.spine_offset;
-    changed = true;
-  }
-
-  const merged = { ...(existing?.volume_offsets ?? {}) };
-  for (const entry of file.volumes) {
-    if (entry.offset === undefined) continue;
-    if (merged[entry.volume_uuid] !== undefined) continue;
-    merged[entry.volume_uuid] = entry.offset;
-    changed = true;
-  }
-  if (Object.keys(merged).length > 0) patch.volume_offsets = merged;
-
-  return changed ? patch : undefined;
-}
-
-/**
  * Apply the metadata facts from a `series.json` sidecar. Newest wins: only
  * writes when there is no local record or the file's stamp is strictly newer
  * than the local *facts* stamp — not the record's `updated_at`, which every
- * per-user write bumps. The volume index is not touched here, apart from each
- * entry's `offset` (see the spine-offset paragraph below): the index itself is
- * cached separately and never overrides local volumes. Returns whether the
- * record was actually written.
+ * per-user write bumps. The volume index is not touched here at all: it is
+ * cached separately (`series_index`) and never overrides local volumes. Returns
+ * whether the record was actually written.
  *
  * A file with no facts at all and no local record to update is ignored
  * outright: an index-only sidecar (written by a device that never linked the
@@ -301,29 +272,32 @@ function offsetsToFill(
  * Read and write share one `rw` transaction so a concurrent writer cannot slip
  * a `put` between them, same as `updateSeriesMetadata`.
  *
- * Spine offsets ride the file as INDEX data, not facts, so they are applied on
- * their own terms: only where this library has no value of its own (fill, never
- * override — the local shelf is the local shelf), and regardless of the facts
- * stamp comparison, which decides nothing about them. Applying them never moves
- * `facts_updated_at`.
+ * **Shelf alignment is not applied here.** `spine_offset` and the per-entry
+ * `offset` ride the file as INDEX data, and this record stores only what THIS
+ * user edited. A published alignment reaches the shelf as a JOIN at display
+ * time — `getSpineOffsets` reads `record value ?? cached-index value` against
+ * the `series_index` copy of this same file — and rides back out through
+ * `buildSeriesFile`, which carries the existing file's offsets through wherever
+ * the record has none. Copying them in here instead would convert inheritance
+ * into ownership: this device would republish another's measurement as its own
+ * forever, so their later correction (or reset) could never win — the two
+ * devices would just flip-flop.
  *
- * A file with no facts and no local record still creates one when it carries
- * offsets. Applying facts is therefore gated on either side actually HAVING
- * facts, not merely on the record existing: without that gate the second upsert
- * of a factless offsets-only file would stamp `facts_updated_at` with the file's
- * epoch — a facts clock this library never earned, which would then be published
- * as a real "no opinion" claim. With the gate the record keeps no facts clock at
- * all, so `buildSeriesFile` still treats this library as having no opinion.
+ * Applying facts is gated on either side actually HAVING facts, not merely on
+ * the record existing: without that gate the upsert of a factless offsets-only
+ * file would stamp `facts_updated_at` with the file's epoch — a facts clock this
+ * library never earned, which would then be published as a real "no opinion"
+ * claim. With the gate the record keeps no facts clock at all, so
+ * `buildSeriesFile` still treats this library as having no opinion.
  *
  * A record that DOES already carry a clock is the opposite case: it has had an
  * opinion, so it must relay a newer factless stamp even though it has no facts
  * to apply. Skipping that would strand an unlink behind a factless device (see
  * `adoptFactlessStamp`).
  *
- * That is also what makes the exchange converge: the first upsert fills the
- * offsets and returns `true`, and every later upsert of the same file fills
- * nothing, changes no facts, and returns `false` — so an importer that schedules
- * a `series.json` write on `true` writes once, not on every read.
+ * That is also what makes the exchange converge: an offsets-only file changes
+ * nothing and returns `false` on every read — so an importer that schedules a
+ * `series.json` write on `true` never writes for one.
  */
 export async function upsertFromSeriesFile(
   seriesTitle: string,
@@ -352,8 +326,7 @@ export async function upsertFromSeriesFile(
     // it has never had an opinion, so there is nothing to relay.
     const adoptFactlessStamp =
       !applyFacts && localStamp !== undefined && localStamp < file.updated_at;
-    const offsets = offsetsToFill(existing, file);
-    if (!applyFacts && !adoptFactlessStamp && !offsets) return false;
+    if (!applyFacts && !adoptFactlessStamp) return false;
 
     const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
     const linked = hasAnyId(file.external_ids);
@@ -381,8 +354,7 @@ export async function upsertFromSeriesFile(
               : undefined
           }
         : {}),
-      ...(adoptFactlessStamp ? { facts_updated_at: file.updated_at } : {}),
-      ...(offsets ?? {})
+      ...(adoptFactlessStamp ? { facts_updated_at: file.updated_at } : {})
     });
     await db.series_metadata.put(next);
     return true;

@@ -20,6 +20,7 @@ import {
   volumeOffsetsByIndex
 } from './spine-offsets';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
+import { buildSeriesFile, type SeriesFile } from './series-file';
 import type { VolumeMetadata } from '$lib/types';
 
 /** Resolve the functional patch a scheduled write handed to the store. */
@@ -43,6 +44,27 @@ function vol(uuid: string): VolumeMetadata {
   return { volume_uuid: uuid } as VolumeMetadata;
 }
 
+/** The cached `series.json` for the series, as `series_index` holds it. */
+function published(spineOffset?: number, offsets: Record<string, number | undefined> = {}) {
+  return {
+    version: 2,
+    series_title: 'One Piece',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at: '1970-01-01T00:00:00.000Z',
+    ...(spineOffset === undefined ? {} : { spine_offset: spineOffset }),
+    volumes: Object.entries(offsets).map(([volume_uuid, offset]) => ({
+      volume_uuid,
+      volume_title: volume_uuid,
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11',
+      ...(offset === undefined ? {} : { offset })
+    }))
+  } as SeriesFile;
+}
+
 describe('getSpineOffsets', () => {
   it('defaults to no offsets when there is no record', () => {
     expect(getSpineOffsets(undefined)).toEqual({ spineOffset: 0, volumeOffsets: {} });
@@ -64,6 +86,58 @@ describe('getSpineOffsets', () => {
       >
     });
     expect(getSpineOffsets(meta)).toEqual({ spineOffset: 0, volumeOffsets: { d: 2 } });
+  });
+});
+
+describe('getSpineOffsets joined with the cached series.json', () => {
+  it('shows the published alignment when this library has no value of its own', () => {
+    // The record stays empty: inheritance is a JOIN at display time, never an
+    // adoption into our own record (which would republish it as ours forever).
+    expect(getSpineOffsets(undefined, published(8, { a: 25 }))).toEqual({
+      spineOffset: 8,
+      volumeOffsets: { a: 25 }
+    });
+    expect(getSpineOffsets(stored(), published(8, { a: 25 }))).toEqual({
+      spineOffset: 8,
+      volumeOffsets: { a: 25 }
+    });
+  });
+
+  it('lets a real local edit win over the published value, per key', () => {
+    const meta = stored({ spine_offset: 3, volume_offsets: { a: 7 } });
+    expect(getSpineOffsets(meta, published(8, { a: 25, b: 4 }))).toEqual({
+      spineOffset: 3,
+      volumeOffsets: { a: 7, b: 4 }
+    });
+  });
+
+  it('lets a local 0 suppress the published value instead of inheriting it back', () => {
+    const meta = stored({ spine_offset: 0, volume_offsets: { a: 0 } });
+    expect(getSpineOffsets(meta, published(8, { a: 25, b: 4 }))).toEqual({
+      spineOffset: 0,
+      volumeOffsets: { b: 4 }
+    });
+  });
+
+  it('treats junk on either side as no opinion', () => {
+    const meta = stored({
+      spine_offset: Number.NaN,
+      volume_offsets: { a: 'x' } as unknown as Record<string, number>
+    });
+    // Junk locally is not an edit, so the published value still shows.
+    expect(getSpineOffsets(meta, published(8, { a: 25 }))).toEqual({
+      spineOffset: 8,
+      volumeOffsets: { a: 25 }
+    });
+    // Junk (or a zero) in the file is not an alignment either.
+    expect(
+      getSpineOffsets(stored(), published(Number.NaN, { a: 0, b: Number.POSITIVE_INFINITY }))
+    ).toEqual({ spineOffset: 0, volumeOffsets: {} });
+  });
+
+  it('is unchanged when there is no cached file', () => {
+    const meta = stored({ spine_offset: 3, volume_offsets: { a: 7 } });
+    expect(getSpineOffsets(meta, undefined)).toEqual(getSpineOffsets(meta));
   });
 });
 
@@ -184,6 +258,17 @@ describe('scheduleSpineOffsetWrite', () => {
     const patch = resolvePatch(0, stored({ volume_offsets: { 'uuid-a': 5, 'uuid-b': -2 } }));
     expect(patch).toEqual({ volume_offsets: { 'uuid-a': 0, 'uuid-b': 0 } });
     expect(getSpineOffsets(stored(patch as Partial<SeriesMetadata>)).volumeOffsets).toEqual({});
+  });
+
+  it('a reset also zeroes the INHERITED volumes the record holds no key for', async () => {
+    // `uuid-c` is only in the published series.json — the record has no key for
+    // it, so a reset that only zeroed the record's own keys would leave it
+    // inherited and the shelf would spring back.
+    scheduleSpineOffsetWrite('One Piece', { volumeOffsets: {}, inheritedUuids: ['uuid-c'] });
+    await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
+
+    const patch = resolvePatch(0, stored({ volume_offsets: { 'uuid-a': 5 } }));
+    expect(patch).toEqual({ volume_offsets: { 'uuid-a': 0, 'uuid-c': 0 } });
   });
 
   it('a reset queued before further nudges still clears the untouched volumes', async () => {
@@ -337,5 +422,68 @@ describe('scheduleSpineOffsetWrite clamping + write result', () => {
     await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
 
     await expect(done).resolves.toBe(written);
+  });
+});
+
+/**
+ * The whole point of joining rather than filling: an inherited alignment stays
+ * the publisher's, so they can still correct or retract it. Device A measured
+ * the shelf; device B only reads it.
+ */
+describe('inherited alignment across devices', () => {
+  const opVolume: VolumeMetadata = {
+    volume_uuid: 'vol-1',
+    series_uuid: 'series-uuid',
+    series_title: 'One Piece',
+    volume_title: 'Vol 1',
+    mokuro_version: '0.4.11',
+    page_count: 2,
+    character_count: 3,
+    page_char_counts: [1, 3]
+  } as VolumeMetadata;
+
+  /** What device B republishes, given its own record and the file it last fetched. */
+  function republish(meta: SeriesMetadata | undefined, existing: SeriesFile) {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta,
+      localVolumes: [opVolume],
+      existing
+    })!;
+    return { spine_offset: file.spine_offset, offset: file.volumes[0].offset };
+  }
+
+  it('A corrects 5 → 8: B displays 8 and republishes 8, not 5', () => {
+    // B saw 5 on an earlier refresh but never adopted it, so it holds no record.
+    const bRecord = undefined;
+    const corrected = published(8, { 'vol-1': 8 });
+
+    expect(getSpineOffsets(bRecord, corrected)).toEqual({
+      spineOffset: 8,
+      volumeOffsets: { 'vol-1': 8 }
+    });
+    expect(republish(bRecord, corrected)).toEqual({ spine_offset: 8, offset: 8 });
+  });
+
+  it('A resets to 0: B displays nothing and does not resurrect the old value', () => {
+    // A's reset drops both fields from the file (a 0 is never written).
+    const retracted = published(undefined, { 'vol-1': undefined });
+
+    expect(getSpineOffsets(undefined, retracted)).toEqual({ spineOffset: 0, volumeOffsets: {} });
+    expect(republish(undefined, retracted)).toEqual({
+      spine_offset: undefined,
+      offset: undefined
+    });
+  });
+
+  it('B makes a real edit: B owns it, displays it and publishes it over A’s', () => {
+    const bRecord = stored({ spine_offset: 2, volume_offsets: { 'vol-1': 3 } });
+    const aFile = published(8, { 'vol-1': 8 });
+
+    expect(getSpineOffsets(bRecord, aFile)).toEqual({
+      spineOffset: 2,
+      volumeOffsets: { 'vol-1': 3 }
+    });
+    expect(republish(bRecord, aFile)).toEqual({ spine_offset: 2, offset: 3 });
   });
 });

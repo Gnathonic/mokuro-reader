@@ -8,6 +8,7 @@
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { seriesMetadataMap } from '$lib/metadata/store';
+  import { seriesIndexMap } from '$lib/metadata/series-index';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import {
     clampSpineOffset,
@@ -172,9 +173,14 @@
   // Spine offsets live on the synced series record (see $lib/metadata/spine-offsets).
   // Local copies are optimistic: the wheel updates them immediately while the debounced
   // write lands, and they resync from the store once our write has come back around.
+  //
+  // The record holds only THIS user's edits; an alignment another device published
+  // reaches the card by joining the cached `series.json` here at read time, so it stays
+  // theirs to correct or retract.
   let seriesKey = $derived(normalizeSeriesKey(volume?.series_title ?? ''));
   let storedRecord = $derived($seriesMetadataMap.get(seriesKey));
-  let storedOffsets = $derived(getSpineOffsets(storedRecord));
+  let publishedIndex = $derived($seriesIndexMap.get(seriesKey)?.file);
+  let storedOffsets = $derived(getSpineOffsets(storedRecord, publishedIndex));
 
   // Per-series horizontal offset adjustment, in percent
   let hOffsetAdjust = $state(0);
@@ -202,8 +208,10 @@
       awaitingEcho = null;
     }
     // Assign only on a real change: `seriesMetadataMap` emits on ANY series' metadata write
-    // (a tag edit, a tracking push, a sync), and a fresh-but-equal object here would
-    // invalidate containerDimensions → stepSizes → the canvas draw on every mounted card.
+    // (a tag edit, a tracking push, a sync) and `seriesIndexMap` on any cloud listing
+    // refresh — both rebuild their whole Map, so `stored` is a fresh object every time.
+    // A fresh-but-equal assignment here would invalidate containerDimensions → stepSizes
+    // → the canvas draw on every mounted card.
     if (hOffsetAdjust !== stored.spineOffset) hOffsetAdjust = stored.spineOffset;
     if (!sameVolumeOffsets(volumeOffsetsByUuid, stored.volumeOffsets)) {
       volumeOffsetsByUuid = stored.volumeOffsets;
@@ -230,7 +238,13 @@
     void scheduleSpineOffsetWrite(seriesTitle, patch)
       .then((written) => {
         if (written) {
-          awaitingEcho = { offsets: getSpineOffsets(written), updatedAt: written.updated_at };
+          // Joined the same way `storedOffsets` is, so the echo comparison is
+          // like for like — a write that stores nothing still displays the
+          // published value.
+          awaitingEcho = {
+            offsets: getSpineOffsets(written, publishedIndex),
+            updatedAt: written.updated_at
+          };
         }
       })
       .finally(() => {
