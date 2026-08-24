@@ -43,7 +43,22 @@ vi.mock('$lib/settings', async () => {
   };
 });
 
+// `restartSeries` is driven for real below (the store->upload seam), so the two
+// things it needs beyond the reading-state store are doubled here: the volume
+// store (the real module opens IndexedDB) and the AniList push.
+vi.mock('$lib/settings/volume-data', async () => {
+  const { writable } = await import('svelte/store');
+  return {
+    volumes: writable<Record<string, { completed?: boolean }>>({}),
+    archiveAndResetVolumes: vi.fn()
+  };
+});
+vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
+
 import { unifiedSyncService } from './unified-sync-service';
+import { restartSeries } from '$lib/metadata/reread';
+import { volumes as volumeCompletion } from '$lib/settings/volume-data';
+import type { VolumeMetadata } from '$lib/types';
 import {
   seriesReadingState,
   setSeriesReadingStates,
@@ -274,6 +289,43 @@ describe('the series section of volume-data.json', () => {
       berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' },
       'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
     });
+  });
+
+  it('carries a real restartSeries bump through the compose and into the upload', async () => {
+    // The one join this suite otherwise seeds by hand: a consumer action writes
+    // the reading-state store, and the composed `volume-data.json` has to carry
+    // what it wrote. Driven end to end — `restartSeries` is the real module, and
+    // nothing between it and `uploadFile` is stubbed.
+    (volumeCompletion as unknown as { set: (v: unknown) => void }).set({
+      'vol-a': { completed: true }
+    });
+    stubCache([fileMeta('only')]);
+    const uploads: Array<Record<string, any>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } })
+      ),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await restartSeries('One Piece', [
+      {
+        volume_uuid: 'vol-a',
+        volume_title: 'Vol 01',
+        series_title: 'One Piece',
+        series_uuid: 's'
+      } as VolumeMetadata
+    ]);
+    expect(get(seriesReadingState)['one piece'].read_count).toBe(1);
+
+    await svc.syncVolumeData(provider);
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].series['one piece']).toMatchObject({ read_count: 1 });
+    expect(uploads[0].series['one piece'].lastUpdated).toEqual(expect.any(String));
   });
 
   it('merges a cloud file that has no section at all without losing local state', async () => {

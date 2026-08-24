@@ -81,8 +81,11 @@ vi.mock('$lib/settings/volume-data', () => ({
   volumes: h.volumesData,
   registerCompletionListener: vi.fn(() => () => {})
 }));
-// Mirrors the real reading-state store: synchronous, functional patches resolved
-// against what is stored right now, cleared flags dropped.
+// Mirrors the real reading-state store where this panel depends on it:
+// synchronous, functional patches resolved against what is stored right now,
+// cleared flags dropped. The real store's `nextTimestamp` (which steps past a
+// stored stamp sitting in the future) is NOT modelled — nothing here reads the
+// stamp — so this double simply stamps `now`.
 vi.mock('$lib/settings/series-data', () => ({
   seriesReadingState: h.seriesReadingState,
   readingStateFor: (states: Record<string, any>, key: string) =>

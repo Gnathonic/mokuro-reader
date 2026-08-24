@@ -32,7 +32,9 @@ describe('RereadPromptModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     restartSeries.mockResolvedValue(undefined);
-    suppressRereadPrompt.mockResolvedValue(undefined);
+    // `suppressRereadPrompt` returns void: it writes the flag to the
+    // reading-state store synchronously, with no promise to await.
+    suppressRereadPrompt.mockImplementation(() => {});
   });
 
   it('shows the display title and all three actions', () => {
@@ -69,7 +71,8 @@ describe('RereadPromptModal', () => {
     await fireEvent.click(getByText("Don't ask for this series"));
 
     expect(dismissRereadForSession).toHaveBeenCalledWith('one piece');
-    await waitFor(() => expect(suppressRereadPrompt).toHaveBeenCalledWith('One Piece'));
+    // Synchronous: by the time the click handler returns, the flag is written.
+    expect(suppressRereadPrompt).toHaveBeenCalledWith('One Piece');
     expect(restartSeries).not.toHaveBeenCalled();
   });
 
