@@ -233,17 +233,21 @@ describe('series-file-sync', () => {
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the listing refresh entirely for a run-scheduled write, and tells the writer to skip its own re-read too', async () => {
+  it('skips the listing refresh for a run-scheduled write, but never the writer’s own re-read', async () => {
     // 2026-08-23 design amendment: a write scheduled from inside a backup run
-    // (`duringBackupRun`) must cost zero network reads. The run already
-    // primed the listing and keeps it current via its own optimistic
-    // `cache.add()` as it uploads, so this module's own whole-account refetch
-    // would be pure waste layered on top mid-run.
+    // (`duringBackupRun`) skips the whole-account listing refresh — the run
+    // already primed that listing and keeps it current via its own optimistic
+    // `cache.add()` as it uploads, so refetching it mid-run is pure waste.
+    //
+    // The writer's own re-read is NOT skipped: it only fires when the listing
+    // shows a stamp our cache does not have, i.e. exactly when another device
+    // wrote the file. Suppressing it there is how a mid-run PUT clobbers that
+    // device's series.json.
     scheduleSeriesFileWrite('One Piece', { duringBackupRun: true });
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
-    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece', { skipRemoteRefresh: true });
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
   });
 
   it('still refreshes the listing and re-reads normally for a write NOT scheduled from a run', async () => {

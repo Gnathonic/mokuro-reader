@@ -1175,19 +1175,25 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     ]);
   });
 
-  it('with skipRemoteRefresh: true, writes from the cached copy without downloading even when the listing stamp looks stale', async () => {
-    // 2026-08-23 design amendment: the per-volume-completion write a backup
-    // run schedules must cost zero network reads. The cached series.json
-    // already carries a volume another device published in a previous full
-    // merge — that entry ("uuid-other-device") is the cache mirror the design
-    // leans on, and it survives untouched. A volume published by some OTHER
-    // device SINCE our last real fetch would not be visible without a
-    // download — a bounded staleness this option accepts on purpose.
+  it('a mid-run write still re-reads a FOREIGN stamp, so the other device’s volumes survive the PUT', async () => {
+    // 2026-08-23 ruling, amending the earlier `skipRemoteRefresh` amendment: the
+    // re-read is gated on the listing stamp differing from our cache, which is
+    // exactly the case where another device wrote the file. Skipping it there —
+    // the only case where it costs anything — is how a mid-run PUT clobbers that
+    // device's series.json. Every SELF-write path is already download-free via
+    // the stamp match (the two tests around this one), so the user's zero-read
+    // intent holds without the option.
     const cache = loadedCache();
     const provider = makeRenameProvider({
-      downloadFile: vi.fn(async () => {
-        throw new Error('must not download for a skipRemoteRefresh write');
-      })
+      downloadFile: vi.fn(
+        async () =>
+          new Blob([
+            seriesFileJson(
+              [{ uuid: 'uuid-device-b', title: 'Volume 3' }],
+              '2026-08-16T00:00:00.000Z'
+            )
+          ])
+      )
     });
     const remoteFile = cloudFile('One Piece/series.json', { fileId: 'sj', size: 999 });
     getActiveProvider.mockReturnValue(provider);
@@ -1201,12 +1207,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getSeriesIndex.mockResolvedValue({
       series_key: 'one piece',
       series_title: 'One Piece',
-      file: JSON.parse(
-        seriesFileJson(
-          [{ uuid: 'uuid-other-device', title: 'Volume 3' }],
-          '2026-01-01T00:00:00.000Z'
-        )
-      ),
+      file: JSON.parse(seriesFileJson([], '2026-01-01T00:00:00.000Z')),
       source: {
         provider: 'webdav',
         path: 'One Piece/series.json',
@@ -1217,15 +1218,13 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    expect(
-      await unifiedCloudManager.writeSeriesFile('One Piece', { skipRemoteRefresh: true })
-    ).toBe('written');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
-    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(provider.downloadFile).toHaveBeenCalledTimes(1);
     const file = await uploadedSeriesFile(provider);
     expect(file.volumes.map((v: { volume_uuid: string }) => v.volume_uuid).sort()).toEqual([
       'uuid-Volume 1',
-      'uuid-other-device'
+      'uuid-device-b'
     ]);
   });
 
@@ -1246,10 +1245,9 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
 
-    // The live per-completion write, mid-run.
-    expect(
-      await unifiedCloudManager.writeSeriesFile('One Piece', { skipRemoteRefresh: true })
-    ).toBe('written');
+    // The live per-completion write, mid-run. Nothing to re-read: the listing
+    // shows no series.json yet, so the write costs no network read of its own.
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
     expect(provider.downloadFile).not.toHaveBeenCalled();
 
     // `putSeriesIndex` is mocked (it doesn't actually persist), so wire the

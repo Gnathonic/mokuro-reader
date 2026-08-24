@@ -51,27 +51,30 @@ interface ScheduleOptions {
    * DECISION (2026-08-23, user-directed amendment): a run-scheduled write must
    * cost the queue nothing extra —
    *
-   * 1. Zero network reads. The write merges on top of the CACHED
-   *    `series.json` (`resolveExistingSeriesFile`'s `skipRemoteRefresh`)
-   *    instead of re-downloading the cloud copy even when its stamp looks
-   *    stale. Multi-device entries already live in that cache from whatever
-   *    this device last merged; skipping the re-read trades perfect
-   *    freshness for a bounded staleness window (closed by the drain-time
-   *    catch-all, the next fact edit, or `reconcileMissingMetadataFiles`) —
-   *    not for data loss. Content is otherwise upload-progress-independent
-   *    (`volumes[]` builds from local installed rows), so an early write is
-   *    byte-equivalent to one fired at drain.
-   * 2. No `ensureFreshCloudListing()` call. A run primes the listing before
+   * 1. No `ensureFreshCloudListing()` call. A run primes the listing before
    *    it starts uploading and adds every upload to the provider's file cache
    *    via `cache.add` as it goes (see `uploadFile`); that is already the
    *    freshest truth mid-run; a debounced write's own whole-account refetch
    *    would just be pure waste layered on top, exactly the case the design
-   *    was written to avoid.
-   * 3. The 2 s debounce stays. It was never contention control — the
+   *    was written to avoid. This is the saving that mattered — one
+   *    whole-account fetch per write, gone.
+   * 2. The 2 s debounce stays. It was never contention control — the
    *    concurrency cap and the per-series serialized write chain already
    *    make concurrent writes race-free — it is PUT-rate coalescing: ten
    *    volumes finishing within the window still cost one or two PUTs
    *    instead of ten.
+   *
+   * REVISION (2026-08-23, review): this option no longer suppresses the
+   * WRITER's own `series.json` re-read, which an earlier draft forwarded as
+   * `writeSeriesFile(title, { skipRemoteRefresh: true })` in the name of "zero
+   * network reads". That read is gated on the cloud listing showing a stamp our
+   * cached record does not have: for a write of OUR OWN the stamp matches and
+   * nothing is fetched anyway, so the flag bought nothing there — the only time
+   * it fired was when ANOTHER device had written the file, and suppressing it
+   * exactly there meant the mid-run PUT overwrote that device's index with our
+   * stale cached copy. The zero-read intent survives for every self-write path
+   * it was written for; the rare foreign-write case pays one GET, which is the
+   * price of not clobbering.
    */
   duringBackupRun?: boolean;
 }
@@ -250,16 +253,11 @@ async function runWrite(seriesKey: string): Promise<void> {
       if (!(await ensureFreshCloudListing())) return;
     }
     if (!(await hasBackedUpVolume(seriesTitle))) return;
-    // Same reasoning, forwarded to the write itself: a run-scheduled write
-    // must not download the cloud copy either, even if its cached stamp looks
-    // stale (see `resolveExistingSeriesFile`'s `skipRemoteRefresh`). Called
-    // with one argument off-run — same call shape as before this option
-    // existed.
-    if (options?.duringBackupRun) {
-      await unifiedCloudManager.writeSeriesFile(seriesTitle, { skipRemoteRefresh: true });
-    } else {
-      await unifiedCloudManager.writeSeriesFile(seriesTitle);
-    }
+    // Always the plain call, run-scheduled or not: the writer's own re-read is
+    // already free for a self-write (the listing stamp matches our cache) and
+    // is the only thing standing between a mid-run PUT and another device's
+    // series.json (see `ScheduleOptions.duringBackupRun`'s REVISION note).
+    await unifiedCloudManager.writeSeriesFile(seriesTitle);
   } catch (error) {
     // Best-effort by contract: a server that compiles series.json itself
     // rejects the write by design, and the next fact edit or backup rewrites
