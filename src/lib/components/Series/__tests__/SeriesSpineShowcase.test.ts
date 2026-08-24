@@ -949,3 +949,56 @@ describe('SeriesSpineShowcase shelves a cloud-only series in volume order', () =
     expect(drawnTitles()).toEqual(['Vol 1', 'Vol 2', 'Vol 3', 'Vol 10']);
   });
 });
+
+describe('SeriesSpineShowcase measures the same volumes the card does', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => ({
+      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
+      width: 250,
+      height: 360
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => null);
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  /** A cloud volume whose size is only knowable once its cover has been fetched. */
+  const cloudNoDims = (index: number) =>
+    ({
+      volume_uuid: `c-${String(index).padStart(3, '0')}`,
+      series_uuid: 'series-uuid',
+      series_title: 'One Piece',
+      volume_title: `Vol ${String(index).padStart(3, '0')}`,
+      page_count: 10,
+      isPlaceholder: true,
+      cloudThumbnailFileId: `thumb-${index}`
+    }) as VolumeMetadata;
+
+  it('asks for the covers of every volume it measures, past the 60-spine window', async () => {
+    // A partly-downloaded series of 66: the card stacks all of them (local rules — no
+    // cloud cap), while the shelf DRAWS only 60 (its own memory cap). The uniform height
+    // is averaged over the card's stack, so the shelf needs dimensions for every one of
+    // them or the spines it shares with the card come out a different size.
+    const volumes = [
+      ...Array.from({ length: 65 }, (_, i) => cloudNoDims(i + 1)),
+      volume({
+        volume_uuid: 'v-local',
+        volume_title: 'Vol 999',
+        thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' })
+      })
+    ];
+    renderShowcase(volumes);
+
+    // 65 cloud covers fetched; the local volume has its own.
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65));
+  });
+});
