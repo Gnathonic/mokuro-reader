@@ -1180,6 +1180,32 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
   });
 
+  it('paints the metadata-only row it just fetched a cover for', async () => {
+    // A row whose files were removed is drawn from the stack's LOCAL half, but
+    // the cover fetch targets it too (no thumbnail, a cover sidecar in the
+    // cloud). If only the placeholder half is enriched, the request is spent and
+    // the spine stays blank — CompositeCanvas paints nothing without pixels.
+    render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+          localVolume({
+            volume_uuid: 'm-2',
+            volume_title: 'Vol 2',
+            metadata_only: true,
+            cloudThumbnailFileId: 'thumb-m-2'
+          })
+        ]
+      }
+    });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
+    await tick();
+
+    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
+    expect(props.volumes.map((vol) => vol.volume_uuid)).toEqual(['v-1', 'm-2']);
+    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+  });
+
   it('keeps a volume that is missing from the middle in its own place', async () => {
     render(CatalogItem, {
       props: {

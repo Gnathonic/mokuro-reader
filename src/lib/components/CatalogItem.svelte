@@ -100,33 +100,41 @@
     seriesNeedsDownload ? seriesVolumes : seriesVolumes.filter((vol) => vol.isPlaceholder)
   );
 
-  // Those volumes, each carrying whatever cover has been found for it. A cloud
-  // placeholder's arrives from the fetch below; a removed row already has one, which is
-  // the whole of the difference between the two (it paints immediately instead of popping
-  // in). Includes ALL target volumes (not just those with loaded thumbnails) so that
-  // stackedVolumes.length is stable. CompositeCanvas skips volumes without thumbnail,
-  // so positions are pre-allocated: each thumbnail pops into its fixed slot without
-  // shifting existing ones.
+  /**
+   * A volume plus whatever cover this card has fetched for it.
+   *
+   * Applied to BOTH halves of the stack, because the fetch targets both: a metadata-only
+   * row has no pixels of its own and a cover sidecar in the cloud, exactly like a
+   * placeholder, so enriching only the cloud half spends the request and leaves the spine
+   * blank (CompositeCanvas paints nothing for a volume without a thumbnail).
+   *
+   * A volume that already has its own cover is left alone: it was measured from the
+   * volume's own pages or picked by hand, and the sidecar is a guess by comparison — the
+   * same precedence `cover-install.ts` applies when it writes one.
+   */
+  function withFetchedCover(vol: VolumeMetadata): VolumeMetadata {
+    if (vol.thumbnail) return vol;
+    const ct = cloudThumbnailData[vol.volume_uuid];
+    if (!ct) return vol;
+    return { ...vol, thumbnail: ct.file, thumbnail_width: ct.width, thumbnail_height: ct.height };
+  }
+
+  // The local rows the stack draws, each carrying whatever cover has been found for it.
+  let enrichedLocalVolumes = $derived(localVolumes.map(withFetchedCover));
+
+  // The cloud half, same treatment. Includes ALL target volumes (not just those with
+  // loaded thumbnails) so that stackedVolumes.length is stable. CompositeCanvas skips
+  // volumes without thumbnail, so positions are pre-allocated: each thumbnail pops into
+  // its fixed slot without shifting existing ones.
   let enrichedPlaceholders = $derived.by(() => {
     if (cloudStackVolumes.length === 0) return [];
-    return cloudStackVolumes.map((vol) => {
-      const ct = cloudThumbnailData[vol.volume_uuid];
-      if (ct) {
-        return {
-          ...vol,
-          thumbnail: ct.file,
-          thumbnail_width: ct.width,
-          thumbnail_height: ct.height
-        };
-      }
-      return vol;
-    });
+    return cloudStackVolumes.map(withFetchedCover);
   });
 
   // Unread across the WHOLE series — what "hide read" hides. Built from the same arrays the
-  // stack rule merges (raw rows, enriched cloud volumes) so the references match, and
+  // stack rule merges (enriched rows, enriched cloud volumes) so the references match, and
   // spanning both absent states: a finished cloud volume hides like any other.
-  let unreadVolumes = $derived([...localVolumes, ...enrichedPlaceholders].filter(isUnread));
+  let unreadVolumes = $derived([...enrichedLocalVolumes, ...enrichedPlaceholders].filter(isUnread));
 
   // The same list over the RAW volumes. The cover fetch below selects with this one so its
   // targets never depend on the covers it is fetching (see `cloudCoverTargets`).
@@ -147,7 +155,7 @@
   // like a cloud one — same treatment, only the covers arrive sooner.
   let stackedVolumes = $derived(
     selectCardStackVolumes({
-      localVolumes: seriesNeedsDownload ? [] : localVolumes,
+      localVolumes: seriesNeedsDownload ? [] : enrichedLocalVolumes,
       unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
       placeholders: enrichedPlaceholders,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
