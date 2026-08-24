@@ -558,4 +558,145 @@ describe('profiles.json', () => {
 
     expect(uploads).toEqual([]);
   });
+
+  function stubProfilesCache() {
+    const profilesMeta = { ...fileMeta('profiles'), path: 'profiles.json' };
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn((name: string) => (name === 'profiles.json' ? profilesMeta : null)),
+      fetch: vi.fn(async () => {})
+    });
+  }
+
+  function makeProfilesProvider(
+    download: () => Promise<Blob>,
+    uploads: Array<Record<string, any>>
+  ): SyncProvider {
+    return {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(download),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+  }
+
+  it('heals a future-stamped cloud profile instead of letting it outrank every later edit', async () => {
+    // Regression for the clock-skew hazard: `touchProfile`/`deleteProfile`
+    // stamp the writing device's raw clock with no ceiling, so a fast-clock
+    // device's single edit would otherwise permanently outrank every honest
+    // later edit (`Math.max` can never let a real timestamp catch up to one
+    // already in the future). The upload compare is already against the RAW
+    // cloud bytes, so a clamped/healed merge that differs uploads the healed
+    // profile and the poison is gone after one sync — mirrors the series
+    // section's `rawSeries` fix. Only `Date` is faked — a real Blob's
+    // `.text()` needs real timers under jsdom.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      profilesWithTrash.set({} as any);
+      stubProfilesCache();
+      const uploads: Array<Record<string, any>> = [];
+      const downloadFile = vi.fn(async () =>
+        jsonBlob({ Desktop: { charCount: 2, lastUpdated: '2999-01-01T00:00:00.000Z' } })
+      );
+      const provider = makeProfilesProvider(downloadFile, uploads);
+
+      await svc.syncProfiles(provider);
+
+      // One upload, carrying the clamped stamp — the cloud is now healed.
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].Desktop.lastUpdated).toBe('2026-08-23T12:00:00.000Z');
+
+      // A minute later, an honest local edit wins the next merge instead of
+      // being reverted by a stamp that would otherwise re-clamp to a fresher
+      // `now` forever.
+      vi.setSystemTime(new Date('2026-08-23T12:01:00.000Z'));
+      profilesWithTrash.update(
+        (p: any) =>
+          ({
+            ...p,
+            Desktop: { charCount: 9, lastUpdated: new Date().toISOString() }
+          }) as any
+      );
+      const healed = uploads[0];
+      downloadFile.mockImplementation(async () => jsonBlob(healed));
+
+      await svc.syncProfiles(provider);
+
+      expect((get(profilesWithTrash) as any).Desktop.charCount).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a deletion across sync when the tombstone postdates the other side's edit", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      // Local doesn't know about the remote deletion yet — it only has a
+      // stale edit from before the deletion happened.
+      profilesWithTrash.set({
+        Custom1: { lastUpdated: '2026-08-01T00:00:00.000Z', charCount: 5 }
+      } as any);
+      stubProfilesCache();
+      const uploads: Array<Record<string, any>> = [];
+      const downloadFile = vi.fn(async () =>
+        jsonBlob({
+          Custom1: {
+            deletedOn: '2026-08-10T00:00:00.000Z',
+            lastUpdated: '2026-08-10T00:00:00.000Z'
+          }
+        })
+      );
+      const provider = makeProfilesProvider(downloadFile, uploads);
+
+      await svc.syncProfiles(provider);
+
+      expect((get(profilesWithTrash) as any).Custom1.deletedOn).toBe('2026-08-10T00:00:00.000Z');
+      // Merged already equals the raw cloud tombstone byte-for-byte: no
+      // upload needed, converged in one sync.
+      expect(uploads).toEqual([]);
+
+      // A second automatic sync round against the same cloud tombstone
+      // doesn't resurrect it.
+      await svc.syncProfiles(provider);
+
+      expect((get(profilesWithTrash) as any).Custom1.deletedOn).toBe('2026-08-10T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resurrects a deleted profile when the other side has a genuinely newer edit (current Math.max rule, documented)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      // Local tombstoned the profile, then someone edited it on another
+      // device AFTER the deletion (e.g. re-created it under the same name).
+      profilesWithTrash.set({
+        Custom1: { deletedOn: '2026-08-01T00:00:00.000Z', lastUpdated: '2026-08-01T00:00:00.000Z' }
+      } as any);
+      stubProfilesCache();
+      const uploads: Array<Record<string, any>> = [];
+      const provider = makeProfilesProvider(
+        async () =>
+          jsonBlob({ Custom1: { charCount: 12, lastUpdated: '2026-08-15T00:00:00.000Z' } }),
+        uploads
+      );
+
+      await svc.syncProfiles(provider);
+
+      // Documented current behavior: a later plain edit outranks an earlier
+      // deletion purely by being the more recent timestamp — the tombstone
+      // does not win just by being a deletion. This re-creates the profile;
+      // it is the existing Math.max rule, pinned rather than changed here.
+      expect((get(profilesWithTrash) as any).Custom1.deletedOn).toBeUndefined();
+      expect((get(profilesWithTrash) as any).Custom1.charCount).toBe(12);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

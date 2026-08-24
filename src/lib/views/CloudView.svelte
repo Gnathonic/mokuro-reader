@@ -20,7 +20,6 @@
   // Note: Provider instances are lazy-loaded via providerManager.getOrLoadProvider()
   import { providerManager } from '$lib/util/sync';
   import { queueVolumesFromCloudFiles } from '$lib/util/download-queue';
-  import { unifiedSyncService } from '$lib/util/sync/unified-sync-service';
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
@@ -293,35 +292,6 @@
     }
   }
 
-  let isSyncingProfiles = $state(false);
-
-  async function syncProfiles() {
-    console.log('🔘 Sync profiles button clicked');
-    const provider = providerManager.getActiveProvider();
-    if (!provider) {
-      showSnackbar('No cloud provider connected');
-      return;
-    }
-
-    console.log('🔘 Provider found:', provider.name);
-    isSyncingProfiles = true;
-    try {
-      // Sync profiles using smart merge logic — every provider sync now reads,
-      // merges and pushes profiles.json unconditionally, so this button just
-      // triggers a regular sync.
-      console.log('🔘 Calling unifiedSyncService.syncProvider');
-      const result = await unifiedSyncService.syncProvider(provider);
-      if (result.success) {
-        console.log('🔘 Sync completed successfully');
-        showSnackbar('Profiles synced');
-      } else {
-        showSnackbar(`Sync failed: ${result.error || 'Unknown error'}`);
-      }
-    } finally {
-      isSyncingProfiles = false;
-    }
-  }
-
   // For backward compatibility with the button in the cloud page
   async function performSync() {
     const result = await unifiedCloudManager.syncProgress();
@@ -581,6 +551,8 @@
 
   async function handleProviderSync() {
     // Use unified sync service - handles merge logic, deletion tracking, and tombstone purging
+    // (read progress, series reading state, AND settings profiles - one sync
+    // action does all three now, so its snackbar names all three).
     const result = await unifiedCloudManager.syncProgress();
     if (result.totalProviders === 0) {
       // No authenticated provider (e.g. a WebDAV session whose password was
@@ -590,7 +562,7 @@
       const message = result.results[0]?.error || 'Unknown error';
       showSnackbar(`Sync failed: ${message}`);
     } else {
-      showSnackbar('Synced read progress');
+      showSnackbar('Synced read progress and profiles');
     }
   }
 
@@ -1104,16 +1076,6 @@
                   promptConfirmation('Backup all series to cloud storage?', backupAllSeries)}
               >
                 Backup all series to cloud
-              </Button>
-
-              <!-- Profile sync button -->
-              <Button color="blue" onclick={syncProfiles} disabled={isSyncingProfiles}>
-                {#if isSyncingProfiles}
-                  <Spinner size="4" class="mr-2" />
-                  Syncing profiles...
-                {:else}
-                  Sync profiles
-                {/if}
               </Button>
             {/if}
 

@@ -18,6 +18,7 @@ import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
+import { normalizeUpdatedAt } from '$lib/metadata/sanitize';
 
 /**
  * Deep-sorts object keys before `JSON.stringify` so two values that differ
@@ -766,6 +767,37 @@ class UnifiedSyncService {
   }
 
   /**
+   * Clamp a cloud profile's untrusted timestamps the way `normalizeUpdatedAt`
+   * clamps the series section's `lastUpdated` (see `series-data.ts`): a
+   * `lastUpdated` or `deletedOn` more than five minutes in the future — clock
+   * skew on another device, a hand-edited cloud file — is clamped to `now`.
+   *
+   * `touchProfile`/`deleteProfile` stamp the writing device's raw clock with
+   * no ceiling, so without this a single fast-clock edit would permanently
+   * outrank every honest later edit (`Math.max` can never let a real
+   * timestamp catch up to one that is already in the future). Only the CLOUD
+   * side is clamped — this device's own edits are trusted at the point they
+   * are made; it is what comes back from elsewhere that is untrusted input.
+   *
+   * The upload decision in `syncProfiles` already compares against the RAW
+   * cloud bytes, never a migrated/clamped copy, so a clamped merge that
+   * differs from that raw file uploads the healed profile and the poison is
+   * gone after one sync — the same mechanism `rawSeries` uses for the series
+   * section.
+   */
+  private clampCloudProfileStamps(profile: any): any {
+    if (!profile || typeof profile !== 'object') return profile;
+    const clamped = { ...profile };
+    if (profile.lastUpdated !== undefined) {
+      clamped.lastUpdated = normalizeUpdatedAt(profile.lastUpdated) ?? profile.lastUpdated;
+    }
+    if (profile.deletedOn !== undefined) {
+      clamped.deletedOn = normalizeUpdatedAt(profile.deletedOn) ?? profile.deletedOn;
+    }
+    return clamped;
+  }
+
+  /**
    * Merge profiles using timestamp-based conflict resolution
    * Handles deletedOn timestamps to properly sync deletions across devices
    * Migrates profiles to ensure all settings fields exist with defaults
@@ -790,7 +822,7 @@ class UnifiedSyncService {
 
     allProfileNames.forEach((profileName) => {
       const localProfile = migratedLocal?.[profileName];
-      const cloudProfile = migratedCloud?.[profileName];
+      const cloudProfile = this.clampCloudProfileStamps(migratedCloud?.[profileName]);
 
       if (!localProfile) {
         // Only in cloud - use cloud version (already migrated)
