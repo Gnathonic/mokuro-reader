@@ -1367,6 +1367,30 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(file.volumes).toHaveLength(1);
   });
 
+  it('picks the same folder every time when two of them fold alike', async () => {
+    // Two real folders on a case-sensitive backend can fold to one key. Neither
+    // is "the" folder, but the answer must not depend on listing order — a write
+    // that alternates between two folders publishes half an index to each.
+    // One listing behind BOTH cache accessors, as the provider caches are.
+    let listing = [cloudFile('ONE PIECE/Volume 1.cbz'), cloudFile('One  Piece/Volume 2.cbz')];
+    getBySeries.mockImplementation((series: string) =>
+      listing.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    getAllFiles.mockImplementation(() => listing);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const first = unifiedCloudManager.resolveCloudFolderTitle('One Piece');
+    listing = [...listing].reverse();
+    const second = unifiedCloudManager.resolveCloudFolderTitle('One Piece');
+
+    expect(first).toBe(second);
+    expect(['ONE PIECE', 'One  Piece']).toContain(first);
+
+    // An exact folder still wins outright over any folded candidate.
+    listing = [...listing, cloudFile('One Piece/Volume 3.cbz')];
+    expect(unifiedCloudManager.resolveCloudFolderTitle('One Piece')).toBe('One Piece');
+  });
+
   it('reports the archives of a decomposed folder for a composed title', async () => {
     // The accessor the backup gate reads. Byte-wise it answers "nothing is
     // backed up" for a folder full of archives.
@@ -1899,6 +1923,138 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       undefined
     );
     expect(provider.deleteFile).not.toHaveBeenCalledWith(sidecar);
+  });
+
+  it('cleans a decomposed folder’s sidecar and index when its last volume goes', async () => {
+    // `deleteManagedVolume` is called with the LOCAL title. Byte-wise it finds
+    // no files in a decomposed folder at all: nothing is deleted, and the
+    // sidecar plus its cached record outlive the volumes they describe.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: `${decomposed}/Volume 1.cbz`,
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'sj',
+        path: `${decomposed}/series.json`,
+        modifiedTime: 't',
+        size: 20
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache(state);
+    getAllFiles.mockImplementation(() => state);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume(composed, 'Volume 1');
+
+    const deleted = provider.deleteFile.mock.calls.map(
+      (args: unknown[]) => (args[0] as CloudFileMetadata).path
+    );
+    expect(deleted).toContain(`${decomposed}/Volume 1.cbz`);
+    expect(deleted).toContain(`${decomposed}/series.json`);
+    expect(deleteSeriesIndex).toHaveBeenCalledWith(decomposed.toLowerCase());
+  });
+
+  it('drops the cached index of a decomposed folder deleted whole', async () => {
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    const deleted: string[] = [];
+    const provider = {
+      type: 'webdav',
+      getStatus: vi.fn(() => ({ isReadOnly: false })),
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        deleted.push(file.path);
+      })
+    };
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: `${decomposed}/Volume 1.cbz`,
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'sj',
+        path: `${decomposed}/series.json`,
+        modifiedTime: 't',
+        size: 20
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getAllFiles.mockImplementation(() => state);
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteSeriesFolder(composed);
+
+    expect(deleted).toContain(`${decomposed}/series.json`);
+    // Keyed by the folder, which is where every writer here cached it.
+    expect(deleteSeriesIndex).toHaveBeenCalledWith(decomposed.toLowerCase());
+    expect(deleteCatalogIndexes).toHaveBeenCalledWith([decomposed.toLowerCase()]);
+  });
+
+  it('retires the stale sidecar of a decomposed folder after a rename', async () => {
+    const composedOld = 'ポケモン';
+    const oldFolder = composedOld.normalize('NFD');
+    const provider = makeRenameProvider();
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: `${oldFolder}/series.json`,
+      modifiedTime: 't',
+      size: 20
+    };
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: `${oldFolder}/Volume 1.cbz`,
+        modifiedTime: 't',
+        size: 100
+      },
+      sidecar
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache(state);
+    getAllFiles.mockImplementation(() => state);
+    generateSidecars.mockResolvedValue({});
+    // The DB still holds the OLD title, in the composed spelling it was imported with.
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: composedOld,
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameSeries(composedOld, 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'New Series/series.json',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
   });
 
   it('deletes the sidecar with the series folder and drops the cached index', async () => {
@@ -2704,6 +2860,43 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
       }
     });
     expect(upsertFromSeriesFile).toHaveBeenCalledWith('One Piece', result);
+  });
+
+  it('caches a decomposed folder’s index ONCE, under the folder’s own key', async () => {
+    // The view opens the series by its local (composed) title while the cloud
+    // folder is decomposed. Reading the gate through the resolver but keying the
+    // record with the caller's spelling leaves TWO records for one folder — and
+    // the listing-driven pass keeps rewriting the other one.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    const seriesJson = { ...SERIES_JSON, series_title: decomposed };
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => new Blob([JSON.stringify(seriesJson)]))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    const files = [
+      cloudFile(`${decomposed}/Volume 1.cbz`, { fileId: 'cbz-1' }),
+      cloudFile(`${decomposed}/series.json`, { fileId: 'sj' })
+    ];
+    listSeriesFolder(files);
+    getAllFiles.mockReturnValue(files);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.refreshSeriesIndexForSeries(composed);
+
+    expect(result?.volumes).toEqual(SERIES_JSON.volumes);
+    // Read AND written under the folder key: one record per cloud folder.
+    expect(getSeriesIndex).toHaveBeenCalledWith(decomposed.toLowerCase());
+    expect(getSeriesIndex).not.toHaveBeenCalledWith(composed.toLowerCase());
+    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndex.mock.calls[0][0]).toMatchObject({
+      series_key: decomposed.toLowerCase(),
+      series_title: decomposed,
+      source: { path: `${decomposed}/series.json` }
+    });
+    // …and the facts land on the folder's series, not a second one named the
+    // same in another unicode form.
+    expect(upsertFromSeriesFile).toHaveBeenCalledWith(decomposed, result);
   });
 
   it('re-fetches when the cached stamp came from another provider', async () => {

@@ -11,6 +11,7 @@ import { cacheManager } from './cache-manager';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
+import { naturalSort } from '$lib/util/natural-sort';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -436,14 +437,18 @@ class UnifiedCloudManager {
    */
   private async cleanupSeriesFileIfFolderEmptied(seriesTitle: string): Promise<void> {
     try {
-      const stillHasArchive = this.getCloudVolumesBySeries(seriesTitle).some((file) =>
+      // Same folder the write path uses, and the same key it cached the record
+      // under: a caller holding the local spelling of a decomposed folder must
+      // still find the sidecar it is cleaning up after.
+      const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+      const stillHasArchive = this.getCloudVolumesBySeries(folderTitle).some((file) =>
         normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
       );
       if (stillHasArchive) return;
 
-      const sidecar = this.getCloudSeriesFile(seriesTitle);
+      const sidecar = this.getCloudSeriesFile(folderTitle);
       if (sidecar) await this.deleteFileIdempotent(sidecar);
-      await deleteSeriesIndex(normalizeSeriesKey(seriesTitle));
+      await deleteSeriesIndex(normalizeSeriesKey(folderTitle));
     } catch (error) {
       console.warn(`Failed to clean up series.json for '${seriesTitle}':`, error);
     }
@@ -465,8 +470,14 @@ class UnifiedCloudManager {
    * is not a managed volume extension).
    */
   getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
-    const basePath = normalizeCloudPath(`${seriesTitle}/${volumeTitle}`);
-    return this.getCloudVolumesBySeries(seriesTitle).filter(
+    // The SERIES half goes through the resolver — callers pass the local title,
+    // and a decomposed folder is invisible to an exact cache key, so the delete
+    // paths below would find nothing to delete. The VOLUME half stays byte-exact
+    // on purpose: this list is what `deleteManagedVolume` erases, and matching a
+    // filename that only resembles the one asked for is not a risk worth taking.
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
+    return this.getCloudVolumesBySeries(folderTitle).filter(
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
     );
   }
@@ -495,7 +506,11 @@ class UnifiedCloudManager {
     // decided BEFORE the read-only gate so a read-only provider (anonymous
     // session, or auto-demoted after a write failure) never blocks a
     // purely-local rename.
-    if (this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle).length === 0) {
+    // The old folder as the CLOUD spells it, so every step below reads and
+    // writes the folder that exists rather than the caller's local spelling of
+    // it (see `resolveCloudFolderTitle`).
+    const oldFolderTitle = this.resolveCloudFolderTitle(oldSeriesTitle);
+    if (this.getManagedCloudFilesForVolume(oldFolderTitle, oldVolumeTitle).length === 0) {
       return 0;
     }
 
@@ -507,7 +522,7 @@ class UnifiedCloudManager {
 
     const changed = await this.renameVolumeFiles(
       provider,
-      oldSeriesTitle,
+      oldFolderTitle,
       oldVolumeTitle,
       newSeriesTitle,
       newVolumeTitle,
@@ -515,11 +530,11 @@ class UnifiedCloudManager {
       options
     );
 
-    if (changed > 0 && oldSeriesTitle !== newSeriesTitle) {
+    if (changed > 0 && oldFolderTitle !== newSeriesTitle) {
       // Sidecar first: while `series.json` is still there the old directory can
       // never be empty, so the prune below would always no-op.
-      await this.cleanupSeriesFileIfFolderEmptied(oldSeriesTitle);
-      await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+      await this.cleanupSeriesFileIfFolderEmptied(oldFolderTitle);
+      await this.pruneSeriesDirectoryIfEmpty(provider, oldFolderTitle);
     }
 
     return changed;
@@ -765,7 +780,12 @@ class UnifiedCloudManager {
     // Pre-rename listing: no index refresh (see fetchAllCloudVolumes).
     await this.fetchAllCloudVolumes({ refreshIndexes: false });
 
-    const existingFiles = this.getCloudVolumesBySeries(oldSeriesTitle);
+    // The OLD folder as the cloud spells it. Everything below reads that folder
+    // — the file list, the gates built from its paths, the per-volume renames,
+    // the sidecar carry-over and the empty-directory prune — so it is resolved
+    // once, here, and never re-derived from the caller's (local) spelling.
+    const oldFolderTitle = this.resolveCloudFolderTitle(oldSeriesTitle);
+    const existingFiles = this.getCloudVolumesBySeries(oldFolderTitle);
     if (existingFiles.length === 0) {
       // Nothing backed up under the old title — decided BEFORE the read-only
       // gate so a read-only provider never blocks a purely-local rename.
@@ -797,7 +817,7 @@ class UnifiedCloudManager {
       // see PR #201). Until then we fail loudly and ask the user to download
       // the missing volumes first.
       const knownBases = new Set(
-        volumes.map((v) => normalizeCloudPath(`${oldSeriesTitle}/${v.volumeTitle}`))
+        volumes.map((v) => normalizeCloudPath(`${oldFolderTitle}/${v.volumeTitle}`))
       );
       const cloudOnlyBases = [
         ...new Set(
@@ -810,7 +830,9 @@ class UnifiedCloudManager {
         )
       ];
       if (cloudOnlyBases.length > 0) {
-        const names = cloudOnlyBases.map((base) => base.slice(normalizedOldTitle.length + 1));
+        const names = cloudOnlyBases.map((base) =>
+          base.slice(normalizeCloudPath(oldFolderTitle).length + 1)
+        );
         const shown = names.slice(0, 3).join(', ') + (names.length > 3 ? ', …' : '');
         throw new ProviderError(
           `Series not renamed: ${names.length} backed-up volume(s) in this series ` +
@@ -834,7 +856,7 @@ class UnifiedCloudManager {
           if (!row || !isMetadataOnly(row)) return false;
           // Image-only volumes have no sidecar to regenerate — they move fine.
           if (!row.mokuro_version?.trim()) return false;
-          const base = normalizeCloudPath(`${oldSeriesTitle}/${volume.volumeTitle}`);
+          const base = normalizeCloudPath(`${oldFolderTitle}/${volume.volumeTitle}`);
           return existingFiles.some(
             (file) =>
               isMokuroSidecarPath(file.path) &&
@@ -859,7 +881,7 @@ class UnifiedCloudManager {
         try {
           result.changed += await this.renameVolumeFiles(
             provider,
-            oldSeriesTitle,
+            oldFolderTitle,
             volumeTitle,
             newSeriesTitle,
             volumeTitle,
@@ -876,14 +898,14 @@ class UnifiedCloudManager {
       // The series sidecar follows the volumes, once, after the fan-out: it
       // describes the folder, not any single volume.
       if (result.renamedVolumeUuids.length > 0) {
-        await this.moveSeriesFileAfterRename(oldSeriesTitle, newSeriesTitle);
+        await this.moveSeriesFileAfterRename(oldFolderTitle, newSeriesTitle);
       }
 
       // ONE prune attempt after the whole fan-out (not per volume): the
       // provider server-checks emptiness, so this is safe even when some
       // volumes failed and their files still occupy the old directory.
       if (result.renamedVolumeUuids.length > 0) {
-        await this.pruneSeriesDirectoryIfEmpty(provider, oldSeriesTitle);
+        await this.pruneSeriesDirectoryIfEmpty(provider, oldFolderTitle);
       }
 
       return result;
@@ -891,13 +913,14 @@ class UnifiedCloudManager {
 
     // Legacy path (no volume list, e.g. an image-only series): no .mokuro to
     // regenerate, so a provider-optimized bulk folder move is correct.
-    const renamedFiles = await provider.renameFolder(oldSeriesTitle, newSeriesTitle);
+    const renamedFiles = await provider.renameFolder(oldFolderTitle, newSeriesTitle);
 
     // A folder move carries `series.json` along with everything else — only the
-    // cached index, which is keyed by series title, has to follow.
+    // cached index, which is keyed by series title, has to follow. Keyed off the
+    // FOLDER, which is the key every writer here cached it under.
     try {
-      await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
-      await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
+      await moveSeriesIndexKey(oldFolderTitle, newSeriesTitle);
+      await moveCatalogIndexKey(oldFolderTitle, newSeriesTitle);
     } catch (error) {
       console.warn(`Failed to move the cached series index to '${newSeriesTitle}':`, error);
     }
@@ -1062,10 +1085,35 @@ class UnifiedCloudManager {
 
     const key = normalizeVolumeTitleKey(seriesTitle);
     if (!key) return seriesTitle;
-    for (const title of this.cloudSeriesTitles()) {
-      if (normalizeVolumeTitleKey(title) === key) return title;
+    const candidates = [...this.cloudFolderNames()].filter(
+      (title) => normalizeVolumeTitleKey(title) === key
+    );
+    if (candidates.length === 0) return seriesTitle;
+    // Two folders CAN fold alike ("One Piece" beside "ONE  PIECE" on a
+    // case-sensitive backend). Neither is more correct, but the pick must be
+    // stable across listings — alternating would publish half an index to each —
+    // so it is ordered, not first-seen.
+    return candidates.sort(naturalSort)[0];
+  }
+
+  /**
+   * Every folder the listing shows a file in — archives, sidecars, covers alike.
+   *
+   * Wider than `cloudSeriesTitles` (which wants a `.cbz`) because the callers of
+   * {@link resolveCloudFolderTitle} include the clean-up paths: a folder whose
+   * last archive was just deleted still has a `series.json` to retire, and it
+   * has to be findable by the title the caller holds. Every gate downstream
+   * still asks for archives separately, so widening this cannot make a write
+   * happen for an empty folder.
+   */
+  private cloudFolderNames(): Set<string> {
+    const folders = new Set<string>();
+    for (const file of this.getAllCloudVolumes()) {
+      const parts = normalizeCloudPath(file.path).split('/');
+      if (parts.length !== 2 || !parts[0]) continue;
+      folders.add(parts[0]);
     }
-    return seriesTitle;
+    return folders;
   }
 
   /**
@@ -1095,7 +1143,16 @@ class UnifiedCloudManager {
     // from a view's load path and its contract is that it never rejects.
     let cached: SeriesIndexRecord | undefined;
     try {
-      cached = await getSeriesIndex(seriesKey);
+      // The caller opens the series by its LOCAL title; everything below —
+      // the archive gate, the sidecar, the cache record and the facts it
+      // applies — belongs to the folder the cloud actually spells (see
+      // `resolveCloudFolderTitle`). Resolving once and using it throughout is
+      // what keeps ONE cached record per folder: keying the record with the
+      // local spelling while the listing-driven pass keys it with the folder's
+      // leaves two records for one file, each re-downloading it in turn.
+      const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+      const folderKey = normalizeSeriesKey(folderTitle) || seriesKey;
+      cached = await getSeriesIndex(folderKey);
 
       const provider = this.getActiveProvider();
       if (!provider) return cached?.file;
@@ -1105,9 +1162,9 @@ class UnifiedCloudManager {
       // a deleted series must not seed a cache record or a series_metadata row
       // — and bailing before the stamp check also stops it being re-downloaded
       // on every single open, since nothing would ever cache its stamp.
-      if (this.cloudVolumeTitlesFor(seriesTitle).size === 0) return cached?.file;
+      if (this.cloudVolumeTitles(folderTitle).size === 0) return cached?.file;
 
-      const cloudFile = this.getCloudSeriesFile(seriesTitle);
+      const cloudFile = this.getCloudSeriesFile(folderTitle);
       if (!cloudFile) return cached?.file;
 
       const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
@@ -1117,8 +1174,8 @@ class UnifiedCloudManager {
       if (!fresh) return cached?.file;
 
       await putSeriesIndex({
-        series_key: seriesKey,
-        series_title: seriesTitle,
+        series_key: folderKey,
+        series_title: folderTitle,
         file: fresh,
         source: {
           provider: provider.type,
@@ -1129,7 +1186,7 @@ class UnifiedCloudManager {
         fetched_at: new Date().toISOString()
       });
       // Facts only, strictly-newer, and never a write trigger.
-      await upsertFromSeriesFile(seriesTitle, fresh);
+      await upsertFromSeriesFile(folderTitle, fresh);
       return fresh;
     } catch (error) {
       console.debug(`Could not refresh series.json for '${seriesTitle}':`, error);
@@ -1463,16 +1520,20 @@ class UnifiedCloudManager {
     oldSeriesTitle: string,
     newSeriesTitle: string
   ): Promise<void> {
-    const staleFile = this.getCloudSeriesFile(oldSeriesTitle);
+    // The OLD folder as the cloud spells it — the sidecar being retired is its
+    // file, and the "does it still hold archives?" test below reads the same
+    // folder. Resolved once so the two cannot disagree.
+    const oldFolderTitle = this.resolveCloudFolderTitle(oldSeriesTitle);
+    const staleFile = this.getCloudSeriesFile(oldFolderTitle);
     try {
       // Move the cache first so the write below merges the OLD index instead of
       // starting from an empty one.
-      await moveSeriesIndexKey(oldSeriesTitle, newSeriesTitle);
+      await moveSeriesIndexKey(oldFolderTitle, newSeriesTitle);
       // Its own guard: the catalog cache is a disposable download cache, and an
       // abort while moving its key must not skip the series.json carry-over
       // below — the only step here that touches the cloud.
       try {
-        await moveCatalogIndexKey(oldSeriesTitle, newSeriesTitle);
+        await moveCatalogIndexKey(oldFolderTitle, newSeriesTitle);
       } catch (error) {
         console.debug(`Could not move the cached catalog entry to '${newSeriesTitle}':`, error);
       }
@@ -1484,7 +1545,7 @@ class UnifiedCloudManager {
       // skipped write while the old folder still lists archives means the
       // moved files have not surfaced under the new title yet; keeping the old
       // index beats leaving the series with none until the next backup.
-      const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldSeriesTitle).some((file) =>
+      const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldFolderTitle).some((file) =>
         normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
       );
       if (staleFile && (outcome === 'written' || !oldFolderStillHasArchive)) {
@@ -1499,18 +1560,21 @@ class UnifiedCloudManager {
    * Delete an entire series folder (all volumes in the series)
    */
   async deleteSeriesFolder(seriesTitle: string): Promise<{ succeeded: number; failed: number }> {
-    const result = await this.deleteSeriesFolderFiles(seriesTitle);
+    // The folder as the CLOUD spells it: the files to delete live under that
+    // name, and both cached records were written under its key.
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const result = await this.deleteSeriesFolderFiles(folderTitle);
     // The cached index describes a folder that no longer exists. Dropping it is
     // safe either way: it is a download cache, re-fetched if the folder returns.
     try {
-      await deleteSeriesIndex(normalizeSeriesKey(seriesTitle));
+      await deleteSeriesIndex(normalizeSeriesKey(folderTitle));
     } catch (error) {
-      console.warn(`Failed to drop the cached series index for '${seriesTitle}':`, error);
+      console.warn(`Failed to drop the cached series index for '${folderTitle}':`, error);
     }
     try {
-      await deleteCatalogIndexes([normalizeSeriesKey(seriesTitle)]);
+      await deleteCatalogIndexes([normalizeSeriesKey(folderTitle)]);
     } catch (error) {
-      console.debug(`Could not drop the cached catalog entry for '${seriesTitle}':`, error);
+      console.debug(`Could not drop the cached catalog entry for '${folderTitle}':`, error);
     }
     return result;
   }
