@@ -467,6 +467,46 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
+  it('refuses a rename onto a decomposed destination folder that is already occupied', async () => {
+    // The case this gate exists for, on a normalizing backend: the caller names
+    // the destination composed, the cloud spells it decomposed, and they are ONE
+    // folder. Comparing the caller's spelling against the resolved destination
+    // files can never match, so the rename would sail past the gate and its
+    // .mokuro upload (an overwrite everywhere) would corrupt the occupant.
+    const composedNew = 'ポケモン';
+    const decomposedNew = composedNew.normalize('NFD');
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      ...oldSeriesFiles(),
+      {
+        provider: 'webdav',
+        fileId: 'other-cbz',
+        path: `${decomposedNew}/Volume X.cbz`,
+        modifiedTime: 't',
+        size: 999
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getAllFiles.mockImplementation(() => state);
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', composedNew, 'Volume X', 'uuid-1')
+    ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
+
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+
+    getAllFiles.mockReturnValue([]);
+  });
+
   it('overwrite option deletes the occupant first, then renames cleanly', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();
@@ -1961,6 +2001,92 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     expect(deleted).toContain(`${decomposed}/Volume 1.cbz`);
     expect(deleted).toContain(`${decomposed}/series.json`);
     expect(deleteSeriesIndex).toHaveBeenCalledWith(decomposed.toLowerCase());
+  });
+
+  it('deletes a volume whose FILENAME is decomposed, like its folder', async () => {
+    // A backend that decomposes names decomposes the filenames too — the very
+    // premise this wave folds on everywhere else. Byte-wise the managed-file
+    // lookup matches nothing, so the delete is a silent no-op the UI reports as
+    // success, and the sidecar clean-up never runs.
+    const composedSeries = 'ポケモン';
+    const composedVolume = 'ポケモン 1';
+    const folder = composedSeries.normalize('NFD');
+    const filename = composedVolume.normalize('NFD');
+    expect(filename).not.toBe(composedVolume);
+
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: `${folder}/${filename}.cbz`,
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mok-1',
+        path: `${folder}/${filename}.mokuro`,
+        modifiedTime: 't',
+        size: 10
+      },
+      {
+        provider: 'webdav',
+        fileId: 'sj',
+        path: `${folder}/series.json`,
+        modifiedTime: 't',
+        size: 20
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache(state);
+    getAllFiles.mockImplementation(() => state);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume(composedSeries, composedVolume);
+
+    const deleted = provider.deleteFile.mock.calls.map(
+      (args: unknown[]) => (args[0] as CloudFileMetadata).path
+    );
+    expect(deleted).toContain(`${folder}/${filename}.cbz`);
+    expect(deleted).toContain(`${folder}/${filename}.mokuro`);
+    // …and with the last archive gone, the folder's sidecar goes with it.
+    expect(deleted).toContain(`${folder}/series.json`);
+    expect(deleteSeriesIndex).toHaveBeenCalledWith(folder.toLowerCase());
+  });
+
+  it('never widens a delete past the file that is spelled exactly right', async () => {
+    // The folded match is a FALLBACK. With a byte-exact filename present, that
+    // is the volume being deleted — a sibling that merely folds the same way is
+    // somebody else's backup.
+    const provider = makeRenameProvider();
+    const state: CloudFileMetadata[] = [
+      {
+        provider: 'webdav',
+        fileId: 'exact',
+        path: 'One Piece/Vol 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'folds-alike',
+        path: 'One Piece/VOL  1.cbz',
+        modifiedTime: 't',
+        size: 100
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache(state);
+    getAllFiles.mockImplementation(() => state);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('One Piece', 'Vol 1');
+
+    const deleted = provider.deleteFile.mock.calls.map(
+      (args: unknown[]) => (args[0] as CloudFileMetadata).path
+    );
+    expect(deleted).toEqual(['One Piece/Vol 1.cbz']);
   });
 
   it('drops the cached index of a decomposed folder deleted whole', async () => {

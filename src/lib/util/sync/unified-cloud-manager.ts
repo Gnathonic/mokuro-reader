@@ -119,6 +119,19 @@ function stripManagedFileExtension(path: string): string {
 }
 
 /**
+ * The managed extension a listed file carries (`.cbz`, `.mokuro.gz`, `.webp`…).
+ *
+ * Read off the file's OWN path rather than by slicing a base path built from the
+ * caller's titles: a source file matched by fold can be spelled differently from
+ * what was asked for — and a decomposed name is not even the same LENGTH — so
+ * slicing would cut the name, not the extension.
+ */
+function managedExtensionOf(path: string): string {
+  const normalized = normalizeCloudPath(path);
+  return normalized.slice(stripManagedFileExtension(normalized).length);
+}
+
+/**
  * Which of two `series_metadata` records folding to the SAME series wins.
  *
  * Two can exist at once — a cloud upsert files one under a decomposed title
@@ -470,16 +483,40 @@ class UnifiedCloudManager {
    * is not a managed volume extension).
    */
   getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
-    // The SERIES half goes through the resolver — callers pass the local title,
-    // and a decomposed folder is invisible to an exact cache key, so the delete
-    // paths below would find nothing to delete. The VOLUME half stays byte-exact
-    // on purpose: this list is what `deleteManagedVolume` erases, and matching a
-    // filename that only resembles the one asked for is not a risk worth taking.
+    // Both halves resolve the same way the folder does: byte-exact first, and a
+    // folded match only when nothing is spelled exactly right. A backend that
+    // decomposes a folder name decomposes the FILENAMES too, so a byte-wise
+    // lookup finds nothing to delete or move there — a silent no-op the UI
+    // reports as success. The exact-first order is what keeps that from widening
+    // anything: with the file the caller named present, a sibling that merely
+    // folds the same way is somebody else's backup and is never touched.
     const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const files = this.getCloudVolumesBySeries(folderTitle);
+
     const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
-    return this.getCloudVolumesBySeries(folderTitle).filter(
+    const exact = files.filter(
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
     );
+    if (exact.length > 0) return exact;
+
+    const key = normalizeVolumeTitleKey(volumeTitle);
+    if (!key) return exact;
+    const byBase = new Map<string, CloudFileMetadata[]>();
+    for (const file of files) {
+      const base = stripManagedFileExtension(normalizeCloudPath(file.path));
+      const name = base.slice(base.lastIndexOf('/') + 1);
+      if (normalizeVolumeTitleKey(name) !== key) continue;
+      const group = byBase.get(base);
+      if (group) group.push(file);
+      else byBase.set(base, [file]);
+    }
+    if (byBase.size === 0) return exact;
+    // Still ONE volume's files, as the contract says: two filenames that fold
+    // alike are two volumes, and the pick between them is ordered rather than
+    // first-seen so it cannot depend on listing order (same rule as
+    // `resolveCloudFolderTitle`).
+    const base = [...byBase.keys()].sort(naturalSort)[0];
+    return byBase.get(base)!;
   }
 
   /**
@@ -588,7 +625,15 @@ class UnifiedCloudManager {
     options?: { overwrite?: boolean }
   ): Promise<number> {
     const oldBasePath = normalizeCloudPath(`${oldSeriesTitle}/${oldVolumeTitle}`);
-    const newBasePath = normalizeCloudPath(`${newSeriesTitle}/${newVolumeTitle}`);
+    // The DESTINATION folder as the cloud spells it, for the same reason the
+    // source resolves: on a normalizing backend the caller's composed spelling
+    // and a decomposed folder already there are ONE folder. The collision gate
+    // below compares against files found under the resolved name, so a raw
+    // `newBasePath` could never match them — and the gate would wave through
+    // exactly the case it exists for. Unresolvable (a folder that does not exist
+    // yet) returns the caller's spelling untouched, which is the normal path.
+    const newFolderTitle = this.resolveCloudFolderTitle(newSeriesTitle);
+    const newBasePath = normalizeCloudPath(`${newFolderTitle}/${newVolumeTitle}`);
     if (oldBasePath === newBasePath) {
       return 0;
     }
@@ -646,8 +691,7 @@ class UnifiedCloudManager {
     const destinationPaths = new Set(destinationFiles.map((f) => normalizeCloudPath(f.path)));
     const collision = managedFiles.some((file) => {
       if (isMokuroSidecarPath(file.path)) return false; // regenerated, not moved
-      const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
-      return destinationPaths.has(`${newBasePath}${suffix}`);
+      return destinationPaths.has(`${newBasePath}${managedExtensionOf(file.path)}`);
     });
     if (collision) {
       if (!options?.overwrite) {
@@ -677,8 +721,7 @@ class UnifiedCloudManager {
     //    fresh fetch, so it never re-enters this loop.
     for (const file of managedFiles) {
       if (isMokuroSidecarPath(file.path)) continue;
-      const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
-      await this.moveFile(provider, file, `${newBasePath}${suffix}`);
+      await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
       changed++;
     }
 
@@ -691,8 +734,7 @@ class UnifiedCloudManager {
       if (freshMokuroBlob) {
         if (await this.deleteFileIdempotent(file)) changed++;
       } else {
-        const suffix = normalizeCloudPath(file.path).slice(oldBasePath.length);
-        await this.moveFile(provider, file, `${newBasePath}${suffix}`);
+        await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
         changed++;
       }
     }
