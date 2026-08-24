@@ -17,6 +17,7 @@
   import { anilistConnected } from '$lib/metadata/anilist-auth';
   import { catalogSettings, preferredTitleLanguage } from '$lib/settings/settings';
   import { volumes as volumesData } from '$lib/settings/volume-data';
+  import { readingStateFor, seriesReadingState } from '$lib/settings/series-data';
   import type { VolumeMetadata } from '$lib/types';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
@@ -52,12 +53,15 @@
   // Resolved from every title on the page (placeholders included) and handed to
   // the pass-state helper, which would otherwise re-detect from the local subset.
   let resolvedUnit = $derived(resolveTrackingUnit(meta, volumes).unit);
-  let passState = $derived(computeLocalPassState(localVolumes, $volumesData, meta, resolvedUnit));
+  // The read count and the push bookkeeping are per-user state, so they come
+  // from the reading-state store, not the (shared) series record.
+  let state = $derived(readingStateFor($seriesReadingState, normalizeSeriesKey(seriesTitle)));
+  let passState = $derived(computeLocalPassState(localVolumes, $volumesData, state, resolvedUnit));
 
   // Tracking only ever runs through AniList, so the status line keys off that link
   // specifically — a bare MAL link has no tracking to report.
   let trackingLinked = $derived(!!meta?.external_ids?.anilist);
-  let lastPushed = $derived(meta?.tracking?.last_pushed);
+  let lastPushed = $derived(state.tracking?.last_pushed);
   // There is no per-series switch: a linked series is tracked whenever the
   // account is connected and the global setting allows it.
   let pushOn = $derived($anilistConnected && $catalogSettings?.pushProgressToAniList !== false);

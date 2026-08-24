@@ -21,6 +21,7 @@ import {
   registerIndexChangeListener,
   registerFactsChangeListener
 } from './store';
+import { updateSeriesReadingState } from '$lib/settings/series-data';
 import { toSeriesMetadataPatch } from './providers/anilist';
 import { FACTLESS_UPDATED_AT, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata } from './types';
@@ -70,67 +71,58 @@ describe('series metadata store', () => {
 
   it('resolves a functional patch against the record as stored, not a stale copy', async () => {
     await updateSeriesMetadata('One Piece', {
-      read_count: 1,
-      tracking: { number_overrides: { a: 2 } }
+      spine_offset: 1,
+      volume_offsets: { a: 2 }
     });
     // Stale snapshot from before the write below — exactly what a component
     // holding a lagging liveQuery value would build its patch from.
     const stale = await getSeriesMetadata('one piece');
     await updateSeriesMetadata('One Piece', {
-      tracking: {
-        ...stale!.tracking!,
-        last_pushed: { n: 4, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-      }
+      volume_offsets: { ...stale!.volume_offsets!, b: 4 }
     });
 
     const next = await updateSeriesMetadata('One Piece', (existing) => ({
-      tracking: { ...existing.tracking!, number_overrides: { a: 5 } }
+      volume_offsets: { ...existing.volume_offsets!, a: 5 }
     }));
-    // The functional patch saw last_pushed even though the caller never did.
-    expect(next.tracking).toEqual({
-      number_overrides: { a: 5 },
-      last_pushed: { n: 4, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-    });
+    // The functional patch saw the `b` nudge even though the caller never did.
+    expect(next.volume_offsets).toEqual({ a: 5, b: 4 });
   });
 
   it('two concurrent functional patches both land (no lost update)', async () => {
-    await updateSeriesMetadata('One Piece', { read_count: 0 });
+    await updateSeriesMetadata('One Piece', { spine_offset: 0 });
     // Fired without awaiting the first: get+put runs inside one rw transaction,
     // so the second sees what the first stored instead of the same start value.
     const [, second] = await Promise.all([
-      updateSeriesMetadata('One Piece', (existing) => ({ read_count: existing.read_count + 1 })),
-      updateSeriesMetadata('One Piece', (existing) => ({ read_count: existing.read_count + 1 }))
+      updateSeriesMetadata('One Piece', (existing) => ({
+        spine_offset: (existing.spine_offset ?? 0) + 1
+      })),
+      updateSeriesMetadata('One Piece', (existing) => ({
+        spine_offset: (existing.spine_offset ?? 0) + 1
+      }))
     ]);
-    expect(second.read_count).toBe(2);
-    expect((await getSeriesMetadata('one piece'))?.read_count).toBe(2);
+    expect(second.spine_offset).toBe(2);
+    expect((await getSeriesMetadata('one piece'))?.spine_offset).toBe(2);
   });
 
   it('a functional patch and a whole-object writer do not clobber each other', async () => {
     await updateSeriesMetadata('One Piece', {
-      read_count: 0,
-      tracking: { number_overrides: { a: 2 } }
+      volume_offsets: { a: 2 }
     });
     await Promise.all([
-      // The tracker's last_pushed write…
+      // One card's nudge…
       updateSeriesMetadata('One Piece', (existing) => ({
-        tracking: {
-          ...existing.tracking!,
-          last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-        }
+        volume_offsets: { ...existing.volume_offsets!, b: 3 }
       })),
-      // …racing the panel's number-override edit.
+      // …racing another card's.
       updateSeriesMetadata('One Piece', (existing) => ({
-        tracking: { ...existing.tracking!, number_overrides: { a: 9 } }
+        volume_offsets: { ...existing.volume_offsets!, a: 9 }
       }))
     ]);
     const stored = await getSeriesMetadata('one piece');
-    expect(stored?.tracking).toEqual({
-      number_overrides: { a: 9 },
-      last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
-    });
+    expect(stored?.volume_offsets).toEqual({ a: 9, b: 3 });
   });
 
-  it('unlinkSeries clears link facts but keeps tag/preferences/read_count/tracking', async () => {
+  it('unlinkSeries clears link facts but keeps tag/preferences/shelf alignment', async () => {
     await updateSeriesMetadata('One Piece', {
       external_ids: { anilist: 30013, mal: 13 },
       titles: { english: 'One Piece' },
@@ -142,9 +134,8 @@ describe('series metadata store', () => {
       linked_at: '2026-01-01T00:00:00.000Z',
       tag: '[bw]',
       title_preference: 'native',
-      read_count: 2,
       unit: 'chapters',
-      tracking: { number_overrides: { a: 2 } }
+      spine_offset: 12
     });
     const meta = await unlinkSeries('One Piece');
     expect(meta.external_ids).toEqual({});
@@ -156,10 +147,9 @@ describe('series metadata store', () => {
     expect(meta.linked_at).toBeUndefined();
     expect(meta.tag).toBe('[bw]');
     expect(meta.title_preference).toBe('native');
-    expect(meta.read_count).toBe(2);
+    expect(meta.spine_offset).toBe(12);
     // The unit describes the archives in the folder, not the link that was removed.
     expect(meta.unit).toBe('chapters');
-    expect(meta.tracking).toEqual({ number_overrides: { a: 2 } });
     expect(Object.keys(meta)).not.toContain('format'); // undefined keys stripped, not stored
   });
 
@@ -170,10 +160,10 @@ describe('series metadata store', () => {
     });
     expect(linked.facts_updated_at).toBe(linked.updated_at);
 
-    // A catalog spine nudge / reread / tracking push is per-user state: it bumps
-    // the record, but publishing that stamp with the facts would unlink the series
-    // on every other device.
-    const nudged = await updateSeriesMetadata('One Piece', { spine_offset: 12, read_count: 1 });
+    // A catalog spine nudge is per-user state: it bumps the record, but
+    // publishing that stamp with the facts would unlink the series on every
+    // other device.
+    const nudged = await updateSeriesMetadata('One Piece', { spine_offset: 12 });
     expect(nudged.updated_at > linked.updated_at).toBe(true);
     expect(nudged.facts_updated_at).toBe(linked.facts_updated_at);
 
@@ -207,8 +197,8 @@ describe('series metadata store', () => {
     expect(Object.keys(nudged)).not.toContain('facts_updated_at');
     expect(await getSeriesMetadataForTitle('One Piece')).toEqual(nudged);
 
-    const reread = await updateSeriesMetadata('One Piece', { read_count: 1 });
-    expect(reread.facts_updated_at).toBeUndefined();
+    const preference = await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+    expect(preference.facts_updated_at).toBeUndefined();
 
     // An unlink IS a deliberate fact edit, even though it leaves the facts empty.
     await updateSeriesMetadata('One Piece', { external_ids: { anilist: 30013 } });
@@ -711,12 +701,25 @@ describe('series metadata store', () => {
       expect(indexed).toEqual(['One Piece', 'One Piece']);
       expect(facts).toEqual(['One Piece']);
 
-      // Per-user fields — neither a fact nor an index key — must stay quiet on
-      // both listeners. These stay per-user until a later task in this plan.
+      // A per-user preference is neither a fact nor an index key: quiet on both.
+      await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+
+      expect(indexed).toEqual(['One Piece', 'One Piece']);
+      expect(facts).toEqual(['One Piece']);
+
+      // The READING state cannot reach this record at all any more — the type
+      // does not admit it, so no patch can ever route a read count or the push
+      // bookkeeping through the shared record and fire these listeners.
+      // @ts-expect-error read_count left SeriesMetadata for the reading-state store
       await updateSeriesMetadata('One Piece', { read_count: 2 });
-      await updateSeriesMetadata('One Piece', {
-        tracking: { number_overrides: { a: 2 } }
-      });
+      // @ts-expect-error tracking left SeriesMetadata for the reading-state store
+      await updateSeriesMetadata('One Piece', { tracking: { number_overrides: { a: 2 } } });
+      // @ts-expect-error reread_prompt_suppressed left SeriesMetadata too
+      await updateSeriesMetadata('One Piece', { reread_prompt_suppressed: true });
+
+      // …and its own store fires neither listener when it is written properly.
+      updateSeriesReadingState('one piece', { read_count: 2 });
+      updateSeriesReadingState('one piece', { tracking: { number_overrides: { a: 2 } } });
 
       expect(indexed).toEqual(['One Piece', 'One Piece']);
       expect(facts).toEqual(['One Piece']);

@@ -15,9 +15,13 @@ export interface SeriesExternalIds {
 }
 
 /**
- * Per-series push bookkeeping. Neither a switch nor a unit lives here any more:
- * pushing is one global setting (`catalogSettings.pushProgressToAniList`) and
- * the unit is an objective fact about the archives (`SeriesMetadata.unit`).
+ * Per-series push bookkeeping. Stored in the reading-state store
+ * (`$lib/settings/series-data`), never on the shared record: it is per-user
+ * state, and it travels in `volume-data.json`'s `series` section.
+ *
+ * Neither a switch nor a unit lives here any more: pushing is one global setting
+ * (`catalogSettings.pushProgressToAniList`) and the unit is an objective fact
+ * about the archives (`SeriesMetadata.unit`).
  */
 export interface SeriesTracking {
   /** volume_uuid -> volume/chapter number override */
@@ -34,7 +38,11 @@ export interface SeriesTracking {
  * (external_ids/titles/synonyms/tag/unit), which carry a facts clock and decide
  * merges, and the shelf alignment (spine_offset/volume_offsets), which rides the
  * same file as INDEX data — shared, but never a fact. Everything else on this
- * record is this library's own state; the reading half of it syncs through the
+ * record is this library's own state.
+ *
+ * The READING state (read count, re-read suppression, AniList push bookkeeping)
+ * is deliberately not here at all: it is per-user, and it lives in the
+ * reading-state store (`$lib/settings/series-data`), which syncs through the
  * `series` section of `volume-data.json`.
  */
 export interface SeriesMetadata {
@@ -76,21 +84,17 @@ export interface SeriesMetadata {
    * `series.json` — under exactly the same rules as `spine_offset` above.
    */
   volume_offsets?: Record<string, number>;
-  /** Archived completed passes; timesRead = read_count + (all volumes completed now ? 1 : 0) */
-  read_count: number;
-  reread_prompt_suppressed?: boolean;
-  tracking?: SeriesTracking;
   /** ISO timestamp — merge key for the record as a whole (local rename collisions) */
   updated_at: string;
   /**
    * ISO timestamp of the last change to the shareable *facts*
    * (`external_ids`/`titles`/`synonyms`/`tag`) — the merge key for `series.json`.
    *
-   * Split from `updated_at` because every per-user write (spine offsets, read_count,
-   * tracking, title_preference) bumps `updated_at`: publishing that stamp with the
-   * facts would let a device that has never linked the series present its empty
-   * facts as "newer" and unlink it everywhere. Absent on legacy records — readers
-   * fall back to `updated_at`.
+   * Split from `updated_at` because every per-user write (spine offsets,
+   * title_preference) bumps `updated_at`: publishing that stamp with the facts
+   * would let a device that has never linked the series present its empty facts
+   * as "newer" and unlink it everywhere. Absent on legacy records — readers fall
+   * back to `updated_at`.
    */
   facts_updated_at?: string;
   linked_at?: string;
@@ -106,7 +110,6 @@ export function createEmptySeriesMetadata(
     external_ids: {},
     titles: {},
     synonyms: [],
-    read_count: 0,
     updated_at: now
   };
 }

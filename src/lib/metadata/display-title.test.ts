@@ -14,7 +14,6 @@ function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
     external_ids: { anilist: 30013, mal: 13 },
     titles: { native: 'ONE PIECE', romaji: 'ONE PIECE (romaji)', english: 'One Piece (en)' },
     synonyms: ['ワンピース', 'OP'],
-    read_count: 0,
     updated_at: '2026-08-16T00:00:00.000Z',
     ...overrides
   };

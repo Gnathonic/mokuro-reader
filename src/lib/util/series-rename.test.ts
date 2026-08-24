@@ -35,6 +35,11 @@ vi.mock('$lib/metadata/store', () => ({
   moveSeriesMetadataKey: (...args: unknown[]) => moveSeriesMetadataKey(...args)
 }));
 
+const moveSeriesReadingStateKey = vi.fn();
+vi.mock('$lib/settings/series-data', () => ({
+  moveSeriesReadingStateKey: (...args: unknown[]) => moveSeriesReadingStateKey(...args)
+}));
+
 describe('Series rename cloud propagation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -227,5 +232,8 @@ describe('Series rename cloud propagation', () => {
 
     await executeRenameSeries('Old Series', 'New Series');
     expect(moveSeriesMetadataKey).toHaveBeenCalledWith('Old Series', 'New Series');
+    // The reading state is keyed the same way and has to follow the same rename,
+    // or "Read N times" and the AniList bookkeeping stay behind on the old key.
+    expect(moveSeriesReadingStateKey).toHaveBeenCalledWith('Old Series', 'New Series');
   });
 });

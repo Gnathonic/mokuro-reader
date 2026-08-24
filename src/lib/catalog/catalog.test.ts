@@ -28,7 +28,6 @@ function meta(seriesTitle: string, overrides: Partial<SeriesMetadata> = {}): Ser
     external_ids: {},
     titles: {},
     synonyms: [],
-    read_count: 0,
     updated_at: '2026-08-16T00:00:00.000Z',
     ...overrides
   };

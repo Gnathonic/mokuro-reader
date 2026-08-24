@@ -22,7 +22,6 @@ function meta(overrides: Partial<SeriesMetadata> = {}): SeriesMetadata {
     titles: { native: 'Dr.STONE', romaji: 'Dr. STONE', english: 'Dr. STONE' },
     synonyms: [],
     tag: 'HD Scan',
-    read_count: 0,
     updated_at: '2026-08-18T19:36:24.324Z',
     facts_updated_at: '2026-08-18T19:36:24.324Z',
     ...overrides

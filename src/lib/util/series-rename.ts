@@ -240,14 +240,22 @@ export async function executeRenameSeries(
       }
     }
 
-    // Carry the per-series metadata (AniList link, tag, …) to the new key.
-    // Non-fatal: the rename itself already succeeded.
+    // Carry the per-series metadata (AniList link, tag, …) and the per-user
+    // reading state (read count, re-read suppression, push bookkeeping) to the
+    // new key — both are keyed by the series title. Non-fatal: the rename itself
+    // already succeeded.
     if (renamedSet.size > 0) {
       try {
         const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
         await moveSeriesMetadataKey(oldTitle, newTitle);
       } catch (error) {
         console.warn('Failed to move series metadata after rename:', error);
+      }
+      try {
+        const { moveSeriesReadingStateKey } = await import('$lib/settings/series-data');
+        moveSeriesReadingStateKey(oldTitle, newTitle);
+      } catch (error) {
+        console.warn('Failed to move series reading state after rename:', error);
       }
     }
 

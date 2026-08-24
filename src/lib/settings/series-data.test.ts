@@ -7,6 +7,7 @@ import {
   SERIES_SECTION_KEY,
   clearSeriesReadingState,
   mergeSeriesSections,
+  moveSeriesReadingStateKey,
   parseSeriesSection,
   readingStateFor,
   seriesReadingState,
@@ -106,6 +107,58 @@ describe('series reading state', () => {
       'one piece': { read_count: 5, lastUpdated: '2026-08-20T00:00:00.000Z' },
       berserk: { read_count: 1, lastUpdated: '2026-08-10T00:00:00.000Z' },
       vinland: { read_count: 1, lastUpdated: '2026-08-05T00:00:00.000Z' }
+    });
+  });
+
+  describe('moveSeriesReadingStateKey', () => {
+    const state = (read_count: number, lastUpdated: string) => ({ read_count, lastUpdated });
+
+    it('carries the state to the renamed series', () => {
+      seriesReadingState.set({ 'one piece': state(3, '2026-08-10T00:00:00.000Z') });
+
+      moveSeriesReadingStateKey('One Piece', 'One Piece Digital');
+
+      expect(get(seriesReadingState)).toEqual({
+        'one piece digital': state(3, '2026-08-10T00:00:00.000Z')
+      });
+    });
+
+    it('does nothing when the old series has no state at all', () => {
+      seriesReadingState.set({ berserk: state(1, '2026-08-10T00:00:00.000Z') });
+
+      moveSeriesReadingStateKey('Nothing Here', 'Something');
+
+      expect(get(seriesReadingState)).toEqual({ berserk: state(1, '2026-08-10T00:00:00.000Z') });
+    });
+
+    it('keeps the state when only case/whitespace changed (same key)', () => {
+      seriesReadingState.set({ 'one piece': state(3, '2026-08-10T00:00:00.000Z') });
+
+      moveSeriesReadingStateKey('one piece', 'One  Piece');
+
+      expect(get(seriesReadingState)).toEqual({
+        'one piece': state(3, '2026-08-10T00:00:00.000Z')
+      });
+    });
+
+    it('keeps the newer state on a collision, in both directions', () => {
+      seriesReadingState.set({
+        old: state(1, '2026-08-01T00:00:00.000Z'),
+        new: state(9, '2026-08-20T00:00:00.000Z')
+      });
+
+      moveSeriesReadingStateKey('old', 'new');
+
+      expect(get(seriesReadingState)).toEqual({ new: state(9, '2026-08-20T00:00:00.000Z') });
+
+      seriesReadingState.set({
+        old: state(4, '2026-08-22T00:00:00.000Z'),
+        new: state(9, '2026-08-20T00:00:00.000Z')
+      });
+
+      moveSeriesReadingStateKey('old', 'new');
+
+      expect(get(seriesReadingState)).toEqual({ new: state(4, '2026-08-22T00:00:00.000Z') });
     });
   });
 });

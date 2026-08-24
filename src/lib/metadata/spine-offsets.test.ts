@@ -141,7 +141,6 @@ describe('scheduleSpineOffsetWrite', () => {
 
     const existing = stored({
       tag: '[color]',
-      read_count: 4,
       external_ids: { anilist: 30013 },
       volume_offsets: { 'uuid-a': -2 }
     });

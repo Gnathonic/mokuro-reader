@@ -3,6 +3,11 @@ import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { sortVolumes } from '$lib/catalog/sort-volumes';
 import { settings } from '$lib/settings/settings';
+import {
+  getSeriesReadingState,
+  updateSeriesReadingState,
+  type SeriesReadingState
+} from '$lib/settings/series-data';
 import { registerCompletionListener, volumes, type VolumeData } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
 import { anilistConnected, getAniListToken, handleAniListUnauthorized } from './anilist-auth';
@@ -16,9 +21,9 @@ import {
 import { AniListError, anilistRequest } from './providers/anilist';
 import { normalizeSeriesKey } from './series-key';
 import { getSeriesIndex } from './series-index';
-import { getAllSeriesMetadata, getSeriesMetadata, updateSeriesMetadata } from './store';
+import { getAllSeriesMetadata, getSeriesMetadata } from './store';
 import { resolveTrackingUnit } from './tracking-unit';
-import type { SeriesMetadata, TrackingUnit } from './types';
+import type { SeriesMetadata, SeriesTracking, TrackingUnit } from './types';
 import { extractVolumeNumber } from './volume-number';
 
 const PENDING_KEY = 'anilist_pending_pushes';
@@ -68,52 +73,49 @@ export interface PendingPush {
 /**
  * `unit` is a parameter, not something resolved here: detection regex-scans
  * every title in the series, so resolving it per volume would be O(n²) on a
- * long series — and this runs inside `$derived`s on the series page. Callers
- * that already know the unit (everything in this module does) pass it.
+ * long series — and this runs inside `$derived`s on the series page.
  */
 export function volumeNumberFor(
   volume: VolumeMetadata,
   sortedSeriesVolumes: VolumeMetadata[],
-  meta: SeriesMetadata | undefined,
-  unit?: TrackingUnit
+  tracking: SeriesTracking | undefined,
+  unit: TrackingUnit
 ): number {
-  const override = meta?.tracking?.number_overrides?.[volume.volume_uuid];
+  const override = tracking?.number_overrides?.[volume.volume_uuid];
   if (typeof override === 'number' && override > 0) return override;
-  const resolved = unit ?? resolveTrackingUnit(meta, sortedSeriesVolumes).unit;
-  const parsed = extractVolumeNumber(volume.volume_title, resolved);
+  const parsed = extractVolumeNumber(volume.volume_title, unit);
   if (parsed !== undefined) return parsed;
   return sortedSeriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid) + 1;
 }
 
 /**
- * Pass `unit` when the caller already resolved it — detection is O(titles) and
- * the series page resolves it anyway (from a title list that includes cloud
- * placeholders, which `seriesVolumes` here deliberately does not).
+ * `unit` is resolved by the caller — from the FULL title list (cloud
+ * placeholders included), which this function's `seriesVolumes` deliberately is
+ * not. `state` is the series' reading state; `undefined` means "never read".
  */
 export function computeLocalPassState(
   seriesVolumes: VolumeMetadata[],
   volumesData: Record<string, Pick<VolumeData, 'completed'> | undefined>,
-  meta: SeriesMetadata | undefined,
-  unit?: TrackingUnit
+  state: SeriesReadingState | undefined,
+  unit: TrackingUnit
 ): LocalPassState {
   const sorted = [...seriesVolumes].sort(sortVolumes);
-  const resolved = unit ?? resolveTrackingUnit(meta, sorted).unit;
   let passProgress = 0;
   let allCompleted = sorted.length > 0;
   for (const volume of sorted) {
     if (volumesData[volume.volume_uuid]?.completed) {
-      passProgress = Math.max(passProgress, volumeNumberFor(volume, sorted, meta, resolved));
+      passProgress = Math.max(passProgress, volumeNumberFor(volume, sorted, state?.tracking, unit));
     } else {
       allCompleted = false;
     }
   }
-  const total = resolved === 'chapters' ? meta?.total_chapters : meta?.total_volumes;
-  const passComplete = typeof total === 'number' && total > 0 && passProgress >= total;
-  const readCount = meta?.read_count ?? 0;
+  const readCount = state?.read_count ?? 0;
   return {
     passProgress,
     allCompleted,
-    passComplete,
+    // Totals are not stored anywhere; the push path fills this in from the
+    // AniList response (see `runPush`). Without them a pass is never "complete".
+    passComplete: false,
     timesRead: readCount + (allCompleted ? 1 : 0),
     rereading: readCount >= 1 && !allCompleted
   };
@@ -321,7 +323,7 @@ function passSignature(local: LocalPassState): string {
 function alreadySettled(
   seriesKey: string,
   local: LocalPassState,
-  meta: SeriesMetadata,
+  state: SeriesReadingState,
   unit: TrackingUnit
 ): boolean {
   const recent = recentCompletions.get(seriesKey);
@@ -332,7 +334,7 @@ function alreadySettled(
   ) {
     return true;
   }
-  const lastPushed = meta.tracking?.last_pushed;
+  const lastPushed = state.tracking?.last_pushed;
   if (!lastPushed) return false;
   const assumedRemote: RemoteEntry = {
     status: lastPushed.status,
@@ -389,13 +391,17 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
   }
 
   const seriesVolumes = await getSeriesVolumesByKey(seriesKey);
+  // The reading state is a plain synchronous store, so this needs no round trip
+  // and cannot go stale between here and the write below (which patches
+  // functionally anyway).
+  const state = getSeriesReadingState(seriesKey);
   // Volumes or chapters is a property of the archives, either stated on the
   // record (someone corrected it) or read off their titles.
   const unit = await resolveUnitForPush(seriesKey, meta, seriesVolumes);
-  const local = computeLocalPassState(seriesVolumes, get(volumes), meta, unit);
+  const local = computeLocalPassState(seriesVolumes, get(volumes), state, unit);
 
   if (event === 'completion') {
-    if (alreadySettled(seriesKey, local, meta, unit)) return 'nothing';
+    if (alreadySettled(seriesKey, local, state, unit)) return 'nothing';
     recentCompletions.set(seriesKey, { signature: passSignature(local), at: Date.now() });
   }
 
@@ -419,16 +425,14 @@ async function runPush(seriesKey: string, event: ProgressPushEvent): Promise<Pus
     // fast path in `alreadySettled` swallow the next real push.
     const unchangedProgress =
       (unit === 'chapters' ? remote?.progress : remote?.progressVolumes) ??
-      meta.tracking?.last_pushed?.n ??
+      state.tracking?.last_pushed?.n ??
       0;
-    // Two round-trips happened since `meta` was read; a tracking edit (a number
-    // override) may have landed in between. The patch is functional so the
-    // record it spreads is the one in the database at write time, not the stale
-    // copy this push started from.
-    const current = (await getSeriesMetadata(seriesKey)) ?? meta;
-    await updateSeriesMetadata(current.series_title, (existing) => ({
+    // A functional patch, resolved against the state as it is now: two round
+    // trips happened since `state` was read and a number override may have
+    // landed in between.
+    updateSeriesReadingState(seriesKey, (existing) => ({
       tracking: {
-        ...(existing.tracking ?? current.tracking ?? {}),
+        ...(existing.tracking ?? {}),
         last_pushed: {
           // The progress AniList actually received — 0 for a restart, and the
           // last known figure for a status-only push.

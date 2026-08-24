@@ -60,10 +60,10 @@
     dismissForSession();
   }
 
-  async function dontAsk() {
+  function dontAsk() {
     dismissForSession();
     try {
-      await suppressRereadPrompt(seriesTitle);
+      suppressRereadPrompt(seriesTitle);
     } catch (error) {
       console.warn('[reread] could not persist suppression:', error);
     }

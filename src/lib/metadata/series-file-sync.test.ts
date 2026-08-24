@@ -104,6 +104,7 @@ import {
   markListingFresh,
   scheduleSeriesFileWrite
 } from './series-file-sync';
+import { updateSeriesReadingState } from '$lib/settings/series-data';
 import { updateSeriesMetadata, unlinkSeries, upsertFromSeriesFile } from './store';
 
 function addVolume(seriesTitle: string, volumeTitle: string, extra: object = {}) {
@@ -573,11 +574,20 @@ describe('series-file-sync', () => {
     expect(metaRows.get('one piece')?.facts_updated_at).toBeUndefined();
   });
 
-  it('does NOT fire for a per-user edit (rereads, tracking)', async () => {
-    // These fields are neither a fact nor an index key (spine_offset,
-    // volume_offsets) — they stay per-user until a later task in this plan.
+  it('does NOT fire for a per-user edit (preferences, reading state)', async () => {
+    // A per-user preference is neither a fact nor an index key (spine_offset,
+    // volume_offsets), so it publishes nothing…
+    await updateSeriesMetadata('One Piece', { title_preference: 'native' });
+    // …and the reading state cannot even reach this record: the type does not
+    // admit it, and its own store has no listener into the sidecar writer.
+    // @ts-expect-error read_count left SeriesMetadata for the reading-state store
     await updateSeriesMetadata('One Piece', { read_count: 2 });
+    // @ts-expect-error tracking left SeriesMetadata for the reading-state store
     await updateSeriesMetadata('One Piece', { tracking: { number_overrides: { a: 2 } } });
+    updateSeriesReadingState('one piece', {
+      read_count: 2,
+      tracking: { number_overrides: { a: 2 } }
+    });
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(writeSeriesFile).not.toHaveBeenCalled();

@@ -28,6 +28,7 @@
   import RereadPromptModal from './RereadPromptModal.svelte';
   import { shouldOfferReread } from '$lib/metadata/reread';
   import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+  import { getSeriesReadingState } from '$lib/settings/series-data';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
@@ -93,10 +94,9 @@
     if (!v || seriesVolumes.length === 0 || rereadCheckedFor === v.volume_uuid) return;
     rereadCheckedFor = v.volume_uuid;
     const seriesKey = normalizeSeriesKey(v.series_title);
-    // A fresh DB read (not the reactive seriesMetadataMap store) so a
-    // "don't ask for this series" flag saved moments earlier — e.g. by a
-    // just-finished restartSeries() clearing it back out — is always honored
-    // rather than racing a liveQuery subscriber that hasn't re-emitted yet.
+    // The record read is for the display title only; the suppression flag comes
+    // from the reading-state store, which is synchronous and therefore always
+    // current (a just-finished restartSeries() has already cleared it).
     getSeriesMetadataForTitle(v.series_title)
       .then((meta) => {
         // The user may have navigated to a different volume while this DB
@@ -109,7 +109,7 @@
             volumeUuid: v.volume_uuid,
             seriesVolumes,
             volumesData: get(volumes),
-            meta,
+            suppressed: getSeriesReadingState(seriesKey).reread_prompt_suppressed === true,
             seriesKey
           })
         ) {

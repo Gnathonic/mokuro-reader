@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VolumeMetadata } from '$lib/types';
+import type { SeriesReadingState } from '$lib/settings/series-data';
 import type { SeriesMetadata } from './types';
 
 // vi.hoisted: `vi.mock` factories are hoisted above every other top-level
@@ -112,6 +113,13 @@ vi.mock('./anilist-auth', () => ({
 }));
 
 import { registerCompletionListener } from '$lib/settings/volume-data';
+// The reading state is the real store: a plain synchronous store over
+// localStorage, so seeding it and reading it back needs no double.
+import {
+  clearSeriesReadingState,
+  getSeriesReadingState,
+  updateSeriesReadingState
+} from '$lib/settings/series-data';
 import { db } from '$lib/catalog/db';
 import { handleAniListUnauthorized } from './anilist-auth';
 import { getSeriesIndex } from './series-index';
@@ -150,14 +158,17 @@ const meta = (over: Partial<SeriesMetadata> = {}): SeriesMetadata => ({
   external_ids: { anilist: 30013 },
   titles: {},
   synonyms: [],
-  read_count: 0,
   updated_at: '2026-01-01T00:00:00.000Z',
   ...over
 });
 
+/** The reading state of the series under test, as the tracker stored it. */
+const trackedState = () => getSeriesReadingState('one piece');
+
 /** Reset every piece of shared state between test cases. */
 function resetWorld() {
   localStorage.clear();
+  clearSeriesReadingState();
   _resetTrackerStateForTests();
   h.dbVolumes.splice(0, h.dbVolumes.length, vol('a', 'Vol 01'), vol('b', 'Vol 02'));
   h.volumesStore.set({ a: { completed: true }, b: { completed: true } });
@@ -180,27 +191,34 @@ function resetWorld() {
 describe('volumeNumberFor', () => {
   const sorted = [vol('a', 'Vol 01'), vol('b', 'Vol 02'), vol('c', 'Extras')];
   it('prefers overrides, then parsed numbers, then sort position', () => {
-    const m = meta({ tracking: { number_overrides: { b: 7 } } });
-    expect(volumeNumberFor(sorted[1], sorted, m)).toBe(7);
-    expect(volumeNumberFor(sorted[0], sorted, m)).toBe(1);
-    expect(volumeNumberFor(sorted[2], sorted, m)).toBe(3);
+    const tracking = { number_overrides: { b: 7 } };
+    expect(volumeNumberFor(sorted[1], sorted, tracking, 'volumes')).toBe(7);
+    expect(volumeNumberFor(sorted[0], sorted, tracking, 'volumes')).toBe(1);
+    expect(volumeNumberFor(sorted[2], sorted, tracking, 'volumes')).toBe(3);
   });
 
   it('reads the title in the unit it is given instead of re-detecting one', () => {
     const chapters = [vol('a', 'One Piece 0007')];
     // Detection would say volumes here (no markers, no totals); the caller's
     // answer wins — that is what keeps this off the O(n²) path.
-    expect(volumeNumberFor(chapters[0], chapters, meta(), 'chapters')).toBe(7);
+    expect(volumeNumberFor(chapters[0], chapters, undefined, 'chapters')).toBe(7);
   });
 });
 
 describe('computeLocalPassState', () => {
   const series = [vol('a', 'Vol 01'), vol('b', 'Vol 02'), vol('c', 'Vol 03')];
+  const readingState = (read_count: number, tracking?: SeriesReadingState['tracking']) => ({
+    read_count,
+    ...(tracking ? { tracking } : {}),
+    lastUpdated: '2026-01-01T00:00:00.000Z'
+  });
+
   it('first read in progress', () => {
     const state = computeLocalPassState(
       series,
       { a: { completed: true }, b: { completed: true } },
-      meta()
+      undefined,
+      'volumes'
     );
     expect(state).toEqual({
       passProgress: 2,
@@ -210,16 +228,19 @@ describe('computeLocalPassState', () => {
       rereading: false
     });
   });
-  it('all local volumes completed and total reached', () => {
+  it('counts the pass as read once every local volume is completed', () => {
     const state = computeLocalPassState(
       series,
       { a: { completed: true }, b: { completed: true }, c: { completed: true } },
-      meta({ total_volumes: 3 })
+      undefined,
+      'volumes'
     );
     expect(state).toEqual({
       passProgress: 3,
       allCompleted: true,
-      passComplete: true,
+      // Nothing here knows the series total: `passComplete` is decided by the
+      // push, against the totals it fetches with the list entry.
+      passComplete: false,
       timesRead: 1,
       rereading: false
     });
@@ -228,7 +249,8 @@ describe('computeLocalPassState', () => {
     const state = computeLocalPassState(
       series,
       { a: { completed: true } },
-      meta({ read_count: 1, total_volumes: 3 })
+      readingState(1),
+      'volumes'
     );
     expect(state).toMatchObject({
       passProgress: 1,
@@ -237,29 +259,28 @@ describe('computeLocalPassState', () => {
       passComplete: false
     });
   });
-  it('uses total_chapters for a folder detected as chapters', () => {
+  it('reads chapter titles in the unit the caller resolved', () => {
     const chapters = [vol('a', 'Chapter 1'), vol('b', 'Chapter 2')];
     const state = computeLocalPassState(
       chapters,
       { a: { completed: true }, b: { completed: true } },
-      meta({ total_chapters: 2 })
+      undefined,
+      'chapters'
     );
-    expect(state.passComplete).toBe(true);
+    expect(state).toMatchObject({ passProgress: 2, allCompleted: true });
   });
 
-  it('honours a corrected unit over the titles', () => {
-    // Chapter-titled files that are really volumes: the fact wins, so the pass
-    // is measured against total_volumes.
-    const chapters = [vol('a', 'Chapter 1'), vol('b', 'Chapter 2')];
+  it("applies the reading state's number overrides", () => {
     const state = computeLocalPassState(
-      chapters,
-      { a: { completed: true }, b: { completed: true } },
-      meta({ unit: 'volumes', total_volumes: 2, total_chapters: 900 })
+      series,
+      { a: { completed: true } },
+      readingState(0, { number_overrides: { a: 9 } }),
+      'volumes'
     );
-    expect(state).toMatchObject({ passProgress: 2, passComplete: true });
+    expect(state.passProgress).toBe(9);
   });
   it('is empty for a series with no local volumes', () => {
-    expect(computeLocalPassState([], {}, meta())).toEqual({
+    expect(computeLocalPassState([], {}, undefined, 'volumes')).toEqual({
       passProgress: 0,
       allCompleted: false,
       passComplete: false,
@@ -287,7 +308,7 @@ describe('syncSeriesNow', () => {
     expect(mutationCall[0]).toContain('SaveMediaListEntry');
     expect(mutationCall[1]).toEqual({ mediaId: 30013, status: 'CURRENT', progressVolumes: 2 });
     expect(mutationCall[2]).toBe('tok');
-    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({
+    expect(trackedState().tracking!.last_pushed).toMatchObject({
       n: 2,
       status: 'CURRENT'
     });
@@ -313,7 +334,8 @@ describe('syncSeriesNow', () => {
 
   it('pushes a linked series that has no tracking block at all', async () => {
     // There is no per-series opt-in any more: linking the series IS the opt-in.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, tracking: undefined }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    clearSeriesReadingState(); // never read, never pushed: no tracking block at all
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
@@ -448,23 +470,25 @@ describe('syncSeriesNow', () => {
       .mockResolvedValueOnce({ Media: { mediaListEntry: null } })
       .mockImplementationOnce((async () => {
         // The series settings UI edits tracking while the push is in flight.
-        const current = h.metaByKey.get('one piece')!;
-        h.metaByKey.set('one piece', {
-          ...current,
-          tracking: { ...current.tracking, number_overrides: { b: 9 } }
-        });
+        updateSeriesReadingState('one piece', (existing) => ({
+          tracking: { ...(existing.tracking ?? {}), number_overrides: { b: 9 } }
+        }));
         return { SaveMediaListEntry: {} };
       }) as never);
 
     await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
 
-    const tracking = h.metaByKey.get('one piece')!.tracking!;
+    const tracking = trackedState().tracking!;
     expect(tracking.number_overrides).toEqual({ b: 9 });
     expect(tracking.last_pushed).toMatchObject({ n: 2, status: 'CURRENT' });
   });
 
   it('records the progress actually sent for a status-only push', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 2 }));
+    // A re-read in flight: local progress (1) is behind what AniList already
+    // holds (5), so only the status moves — and what gets recorded is the local
+    // pass, which is the figure this push stood for.
+    updateSeriesReadingState('one piece', { read_count: 1 });
+    h.volumesStore.set({ a: { completed: true } });
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
         Media: { mediaListEntry: { status: 'CURRENT', progress: 0, progressVolumes: 5, repeat: 0 } }
@@ -474,11 +498,11 @@ describe('syncSeriesNow', () => {
     await expect(syncSeriesNow('one piece')).resolves.toBe('pushed');
     expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
       mediaId: 30013,
-      status: 'COMPLETED'
+      status: 'REPEATING'
     });
-    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({
-      n: 2,
-      status: 'COMPLETED'
+    expect(trackedState().tracking!.last_pushed).toMatchObject({
+      n: 1,
+      status: 'REPEATING'
     });
   });
 
@@ -543,7 +567,7 @@ describe('completion fires are idempotent', () => {
     onVolumeCompleted('b');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(anilistRequest).toHaveBeenCalledTimes(1);
-    expect(h.metaByKey.get('one piece')!.tracking?.last_pushed).toBeUndefined();
+    expect(trackedState().tracking?.last_pushed).toBeUndefined();
   });
 
   it('pushes again once local progress actually moves', async () => {
@@ -587,7 +611,8 @@ describe('flushPendingPushes', () => {
     );
 
   it('replays a queued restart before the follow-up sync', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     seedPending('restart');
 
@@ -615,7 +640,7 @@ describe('flushPendingPushes', () => {
   });
 
   it('replays a queued read_count as a read_count, then syncs', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 0 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
     h.volumesStore.set({});
     seedPending('read_count');
 
@@ -642,7 +667,8 @@ describe('flushPendingPushes', () => {
   it('replays a restart AND the read-count correction queued behind it', async () => {
     // Offline: the user restarts the series and then corrects "Read N times"
     // downwards. Collapsing both into one restart would lose the decrease.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     h.auth.token = null;
 
@@ -733,7 +759,8 @@ describe('onSeriesRestarted', () => {
   it('pushes a restart for a linked series that never had a tracking block', async () => {
     // The reported bug: re-reads never reached AniList because a per-series
     // toggle nobody had switched on gated every push.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1, tracking: undefined }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({});
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
@@ -744,9 +771,7 @@ describe('onSeriesRestarted', () => {
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
 
     onSeriesRestarted('one piece');
-    await vi.waitFor(() =>
-      expect(h.metaByKey.get('one piece')!.tracking?.last_pushed).toBeDefined()
-    );
+    await vi.waitFor(() => expect(trackedState().tracking?.last_pushed).toBeDefined());
     expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
       mediaId: 30013,
       status: 'REPEATING',
@@ -758,7 +783,8 @@ describe('onSeriesRestarted', () => {
     // A restart queued while offline is replayed after the next pass already
     // started: the plan sends 0, so last_pushed must say 0 — recording the
     // local pass (1) would make the fast-path swallow the next completion.
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 1 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    updateSeriesReadingState('one piece', { read_count: 1 });
     h.volumesStore.set({ a: { completed: true } });
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
@@ -769,16 +795,14 @@ describe('onSeriesRestarted', () => {
       .mockResolvedValueOnce({ SaveMediaListEntry: {} });
 
     onSeriesRestarted('one piece');
-    await vi.waitFor(() =>
-      expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toBeDefined()
-    );
+    await vi.waitFor(() => expect(trackedState().tracking!.last_pushed).toBeDefined());
 
     expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({
       mediaId: 30013,
       status: 'REPEATING',
       progressVolumes: 0
     });
-    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({
+    expect(trackedState().tracking!.last_pushed).toMatchObject({
       n: 0,
       status: 'REPEATING'
     });
@@ -789,7 +813,8 @@ describe('onReadCountChanged', () => {
   beforeEach(resetWorld);
 
   it('raises the repeat count without touching progress or status', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 2 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
+    updateSeriesReadingState('one piece', { read_count: 2 });
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
         Media: {
@@ -804,7 +829,7 @@ describe('onReadCountChanged', () => {
   });
 
   it('lowers the repeat count and records the progress AniList already holds', async () => {
-    h.metaByKey.set('one piece', meta({ total_volumes: 20, read_count: 0 }));
+    h.metaByKey.set('one piece', meta({ total_volumes: 20 }));
     h.volumesStore.set({});
     vi.mocked(anilistRequest)
       .mockResolvedValueOnce({
@@ -817,7 +842,7 @@ describe('onReadCountChanged', () => {
     await expect(onReadCountChanged('one piece')).resolves.toBe('pushed');
     expect(vi.mocked(anilistRequest).mock.calls[1][1]).toEqual({ mediaId: 30013, repeat: 0 });
     // No progress moved, so last_pushed must not invent one from the local pass.
-    expect(h.metaByKey.get('one piece')!.tracking!.last_pushed).toMatchObject({ n: 7 });
+    expect(trackedState().tracking!.last_pushed).toMatchObject({ n: 7 });
   });
 
   it('is "nothing" when the remote repeat already agrees', async () => {

@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 import { isRecord, normalizeUpdatedAt, sanitizeTracking } from '$lib/metadata/sanitize';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import type { SeriesTracking } from '$lib/metadata/types';
 
 /**
@@ -163,6 +164,35 @@ export function updateSeriesReadingState(
 /** Read one series' state outside a component (`get` + default in one call). */
 export function getSeriesReadingState(seriesKey: string): SeriesReadingState {
   return readingStateFor(get(seriesReadingState), seriesKey);
+}
+
+/**
+ * After a series rename: carry the reading state to the new key. Mirrors
+ * `moveSeriesMetadataKey` (`store.ts`) and `moveSeriesIndexKey` — on a
+ * collision the newer `lastUpdated` wins outright rather than the two states
+ * being merged, which is the same rule the cloud merge applies per series.
+ *
+ * Synchronous, unlike its Dexie-backed siblings: this is a plain store over
+ * localStorage. Nothing is stamped here — a rename moves the state, it does not
+ * edit it, and re-stamping would let the rename win a cloud merge against a
+ * genuinely newer read count from another device.
+ */
+export function moveSeriesReadingStateKey(oldTitle: string, newTitle: string): void {
+  const oldKey = normalizeSeriesKey(oldTitle);
+  const newKey = normalizeSeriesKey(newTitle);
+  if (oldKey === newKey) return;
+
+  seriesReadingState.update((states) => {
+    const oldState = states[oldKey];
+    if (!oldState) return states;
+
+    const newState = states[newKey];
+    const winner =
+      newState && newState.lastUpdated > oldState.lastUpdated ? newState : { ...oldState };
+    const next = { ...states, [newKey]: winner };
+    delete next[oldKey];
+    return next;
+  });
 }
 
 /** Replace the whole table — the sync merge's write-back, and tests. */

@@ -7,6 +7,11 @@
     updateSeriesMetadata,
     type SeriesMetadataPatchInput
   } from '$lib/metadata/store';
+  import {
+    readingStateFor,
+    seriesReadingState,
+    updateSeriesReadingState
+  } from '$lib/settings/series-data';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { computeLocalPassState, onReadCountChanged } from '$lib/metadata/progress-tracker';
@@ -34,23 +39,13 @@
   // (`restartSeries` does the same) — filtering here keeps "Read N times" and
   // the Restart button in step with what actually gets pushed.
   let localVolumes = $derived(volumes.filter((v) => !v.isPlaceholder));
-  let storedCount = $derived(meta?.read_count ?? 0);
-  /**
-   * `seriesMetadataMap` is a liveQuery and lags a write by a round-trip, so two
-   * fast clicks would both read the pre-click count — the second would write a
-   * value it wrongly believes is new and push it to AniList. This holds what we
-   * last wrote, and falls away by itself as soon as the stored value stops being
-   * the one it was written from (the write landed, another device changed it, or
-   * the panel moved to another series).
-   */
-  let optimisticCount = $state<{ key: string; from: number; to: number } | null>(null);
-  let readCount = $derived(
-    optimisticCount?.key === seriesKey && optimisticCount.from === storedCount
-      ? optimisticCount.to
-      : storedCount
-  );
+  // The reading state is a plain store over localStorage: a write is visible on
+  // the very next read, so unlike the (liveQuery-backed) record there is nothing
+  // to hold optimistically — two fast clicks each see the previous one's value.
+  let state = $derived(readingStateFor($seriesReadingState, seriesKey));
+  let readCount = $derived(state.read_count);
   let linked = $derived(!!meta?.external_ids?.anilist);
-  let lastPushed = $derived(meta?.tracking?.last_pushed);
+  let lastPushed = $derived(state.tracking?.last_pushed);
   // Volumes or chapters is a fact about the archives, not a preference: detected
   // from every title in the folder (placeholders included — they have titles)
   // unless somebody has corrected it on the record.
@@ -59,7 +54,7 @@
   // One computation for the whole page — never per volume card. The unit is
   // handed over rather than re-detected: it was resolved above from the FULL
   // volume list, which is what the tracker pushes by.
-  let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, meta, resolvedUnit));
+  let passState = $derived(computeLocalPassState(localVolumes, $volumesStore, state, resolvedUnit));
   // What detection says on its own, so the "Auto" option can name it even while
   // an override is in force.
   let detectedUnit = $derived(
@@ -88,12 +83,11 @@
   );
 
   /**
-   * Every write goes through `updateSeriesMetadata`, which resolves a functional
-   * patch inside its own `rw` transaction. That is what keeps concurrent writers
-   * honest: `seriesMetadataMap` is a Dexie liveQuery and lags a write by a
-   * round-trip (two fast `+` clicks would otherwise read the same count), and
-   * the progress tracker writes `tracking.last_pushed` from another module
-   * entirely.
+   * Record writes (the unit correction — the one fact this panel edits) go
+   * through `updateSeriesMetadata`, which resolves a functional patch inside its
+   * own `rw` transaction: `seriesMetadataMap` is a Dexie liveQuery and lags a
+   * write by a round-trip. The reading state has its own store and its own
+   * writes below.
    */
   async function write(patch: SeriesMetadataPatchInput, failureMessage: string): Promise<boolean> {
     try {
@@ -106,22 +100,21 @@
     }
   }
 
-  async function setReadCount(delta: number) {
+  function setReadCount(delta: number) {
     const before = readCount;
     const next = Math.max(0, before + delta);
     // The − button is disabled at 0, and a second fast click lands here too:
-    // either way a no-op must not spend a write (and the `updated_at` bump the
-    // cloud would then sync) or a push.
+    // either way a no-op must not spend a write (and the sync it would cause).
     if (next === before) return;
-    optimisticCount = { key: seriesKey, from: storedCount, to: next };
-    // Still a functional patch: `restartSeries` bumps `read_count` from another
-    // module, so the delta has to be applied to the record as stored.
-    const saved = await write(
-      (current) => ({ read_count: Math.max(0, (current.read_count ?? 0) + delta) }),
-      "Couldn't save the read count"
-    );
-    if (!saved) {
-      optimisticCount = null;
+    try {
+      // Functional patch: `restartSeries` bumps the same counter from another
+      // module, so the delta applies to the state as stored.
+      updateSeriesReadingState(seriesKey, (existing) => ({
+        read_count: Math.max(0, existing.read_count + delta)
+      }));
+    } catch (error) {
+      console.error('[series-tracking] could not save the read count:', error);
+      showSnackbar("Couldn't save the read count");
       return;
     }
     // "Read N times" is AniList's repeat count. Nothing else pushes it — a
@@ -147,7 +140,12 @@
 
   /** The reader's "Don't ask for this series" is permanent — this is its undo. */
   function askAgainAboutRereads() {
-    return write({ reread_prompt_suppressed: undefined }, "Couldn't reset the re-read prompt");
+    try {
+      updateSeriesReadingState(seriesKey, { reread_prompt_suppressed: undefined });
+    } catch (error) {
+      console.error('[series-tracking] could not reset the re-read prompt:', error);
+      showSnackbar("Couldn't reset the re-read prompt");
+    }
   }
 
   function confirmRestart() {
@@ -199,7 +197,7 @@
       disabled={localVolumes.length === 0}
       title="Archive this pass and send every volume back to the start">Restart series…</Button
     >
-    {#if meta?.reread_prompt_suppressed}
+    {#if state.reread_prompt_suppressed}
       <Button
         size="xs"
         color="light"

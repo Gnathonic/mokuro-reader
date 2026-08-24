@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VolumeMetadata } from '$lib/types';
-import type { SeriesMetadata } from './types';
 
 // vi.mock factories are hoisted above imports, so the stores they close over are
 // hand-rolled here rather than built with svelte/store's `writable` — see
@@ -25,8 +24,7 @@ const h = vi.hoisted(() => {
   }
 
   return {
-    volumesStore: createStore<Record<string, any>>({}),
-    metaByKey: new Map<string, SeriesMetadata>()
+    volumesStore: createStore<Record<string, any>>({})
   };
 });
 
@@ -37,17 +35,18 @@ vi.mock('$lib/settings/volume-data', () => ({
   archiveAndResetVolumes: vi.fn()
 }));
 
-vi.mock('./store', () => ({
-  getSeriesMetadataForTitle: vi.fn(async (title: string) =>
-    h.metaByKey.get(title.trim().replace(/\s+/g, ' ').toLowerCase())
-  ),
-  updateSeriesMetadata: vi.fn(async (title: string, patch: any) => patch)
-}));
-
 vi.mock('./progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
 
 import { archiveAndResetVolumes } from '$lib/settings/volume-data';
-import { updateSeriesMetadata } from './store';
+// The reading-state store is the real one: it is a plain synchronous store over
+// localStorage, and its write semantics (functional patch, cleared flags
+// dropped) are exactly what these tests are about.
+import {
+  clearSeriesReadingState,
+  getSeriesReadingState,
+  seriesReadingState,
+  updateSeriesReadingState
+} from '$lib/settings/series-data';
 import { onSeriesRestarted } from './progress-tracker';
 import {
   dismissRereadForSession,
@@ -55,10 +54,6 @@ import {
   shouldOfferReread,
   suppressRereadPrompt
 } from './reread';
-
-/** Resolve `updateSeriesMetadata`'s patch arg (plain object or functional patch) against a fake existing record. */
-const resolvePatch = (patch: any, existing: Partial<SeriesMetadata> = {}) =>
-  typeof patch === 'function' ? patch(existing as SeriesMetadata) : patch;
 
 const vol = (uuid: string, title: string, extra: Partial<VolumeMetadata> = {}): VolumeMetadata =>
   ({
@@ -77,7 +72,7 @@ describe('shouldOfferReread', () => {
   const base = {
     seriesVolumes: series,
     volumesData: allDone,
-    meta: undefined,
+    suppressed: false,
     seriesKey: 'one piece'
   };
 
@@ -97,13 +92,7 @@ describe('shouldOfferReread', () => {
     ).toBe(false);
   });
   it('respects the per-series suppression and the session dismissal', () => {
-    expect(
-      shouldOfferReread({
-        ...base,
-        volumeUuid: 'a',
-        meta: { reread_prompt_suppressed: true } as SeriesMetadata
-      })
-    ).toBe(false);
+    expect(shouldOfferReread({ ...base, volumeUuid: 'a', suppressed: true })).toBe(false);
     dismissRereadForSession('one piece');
     expect(shouldOfferReread({ ...base, volumeUuid: 'a' })).toBe(false);
   });
@@ -117,7 +106,7 @@ describe('shouldOfferReread', () => {
         volumeUuid: 'solo',
         seriesVolumes: single,
         volumesData: { solo: { completed: true } },
-        meta: undefined,
+        suppressed: false,
         seriesKey: 'one piece'
       })
     ).toBe(true);
@@ -137,7 +126,7 @@ describe('shouldOfferReread', () => {
           volumeUuid: 'b',
           seriesVolumes: withLeadingPlaceholder,
           volumesData: { b: { completed: true }, c: { completed: true } },
-          meta: undefined,
+          suppressed: false,
           seriesKey: 'one piece'
         })
       ).toBe(true);
@@ -149,7 +138,7 @@ describe('shouldOfferReread', () => {
           volumeUuid: 'a',
           seriesVolumes: withLeadingPlaceholder,
           volumesData: { b: { completed: true }, c: { completed: true } },
-          meta: undefined,
+          suppressed: false,
           seriesKey: 'one piece'
         })
       ).toBe(false);
@@ -162,7 +151,7 @@ describe('shouldOfferReread', () => {
           volumeUuid: 'b',
           seriesVolumes: withLeadingPlaceholder,
           volumesData: { b: { completed: true }, c: { completed: true } },
-          meta: undefined,
+          suppressed: false,
           seriesKey: 'one piece'
         })
       ).toBe(true);
@@ -173,65 +162,69 @@ describe('shouldOfferReread', () => {
 describe('restartSeries', () => {
   beforeEach(() => {
     vi.mocked(archiveAndResetVolumes).mockClear();
-    vi.mocked(updateSeriesMetadata).mockClear();
     vi.mocked(onSeriesRestarted).mockClear();
-    h.metaByKey.clear();
+    clearSeriesReadingState();
     sessionStorage.clear();
   });
 
   it('archives, bumps read_count when the series was fully read, clears suppression, notifies tracker', async () => {
+    updateSeriesReadingState('one piece', { read_count: 1, reread_prompt_suppressed: true });
     h.volumesStore.set(allDone);
     dismissRereadForSession('one piece');
 
     await restartSeries('One Piece', series);
 
     expect(archiveAndResetVolumes).toHaveBeenCalledWith(['b', 'a', 'c']);
-    const [title, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
-    expect(title).toBe('One Piece');
-    // Race-free: read_count is bumped off the record as read inside the write
-    // transaction (simulated here via a fake "existing" record), not a value
-    // read earlier.
-    expect(resolvePatch(patch, { read_count: 1 })).toEqual({
-      read_count: 2,
-      reread_prompt_suppressed: undefined
-    });
+    // Race-free: the bump is applied to the state as stored at write time (a
+    // functional patch), not to a value read before the archive ran.
+    expect(getSeriesReadingState('one piece').read_count).toBe(2);
+    expect(getSeriesReadingState('one piece').reread_prompt_suppressed).toBeUndefined();
     expect(sessionStorage.getItem('reread_dismissed:one piece')).toBeNull();
     expect(onSeriesRestarted).toHaveBeenCalledWith('one piece');
   });
 
-  it('does not touch read_count for a partially read series, only clears suppression', async () => {
-    h.volumesStore.set({ a: { completed: true } });
+  it('bumps read_count in the reading-state store, not on the metadata record', async () => {
+    h.volumesStore.set(allDone);
+
     await restartSeries('One Piece', series);
-    const [, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
-    const resolved = resolvePatch(patch, { read_count: 5 });
-    expect(resolved).toEqual({ reread_prompt_suppressed: undefined });
-    expect(resolved).not.toHaveProperty('read_count');
+
+    expect(getSeriesReadingState('one piece').read_count).toBe(1);
+    expect(getSeriesReadingState('one piece').reread_prompt_suppressed).toBeUndefined();
   });
 
-  it('suppressRereadPrompt persists the flag', async () => {
-    await suppressRereadPrompt('One Piece');
-    expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
-      reread_prompt_suppressed: true
-    });
+  it('does not touch read_count for a partially read series, only clears suppression', async () => {
+    updateSeriesReadingState('one piece', { read_count: 5, reread_prompt_suppressed: true });
+    h.volumesStore.set({ a: { completed: true } });
+
+    await restartSeries('One Piece', series);
+
+    const state = getSeriesReadingState('one piece');
+    expect(state.read_count).toBe(5);
+    expect('reread_prompt_suppressed' in state).toBe(false);
   });
 
-  it('calls onSeriesRestarted only after the archive and metadata writes complete', async () => {
+  it('suppressRereadPrompt writes the flag to the reading-state store', () => {
+    suppressRereadPrompt('One Piece');
+
+    expect(getSeriesReadingState('one piece').reread_prompt_suppressed).toBe(true);
+  });
+
+  it('calls onSeriesRestarted only after the archive and state writes complete', async () => {
     const calls: string[] = [];
     vi.mocked(archiveAndResetVolumes).mockImplementation(() => {
       calls.push('archive');
     });
-    vi.mocked(updateSeriesMetadata).mockImplementation(async (...args: any[]) => {
-      calls.push('updateMeta');
-      return args[1];
-    });
+    const unsubscribe = seriesReadingState.subscribe(() => calls.push('state'));
+    calls.length = 0; // drop the subscription's immediate first emission
     vi.mocked(onSeriesRestarted).mockImplementation(() => {
       calls.push('restarted');
     });
     h.volumesStore.set(allDone);
 
     await restartSeries('One Piece', series);
+    unsubscribe();
 
-    expect(calls).toEqual(['archive', 'updateMeta', 'restarted']);
+    expect(calls).toEqual(['archive', 'state', 'restarted']);
   });
 
   it('does not archive placeholder volumes and ignores them when checking full completion', async () => {
@@ -241,10 +234,6 @@ describe('restartSeries', () => {
     await restartSeries('One Piece', withPlaceholder);
 
     expect(archiveAndResetVolumes).toHaveBeenCalledWith(['b', 'a', 'c']);
-    const [, patch] = vi.mocked(updateSeriesMetadata).mock.calls[0];
-    expect(resolvePatch(patch, { read_count: 0 })).toEqual({
-      read_count: 1,
-      reread_prompt_suppressed: undefined
-    });
+    expect(getSeriesReadingState('one piece').read_count).toBe(1);
   });
 });

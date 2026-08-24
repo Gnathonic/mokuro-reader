@@ -42,6 +42,9 @@ const h = vi.hoisted(() => {
     // separate from `seriesMetadataMap`: the real store is a liveQuery that lags
     // a write by a round-trip, which is the race the panel's write chain fixes.
     stored: new Map<string, SeriesMetadata>(),
+    // The reading state's own store: a plain synchronous store over
+    // localStorage in production, so nothing here lags a write.
+    seriesReadingState: createStore<Record<string, any>>({}),
     writeSeq: { n: 0 }
   };
 });
@@ -78,6 +81,32 @@ vi.mock('$lib/settings/volume-data', () => ({
   volumes: h.volumesData,
   registerCompletionListener: vi.fn(() => () => {})
 }));
+// Mirrors the real reading-state store: synchronous, functional patches resolved
+// against what is stored right now, cleared flags dropped.
+vi.mock('$lib/settings/series-data', () => ({
+  seriesReadingState: h.seriesReadingState,
+  readingStateFor: (states: Record<string, any>, key: string) =>
+    states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() },
+  updateSeriesReadingState: vi.fn(
+    (
+      key: string,
+      patch:
+        | Record<string, unknown>
+        | ((existing: Record<string, unknown>) => Record<string, unknown>)
+    ) => {
+      const states = h.seriesReadingState.get();
+      const existing = states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() };
+      const resolved = typeof patch === 'function' ? patch(existing as any) : patch;
+      const next = Object.fromEntries(
+        Object.entries({ ...existing, ...resolved, lastUpdated: new Date().toISOString() }).filter(
+          ([, v]) => v !== undefined
+        )
+      );
+      h.seriesReadingState.set({ ...states, [key]: next });
+      return next;
+    }
+  )
+}));
 vi.mock('$lib/settings/settings', () => ({
   catalogSettings: h.catalogSettings,
   settings: h.settings,
@@ -106,6 +135,7 @@ vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { updateSeriesMetadata } from '$lib/metadata/store';
+import { updateSeriesReadingState } from '$lib/settings/series-data';
 import { onReadCountChanged } from '$lib/metadata/progress-tracker';
 import { restartSeries } from '$lib/metadata/reread';
 import { promptConfirmation } from '$lib/util/modals';
@@ -138,6 +168,15 @@ function setMeta(record: SeriesMetadata | undefined) {
   h.seriesMetadataMap.set(record ? new Map([['one piece', record]]) : new Map());
 }
 
+/** Seed the series' reading state (read count, re-read flag, push bookkeeping). */
+function setState(state: Record<string, unknown> = {}) {
+  h.seriesReadingState.set({
+    'one piece': { read_count: 0, lastUpdated: new Date(0).toISOString(), ...state }
+  });
+}
+
+const storedState = () => h.seriesReadingState.get()['one piece'];
+
 function renderPanel(volumes: VolumeMetadata[] = VOLUMES) {
   return render(SeriesTrackingPanel, { props: { seriesTitle: 'One Piece', volumes } });
 }
@@ -156,7 +195,8 @@ describe('SeriesTrackingPanel', () => {
     h.catalogSettings.set({ pushProgressToAniList: true });
     h.preferredTitleLanguage.set('imported');
     h.volumesData.set({ a: { completed: true }, b: { completed: true } });
-    setMeta(meta({ read_count: 1 }));
+    setMeta(meta());
+    setState({ read_count: 1 });
   });
 
   afterEach(() => {
@@ -172,14 +212,14 @@ describe('SeriesTrackingPanel', () => {
     it('ignores cloud placeholders when deciding the pass is complete', () => {
       // The tracker computes its pass state from LOCAL volumes only; a
       // never-downloaded placeholder must not hold "Read N times" back.
-      setMeta(meta({ read_count: 0 }));
+      setState({ read_count: 0 });
       h.volumesData.set({ a: { completed: true }, b: { completed: true } });
       const { getByText } = renderPanel([...VOLUMES, volume('c', 'One Piece Volume 3', true)]);
       expect(getByText('Read 1 time')).toBeTruthy();
     });
 
     it('does not count an unfinished pass', () => {
-      setMeta(meta({ read_count: 1 }));
+      setState({ read_count: 1 });
       h.volumesData.set({ a: { completed: true } });
       const { getByText } = renderPanel();
       expect(getByText('Read 1 time')).toBeTruthy();
@@ -188,59 +228,60 @@ describe('SeriesTrackingPanel', () => {
     it('increments read_count', async () => {
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Increase read count'));
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', expect.any(Function));
-      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(2));
+      expect(updateSeriesReadingState).toHaveBeenCalledWith('one piece', expect.any(Function));
+      await waitFor(() => expect(storedState().read_count).toBe(2));
+      // The read count is per-user state: the shared record is not touched.
+      expect(updateSeriesMetadata).not.toHaveBeenCalled();
     });
 
     it('decrements read_count', async () => {
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Decrease read count'));
-      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(0));
+      await waitFor(() => expect(storedState().read_count).toBe(0));
     });
 
     it('clamps read_count at 0', async () => {
-      setMeta(meta({ read_count: 0 }));
+      setState({ read_count: 0 });
       const { getByLabelText } = renderPanel();
       const decrease = getByLabelText('Decrease read count').closest('button')!;
       expect(decrease.disabled).toBe(true);
       await fireEvent.click(decrease);
-      expect(updateSeriesMetadata).not.toHaveBeenCalled();
+      expect(updateSeriesReadingState).not.toHaveBeenCalled();
     });
 
     it('lands both of two rapid clicks instead of writing the same value twice', async () => {
-      // The store is a liveQuery and lags the write, so the second click must
-      // build on what the first one stored — that is what the functional patch
-      // (resolved inside the write's own transaction) guarantees.
-      setMeta(meta({ read_count: 0 }));
+      // The write is synchronous, so the second click already sees the first
+      // one's value — and the functional patch keeps that true even if it
+      // didn't.
+      setState({ read_count: 0 });
       const { getByLabelText } = renderPanel();
       const increase = getByLabelText('Increase read count');
       await Promise.all([fireEvent.click(increase), fireEvent.click(increase)]);
-      await waitFor(() => expect(updateSeriesMetadata).toHaveBeenCalledTimes(2));
-      expect(h.stored.get('one piece')!.read_count).toBe(2);
+      await waitFor(() => expect(updateSeriesReadingState).toHaveBeenCalledTimes(2));
+      expect(storedState().read_count).toBe(2);
     });
 
     it('does not clobber a tracking write that landed since the panel last rendered', async () => {
-      // The progress tracker writes `tracking.last_pushed` from another module;
-      // the panel's own patch must be built on top of it, not on the stale
-      // record the (lagging) liveQuery is still showing.
-      setMeta(meta({ read_count: 0 }));
+      // The progress tracker writes `tracking.last_pushed` into the same state
+      // from another module; the panel's own patch must be built on top of it.
+      setState({ read_count: 0 });
       const { getByLabelText } = renderPanel();
-      h.stored.set('one piece', {
-        ...h.stored.get('one piece')!,
+      updateSeriesReadingState('one piece', {
         tracking: { last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
       });
       await fireEvent.click(getByLabelText('Increase read count'));
       await waitFor(() => {
-        const stored = h.stored.get('one piece')!;
-        expect(stored.read_count).toBe(1);
-        expect(stored.tracking).toEqual({
+        expect(storedState().read_count).toBe(1);
+        expect(storedState().tracking).toEqual({
           last_pushed: { n: 7, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' }
         });
       });
     });
 
     it('reports a failed write', async () => {
-      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      vi.mocked(updateSeriesReadingState).mockImplementationOnce(() => {
+        throw new Error('localStorage is full');
+      });
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Increase read count'));
       await waitFor(() =>
@@ -261,7 +302,9 @@ describe('SeriesTrackingPanel', () => {
     });
 
     it('does not push when the write itself failed', async () => {
-      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
+      vi.mocked(updateSeriesReadingState).mockImplementationOnce(() => {
+        throw new Error('localStorage is full');
+      });
       const { getByLabelText } = renderPanel();
       await fireEvent.click(getByLabelText('Increase read count'));
       await waitFor(() =>
@@ -271,20 +314,20 @@ describe('SeriesTrackingPanel', () => {
     });
 
     it('offers no − at 0', () => {
-      setMeta(meta({ read_count: 0 }));
+      setState({ read_count: 0 });
       const { getByLabelText } = renderPanel();
       expect((getByLabelText('Decrease read count') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('ignores the second of two rapid − clicks instead of re-writing 0', async () => {
-      // The store lags the first write, so the second click still sees 1 unless
-      // the panel remembers what it just wrote.
-      setMeta(meta({ read_count: 1 }));
+      // The second click reads what the first one wrote (0) and is a no-op: a
+      // no-op must not spend a write, nor the push and sync it would cause.
+      setState({ read_count: 1 });
       const { getByLabelText } = renderPanel();
       const decrease = getByLabelText('Decrease read count');
       await Promise.all([fireEvent.click(decrease), fireEvent.click(decrease)]);
-      await waitFor(() => expect(h.stored.get('one piece')!.read_count).toBe(0));
-      expect(updateSeriesMetadata).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(storedState().read_count).toBe(0));
+      expect(updateSeriesReadingState).toHaveBeenCalledTimes(1);
       expect(onReadCountChanged).toHaveBeenCalledTimes(1);
     });
 
@@ -300,7 +343,7 @@ describe('SeriesTrackingPanel', () => {
 
   describe('tracking controls', () => {
     it('asks for a link instead of tracking controls when the series is unlinked', () => {
-      setMeta(meta({ external_ids: {}, tracking: undefined }));
+      setMeta(meta({ external_ids: {} }));
       const { getByText, queryByLabelText } = renderPanel();
       expect(getByText('Link to AniList to track progress')).toBeTruthy();
       expect(queryByLabelText('Tracking unit')).toBeNull();
@@ -343,14 +386,16 @@ describe('SeriesTrackingPanel', () => {
     });
 
     it('writes a correction as a top-level fact, not into the tracking block', async () => {
-      setMeta(meta({ tracking: { number_overrides: { a: 4 } } }));
+      setState({ tracking: { number_overrides: { a: 4 } } });
       const { getByLabelText } = renderPanel();
       await fireEvent.change(getByLabelText('Tracking unit') as HTMLSelectElement, {
         target: { value: 'chapters' }
       });
       await waitFor(() => expect(h.stored.get('one piece')!.unit).toBe('chapters'));
-      // The correction is a fact edit; the push bookkeeping is untouched.
-      expect(h.stored.get('one piece')!.tracking).toEqual({ number_overrides: { a: 4 } });
+      // The correction is a fact edit on the record; the push bookkeeping lives
+      // in the reading state and is untouched.
+      expect(storedState().tracking).toEqual({ number_overrides: { a: 4 } });
+      expect(updateSeriesReadingState).not.toHaveBeenCalled();
       expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', { unit: 'chapters' });
     });
 
@@ -378,12 +423,10 @@ describe('SeriesTrackingPanel', () => {
     });
 
     it('shows the last pushed figure in the resolved unit', () => {
-      setMeta(
-        meta({
-          unit: 'chapters',
-          tracking: { last_pushed: { n: 2, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
-        })
-      );
+      setMeta(meta({ unit: 'chapters' }));
+      setState({
+        tracking: { last_pushed: { n: 2, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
+      });
       const { getByText } = renderPanel();
       expect(getByText(/Last pushed ch\. 2 ·/)).toBeTruthy();
     });
@@ -392,11 +435,9 @@ describe('SeriesTrackingPanel', () => {
       h.anilistUser.set(null);
       h.auth.token = null;
       h.anilistConnected.set(false);
-      setMeta(
-        meta({
-          tracking: { last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
-        })
-      );
+      setState({
+        tracking: { last_pushed: { n: 3, status: 'CURRENT', at: '2026-08-15T10:00:00.000Z' } }
+      });
       const { getByText } = renderPanel();
       expect(getByText('Connect AniList in Settings')).toBeTruthy();
       expect(getByText(/Last pushed vol\. 3 ·/)).toBeTruthy();
@@ -480,17 +521,20 @@ describe('SeriesTrackingPanel', () => {
     });
 
     it('clears the suppression flag', async () => {
-      setMeta(meta({ read_count: 1, reread_prompt_suppressed: true }));
+      setState({ read_count: 1, reread_prompt_suppressed: true });
       const { getByText } = renderPanel();
       await fireEvent.click(getByText('Ask again about re-reads'));
-      expect(updateSeriesMetadata).toHaveBeenCalledWith('One Piece', {
+      expect(updateSeriesReadingState).toHaveBeenCalledWith('one piece', {
         reread_prompt_suppressed: undefined
       });
+      expect(storedState().reread_prompt_suppressed).toBeUndefined();
     });
 
     it('reports a failed reset', async () => {
-      vi.mocked(updateSeriesMetadata).mockRejectedValueOnce(new Error('dexie is out'));
-      setMeta(meta({ read_count: 1, reread_prompt_suppressed: true }));
+      vi.mocked(updateSeriesReadingState).mockImplementationOnce(() => {
+        throw new Error('localStorage is full');
+      });
+      setState({ read_count: 1, reread_prompt_suppressed: true });
       const { getByText } = renderPanel();
       await fireEvent.click(getByText('Ask again about re-reads'));
       await waitFor(() =>

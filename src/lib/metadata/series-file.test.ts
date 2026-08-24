@@ -40,10 +40,7 @@ function linkedMeta(): SeriesMetadata {
     cover_url: 'https://img/op.jpg',
     title_preference: 'native',
     spine_offset: 12,
-    volume_offsets: { 'vol-1': 4 },
-    read_count: 3,
-    reread_prompt_suppressed: true,
-    tracking: { number_overrides: { 'vol-1': 2 } }
+    volume_offsets: { 'vol-1': 4 }
   };
 }
 
@@ -168,9 +165,9 @@ describe('buildSeriesFile', () => {
   });
 
   it('never lets a factless local record overwrite the facts already published', () => {
-    // The catalog writes spine offsets/read counts on records that were never
-    // linked here; those writes bump `updated_at`, which must not read as
-    // "this series was just unlinked" on every other device.
+    // The catalog writes spine offsets on records that were never linked here;
+    // those writes bump `updated_at`, which must not read as "this series was
+    // just unlinked" on every other device.
     const existing: SeriesFile = {
       version: 2,
       series_title: 'One Piece',
@@ -183,8 +180,7 @@ describe('buildSeriesFile', () => {
     };
     const neverLinkedHere = {
       ...createEmptySeriesMetadata('One Piece', '2026-06-01T00:00:00.000Z'),
-      spine_offset: 12,
-      read_count: 2
+      spine_offset: 12
     };
     expect(neverLinkedHere.facts_updated_at).toBeUndefined(); // no facts clock at all
     const file = buildSeriesFile({

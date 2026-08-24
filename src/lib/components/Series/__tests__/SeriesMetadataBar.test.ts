@@ -14,6 +14,7 @@ const {
   catalogSettings,
   anilistConnected,
   volumesData,
+  seriesReadingState,
   computeLocalPassState
 } = vi.hoisted(() => {
   function createStore<T>(initial: T) {
@@ -43,6 +44,9 @@ const {
     }),
     anilistConnected: createStore(true),
     volumesData: createStore<Record<string, { completed?: boolean }>>({}),
+    // The read count and the push bookkeeping are per-user state: they come
+    // from the reading-state store, never from the shared series record.
+    seriesReadingState: createStore<Record<string, any>>({}),
     // The read-only bar delegates the "Read N times" figure to the progress tracker's
     // pure helper; the component test only needs to prove it renders what comes back.
     computeLocalPassState: vi.fn(() => ({
@@ -58,6 +62,11 @@ vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/settings/settings', () => ({ preferredTitleLanguage, catalogSettings }));
 vi.mock('$lib/metadata/anilist-auth', () => ({ anilistConnected }));
 vi.mock('$lib/settings/volume-data', () => ({ volumes: volumesData }));
+vi.mock('$lib/settings/series-data', () => ({
+  seriesReadingState,
+  readingStateFor: (states: Record<string, any>, key: string) =>
+    states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() }
+}));
 vi.mock('$lib/metadata/progress-tracker', () => ({ computeLocalPassState }));
 
 import SeriesMetadataBar from '../SeriesMetadataBar.svelte';
@@ -79,6 +88,13 @@ const LINKED_TITLES = {
   english: 'One Piece (en)'
 };
 
+/** Seed the series' reading state (read count, push bookkeeping). */
+function setReadingState(state: Record<string, unknown>) {
+  seriesReadingState.set({
+    'one piece': { read_count: 0, lastUpdated: new Date(0).toISOString(), ...state }
+  });
+}
+
 function linkedMeta(seriesTitle: string, overrides: Record<string, unknown> = {}) {
   return {
     ...createEmptySeriesMetadata(seriesTitle),
@@ -93,6 +109,7 @@ describe('SeriesMetadataBar', () => {
     preferredTitleLanguage.set('imported');
     catalogSettings.set({ pushProgressToAniList: true });
     anilistConnected.set(true);
+    seriesReadingState.set({});
     computeLocalPassState.mockReturnValue({
       passProgress: 0,
       allCompleted: false,
@@ -192,10 +209,8 @@ describe('SeriesMetadataBar', () => {
 
   it('shows the last-pushed volume and date once tracking has pushed', () => {
     const at = '2026-07-09T12:00:00.000Z';
-    const meta = linkedMeta('One Piece', {
-      tracking: { last_pushed: { n: 5, status: 'CURRENT', at } }
-    });
-    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+    setReadingState({ tracking: { last_pushed: { n: 5, status: 'CURRENT', at } } });
     const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [] }
     });
@@ -205,10 +220,8 @@ describe('SeriesMetadataBar', () => {
 
   it('uses the chapters label when the archives are chapters', () => {
     const at = '2026-07-09T12:00:00.000Z';
-    const meta = linkedMeta('One Piece', {
-      tracking: { last_pushed: { n: 42, status: 'CURRENT', at } }
-    });
-    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece')]]));
+    setReadingState({ tracking: { last_pushed: { n: 42, status: 'CURRENT', at } } });
     const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [volume('Chapter 41'), volume('Chapter 42')] }
     });
@@ -217,11 +230,9 @@ describe('SeriesMetadataBar', () => {
 
   it('prefers a corrected unit over the archive names', () => {
     const at = '2026-07-09T12:00:00.000Z';
-    const meta = linkedMeta('One Piece', {
-      unit: 'volumes',
-      tracking: { last_pushed: { n: 3, status: 'CURRENT', at } }
-    });
-    seriesMetadataMap.set(new Map([['one piece', meta]]));
+    // The unit is a fact on the record; the pushed figure is per-user state.
+    seriesMetadataMap.set(new Map([['one piece', linkedMeta('One Piece', { unit: 'volumes' })]]));
+    setReadingState({ tracking: { last_pushed: { n: 3, status: 'CURRENT', at } } });
     const { getByText } = render(SeriesMetadataBar, {
       props: { seriesTitle: 'One Piece', volumes: [volume('Chapter 41'), volume('Chapter 42')] }
     });

@@ -12,11 +12,11 @@ export type SeriesMetadataPatch = Partial<
 
 /**
  * Either a plain patch, or a function that builds one from the record as it is
- * stored *at write time*. Two writers touch the same record from different
- * places — the progress tracker (`tracking.last_pushed`) and the series panel
- * (`read_count`, `unit`, number overrides) — and both write whole objects, so a
- * patch built from a record read earlier would silently undo the other's edit.
- * A functional patch is resolved inside the write transaction instead.
+ * stored *at write time*. Several writers touch the same record from different
+ * places — the series panel's unit correction, the catalog's shelf alignment,
+ * a sidecar import — and all write whole objects, so a patch built from a record
+ * read earlier would silently undo another's edit. A functional patch is
+ * resolved inside the write transaction instead.
  */
 export type SeriesMetadataPatchInput =
   | SeriesMetadataPatch
@@ -238,9 +238,10 @@ export async function updateSeriesMetadata(
 }
 
 /**
- * Remove the external link + fetched facts; keep user preferences, `tag`,
- * `read_count` and `tracking`. `unit` stays too: it describes the archives in
- * the folder, not the link that was just removed.
+ * Remove the external link + fetched facts; keep user preferences and `tag`.
+ * `unit` stays too: it describes the archives in the folder, not the link that
+ * was just removed. (The reading state was never on this record — it lives in
+ * `$lib/settings/series-data` — so unlinking cannot touch it.)
  */
 export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata> {
   return updateSeriesMetadata(seriesTitle, {

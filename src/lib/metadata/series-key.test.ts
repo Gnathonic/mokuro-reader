@@ -22,7 +22,6 @@ describe('createEmptySeriesMetadata', () => {
     expect(meta.external_ids).toEqual({});
     expect(meta.titles).toEqual({});
     expect(meta.synonyms).toEqual([]);
-    expect(meta.read_count).toBe(0);
     expect(meta.updated_at).toBe('2026-08-16T00:00:00.000Z');
   });
 });
