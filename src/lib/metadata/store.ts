@@ -229,6 +229,9 @@ export async function updateSeriesMetadata(
   });
 
   // After the commit, so a listener that reads the record back sees this write.
+  // A patch that touches both a fact and an index key fires both listeners here —
+  // downstream, both resolve to the same per-series debounced write, so that
+  // still costs one PUT, not two (see `registerIndexChangeListener`).
   if (factsChanged) notifyFactsChanged(seriesTitle);
   if (indexChanged) notifyIndexChanged(seriesTitle);
   return next;

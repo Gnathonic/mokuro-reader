@@ -710,6 +710,33 @@ describe('series metadata store', () => {
 
       expect(indexed).toEqual(['One Piece', 'One Piece']);
       expect(facts).toEqual(['One Piece']);
+
+      // Per-user fields — neither a fact nor an index key — must stay quiet on
+      // both listeners. These stay per-user until a later task in this plan.
+      await updateSeriesMetadata('One Piece', { read_count: 2 });
+      await updateSeriesMetadata('One Piece', {
+        tracking: { number_overrides: { a: 2 } }
+      });
+
+      expect(indexed).toEqual(['One Piece', 'One Piece']);
+      expect(facts).toEqual(['One Piece']);
+    } finally {
+      offIndex();
+      offFacts();
+    }
+  });
+
+  it('notifies both listeners from a single patch that touches a fact and an index key', async () => {
+    const indexed: string[] = [];
+    const facts: string[] = [];
+    const offIndex = registerIndexChangeListener((title) => indexed.push(title));
+    const offFacts = registerFactsChangeListener((title) => facts.push(title));
+
+    try {
+      await updateSeriesMetadata('One Piece', { tag: 'color', spine_offset: 9 });
+
+      expect(indexed).toEqual(['One Piece']);
+      expect(facts).toEqual(['One Piece']);
     } finally {
       offIndex();
       offFacts();

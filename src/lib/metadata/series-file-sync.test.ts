@@ -573,6 +573,27 @@ describe('series-file-sync', () => {
     expect(metaRows.get('one piece')?.facts_updated_at).toBeUndefined();
   });
 
+  it('does NOT fire for a per-user edit (rereads, tracking)', async () => {
+    // These fields are neither a fact nor an index key (spine_offset,
+    // volume_offsets) — they stay per-user until a later task in this plan.
+    await updateSeriesMetadata('One Piece', { read_count: 2 });
+    await updateSeriesMetadata('One Piece', { tracking: { number_overrides: { a: 2 } } });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('collapses a single patch that touches a fact AND an index key into one write', async () => {
+    await updateSeriesMetadata('One Piece', { tag: 'color', spine_offset: 9 });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Both the facts and the index listener fire for this one patch (see
+    // store.test.ts), but they schedule the same per-series debounced write —
+    // one PUT, not two.
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
   it('does NOT fire when a fact write changes nothing', async () => {
     await updateSeriesMetadata('One Piece', { tag: 'color' });
     await vi.advanceTimersByTimeAsync(2000);
