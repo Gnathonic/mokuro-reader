@@ -32,7 +32,8 @@ import { upsertFromSeriesFile } from './store';
  *   download is skipped, and the whole run never rejects. It runs behind a
  *   reading flow and must never surface there.
  * - Facts go through `upsertFromSeriesFile`, which applies only strictly newer
- *   facts and never schedules a `series.json` write — so a refresh can never
+ *   facts (and fills a missing shelf alignment, which is index data and follows
+ *   no stamp) and never schedules a `series.json` write — so a refresh can never
  *   ping-pong into an upload (see `series-file-sync.ts`).
  * - A run is BOUND to the provider whose listing produced it. Between the fetch
  *   and the (background, possibly queued) run the user can switch accounts, and
@@ -151,10 +152,12 @@ async function refreshOne(
   };
 
   try {
-    // Facts only, strictly-newer, and never a write trigger.
+    // Facts (strictly-newer only) plus any shelf alignment this library is
+    // missing — offsets are index data, so they fill regardless of the stamp,
+    // and an offsets-only sidecar can create the record. Never a write trigger.
     await upsertFromSeriesFile(task.title, parsed);
   } catch (error) {
-    console.warn(`[series-index-sync] could not apply the facts for '${task.title}':`, error);
+    console.warn(`[series-index-sync] could not apply the sidecar for '${task.title}':`, error);
   }
 
   return record;

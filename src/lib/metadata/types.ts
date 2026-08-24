@@ -28,8 +28,12 @@ export interface SeriesTracking {
 /**
  * Per-series metadata record. PK = normalizeSeriesKey(series_title).
  * Synced as series-metadata.json (newest updated_at wins per key).
- * Only the "facts" (external_ids/titles/synonyms/tag) are shared publicly, via
- * the per-series `series.json` sidecar (`series-file.ts`).
+ *
+ * Two kinds of field are shared publicly through the per-series `series.json`
+ * sidecar (`series-file.ts`): the "facts" (external_ids/titles/synonyms/tag/unit),
+ * which carry a facts clock and decide merges, and the shelf alignment
+ * (spine_offset/volume_offsets), which is INDEX data — shared, but never a fact.
+ * Everything else on this record is this library's own state.
  */
 export interface SeriesMetadata {
   series_key: string;
@@ -54,11 +58,21 @@ export interface SeriesMetadata {
   title_preference?: DisplayTitleLanguage;
   /**
    * Catalog spine stack: adjustment to the global horizontal step, in percent.
-   * Added to `catalogSettings.horizontalStep` for this series only. Never shared
-   * in `series.json` — it describes this library's shelf, not the series.
+   * Added to `catalogSettings.horizontalStep` for this series only.
+   *
+   * User-visible catalog layout AND a property of the archives themselves — the
+   * same covers have the same geometry — so it IS published, as INDEX data, in
+   * the shared `series.json` sidecar (top-level `spine_offset`). Never a fact:
+   * it must never move `facts_updated_at`. An explicit `0` is a deliberate reset
+   * and is stored as such; absent means "no opinion", which inherits whatever
+   * another library published. See `spine-offsets.ts`.
    */
   spine_offset?: number;
-  /** Catalog spine stack: per-volume horizontal nudge in px, keyed by `volume_uuid`. */
+  /**
+   * Catalog spine stack: per-volume horizontal nudge in px, keyed by `volume_uuid`.
+   * Published as INDEX data too — as each volume entry's `offset` in
+   * `series.json` — under exactly the same rules as `spine_offset` above.
+   */
   volume_offsets?: Record<string, number>;
   /** Archived completed passes; timesRead = read_count + (all volumes completed now ? 1 : 0) */
   read_count: number;

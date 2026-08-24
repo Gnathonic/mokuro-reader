@@ -109,10 +109,10 @@ interface PendingWrite {
   timer: ReturnType<typeof setTimeout>;
   spineOffset?: number;
   hasSpineOffset: boolean;
-  /** Accumulated per-volume values from this burst (`0` = delete that key). */
+  /** Accumulated per-volume values from this burst (`0` = reset that key, stored). */
   volumeOffsets: Record<string, number>;
   hasVolumeOffsets: boolean;
-  /** A "reset all" arrived in this burst: start from an empty map, not the record's. */
+  /** A "reset all" arrived in this burst: zero every key the record holds, don't drop them. */
   resetVolumes: boolean;
   done: Promise<SeriesMetadata | undefined>;
   resolve: (written: SeriesMetadata | undefined) => void;
@@ -209,7 +209,8 @@ export function scheduleSpineOffsetWrite(
   if (patch.volumeOffsets !== undefined) {
     const entries = Object.entries(patch.volumeOffsets);
     if (entries.length === 0) {
-      // "Reset all": drop the nudges accumulated so far in this burst too.
+      // "Reset all": discard the nudges accumulated so far in THIS BURST. The
+      // record's own keys are not dropped — `buildPatch` zeroes them.
       entry.resetVolumes = true;
       entry.volumeOffsets = {};
     } else {

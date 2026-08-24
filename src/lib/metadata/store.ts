@@ -239,9 +239,10 @@ function offsetsToFill(
  * Apply the metadata facts from a `series.json` sidecar. Newest wins: only
  * writes when there is no local record or the file's stamp is strictly newer
  * than the local *facts* stamp — not the record's `updated_at`, which every
- * per-user write bumps. The volume index is not touched here: it is cached
- * separately and never overrides local volumes. Returns whether the record was
- * actually written.
+ * per-user write bumps. The volume index is not touched here, apart from each
+ * entry's `offset` (see the spine-offset paragraph below): the index itself is
+ * cached separately and never overrides local volumes. Returns whether the
+ * record was actually written.
  *
  * A file with no facts at all and no local record to update is ignored
  * outright: an index-only sidecar (written by a device that never linked the
@@ -266,8 +267,17 @@ function offsetsToFill(
  * `facts_updated_at`.
  *
  * A file with no facts and no local record still creates one when it carries
- * offsets: that record has no facts clock, so `buildSeriesFile` still treats
- * this library as having no opinion about the series' facts.
+ * offsets. Applying facts is therefore gated on either side actually HAVING
+ * facts, not merely on the record existing: without that gate the second upsert
+ * of a factless offsets-only file would stamp `facts_updated_at` with the file's
+ * epoch — a facts clock this library never earned, which would then be published
+ * as a real "no opinion" claim. With the gate the record keeps no facts clock at
+ * all, so `buildSeriesFile` still treats this library as having no opinion.
+ *
+ * That is also what makes the exchange converge: the first upsert fills the
+ * offsets and returns `true`, and every later upsert of the same file fills
+ * nothing, changes no facts, and returns `false` — so an importer that schedules
+ * a `series.json` write on `true` writes once, not on every read.
  */
 export async function upsertFromSeriesFile(
   seriesTitle: string,
@@ -279,9 +289,14 @@ export async function upsertFromSeriesFile(
     // No local facts stamp = no local opinion, so any sidecar with facts applies.
     const localStamp = existing ? factsStamp(existing) : undefined;
     const stampWins = localStamp === undefined || localStamp < file.updated_at;
-    // An index-only file for a series we hold no record for says nothing about
-    // the facts — creating an empty record from it would publish that emptiness.
-    const applyFacts = stampWins && (!!existing || hasSeriesFacts(file));
+    // Neither side has facts = there are no facts to apply, so the facts branch
+    // (and the `facts_updated_at` stamp it writes) is skipped entirely. This
+    // covers both an index-only file for a series we hold no record for —
+    // creating an empty record from it would publish that emptiness — and a
+    // repeat visit to an offsets-only file, which must not mint a facts clock
+    // out of the file's epoch stamp.
+    const applyFacts =
+      stampWins && (hasSeriesFacts(file) || (!!existing && hasSeriesFacts(existing)));
     const offsets = offsetsToFill(existing, file);
     if (!applyFacts && !offsets) return false;
 

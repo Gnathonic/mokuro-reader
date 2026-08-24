@@ -609,6 +609,30 @@ describe('series metadata store', () => {
     expect(record.spine_offset).toBe(6);
     expect(record.facts_updated_at).toBeUndefined();
   });
+
+  it('converges: re-reading an offsets-only sidecar applies nothing and mints no facts clock', async () => {
+    const file: SeriesFile = {
+      version: 2,
+      series_title: 'Berserk',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 6,
+      volumes: []
+    };
+
+    expect(await upsertFromSeriesFile('Berserk', file)).toBe(true);
+    // Callers schedule a series.json write on `true`; a second read must not
+    // schedule another, or every cloud refresh would trigger an upload.
+    expect(await upsertFromSeriesFile('Berserk', file)).toBe(false);
+
+    const record = (await getSeriesMetadataForTitle('Berserk'))!;
+    expect(record.spine_offset).toBe(6);
+    // The file's epoch stamp is NOT a facts clock this library earned.
+    expect(record.facts_updated_at).toBeUndefined();
+    expect(Object.keys(record)).not.toContain('facts_updated_at');
+  });
 });
 
 describe('the tracking unit as a shared fact', () => {

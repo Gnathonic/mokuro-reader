@@ -968,30 +968,54 @@ describe('spine offsets in series.json', () => {
     expect('offset' in junk.volumes[0]).toBe(false);
   });
 
-  it('keeps the offsets of the winning side when caching an imported file', () => {
-    const cached: SeriesFile = {
-      version: 2,
-      series_title: 'One Piece',
-      external_ids: {},
-      titles: {},
-      synonyms: [],
-      updated_at: '2026-08-01T00:00:00.000Z',
-      spine_offset: 5,
-      volumes: []
-    };
-    const arriving: SeriesFile = {
-      version: 2,
-      series_title: 'One Piece',
-      external_ids: {},
-      titles: {},
-      synonyms: [],
+  const cachedFile = (partial: Partial<SeriesFile> = {}): SeriesFile => ({
+    version: 2,
+    series_title: 'One Piece',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at: '2026-08-01T00:00:00.000Z',
+    volumes: [],
+    ...partial
+  });
+
+  it("takes the winning side's alignment when caching an imported file", () => {
+    const cached = cachedFile({ spine_offset: 5 });
+    const arriving = cachedFile({
       updated_at: '2026-08-20T00:00:00.000Z',
+      spine_offset: 12,
       volumes: [{ ...volumeToIndexEntry(volume()), offset: 11 }]
-    };
+    });
 
     const merged = mergeSeriesFileForCache('One Piece', arriving, cached);
 
-    expect('spine_offset' in merged).toBe(false);
+    expect(merged.spine_offset).toBe(12);
     expect(merged.volumes[0].offset).toBe(11);
+  });
+
+  it('inherits the alignment of the losing side when the winner has no opinion', () => {
+    // The alignment is index data, so it does NOT follow the facts clock: an
+    // arriving file that simply never measured a nudge must not erase one the
+    // cached copy holds. Absent = no opinion = inherit, as everywhere else.
+    const cached = cachedFile({
+      spine_offset: 5,
+      volumes: [{ ...volumeToIndexEntry(volume()), offset: 7 }]
+    });
+    const arriving = cachedFile({ updated_at: '2026-08-20T00:00:00.000Z' });
+
+    const merged = mergeSeriesFileForCache('One Piece', arriving, cached);
+
+    expect(merged.spine_offset).toBe(5);
+    // The cached volume entry is untouched — the arriving file lists no volumes.
+    expect(merged.volumes[0].offset).toBe(7);
+  });
+
+  it('inherits the alignment when the LOSER is the arriving file', () => {
+    // Same rule with the sides swapped: the cached copy wins on the stamp but
+    // has no alignment, so the older import's rides through.
+    const cached = cachedFile({ updated_at: '2026-08-20T00:00:00.000Z' });
+    const arriving = cachedFile({ spine_offset: 9 });
+
+    expect(mergeSeriesFileForCache('One Piece', arriving, cached).spine_offset).toBe(9);
   });
 });

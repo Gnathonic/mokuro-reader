@@ -407,9 +407,15 @@ export function mergeSeriesFileForCache(
   const merged: SeriesFile = { ...base, series_title: seriesTitle, volumes };
   if (!base.tag) delete merged.tag;
   if (!base.unit) delete merged.unit;
-  // The alignment follows the same winner as the facts: a cached copy must not
-  // resurrect an offset the arriving (newer) file cleared.
-  if (!base.spine_offset) delete merged.spine_offset;
+  // The alignment does NOT follow the facts clock — it is index data, and index
+  // data merges by "absent = no opinion = inherit" everywhere else (the volume
+  // entries right above, `buildSeriesFile`, `upsertFromSeriesFile`). So the
+  // winner's value wins where it has one, and otherwise the loser's rides
+  // through instead of being dropped on a stamp it has nothing to do with.
+  const loser = base === file ? cached : file;
+  if (merged.spine_offset === undefined && loser.spine_offset !== undefined) {
+    merged.spine_offset = loser.spine_offset;
+  }
   return merged;
 }
 

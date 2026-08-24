@@ -1227,7 +1227,9 @@ class UnifiedCloudManager {
         },
         fetched_at: new Date().toISOString()
       });
-      // Facts only, strictly-newer, and never a write trigger.
+      // Facts (strictly-newer only) plus any shelf alignment this library is
+      // missing — offsets are index data, so they fill regardless of the stamp.
+      // Never a write trigger either way.
       await upsertFromSeriesFile(folderTitle, fresh);
       return fresh;
     } catch (error) {
