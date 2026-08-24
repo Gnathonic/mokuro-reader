@@ -60,7 +60,15 @@
     if (cached) {
       const url = URL.createObjectURL(cached.file);
       cloudThumbnailUrl = url;
-      return () => URL.revokeObjectURL(url);
+      // Cleared as well as revoked: this component is reused across volumes (a re-sort,
+      // the next page of results), and a state variable still holding a revoked URL keeps
+      // the <img> branch rendering — a broken-image icon where the new volume's
+      // placeholder belongs. Guarded, so a run that has already been superseded cannot
+      // wipe the URL its successor just created.
+      return () => {
+        URL.revokeObjectURL(url);
+        if (cloudThumbnailUrl === url) cloudThumbnailUrl = null;
+      };
     }
 
     let cancelled = false;
