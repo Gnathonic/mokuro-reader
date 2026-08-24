@@ -564,12 +564,13 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
   });
 
-  it('does NOT fire for a per-user edit (spine offsets, rereads, tracking)', async () => {
-    await updateSeriesMetadata('One Piece', { read_count: 2 });
-    await updateSeriesMetadata('One Piece', { tracking: { number_overrides: { a: 2 } } });
+  it('fires after an offset edit — the shelf alignment is published too', async () => {
+    await updateSeriesMetadata('One Piece', { spine_offset: 6 });
     await vi.advanceTimersByTimeAsync(2000);
 
-    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    // Index data: the facts clock must not have moved.
+    expect(metaRows.get('one piece')?.facts_updated_at).toBeUndefined();
   });
 
   it('does NOT fire when a fact write changes nothing', async () => {

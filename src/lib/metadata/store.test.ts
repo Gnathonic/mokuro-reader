@@ -17,7 +17,9 @@ import {
   upsertFromSeriesFile,
   moveSeriesMetadataKey,
   getAllSeriesMetadata,
-  replaceAllSeriesMetadata
+  replaceAllSeriesMetadata,
+  registerIndexChangeListener,
+  registerFactsChangeListener
 } from './store';
 import { toSeriesMetadataPatch } from './providers/anilist';
 import { FACTLESS_UPDATED_AT, type SeriesFile } from './series-file';
@@ -691,6 +693,49 @@ describe('series metadata store', () => {
     // The file's epoch stamp is NOT a facts clock this library earned.
     expect(record.facts_updated_at).toBeUndefined();
     expect(Object.keys(record)).not.toContain('facts_updated_at');
+  });
+
+  it('notifies index listeners for an offset edit and facts listeners for a fact edit', async () => {
+    const indexed: string[] = [];
+    const facts: string[] = [];
+    const offIndex = registerIndexChangeListener((title) => indexed.push(title));
+    const offFacts = registerFactsChangeListener((title) => facts.push(title));
+
+    try {
+      await updateSeriesMetadata('One Piece', { spine_offset: 4 });
+      await updateSeriesMetadata('One Piece', { volume_offsets: { 'vol-1': 8 } });
+      await updateSeriesMetadata('One Piece', { tag: 'color' });
+      // A re-write of the same values changes nothing and must stay quiet.
+      await updateSeriesMetadata('One Piece', { spine_offset: 4 });
+
+      expect(indexed).toEqual(['One Piece', 'One Piece']);
+      expect(facts).toEqual(['One Piece']);
+    } finally {
+      offIndex();
+      offFacts();
+    }
+  });
+
+  it('does not notify index listeners when a sidecar fills the offsets', async () => {
+    const indexed: string[] = [];
+    const off = registerIndexChangeListener((title) => indexed.push(title));
+
+    try {
+      await upsertFromSeriesFile('One Piece', {
+        version: 2,
+        series_title: 'One Piece',
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: FACTLESS_UPDATED_AT,
+        spine_offset: 6,
+        volumes: []
+      });
+
+      expect(indexed).toEqual([]);
+    } finally {
+      off();
+    }
   });
 });
 

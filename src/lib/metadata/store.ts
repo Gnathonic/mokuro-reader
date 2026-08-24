@@ -97,6 +97,18 @@ function changesFacts(existing: SeriesMetadata, patch: SeriesMetadataPatch): boo
   return FACT_KEYS.some((key) => key in patch && !sameValue(patch[key], existing[key]));
 }
 
+/**
+ * The INDEX keys — data that rides `series.json`'s volume entries rather than
+ * its facts. Changing one has to publish a new sidecar (a shelf alignment is
+ * worth sharing) but must never move `facts_updated_at`, which is what decides
+ * whose link wins.
+ */
+const INDEX_KEYS = ['spine_offset', 'volume_offsets'] as const;
+
+function changesIndex(existing: SeriesMetadata, patch: SeriesMetadataPatch): boolean {
+  return INDEX_KEYS.some((key) => key in patch && !sameValue(patch[key], existing[key]));
+}
+
 type FactsChangeListener = (seriesTitle: string) => void;
 const factsChangeListeners = new Set<FactsChangeListener>();
 
@@ -124,6 +136,37 @@ function notifyFactsChanged(seriesTitle: string): void {
       fn(seriesTitle);
     } catch (error) {
       console.warn('[series-metadata] facts-change listener failed:', error);
+    }
+  }
+}
+
+type IndexChangeListener = (seriesTitle: string) => void;
+const indexChangeListeners = new Set<IndexChangeListener>();
+
+/**
+ * Called after a local write that actually changed the shelf alignment
+ * (`spine_offset`, `volume_offsets`). The NON-FACTS trigger for the debounced
+ * `series.json` writer: the file has to be republished, but nothing about the
+ * facts changed, so `facts_updated_at` stays where it was.
+ *
+ * Never fires for `upsertFromSeriesFile` — that applies what a sidecar already
+ * says, and republishing it would be a write loop between devices. Same
+ * registration-hook shape as `registerFactsChangeListener`, for the same reason
+ * (this module must not import the cloud layer). Returns an unregister function.
+ */
+export function registerIndexChangeListener(fn: IndexChangeListener): () => void {
+  indexChangeListeners.add(fn);
+  return () => {
+    indexChangeListeners.delete(fn);
+  };
+}
+
+function notifyIndexChanged(seriesTitle: string): void {
+  for (const fn of indexChangeListeners) {
+    try {
+      fn(seriesTitle);
+    } catch (error) {
+      console.warn('[series-metadata] index-change listener failed:', error);
     }
   }
 }
@@ -163,12 +206,14 @@ export async function updateSeriesMetadata(
     return createEmptySeriesMetadata(seriesTitle);
   }
   let factsChanged = false;
+  let indexChanged = false;
   const next = await db.transaction('rw', db.series_metadata, async () => {
     const stored = await db.series_metadata.get(key);
     const updated_at = nextTimestamp(stored?.updated_at);
     const existing = stored ?? createEmptySeriesMetadata(seriesTitle, updated_at);
     const resolved = typeof patch === 'function' ? patch(existing) : patch;
     factsChanged = changesFacts(existing, resolved);
+    indexChanged = changesIndex(existing, resolved);
     const written = stripUndefined<SeriesMetadata>({
       ...existing,
       ...resolved,
@@ -185,6 +230,7 @@ export async function updateSeriesMetadata(
 
   // After the commit, so a listener that reads the record back sees this write.
   if (factsChanged) notifyFactsChanged(seriesTitle);
+  if (indexChanged) notifyIndexChanged(seriesTitle);
   return next;
 }
 

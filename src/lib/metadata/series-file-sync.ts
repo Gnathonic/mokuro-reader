@@ -9,7 +9,7 @@ import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
 import { isSeriesFilePath } from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
-import { registerFactsChangeListener } from './store';
+import { registerFactsChangeListener, registerIndexChangeListener } from './store';
 
 /**
  * The automatic half of the `series.json` index: local fact edits (link,
@@ -23,9 +23,10 @@ import { registerFactsChangeListener } from './store';
  * - Gated on a *writable* connected provider and on the series actually having a
  *   backup — publishing an index for a series that exists nowhere in the cloud
  *   would create folders out of thin air.
- * - Driven by `registerFactsChangeListener`, which only fires for local fact
- *   edits. Facts arriving FROM a sidecar (`upsertFromSeriesFile`) never
- *   schedule a write, so two devices cannot ping-pong the same file.
+ * - Driven by `registerFactsChangeListener` and `registerIndexChangeListener`,
+ *   which only fire for local edits — facts, or the shelf alignment. Anything
+ *   arriving FROM a sidecar (`upsertFromSeriesFile`) never schedules a write,
+ *   so two devices cannot ping-pong the same file.
  * - Preceded by ONE cloud listing refresh per flush (shared by every series in
  *   it), because the write merges and prunes against that listing.
  *
@@ -563,14 +564,21 @@ export function initSeriesFileSync(): () => void {
   if (!browser) return () => {};
   if (teardown) return teardown;
 
-  const unregister = registerFactsChangeListener((seriesTitle) =>
+  const unregisterFacts = registerFactsChangeListener((seriesTitle) =>
+    scheduleSeriesFileWrite(seriesTitle)
+  );
+  // The non-facts trigger: a shelf alignment change republishes the sidecar
+  // with the SAME facts stamp (see `registerIndexChangeListener`). Both funnel
+  // into the same per-series debounce, so an edit that moves both costs one write.
+  const unregisterIndex = registerIndexChangeListener((seriesTitle) =>
     scheduleSeriesFileWrite(seriesTitle)
   );
 
   const dispose = () => {
     if (teardown !== dispose) return;
     teardown = null;
-    unregister();
+    unregisterFacts();
+    unregisterIndex();
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
     pendingTitles.clear();
