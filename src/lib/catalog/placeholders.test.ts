@@ -207,6 +207,28 @@ describe('generatePlaceholders with a series index', () => {
     expect(placeholders[0].volume_uuid).toBe('real-uuid-1');
   });
 
+  it('matches the entry across unicode forms — an NFD filename is the same volume', () => {
+    // A cloud filename that made the round trip through a filesystem can come
+    // back decomposed while the `series.json` beside it stays composed. Compared
+    // byte-wise the placeholder adopts nothing: derived uuid, zero counts, no
+    // progress and no cover, for a volume the index describes perfectly.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const listed = new Map<string, CloudVolumeWithProvider[]>([
+      ['One Piece', [cloudFile(`One Piece/${decomposed}.cbz`)]]
+    ]);
+
+    const placeholders = generatePlaceholders(
+      listed,
+      [],
+      indexMap('One Piece', [indexEntry({ volume_title: composed })])
+    );
+
+    expect(placeholders[0]).toMatchObject({ volume_uuid: 'real-uuid-1', page_count: 180 });
+  });
+
   it('leaves page_char_counts empty — the index carries totals only', () => {
     const map = indexMap('One Piece', [indexEntry()]);
     const placeholders = generatePlaceholders(cloudFiles, [], map);
@@ -340,6 +362,22 @@ describe('a metadata-only row and the cloud', () => {
     expect(placeholders).toEqual([]);
   });
 
+  it('shadows it when the cloud filename is decomposed and the row is composed', () => {
+    // Same volume, two unicode spellings. Byte-wise the shadow check misses and
+    // the catalog shows the volume twice: once as the row that holds the read
+    // history, once as a cloud-only placeholder of the very same archive.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const placeholders = generatePlaceholders(
+      new Map([['One Piece', [cloudFile(`One Piece/${decomposed}.cbz`, 'file-1')]]]),
+      [localVolume({ metadata_only: true, volume_title: composed })]
+    );
+
+    expect(placeholders).toEqual([]);
+  });
+
   it('gets the cloud fields the placeholder would have carried', () => {
     const index = indexCloudFilesByPath(cloudFiles);
 
@@ -362,6 +400,26 @@ describe('a metadata-only row and the cloud', () => {
     expect(cloudFieldsForRemovedVolume(index, localVolume({ metadata_only: true }))).toMatchObject({
       cloudFileId: 'file-1'
     });
+  });
+
+  it('matches the archive across unicode forms, so the row keeps its Download', () => {
+    // The row shadows the placeholder its file would have produced, so this is
+    // the ONLY source of the download affordance. A byte-wise miss reads as
+    // "the cloud no longer holds it" and the volume becomes undownloadable.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const index = indexCloudFilesByPath(
+      new Map([['One Piece', [cloudFile(`One Piece/${decomposed}.cbz`, 'file-1')]]])
+    );
+
+    expect(
+      cloudFieldsForRemovedVolume(
+        index,
+        localVolume({ metadata_only: true, volume_title: composed })
+      )
+    ).toMatchObject({ cloudFileId: 'file-1' });
   });
 
   it('gets nothing when the cloud no longer holds the volume', () => {

@@ -6,7 +6,30 @@ import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
 import { isArchiveSize, isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+
+/**
+ * The identity of one archive across the sources that spell it differently: a
+ * local row (`<series_title>/<volume_title>`), a cloud `.cbz` filename, and a
+ * `series.json` entry. Mirrors `cover-install.ts`'s `coverKey` exactly — same
+ * per-segment fold, so a row, its cover sidecar and its archive always agree
+ * about which volume they are.
+ *
+ * `normalizeVolumeTitleKey` rather than a `.toLowerCase()`: a name that made the
+ * round trip through a filesystem can come back decomposed (NFD) while the JSON
+ * and the IndexedDB row beside it stay composed.
+ */
+function archiveKey(seriesTitle: string, volumeTitle: string): string {
+  return `${normalizeVolumeTitleKey(seriesTitle)}/${normalizeVolumeTitleKey(volumeTitle)}`;
+}
+
+/** {@link archiveKey} for a listed cloud path (`<Series>/<Volume>.cbz`). */
+function cloudArchiveKey(path: string): string {
+  const trimmed = path.replace(/^\/+|\/+$/g, '');
+  const cut = trimmed.lastIndexOf('/');
+  if (cut < 0) return '';
+  return archiveKey(trimmed.slice(0, cut), trimmed.slice(cut + 1).replace(/\.cbz$/i, ''));
+}
 
 /**
  * Extract series title from description field
@@ -58,9 +81,15 @@ function parseCloudPath(
  * The `series.json` entry describing this cloud file, if the cached index has
  * one. Looked up by FOLDER name — the index is a sidecar of the cloud folder,
  * so a `Series:` description (which only renames the series for display) must
- * not change which file we read. Titles are compared with the catalog's own
- * grouping normalisation so a casing/whitespace difference between the cloud
- * filename and the indexed title still matches.
+ * not change which file we read. Volume titles are compared with the shared
+ * volume fold, so a casing/whitespace/unicode-form difference between the cloud
+ * filename and the indexed title still matches — without it the placeholder
+ * adopts nothing (derived uuid, zero counts, no synced progress) for a volume
+ * the index describes perfectly.
+ *
+ * The FOLDER lookup stays on `normalizeSeriesKey`: that is the key
+ * `seriesIndexMap` is built with, and folding it differently here would just
+ * miss every record.
  */
 function findIndexEntry(
   indexMap: Map<string, SeriesIndexRecord> | undefined,
@@ -70,8 +99,10 @@ function findIndexEntry(
   const record = indexMap?.get(normalizeSeriesKey(folderName));
   if (!record) return undefined;
 
-  const wanted = normalizeSeriesKey(volumeTitle);
-  return record.file.volumes.find((entry) => normalizeSeriesKey(entry.volume_title) === wanted);
+  const wanted = normalizeVolumeTitleKey(volumeTitle);
+  return record.file.volumes.find(
+    (entry) => normalizeVolumeTitleKey(entry.volume_title) === wanted
+  );
 }
 
 /** Every file of a listing, flattened. */
@@ -189,13 +220,13 @@ export function generatePlaceholders(
     return [];
   }
 
-  // Create a set of local volume paths for fast lookup. Lowercased, like
-  // `localVolumeByPath` below and the cloud-field lookup a metadata-only row is
-  // decorated with: a casing difference between the stored title and the cloud
-  // filename must not make the same volume appear twice — once as its own row
-  // and once as a placeholder of the same file.
+  // Create a set of local volume keys for fast lookup. Folded through
+  // `archiveKey`, like the cloud-field lookup a metadata-only row is decorated
+  // with: a casing, whitespace or unicode-form difference between the stored
+  // title and the cloud filename must not make the same volume appear twice —
+  // once as its own row and once as a placeholder of the same file.
   const localPaths = new Set(
-    localVolumes.map((vol) => `${vol.series_title}/${vol.volume_title}.cbz`.toLowerCase())
+    localVolumes.map((vol) => archiveKey(vol.series_title, vol.volume_title))
   );
   // …and of local uuids. A placeholder that adopts an indexed uuid can collide
   // with an installed volume the path check misses (renamed locally, or filed
@@ -260,7 +291,7 @@ export function generatePlaceholders(
   }
 
   // Find cloud-only files
-  const cloudOnlyFiles = cloudFiles.filter((file) => !localPaths.has(file.path.toLowerCase()));
+  const cloudOnlyFiles = cloudFiles.filter((file) => !localPaths.has(cloudArchiveKey(file.path)));
 
   // Generate placeholders
   const placeholders: VolumeMetadata[] = [];
@@ -402,7 +433,9 @@ export function isIndexedPlaceholder(volume: VolumeMetadata): boolean {
 }
 
 /**
- * Index a cloud listing by archive path, lowercased.
+ * Index a cloud listing by {@link archiveKey} — the same folded identity every
+ * other cloud lookup here uses, so a stored title and a cloud filename that
+ * differ only in case, whitespace or unicode form still meet.
  *
  * Built once per listing and shared by every lookup: a row whose files were
  * removed needs the same cloud file a placeholder would have been built from,
@@ -415,7 +448,8 @@ export function indexCloudFilesByPath(
   for (const files of cloudFilesMap.values()) {
     for (const file of files) {
       if (!file.path.toLowerCase().endsWith('.cbz')) continue;
-      index.set(file.path.toLowerCase(), file);
+      const key = cloudArchiveKey(file.path);
+      if (key) index.set(key, file);
     }
   }
   return index;
@@ -430,17 +464,16 @@ export function indexCloudFilesByPath(
  * download affordance has to come from somewhere — this is that somewhere, and
  * it deliberately carries exactly the fields `cloud-fields.ts` reads.
  *
- * Matched by stored path, the same identity every other cloud lookup uses
- * (`<series_title>/<volume_title>.cbz`), so a volume renamed locally without
- * renaming the cloud file reads as "not in the cloud" here too rather than
- * silently pointing at somebody else's archive.
+ * Matched by stored title, through the same {@link archiveKey} every other
+ * cloud lookup uses, so a volume renamed locally without renaming the cloud file
+ * reads as "not in the cloud" here too rather than silently pointing at somebody
+ * else's archive — while a mere unicode-form or casing difference still meets.
  */
 export function cloudFieldsForRemovedVolume(
   cloudIndex: Map<string, CloudVolumeWithProvider>,
   volume: VolumeMetadata
 ): Partial<VolumeMetadata> | undefined {
-  const path = `${volume.series_title}/${volume.volume_title}.cbz`;
-  const file = cloudIndex.get(path.toLowerCase());
+  const file = cloudIndex.get(archiveKey(volume.series_title, volume.volume_title));
   if (!file) return undefined;
 
   return {
