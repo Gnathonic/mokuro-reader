@@ -120,6 +120,23 @@ export function parseSeriesSection(raw: unknown): SeriesReadingStates {
 }
 
 /**
+ * `parseSeriesSection` over a raw localStorage string.
+ *
+ * The parse is guarded because this runs in the module body: a truncated or
+ * hand-mangled `series-data` key would otherwise throw out of the import and
+ * white-screen the app on every load, with no way back but clearing site data.
+ * Corrupt JSON is treated as "no reading state" — the same fallback the volume
+ * half uses (`parseVolumesFromJson` in `volume-data.ts`).
+ */
+export function parseSeriesStatesFromJson(storedData: string): SeriesReadingStates {
+  try {
+    return parseSeriesSection(JSON.parse(storedData));
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Detect series keys whose RAW `lastUpdated` needed clamping — more than
  * `FUTURE_TOLERANCE_MS` ahead of `now` — computed on the pre-parse raw
  * section. `parseSeriesSection` clamps by the time a caller sees the parsed
@@ -171,7 +188,7 @@ export function mergeSeriesSections(
 }
 
 const initial: SeriesReadingStates = browser
-  ? parseSeriesSection(JSON.parse(window.localStorage.getItem(SERIES_DATA_STORAGE_KEY) || '{}'))
+  ? parseSeriesStatesFromJson(window.localStorage.getItem(SERIES_DATA_STORAGE_KEY) || '{}')
   : {};
 
 export const seriesReadingState = writable<SeriesReadingStates>(initial);
