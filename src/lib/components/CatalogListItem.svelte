@@ -11,7 +11,6 @@
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
-  import DownloadBadge from './DownloadBadge.svelte';
   import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
@@ -176,9 +175,9 @@
                 Cover
               </div>
             {/if}
-            {#if seriesNeedsDownload && !isDownloading}
-              <DownloadBadge size="sm" class="right-0.5 bottom-0.5" label="Not on this device" />
-            {/if}
+            <!-- No corner badge here either (see CatalogItem): an absent series is marked
+                 the way cloud series have always been marked in this list — the dimming,
+                 the "In <provider>" chip, and the download glyph where no cover exists. -->
           </div>
         </div>
       </a>

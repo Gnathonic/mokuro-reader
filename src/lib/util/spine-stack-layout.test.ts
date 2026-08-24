@@ -218,13 +218,28 @@ describe('spineBadgePlacements', () => {
     ).toEqual([]);
   });
 
-  it('puts a badge in the bottom-right corner of each marked spine', () => {
-    // lefts are 0/30/60; the stack is right-aligned so its last spine ends at 160 —
-    // alignShift = 160 - (60 + 100) = 0. Badge sits 16 + 2 px in from the far corner.
+  it('centres a badge along the visible strip of each marked spine', () => {
+    // lefts are 0/30/60 and every spine is 100 wide, so each one is overlapped by the next
+    // except the last: spine 1 shows [100, 130) and spine 2 shows [130, 160). A badge is
+    // centred in the strip that is actually on screen, sitting on the bottom edge.
     expect(spineBadgePlacements(threeSpines([1, 2]))).toEqual([
-      { index: 1, left: 30 + 100 - 18, top: 200 - 18 },
-      { index: 2, left: 60 + 100 - 18, top: 200 - 18 }
+      { index: 1, left: (100 + 130) / 2 - 10, top: 200 - 22 },
+      { index: 2, left: (130 + 160) / 2 - 10, top: 200 - 22 }
     ]);
+  });
+
+  it('centres on the whole spine when nothing overlaps it', () => {
+    expect(
+      spineBadgePlacements({
+        volumes: [0],
+        isMarked: () => true,
+        drawnSize: () => ({ width: 100, height: 200 }),
+        horizontalStepPx: 30,
+        verticalStepPx: 0,
+        topOffsetPx: 0,
+        canvasWidth: 100
+      })
+    ).toEqual([{ index: 0, left: 50 - 10, top: 200 - 22 }]);
   });
 
   it('marks nothing for a volume the canvas paints nothing for', () => {
@@ -234,7 +249,9 @@ describe('spineBadgePlacements', () => {
 
   it('follows the right-alignment CompositeCanvas draws with', () => {
     // The last spine is half-width, so the whole stack shifts right by 50px to keep its
-    // right edge on the canvas — every badge moves with it.
+    // right edge on the canvas — every badge moves with it. Spine 0 is the top one and
+    // shows in full: [50, 150]. Spine 2 ends at 160 while spine 1 (in front of it) reaches
+    // 180, so nothing of it shows and its badge collapses onto its right edge.
     const sizes = [
       { width: 100, height: 200 },
       { width: 100, height: 200 },
@@ -242,8 +259,8 @@ describe('spineBadgePlacements', () => {
     ];
     const placements = spineBadgePlacements(threeSpines([0, 2], sizes));
     expect(placements).toEqual([
-      { index: 0, left: 0 + 50 + 100 - 18, top: 182 },
-      { index: 2, left: 60 + 50 + 50 - 18, top: 182 }
+      { index: 0, left: (50 + 150) / 2 - 10, top: 178 },
+      { index: 2, left: 160 - 10, top: 178 }
     ]);
   });
 
@@ -252,8 +269,9 @@ describe('spineBadgePlacements', () => {
       ...threeSpines([2]),
       volumeOffsetsByIndex: new Map([[0, 10]])
     });
-    // Volume 0's +10 pushes 1 and 2; the right-align then takes it back off the shift.
-    expect(placements[0].left).toBe(60 + 10 + (160 - (60 + 10 + 100)) + 100 - 18);
+    // Volume 0's +10 pushes 1 and 2; the right-align then takes it back off the shift, so
+    // the last spine still ends at the canvas edge and shows [130, 160].
+    expect(placements[0].left).toBe((130 + 160) / 2 - 10);
   });
 
   it('follows the vertical step and the stack top inset', () => {
@@ -262,11 +280,12 @@ describe('spineBadgePlacements', () => {
       verticalStepPx: 12,
       topOffsetPx: 5
     });
-    expect(placements[0].top).toBe(5 + 2 * 12 + 200 - 18);
+    expect(placements[0].top).toBe(5 + 2 * 12 + 200 - 22);
   });
 
   it('takes the badge size and inset from the caller', () => {
     const placements = spineBadgePlacements({ ...threeSpines([0]), badgePx: 24, insetPx: 0 });
-    expect(placements[0]).toEqual({ index: 0, left: 100 - 24, top: 200 - 24 });
+    // Spine 0 is on top and shows in full, so its badge centres on 0-100.
+    expect(placements[0]).toEqual({ index: 0, left: 50 - 12, top: 200 - 24 });
   });
 });

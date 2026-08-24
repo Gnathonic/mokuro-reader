@@ -62,35 +62,38 @@ function badges(container: HTMLElement) {
 describe('CatalogListItem marks a series whose volumes are all absent', () => {
   afterEach(() => cleanup());
 
-  it('draws no badge while any volume is installed', () => {
+  /** The chip that has always said "this series lives in the cloud". */
+  function chipOf(container: HTMLElement): string | null {
+    return (
+      [...container.querySelectorAll('span')]
+        .map((el) => el.textContent?.trim() ?? '')
+        .find((text) => text.startsWith('In ')) ?? null
+    );
+  }
+
+  it('leaves a series with something to read unmarked', () => {
     const { container } = render(CatalogListItem, {
       props: { volumes: [volume(), volume({ volume_uuid: 'uuid-2', metadata_only: true })] }
     });
+    expect(chipOf(container)).toBeNull();
     expect(badges(container)).toHaveLength(0);
   });
 
-  it('draws the badge when every volume is metadata-only', () => {
+  it('marks a metadata-only series the way cloud rows have always been marked', () => {
     const { container } = render(CatalogListItem, {
-      props: { volumes: [volume({ metadata_only: true })] }
+      props: { volumes: [volume({ metadata_only: true })], providerName: 'Drive' }
     });
-    expect(badges(container)).toHaveLength(1);
-    expect((badges(container)[0] as HTMLElement).className).toContain('pointer-events-none');
+    // The chip and the dimming, no corner badge: the row's established design language.
+    expect(chipOf(container)).toBe('In Drive');
+    expect(badges(container)).toHaveLength(0);
   });
 
-  it('names the mark for screen readers', () => {
+  it('marks a cloud-only (placeholder) series identically', () => {
     const { container } = render(CatalogListItem, {
-      props: { volumes: [volume({ metadata_only: true })] }
+      props: { volumes: [volume({ isPlaceholder: true })], providerName: 'Drive' }
     });
-    const badge = badges(container)[0] as HTMLElement;
-    expect(badge.querySelector('.sr-only')?.textContent).toBe('Not on this device');
-    expect(badge.getAttribute('title')).toBeNull();
-  });
-
-  it('draws the badge for a cloud-only (placeholder) series', () => {
-    const { container } = render(CatalogListItem, {
-      props: { volumes: [volume({ isPlaceholder: true })] }
-    });
-    expect(badges(container)).toHaveLength(1);
+    expect(chipOf(container)).toBe('In Drive');
+    expect(badges(container)).toHaveLength(0);
   });
 });
 
@@ -118,6 +121,7 @@ describe('CatalogListItem gives an all-absent series the placeholder identity', 
       mutedTitle: title?.className.includes('text-gray-400') ?? false,
       greenTitle: title?.className.includes('text-green-400') ?? false,
       chip: chip ?? null,
+      // No corner badge on an absent row: the chip and the dimming are the mark.
       badges: row.querySelectorAll('[data-testid="download-badge"]').length
     };
   }
@@ -140,7 +144,7 @@ describe('CatalogListItem gives an all-absent series the placeholder identity', 
       // A series with nothing here is not a series you finished.
       greenTitle: false,
       chip: 'In Drive',
-      badges: 1
+      badges: 0
     });
   });
 
@@ -189,23 +193,27 @@ describe('CatalogListItem follows the download queue', () => {
     return container.querySelectorAll('.animate-spin');
   }
 
-  it('shows the spinner when this series starts downloading, and drops the badge', async () => {
+  /** The download glyph a cloud row shows where a cover would be. */
+  function downloadGlyphs(container: HTMLElement) {
+    return container.querySelectorAll('svg');
+  }
+
+  it('shows the spinner when this series starts downloading', async () => {
     const { container } = render(CatalogListItem, {
       props: { volumes: [volume({ isPlaceholder: true })] }
     });
     expect(spinners(container)).toHaveLength(0);
-    expect(badges(container)).toHaveLength(1);
+    expect(downloadGlyphs(container)).toHaveLength(1);
 
     emitQueue([{ seriesTitle: 'One Piece' }], { hasQueued: false, hasDownloading: true });
     await tick();
 
     expect(spinners(container)).toHaveLength(1);
-    expect(badges(container)).toHaveLength(0);
   });
 
   it('clears the spinner when the download leaves the queue', async () => {
     const { container } = render(CatalogListItem, {
-      props: { volumes: [volume({ metadata_only: true })] }
+      props: { volumes: [volume({ isPlaceholder: true })] }
     });
 
     emitQueue([{ seriesTitle: 'One Piece' }], { hasQueued: true, hasDownloading: false });
@@ -215,6 +223,6 @@ describe('CatalogListItem follows the download queue', () => {
     emitQueue([], { hasQueued: false, hasDownloading: false });
     await tick();
     expect(spinners(container)).toHaveLength(0);
-    expect(badges(container)).toHaveLength(1);
+    expect(downloadGlyphs(container)).toHaveLength(1);
   });
 });

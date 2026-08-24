@@ -73,6 +73,9 @@ export function hitTestStack(
   return null;
 }
 
+/** Rendered size of a spine mark, in px — the `spine` DownloadBadge (h-5 w-5). */
+export const SPINE_BADGE_PX = 20;
+
 export interface SpineBadgeInput<T> {
   /** The stack, in draw order (index 0 on top), exactly as handed to CompositeCanvas. */
   volumes: T[];
@@ -92,9 +95,9 @@ export interface SpineBadgeInput<T> {
   canvasWidth: number;
   /** Per-index nudges in px; cascading, as everywhere else. */
   volumeOffsetsByIndex?: Map<number, number>;
-  /** Size of the badge box in px (default 16 — the `sm` DownloadBadge). */
+  /** Size of the badge box in px (default `SPINE_BADGE_PX`). */
   badgePx?: number;
-  /** Inset from the spine's bottom-right corner (default 2). */
+  /** Inset from the spine's bottom edge (default 2). */
   insetPx?: number;
 }
 
@@ -113,6 +116,11 @@ export interface SpineBadgePlacement {
  * (`computeStackLayout`), then its right-alignment of the last spine to `canvasWidth`, then
  * the vertical step. The badges are overlays; nothing here feeds back into the geometry, so
  * a marked stack measures exactly like an unmarked one.
+ *
+ * Horizontally each badge is CENTRED on the strip of its spine that is actually visible.
+ * Spines overlap — index 0 is painted last and covers the one behind it — so the strip is
+ * bounded on the left by the previous spine's right edge, and a badge centred on the full
+ * width would sit under its neighbour on every spine but the front one.
  */
 export function spineBadgePlacements<T>({
   volumes,
@@ -123,7 +131,7 @@ export function spineBadgePlacements<T>({
   topOffsetPx,
   canvasWidth,
   volumeOffsetsByIndex,
-  badgePx = 16,
+  badgePx = SPINE_BADGE_PX,
   insetPx = 2
 }: SpineBadgeInput<T>): SpineBadgePlacement[] {
   const placements: SpineBadgePlacement[] = [];
@@ -147,9 +155,17 @@ export function spineBadgePlacements<T>({
     if (!isMarked(volume, i)) continue;
     const size = drawnSize(volume, i);
     if (!size) continue;
+
+    const left = (lefts[i] ?? 0) + alignShift;
+    const right = left + size.width;
+    // Whatever the spine in front leaves showing (nothing is in front of index 0).
+    const previous = i > 0 ? drawnSize(volumes[i - 1], i - 1) : null;
+    const coveredTo = previous ? (lefts[i - 1] ?? 0) + alignShift + previous.width : left;
+    const visibleLeft = Math.min(Math.max(left, coveredTo), right);
+
     placements.push({
       index: i,
-      left: (lefts[i] ?? 0) + alignShift + size.width - inset,
+      left: (visibleLeft + right) / 2 - badgePx / 2,
       top: topOffsetPx + i * verticalStepPx + size.height - inset
     });
   }
