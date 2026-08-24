@@ -3,7 +3,6 @@
   import { catalog } from '$lib/catalog';
   import { Button, Listgroup, Search } from 'flowbite-svelte';
   import CatalogItem from './CatalogItem.svelte';
-  import CatalogNameCard from './CatalogNameCard.svelte';
   import Loader from './Loader.svelte';
   import {
     GridOutline,
@@ -240,7 +239,6 @@
   let sections = $derived(partitionCatalogSeries(sortedCatalog, $notOnDeviceDisplay));
   let localSeries = $derived(sections.localSeries);
   let placeholderSeries = $derived(sections.cloudSeries);
-  let nameOnlySeries = $derived(sections.nameOnlySeries);
 
   // Everything "Download all" fetches: every volume in the LIBRARY that is not on this
   // device and has a cloud file to pull from — cloud-only placeholders and metadata-only
@@ -399,32 +397,6 @@
               <Listgroup active class="w-full">
                 {#each placeholderSeries as { title, displayTitle, volumes } (title)}
                   <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
-                {/each}
-              </Listgroup>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Catalog-only series (names from catalog.json) -->
-      {#if nameOnlySeries.length > 0}
-        <div class="mt-8">
-          <div class="mb-4 flex items-center justify-between px-4">
-            <h4 class="text-lg font-semibold text-gray-400">
-              In {providerDisplayName} ({nameOnlySeries.length} series)
-            </h4>
-          </div>
-          <div
-            class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
-          >
-            {#if $miscSettings.galleryLayout === 'grid'}
-              {#each nameOnlySeries as { title, displayTitle } (title)}
-                <CatalogNameCard {title} {displayTitle} variant="grid" />
-              {/each}
-            {:else}
-              <Listgroup active class="w-full">
-                {#each nameOnlySeries as { title, displayTitle } (title)}
-                  <CatalogNameCard {title} {displayTitle} variant="list" />
                 {/each}
               </Listgroup>
             {/if}

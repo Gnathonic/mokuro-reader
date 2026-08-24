@@ -217,7 +217,7 @@ collected into their own trailing section. Display only: it never touches the
 rows above, downloads nothing, and every volume keeps its progress and actions
 either way.
 
-**Catalog card shortcuts** (installed/materialized series cards — name-only stub cards attach no key listener): hovering a card and pressing `E` opens the series
+**Catalog card shortcuts**: hovering a card and pressing `E` opens the series
 editor (`series-editor-shortcut.ts`); hovering and pressing `Delete` raises the
 series removal dialog (`delete-shortcut.ts`). Both are document-level `keydown`
 listeners gated on hover + no modal open + focus not on a typing target.
@@ -345,15 +345,21 @@ Rules:
   same keys, same meaning, same facts stamp. No counts, no covers, no volume
   lists: those live in `series.json` and arrive when the series is opened. A
   series with no facts still gets an entry carrying just `series_title` and
-  `FACTLESS_UPDATED_AT`, so the catalog can list every folder by name.
+  `FACTLESS_UPDATED_AT`, so the cached table stays complete for the
+  size/mtime staleness check.
 - **Load schedule.** Catalog open / provider connect → fetch `catalog.json` when
   its size/mtime changed (`catalog-index-sync.ts`), cache the entries in
   `catalog_index`, apply each entry's facts through `upsertFromSeriesFile` (so
   the factless rules apply unchanged). Series open → refresh that ONE
   `series.json` and materialize its volumes (`series-open.ts`).
-- **Name-only cards.** A series in `catalog_index` with nothing local yet renders
-  as a name-only catalog card, searchable through the same `seriesSearchTerms`.
-  Opening it runs the series-open path.
+- **Search enrichment, not cards.** `catalog.json` never mints a catalog card —
+  a stale file would otherwise produce dead-end "Open to load volumes" cards
+  for folders that no longer exist. Its facts merge into `series_metadata`
+  the same way regardless: a series that already has rows or a cloud listing
+  becomes searchable by every synonym/alt title/tag the file carries (same
+  `seriesSearchTerms` as any other series), while a catalog-only entry with
+  nothing local at all gets a `series_metadata` record but no card until it
+  becomes real.
 - **Materialization.** Series open promotes each index entry into a real
   `volumes` row in the metadata-only state (real uuid, counts, `mokuro_version`,
   `spine_width`), so progress attaches and stats count before anything is

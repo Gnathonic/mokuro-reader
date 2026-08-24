@@ -1,9 +1,7 @@
 import type { VolumeMetadata } from '$lib/types';
 import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
-import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { resolveDisplayTitle, seriesSearchTerms } from '$lib/metadata/display-title';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { sortVolumes } from './sort-volumes';
 import { isVolumeInstalled, needsDownload } from './volume-state';
 import type { NotOnDeviceDisplay } from '$lib/settings/settings';
@@ -17,12 +15,6 @@ export interface Series {
   searchTerms: string[];
   series_uuid: string;
   volumes: VolumeMetadata[];
-  /**
-   * The series exists only in the root `catalog.json` — this device knows its
-   * name and its facts and nothing else. Opening it fetches its `series.json`
-   * and materializes its volumes, at which point it becomes a normal series.
-   */
-  nameOnly?: true;
 }
 
 function sortByDisplayTitle(a: Series, b: Series) {
@@ -96,61 +88,15 @@ export function deriveSeriesFromVolumes(
   return titles;
 }
 
-/**
- * Series that exist in the root catalog but have nothing local yet — no rows and
- * no placeholders — as name-only cards.
- *
- * Deliberately volume-free: the whole point of `catalog.json` is that the
- * catalog can be browsed and searched on a 1k-series backend without fetching
- * anything per series. Display titles and search terms are computed HERE, once
- * per recompute, exactly like `deriveSeriesFromVolumes` — never in per-card
- * `$derived` (see CLAUDE.md "Svelte 5 Reactive Performance").
- *
- * `knownKeys` is the set of normalized series keys the volume-backed catalog
- * already covers; a series in both is NOT name-only, so the real card wins.
- */
-export function deriveNameOnlySeries(
-  rows: CatalogIndexRecord[],
-  knownKeys: Set<string>,
-  metaMap: Map<string, SeriesMetadata> | undefined,
-  pref: DisplayTitleLanguage = 'imported'
-): Series[] {
-  const out: Series[] = [];
-  for (const row of rows) {
-    if (knownKeys.has(row.series_key)) continue;
-
-    const { displayTitle, searchTerms } = resolveCardTitles(
-      row.series_title,
-      metaMap?.get(row.series_key),
-      pref
-    );
-
-    out.push({
-      title: row.series_title,
-      displayTitle,
-      searchTerms,
-      // Deterministic from the folder name, like a placeholder's: the real uuid
-      // arrives with the volumes when the series is opened.
-      series_uuid: generateDeterministicUUID(row.series_title),
-      volumes: [],
-      nameOnly: true
-    });
-  }
-  out.sort(sortByDisplayTitle);
-  return out;
-}
-
 export interface CatalogSections {
   /** The library proper: series with something to read on this device. */
   localSeries: Series[];
   /** The "Available in <provider>" region: series with nothing readable here. */
   cloudSeries: Series[];
-  /** Names from the root catalog.json, with nothing local at all. */
-  nameOnlySeries: Series[];
 }
 
 /**
- * Split the catalog into the three regions the gallery draws.
+ * Split the catalog into the two regions the gallery draws.
  *
  * `mode` only decides where a series with NO pages on this device goes: mixed leaves it
  * in the library (where its covers and read history have always been), cloud-section
@@ -164,15 +110,9 @@ export function partitionCatalogSeries(
   series: Series[],
   mode: NotOnDeviceDisplay
 ): CatalogSections {
-  const sections: CatalogSections = { localSeries: [], cloudSeries: [], nameOnlySeries: [] };
+  const sections: CatalogSections = { localSeries: [], cloudSeries: [] };
 
   for (const entry of series) {
-    // Split out FIRST: with no volumes at all a name-only series would satisfy every
-    // "all absent" test below and reach a card that reads volumes[0].
-    if (entry.nameOnly) {
-      sections.nameOnlySeries.push(entry);
-      continue;
-    }
     if (entry.volumes.length === 0) continue;
 
     const allAbsent = entry.volumes.every(needsDownload);

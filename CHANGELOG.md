@@ -12,7 +12,7 @@
 - Restart series: archive a finished read; reader offers it on re-open
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
 - Series editor: spine shelf with persistent series/volume offsets
-- Browse a cloud library's whole series list before downloading
+- Search matches a cloud library's series by AniList titles and synonyms before you download anything
 - Opening a series installs its volume list, stats and covers
 - Not-on-device volumes show a download badge and file size
 - Hover a series card and press Delete to remove it

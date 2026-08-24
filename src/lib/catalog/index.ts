@@ -2,12 +2,11 @@ import { db } from '$lib/catalog/db';
 import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
-import { deriveNameOnlySeries, deriveSeriesFromVolumes } from '$lib/catalog/catalog';
+import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
-import { activeProviderType } from '$lib/util/sync/provider-manager';
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
@@ -16,7 +15,6 @@ import {
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { catalogIndexMap } from '$lib/metadata/catalog-index';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
@@ -173,48 +171,22 @@ export const volumesWithPlaceholders = derived(
 // emits a new object on every settings write (per-wheel-tick `pagedGap` included), which
 // would re-group, re-resolve and re-sort the whole library each time.
 export const catalog = derived(
-  [
-    volumesWithPlaceholders,
-    seriesMetadataMap,
-    preferredTitleLanguage,
-    catalogIndexMap,
-    activeProviderType
-  ],
-  ([
-    $volumesWithPlaceholders,
-    $seriesMetadataMap,
-    $preferredTitleLanguage,
-    $catalogIndexMap,
-    $activeProviderType
-  ]) => {
+  [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage],
+  ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage]) => {
     // Return null while loading (before first data emission)
     if ($volumesWithPlaceholders === undefined) {
       return null;
     }
-    const withVolumes = deriveSeriesFromVolumes(
+    // The root catalog.json's facts merge into `seriesMetadataMap` (see
+    // catalog-index-sync.ts) for search/mapping enrichment of series that
+    // exist here or in the cloud listing — it never mints a card of its own
+    // (a stale file would otherwise produce dead-end cards for deleted
+    // folders).
+    return deriveSeriesFromVolumes(
       Object.values($volumesWithPlaceholders),
       $seriesMetadataMap,
       $preferredTitleLanguage
     );
-    if ($catalogIndexMap.size === 0 || !$activeProviderType) return withVolumes;
-
-    // Rows are cached PER PROVIDER and deliberately survive a switch, so
-    // reconnecting an account does not re-download its whole catalog. But only
-    // one provider is ever connected: another account's rows would list series
-    // this device cannot fetch, under the connected provider's heading. Show
-    // only the active provider's names.
-    const rows = [...$catalogIndexMap.values()].filter(
-      (row) => row.source.provider === $activeProviderType
-    );
-    if (rows.length === 0) return withVolumes;
-
-    // Catalog-only series: known by name from the root catalog.json, with
-    // nothing local yet. Opening one fetches its series.json (see series-open.ts).
-    const knownKeys = new Set(withVolumes.map((series) => normalizeSeriesKey(series.title)));
-    return [
-      ...withVolumes,
-      ...deriveNameOnlySeries(rows, knownKeys, $seriesMetadataMap, $preferredTitleLanguage)
-    ];
   }
 );
 

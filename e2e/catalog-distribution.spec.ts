@@ -201,8 +201,8 @@ const opfsRead = (page: Page, relative: string) =>
 
 /**
  * Connect the REAL Local Folder provider (`filesystem`) through the cloud view,
- * then wait until its listing is loaded — everything downstream (name-only
- * cards, the reconcile backfill, download queueing) is gated on the cache
+ * then wait until its listing is loaded — everything downstream (search
+ * enrichment, the reconcile backfill, download queueing) is gated on the cache
  * actually having been filled, never merely on a non-null provider.
  */
 async function connectLocalFolder(page: Page) {
@@ -249,8 +249,9 @@ async function resetDb(page: Page) {
  * The state one `catalog.json` download leaves behind: the parsed entries cached
  * in `catalog_index`, and their FACTS merged into `series_metadata` through the
  * same `upsertFromSeriesFile` the real refresh routes them through (which is
- * what makes a name-only card searchable by synonym and alternate title, and
- * what declines to create a record for a factless entry).
+ * what makes a REAL, locally-present series searchable by a synonym or
+ * alternate title delivered through catalog.json, and what declines to create
+ * a record for a factless entry).
  */
 async function seedCatalogIndex(
   page: Page,
@@ -485,12 +486,14 @@ test.describe('catalog.json', () => {
     expectCleanConsole(watch);
   });
 
-  test('cached rows for a provider that is not connected list nothing', async ({ page }) => {
-    // The rows survive a provider switch on purpose (reconnecting must not
-    // re-download a whole catalog), so the card list filters by the ACTIVE
-    // provider. With nothing connected, a cached catalog lists nothing — the
-    // rendered name-only cards are asserted in the Local Folder suite below,
-    // where a provider really is connected.
+  test('cached catalog_index rows never render as cards, connected or not', async ({ page }) => {
+    // catalog.json never mints cards (a stale file would otherwise produce
+    // dead-end "Open to load volumes" cards for deleted folders) — its facts
+    // only enrich search/mapping for series that exist locally or in a cloud
+    // listing. The rows survive a provider switch on purpose (reconnecting
+    // must not re-download a whole catalog), so they stay cached here with
+    // nothing connected; the search-enrichment path is exercised in the Local
+    // Folder suite below, where a provider really is connected.
     const watch = watchConsole(page);
     await seedCatalogIndex(page);
     await goHash(page, '#/');
@@ -590,29 +593,6 @@ test.describe('materialization', () => {
     await expect(page.getByText('Volume 1').first()).toBeVisible();
     await expect(page.getByText('Volume 2').first()).toBeVisible();
     expect(await page.getByText('Not on this device').count()).toBeGreaterThanOrEqual(2);
-
-    // The series now has volume-backed rows, so it can no longer be name-only:
-    // `deriveNameOnlySeries` skips every key the volume catalog already covers.
-    const nameOnly = await page.evaluate(async () => {
-      const { deriveNameOnlySeries, deriveSeriesFromVolumes } = await import(
-        '/src/lib/catalog/catalog.ts'
-      );
-      const { normalizeSeriesKey } = await import('/src/lib/metadata/series-key.ts');
-      const { db } = await import('/src/lib/catalog/db.ts');
-      const { listCatalogIndexes } = await import('/src/lib/metadata/catalog-index.ts');
-      const withVolumes = deriveSeriesFromVolumes(
-        await db.volumes.toArray(),
-        undefined,
-        'imported'
-      );
-      const knownKeys = new Set(
-        withVolumes.map((series: { title: string }) => normalizeSeriesKey(series.title))
-      );
-      return deriveNameOnlySeries(await listCatalogIndexes(), knownKeys, undefined, 'imported').map(
-        (series: { title: string }) => series.title
-      );
-    });
-    expect(nameOnly).toEqual(['Bare Folder']);
     expectCleanConsole(watch);
   });
 
@@ -789,74 +769,46 @@ test.describe('Local Folder provider (OPFS)', () => {
     expectCleanConsole(watch);
   });
 
-  test('a catalog-only series lists as a name-only card while a provider is connected', async ({
+  test('catalog.json enriches search for a real series without minting a card for a catalog-index-only one', async ({
     page
   }) => {
     const watch = watchConsole(page);
     await connectLocalFolder(page);
+    // A REAL, locally-installed series (matches the 'Dr Stone (HD Scan)' entry
+    // in CATALOG_JSON by title) alongside a catalog-only entry with nothing
+    // local behind it at all ('Bare Folder').
+    await seedVolumes(page, [{ uuid: 'real-1', series: 'Dr Stone (HD Scan)', title: 'Volume 1' }]);
     await seedCatalogIndex(page, { provider: 'filesystem' });
 
     await goHash(page, '#/');
-    await expect(page.getByText('Dr Stone (HD Scan)')).toBeVisible();
-    await expect(page.getByText('Bare Folder')).toBeVisible();
-    await expect(page.getByText('Open to load volumes')).toHaveCount(2);
+    // (a) No stub card for the catalog-index-only entry: a stale catalog.json
+    // listing a deleted folder must never produce a dead-end
+    // "Open to load volumes" card.
+    await expect(page.getByText('Open to load volumes')).toHaveCount(0);
+    await expect(page.getByText('Bare Folder')).toHaveCount(0);
+    // The real series still renders its normal card.
+    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
 
-    // Searchable by synonym and by an alternate-language title, not just by folder name.
+    // (b) The real series IS searchable by a synonym and an alternate-language
+    // title delivered through catalog.json — its facts still merge into
+    // series_metadata even though nothing was minted from them.
     const search = page.locator('input[type="search"]').first();
     await search.fill('doctor stone');
     await page.waitForTimeout(400);
-    await expect(page.getByText('Dr Stone (HD Scan)')).toBeVisible();
-    await expect(page.getByText('Bare Folder')).toHaveCount(0);
+    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
     await search.fill('Dr.STONE');
     await page.waitForTimeout(400);
-    await expect(page.getByText('Dr Stone (HD Scan)')).toBeVisible();
+    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
+
+    // A query that could only ever match the catalog-only, no-local-presence
+    // entry finds nothing — there was never a card to search.
+    await search.fill('Bare Folder');
+    await page.waitForTimeout(400);
+    await expect(page.getByText('Dr Stone (HD Scan)')).toHaveCount(0);
+    await expect(page.getByText('Bare Folder')).toHaveCount(0);
+
     await search.fill('');
     await page.waitForTimeout(300);
-
-    // Opening one materializes it: the card stops being name-only.
-    await seedOpfs(page, [
-      { path: 'Dr Stone (HD Scan)/Volume 1.cbz', bytes: 3000 },
-      {
-        path: 'Dr Stone (HD Scan)/series.json',
-        text: JSON.stringify({
-          version: 2,
-          series_title: 'Dr Stone (HD Scan)',
-          external_ids: { anilist: 98416 },
-          titles: { native: 'Dr.STONE' },
-          synonyms: [],
-          updated_at: '2026-08-18T19:36:24.324Z',
-          volumes: [
-            {
-              volume_uuid: 'drstone-v1',
-              volume_title: 'Volume 1',
-              page_count: 212,
-              character_count: 7300,
-              mokuro_version: '0.4.11',
-              archive_size: 55_000_000
-            }
-          ]
-        })
-      }
-    ]);
-    await page.evaluate(async () => {
-      const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
-      await unifiedCloudManager.fetchAllCloudVolumes();
-    });
-    await goHash(page, seriesHash('Dr Stone (HD Scan)'));
-    await expect(page.getByText('Volume 1').first()).toBeVisible();
-
-    const row = await page.evaluate(async () => {
-      const { db } = await import('/src/lib/catalog/db.ts');
-      return db.volumes.get('drstone-v1');
-    });
-    expect(row).toMatchObject({
-      series_title: 'Dr Stone (HD Scan)',
-      volume_title: 'Volume 1',
-      page_count: 212,
-      character_count: 7300,
-      metadata_only: true,
-      archive_size: 55_000_000
-    });
     expectCleanConsole(watch);
   });
 
