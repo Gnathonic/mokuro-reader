@@ -44,8 +44,6 @@ function sortKeysDeep(value: unknown): unknown {
 export interface SyncOptions {
   /** If true, suppress snackbar notifications */
   silent?: boolean;
-  /** If true, sync profiles in addition to volume data */
-  syncProfiles?: boolean;
 }
 
 export interface ProviderSyncResult {
@@ -91,8 +89,9 @@ export interface CloudVolumeDataFile {
 /**
  * Unified Sync Service
  *
- * Syncs read progress and profiles across all authenticated cloud providers.
- * Works with the SyncProvider interface, making it provider-agnostic.
+ * Syncs read progress, series reading state and settings profiles across all
+ * authenticated cloud providers. Works with the SyncProvider interface,
+ * making it provider-agnostic.
  */
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
@@ -262,14 +261,12 @@ class UnifiedSyncService {
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
-      // Optionally sync profiles
-      if (options.syncProfiles) {
-        console.log('🔄 options.syncProfiles is true, calling syncProfiles...');
-        await this.syncProfiles(provider);
-        console.log('✅ syncProfiles completed');
-      } else {
-        console.log('⏭️ Skipping profile sync (options.syncProfiles is false)');
-      }
+      // Profiles get the same treatment: read → merge (newest `lastUpdated` per
+      // profile, tombstones honoured) → push. It used to be a button nobody
+      // pressed, which is how devices ended up with divergent settings.
+      console.log('🔄 Syncing profiles...');
+      await this.syncProfiles(provider);
+      console.log('✅ Profiles synced');
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -636,11 +633,11 @@ class UnifiedSyncService {
     // Step 5: Update local storage (including tombstones)
     profilesWithTrash.set(purgedProfiles);
 
-    // Step 6: Upload purged profiles if changed
-    const mergedJson = JSON.stringify(purgedProfiles);
-    const cloudJson = JSON.stringify(cloudProfiles || {});
-
-    if (mergedJson !== cloudJson) {
+    // Step 6: Upload purged profiles if changed. `stableStringify` sorts keys
+    // first, the same way the volume-data half does, so two devices whose
+    // profile maps hold identical state in different insertion orders don't
+    // re-upload the same bytes at each other forever.
+    if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
       await this.uploadProfilesFile(provider, purgedProfiles);
     }
   }

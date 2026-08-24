@@ -306,9 +306,11 @@
     console.log('🔘 Provider found:', provider.name);
     isSyncingProfiles = true;
     try {
-      // Sync profiles using smart merge logic
-      console.log('🔘 Calling unifiedSyncService.syncProvider with syncProfiles: true');
-      const result = await unifiedSyncService.syncProvider(provider, { syncProfiles: true });
+      // Sync profiles using smart merge logic — every provider sync now reads,
+      // merges and pushes profiles.json unconditionally, so this button just
+      // triggers a regular sync.
+      console.log('🔘 Calling unifiedSyncService.syncProvider');
+      const result = await unifiedSyncService.syncProvider(provider);
       if (result.success) {
         console.log('🔘 Sync completed successfully');
         showSnackbar('Profiles synced');

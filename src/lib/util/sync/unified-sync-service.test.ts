@@ -60,6 +60,7 @@ import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
 import {
+  profilesWithTrash,
   seriesReadingState,
   setSeriesReadingStates,
   updateSeriesReadingState,
@@ -495,6 +496,66 @@ describe('the series section of volume-data.json', () => {
     await svc.syncVolumeData(provider);
 
     // Nothing to say and nothing in the cloud: no upload at all.
+    expect(uploads).toEqual([]);
+  });
+});
+
+describe('profiles.json', () => {
+  it('is read, merged and pushed on every provider sync — no flag to ask for it', async () => {
+    const profilesMeta = { ...fileMeta('profiles'), path: 'profiles.json' };
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn((name: string) => (name === 'profiles.json' ? profilesMeta : null)),
+      fetch: vi.fn(async () => {})
+    });
+
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ Desktop: { lastUpdated: '2026-08-20T00:00:00.000Z', charCount: 3 } })
+      ),
+      uploadFile: vi.fn(async () => {})
+    } as unknown as SyncProvider;
+
+    const result = await unifiedSyncService.syncProvider(provider);
+
+    expect(result.success).toBe(true);
+    expect(provider.downloadFile).toHaveBeenCalledWith(profilesMeta);
+  });
+
+  it('does not re-upload profiles whose state matches but whose key order differs', async () => {
+    // Same guarantee the volume-data half already has: byte-order churn from
+    // differing insertion order across devices is not a change.
+    profilesWithTrash.set({
+      Desktop: { lastUpdated: '2026-08-20T00:00:00.000Z', charCount: 3 },
+      Mobile: { lastUpdated: '2026-08-19T00:00:00.000Z', charCount: 1 }
+    } as any);
+    const profilesMeta = { ...fileMeta('profiles'), path: 'profiles.json' };
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn((name: string) => (name === 'profiles.json' ? profilesMeta : null)),
+      fetch: vi.fn(async () => {})
+    });
+    const uploads: unknown[] = [];
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(async () =>
+        jsonBlob({
+          Mobile: { charCount: 1, lastUpdated: '2026-08-19T00:00:00.000Z' },
+          Desktop: { charCount: 3, lastUpdated: '2026-08-20T00:00:00.000Z' }
+        })
+      ),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await unifiedSyncService.syncProvider(provider);
+
     expect(uploads).toEqual([]);
   });
 });
