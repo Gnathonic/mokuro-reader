@@ -6,12 +6,12 @@
 
 - Link a series to AniList; alt titles, link-out chips, free-text tag
 - `series.json` per series: link, titles, tag and a volume index (stats for not-installed volumes)
-- `series-metadata.json` synced across devices
+- Re-read count, mute and AniList tracking now sync across devices
 - Show series titles in your preferred language (native/romaji/english)
 - Push read progress and re-reads to AniList for every linked series
 - Restart series: archive a finished read; reader offers it on re-open
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
-- Series editor: spine shelf with persistent series/volume offsets
+- Series editor: spine shelf offsets now sync across devices
 - Search matches a cloud library's series by AniList titles and synonyms before you download anything
 - Opening a series installs its volume list, stats and covers
 - Not-on-device volumes show a download badge and file size
@@ -23,6 +23,7 @@
 
 - Removing a volume from device keeps thumbnails, stats and history
 - Metadata sync failures no longer switch a server to read-only
+- Settings profiles now sync automatically; button removed
 
 ## [1.8.2] - 2026-07-09
 

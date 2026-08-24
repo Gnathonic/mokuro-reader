@@ -13,9 +13,9 @@ Fast, incremental catalog browsing on large/slow backends (bunko: 1k+ series) wi
 
 ## Files
 
-### `catalog.json` (root, next to `series-metadata.json`)
+### `catalog.json` (root)
 
-Name-related data ONLY — everything needed to map and search, nothing more. No counts, no covers, no volume lists (those live in `series.json`; we may revisit if this produces holes — see Hole patching).
+At the root of the library folder. Name-related data ONLY — everything needed to map and search, nothing more. No counts, no covers, no volume lists (those live in `series.json`; we may revisit if this produces holes — see Hole patching).
 
 ```json
 {

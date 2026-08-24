@@ -261,6 +261,7 @@ series' volumes:
   tag?: string,
   unit?: 'volumes' | 'chapters', // are the archives volumes or chapters? absent = auto-detect
   updated_at: string,            // ISO — the facts stamp (SeriesMetadata.facts_updated_at)
+  spine_offset?: number,         // % — shelf alignment, INDEX data (never a fact)
   volumes: {                     // the index
     volume_uuid: string,
     volume_title: string,
@@ -268,7 +269,8 @@ series' volumes:
     character_count: number,
     mokuro_version: string,
     spine_width?: number,
-    archive_size?: number         // bytes of the .cbz; optional, like spine_width
+    archive_size?: number,        // bytes of the .cbz; optional, like spine_width
+    offset?: number                // px — per-volume shelf alignment, INDEX data
   }[]
 }
 ```
@@ -282,16 +284,38 @@ Rules:
   `page_char_counts` (it bloated the file; a placeholder's chars read come from
   the synced `VolumeData.chars`).
 - **Never per-user state**: no progress, tracking, `title_preference`,
-  `read_count`, `reread_prompt_suppressed`, thumbnails or page/OCR data.
+  `read_count`, `reread_prompt_suppressed`, thumbnails or page/OCR data. Series
+  reading state (`read_count`, re-read mute, `tracking`) lives in
+  `volume-data.json`'s `series` section instead (`src/lib/settings/series-data.ts`
+  — same newest-`lastUpdated`-wins merge as the volume map it rides alongside).
+- **Shelf alignment is index data, not a fact.** `spine_offset` (top-level, %)
+  and each volume's `offset` (px) ride the file but never move
+  `facts_updated_at`. An explicit `0` is a real reset value and is published;
+  an absent value means "no opinion" and inherits whatever the other side
+  already published. Readers clamp both fields on parse (±50% / ±500px);
+  mokuro-bunko stores whatever it is sent verbatim (one side owns the range
+  rule).
+- **AniList display data (`format`, `status`, volume/chapter totals,
+  `cover_url`) is never stored** — not here, not anywhere. The link picker
+  shows it transiently from the search result only; the read-progress push
+  (`progress-tracker.ts`) fetches the totals fresh in the same GraphQL request
+  every time. The reader-facing "Auto" unit option only names a unit
+  (`Auto (volumes)`/`Auto (chapters)`) when a marker in the archive names
+  actually decided it; otherwise it shows plain `Auto` rather than a guess it
+  can't stand behind — the guess itself can still differ from what a push
+  resolves once real totals are in hand.
 - **Merge**: facts merge by `updated_at` (strictly newer wins,
   `upsertFromSeriesFile`); volume entries merge by `volume_uuid` (local wins),
   then entries missing from the cloud listing are pruned (`buildSeriesFile`).
-- **Written** automatically — debounced 2 s per series after a local fact edit
-  (`series-file-sync.ts`), after a series' backup uploads finish, on series
-  rename (written at the new title, old deleted) and removed with the series
-  folder. Gated on a writable connected provider and ≥1 backed-up volume;
-  read-only providers skip silently. There is no UI button. Facts arriving _from_
-  a sidecar never schedule a write (no ping-pong).
+- **Written** automatically — debounced 2 s per series after a local fact OR
+  shelf-alignment edit (`series-file-sync.ts` registers both
+  `registerFactsChangeListener` and `registerIndexChangeListener` from
+  `store.ts`, funnelling into the same per-series debounce so one patch
+  touching both costs one write), after a series' backup uploads finish, on
+  series rename (written at the new title, old deleted) and removed with the
+  series folder. Gated on a writable connected provider and ≥1 backed-up
+  volume; read-only providers skip silently. There is no UI button. Facts or
+  offsets arriving _from_ a sidecar never schedule a write (no ping-pong).
 - **Backfill.** Every cloud listing also reconciles: a folder with at least one
   `.cbz`, no `series.json`, and at least one non-placeholder local row (counts
   even if its files were removed from this device) gets a write queued the same
@@ -314,12 +338,40 @@ Rules:
 
 ### Root `catalog.json`
 
-The library's name/mapping/search data in one root file, next to
-`series-metadata.json`. It joins the same root-config allowlist as
-`volume-data.json`/`profiles.json`/`series-metadata.json` (`isRootConfigFile`
-in `syncable-file.ts`) — every provider lists, caches and syncs it the same
-way — but for writes it is one of the two best-effort compiled files, along
-with `series.json` (see Best-effort writes below).
+The library's name/mapping/search data in one root file. It joins the same
+root-config allowlist as `volume-data.json`/`profiles.json`
+(`isRootConfigFile` in `syncable-file.ts`) — every provider lists, caches and
+syncs it the same way — but for writes it is one of the two best-effort
+compiled files, along with `series.json` (see Best-effort writes below).
+
+### What syncs where
+
+| Data                                                        | File                                      | Merge key                            |
+| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------ |
+| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume      |
+| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`       |
+| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile            |
+| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp       |
+| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value |
+
+Read progress, the series section and settings profiles all sync automatically
+on every `syncProvider` call — there is no per-file opt-in and no separate
+"Sync profiles" button; `profiles.json` rides along unconditionally, the same
+way `volume-data.json` always has.
+
+`series-metadata.json` was retired on 2026-08-23 before it ever shipped. A stale
+copy in an existing cloud folder is inert junk — never listed, never read.
+
+Clock-skew hazard: a cloud stamp more than 5 minutes into the future
+(`FUTURE_TOLERANCE_MS`) is bogus — a fast-clock device's edit, or corruption.
+The series section and `profiles.json` merges clamp such a cloud stamp to
+`now` on read, but clamping alone can let the clamped value tie-or-beat a
+genuine pending local edit on the first sync after the poisoning. Both merges
+add FORFEIT-ON-BOGUS on top: detected on the _raw_, pre-clamp stamp, a bogus
+cloud entry never outranks an existing local entry for that key — the clamped
+value is only adopted when local has no entry at all. See
+`detectBogusSeriesKeys`/`mergeSeriesSections` (`series-data.ts`) and
+`isBogusCloudProfile`/`clampCloudProfileStamps` (`unified-sync-service.ts`).
 
 ```json
 {

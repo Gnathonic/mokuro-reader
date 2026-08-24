@@ -14,7 +14,7 @@
 
 Copied verbatim from the spec; every task's requirements implicitly include these.
 
-- **`catalog.json` shape** — root file, next to `series-metadata.json`:
+- **`catalog.json` shape** — root file:
   `{"version": 1, "updated_at": "<ISO>", "series": [{"series_title", "titles", "synonyms", "tag"?, "unit"?, "external_ids"?, "updated_at"}]}`.
 - **Name-related data ONLY** — "everything needed to map and search, nothing more. No counts, no covers, no volume lists (those live in `series.json`)".
 - **Entry = the FACTS subset of that series' `series.json`** — "same keys, same meaning, same facts stamp".
@@ -40,6 +40,7 @@ Copied verbatim from the spec; every task's requirements implicitly include thes
   - Always use the Dexie instance from `src/lib/catalog/db.ts`.
   - Worktree-based development; the coordinator commits — implementers commit inside the worktree only.
 - **Verification port is 5199** — port 5173 belongs to the user. Playwright runs with `E2E_PORT=5199` (and `E2E_CHROMIUM` when a browser binary is already cached).
+- **Superseded in part** — the spec's `series-metadata.json` references are superseded by its own 2026-08-23 amendment; see `docs/superpowers/plans/2026-08-23-series-metadata-retirement.md`.
 
 ## File Structure
 
