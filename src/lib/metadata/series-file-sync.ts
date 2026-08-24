@@ -39,6 +39,42 @@ export const SERIES_FILE_WRITE_DEBOUNCE_MS = 2000;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 /** series_key → the title to write with (the folder name, never derived). */
 const pendingTitles = new Map<string, string>();
+/** series_key → the options the pending write was last scheduled with. */
+const pendingOptions = new Map<string, ScheduleOptions>();
+
+interface ScheduleOptions {
+  /**
+   * This write was scheduled from inside a backup run's own upload-completion
+   * handler (`backup-queue.ts`'s `noteSeriesNeedingIndexWrite` call sites),
+   * not from a fact edit or the reconcile pass.
+   *
+   * DECISION (2026-08-23, user-directed amendment): a run-scheduled write must
+   * cost the queue nothing extra —
+   *
+   * 1. Zero network reads. The write merges on top of the CACHED
+   *    `series.json` (`resolveExistingSeriesFile`'s `skipRemoteRefresh`)
+   *    instead of re-downloading the cloud copy even when its stamp looks
+   *    stale. Multi-device entries already live in that cache from whatever
+   *    this device last merged; skipping the re-read trades perfect
+   *    freshness for a bounded staleness window (closed by the drain-time
+   *    catch-all, the next fact edit, or `reconcileMissingMetadataFiles`) —
+   *    not for data loss. Content is otherwise upload-progress-independent
+   *    (`volumes[]` builds from local installed rows), so an early write is
+   *    byte-equivalent to one fired at drain.
+   * 2. No `ensureFreshCloudListing()` call. A run primes the listing before
+   *    it starts uploading and adds every upload to the provider's file cache
+   *    via `cache.add` as it goes (see `uploadFile`); that is already the
+   *    freshest truth mid-run; a debounced write's own whole-account refetch
+   *    would just be pure waste layered on top, exactly the case the design
+   *    was written to avoid.
+   * 3. The 2 s debounce stays. It was never contention control — the
+   *    concurrency cap and the per-series serialized write chain already
+   *    make concurrent writes race-free — it is PUT-rate coalescing: ten
+   *    volumes finishing within the window still cost one or two PUTs
+   *    instead of ten.
+   */
+  duringBackupRun?: boolean;
+}
 
 /** Is there a connected provider that can actually be written to? */
 function hasWritableProvider(): boolean {
@@ -194,6 +230,8 @@ async function runWrite(seriesKey: string): Promise<void> {
   timers.delete(seriesKey);
   const seriesTitle = pendingTitles.get(seriesKey);
   pendingTitles.delete(seriesKey);
+  const options = pendingOptions.get(seriesKey);
+  pendingOptions.delete(seriesKey);
   if (!seriesTitle) return;
 
   // Taken around the WHOLE body, gates included: the volume scan costs as much
@@ -201,12 +239,27 @@ async function runWrite(seriesKey: string): Promise<void> {
   await acquireWriteSlot();
   try {
     if (!hasWritableProvider()) return;
-    // Both gates below read the listing, so refresh it first — and skip the
-    // write entirely when that fails rather than publish a file built from a
-    // view we know may be hours old.
-    if (!(await ensureFreshCloudListing())) return;
+    // Both gates below normally read the listing, so refresh it first — and
+    // skip the write entirely when that fails rather than publish a file
+    // built from a view we know may be hours old. A run-scheduled write skips
+    // this refresh on purpose (see `ScheduleOptions.duringBackupRun`): the run
+    // already primed the listing and keeps it current via `cache.add` as it
+    // uploads, so refreshing again here would be a redundant whole-account
+    // fetch mid-run.
+    if (!options?.duringBackupRun) {
+      if (!(await ensureFreshCloudListing())) return;
+    }
     if (!(await hasBackedUpVolume(seriesTitle))) return;
-    await unifiedCloudManager.writeSeriesFile(seriesTitle);
+    // Same reasoning, forwarded to the write itself: a run-scheduled write
+    // must not download the cloud copy either, even if its cached stamp looks
+    // stale (see `resolveExistingSeriesFile`'s `skipRemoteRefresh`). Called
+    // with one argument off-run — same call shape as before this option
+    // existed.
+    if (options?.duringBackupRun) {
+      await unifiedCloudManager.writeSeriesFile(seriesTitle, { skipRemoteRefresh: true });
+    } else {
+      await unifiedCloudManager.writeSeriesFile(seriesTitle);
+    }
   } catch (error) {
     // Best-effort by contract: a server that compiles series.json itself
     // rejects the write by design, and the next fact edit or backup rewrites
@@ -221,12 +274,22 @@ async function runWrite(seriesKey: string): Promise<void> {
  * Queue a `series.json` write for this series, coalescing anything already
  * queued for it. Safe to call from any edit path — the gates are evaluated when
  * the timer fires, not now.
+ *
+ * `options.duringBackupRun` is read once, HERE, at schedule time — not when
+ * the timer later fires. The two `backup-queue.ts` call sites pass
+ * `isBackupRunActive()`, captured synchronously inside the same
+ * upload-completion handler that just finished; by the time the 2 s debounce
+ * elapses the run may well have drained, so re-reading a "run active" signal
+ * at fire time would be answering the wrong question. A later call for the
+ * same series (a fact edit, another volume's completion) coalesces exactly
+ * like `pendingTitles` does — its options simply win, same as its title does.
  */
-export function scheduleSeriesFileWrite(seriesTitle: string): void {
+export function scheduleSeriesFileWrite(seriesTitle: string, options?: ScheduleOptions): void {
   const key = normalizeSeriesKey(seriesTitle);
   if (!key) return;
 
   pendingTitles.set(key, seriesTitle);
+  pendingOptions.set(key, options ?? {});
   const existing = timers.get(key);
   if (existing) clearTimeout(existing);
   timers.set(
@@ -436,6 +499,7 @@ export function initSeriesFileSync(): () => void {
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
     pendingTitles.clear();
+    pendingOptions.clear();
   };
 
   teardown = dispose;

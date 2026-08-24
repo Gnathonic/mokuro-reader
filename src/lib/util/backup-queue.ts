@@ -12,7 +12,7 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
-import { markListingFresh } from '$lib/metadata/series-file-sync';
+import { markListingFresh, scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
 
@@ -63,6 +63,22 @@ const queueStore = writable<BackupQueueItem[]>([]);
 
 // Track if this queue is currently using the shared pool
 let processingStarted = false;
+
+/**
+ * Is a backup/export run currently draining the queue?
+ *
+ * Read by the two upload-success sites below to decide how they schedule this
+ * volume's `series.json` write (see `scheduleSeriesFileWrite`'s
+ * `duringBackupRun` option in `series-file-sync.ts` for what that changes).
+ * Exposed as a function rather than the raw flag so the writer module reads
+ * an intent, not a mutable internal — and because it must be evaluated AT THE
+ * CALL SITE, synchronously, inside the same `onComplete` handler that just
+ * finished: that is the instant that is genuinely "mid-run", not whatever the
+ * flag happens to read 2 seconds later when the debounce timer fires.
+ */
+export function isBackupRunActive(): boolean {
+  return processingStarted;
+}
 
 // Queue lock: Ensures processQueue() executions wait in line instead of skipping
 // Each call waits for the previous one to finish before proceeding
@@ -303,10 +319,19 @@ function handleBackupError(item: BackupQueueItem, processId: string, errorMessag
 }
 
 /**
- * Series that got at least one volume uploaded in this run. Their
- * `<Series>/series.json` index is written ONCE at the end of the run rather
- * than per volume: the index lists every volume, so a per-volume write would
- * re-upload the whole file for each archive.
+ * Series that got at least one volume uploaded in this run, kept as the
+ * DRAIN-TIME catch-all for their `<Series>/series.json` index.
+ *
+ * The primary write now happens live: each upload-success site also calls
+ * `scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: true })`,
+ * whose 2 s debounce + serialized write chain already collapses a whole
+ * run's volumes for one series into one or two PUTs. This set exists for what
+ * that debounced write can lose a race with — a run that gets interrupted
+ * before its timer fires, or a volume removed mid-run right after its own
+ * write went out — so a run still ends with every backed-up series indexed
+ * even if its live write never landed. Redundant with an already-successful
+ * live write is fine: `writeSeriesFile` is a cheap union, not a resend of
+ * bytes nobody asked for.
  */
 const seriesNeedingIndexWrite = new Set<string>();
 
@@ -575,6 +600,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
 
             noteSeriesNeedingIndexWrite(item.seriesTitle);
+            // Debounced (2s), coalesced per series, and — mid-run —
+            // network-read-free (see `series-file-sync.ts`'s
+            // `duringBackupRun`). A run of hundreds no longer waits until
+            // drain for its first sidecar; the drain-time pass above stays as
+            // the catch-all for whatever this loses a debounce race with.
+            scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
@@ -648,6 +679,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // Same fact the cache entry above carries: the bytes the worker sent.
           await recordArchiveSize(item.volumeUuid, data.size);
           noteSeriesNeedingIndexWrite(item.seriesTitle);
+          // See the matching comment on the main-thread-upload path above.
+          scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);

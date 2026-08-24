@@ -1175,6 +1175,110 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     ]);
   });
 
+  it('with skipRemoteRefresh: true, writes from the cached copy without downloading even when the listing stamp looks stale', async () => {
+    // 2026-08-23 design amendment: the per-volume-completion write a backup
+    // run schedules must cost zero network reads. The cached series.json
+    // already carries a volume another device published in a previous full
+    // merge — that entry ("uuid-other-device") is the cache mirror the design
+    // leans on, and it survives untouched. A volume published by some OTHER
+    // device SINCE our last real fetch would not be visible without a
+    // download — a bounded staleness this option accepts on purpose.
+    const cache = loadedCache();
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => {
+        throw new Error('must not download for a skipRemoteRefresh write');
+      })
+    });
+    const remoteFile = cloudFile('One Piece/series.json', { fileId: 'sj', size: 999 });
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/Volume 3.cbz'),
+      remoteFile
+    ]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: JSON.parse(
+        seriesFileJson(
+          [{ uuid: 'uuid-other-device', title: 'Volume 3' }],
+          '2026-01-01T00:00:00.000Z'
+        )
+      ),
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 1,
+        modifiedTime: '2026-08-01T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-01T00:00:00.000Z'
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(
+      await unifiedCloudManager.writeSeriesFile('One Piece', { skipRemoteRefresh: true })
+    ).toBe('written');
+
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes.map((v: { volume_uuid: string }) => v.volume_uuid).sort()).toEqual([
+      'uuid-Volume 1',
+      'uuid-other-device'
+    ]);
+  });
+
+  it('a run-scheduled write followed by the drain-time catch-all succeeds as a cheap, still-no-network union', async () => {
+    // The two writers `series-file-sync.ts` and `backup-queue.ts`'s drain pass
+    // both target the same series in short order (the debounced write races
+    // the run, and `writeSeriesIndexesForRun` is a catch-all whether or not it
+    // won). Neither may throw, and the second should not need a download
+    // either — the first write already stamped the cache with exactly what it
+    // uploaded.
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    getSeriesIndex.mockResolvedValue(undefined);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // The live per-completion write, mid-run.
+    expect(
+      await unifiedCloudManager.writeSeriesFile('One Piece', { skipRemoteRefresh: true })
+    ).toBe('written');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+
+    // `putSeriesIndex` is mocked (it doesn't actually persist), so wire the
+    // read side to what the write just uploaded — standing in for the record
+    // the real cache would now hold.
+    const written = await uploadedSeriesFile(provider);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: written,
+      source: {
+        provider: 'webdav',
+        path: 'One Piece/series.json',
+        size: 100,
+        modifiedTime: '2026-08-17T00:00:00.000Z'
+      },
+      fetched_at: '2026-08-17T00:00:00.000Z'
+    });
+    getBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/series.json', { fileId: 'sj', size: 100 })
+    ]);
+
+    // The drain-time catch-all: full gates, no skip — but the stamp already
+    // matches what we just wrote, so it is STILL a no-download union.
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+  });
+
   it('prunes index entries for volumes that are neither in the cloud listing nor installed', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();

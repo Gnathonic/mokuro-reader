@@ -233,6 +233,41 @@ describe('series-file-sync', () => {
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
   });
 
+  it('skips the listing refresh entirely for a run-scheduled write, and tells the writer to skip its own re-read too', async () => {
+    // 2026-08-23 design amendment: a write scheduled from inside a backup run
+    // (`duringBackupRun`) must cost zero network reads. The run already
+    // primed the listing and keeps it current via its own optimistic
+    // `cache.add()` as it uploads, so this module's own whole-account refetch
+    // would be pure waste layered on top mid-run.
+    scheduleSeriesFileWrite('One Piece', { duringBackupRun: true });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece', { skipRemoteRefresh: true });
+  });
+
+  it('still refreshes the listing and re-reads normally for a write NOT scheduled from a run', async () => {
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('coalesces schedule options the same way it coalesces the title — the LAST call for a series wins', async () => {
+    // A fact edit landing in the same 2s window as a run-scheduled write for
+    // the same series should not silently keep the run's network-free
+    // options; whichever call was scheduled last describes the write that
+    // actually happens.
+    scheduleSeriesFileWrite('One Piece', { duringBackupRun: true });
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+  });
+
   it('gives up on a listing refresh that hangs, and the next flush tries again', async () => {
     fetchAllCloudVolumes.mockImplementationOnce(() => new Promise<void>(() => {}));
     scheduleSeriesFileWrite('One Piece');

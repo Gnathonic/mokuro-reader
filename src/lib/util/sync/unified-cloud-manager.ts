@@ -922,11 +922,22 @@ class UnifiedCloudManager {
    *
    * Throws when the re-read fails: writing on top of a copy we could not read
    * would silently clobber it.
+   *
+   * `skipRemoteRefresh` trades that re-read away on purpose. It exists for the
+   * per-volume-completion write a backup run schedules for every upload (see
+   * `backup-queue.ts`'s `noteSeriesNeedingIndexWrite` call sites): those fire
+   * live, mid-run, and the design deliberately keeps them GET-free — other
+   * devices' volumes already live in `cached` from whatever this device last
+   * merged, so writing from it as-is is a bounded staleness, not a data loss.
+   * The drain-time catch-all (`writeSeriesIndexesForRun`) and any non-run write
+   * (a fact edit, `reconcileMissingMetadataFiles`) still take this branch's
+   * normal path and re-read when the stamp says another device moved.
    */
   private async resolveExistingSeriesFile(
     seriesKey: string,
     seriesTitle: string,
-    providerType: ProviderType
+    providerType: ProviderType,
+    options?: { skipRemoteRefresh?: boolean }
   ): Promise<SeriesFile | undefined> {
     const cached = await getSeriesIndex(seriesKey);
     const cloudFile = this.getCloudSeriesFile(seriesTitle);
@@ -934,6 +945,7 @@ class UnifiedCloudManager {
 
     const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
     if (!indexNeedsRefresh(cached, stamp, providerType)) return cached?.file;
+    if (options?.skipRemoteRefresh) return cached?.file;
 
     const fresh = await this.readCloudSeriesFile(cloudFile);
     if (!fresh) {
@@ -1058,10 +1070,16 @@ class UnifiedCloudManager {
    * title than the one being written: during a series rename the cloud move
    * gates the local commit, so the DB still holds the old title while the file
    * must already be written under the new one.
+   *
+   * `options.skipRemoteRefresh` forwards to `resolveExistingSeriesFile` — see
+   * its doc comment. Nothing else in this method reads the network: the
+   * `cache?.isLoaded()` and `cloudVolumeTitles` gates below only read the
+   * provider's already-fetched listing cache, and `uploadFile` at the end is
+   * the write itself, not a read.
    */
   async writeSeriesFile(
     seriesTitle: string,
-    options?: { localSeriesTitle?: string }
+    options?: { localSeriesTitle?: string; skipRemoteRefresh?: boolean }
   ): Promise<'written' | 'skipped' | 'read-only'> {
     const provider = this.getActiveProvider();
     if (!provider) return 'skipped';
@@ -1103,7 +1121,9 @@ class UnifiedCloudManager {
 
     let existing: SeriesFile | undefined;
     try {
-      existing = await this.resolveExistingSeriesFile(seriesKey, seriesTitle, provider.type);
+      existing = await this.resolveExistingSeriesFile(seriesKey, seriesTitle, provider.type, {
+        skipRemoteRefresh: options?.skipRemoteRefresh
+      });
     } catch (error) {
       console.warn(`Could not read the cloud series.json for '${seriesTitle}':`, error);
       return 'skipped';
