@@ -146,15 +146,25 @@ export function catalogEntryToSeriesFile(entry: CatalogFileEntry): SeriesFile {
 /**
  * Which of the two copies of a series wins.
  *
- * Byte-for-byte the rule `buildSeriesFile` uses for facts: a cloud entry with no
- * facts says nothing, so local replaces it; a local entry WITH facts wins ties
- * (that is the same link round-tripping back); a local entry WITHOUT facts is an
- * unlink and needs a strictly newer stamp.
+ * `buildSeriesFile`'s rule for facts, adapted to the one thing a catalog entry
+ * cannot express: "this library has no facts clock at all". A record like that
+ * makes `buildSeriesFile` carry the published facts through untouched; an entry
+ * has to carry SOME stamp, so it carries `FACTLESS_UPDATED_AT`, and the epoch
+ * has to lose rather than replace. Hence:
+ *
+ * - local entry WITH facts → replaces a factless one outright, and wins ties
+ *   against facts (that is the same link round-tripping back);
+ * - local entry WITHOUT facts → needs a strictly newer stamp, whether the entry
+ *   it faces carries facts (an unlink) or not (a published unlink somebody else
+ *   already made — a factless epoch entry must not roll its stamp back to 1970,
+ *   which would put the series back below every stale link still out there).
  */
 function pickEntry(local: CatalogFileEntry, existing: CatalogFileEntry | undefined) {
   if (!existing) return local;
-  if (!hasSeriesFacts(existing)) return local;
-  if (hasSeriesFacts(local)) return local.updated_at >= existing.updated_at ? local : existing;
+  if (hasSeriesFacts(local)) {
+    if (!hasSeriesFacts(existing)) return local;
+    return local.updated_at >= existing.updated_at ? local : existing;
+  }
   return local.updated_at > existing.updated_at ? local : existing;
 }
 

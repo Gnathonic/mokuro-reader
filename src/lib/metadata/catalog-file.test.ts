@@ -182,6 +182,92 @@ describe('buildCatalogFile', () => {
     expect(built?.series[0].external_ids).toEqual({ anilist: 98416 });
   });
 
+  it('keeps the newer stamp when BOTH copies are factless', () => {
+    // Device A unlinked the series and published that: a factless entry carrying a REAL
+    // stamp. Device C is merely offline-ignorant of the series — factless at the epoch.
+    // Letting C's epoch replace A's stamp would put the entry back below every stale link
+    // still out there, and the next union would resurrect the dead one.
+    const existing: CatalogFile = {
+      version: 1,
+      updated_at: '2026-08-21T00:00:00.000Z',
+      series: [
+        {
+          series_title: 'Dr Stone (HD Scan)',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-21T00:00:00.000Z'
+        }
+      ]
+    };
+    const built = buildCatalogFile({
+      entries: [
+        {
+          series_title: 'Dr Stone (HD Scan)',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: FACTLESS_UPDATED_AT
+        }
+      ],
+      existing,
+      cloudSeriesTitles: new Set(['Dr Stone (HD Scan)'])
+    });
+    expect(built?.series[0].updated_at).toBe('2026-08-21T00:00:00.000Z');
+  });
+
+  it('still lets a factless local entry replace an OLDER factless one', () => {
+    const existing: CatalogFile = {
+      version: 1,
+      updated_at: '2026-08-10T00:00:00.000Z',
+      series: [
+        {
+          series_title: 'Dr Stone (HD Scan)',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-10T00:00:00.000Z'
+        }
+      ]
+    };
+    const built = buildCatalogFile({
+      entries: [
+        {
+          series_title: 'Dr Stone (HD Scan)',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-20T00:00:00.000Z'
+        }
+      ],
+      existing,
+      cloudSeriesTitles: new Set(['Dr Stone (HD Scan)'])
+    });
+    expect(built?.series[0].updated_at).toBe('2026-08-20T00:00:00.000Z');
+  });
+
+  it('lets local FACTS replace a factless entry however it is stamped', () => {
+    const existing: CatalogFile = {
+      version: 1,
+      updated_at: '2026-08-21T00:00:00.000Z',
+      series: [
+        {
+          series_title: 'Dr Stone (HD Scan)',
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '2026-08-21T00:00:00.000Z'
+        }
+      ]
+    };
+    const built = buildCatalogFile({
+      entries: [entry({ updated_at: '2026-08-20T00:00:00.000Z' })],
+      existing,
+      cloudSeriesTitles: new Set(['Dr Stone (HD Scan)'])
+    });
+    expect(built?.series[0].external_ids).toEqual({ anilist: 98416 });
+  });
+
   it('needs a STRICTLY newer stamp to publish an unlink', () => {
     const existing: CatalogFile = {
       version: 1,
