@@ -1317,6 +1317,73 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(file.updated_at).toBe('2026-08-23T00:00:00.000Z');
   });
 
+  it('writes under the LISTING’s folder spelling when the caller has the composed one', async () => {
+    // The reconcile pass schedules with the folder name the listing shows (NFD),
+    // but every LATER trigger — a fact edit, a per-completion schedule — carries
+    // the local composed title. The cache is keyed by the folder name exactly,
+    // so every one of those writes found no `.cbz`, returned 'skipped', and the
+    // folder's facts never moved again once its series.json existed.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    const listing = [cloudFile(`${decomposed}/Volume 1.cbz`)];
+
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    // Faithful to the provider caches: an exact `<folder>/` prefix match.
+    getBySeries.mockImplementation((series: string) =>
+      listing.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    getAllFiles.mockReturnValue(listing);
+    localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
+    getAllSeriesMetadata.mockResolvedValue({
+      [composed.toLowerCase()]: {
+        series_key: composed.toLowerCase(),
+        series_title: composed,
+        external_ids: { anilist: 4242 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-23T00:00:00.000Z',
+        facts_updated_at: '2026-08-23T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile(composed)).toBe('written');
+
+    // The path IS the folder: written under the spelling the cloud actually has,
+    // never a second folder that only differs in unicode form.
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      `${decomposed}/series.json`,
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    const file = await uploadedSeriesFile(provider);
+    expect(file.series_title).toBe(decomposed);
+    expect(file.external_ids).toEqual({ anilist: 4242 });
+    expect(file.volumes).toHaveLength(1);
+  });
+
+  it('reports the archives of a decomposed folder for a composed title', async () => {
+    // The accessor the backup gate reads. Byte-wise it answers "nothing is
+    // backed up" for a folder full of archives.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    const listing = [cloudFile(`${decomposed}/Volume 1.cbz`)];
+    getBySeries.mockImplementation((series: string) =>
+      listing.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    getAllFiles.mockReturnValue(listing);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect([...unifiedCloudManager.cloudVolumeTitlesFor(composed)]).toEqual(['Volume 1']);
+    // A series the cloud does not hold at all still reports nothing.
+    expect(unifiedCloudManager.cloudVolumeTitlesFor('Berserk').size).toBe(0);
+  });
+
   it('picks the record WITH facts when two spellings fold to one series', async () => {
     // A cloud upsert can file a record under the decomposed title while a local
     // import filed one under the composed one. Both fold to this folder, and

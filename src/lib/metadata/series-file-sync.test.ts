@@ -42,10 +42,24 @@ const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
 const cloudPaths = vi.hoisted(() => [] as string[]);
 const cloudVolumeTitlesFor = vi.hoisted(() =>
   vi.fn((seriesTitle: string) => {
+    // The manager resolves the caller's title to the folder the LISTING spells
+    // before reading it (`resolveCloudFolderTitle`, tested there): exact folder
+    // key first, else the one whose folded key matches. Mirrored here so the
+    // gate meets the same contract it meets in production.
+    const folders = new Set(
+      cloudPaths.map((path) => path.split('/')[0]).filter((folder) => !!folder)
+    );
+    const folder = folders.has(seriesTitle)
+      ? seriesTitle
+      : [...folders].find(
+          (candidate) => candidate.normalize('NFC') === seriesTitle.normalize('NFC')
+        );
+
     const titles = new Set<string>();
+    if (!folder) return titles;
     for (const path of cloudPaths) {
       const parts = path.split('/');
-      if (parts.length !== 2 || parts[0] !== seriesTitle) continue;
+      if (parts.length !== 2 || parts[0] !== folder) continue;
       if (!parts[1].toLowerCase().endsWith('.cbz')) continue;
       titles.add(parts[1].slice(0, -4));
     }
@@ -396,6 +410,26 @@ describe('series-file-sync', () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(writeSeriesFile).toHaveBeenCalledWith(series);
+  });
+
+  it('writes for a fact edit that carries the composed title of a decomposed folder', async () => {
+    // How the folder is reached AFTER the reconcile pass: a fact edit (or a
+    // per-completion schedule) names the series with the local composed title,
+    // while the cloud folder is decomposed. Dropping those writes is permanent —
+    // reconcile only revisits folders that have no series.json — so the folder's
+    // facts would never move again.
+    const composedSeries = 'ポケモン';
+    const series = composedSeries.normalize('NFD');
+    cloudPaths.length = 0;
+    backUp(series, 'Volume 1'.normalize('NFD'));
+    addVolume(composedSeries, 'Volume 1');
+
+    scheduleSeriesFileWrite(composedSeries);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Handed on with the caller's spelling: the manager resolves the folder (and
+    // writes under the listing's path) itself.
+    expect(writeSeriesFile).toHaveBeenCalledWith(composedSeries);
   });
 
   it('swallows a write failure — a background index write never breaks an edit', async () => {

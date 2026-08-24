@@ -1040,9 +1040,41 @@ class UnifiedCloudManager {
     return titles;
   }
 
-  /** Volume titles the cloud listing shows as `.cbz` archives in a series folder. */
+  /**
+   * The folder name the CLOUD spells this series with.
+   *
+   * Every cache accessor keys the folder exactly (`path.startsWith(title + '/')`),
+   * which is right — two folders that differ in case really are two folders on a
+   * case-sensitive backend — but it cannot see through unicode form. A folder
+   * that came back decomposed from the filesystem is reached by the reconcile
+   * pass (which uses the listing's own spelling) and missed by every later
+   * trigger, which carries the local composed title: the gate finds no archive,
+   * the write is skipped, and the folder's facts never move again.
+   *
+   * Exact match first, so the ordinary case costs one cache read and nothing
+   * else, and the answer is always the LISTING's spelling — the folder name is
+   * the path a write goes to, and is never derived. Unresolvable (a series the
+   * cloud does not hold) returns the title unchanged, so the gates downstream
+   * skip exactly as they did before.
+   */
+  resolveCloudFolderTitle(seriesTitle: string): string {
+    if (this.getCloudVolumesBySeries(seriesTitle).length > 0) return seriesTitle;
+
+    const key = normalizeVolumeTitleKey(seriesTitle);
+    if (!key) return seriesTitle;
+    for (const title of this.cloudSeriesTitles()) {
+      if (normalizeVolumeTitleKey(title) === key) return title;
+    }
+    return seriesTitle;
+  }
+
+  /**
+   * Volume titles the cloud listing shows as `.cbz` archives in a series folder,
+   * found by {@link resolveCloudFolderTitle} so a caller holding the local
+   * spelling of a decomposed folder still sees them.
+   */
   cloudVolumeTitlesFor(seriesTitle: string): Set<string> {
-    return this.cloudVolumeTitles(seriesTitle);
+    return this.cloudVolumeTitles(this.resolveCloudFolderTitle(seriesTitle));
   }
 
   /**
@@ -1128,6 +1160,13 @@ class UnifiedCloudManager {
    * gates the local commit, so the DB still holds the old title while the file
    * must already be written under the new one.
    *
+   * Everything CLOUD-facing here — the archive gate, the copy to merge on top
+   * of, and the upload path itself — goes through the folder name the listing
+   * actually shows (`resolveCloudFolderTitle`), because the path IS the folder:
+   * writing under the caller's spelling of a decomposed folder would create a
+   * second folder next to the real one. Everything LOCAL-facing keeps the
+   * caller's title, folded where it has to meet the cloud.
+   *
    * The only network READ this method can make is `resolveExistingSeriesFile`'s
    * re-read, and only when the listing shows a copy our cache has not seen (see
    * its doc comment). The `cache?.isLoaded()` and `cloudVolumeTitles` gates
@@ -1174,23 +1213,29 @@ class UnifiedCloudManager {
     const cache = cacheManager.getCache(provider.type);
     if (!cache?.isLoaded()) return 'skipped';
 
+    // From here on the CLOUD's spelling of the folder, and the key that goes
+    // with it: the file is written into that folder, and its cached record must
+    // be the one the listing-driven refresh reads back.
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const folderKey = normalizeSeriesKey(folderTitle) || seriesKey;
+
     // The index describes a folder of volumes: with no `.cbz` in it there is
     // nothing to index, and writing would create `<Series>/series.json` (and
     // the folder itself) for a series the cloud does not hold — a local-only
     // series, or one whose volumes have all been deleted.
-    const cloudTitles = this.cloudVolumeTitles(seriesTitle);
+    const cloudTitles = this.cloudVolumeTitles(folderTitle);
     if (cloudTitles.size === 0) return 'skipped';
 
     let existing: SeriesFile | undefined;
     try {
-      existing = await this.resolveExistingSeriesFile(seriesKey, seriesTitle, provider.type);
+      existing = await this.resolveExistingSeriesFile(folderKey, folderTitle, provider.type);
     } catch (error) {
-      console.warn(`Could not read the cloud series.json for '${seriesTitle}':`, error);
+      console.warn(`Could not read the cloud series.json for '${folderTitle}':`, error);
       return 'skipped';
     }
 
     const file = buildSeriesFile({
-      seriesTitle,
+      seriesTitle: folderTitle,
       meta,
       localVolumes,
       existing,
@@ -1205,7 +1250,7 @@ class UnifiedCloudManager {
     // vouching for it) and re-publishing costs one small upload. The catalog is
     // the opposite case — one big file every device re-downloads whenever its
     // stamp moves — which is why the skip lives there and not here.
-    const path = normalizeCloudPath(`${seriesTitle}/${SERIES_FILE_NAME}`);
+    const path = normalizeCloudPath(`${folderTitle}/${SERIES_FILE_NAME}`);
     const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
     await this.uploadFile(path, blob);
 
@@ -1215,11 +1260,11 @@ class UnifiedCloudManager {
     // differ from the entry `uploadFile` just added and make the very next
     // listing re-download our own write. Providers that later report their own
     // modifiedTime still cost at most one extra refresh.
-    const uploaded = this.getCloudSeriesFile(seriesTitle);
+    const uploaded = this.getCloudSeriesFile(folderTitle);
     const now = new Date().toISOString();
     await putSeriesIndex({
-      series_key: seriesKey,
-      series_title: seriesTitle,
+      series_key: folderKey,
+      series_title: folderTitle,
       file,
       source: {
         provider: provider.type,

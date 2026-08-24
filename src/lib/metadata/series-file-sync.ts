@@ -99,6 +99,13 @@ function hasWritableProvider(): boolean {
  * exactly the way `buildSeriesFile`'s prune matches them, so this gate and the
  * file it gates agree about which volumes the cloud is showing.
  *
+ * The FOLDER half is folded inside `cloudVolumeTitlesFor`, which resolves the
+ * title to the folder name the listing spells (see `resolveCloudFolderTitle`) —
+ * `seriesTitle` here is the listing's own spelling when the reconcile pass
+ * scheduled the write, but the local composed one for every fact edit and
+ * per-completion schedule, and both have to find the same folder or the write is
+ * dropped for good once the folder has a series.json.
+ *
  * A byte-wise match here disagrees with `reconcileMissingMetadataFiles`, which
  * folds before scheduling: the folder would be scheduled, dropped here, and
  * scheduled again on the very next listing — forever, at one volumes scan each.
