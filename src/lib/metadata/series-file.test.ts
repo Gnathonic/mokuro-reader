@@ -1019,3 +1019,61 @@ describe('spine offsets in series.json', () => {
     expect(mergeSeriesFileForCache('One Piece', arriving, cached).spine_offset).toBe(9);
   });
 });
+
+describe('the published facts stamp never moves backwards', () => {
+  const factlessFile = (updated_at: string): SeriesFile => ({
+    version: 2,
+    series_title: 'One Piece',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at,
+    volumes: []
+  });
+
+  const factlessMeta = (factsStamp: string): SeriesMetadata => ({
+    ...createEmptySeriesMetadata('One Piece', '2026-09-01T00:00:00.000Z'),
+    facts_updated_at: factsStamp
+  });
+
+  it('keeps the published stamp when neither side has facts and ours is older', () => {
+    // Belt and braces for the relay: even if a device somehow still holds the
+    // older clock, WRITING the file must not lower the stamp already published —
+    // that is what strands somebody else's unlink.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: factlessMeta('2026-01-01T00:00:00.000Z'),
+      localVolumes: [volume()],
+      existing: factlessFile('2026-02-01T00:00:00.000Z')
+    })!;
+
+    expect(file.updated_at).toBe('2026-02-01T00:00:00.000Z');
+  });
+
+  it('publishes our own factless stamp when it is the newer one', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: factlessMeta('2026-03-01T00:00:00.000Z'),
+      localVolumes: [volume()],
+      existing: factlessFile('2026-02-01T00:00:00.000Z')
+    })!;
+
+    expect(file.updated_at).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  it('does not let a stale local link lower a newer published unlink', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: {
+        ...createEmptySeriesMetadata('One Piece', '2026-09-01T00:00:00.000Z'),
+        external_ids: { anilist: 30013 },
+        facts_updated_at: '2026-01-01T00:00:00.000Z'
+      },
+      localVolumes: [volume()],
+      existing: factlessFile('2026-02-01T00:00:00.000Z')
+    })!;
+
+    expect(file.updated_at).toBe('2026-02-01T00:00:00.000Z');
+    expect(file.external_ids).toEqual({});
+  });
+});

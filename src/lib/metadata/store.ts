@@ -274,6 +274,11 @@ function offsetsToFill(
  * as a real "no opinion" claim. With the gate the record keeps no facts clock at
  * all, so `buildSeriesFile` still treats this library as having no opinion.
  *
+ * A record that DOES already carry a clock is the opposite case: it has had an
+ * opinion, so it must relay a newer factless stamp even though it has no facts
+ * to apply. Skipping that would strand an unlink behind a factless device (see
+ * `adoptFactlessStamp`).
+ *
  * That is also what makes the exchange converge: the first upsert fills the
  * offsets and returns `true`, and every later upsert of the same file fills
  * nothing, changes no facts, and returns `false` — so an importer that schedules
@@ -297,8 +302,17 @@ export async function upsertFromSeriesFile(
     // out of the file's epoch stamp.
     const applyFacts =
       stampWins && (hasSeriesFacts(file) || (!!existing && hasSeriesFacts(existing)));
+    // Neither side has facts, but this library HAS had an opinion before (it
+    // unlinked at some point) and the file's is newer: adopt the newer clock.
+    // Without this, a factless relay device strands somebody else's unlink —
+    // A unlinks at T2, B is factless at T1 so it applies nothing and keeps
+    // republishing T1, and C (linked at T1.5) compares `T1.5 < T1` → false and
+    // never learns about the unlink. A record with NO clock still mints none:
+    // it has never had an opinion, so there is nothing to relay.
+    const adoptFactlessStamp =
+      !applyFacts && localStamp !== undefined && localStamp < file.updated_at;
     const offsets = offsetsToFill(existing, file);
-    if (!applyFacts && !offsets) return false;
+    if (!applyFacts && !adoptFactlessStamp && !offsets) return false;
 
     const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
     const linked = hasAnyId(file.external_ids);
@@ -336,6 +350,7 @@ export async function upsertFromSeriesFile(
               : undefined
           }
         : {}),
+      ...(adoptFactlessStamp ? { facts_updated_at: file.updated_at } : {}),
       ...(offsets ?? {})
     });
     await db.series_metadata.put(next);

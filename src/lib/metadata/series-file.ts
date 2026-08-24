@@ -237,7 +237,12 @@ export function buildSeriesFile(args: {
   if (!local || localStamp === undefined) {
     source = existing;
   } else if (!existingHasFacts) {
-    source = local;
+    // Nothing published, or something published factless. Belt and braces for
+    // the unlink relay: `local` must not LOWER the stamp already on the file. A
+    // factless file carrying a newer stamp is somebody's deliberate unlink, and
+    // republishing our older stamp over it would strand that unlink — every
+    // device still holding the link compares stamps and would reject it.
+    source = existing === undefined || localStamp >= existing.updated_at ? local : existing;
   } else if (hasSeriesFacts(local)) {
     source = localStamp >= existing!.updated_at ? local : existing;
   } else {
@@ -408,10 +413,16 @@ export function mergeSeriesFileForCache(
   if (!base.tag) delete merged.tag;
   if (!base.unit) delete merged.unit;
   // The alignment does NOT follow the facts clock — it is index data, and index
-  // data merges by "absent = no opinion = inherit" everywhere else (the volume
-  // entries right above, `buildSeriesFile`, `upsertFromSeriesFile`). So the
+  // data merges by "absent = no opinion = inherit" everywhere else. So the
   // winner's value wins where it has one, and otherwise the loser's rides
   // through instead of being dropped on a stamp it has nothing to do with.
+  //
+  // The two LEVELS behave differently here, deliberately — do not "fix" one to
+  // match the other. A volume entry is the merge unit: the union above replaces
+  // a whole entry by uuid, so an arriving entry that lists the volume WITHOUT an
+  // offset is a positive statement ("this is the volume, it has no nudge") and
+  // clears the cached one. `spine_offset` has no such unit — the file either
+  // mentions it or does not — so its absence is silence, and silence inherits.
   const loser = base === file ? cached : file;
   if (merged.spine_offset === undefined && loser.spine_offset !== undefined) {
     merged.spine_offset = loser.spine_offset;

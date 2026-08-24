@@ -610,6 +610,65 @@ describe('series metadata store', () => {
     expect(record.facts_updated_at).toBeUndefined();
   });
 
+  it('advances an EXISTING factless clock so a relayed unlink keeps propagating', async () => {
+    // Device B unlinked at T1, so its record is factless but DOES carry a clock.
+    await replaceAllSeriesMetadata({
+      'one piece': {
+        ...createEmptySeriesMetadata('One Piece', '2026-09-01T00:00:00.000Z'),
+        facts_updated_at: '2026-01-01T00:00:00.000Z'
+      }
+    });
+
+    // Device A unlinks at T2 and publishes a factless file. B has no facts to
+    // apply, but it must still adopt the newer clock: otherwise B republishes T1
+    // and a device C that linked at T1.5 compares `T1.5 < T1` → false, so the
+    // unlink is stranded and never reaches C.
+    const applied = await upsertFromSeriesFile(
+      'One Piece',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z'
+      })
+    );
+
+    expect(applied).toBe(true);
+    expect((await getSeriesMetadataForTitle('One Piece'))?.facts_updated_at).toBe(
+      '2026-02-01T00:00:00.000Z'
+    );
+  });
+
+  it('mints no clock for a record that has never had an opinion', async () => {
+    // Created by an offsets-only sidecar: no facts, and no facts clock either.
+    await upsertFromSeriesFile('Berserk', {
+      version: 2,
+      series_title: 'Berserk',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 6,
+      volumes: []
+    });
+
+    // A factless file arrives. There is no local clock to advance, so there is
+    // nothing to relay — minting one here would invent an opinion.
+    await upsertFromSeriesFile(
+      'Berserk',
+      seriesFile({
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z'
+      })
+    );
+
+    const record = (await getSeriesMetadataForTitle('Berserk'))!;
+    expect(record.facts_updated_at).toBeUndefined();
+    expect(Object.keys(record)).not.toContain('facts_updated_at');
+  });
+
   it('converges: re-reading an offsets-only sidecar applies nothing and mints no facts clock', async () => {
     const file: SeriesFile = {
       version: 2,
