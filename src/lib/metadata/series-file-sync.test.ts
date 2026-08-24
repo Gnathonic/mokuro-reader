@@ -87,7 +87,8 @@ vi.mock('$lib/catalog/db', () => ({
       get: async (key: string) => metaRows.get(key),
       put: async (rec: { series_key: string }) => {
         metaRows.set(rec.series_key, rec);
-      }
+      },
+      toArray: async () => [...metaRows.values()]
     },
     transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
@@ -384,6 +385,39 @@ describe('series-file-sync', () => {
     cloudPaths.push('One Piece/Volume 1.mokuro');
 
     scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('writes a facts-only file for a linked series with nothing local (placeholder library)', async () => {
+    // The user browsed the cloud and linked a series they never downloaded.
+    // The folder exists up there full of archives; the link is worth
+    // publishing even though this device cannot vouch for a single volume
+    // entry — entries fill in later (downloads here, another device's backup,
+    // or a server compiling them itself).
+    volumeRows.length = 0;
+    await updateSeriesMetadata('One Piece', { external_ids: { anilist: 123 } });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('does not write a factless file for a folder this device merely sees', async () => {
+    // No local rows AND no facts: nothing to say. Without this rule every
+    // placeholder folder in the account would get an empty series.json.
+    volumeRows.length = 0;
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('facts alone never CREATE a folder: no archives in the cloud, no write', async () => {
+    volumeRows.length = 0;
+    cloudPaths.length = 0;
+    await updateSeriesMetadata('One Piece', { external_ids: { anilist: 123 } });
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(writeSeriesFile).not.toHaveBeenCalled();

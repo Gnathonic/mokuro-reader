@@ -7,9 +7,13 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { isCbzFile } from '$lib/util/sync/syncable-file';
 import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
-import { isSeriesFilePath } from './series-file';
+import { hasSeriesFacts, isSeriesFilePath } from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
-import { registerFactsChangeListener, registerIndexChangeListener } from './store';
+import {
+  getAllSeriesMetadata,
+  registerFactsChangeListener,
+  registerIndexChangeListener
+} from './store';
 
 /**
  * The automatic half of the `series.json` index: local fact edits (link,
@@ -20,9 +24,10 @@ import { registerFactsChangeListener, registerIndexChangeListener } from './stor
  * Three rules keep this from becoming a nuisance or a loop:
  *
  * - Debounced per series, so typing in the tag field writes once, not per keystroke.
- * - Gated on a *writable* connected provider and on the series actually having a
- *   backup — publishing an index for a series that exists nowhere in the cloud
- *   would create folders out of thin air.
+ * - Gated on a *writable* connected provider and on the series having either a
+ *   backup or local facts for an existing cloud folder — publishing an index
+ *   for a series that exists nowhere in the cloud would create folders out of
+ *   thin air.
  * - Driven by `registerFactsChangeListener` and `registerIndexChangeListener`,
  *   which only fire for local edits — facts, or the shelf alignment. Anything
  *   arriving FROM a sidecar (`upsertFromSeriesFile`) never schedules a write,
@@ -126,6 +131,31 @@ async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
     if (normalizeVolumeTitleKey(volume.series_title) !== key) return false;
     return cloudKeys.has(normalizeVolumeTitleKey(volume.volume_title));
   });
+}
+
+/**
+ * Facts with a folder to land in: the user linked or named a series this
+ * device holds nothing of (a placeholder library, browsed straight off the
+ * cloud). A facts-only `series.json` is worth publishing INTO AN EXISTING
+ * folder — the volume entries fill in later: a download here, another device's
+ * backup, or a server (bunko) compiling them from the archives it holds. But a
+ * folder is never CREATED for facts: a local-only series that was never backed
+ * up has no cloud seat for them yet, and a factless series has nothing to say.
+ *
+ * Matched by folded title against the whole metadata table, never by keyed
+ * lookup: `seriesTitle` may be the listing's own (possibly NFD) spelling when
+ * the reconcile pass scheduled the write, while the record was keyed off the
+ * composed local title. A byte-wise `get` would miss, the write would drop, and
+ * the reconcile pass would schedule it again on every listing — the loop
+ * `locallyKnownSeriesKeys` exists to prevent, so both use the same fold.
+ */
+async function hasPublishableFacts(seriesTitle: string): Promise<boolean> {
+  if (unifiedCloudManager.cloudVolumeTitlesFor(seriesTitle).size === 0) return false;
+  const key = normalizeVolumeTitleKey(seriesTitle);
+  const metas = await getAllSeriesMetadata();
+  return Object.values(metas).some(
+    (meta) => normalizeVolumeTitleKey(meta.series_title) === key && hasSeriesFacts(meta)
+  );
 }
 
 /**
@@ -296,7 +326,9 @@ async function performWrite(seriesKey: string): Promise<void> {
     if (!options?.duringBackupRun) {
       if (!(await ensureFreshCloudListing())) return;
     }
-    if (!(await hasBackedUpVolume(seriesTitle))) return;
+    if (!(await hasBackedUpVolume(seriesTitle)) && !(await hasPublishableFacts(seriesTitle))) {
+      return;
+    }
     // Always the plain call, run-scheduled or not: the writer's own re-read is
     // already free for a self-write (the listing stamp matches our cache) and
     // is the only thing standing between a mid-run PUT and another device's
@@ -445,12 +477,15 @@ function walkListing(files: ListedFile[]): {
  * excluding it would leave exactly those libraries without one forever.
  *
  * The point of the test is convergence, not thrift. `runWrite` will drop a
- * schedule whose series has no local row at all, so without the same test here
- * such a folder is scheduled, dropped, and scheduled again on the very next
- * listing — forever, at one full volumes scan each time. Those two classes are
- * what it excludes: a device that has never imported the series, and a
- * placeholder-only library (rows synthesised from the listing, no history, no
- * local truth to publish).
+ * schedule whose series has neither a local row nor local facts, so without the
+ * same test here such a folder is scheduled, dropped, and scheduled again on
+ * the very next listing — forever, at one full volumes scan each time. What it
+ * excludes is the series this device has nothing to say about: never imported,
+ * never linked, rows synthesised from the listing only.
+ *
+ * Facts count the same way they do in `hasPublishableFacts`: a series the user
+ * linked without downloading anything is worth a facts-only index in its
+ * (existing) folder.
  *
  * Folded with `normalizeVolumeTitleKey` rather than `normalizeSeriesKey`: the
  * folder name comes off a filesystem and can arrive decomposed (NFD) while the
@@ -462,6 +497,10 @@ async function locallyKnownSeriesKeys(): Promise<Set<string>> {
   for (const volume of volumes) {
     if (volume.isPlaceholder) continue;
     keys.add(normalizeVolumeTitleKey(volume.series_title));
+  }
+  const metas = await getAllSeriesMetadata();
+  for (const meta of Object.values(metas)) {
+    if (hasSeriesFacts(meta)) keys.add(normalizeVolumeTitleKey(meta.series_title));
   }
   return keys;
 }

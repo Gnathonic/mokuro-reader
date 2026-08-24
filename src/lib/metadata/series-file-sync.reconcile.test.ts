@@ -60,9 +60,10 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 const scheduleCatalogFileWrite = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
 
-const { volumeRows, dbScans } = vi.hoisted(() => ({
+const { volumeRows, dbScans, metaRows } = vi.hoisted(() => ({
   volumeRows: [] as Record<string, unknown>[],
-  dbScans: { count: 0 }
+  dbScans: { count: 0 },
+  metaRows: new Map<string, Record<string, unknown>>()
 }));
 vi.mock('$lib/catalog/db', () => ({
   db: {
@@ -72,7 +73,13 @@ vi.mock('$lib/catalog/db', () => ({
         return [...volumeRows];
       }
     },
-    series_metadata: { get: async () => undefined, put: async () => {} },
+    series_metadata: {
+      get: async (key: string) => metaRows.get(key),
+      put: async (rec: { series_key: string }) => {
+        metaRows.set(rec.series_key, rec);
+      },
+      toArray: async () => [...metaRows.values()]
+    },
     transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
 }));
@@ -122,6 +129,7 @@ describe('reconcileMissingMetadataFiles', () => {
       currentProviderType: 'webdav'
     });
     volumeRows.length = 0;
+    metaRows.clear();
     dbScans.count = 0;
     cloudListing.files = [];
     addVolume('One Piece', 'Volume 1');
@@ -143,6 +151,37 @@ describe('reconcileMissingMetadataFiles', () => {
     await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
 
     expect(writtenTitles()).toEqual(['One Piece']);
+  });
+
+  it('publishes a facts-only series.json for a linked series with no local rows', async () => {
+    // The user linked a cloud series they never downloaded. The folder is
+    // missing its sidecar; the facts are this device's contribution — entries
+    // fill in later. Scheduler and gate must agree (same fold, same facts
+    // test) or this folder loops schedule/drop forever.
+    volumeRows.length = 0;
+    metaRows.set('naruto', {
+      series_key: 'naruto',
+      series_title: 'Naruto',
+      external_ids: { anilist: 42 },
+      updated_at: '2026-08-24T00:00:00.000Z',
+      facts_updated_at: '2026-08-24T00:00:00.000Z'
+    });
+    cloudListing.files = [{ path: 'Naruto/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual(['Naruto']);
+  });
+
+  it('does not schedule a folder this device has no rows AND no facts for', async () => {
+    volumeRows.length = 0;
+    cloudListing.files = [{ path: 'Naruto/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual([]);
   });
 
   it('leaves a folder alone when its series.json is already in the listing', async () => {
