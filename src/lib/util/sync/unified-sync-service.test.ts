@@ -410,6 +410,51 @@ describe('the series section of volume-data.json', () => {
     }
   });
 
+  it('protects a pending local edit from a still-poisoned cloud section during the first heal', async () => {
+    // FORFEIT-ON-BOGUS regression: clamping alone sets the healed stamp to
+    // exactly this device's own `now`, which always ties-or-beats a pending
+    // local edit (a local edit is, by definition, timestamped at or before
+    // `now`). A cloud entry whose RAW stamp is bogus must forfeit to local
+    // content instead — the pending edit survives the FIRST sync, and the
+    // upload that heals the cloud copy carries the honest local content, not
+    // the stale cloud content under a fabricated "now" stamp.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      setSeriesReadingStates({
+        'one piece': { read_count: 9, lastUpdated: '2026-08-23T11:59:00.000Z' }
+      });
+      stubCache([fileMeta('only')]);
+      const uploads: Array<Record<string, any>> = [];
+      const downloadFile = vi.fn(async () =>
+        jsonBlob(
+          seriesJson({ 'one piece': { read_count: 2, lastUpdated: '2999-01-01T00:00:00.000Z' } })
+        )
+      );
+      const provider = {
+        type: 'mega',
+        downloadFile,
+        uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+          uploads.push(JSON.parse(await blob.text()));
+        })
+      } as unknown as SyncProvider;
+
+      await svc.syncVolumeData(provider);
+
+      expect(get(seriesReadingState)['one piece']).toEqual({
+        read_count: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].series['one piece']).toEqual({
+        read_count: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('writes the fold back over the surviving copy even when local already matches it', async () => {
     // Two copies; the one that survives the delete sweep holds the STALE
     // series entry. Local already equals the fold, so only a comparison
@@ -627,6 +672,79 @@ describe('profiles.json', () => {
       await svc.syncProfiles(provider);
 
       expect((get(profilesWithTrash) as any).Desktop.charCount).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('protects a pending local edit from a still-poisoned cloud profile during the first heal', async () => {
+    // FORFEIT-ON-BOGUS regression, profiles half: same race as the series
+    // section — clamping alone sets the healed stamp to exactly this
+    // device's own `now`, which always ties-or-beats a pending local edit.
+    // A bogus cloud entry must forfeit to local content when local exists;
+    // the upload that heals the cloud copy must carry the honest local
+    // content, not the stale cloud content under a fabricated stamp.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      profilesWithTrash.set({
+        Desktop: { charCount: 9, lastUpdated: '2026-08-23T11:59:00.000Z' }
+      } as any);
+      stubProfilesCache();
+      const uploads: Array<Record<string, any>> = [];
+      const provider = makeProfilesProvider(
+        async () =>
+          jsonBlob({ Desktop: { charCount: 2, lastUpdated: '2999-01-01T00:00:00.000Z' } }),
+        uploads
+      );
+
+      await svc.syncProfiles(provider);
+
+      expect((get(profilesWithTrash) as any).Desktop).toEqual({
+        charCount: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].Desktop).toEqual({
+        charCount: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forfeits a bogus deletedOn to local content too — a poisoned deletion cannot silently wipe a profile', async () => {
+    // Round 2, bullet 3: FORFEIT-ON-BOGUS must apply to `deletedOn` exactly
+    // like `lastUpdated` — a far-future tombstone is still a bogus cloud
+    // stamp, and clamping it alone would set it to this device's own `now`,
+    // which (via Math.max) would outrank the local active profile's honest,
+    // ordinary-dated edit and silently delete it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      profilesWithTrash.set({
+        Custom1: { charCount: 7, lastUpdated: '2026-08-23T11:00:00.000Z' }
+      } as any);
+      stubProfilesCache();
+      const uploads: Array<Record<string, any>> = [];
+      const provider = makeProfilesProvider(
+        async () =>
+          jsonBlob({
+            Custom1: {
+              deletedOn: '2999-01-01T00:00:00.000Z',
+              lastUpdated: '2999-01-01T00:00:00.000Z'
+            }
+          }),
+        uploads
+      );
+
+      await svc.syncProfiles(provider);
+
+      expect((get(profilesWithTrash) as any).Custom1.deletedOn).toBeUndefined();
+      expect((get(profilesWithTrash) as any).Custom1.charCount).toBe(7);
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].Custom1.deletedOn).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

@@ -1,6 +1,11 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
-import { isRecord, normalizeUpdatedAt, sanitizeTracking } from '$lib/metadata/sanitize';
+import {
+  FUTURE_TOLERANCE_MS,
+  isRecord,
+  normalizeUpdatedAt,
+  sanitizeTracking
+} from '$lib/metadata/sanitize';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import type { SeriesTracking } from '$lib/metadata/types';
 
@@ -114,15 +119,53 @@ export function parseSeriesSection(raw: unknown): SeriesReadingStates {
   return out;
 }
 
-/** Newest `lastUpdated` wins per series; a tie keeps local. */
+/**
+ * Detect series keys whose RAW `lastUpdated` needed clamping — more than
+ * `FUTURE_TOLERANCE_MS` ahead of `now` — computed on the pre-parse raw
+ * section. `parseSeriesSection` clamps by the time a caller sees the parsed
+ * result, so the poison is invisible there; this has to run on `rawSeries`.
+ *
+ * Feeds FORFEIT-ON-BOGUS in `mergeSeriesSections`: a cloud entry whose stamp
+ * needed clamping must not out-rank a pending local edit just because
+ * clamping sets its "healed" stamp to this device's own `now` — which would
+ * otherwise tie-or-beat any local edit (a local edit is, by definition,
+ * timestamped at or before `now`).
+ */
+export function detectBogusSeriesKeys(raw: unknown, now: number = Date.now()): Set<string> {
+  const bogus = new Set<string>();
+  if (!isRecord(raw)) return bogus;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!key.trim() || !isRecord(value)) continue;
+    const stamp = value.lastUpdated;
+    if (typeof stamp !== 'string') continue;
+    const parsed = Date.parse(stamp);
+    if (!Number.isNaN(parsed) && parsed > now + FUTURE_TOLERANCE_MS) bogus.add(key);
+  }
+  return bogus;
+}
+
+/**
+ * Newest `lastUpdated` wins per series; a tie keeps local.
+ *
+ * FORFEIT-ON-BOGUS: a key in `bogusKeys` (see `detectBogusSeriesKeys`) never
+ * out-ranks an existing local entry, regardless of its (already-clamped)
+ * `lastUpdated` — only adopted (healed) when local has no entry for that key
+ * at all, so there is no honest edit to protect.
+ */
 export function mergeSeriesSections(
   local: SeriesReadingStates,
-  cloud: SeriesReadingStates
+  cloud: SeriesReadingStates,
+  bogusKeys: ReadonlySet<string> = new Set()
 ): SeriesReadingStates {
   const merged: SeriesReadingStates = { ...local };
   for (const [key, cloudState] of Object.entries(cloud)) {
     const localState = merged[key];
-    if (!localState || cloudState.lastUpdated > localState.lastUpdated) merged[key] = cloudState;
+    if (!localState) {
+      merged[key] = cloudState;
+      continue;
+    }
+    if (bogusKeys.has(key)) continue;
+    if (cloudState.lastUpdated > localState.lastUpdated) merged[key] = cloudState;
   }
   return merged;
 }

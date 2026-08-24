@@ -6,6 +6,7 @@ vi.mock('$app/environment', () => ({ browser: true }));
 import {
   SERIES_SECTION_KEY,
   clearSeriesReadingState,
+  detectBogusSeriesKeys,
   mergeSeriesSections,
   moveSeriesReadingStateKey,
   parseSeriesSection,
@@ -107,6 +108,57 @@ describe('series reading state', () => {
       'one piece': { read_count: 5, lastUpdated: '2026-08-20T00:00:00.000Z' },
       berserk: { read_count: 1, lastUpdated: '2026-08-10T00:00:00.000Z' },
       vinland: { read_count: 1, lastUpdated: '2026-08-05T00:00:00.000Z' }
+    });
+  });
+
+  it('does not let a bogus cloud key out-rank an existing local entry — FORFEIT-ON-BOGUS', () => {
+    // The cloud entry here is already-clamped (as `parseSeriesSection` would
+    // hand it over), so on stamps alone it looks newer than local. `bogusKeys`
+    // is how the caller (`syncVolumeData`, which has the RAW section) tells
+    // this function the clamp is masking a poisoned stamp — local must win
+    // outright rather than by a stamp comparison the clamp already rigged.
+    const local = { 'one piece': { read_count: 9, lastUpdated: '2026-08-23T11:59:00.000Z' } };
+    const cloud = { 'one piece': { read_count: 2, lastUpdated: '2026-08-23T12:00:00.000Z' } };
+
+    expect(mergeSeriesSections(local, cloud, new Set(['one piece']))).toEqual(local);
+  });
+
+  it('still adopts a bogus cloud key (healed) when local has no entry for it', () => {
+    // No local content to protect — the clamped/healed cloud value is the
+    // only copy of this series' state, so it is adopted rather than dropped.
+    const cloud = { 'one piece': { read_count: 2, lastUpdated: '2026-08-23T12:00:00.000Z' } };
+
+    expect(mergeSeriesSections({}, cloud, new Set(['one piece']))).toEqual(cloud);
+  });
+
+  describe('detectBogusSeriesKeys', () => {
+    const now = Date.parse('2026-08-23T12:00:00.000Z');
+
+    it('flags a key whose RAW lastUpdated is more than 5 minutes ahead of now', () => {
+      const bogus = detectBogusSeriesKeys(
+        { 'one piece': { lastUpdated: '2999-01-01T00:00:00.000Z' } },
+        now
+      );
+      expect(bogus).toEqual(new Set(['one piece']));
+    });
+
+    it('does not flag an ordinary stamp or one within the 5-minute tolerance', () => {
+      const bogus = detectBogusSeriesKeys(
+        {
+          'one piece': { lastUpdated: '2026-08-20T00:00:00.000Z' },
+          berserk: { lastUpdated: new Date(now + 60_000).toISOString() }
+        },
+        now
+      );
+      expect(bogus.size).toBe(0);
+    });
+
+    it('ignores non-record input and malformed entries', () => {
+      expect(detectBogusSeriesKeys(null, now)).toEqual(new Set());
+      expect(
+        detectBogusSeriesKeys({ '': { lastUpdated: '2999-01-01T00:00:00.000Z' } }, now)
+      ).toEqual(new Set());
+      expect(detectBogusSeriesKeys({ key: 'not an object' }, now)).toEqual(new Set());
     });
   });
 

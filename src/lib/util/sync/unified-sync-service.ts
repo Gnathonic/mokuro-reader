@@ -8,6 +8,7 @@ import {
   migrateProfiles,
   parseSeriesSection,
   mergeSeriesSections,
+  detectBogusSeriesKeys,
   seriesReadingState,
   setSeriesReadingStates,
   SERIES_SECTION_KEY,
@@ -18,7 +19,7 @@ import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
-import { normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 
 /**
  * Deep-sorts object keys before `JSON.stringify` so two values that differ
@@ -517,9 +518,17 @@ class UnifiedSyncService {
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
-    // Step 3: Merge each half by its own key
+    // Step 3: Merge each half by its own key. FORFEIT-ON-BOGUS: a series key
+    // whose RAW cloud stamp needed clamping must not out-rank a pending local
+    // edit — `detectBogusSeriesKeys` reads `rawSeries` (pre-parse) because
+    // `cloud.series` has already been clamped by `parseSeriesSection` and the
+    // poison is invisible there.
     const mergedVolumes = this.mergeVolumeData(localVolumes, cloud?.volumes || {});
-    const mergedSeries = mergeSeriesSections(get(seriesReadingState), cloud?.series ?? {});
+    const mergedSeries = mergeSeriesSections(
+      get(seriesReadingState),
+      cloud?.series ?? {},
+      detectBogusSeriesKeys(cloud?.rawSeries)
+    );
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
@@ -784,17 +793,41 @@ class UnifiedSyncService {
    * differs from that raw file uploads the healed profile and the poison is
    * gone after one sync — the same mechanism `rawSeries` uses for the series
    * section.
+   *
+   * Clamping alone is not the whole fix: see `isBogusCloudProfile` and the
+   * FORFEIT-ON-BOGUS branch in `mergeProfiles` for the race this leaves open.
    */
-  private clampCloudProfileStamps(profile: any): any {
+  private clampCloudProfileStamps(profile: any, now: number): any {
     if (!profile || typeof profile !== 'object') return profile;
     const clamped = { ...profile };
     if (profile.lastUpdated !== undefined) {
-      clamped.lastUpdated = normalizeUpdatedAt(profile.lastUpdated) ?? profile.lastUpdated;
+      clamped.lastUpdated = normalizeUpdatedAt(profile.lastUpdated, now) ?? profile.lastUpdated;
     }
     if (profile.deletedOn !== undefined) {
-      clamped.deletedOn = normalizeUpdatedAt(profile.deletedOn) ?? profile.deletedOn;
+      clamped.deletedOn = normalizeUpdatedAt(profile.deletedOn, now) ?? profile.deletedOn;
     }
     return clamped;
+  }
+
+  /**
+   * True when a cloud profile's RAW `lastUpdated` or `deletedOn` is more than
+   * `FUTURE_TOLERANCE_MS` ahead of `now` — checked on the PRE-clamp value,
+   * since that is what triggers FORFEIT-ON-BOGUS in `mergeProfiles`.
+   *
+   * Clamping a bogus stamp sets it to exactly this device's own `now`, which
+   * always ties-or-beats any local stamp (a local edit is, by definition,
+   * timestamped at or before `now`). Without this check, a poisoned cloud
+   * profile would silently discard a pending honest local edit — once per
+   * poisoning, under a stamp that now looks perfectly healthy.
+   */
+  private isBogusCloudProfile(profile: any, now: number): boolean {
+    if (!profile || typeof profile !== 'object') return false;
+    return (['lastUpdated', 'deletedOn'] as const).some((key) => {
+      const raw = profile[key];
+      if (typeof raw !== 'string') return false;
+      const parsed = Date.parse(raw);
+      return !Number.isNaN(parsed) && parsed > now + FUTURE_TOLERANCE_MS;
+    });
   }
 
   /**
@@ -813,6 +846,7 @@ class UnifiedSyncService {
     // Migrate both local and cloud profiles to ensure all fields exist
     const migratedLocal = migrateProfiles(local || {});
     const migratedCloud = migrateProfiles(cloud || {});
+    const now = Date.now();
 
     const merged: any = {};
     const allProfileNames = new Set([
@@ -822,13 +856,21 @@ class UnifiedSyncService {
 
     allProfileNames.forEach((profileName) => {
       const localProfile = migratedLocal?.[profileName];
-      const cloudProfile = this.clampCloudProfileStamps(migratedCloud?.[profileName]);
+      const rawCloudProfile = migratedCloud?.[profileName];
+      const cloudProfile = this.clampCloudProfileStamps(rawCloudProfile, now);
 
       if (!localProfile) {
-        // Only in cloud - use cloud version (already migrated)
+        // No local content to protect — adopt the cloud entry (healed if bogus).
         merged[profileName] = cloudProfile;
       } else if (!cloudProfile) {
         // Only in local - use local version (already migrated)
+        merged[profileName] = localProfile;
+      } else if (this.isBogusCloudProfile(rawCloudProfile, now)) {
+        // FORFEIT-ON-BOGUS: the cloud entry's raw stamp needed clamping, and
+        // local content exists — local wins outright regardless of stamps.
+        // The upload below then carries the honest local content and its
+        // real timestamp, which is what actually heals the cloud copy.
+        console.log(`  🚫 Cloud forfeits [${profileName}] — raw stamp was bogus, local exists`);
         merged[profileName] = localProfile;
       } else {
         // In both - determine which has the most recent user action
