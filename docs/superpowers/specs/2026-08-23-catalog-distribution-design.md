@@ -78,3 +78,13 @@ All metadata writes (`series.json`, `catalog.json`) are best-effort: on failure,
 2. Bunko updates via intercepted `series.json` PUT — no dedicated endpoint.
 3. `catalog.json` = name/mapping/search data only; volume metadata + thumbs in `series.json`; revisit if holes appear (e.g. force-pull on progress referencing an unknown series).
 4. Covers come from existing per-volume sidecars, not from new fields in the metadata files.
+
+## Amendment 2026-08-23: `series-metadata.json` retired; field redistribution (user decisions)
+
+`series-metadata.json` is REMOVED — never shipped, no legacy support. Writer, reader, merge machinery, and its root-allowlist entry go; a stale file in an existing cloud is inert junk. The local `series_metadata` table remains as local storage; only the root sync file dies. Fields redistribute by their true nature:
+
+- **Facts** (`external_ids`, `titles`, `synonyms`, `tag`, `unit`) — transported ONLY by `<Series>/series.json` (+ `catalog.json` compilation). Facts stamps unchanged.
+- **Spine offsets are FILE FACTS** (same archives ⇒ same cover geometry): `spine_offset` becomes a top-level optional in `series.json`, per-volume offsets ride volume entries — index rules like `archive_size` (installed-override/fill, never stamped as facts). Bunko contract: accepted index fields. Bunko users inherit the uploader's shelf alignment.
+- **Series-level reading state** (`read_count`, `reread_prompt_suppressed`, `tracking{}`) — moves to a `series` section of `volume-data.json`, gaining its per-key newest-wins sync semantics. Never in shared files.
+- **AniList-derived display data** (`format`, `status`, `total_volumes`, `total_chapters`, `cover_url`) — NOT STORED. Shown transiently in the link picker from search results only. The tracker's COMPLETED logic fetches totals in the same AniList request the push already makes (`fetchRemoteEntry` query gains `media { volumes chapters }`); `detectTrackingUnit`'s overshoot rule applies only when totals are present in that context (marker-based detection otherwise).
+- **`title_preference`** — deleted (globally ignored legacy field). Profile-level preferences live in `profiles.json`, which is upgraded to the same automatic read/merge/push treatment `volume-data.json` has (it is currently neglected).
