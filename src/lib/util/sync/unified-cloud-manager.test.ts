@@ -1277,6 +1277,32 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(provider.downloadFile).not.toHaveBeenCalled();
   });
 
+  it('reads the local rows of an NFD folder name, whose rows are stored composed', async () => {
+    // A folder name that made the round trip through a filesystem can come back
+    // decomposed while the IndexedDB rows stay composed. Byte-wise, the filter
+    // then matches nothing: the index is published with an empty volumes list
+    // (or skipped outright), which is what left the reconcile pass scheduling
+    // and dropping the same folder forever.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile(`${decomposed}/Volume 1.cbz`)]);
+    localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
+
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes.map((v: { volume_uuid: string }) => v.volume_uuid)).toEqual([
+      'uuid-Volume 1'
+    ]);
+  });
+
   it('prunes index entries for volumes that are neither in the cloud listing nor installed', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();
@@ -2162,6 +2188,51 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // The cache is stamped so the very next listing does not re-download our own write.
     const cached = replaceCatalogIndexes.mock.calls.at(-1)![1] as Array<{ series_key: string }>;
     expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
+  });
+
+  it('gives an NFD folder the facts of its composed series record', async () => {
+    // Same fold as the series index: the folder name comes off a filesystem and
+    // may be decomposed, while `series_metadata` is keyed off the composed local
+    // title. A byte-wise lookup misses, and the series lands in the catalog as a
+    // factless epoch entry — its links dropped for every device that reads it.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    getActiveProvider.mockReturnValue(provider());
+    getAllFiles.mockReturnValue([
+      {
+        provider: 'webdav',
+        fileId: 'nfd',
+        path: `${decomposed}/Volume 1.cbz`,
+        size: 10,
+        modifiedTime: '2026-08-23T00:00:00.000Z'
+      }
+    ]);
+    getAllSeriesMetadata.mockResolvedValue({
+      [composed.toLowerCase()]: {
+        series_key: composed.toLowerCase(),
+        series_title: composed,
+        external_ids: { anilist: 4242 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-23T00:00:00.000Z',
+        facts_updated_at: '2026-08-23T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
+
+    const [, blob] = uploadFile.mock.calls.at(-1)!;
+    const written = JSON.parse(await (blob as Blob).text());
+    // The FOLDER name is what gets published (never derived), carrying the facts
+    // of the record filed under the composed spelling.
+    expect(written.series).toHaveLength(1);
+    expect(written.series[0].series_title).toBe(decomposed);
+    expect(written.series[0].external_ids).toEqual({ anilist: 4242 });
+    expect(written.series[0].updated_at).toBe('2026-08-23T00:00:00.000Z');
   });
 
   /**

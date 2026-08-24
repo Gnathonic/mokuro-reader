@@ -356,6 +356,25 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
+  it('writes for an NFD folder name whose local rows are stored composed', async () => {
+    // The reconcile pass folds the folder name with `normalizeVolumeTitleKey`
+    // and schedules the write; this gate must fold the same way or the write is
+    // dropped, the folder still has no series.json, and the very next listing
+    // schedules it again — an eternal schedule/drop loop, one volumes scan each.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+    addVolume(composed, 'Volume 1');
+    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
+      { path: `${series}/${volumeTitle}.cbz` }
+    ]);
+
+    scheduleSeriesFileWrite(decomposed);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith(decomposed);
+  });
+
   it('swallows a write failure — a background index write never breaks an edit', async () => {
     writeSeriesFile.mockRejectedValue(new Error('offline'));
 

@@ -92,13 +92,19 @@ function hasWritableProvider(): boolean {
  * Does this series have at least one volume backed up? Checked per volume
  * against the cloud listing rather than "the folder exists", so a stray sidecar
  * or an empty folder does not qualify.
+ *
+ * Folded with `normalizeVolumeTitleKey`, exactly like `locallyKnownSeriesKeys`
+ * upstream: `seriesTitle` is a cloud FOLDER name here and may be decomposed
+ * (NFD) while the local rows stay composed. A byte-wise fold disagrees with the
+ * pass that scheduled the write, so the folder is scheduled, dropped here, and
+ * scheduled again on the next listing — forever.
  */
 async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
-  const key = normalizeSeriesKey(seriesTitle);
+  const key = normalizeVolumeTitleKey(seriesTitle);
   const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
   return volumes.some((volume) => {
     if (volume.isPlaceholder) return false;
-    if (normalizeSeriesKey(volume.series_title) !== key) return false;
+    if (normalizeVolumeTitleKey(volume.series_title) !== key) return false;
     return unifiedCloudManager
       .getManagedCloudFilesForVolume(seriesTitle, volume.volume_title)
       .some((file) => file.path.toLowerCase().endsWith('.cbz'));

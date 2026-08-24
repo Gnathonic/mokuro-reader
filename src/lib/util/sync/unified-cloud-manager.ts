@@ -31,7 +31,7 @@ import {
   stringifyCatalogFile,
   type CatalogFile
 } from '$lib/metadata/catalog-file';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
   getAllSeriesMetadata,
   getSeriesMetadataForTitle,
@@ -1085,10 +1085,15 @@ class UnifiedCloudManager {
     const seriesKey = normalizeSeriesKey(seriesTitle);
     if (!seriesKey) return 'skipped';
 
-    const localKey = normalizeSeriesKey(options?.localSeriesTitle ?? seriesTitle);
+    // Folded with `normalizeVolumeTitleKey`, not the plain series key: this
+    // matches a cloud FOLDER name against titles stored in IndexedDB, and a
+    // folder that made the round trip through a filesystem can come back
+    // decomposed (NFD) while the rows stay composed. Byte-wise the filter then
+    // matches nothing and the index is published with no volumes at all.
+    const localKey = normalizeVolumeTitleKey(options?.localSeriesTitle ?? seriesTitle);
     const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
     const localVolumes = allVolumes.filter(
-      (volume) => normalizeSeriesKey(volume.series_title) === localKey && !volume.isPlaceholder
+      (volume) => normalizeVolumeTitleKey(volume.series_title) === localKey && !volume.isPlaceholder
     );
 
     // Same reason as `localSeriesTitle` above: mid-rename the series_metadata
@@ -1273,9 +1278,17 @@ class UnifiedCloudManager {
       return 'skipped';
     }
 
+    // Re-keyed with `normalizeVolumeTitleKey` on BOTH sides: `cloudTitles` are
+    // folder names off a filesystem and can be decomposed (NFD) while the
+    // records are keyed off the composed local title. A byte-wise lookup misses
+    // and the series is published as a factless epoch entry — its links dropped
+    // for every device that reads the catalog.
     const metaByKey = await getAllSeriesMetadata();
+    const metaByFoldedKey = new Map(
+      Object.values(metaByKey).map((meta) => [normalizeVolumeTitleKey(meta.series_title), meta])
+    );
     const entries = [...cloudTitles].map((title) =>
-      catalogEntryFromMeta(title, metaByKey[normalizeSeriesKey(title)])
+      catalogEntryFromMeta(title, metaByFoldedKey.get(normalizeVolumeTitleKey(title)))
     );
 
     const file = buildCatalogFile({ entries, existing, cloudSeriesTitles: cloudTitles });
