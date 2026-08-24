@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
 import { ProviderError } from './provider-interface';
 import type { CloudFileMetadata, SyncProvider } from './provider-interface';
 
@@ -20,12 +21,25 @@ vi.mock('../progress-tracker', () => ({
 
 vi.mock('$lib/settings', async () => {
   const { writable } = await import('svelte/store');
+  // The series half is the real module — these tests exercise the actual
+  // parse/merge rules, not a stand-in for them.
+  const seriesData = await vi.importActual<typeof import('$lib/settings/series-data')>(
+    '$lib/settings/series-data'
+  );
   return {
+    ...seriesData,
     volumesWithTrash: writable({}),
     profiles: writable({}),
     profilesWithTrash: writable({}),
     migrateProfiles: vi.fn((p: unknown) => p),
-    parseVolumesFromJson: vi.fn((json: string) => JSON.parse(json))
+    // Stand-in for the real parser (no VolumeData instances), but it must keep
+    // the one behavior this file depends on: the reserved `series` section is
+    // not a volume.
+    parseVolumesFromJson: vi.fn((json: string) =>
+      Object.fromEntries(
+        Object.entries(JSON.parse(json)).filter(([key]) => key !== seriesData.SERIES_SECTION_KEY)
+      )
+    )
   };
 });
 
@@ -39,6 +53,7 @@ vi.mock('$lib/metadata/store', () => ({
 }));
 
 import { unifiedSyncService } from './unified-sync-service';
+import { seriesReadingState, setSeriesReadingStates, volumesWithTrash } from '$lib/settings';
 
 // downloadVolumeDataFile is private; these tests target it directly because it
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
@@ -95,7 +110,8 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
 
     const result = await svc.downloadVolumeDataFile(provider);
 
-    expect(result).toEqual(goodData);
+    expect(result.volumes).toEqual(goodData);
+    expect(result.series).toEqual({});
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(ghost);
     expect(cache.fetch).not.toHaveBeenCalled();
@@ -111,7 +127,7 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
 
     const result = await svc.downloadVolumeDataFile(provider);
 
-    expect(result).toEqual(goodData);
+    expect(result.volumes).toEqual(goodData);
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(ghost);
   });
@@ -129,7 +145,9 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
       }
     );
 
-    await expect(svc.downloadVolumeDataFile(provider)).resolves.toEqual(goodData);
+    await expect(svc.downloadVolumeDataFile(provider)).resolves.toMatchObject({
+      volumes: goodData
+    });
   });
 
   it('returns null after one cache refresh when every copy is missing', async () => {
@@ -158,8 +176,8 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
 
     const result = await svc.downloadVolumeDataFile(provider);
 
-    expect(result['vol-1'].progress).toBe(9);
-    expect(result['vol-2'].progress).toBe(1);
+    expect(result.volumes['vol-1'].progress).toBe(9);
+    expect(result.volumes['vol-2'].progress).toBe(1);
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(second);
   });
@@ -173,6 +191,133 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
 
     await expect(svc.downloadVolumeDataFile(provider)).rejects.toThrow('network down');
     expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('the series section of volume-data.json', () => {
+  const seriesJson = (series: unknown) => ({
+    'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+    series
+  });
+
+  beforeEach(() => {
+    // Both halves are module-level stores shared across tests in this file.
+    volumesWithTrash.set({});
+    setSeriesReadingStates({});
+  });
+
+  it('reads the section out of the file instead of treating it as a volume', async () => {
+    stubCache([fileMeta('only')]);
+    const provider = makeProvider(async () =>
+      jsonBlob(
+        seriesJson({ 'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' } })
+      )
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    expect(Object.keys(result.volumes)).toEqual(['vol-1']);
+    expect(result.series).toEqual({
+      'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+  });
+
+  it('folds the section across duplicate copies, newest per series wins', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const provider = makeProvider(async (file) =>
+      jsonBlob(
+        seriesJson(
+          file.fileId === 'first'
+            ? { 'one piece': { read_count: 1, lastUpdated: '2026-08-01T00:00:00.000Z' } }
+            : { 'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+        )
+      )
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    expect(result.series['one piece'].read_count).toBe(4);
+  });
+
+  it('writes the merged section back locally and uploads it beside the volumes', async () => {
+    setSeriesReadingStates({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' }
+    });
+    stubCache([fileMeta('only')]);
+    const uploads: Array<{ path: string; body: unknown }> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob(
+          seriesJson({ 'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' } })
+        )
+      ),
+      uploadFile: vi.fn(async (path: string, blob: Blob) => {
+        uploads.push({ path, body: JSON.parse(await blob.text()) });
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(get(seriesReadingState)).toEqual({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' },
+      'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+    expect(uploads).toHaveLength(1);
+    expect((uploads[0].body as Record<string, unknown>).series).toEqual({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' },
+      'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+  });
+
+  it('merges a cloud file that has no section at all without losing local state', async () => {
+    // A file written by a reader that predates the section: no `series` key.
+    setSeriesReadingStates({ berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' } });
+    stubCache([fileMeta('only')]);
+    const uploads: Array<Record<string, unknown>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } })
+      ),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(get(seriesReadingState)).toEqual({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' }
+    });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].series).toEqual({
+      berserk: { read_count: 7, lastUpdated: '2026-08-22T00:00:00.000Z' }
+    });
+    // The volume half round-trips untouched beside it.
+    expect(uploads[0]['vol-1']).toEqual({
+      lastProgressUpdate: '2026-01-02T00:00:00Z',
+      progress: 5
+    });
+  });
+
+  it('omits the section entirely when there is no series state at all', async () => {
+    setSeriesReadingStates({});
+    stubCache([]);
+    const uploads: Array<Record<string, unknown>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    // Nothing to say and nothing in the cloud: no upload at all.
+    expect(uploads).toEqual([]);
   });
 });
 

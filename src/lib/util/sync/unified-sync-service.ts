@@ -5,7 +5,13 @@ import {
   profiles,
   profilesWithTrash,
   parseVolumesFromJson,
-  migrateProfiles
+  migrateProfiles,
+  parseSeriesSection,
+  mergeSeriesSections,
+  seriesReadingState,
+  setSeriesReadingStates,
+  SERIES_SECTION_KEY,
+  type SeriesReadingStates
 } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
@@ -55,6 +61,17 @@ export interface SyncResult {
   succeeded: number;
   failed: number;
   results: ProviderSyncResult[];
+}
+
+/**
+ * `volume-data.json` as it comes off the cloud: the volume map plus the
+ * reserved `series` section (series-level reading state). Two independently
+ * merged halves of one file — volumes by `lastProgressUpdate`, series by
+ * `lastUpdated`.
+ */
+export interface CloudVolumeDataFile {
+  volumes: Record<string, any>;
+  series: SeriesReadingStates;
 }
 
 /**
@@ -322,11 +339,16 @@ class UnifiedSyncService {
   /**
    * Download volume-data.json file from provider using generic file operations
    * Handles duplicate files by merging them (Google Drive specific)
+   *
+   * Returns both halves of the file: the volume map and the reserved `series`
+   * section. `parseVolumesFromJson` drops the section, so every path that
+   * parses a copy has to lift it out separately — the single-file path and the
+   * duplicate-merge path alike.
    */
   private async downloadVolumeDataFile(
     provider: SyncProvider,
     reloadCacheOnFileNotFound = true
-  ): Promise<any | null> {
+  ): Promise<CloudVolumeDataFile | null> {
     try {
       const volumeDataFiles = await this.findVolumeDataFiles(provider);
 
@@ -347,7 +369,10 @@ class UnifiedSyncService {
           volumeDataFiles.map(async (file) => {
             const blob = await provider.downloadFile(file);
             const data = await this.blobToJson(blob);
-            return parseVolumesFromJson(JSON.stringify(data));
+            return {
+              volumes: parseVolumesFromJson(JSON.stringify(data)),
+              series: parseSeriesSection(data?.[SERIES_SECTION_KEY])
+            };
           })
         );
 
@@ -362,7 +387,9 @@ class UnifiedSyncService {
         const readable = downloads
           .map((result, index) => ({ result, index }))
           .filter(
-            (entry): entry is { result: PromiseFulfilledResult<any>; index: number } =>
+            (
+              entry
+            ): entry is { result: PromiseFulfilledResult<CloudVolumeDataFile>; index: number } =>
               entry.result.status === 'fulfilled'
           );
 
@@ -374,8 +401,9 @@ class UnifiedSyncService {
 
         // Merge all readable copies (newest lastProgressUpdate wins per volume)
         const merged: any = {};
+        let mergedSeries: SeriesReadingStates = {};
         for (const entry of readable) {
-          for (const [volumeId, volumeData] of Object.entries(entry.result.value)) {
+          for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
             const existing = merged[volumeId];
             if (!existing) {
               merged[volumeId] = volumeData;
@@ -388,6 +416,8 @@ class UnifiedSyncService {
               }
             }
           }
+          // The series section folds by its own key, newest `lastUpdated` wins.
+          mergedSeries = mergeSeriesSections(mergedSeries, entry.result.value.series);
         }
 
         // Keep the first readable copy; delete every other listed copy.
@@ -404,13 +434,16 @@ class UnifiedSyncService {
         }
 
         console.log(`✅ Merged ${readable.length} readable copies into 1`);
-        return merged;
+        return { volumes: merged, series: mergedSeries };
       }
 
       // Single file - download normally
       const blob = await provider.downloadFile(volumeDataFiles[0]);
       const data = await this.blobToJson(blob);
-      return parseVolumesFromJson(JSON.stringify(data));
+      return {
+        volumes: parseVolumesFromJson(JSON.stringify(data)),
+        series: parseSeriesSection(data?.[SERIES_SECTION_KEY])
+      };
     } catch (error) {
       // File not found is not an error
       if (this.isFileNotFoundError(error)) {
@@ -451,30 +484,44 @@ class UnifiedSyncService {
   }
 
   /**
+   * The bytes of `volume-data.json`: the volume map, plus the `series` section
+   * when there is any. Omitted when empty so a library that has never had
+   * series-level state produces byte-identical files to before this existed —
+   * no spurious upload, no mtime churn on every other device.
+   */
+  private composeVolumeDataFile(volumes: any, series: SeriesReadingStates): any {
+    return Object.keys(series).length > 0
+      ? { ...volumes, [SERIES_SECTION_KEY]: series }
+      : { ...volumes };
+  }
+
+  /**
    * Sync volume data (read progress) with a provider
    */
   private async syncVolumeData(provider: SyncProvider): Promise<void> {
-    // Step 1: Download cloud data
-    const cloudVolumes = await this.downloadVolumeDataFile(provider);
+    // Step 1: Download cloud data (volumes + the series section)
+    const cloud = await this.downloadVolumeDataFile(provider);
 
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
-    // Step 3: Merge data (handles deletedOn/addedOn timestamps)
-    const mergedVolumes = this.mergeVolumeData(localVolumes, cloudVolumes || {});
+    // Step 3: Merge each half by its own key
+    const mergedVolumes = this.mergeVolumeData(localVolumes, cloud?.volumes || {});
+    const mergedSeries = mergeSeriesSections(get(seriesReadingState), cloud?.series ?? {});
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
 
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);
+    setSeriesReadingStates(mergedSeries);
 
-    // Step 6: Upload purged data if changed
-    const purgedJson = JSON.stringify(purgedVolumes);
-    const cloudJson = JSON.stringify(cloudVolumes || {});
+    // Step 6: Upload if anything differs from what the cloud holds
+    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const cloudFile = this.composeVolumeDataFile(cloud?.volumes ?? {}, cloud?.series ?? {});
 
-    if (purgedJson !== cloudJson) {
-      await this.uploadVolumeDataFile(provider, purgedVolumes);
+    if (JSON.stringify(nextFile) !== JSON.stringify(cloudFile)) {
+      await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
 
