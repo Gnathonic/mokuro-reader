@@ -86,6 +86,16 @@ export interface CloudVolumeDataFile {
    * root series-metadata sync followed before this file absorbed its job.
    */
   rawSeries?: unknown;
+  /**
+   * Series keys whose RAW `lastUpdated` needed clamping, UNIONED across every
+   * readable copy inspected — not only the one that survives the delete
+   * sweep (`rawSeries` above). A duplicate `volume-data.json` that gets
+   * deleted after the fold is exactly as real a source of poison as the
+   * survivor; deriving this only from `rawSeries` would let a bogus stamp on
+   * a non-surviving copy escape detection entirely once that copy is gone.
+   * Drives FORFEIT-ON-BOGUS in `syncVolumeData`'s cloud-vs-local merge.
+   */
+  bogusSeriesKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -404,10 +414,23 @@ class UnifiedSyncService {
           throw (downloads[0] as PromiseRejectedResult).reason;
         }
 
+        // Per-copy bogus-key detection (on each copy's OWN raw section), and
+        // the UNION across every readable copy — not only the one that ends
+        // up surviving the delete sweep below. A poisoned stamp on a copy
+        // that gets deleted is exactly as real a poison as one on the
+        // survivor; deriving this from only one copy's raw section would let
+        // it escape detection entirely once that copy is gone.
+        const perCopyBogusKeys = readable.map((entry) =>
+          detectBogusSeriesKeys(entry.result.value.rawSeries)
+        );
+        const bogusSeriesKeys = new Set<string>();
+        for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
         // Merge all readable copies (newest lastProgressUpdate wins per volume)
         const merged: Record<string, VolumeData> = {};
         let mergedSeries: SeriesReadingStates = {};
-        for (const entry of readable) {
+        for (let i = 0; i < readable.length; i++) {
+          const entry = readable[i];
           for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
             const existing = merged[volumeId];
             if (!existing) {
@@ -421,8 +444,29 @@ class UnifiedSyncService {
               }
             }
           }
-          // The series section folds by its own key, newest `lastUpdated` wins.
-          mergedSeries = mergeSeriesSections(mergedSeries, entry.result.value.series);
+
+          // The series section folds by its own key, newest `lastUpdated`
+          // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
+          // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
+          // must not clobber an honest entry from ANOTHER copy, regardless of
+          // fold order. Such a key is excluded from this copy's contribution
+          // whenever some other readable copy holds it honestly — that other
+          // copy's own turn in this loop supplies it instead. Only when NO
+          // readable copy holds the key honestly does the bogus (clamped)
+          // value get folded in at all, as the best available answer.
+          const entryBogus = perCopyBogusKeys[i];
+          const foldable: SeriesReadingStates = {};
+          for (const [key, state] of Object.entries(entry.result.value.series)) {
+            const honestElsewhere =
+              entryBogus.has(key) &&
+              readable.some(
+                (_other, j) =>
+                  j !== i && key in readable[j].result.value.series && !perCopyBogusKeys[j].has(key)
+              );
+            if (honestElsewhere) continue;
+            foldable[key] = state;
+          }
+          mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
         }
 
         // Keep the first readable copy; delete every other listed copy.
@@ -442,20 +486,25 @@ class UnifiedSyncService {
         // The raw section comes from the copy that SURVIVES the delete sweep —
         // the fold is only durable once it is written back over that copy, so
         // that copy is what the upload decision has to be measured against.
+        // `bogusSeriesKeys`, unlike `rawSeries`, is the UNION across every
+        // copy inspected — see the field doc on `CloudVolumeDataFile`.
         return {
           volumes: merged,
           series: mergedSeries,
-          rawSeries: readable[0].result.value.rawSeries
+          rawSeries: readable[0].result.value.rawSeries,
+          bogusSeriesKeys
         };
       }
 
       // Single file - download normally
       const blob = await provider.downloadFile(volumeDataFiles[0]);
       const data = await this.blobToJson(blob);
+      const rawSeries = data?.[SERIES_SECTION_KEY];
       return {
         volumes: parseVolumesFromJson(JSON.stringify(data)),
-        series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
-        rawSeries: data?.[SERIES_SECTION_KEY]
+        series: parseSeriesSection(rawSeries),
+        rawSeries,
+        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
       };
     } catch (error) {
       // File not found is not an error
@@ -520,14 +569,16 @@ class UnifiedSyncService {
 
     // Step 3: Merge each half by its own key. FORFEIT-ON-BOGUS: a series key
     // whose RAW cloud stamp needed clamping must not out-rank a pending local
-    // edit — `detectBogusSeriesKeys` reads `rawSeries` (pre-parse) because
-    // `cloud.series` has already been clamped by `parseSeriesSection` and the
-    // poison is invisible there.
+    // edit — `bogusSeriesKeys` is computed by `downloadVolumeDataFile` itself
+    // (unioned across every readable copy when duplicates existed; see the
+    // field doc on `CloudVolumeDataFile`), never re-derived from `rawSeries`
+    // here, since `rawSeries` alone only ever reflects the ONE copy that
+    // happens to survive the delete sweep.
     const mergedVolumes = this.mergeVolumeData(localVolumes, cloud?.volumes || {});
     const mergedSeries = mergeSeriesSections(
       get(seriesReadingState),
       cloud?.series ?? {},
-      detectBogusSeriesKeys(cloud?.rawSeries)
+      cloud?.bogusSeriesKeys ?? new Set()
     );
 
     // Step 4: Purge tombstones older than 30 days

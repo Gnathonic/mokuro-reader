@@ -213,6 +213,36 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
     await expect(svc.downloadVolumeDataFile(provider)).rejects.toThrow('network down');
     expect(provider.deleteFile).not.toHaveBeenCalled();
   });
+
+  it('unions bogus-series detection across every readable copy and lets the honest copy win the fold', async () => {
+    // The poison sits on the NON-surviving duplicate (readable[1], deleted
+    // after the fold). Deriving bogus-key detection from only the survivor's
+    // raw section (readable[0]) would miss it entirely, and folding without
+    // forfeit-awareness would let the bogus, now-clamped-to-"now" stamp
+    // clobber the honest entry from the surviving copy.
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const provider = makeProvider(async (file) =>
+      jsonBlob({
+        ...goodData,
+        series:
+          file.fileId === 'first'
+            ? { 'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+            : { 'one piece': { read_count: 2, lastUpdated: '2999-01-01T00:00:00.000Z' } }
+      })
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    // The fold prefers the honest copy's content over the bogus one,
+    // regardless of which copy happens to survive the delete sweep.
+    expect(result.series['one piece'].read_count).toBe(4);
+    // The union still flags the key as bogus — the OTHER, non-surviving copy
+    // needed clamping — which is what protects a pending local edit
+    // downstream even though the fold itself resolved to honest content.
+    expect(result.bogusSeriesKeys.has('one piece')).toBe(true);
+    expect(provider.deleteFile).toHaveBeenCalledWith(second);
+  });
 });
 
 describe('the series section of volume-data.json', () => {
@@ -434,6 +464,54 @@ describe('the series section of volume-data.json', () => {
       const provider = {
         type: 'mega',
         downloadFile,
+        uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+          uploads.push(JSON.parse(await blob.text()));
+        })
+      } as unknown as SyncProvider;
+
+      await svc.syncVolumeData(provider);
+
+      expect(get(seriesReadingState)['one piece']).toEqual({
+        read_count: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].series['one piece']).toEqual({
+        read_count: 9,
+        lastUpdated: '2026-08-23T11:59:00.000Z'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('protects a pending local edit even when the poison is on a non-surviving duplicate copy', async () => {
+    // The compound edge: bogus-key detection has to union across every
+    // readable copy, not just the one that survives the delete sweep. Here
+    // the SURVIVING copy has no entry at all for this series — only the
+    // duplicate that gets deleted after the fold is poisoned — so a
+    // union-blind implementation sees no bogus stamp anywhere and lets the
+    // clamped-to-"now" fold result silently beat the pending local edit.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    try {
+      setSeriesReadingStates({
+        'one piece': { read_count: 9, lastUpdated: '2026-08-23T11:59:00.000Z' }
+      });
+      stubCache([fileMeta('first'), fileMeta('second')]);
+      const uploads: Array<Record<string, any>> = [];
+      const provider = {
+        type: 'mega',
+        downloadFile: vi.fn(async (file: CloudFileMetadata) =>
+          jsonBlob(
+            file.fileId === 'first'
+              ? seriesJson({}) // survivor: no entry for this series at all
+              : seriesJson({
+                  'one piece': { read_count: 2, lastUpdated: '2999-01-01T00:00:00.000Z' }
+                }) // deleted duplicate: the poison
+          )
+        ),
+        deleteFile: vi.fn(async () => {}),
         uploadFile: vi.fn(async (_path: string, blob: Blob) => {
           uploads.push(JSON.parse(await blob.text()));
         })
