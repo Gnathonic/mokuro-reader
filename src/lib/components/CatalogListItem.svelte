@@ -11,6 +11,7 @@
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
   import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
@@ -27,8 +28,11 @@
 
   let localVolumes = $derived(sortedVolumes.filter((v) => !v.isPlaceholder));
 
+  // The app's one completion rule, over the raw page (see isVolumeComplete): an inline
+  // copy here used to call a never-opened one- or two-page volume finished, so a row could
+  // claim a series was read that the grid card in the same catalog said was not.
   let firstUnreadVolume = $derived(
-    localVolumes.find((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
+    localVolumes.find((v) => !isVolumeComplete($progress?.[v.volume_uuid] ?? 0, v.page_count))
   );
 
   let firstVolume = $derived(sortedVolumes[0]);

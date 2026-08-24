@@ -41,6 +41,7 @@ vi.mock('$lib/catalog', () => ({
 }));
 
 import CatalogListItem from '../CatalogListItem.svelte';
+import { updateProgress } from '$lib/settings';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -224,5 +225,43 @@ describe('CatalogListItem follows the download queue', () => {
     await tick();
     expect(spinners(container)).toHaveLength(0);
     expect(downloadGlyphs(container)).toHaveLength(1);
+  });
+});
+
+describe('CatalogListItem reads completion the way every other surface does', () => {
+  afterEach(() => cleanup());
+
+  function greenTitle(container: HTMLElement): boolean {
+    const title = container.querySelector('p.font-semibold') as HTMLElement | null;
+    return title?.className.includes('text-green-400') ?? false;
+  }
+
+  it('does not call a never-opened short series finished', () => {
+    // The grid card says "not read" for this series (its own rule went through
+    // isVolumeComplete); the list row used to disagree, because page 1 of a 1-page volume
+    // looked like the end to its inline copy of the rule.
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ page_count: 1 })] }
+    });
+    expect(greenTitle(container)).toBe(false);
+  });
+
+  it('does not call a never-opened two-page series finished either', () => {
+    const { container } = render(CatalogListItem, {
+      props: { volumes: [volume({ page_count: 2 })] }
+    });
+    expect(greenTitle(container)).toBe(false);
+  });
+
+  it('still calls a series finished once its volumes have been read', () => {
+    updateProgress('uuid-1', 10, 0, true);
+    try {
+      const { container } = render(CatalogListItem, {
+        props: { volumes: [volume({ page_count: 10 })] }
+      });
+      expect(greenTitle(container)).toBe(true);
+    } finally {
+      updateProgress('uuid-1', 0, 0, false);
+    }
   });
 });
