@@ -93,21 +93,30 @@ function hasWritableProvider(): boolean {
  * against the cloud listing rather than "the folder exists", so a stray sidecar
  * or an empty folder does not qualify.
  *
- * Folded with `normalizeVolumeTitleKey`, exactly like `locallyKnownSeriesKeys`
- * upstream: `seriesTitle` is a cloud FOLDER name here and may be decomposed
- * (NFD) while the local rows stay composed. A byte-wise fold disagrees with the
- * pass that scheduled the write, so the folder is scheduled, dropped here, and
- * scheduled again on the next listing — forever.
+ * Both sides folded with `normalizeVolumeTitleKey` — the SERIES title and the
+ * volume titles — because a backend that decomposes names decomposes the
+ * filenames too, not just the folder. The listing's `.cbz` titles are matched
+ * exactly the way `buildSeriesFile`'s prune matches them, so this gate and the
+ * file it gates agree about which volumes the cloud is showing.
+ *
+ * A byte-wise match here disagrees with `reconcileMissingMetadataFiles`, which
+ * folds before scheduling: the folder would be scheduled, dropped here, and
+ * scheduled again on the very next listing — forever, at one volumes scan each.
+ *
+ * The listing is read first so a folder with no archive costs no table scan.
  */
 async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
+  const cloudKeys = new Set(
+    [...unifiedCloudManager.cloudVolumeTitlesFor(seriesTitle)].map(normalizeVolumeTitleKey)
+  );
+  if (cloudKeys.size === 0) return false;
+
   const key = normalizeVolumeTitleKey(seriesTitle);
   const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
   return volumes.some((volume) => {
     if (volume.isPlaceholder) return false;
     if (normalizeVolumeTitleKey(volume.series_title) !== key) return false;
-    return unifiedCloudManager
-      .getManagedCloudFilesForVolume(seriesTitle, volume.volume_title)
-      .some((file) => file.path.toLowerCase().endsWith('.cbz'));
+    return cloudKeys.has(normalizeVolumeTitleKey(volume.volume_title));
   });
 }
 

@@ -31,16 +31,27 @@ const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
 const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
 const cloudListing = vi.hoisted(() => ({ files: [] as { path: string }[] }));
 const getAllCloudVolumes = vi.hoisted(() => vi.fn(() => cloudListing.files));
-// Every folder in the listing counts as backed up: this suite is about which
-// folders get a write queued, not about the per-series backup gate.
-const getManagedCloudFilesForVolume = vi.hoisted(() =>
-  vi.fn((series: string, volumeTitle: string) => [{ path: `${series}/${volumeTitle}.cbz` }])
+// The per-series backup gate reads the same listing fixture the pass itself
+// walks, derived the way the real manager derives it (folder keyed exactly, then
+// the `.cbz` basenames). This suite is about which folders get a write queued,
+// and every folder in the fixture is backed up by construction.
+const cloudVolumeTitlesFor = vi.hoisted(() =>
+  vi.fn((seriesTitle: string) => {
+    const titles = new Set<string>();
+    for (const file of cloudListing.files) {
+      const parts = file.path.split('/');
+      if (parts.length !== 2 || parts[0] !== seriesTitle) continue;
+      if (!parts[1].toLowerCase().endsWith('.cbz')) continue;
+      titles.add(parts[1].slice(0, -4));
+    }
+    return titles;
+  })
 );
 
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     writeSeriesFile,
-    getManagedCloudFilesForVolume,
+    cloudVolumeTitlesFor,
     fetchAllCloudVolumes,
     getAllCloudVolumes
   }
@@ -103,9 +114,6 @@ describe('reconcileMissingMetadataFiles', () => {
     _resetWriteSlotsForTests();
     writeSeriesFile.mockResolvedValue('written');
     fetchAllCloudVolumes.mockResolvedValue(undefined);
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
     getAllCloudVolumes.mockImplementation(() => cloudListing.files);
     providerStatus.set({
       providers: {},
@@ -231,7 +239,11 @@ describe('reconcileMissingMetadataFiles', () => {
   });
 
   it('accepts a listing passed by the caller instead of re-reading the cache', async () => {
-    cloudListing.files = [{ path: 'Berserk/Volume 1.cbz' }];
+    // The cache holds BOTH folders; the caller hands over One Piece only. Reading
+    // the cache instead of the argument would queue Berserk as well — and the
+    // per-series gate downstream reads the cache either way, which is why the
+    // fixture has to contain what the argument names.
+    cloudListing.files = [{ path: 'Berserk/Volume 1.cbz' }, { path: 'One Piece/Volume 1.cbz' }];
 
     await reconcileMissingMetadataFiles([{ path: 'One Piece/Volume 1.cbz' }]);
     await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);

@@ -28,12 +28,33 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
-const getManagedCloudFilesForVolume = vi.hoisted(() =>
-  vi.fn((_series: string, volumeTitle: string) => [{ path: `One Piece/${volumeTitle}.cbz` }])
+
+/**
+ * The provider's file cache, as the listing of paths it holds.
+ *
+ * The backup gate's double derives its answer from THIS fixture the way the real
+ * manager does (`cacheManager.getBySeries` keys the folder exactly, then the
+ * `.cbz` basenames name the volumes) instead of echoing back the title it was
+ * asked about. An echoing double makes every comparison the gate performs look
+ * like a match, which is exactly how a byte-wise probe passed its tests while
+ * dropping every write for a folder whose filenames are decomposed.
+ */
+const cloudPaths = vi.hoisted(() => [] as string[]);
+const cloudVolumeTitlesFor = vi.hoisted(() =>
+  vi.fn((seriesTitle: string) => {
+    const titles = new Set<string>();
+    for (const path of cloudPaths) {
+      const parts = path.split('/');
+      if (parts.length !== 2 || parts[0] !== seriesTitle) continue;
+      if (!parts[1].toLowerCase().endsWith('.cbz')) continue;
+      titles.add(parts[1].slice(0, -4));
+    }
+    return titles;
+  })
 );
 const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { writeSeriesFile, getManagedCloudFilesForVolume, fetchAllCloudVolumes }
+  unifiedCloudManager: { writeSeriesFile, cloudVolumeTitlesFor, fetchAllCloudVolumes }
 }));
 
 // An in-memory stand-in for the two tables involved: the gate reads the
@@ -85,6 +106,11 @@ function addVolume(seriesTitle: string, volumeTitle: string, extra: object = {})
   });
 }
 
+/** Put a volume's archive in the cloud listing fixture, spelled exactly as given. */
+function backUp(seriesTitle: string, volumeTitle: string) {
+  cloudPaths.push(`${seriesTitle}/${volumeTitle}.cbz`);
+}
+
 let dispose: (() => void) | undefined;
 
 describe('series-file-sync', () => {
@@ -95,9 +121,8 @@ describe('series-file-sync', () => {
     _resetWriteSlotsForTests();
     writeSeriesFile.mockResolvedValue('written');
     fetchAllCloudVolumes.mockResolvedValue(undefined);
-    getManagedCloudFilesForVolume.mockImplementation((_s: string, volumeTitle: string) => [
-      { path: `One Piece/${volumeTitle}.cbz` }
-    ]);
+    cloudPaths.length = 0;
+    backUp('One Piece', 'Volume 1');
     providerStatus.set({
       providers: {},
       hasAnyAuthenticated: true,
@@ -130,9 +155,7 @@ describe('series-file-sync', () => {
 
   it('debounces per series — two series each get their own write', async () => {
     addVolume('Berserk', 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    backUp('Berserk', 'Volume 1');
 
     scheduleSeriesFileWrite('One Piece');
     scheduleSeriesFileWrite('Berserk');
@@ -146,9 +169,7 @@ describe('series-file-sync', () => {
 
   it('refreshes the cloud listing once for every series flushed together', async () => {
     addVolume('Berserk', 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    backUp('Berserk', 'Volume 1');
 
     scheduleSeriesFileWrite('One Piece');
     scheduleSeriesFileWrite('Berserk');
@@ -166,9 +187,7 @@ describe('series-file-sync', () => {
     // A real listing is a network round trip, so the second debounce timer of a
     // burst fires while the first write is still waiting for it.
     addVolume('Berserk', 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    backUp('Berserk', 'Volume 1');
     fetchAllCloudVolumes.mockImplementation(
       () => new Promise<void>((resolve) => setTimeout(resolve, 50))
     );
@@ -184,13 +203,10 @@ describe('series-file-sync', () => {
   it('decides the write on the refreshed listing, not the one the edit saw', async () => {
     // At edit time nothing is backed up (the listing predates the upload); the
     // refresh is what reveals the archive.
-    let refreshed = false;
+    cloudPaths.length = 0;
     fetchAllCloudVolumes.mockImplementation(async () => {
-      refreshed = true;
+      backUp('One Piece', 'Volume 1');
     });
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) =>
-      refreshed ? [{ path: `${series}/${volumeTitle}.cbz` }] : []
-    );
 
     scheduleSeriesFileWrite('One Piece');
     await vi.advanceTimersByTimeAsync(2000);
@@ -340,7 +356,7 @@ describe('series-file-sync', () => {
   });
 
   it('does not write for a series with nothing backed up', async () => {
-    getManagedCloudFilesForVolume.mockReturnValue([]);
+    cloudPaths.length = 0;
 
     scheduleSeriesFileWrite('One Piece');
     await vi.advanceTimersByTimeAsync(2000);
@@ -349,7 +365,8 @@ describe('series-file-sync', () => {
   });
 
   it('ignores a series whose only cloud files are sidecars (no archive)', async () => {
-    getManagedCloudFilesForVolume.mockReturnValue([{ path: 'One Piece/Volume 1.mokuro' }]);
+    cloudPaths.length = 0;
+    cloudPaths.push('One Piece/Volume 1.mokuro');
 
     scheduleSeriesFileWrite('One Piece');
     await vi.advanceTimersByTimeAsync(2000);
@@ -357,23 +374,28 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
-  it('writes for an NFD folder name whose local rows are stored composed', async () => {
-    // The reconcile pass folds the folder name with `normalizeVolumeTitleKey`
-    // and schedules the write; this gate must fold the same way or the write is
+  it('writes for a decomposed folder AND decomposed filenames, rows being composed', async () => {
+    // The whole NFD case, not half of it: a backend that decomposes names does it
+    // to the FILES as well as the folder. The reconcile pass folds the folder name
+    // and schedules the write; this gate has to fold the volume titles too — the
+    // same fold `buildSeriesFile`'s listing prune applies — or the write is
     // dropped, the folder still has no series.json, and the very next listing
-    // schedules it again — an eternal schedule/drop loop, one volumes scan each.
-    const composed = 'ポケモン';
-    const decomposed = composed.normalize('NFD');
-    expect(decomposed).not.toBe(composed);
-    addVolume(composed, 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    // schedules it again: an eternal schedule/drop loop, one volumes scan each.
+    const composedSeries = 'ポケモン';
+    const composedVolume = 'ポケモン 1';
+    const series = composedSeries.normalize('NFD');
+    const volumeTitle = composedVolume.normalize('NFD');
+    expect(series).not.toBe(composedSeries);
+    expect(volumeTitle).not.toBe(composedVolume);
 
-    scheduleSeriesFileWrite(decomposed);
+    cloudPaths.length = 0;
+    backUp(series, volumeTitle);
+    addVolume(composedSeries, composedVolume);
+
+    scheduleSeriesFileWrite(series);
     await vi.advanceTimersByTimeAsync(2000);
 
-    expect(writeSeriesFile).toHaveBeenCalledWith(decomposed);
+    expect(writeSeriesFile).toHaveBeenCalledWith(series);
   });
 
   it('swallows a write failure — a background index write never breaks an edit', async () => {
@@ -390,10 +412,10 @@ describe('series-file-sync', () => {
     // library, an import batch, a tagging spree — puts every timer on the SAME
     // 2000 ms mark. Uncapped that is N whole-table scans and N PUTs at once.
     const titles = ['A', 'B', 'C', 'D', 'E'];
-    for (const title of titles) addVolume(title, 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    for (const title of titles) {
+      addVolume(title, 'Volume 1');
+      backUp(title, 'Volume 1');
+    }
 
     let inFlight = 0;
     let peak = 0;
@@ -429,9 +451,7 @@ describe('series-file-sync', () => {
     // firing it too would be a second PUT of identical bytes (mtime churn on
     // every other device) racing the direct write for the same file.
     addVolume('Berserk', 'Volume 1');
-    getManagedCloudFilesForVolume.mockImplementation((series: string, volumeTitle: string) => [
-      { path: `${series}/${volumeTitle}.cbz` }
-    ]);
+    backUp('Berserk', 'Volume 1');
 
     scheduleSeriesFileWrite('One Piece');
     scheduleSeriesFileWrite('Berserk');
