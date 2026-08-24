@@ -123,6 +123,26 @@ export interface ProviderStatus {
    * backend, where the client is the producer.
    */
   serverCompilesMetadata?: boolean;
+  /**
+   * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
+   * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
+   * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
+   * any provider that doesn't support the concept at all.
+   */
+  metadataPermissions?: SeriesMetadataPermissions;
+}
+
+/** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
+export type SeriesMetadataScope = 'all' | 'owned' | 'none';
+
+/**
+ * Per-series metadata edit permissions reported by the server. `canEditSeriesMetadata` in
+ * `$lib/util/sync/metadata-permissions.ts` is the single place that interprets this.
+ */
+export interface SeriesMetadataPermissions {
+  scope: SeriesMetadataScope;
+  /** Series FOLDER names this account may edit; present only when scope === 'owned'. */
+  ownedSeries?: string[];
 }
 
 /**

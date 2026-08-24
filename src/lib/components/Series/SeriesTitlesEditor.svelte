@@ -27,9 +27,22 @@
   import { Label } from 'flowbite-svelte';
   import { seriesMetadataMap, updateSeriesMetadata } from '$lib/metadata/store';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import {
+    activeMetadataPermissions,
+    canEditSeriesMetadata
+  } from '$lib/util/sync/metadata-permissions';
   import type { SeriesTitles } from '$lib/metadata/types';
 
   let { seriesTitle }: { seriesTitle: string } = $props();
+
+  // Server-reported edit scope for THIS series (mokuro-bunko's identity endpoint). Disabled,
+  // not hidden, with the reason shown below — see $lib/util/sync/metadata-permissions.ts.
+  // Touches $activeMetadataPermissions so this recomputes if the scope changes after mount
+  // (a slow identity check, a reconnect) — canEditSeriesMetadata reads the live value itself.
+  let editGate = $derived.by(() => {
+    void $activeMetadataPermissions;
+    return canEditSeriesMetadata(seriesTitle);
+  });
 
   // The series this component instance's drafts belong to, captured once at mount. The
   // host modal remounts this component (via `{#key seriesTitle}`) on every legitimate
@@ -102,7 +115,7 @@
   }
 
   async function runTitlesSave(savingFor: string) {
-    if (!savingFor.trim() || savingFor !== ownerSeriesTitle) return;
+    if (!savingFor.trim() || savingFor !== ownerSeriesTitle || !editGate.allowed) return;
 
     // Snapshot each field's draft NOW (this save's turn, so these are already the freshest
     // values pending any earlier save in the chain) — used both to build the patch and,
@@ -174,7 +187,7 @@
   }
 
   async function runSynonymsSave(savingFor: string) {
-    if (!savingFor.trim() || savingFor !== ownerSeriesTitle) return;
+    if (!savingFor.trim() || savingFor !== ownerSeriesTitle || !editGate.allowed) return;
 
     const draftAtSave = synonymsDraft;
     const synonyms = parseSynonyms(draftAtSave);
@@ -211,7 +224,8 @@
         }}
         onblur={saveTitles}
         onkeydown={handleTitleKeydown}
-        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        disabled={!editGate.allowed}
+        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
       />
     </div>
     <div class="flex flex-col gap-1">
@@ -227,7 +241,8 @@
         }}
         onblur={saveTitles}
         onkeydown={handleTitleKeydown}
-        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        disabled={!editGate.allowed}
+        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
       />
     </div>
     <div class="flex flex-col gap-1">
@@ -243,7 +258,8 @@
         }}
         onblur={saveTitles}
         onkeydown={handleTitleKeydown}
-        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        disabled={!editGate.allowed}
+        class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
       />
     </div>
   </div>
@@ -260,10 +276,15 @@
         synonymsDraft = (e.currentTarget as HTMLTextAreaElement).value;
       }}
       onblur={saveSynonyms}
+      disabled={!editGate.allowed}
       placeholder="Comma- or newline-separated"
-      class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
+      class="min-w-0 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
     ></textarea>
   </div>
 
-  <p class="text-xs text-gray-500 dark:text-gray-400">Linking to AniList replaces these.</p>
+  {#if !editGate.allowed}
+    <p class="text-xs text-amber-600 dark:text-amber-400">{editGate.reason}</p>
+  {:else}
+    <p class="text-xs text-gray-500 dark:text-gray-400">Linking to AniList replaces these.</p>
+  {/if}
 </div>

@@ -16,6 +16,10 @@
   import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { computeLocalPassState, onReadCountChanged } from '$lib/metadata/progress-tracker';
   import { resolveTrackingUnit } from '$lib/metadata/tracking-unit';
+  import {
+    activeMetadataPermissions,
+    canEditSeriesMetadata
+  } from '$lib/util/sync/metadata-permissions';
   import { restartSeries } from '$lib/metadata/reread';
   import { anilistConnected, anilistUser, getAniListClientId } from '$lib/metadata/anilist-auth';
   import { volumes as volumesStore } from '$lib/settings/volume-data';
@@ -31,6 +35,14 @@
 
   let seriesKey = $derived(normalizeSeriesKey(seriesTitle));
   let meta = $derived($seriesMetadataMap.get(seriesKey));
+  // Server-reported edit scope for THIS series (mokuro-bunko's identity endpoint). Only the
+  // tracking-unit correction below is shared series metadata — read count and Restart are
+  // per-user progress, never gated. See $lib/util/sync/metadata-permissions.ts.
+  // Touches $activeMetadataPermissions so this recomputes if the scope changes after mount.
+  let editGate = $derived.by(() => {
+    void $activeMetadataPermissions;
+    return canEditSeriesMetadata(seriesTitle);
+  });
   // Every human-facing label uses the display title (language preference + tag);
   // the folder title stays the identity we read and write records by.
   let displayTitle = $derived(resolveDisplayTitle(seriesTitle, meta, $preferredTitleLanguage));
@@ -148,6 +160,7 @@
    * "no correction" — back to auto-detection.
    */
   function setUnit(value: string) {
+    if (!editGate.allowed) return Promise.resolve(false);
     return write(
       { unit: value === 'volumes' || value === 'chapters' ? value : undefined },
       "Couldn't save the tracking unit"
@@ -243,7 +256,8 @@
           placeholder=""
           value={unitState.source === 'set' ? resolvedUnit : ''}
           aria-label="Tracking unit"
-          title={unitHint}
+          disabled={!editGate.allowed}
+          title={editGate.allowed ? unitHint : editGate.reason}
           onchange={(e) => setUnit(e.currentTarget.value)}
         />
         <!-- Standing element (spec): what AniList last received, shown alongside any hint. -->
@@ -257,9 +271,13 @@
           {/key}
         {/if}
       </div>
-      <span class="text-xs text-gray-500 dark:text-gray-400">
-        Detected from the archive names; override if wrong. Saved with the series.
-      </span>
+      {#if !editGate.allowed}
+        <span class="text-xs text-amber-600 dark:text-amber-400">{editGate.reason}</span>
+      {:else}
+        <span class="text-xs text-gray-500 dark:text-gray-400">
+          Detected from the archive names; override if wrong. Saved with the series.
+        </span>
+      {/if}
     {:else}
       <span class="text-xs text-gray-500 dark:text-gray-400">Link to AniList to track progress</span
       >

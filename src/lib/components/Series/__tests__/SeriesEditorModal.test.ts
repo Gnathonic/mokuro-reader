@@ -39,7 +39,10 @@ const h = vi.hoisted(() => {
       type: 'catalog'
     }),
     providerStatus: createStore({
-      providers: {} as Record<string, { isReadOnly?: boolean }>,
+      providers: {} as Record<
+        string,
+        { isReadOnly?: boolean; metadataPermissions?: unknown } | null
+      >,
       hasAnyAuthenticated: false,
       needsAttention: false,
       currentProviderType: null as string | null
@@ -635,5 +638,68 @@ describe('SeriesEditorModal', () => {
         "Couldn't unlink from AniList. Check your connection and try again."
       )
     );
+  });
+
+  describe('per-series metadata edit gating (SeriesLinkControls)', () => {
+    function setMetadataScope(scope: 'all' | 'owned' | 'none', ownedSeries?: string[]) {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope, ownedSeries } } },
+        hasAnyAuthenticated: true,
+        needsAttention: false,
+        currentProviderType: 'webdav'
+      });
+    }
+
+    it('leaves Link…/tag enabled when the active provider reports no metadata scope (default)', async () => {
+      const { getByText, getByPlaceholderText } = await openFor('Berserk');
+      expect((getByText('Link…') as HTMLElement).closest('button')?.disabled).toBe(false);
+      expect((getByPlaceholderText('color') as HTMLInputElement).disabled).toBe(false);
+    });
+
+    it('disables Link… and the tag field, and shows the reason, under scope "none"', async () => {
+      setMetadataScope('none');
+      const { getByText, getAllByText, getByPlaceholderText } = await openFor('Berserk');
+
+      expect((getByText('Link…') as HTMLElement).closest('button')?.disabled).toBe(true);
+      expect((getByPlaceholderText('color') as HTMLInputElement).disabled).toBe(true);
+      // Both SeriesLinkControls and SeriesTitlesEditor gate on the same reason, so it
+      // appears more than once in the modal — any occurrence proves it was shown.
+      expect(
+        getAllByText("This account can't edit series details on this server").length
+      ).toBeGreaterThan(0);
+    });
+
+    it('disables Change/Unlink on an already-linked series under scope "none"', async () => {
+      setMetadataScope('none');
+      const { getByText } = await openFor('Akira');
+
+      expect((getByText('Change') as HTMLElement).closest('button')?.disabled).toBe(true);
+      expect((getByText('Unlink') as HTMLElement).closest('button')?.disabled).toBe(true);
+    });
+
+    it('allows an owned series under scope "owned"', async () => {
+      setMetadataScope('owned', ['Berserk']);
+      const { getByText } = await openFor('Berserk');
+      expect((getByText('Link…') as HTMLElement).closest('button')?.disabled).toBe(false);
+    });
+
+    it('blocks an unowned series under scope "owned", with a different reason', async () => {
+      setMetadataScope('owned', ['Berserk']);
+      const { getByText, getAllByText } = await openFor('Chainsaw Man');
+      expect((getByText('Link…') as HTMLElement).closest('button')?.disabled).toBe(true);
+      expect(
+        getAllByText('Editing this series requires ownership on this server').length
+      ).toBeGreaterThan(0);
+    });
+
+    it('refuses to unlink even if the click reaches the handler while blocked (defense in depth)', async () => {
+      setMetadataScope('none');
+      const { getByText } = await openFor('Akira');
+
+      // fireEvent bypasses the disabled attribute the way a real user can't — this proves
+      // onUnlink's own gate check is what refuses the write.
+      await fireEvent.click(getByText('Unlink'));
+      expect(unlinkSeries).not.toHaveBeenCalled();
+    });
   });
 });

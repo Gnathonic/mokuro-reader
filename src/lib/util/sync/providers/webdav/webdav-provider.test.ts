@@ -94,6 +94,35 @@ describe('WebDAVProvider login()', () => {
     expect(localStorage.getItem('webdav_password')).toBe('pässwörd');
   });
 
+  it('carries the identity endpoint’s metadata scope through to getStatus()', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'authenticated' as const,
+      username: 'alice',
+      role: 'registered',
+      permissions: {
+        ...REGISTERED_PERMS,
+        metadata: { scope: 'owned' as const, ownedSeries: ['One Piece'] }
+      }
+    });
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toEqual({
+      scope: 'owned',
+      ownedSeries: ['One Piece']
+    });
+  });
+
+  it('leaves getStatus().metadataPermissions undefined when the identity response omits it', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toBeUndefined();
+  });
+
   it('throws a typed auth error and does not persist credentials on invalid-credentials', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'invalid-credentials' });

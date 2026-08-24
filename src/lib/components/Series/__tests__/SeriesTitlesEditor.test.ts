@@ -28,7 +28,13 @@ const h = vi.hoisted(() => {
 
   return {
     seriesMetadataMap: createStore(new Map<string, SeriesMetadata>()),
-    updateSeriesMetadata: vi.fn(async () => undefined)
+    updateSeriesMetadata: vi.fn(async () => undefined),
+    // No active provider by default — every existing test in this file relies on the
+    // fields staying enabled, which is `canEditSeriesMetadata`'s default in that state.
+    providerStatus: createStore({
+      providers: {} as Record<string, { metadataPermissions?: unknown } | null>,
+      currentProviderType: null as string | null
+    })
   };
 });
 
@@ -36,6 +42,7 @@ vi.mock('$lib/metadata/store', () => ({
   seriesMetadataMap: h.seriesMetadataMap,
   updateSeriesMetadata: h.updateSeriesMetadata
 }));
+vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
 
 import SeriesTitlesEditor from '../SeriesTitlesEditor.svelte';
 
@@ -55,6 +62,50 @@ describe('SeriesTitlesEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setMeta(undefined);
+    h.providerStatus.set({ providers: {}, currentProviderType: null });
+  });
+
+  describe('per-series metadata edit gating', () => {
+    it('leaves every field enabled when the active provider reports no metadata scope', () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: undefined } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText, getByText } = renderEditor();
+      expect((getByLabelText('Native') as HTMLInputElement).disabled).toBe(false);
+      expect((getByLabelText('Romaji') as HTMLInputElement).disabled).toBe(false);
+      expect((getByLabelText('English') as HTMLInputElement).disabled).toBe(false);
+      expect((getByLabelText('Synonyms') as HTMLTextAreaElement).disabled).toBe(false);
+      expect(getByText('Linking to AniList replaces these.')).toBeTruthy();
+    });
+
+    it('disables every field and shows the reason under scope "none"', () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText, getByText } = renderEditor();
+      expect((getByLabelText('Native') as HTMLInputElement).disabled).toBe(true);
+      expect((getByLabelText('Romaji') as HTMLInputElement).disabled).toBe(true);
+      expect((getByLabelText('English') as HTMLInputElement).disabled).toBe(true);
+      expect((getByLabelText('Synonyms') as HTMLTextAreaElement).disabled).toBe(true);
+      expect(getByText("This account can't edit series details on this server")).toBeTruthy();
+    });
+
+    it('refuses to write even if a change reaches the save path (defense in depth beyond the disabled attribute)', async () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText } = renderEditor();
+      const native = getByLabelText('Native') as HTMLInputElement;
+      // fireEvent bypasses the disabled attribute the way a real user can't — this proves
+      // the save function's own gate check is what refuses the write, not just the
+      // attribute a browser would normally enforce.
+      await fireEvent.input(native, { target: { value: 'ワンピース' } });
+      await fireEvent.blur(native);
+      expect(h.updateSeriesMetadata).not.toHaveBeenCalled();
+    });
   });
 
   it('prefills the fields from meta.titles and meta.synonyms', () => {

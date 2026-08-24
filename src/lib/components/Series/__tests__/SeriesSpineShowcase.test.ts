@@ -10,7 +10,8 @@ const {
   seriesMetadataMap,
   catalogSettings,
   progressStore,
-  compositeCanvasProps
+  compositeCanvasProps,
+  providerStatus
 } = vi.hoisted(() => {
   type Row = Record<string, unknown>;
   const subscribers = new Set<(v: Map<string, Row>) => void>();
@@ -50,7 +51,13 @@ const {
     progressStore: createStore<Record<string, number>>({}),
     // Props CompositeCanvas was last mounted with — real drawing is a canvas no-op in
     // jsdom, so this is the only way to see what the showcase actually asked it to draw.
-    compositeCanvasProps: [] as Record<string, unknown>[]
+    compositeCanvasProps: [] as Record<string, unknown>[],
+    // No active provider by default — every existing test in this file relies on the
+    // offset controls staying enabled, which is `canEditSeriesMetadata`'s default.
+    providerStatus: createStore({
+      providers: {} as Record<string, { metadataPermissions?: unknown } | null>,
+      currentProviderType: null as string | null
+    })
   };
 });
 
@@ -64,6 +71,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: vi.fn(async () => null),
   getCachedCloudThumbnail: vi.fn(() => undefined)
 }));
+vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
 // Transparent pass-through wrapper — records the props each mount receives, then delegates
 // to the real component so rendering/behavior is untouched.
 vi.mock('$lib/components/CompositeCanvas.svelte', async (importOriginal) => {
@@ -246,6 +254,7 @@ describe('SeriesSpineShowcase', () => {
     progressStore.set({});
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
+    providerStatus.set({ providers: {}, currentProviderType: null });
   });
 
   afterEach(async () => {
@@ -1148,5 +1157,92 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
     // Every cover landed and nothing was requested twice — the measurement window fix
     // still covers all 65, and the fetch never chased the state it writes.
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65);
+  });
+});
+
+describe('SeriesSpineShowcase per-series metadata edit gating', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    updateSeriesMetadata.mockClear();
+    catalogSettings.set({ horizontalStep: 11 });
+    progressStore.set({});
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+    providerStatus.set({ providers: {}, currentProviderType: null });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    // Drain any write this suite's own tests scheduled — and, as a defensive measure,
+    // anything a preceding describe block in this file left pending, so a stale entry
+    // can never surface as a false "the gate didn't block it" positive here.
+    await flushSpineOffsetWrites();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  it('leaves the offset controls enabled when the active provider reports no metadata scope', () => {
+    providerStatus.set({
+      providers: { webdav: { metadataPermissions: undefined } },
+      currentProviderType: 'webdav'
+    });
+    const { getByLabelText, getByText } = renderShowcase();
+    expect((getByLabelText('Series spine offset') as HTMLInputElement).disabled).toBe(false);
+    expect((getByText('Reset') as HTMLElement).closest('button')?.disabled).toBe(false);
+    expect((getByText('Reset all volume offsets') as HTMLElement).closest('button')?.disabled).toBe(
+      false
+    );
+  });
+
+  it('disables the offset controls and shows the reason under scope "none"', () => {
+    providerStatus.set({
+      providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+      currentProviderType: 'webdav'
+    });
+    const { getByLabelText, getByText } = renderShowcase();
+    expect((getByLabelText('Series spine offset') as HTMLInputElement).disabled).toBe(true);
+    expect((getByText('Reset') as HTMLElement).closest('button')?.disabled).toBe(true);
+    expect((getByText('Reset all volume offsets') as HTMLElement).closest('button')?.disabled).toBe(
+      true
+    );
+    expect(getByText("This account can't edit series details on this server")).toBeTruthy();
+  });
+
+  it('does not write a slider change under scope "none" (defense in depth beyond the disabled attribute)', async () => {
+    providerStatus.set({
+      providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+      currentProviderType: 'webdav'
+    });
+    const { getByLabelText } = renderShowcase();
+    // fireEvent bypasses the disabled attribute the way a real user can't — this proves
+    // setSeriesOffset's own gate check is what refuses the write.
+    await fireEvent.input(getByLabelText('Series spine offset') as HTMLInputElement, {
+      target: { value: '7.5' }
+    });
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it('does not write a shift+wheel nudge under scope "none"', async () => {
+    providerStatus.set({
+      providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+      currentProviderType: 'webdav'
+    });
+    const { strip } = renderShowcase();
+    await tick();
+    wheel(strip, { deltaY: -1, shiftKey: true });
+    await flushSpineOffsetWrites();
+    expect(updateSeriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it('allows an owned series under scope "owned" but blocks an unowned one', async () => {
+    providerStatus.set({
+      providers: {
+        webdav: { metadataPermissions: { scope: 'owned', ownedSeries: ['One Piece'] } }
+      },
+      currentProviderType: 'webdav'
+    });
+    const { getByLabelText } = renderShowcase();
+    expect((getByLabelText('Series spine offset') as HTMLInputElement).disabled).toBe(false);
   });
 });

@@ -10,9 +10,21 @@
   import { createLinkSearch, describeSearchError } from '$lib/metadata/link-search';
   import { getSeriesMetadataForTitle, updateSeriesMetadata } from '$lib/metadata/store';
   import { splitFolderTag } from '$lib/metadata/folder-tag';
+  import {
+    activeMetadataPermissions,
+    canEditSeriesMetadata
+  } from '$lib/util/sync/metadata-permissions';
   import type { MetadataSearchResult } from '$lib/metadata/provider-interface';
 
   let { open = $bindable(false), seriesTitle }: { open?: boolean; seriesTitle: string } = $props();
+
+  // Defense in depth: SeriesLinkControls already disables the buttons that open this modal,
+  // but the actions here are gated too — see $lib/util/sync/metadata-permissions.ts.
+  // Touches $activeMetadataPermissions so this recomputes if the scope changes after mount.
+  let editGate = $derived.by(() => {
+    void $activeMetadataPermissions;
+    return canEditSeriesMetadata(seriesTitle);
+  });
 
   let query = $state('');
   let idInput = $state('');
@@ -90,6 +102,7 @@
   }
 
   async function link(result: MetadataSearchResult) {
+    if (!editGate.allowed) return;
     linking = true;
     try {
       // Adopt the folder's bracket tag unless the series already has one.
@@ -110,6 +123,7 @@
   }
 
   async function linkById() {
+    if (!editGate.allowed) return;
     const id = parseAniListIdInput(idInput);
     if (id == null) {
       error = 'Enter an AniList manga ID or URL (e.g. https://anilist.co/manga/30013)';
@@ -133,7 +147,7 @@
 
   // Enter in the paste field submits, like the "Link by ID" button next to it.
   function onIdKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Enter' || loading || linking) return;
+    if (e.key !== 'Enter' || loading || linking || !editGate.allowed) return;
     e.preventDefault();
     void linkById();
   }
@@ -141,8 +155,16 @@
 
 <Modal bind:open size="md" title="Link to AniList" outsideclose>
   <div class="flex flex-col gap-3">
-    <Input value={query} oninput={onQueryInput} placeholder="Search AniList…" autofocus />
-    {#if folderTag}
+    <Input
+      value={query}
+      oninput={onQueryInput}
+      disabled={!editGate.allowed}
+      placeholder="Search AniList…"
+      autofocus
+    />
+    {#if !editGate.allowed}
+      <p class="text-sm text-amber-600 dark:text-amber-400">{editGate.reason}</p>
+    {:else if folderTag}
       <p class="text-xs text-gray-500 dark:text-gray-400">
         Folder tag <span class="font-medium">({folderTag})</span> left out of the search; it becomes
         the series tag on link if none is set.
@@ -166,8 +188,8 @@
           <li>
             <button
               type="button"
-              class="flex w-full items-center gap-3 p-2 text-left hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-700"
-              disabled={linking}
+              class="flex w-full items-center gap-3 p-2 text-left hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700"
+              disabled={linking || !editGate.allowed}
               onclick={() => link(r)}
             >
               {#if r.coverUrl}
@@ -204,10 +226,14 @@
         bind:value={idInput}
         placeholder="…or paste an AniList URL / ID"
         class="flex-1"
+        disabled={!editGate.allowed}
         onkeydown={onIdKeydown}
       />
-      <Button size="sm" color="light" onclick={linkById} disabled={loading || linking}
-        >Link by ID</Button
+      <Button
+        size="sm"
+        color="light"
+        onclick={linkById}
+        disabled={loading || linking || !editGate.allowed}>Link by ID</Button
       >
     </div>
   </div>

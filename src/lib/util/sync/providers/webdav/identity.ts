@@ -13,11 +13,17 @@
  * This module must stay dependency-free (no Svelte / $app imports).
  */
 import { basicAuthHeader } from '$lib/util/base64';
+import type { SeriesMetadataPermissions } from '../../provider-interface';
 
 export interface ServerPermissions {
   canWriteProgress: boolean;
   canAddFiles: boolean;
   canModifyDelete: boolean;
+  /**
+   * Per-series metadata (names/links/tag/unit/spine offsets) edit scope. Absent = no
+   * restriction — an older bunko that doesn't report the field, or a plain WebDAV server.
+   */
+  metadata?: SeriesMetadataPermissions;
 }
 
 export type IdentityResult =
@@ -44,14 +50,30 @@ function deriveCandidateUrls(serverUrl: string): string[] {
   return candidates;
 }
 
+/** `scope: 'owned'` with no (or a non-array) `ownedSeries` is treated as an empty list, not
+ * a parse failure — the scope itself is still meaningful (nothing is owned yet). */
+function normalizeMetadataPermissions(value: unknown): SeriesMetadataPermissions | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const m = value as Record<string, unknown>;
+  if (m.scope !== 'all' && m.scope !== 'owned' && m.scope !== 'none') return undefined;
+  if (m.scope !== 'owned') return { scope: m.scope };
+  const ownedSeries = Array.isArray(m.ownedSeries)
+    ? m.ownedSeries.filter((s): s is string => typeof s === 'string')
+    : [];
+  return { scope: 'owned', ownedSeries };
+}
+
 function normalizePermissions(value: unknown): ServerPermissions | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;
-  return {
+  const permissions: ServerPermissions = {
     canWriteProgress: p.canWriteProgress === true,
     canAddFiles: p.canAddFiles === true,
     canModifyDelete: p.canModifyDelete === true
   };
+  const metadata = normalizeMetadataPermissions(p.metadata);
+  if (metadata) permissions.metadata = metadata;
+  return permissions;
 }
 
 /** Terminal result for this candidate, or null to advance to the next one. */

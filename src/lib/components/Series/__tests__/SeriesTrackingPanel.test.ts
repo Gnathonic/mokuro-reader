@@ -45,7 +45,13 @@ const h = vi.hoisted(() => {
     // The reading state's own store: a plain synchronous store over
     // localStorage in production, so nothing here lags a write.
     seriesReadingState: createStore<Record<string, any>>({}),
-    writeSeq: { n: 0 }
+    writeSeq: { n: 0 },
+    // No active provider by default — every existing test in this file relies on the
+    // tracking-unit select staying enabled, which is `canEditSeriesMetadata`'s default.
+    providerStatus: createStore({
+      providers: {} as Record<string, { metadataPermissions?: unknown } | null>,
+      currentProviderType: null as string | null
+    })
   };
 });
 
@@ -136,6 +142,7 @@ vi.mock('$lib/metadata/progress-tracker', async () => {
 vi.mock('$lib/metadata/reread', () => ({ restartSeries: vi.fn(async () => {}) }));
 vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.providerStatus } }));
 
 import { updateSeriesMetadata } from '$lib/metadata/store';
 import { updateSeriesReadingState } from '$lib/settings/series-data';
@@ -198,6 +205,7 @@ describe('SeriesTrackingPanel', () => {
     h.catalogSettings.set({ pushProgressToAniList: true });
     h.preferredTitleLanguage.set('imported');
     h.volumesData.set({ a: { completed: true }, b: { completed: true } });
+    h.providerStatus.set({ providers: {}, currentProviderType: null });
     setMeta(meta());
     setState({ read_count: 1 });
   });
@@ -494,6 +502,51 @@ describe('SeriesTrackingPanel', () => {
     it('names the connected account while pushing is on', () => {
       const { getByText } = renderPanel();
       expect(getByText('Progress push on · Connected as nathan')).toBeTruthy();
+    });
+  });
+
+  describe('per-series metadata edit gating (tracking unit only — read count/Restart stay live)', () => {
+    it('leaves the unit select enabled when the active provider reports no metadata scope', () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: undefined } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText } = renderPanel();
+      expect((getByLabelText('Tracking unit') as HTMLSelectElement).disabled).toBe(false);
+    });
+
+    it('disables the unit select and shows the reason under scope "none"', () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText, getByText } = renderPanel();
+      expect((getByLabelText('Tracking unit') as HTMLSelectElement).disabled).toBe(true);
+      expect(getByText("This account can't edit series details on this server")).toBeTruthy();
+    });
+
+    it('does not write a blocked unit correction even if the change reaches the handler', async () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+        currentProviderType: 'webdav'
+      });
+      const { getByLabelText } = renderPanel();
+      // fireEvent bypasses the disabled attribute the way a real user can't — this proves
+      // setUnit's own gate check is what refuses the write.
+      await fireEvent.change(getByLabelText('Tracking unit') as HTMLSelectElement, {
+        target: { value: 'chapters' }
+      });
+      expect(updateSeriesMetadata).not.toHaveBeenCalled();
+    });
+
+    it('leaves read count and Restart untouched by the gate (per-user progress, not shared metadata)', async () => {
+      h.providerStatus.set({
+        providers: { webdav: { metadataPermissions: { scope: 'none' } } },
+        currentProviderType: 'webdav'
+      });
+      const { getByText, getByLabelText } = renderPanel();
+      expect((getByLabelText('Increase read count') as HTMLButtonElement).disabled).toBe(false);
+      expect((getByText('Restart series…') as HTMLElement).closest('button')?.disabled).toBe(false);
     });
   });
 

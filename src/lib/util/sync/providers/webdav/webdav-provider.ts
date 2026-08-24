@@ -134,7 +134,8 @@ export class WebDAVProvider implements SyncProvider {
           ? 'Configured (not connected)'
           : 'Not configured',
       isReadOnly: this._isReadOnly,
-      serverCompilesMetadata: this._serverCompilesMetadata
+      serverCompilesMetadata: this._serverCompilesMetadata,
+      metadataPermissions: this._capabilities?.metadata
     };
   }
 

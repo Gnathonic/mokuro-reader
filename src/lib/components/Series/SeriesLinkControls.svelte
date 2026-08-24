@@ -16,6 +16,10 @@
   import { resolveDisplayBase } from '$lib/metadata/display-title';
   import { preferredTitleLanguage } from '$lib/settings/settings';
   import { getLinkTargets } from '$lib/metadata/link-targets';
+  import {
+    activeMetadataPermissions,
+    canEditSeriesMetadata
+  } from '$lib/util/sync/metadata-permissions';
   import { showSnackbar } from '$lib/util';
   import SeriesLinkModal from './SeriesLinkModal.svelte';
 
@@ -30,6 +34,15 @@
   // refuse to write once the host modal has cleared `seriesTitle` out from under it (e.g.
   // Escape closing the editor while the tag input still has focus).
   const ownerSeriesTitle = seriesTitle;
+
+  // Server-reported edit scope for THIS series (mokuro-bunko's identity endpoint). Disabled,
+  // not hidden, with the reason shown below — see $lib/util/sync/metadata-permissions.ts.
+  // Touches $activeMetadataPermissions so this recomputes if the scope changes after mount
+  // (a slow identity check, a reconnect) — canEditSeriesMetadata reads the live value itself.
+  let editGate = $derived.by(() => {
+    void $activeMetadataPermissions;
+    return canEditSeriesMetadata(seriesTitle);
+  });
 
   let meta = $derived($seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)));
   let linked = $derived(!!meta && Object.values(meta.external_ids ?? {}).some((v) => v != null));
@@ -65,7 +78,7 @@
   });
 
   async function saveTag() {
-    if (!seriesTitle.trim() || seriesTitle !== ownerSeriesTitle) return;
+    if (!seriesTitle.trim() || seriesTitle !== ownerSeriesTitle || !editGate.allowed) return;
     const next = tagDraft.trim();
     if ((meta?.tag ?? '') === next) {
       tagDirty = false;
@@ -81,6 +94,7 @@
   }
 
   async function onUnlink() {
+    if (!editGate.allowed) return;
     try {
       await unlinkSeries(seriesTitle);
       showSnackbar('Unlinked from AniList');
@@ -107,10 +121,14 @@
   {/each}
 
   {#if linked}
-    <Button size="xs" color="light" onclick={() => (linkOpen = true)}>Change</Button>
-    <Button size="xs" color="light" onclick={onUnlink}>Unlink</Button>
+    <Button size="xs" color="light" disabled={!editGate.allowed} onclick={() => (linkOpen = true)}
+      >Change</Button
+    >
+    <Button size="xs" color="light" disabled={!editGate.allowed} onclick={onUnlink}>Unlink</Button>
   {:else}
-    <Button size="xs" color="light" onclick={() => (linkOpen = true)}>Link…</Button>
+    <Button size="xs" color="light" disabled={!editGate.allowed} onclick={() => (linkOpen = true)}
+      >Link…</Button
+    >
   {/if}
 
   <label class="ml-auto flex items-center gap-1">
@@ -124,11 +142,18 @@
       }}
       onblur={saveTag}
       onkeydown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+      disabled={!editGate.allowed}
       placeholder="color"
-      title="Shown as (tag) after alt titles; folder names already include it"
-      class="w-32 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-700"
+      title={editGate.allowed
+        ? 'Shown as (tag) after alt titles; folder names already include it'
+        : editGate.reason}
+      class="w-32 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700"
     />
   </label>
 </div>
+
+{#if !editGate.allowed}
+  <p class="text-xs text-amber-600 dark:text-amber-400">{editGate.reason}</p>
+{/if}
 
 <SeriesLinkModal bind:open={linkOpen} {seriesTitle} />

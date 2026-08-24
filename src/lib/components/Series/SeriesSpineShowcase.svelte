@@ -44,6 +44,10 @@
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { seriesIndexMap } from '$lib/metadata/series-index';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import {
+    activeMetadataPermissions,
+    canEditSeriesMetadata
+  } from '$lib/util/sync/metadata-permissions';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import {
     fetchCloudThumbnail,
@@ -307,6 +311,13 @@
   // The record holds only THIS user's edits; an alignment another device published is
   // joined in from the cached `series.json` at read time (see `getSpineOffsets`).
   let seriesKey = $derived(normalizeSeriesKey(seriesTitle));
+  // Server-reported edit scope for THIS series (mokuro-bunko's identity endpoint). Disabled,
+  // not hidden, with the reason shown below — see $lib/util/sync/metadata-permissions.ts.
+  // Touches $activeMetadataPermissions so this recomputes if the scope changes after mount.
+  let editGate = $derived.by(() => {
+    void $activeMetadataPermissions;
+    return canEditSeriesMetadata(seriesTitle);
+  });
   let storedRecord = $derived($seriesMetadataMap.get(seriesKey));
   let publishedIndex = $derived($seriesIndexMap.get(seriesKey)?.file);
   let storedOffsets = $derived(getSpineOffsets(storedRecord, publishedIndex));
@@ -369,11 +380,13 @@
   }
 
   function setSeriesOffset(value: number) {
+    if (!editGate.allowed) return;
     hOffsetAdjust = clampSpineOffset(value);
     writeSpineOffsets({ spineOffset: hOffsetAdjust });
   }
 
   function setVolumeOffset(volumeUuid: string, value: number) {
+    if (!editGate.allowed) return;
     const px = clampVolumeOffset(value);
     const next = { ...volumeOffsetsByUuid };
     if (px === 0) delete next[volumeUuid];
@@ -384,6 +397,7 @@
   }
 
   function resetAllVolumeOffsets() {
+    if (!editGate.allowed) return;
     // Everything currently nudged on screen, including the volumes whose nudge is
     // inherited from the published series.json — the record holds no key to zero for
     // those, and only a stored 0 suppresses a published value, so without them the
@@ -661,14 +675,25 @@
       max={SLIDER_LIMIT}
       step={ADJUST_STEP}
       value={hOffsetAdjust}
+      disabled={!editGate.allowed}
       class="max-w-56 min-w-32 flex-1"
       oninput={(e) => setSeriesOffset(parseFloat(e.currentTarget.value))}
     />
     <span class="w-16 text-right font-mono text-xs text-gray-600 dark:text-gray-300">
       {formatPercent(hOffsetAdjust)}
     </span>
-    <Button size="xs" color="alternative" onclick={() => setSeriesOffset(0)}>Reset</Button>
-    <Button size="xs" color="alternative" onclick={resetAllVolumeOffsets}>
+    <Button
+      size="xs"
+      color="alternative"
+      disabled={!editGate.allowed}
+      onclick={() => setSeriesOffset(0)}>Reset</Button
+    >
+    <Button
+      size="xs"
+      color="alternative"
+      disabled={!editGate.allowed}
+      onclick={resetAllVolumeOffsets}
+    >
       Reset all volume offsets
     </Button>
 
@@ -691,10 +716,14 @@
     </ButtonGroup>
   </div>
 
-  <p class="text-xs text-gray-500 dark:text-gray-400">
-    Shift+scroll: series offset · Alt+Shift+scroll over a volume: nudge that volume ·
-    Alt+Shift+right-click: reset it
-  </p>
+  {#if !editGate.allowed}
+    <p class="text-xs text-amber-600 dark:text-amber-400">{editGate.reason}</p>
+  {:else}
+    <p class="text-xs text-gray-500 dark:text-gray-400">
+      Shift+scroll: series offset · Alt+Shift+scroll over a volume: nudge that volume ·
+      Alt+Shift+right-click: reset it
+    </p>
+  {/if}
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
