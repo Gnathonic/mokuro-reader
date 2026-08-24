@@ -166,6 +166,30 @@ describe('finishBackupRun', () => {
     );
   });
 
+  it('waits for a live write that is already in flight before writing that series', async () => {
+    // Cancelling only kills the TIMER. When the debounce has already fired — the
+    // whole-account fetch above takes about that long — the live write is out on
+    // its PUT, and starting the drain's own write for the same series then is two
+    // concurrent writers on one file. The cancel hands back that write's promise,
+    // and the drain has to await it.
+    let release: (() => void) | undefined;
+    cancelScheduledSeriesFileWrite.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = () => resolve();
+      })
+    );
+    noteSeriesNeedingIndexWrite('One Piece');
+
+    const run = finishBackupRun();
+    await vi.waitFor(() => expect(cancelScheduledSeriesFileWrite).toHaveBeenCalled());
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+
+    release!();
+    await run;
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
   it('writes no catalog for a run that uploaded nothing (export-to-disk drains)', async () => {
     // `finishBackupRun` also ends export-to-disk drains. Those touch no cloud
     // file at all, and must not end in a catalog.json UPLOAD.

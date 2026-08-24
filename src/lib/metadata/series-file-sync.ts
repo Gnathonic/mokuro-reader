@@ -238,13 +238,34 @@ function releaseWriteSlot(): void {
   waitingWrites.shift()?.();
 }
 
-/** Test hook: drop the write-concurrency bookkeeping. */
+/**
+ * series_key → the write currently running for it.
+ *
+ * A timer that has already fired is past cancelling: the write is inside its
+ * gates or out on its PUT. Anyone who is about to write the SAME file (the
+ * backup drain) has to be able to WAIT for it instead, so this module stays the
+ * one place where writes for a series are serialized. Entries live only for the
+ * duration of a run and never reject — `runWrite` swallows its own failures.
+ */
+const inFlightWrites = new Map<string, Promise<void>>();
+
+/** Test hook: drop the write-concurrency and in-flight bookkeeping. */
 export function _resetWriteSlotsForTests(): void {
   activeWrites = 0;
   waitingWrites.length = 0;
+  inFlightWrites.clear();
 }
 
-async function runWrite(seriesKey: string): Promise<void> {
+function runWrite(seriesKey: string): Promise<void> {
+  const run = performWrite(seriesKey);
+  inFlightWrites.set(seriesKey, run);
+  void run.finally(() => {
+    if (inFlightWrites.get(seriesKey) === run) inFlightWrites.delete(seriesKey);
+  });
+  return run;
+}
+
+async function performWrite(seriesKey: string): Promise<void> {
   timers.delete(seriesKey);
   const seriesTitle = pendingTitles.get(seriesKey);
   pendingTitles.delete(seriesKey);
@@ -312,29 +333,37 @@ export function scheduleSeriesFileWrite(seriesTitle: string, options?: ScheduleO
 }
 
 /**
- * Drop a queued write for this series, timer and all.
+ * Drop a queued write for this series and hand back whatever is ALREADY running
+ * for it, so the caller can wait the file free.
  *
  * For a caller that is about to write the SAME file itself: the drain pass at
  * the end of a backup run (`writeSeriesIndexesForRun`) writes every series the
  * run backed up directly, and the live per-completion schedules are still
  * pending for those very series. Left alone, each timer fires seconds later and
  * PUTs byte-identical content — mtime churn that makes every other device
- * re-download the file — and, worse, can land while the direct write for the
- * same series is still in flight, which is the one write pair nothing
- * serializes (the concurrency cap orders writes THROUGH this module only).
+ * re-download the file.
+ *
+ * Cancelling the timer only covers the writes that have not started. The drain
+ * runs immediately after a whole-account listing fetch, which is easily longer
+ * than the 2 s debounce, so the live write is often already past its timer and
+ * inside its gates or out on its PUT — and the concurrency cap orders writes
+ * THROUGH this module only, so the drain's own write would not queue behind it.
+ * Returning the in-flight promise is what closes that: `await` it and the two
+ * writers for one series are strictly sequential again.
  *
  * A cancelled write is not a lost one: the caller is writing the same file with
  * the same builder. Anything scheduled AFTER the cancel is a new edit and keeps
  * its own timer.
  */
-export function cancelScheduledSeriesFileWrite(seriesTitle: string): void {
+export function cancelScheduledSeriesFileWrite(seriesTitle: string): Promise<void> {
   const key = normalizeSeriesKey(seriesTitle);
-  if (!key) return;
+  if (!key) return Promise.resolve();
   const timer = timers.get(key);
   if (timer) clearTimeout(timer);
   timers.delete(key);
   pendingTitles.delete(key);
   pendingOptions.delete(key);
+  return inFlightWrites.get(key) ?? Promise.resolve();
 }
 
 /**

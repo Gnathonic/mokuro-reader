@@ -461,6 +461,49 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile.mock.calls.map((args: unknown[]) => args[0])).toEqual(['Berserk']);
   });
 
+  it('waits for a write already in flight instead of letting a caller race it', async () => {
+    // Cancelling a TIMER is not enough: the debounce may already have fired and
+    // the write be sitting on its PUT (the drain runs right after a whole-account
+    // fetch, which is exactly long enough for that). The drain must be able to
+    // wait for it, or two writes for one series are in flight at once — the race
+    // nothing else serializes.
+    let finishPut: (() => void) | undefined;
+    writeSeriesFile.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishPut = () => resolve('written');
+        })
+    );
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(finishPut).toBeDefined();
+
+    let settled = false;
+    const cancelled = cancelScheduledSeriesFileWrite('One Piece').then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    finishPut!();
+    await cancelled;
+    expect(settled).toBe(true);
+    // Nothing new was started by the cancel itself.
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves immediately when nothing is queued or in flight', async () => {
+    let settled = false;
+    const cancelled = cancelScheduledSeriesFileWrite('Nothing Here').then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelled;
+    expect(settled).toBe(true);
+  });
+
   it('cancels by the same key the schedule used, whatever the caller spells it', async () => {
     scheduleSeriesFileWrite('One Piece');
     cancelScheduledSeriesFileWrite('  one   piece  ');

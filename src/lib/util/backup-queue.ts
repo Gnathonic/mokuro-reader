@@ -364,13 +364,15 @@ async function writeSeriesIndexesForRun(): Promise<void> {
   seriesNeedingIndexWrite.clear();
   for (const seriesTitle of seriesTitles) {
     try {
-      // The live per-completion write is very likely still pending for this
-      // exact series (2 s debounce, scheduled as its last volume finished).
-      // Cancel it FIRST: this pass writes the same file from the same builder,
-      // so letting the timer fire afterwards costs a duplicate PUT — new mtime,
-      // every other device re-downloading an unchanged file — and letting it
-      // fire DURING this write is a same-series race nothing serializes.
-      cancelScheduledSeriesFileWrite(seriesTitle);
+      // The live per-completion write is still pending — or already running —
+      // for this exact series (2 s debounce, scheduled as its last volume
+      // finished; the listing fetch above takes longer than that). Cancel it
+      // FIRST and AWAIT what was already in flight: this pass writes the same
+      // file from the same builder, so a timer left armed costs a duplicate PUT
+      // (new mtime, every other device re-downloading an unchanged file), and a
+      // write already out on its PUT would otherwise run concurrently with this
+      // one — a same-series race nothing else serializes.
+      await cancelScheduledSeriesFileWrite(seriesTitle);
       await unifiedCloudManager.writeSeriesFile(seriesTitle);
     } catch (error) {
       // Best-effort by contract: never fails a backup that succeeded.
