@@ -201,6 +201,20 @@
     return targets;
   });
 
+  /**
+   * Covers already asked for, by uuid.
+   *
+   * `coverTargets` is built from the RAW volumes, which never gain a thumbnail — the
+   * fetched ones live in `cloudThumbnailData` — so the target list cannot shrink as covers
+   * land. Anything that re-runs this effect (a settings write, a re-sort, a metadata
+   * emission) would otherwise re-request every volume that has no cover, and each request
+   * that resolves writes state that can re-run it again: a shelf that never settles.
+   *
+   * Deliberately NOT reactive: a record of what this shelf has done, never an input to
+   * what it draws.
+   */
+  const requestedCovers = new Set<string>();
+
   $effect(() => {
     let cancelled = false;
     for (const vol of coverTargets) {
@@ -211,6 +225,10 @@
         cloudThumbnailData[vol.volume_uuid] = cached;
         continue;
       }
+
+      // One request per volume, whatever else re-runs this effect.
+      if (requestedCovers.has(vol.volume_uuid)) continue;
+      requestedCovers.add(vol.volume_uuid);
       void fetchCloudThumbnail(vol).then((result) => {
         if (cancelled || !result) return;
         cloudThumbnailData[vol.volume_uuid] = result;

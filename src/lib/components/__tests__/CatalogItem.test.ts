@@ -1087,6 +1087,50 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(2);
   });
 
+  it('asks for each missing cover once — the fetch must not feed itself', async () => {
+    // The effect that fetches covers writes `cloudThumbnailData`. If its target list is
+    // derived from the ENRICHED volumes (which carry that data), every arriving cover
+    // re-runs it and re-requests everything still outstanding: quadratic fetches, a
+    // permanently busy effect, and a frozen card.
+    let resolvers: (() => void)[] = [];
+    vi.mocked(fetchCloudThumbnail).mockImplementation(
+      (vol) =>
+        new Promise((resolve) => {
+          resolvers.push(() =>
+            resolve({
+              file: new File([], `${vol.volume_uuid}.jpg`, { type: 'image/jpeg' }),
+              width: 250,
+              height: 360
+            } as never)
+          );
+        })
+    );
+
+    render(CatalogItem, {
+      props: {
+        volumes: [
+          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
+          ...Array.from({ length: 6 }, (_, i) =>
+            cloudOnly({ volume_uuid: `c-${i + 2}`, volume_title: `Vol ${i + 2}` })
+          )
+        ]
+      }
+    });
+    await tick();
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
+
+    // Let the covers land one at a time, the way a real listing does.
+    for (const resolve of [...resolvers]) {
+      resolve();
+      await tick();
+      await tick();
+    }
+    await tick();
+
+    // Still six: one request per volume, no re-request storm as each one arrives.
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
+  });
+
   it('keeps a volume that is missing from the middle in its own place', async () => {
     render(CatalogItem, {
       props: {

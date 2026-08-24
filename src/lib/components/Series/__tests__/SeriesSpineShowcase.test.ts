@@ -1002,3 +1002,104 @@ describe('SeriesSpineShowcase measures the same volumes the card does', () => {
     await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65));
   });
 });
+
+describe('SeriesSpineShowcase settles instead of chasing its own covers', () => {
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => null);
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  const cloudNoCover = (index: number) =>
+    volume({
+      volume_uuid: `c-${String(index).padStart(3, '0')}`,
+      volume_title: `Vol ${String(index).padStart(3, '0')}`,
+      isPlaceholder: true,
+      thumbnail_width: undefined,
+      thumbnail_height: undefined,
+      cloudThumbnailFileId: `thumb-${index}`
+    });
+
+  /** Hand each cover over one at a time, the way a listing really lands. */
+  function deferredCovers() {
+    const resolvers: (() => void)[] = [];
+    vi.mocked(fetchCloudThumbnail).mockImplementation(
+      (vol) =>
+        new Promise((resolve) => {
+          resolvers.push(() =>
+            resolve({
+              file: new File([], `${vol.volume_uuid}.jpg`, { type: 'image/jpeg' }),
+              width: 250,
+              height: 360
+            } as never)
+          );
+        })
+    );
+    return resolvers;
+  }
+
+  async function landAll(resolvers: (() => void)[]) {
+    for (const resolve of [...resolvers]) {
+      resolve();
+      await tick();
+      await tick();
+    }
+    await tick();
+  }
+
+  it('asks for each cover of a cloud-only series once', async () => {
+    const resolvers = deferredCovers();
+    renderShowcase(Array.from({ length: 6 }, (_, i) => cloudNoCover(i + 1)));
+    await tick();
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
+    await landAll(resolvers);
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
+  });
+
+  it('never re-requests a cover for a volume that has none, however often it re-runs', async () => {
+    // The volumes that never gain a thumbnail are the dangerous ones: the raw list the
+    // fetch selects from cannot shrink for them, so anything that re-runs the effect —
+    // a settings write, a re-sort — would re-request every one of them, forever.
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+    renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
+    await tick();
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
+
+    // Something unrelated re-runs the effect.
+    catalogSettings.set({ horizontalStep: 12 });
+    await tick();
+    catalogSettings.set({ horizontalStep: 13 });
+    await tick();
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
+    catalogSettings.set({ horizontalStep: 11 });
+  });
+
+  it('asks for each cover of a partly-downloaded series past the window once', async () => {
+    const resolvers = deferredCovers();
+    renderShowcase([
+      ...Array.from({ length: 65 }, (_, i) => cloudNoCover(i + 1)),
+      volume({
+        volume_uuid: 'v-local',
+        volume_title: 'Vol 999',
+        thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' })
+      })
+    ]);
+    await tick();
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65);
+    await landAll(resolvers);
+    // Every cover landed and nothing was requested twice — the measurement window fix
+    // still covers all 65, and the fetch never chased the state it writes.
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65);
+  });
+});

@@ -127,6 +127,10 @@
   // spanning both absent states: a finished cloud volume hides like any other.
   let unreadVolumes = $derived([...localVolumes, ...enrichedPlaceholders].filter(isUnread));
 
+  // The same list over the RAW volumes. The cover fetch below selects with this one so its
+  // targets never depend on the covers it is fetching (see `cloudCoverTargets`).
+  let rawUnreadVolumes = $derived([...localVolumes, ...cloudStackVolumes].filter(isUnread));
+
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
     seriesNeedsDownload && ($catalogSettings?.compactCloudSeries ?? false)
@@ -629,7 +633,10 @@
   let cloudCoverTargets = $derived(
     selectCardStackVolumes({
       localVolumes: seriesNeedsDownload ? [] : localVolumes,
-      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
+      // The RAW unread list, not the one built over the enriched copies: `enrichedPlaceholders`
+      // carries the fetched covers, so depending on it here would make every arriving cover
+      // re-run this effect and re-request whatever had not landed yet.
+      unreadVolumes: seriesNeedsDownload ? [] : rawUnreadVolumes,
       placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
@@ -637,6 +644,17 @@
       compare: sortVolumes
     }).filter((vol) => !vol.thumbnail && !!vol.cloudThumbnailFileId)
   );
+
+  /**
+   * Covers already asked for, by uuid. The effect above can re-run for reasons that have
+   * nothing to do with the covers (a settings change, a re-sort), and a second request for
+   * the same volume would be pure waste — `fetchCloudThumbnail` coalesces in flight, but
+   * the `.then` handlers pile up per call and each one writes state.
+   *
+   * Deliberately NOT reactive: it is a record of what this card has done, never an input
+   * to what it draws.
+   */
+  const requestedCovers = new Set<string>();
 
   // Fetch cloud thumbnails for the volumes the stack is drawing.
   $effect(() => {
@@ -651,6 +669,10 @@
         cloudThumbnailData[vol.volume_uuid] = cached;
         continue;
       }
+
+      // One request per volume, whatever else re-runs this effect.
+      if (requestedCovers.has(vol.volume_uuid)) continue;
+      requestedCovers.add(vol.volume_uuid);
 
       // Fetch async
       fetchCloudThumbnail(vol).then((result) => {
