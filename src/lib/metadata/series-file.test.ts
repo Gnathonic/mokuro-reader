@@ -6,6 +6,7 @@ import {
   isSeriesFilePath,
   mergeSeriesFileForCache,
   parseSeriesFile,
+  stringifySeriesFile,
   volumeToIndexEntry,
   type SeriesFile
 } from './series-file';
@@ -124,6 +125,9 @@ describe('buildSeriesFile', () => {
       synonyms: ['ワンピース'],
       tag: '[color]',
       updated_at: '2026-08-16T00:00:00.000Z',
+      // Index data, published on purpose — the shelf alignment describes the
+      // archives' cover geometry, not the reader (see the offsets suite below).
+      spine_offset: 12,
       volumes: []
     });
     const json = JSON.stringify(file);
@@ -132,7 +136,7 @@ describe('buildSeriesFile', () => {
       'read_count',
       'title_preference',
       'reread_prompt_suppressed',
-      'spine_offset',
+      // The local uuid→px map never rides the file; per-entry `offset` does.
       'volume_offsets',
       'cover_url',
       'total_volumes'
@@ -871,5 +875,123 @@ describe('the tracking unit as a shared fact', () => {
     delete newer.unit;
     expect(mergeSeriesFileForCache('One Piece', newer, withUnit).unit).toBeUndefined();
     expect(mergeSeriesFileForCache('One Piece', withUnit, newer).unit).toBeUndefined();
+  });
+});
+
+describe('spine offsets in series.json', () => {
+  const meta = (partial: Partial<SeriesMetadata> = {}): SeriesMetadata => ({
+    ...createEmptySeriesMetadata('One Piece'),
+    ...partial
+  });
+
+  it('publishes the local shelf alignment as index data, not as facts', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: meta({ spine_offset: 12, volume_offsets: { 'vol-1': -30 } }),
+      localVolumes: [volume()]
+    })!;
+
+    expect(file.spine_offset).toBe(12);
+    expect(file.volumes[0].offset).toBe(-30);
+    // Offsets are not facts: an offsets-only record still publishes nothing to
+    // outrank anybody's link.
+    expect(file.updated_at).toBe(FACTLESS_UPDATED_AT);
+  });
+
+  it('carries the published alignment through when this library has none', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 8,
+      volumes: [{ ...volumeToIndexEntry(volume()), offset: 25 }]
+    };
+
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: meta(),
+      localVolumes: [volume()],
+      existing
+    })!;
+
+    expect(file.spine_offset).toBe(8);
+    expect(file.volumes[0].offset).toBe(25);
+  });
+
+  it('lets a local reset (an explicit 0) clear the published alignment', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 8,
+      volumes: [{ ...volumeToIndexEntry(volume()), offset: 25 }]
+    };
+
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: meta({ spine_offset: 0, volume_offsets: { 'vol-1': 0 } }),
+      localVolumes: [volume()],
+      existing
+    })!;
+
+    expect('spine_offset' in file).toBe(false);
+    expect('offset' in file.volumes[0]).toBe(false);
+  });
+
+  it('round-trips offsets through stringify → parse and drops junk', () => {
+    const built = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: meta({ spine_offset: 12, volume_offsets: { 'vol-1': -30 } }),
+      localVolumes: [volume()]
+    })!;
+
+    expect(parseSeriesFile(JSON.parse(stringifySeriesFile(built)))).toEqual(built);
+
+    const junk = parseSeriesFile({
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-23T00:00:00.000Z',
+      spine_offset: 9999,
+      volumes: [{ ...volumeToIndexEntry(volume()), offset: 'nope' }]
+    })!;
+
+    expect(junk.spine_offset).toBe(50); // clamped to SPINE_OFFSET_LIMIT
+    expect('offset' in junk.volumes[0]).toBe(false);
+  });
+
+  it('keeps the offsets of the winning side when caching an imported file', () => {
+    const cached: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-01T00:00:00.000Z',
+      spine_offset: 5,
+      volumes: []
+    };
+    const arriving: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-20T00:00:00.000Z',
+      volumes: [{ ...volumeToIndexEntry(volume()), offset: 11 }]
+    };
+
+    const merged = mergeSeriesFileForCache('One Piece', arriving, cached);
+
+    expect('spine_offset' in merged).toBe(false);
+    expect(merged.volumes[0].offset).toBe(11);
   });
 });

@@ -331,8 +331,9 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     await fireEvent.contextMenu(card, { shiftKey: true });
     await flushSpineOffsetWrites();
 
-    // `undefined` drops the field from the synced record.
-    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: undefined });
+    // An explicit 0, not a deleted field: absent means "no opinion", which would
+    // inherit the alignment another device published in series.json.
+    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: 0 });
   });
 
   it('alt+shift+wheel over the second volume writes volume_offsets keyed by ITS uuid', async () => {
@@ -372,7 +373,7 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     expect(resolvePatch(0)).toEqual({ volume_offsets: { 'uuid-0': 1 } });
   });
 
-  it('alt+shift+right-click over a volume clears that volume key only', async () => {
+  it('alt+shift+right-click over a volume zeroes that volume key only', async () => {
     emitSeriesMetadata(meta({ volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } }));
     const { container } = render(CatalogItem, { props: { volumes: twoVolumes() } });
     const card = getCard(container);
@@ -383,7 +384,7 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
     await flushSpineOffsetWrites();
 
     expect(resolvePatch(0, { volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } })).toEqual({
-      volume_offsets: { 'uuid-0': 3 }
+      volume_offsets: { 'uuid-0': 3, 'uuid-1': 0 }
     });
   });
 

@@ -208,6 +208,34 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
 }
 
 /**
+ * The offsets a sidecar can contribute: fill-only, so anything this library
+ * already decided stays untouched. `undefined` = nothing to add.
+ */
+function offsetsToFill(
+  existing: SeriesMetadata | undefined,
+  file: SeriesFile
+): Pick<SeriesMetadata, 'spine_offset' | 'volume_offsets'> | undefined {
+  const patch: Pick<SeriesMetadata, 'spine_offset' | 'volume_offsets'> = {};
+  let changed = false;
+
+  if (existing?.spine_offset === undefined && file.spine_offset !== undefined) {
+    patch.spine_offset = file.spine_offset;
+    changed = true;
+  }
+
+  const merged = { ...(existing?.volume_offsets ?? {}) };
+  for (const entry of file.volumes) {
+    if (entry.offset === undefined) continue;
+    if (merged[entry.volume_uuid] !== undefined) continue;
+    merged[entry.volume_uuid] = entry.offset;
+    changed = true;
+  }
+  if (Object.keys(merged).length > 0) patch.volume_offsets = merged;
+
+  return changed ? patch : undefined;
+}
+
+/**
  * Apply the metadata facts from a `series.json` sidecar. Newest wins: only
  * writes when there is no local record or the file's stamp is strictly newer
  * than the local *facts* stamp — not the record's `updated_at`, which every
@@ -230,6 +258,16 @@ export async function unlinkSeries(seriesTitle: string): Promise<SeriesMetadata>
  *
  * Read and write share one `rw` transaction so a concurrent writer cannot slip
  * a `put` between them, same as `updateSeriesMetadata`.
+ *
+ * Spine offsets ride the file as INDEX data, not facts, so they are applied on
+ * their own terms: only where this library has no value of its own (fill, never
+ * override — the local shelf is the local shelf), and regardless of the facts
+ * stamp comparison, which decides nothing about them. Applying them never moves
+ * `facts_updated_at`.
+ *
+ * A file with no facts and no local record still creates one when it carries
+ * offsets: that record has no facts clock, so `buildSeriesFile` still treats
+ * this library as having no opinion about the series' facts.
  */
 export async function upsertFromSeriesFile(
   seriesTitle: string,
@@ -238,11 +276,14 @@ export async function upsertFromSeriesFile(
   const key = normalizeSeriesKey(seriesTitle);
   return db.transaction('rw', db.series_metadata, async () => {
     const existing = await db.series_metadata.get(key);
-    // An index-only file for a series we hold no record for: nothing to apply.
-    if (!existing && !hasSeriesFacts(file)) return false;
     // No local facts stamp = no local opinion, so any sidecar with facts applies.
     const localStamp = existing ? factsStamp(existing) : undefined;
-    if (localStamp !== undefined && localStamp >= file.updated_at) return false;
+    const stampWins = localStamp === undefined || localStamp < file.updated_at;
+    // An index-only file for a series we hold no record for says nothing about
+    // the facts — creating an empty record from it would publish that emptiness.
+    const applyFacts = stampWins && (!!existing || hasSeriesFacts(file));
+    const offsets = offsetsToFill(existing, file);
+    if (!applyFacts && !offsets) return false;
 
     const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
     const linked = hasAnyId(file.external_ids);
@@ -251,31 +292,36 @@ export async function upsertFromSeriesFile(
       ...base,
       series_key: key,
       series_title: seriesTitle,
-      external_ids: { ...file.external_ids },
-      titles: { ...file.titles },
-      synonyms: [...file.synonyms],
-      tag: file.tag,
-      unit: file.unit,
-      ...(linkChanged
+      ...(applyFacts
         ? {
-            format: undefined,
-            status: undefined,
-            total_volumes: undefined,
-            total_chapters: undefined,
-            cover_url: undefined
+            external_ids: { ...file.external_ids },
+            titles: { ...file.titles },
+            synonyms: [...file.synonyms],
+            tag: file.tag,
+            unit: file.unit,
+            ...(linkChanged
+              ? {
+                  format: undefined,
+                  status: undefined,
+                  total_volumes: undefined,
+                  total_chapters: undefined,
+                  cover_url: undefined
+                }
+              : {}),
+            // The record's own stamp never moves backwards: the root series-metadata.json
+            // merge is "newest updated_at wins", so lowering it to an older file stamp
+            // would let another device's pre-link copy of this record win and undo the
+            // facts we just applied (with the per-user state riding along).
+            updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
+            facts_updated_at: file.updated_at,
+            linked_at: linked
+              ? linkChanged
+                ? file.updated_at
+                : (base.linked_at ?? file.updated_at)
+              : undefined
           }
         : {}),
-      // The record's own stamp never moves backwards: the root series-metadata.json
-      // merge is "newest updated_at wins", so lowering it to an older file stamp
-      // would let another device's pre-link copy of this record win and undo the
-      // facts we just applied (with the per-user state riding along).
-      updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
-      facts_updated_at: file.updated_at,
-      linked_at: linked
-        ? linkChanged
-          ? file.updated_at
-          : (base.linked_at ?? file.updated_at)
-        : undefined
+      ...(offsets ?? {})
     });
     await db.series_metadata.put(next);
     return true;

@@ -519,6 +519,96 @@ describe('series metadata store', () => {
     await replaceAllSeriesMetadata({ ...all, b: { ...all.b, tag: '22' } });
     expect((await getSeriesMetadataForTitle('B'))?.tag).toBe('22');
   });
+
+  it('fills missing spine offsets from a sidecar without touching the facts stamp', async () => {
+    await updateSeriesMetadata('One Piece', { external_ids: { anilist: 13 } });
+    const before = (await getSeriesMetadataForTitle('One Piece'))!;
+
+    const applied = await upsertFromSeriesFile('One Piece', {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 9,
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 1,
+          character_count: 1,
+          mokuro_version: '0.4.11',
+          offset: -20
+        }
+      ]
+    });
+
+    expect(applied).toBe(true);
+    const after = (await getSeriesMetadataForTitle('One Piece'))!;
+    expect(after.spine_offset).toBe(9);
+    expect(after.volume_offsets).toEqual({ 'vol-1': -20 });
+    // Index data, not facts: the link and its stamp are untouched.
+    expect(after.external_ids).toEqual({ anilist: 13 });
+    expect(after.facts_updated_at).toBe(before.facts_updated_at);
+  });
+
+  it('never overrides an offset this library already has', async () => {
+    await updateSeriesMetadata('One Piece', {
+      spine_offset: 3,
+      volume_offsets: { 'vol-1': 7 }
+    });
+
+    await upsertFromSeriesFile('One Piece', {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 9,
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 1,
+          character_count: 1,
+          mokuro_version: '0.4.11',
+          offset: -20
+        },
+        {
+          volume_uuid: 'vol-2',
+          volume_title: 'Vol 2',
+          page_count: 1,
+          character_count: 1,
+          mokuro_version: '0.4.11',
+          offset: 4
+        }
+      ]
+    });
+
+    const after = (await getSeriesMetadataForTitle('One Piece'))!;
+    expect(after.spine_offset).toBe(3);
+    expect(after.volume_offsets).toEqual({ 'vol-1': 7, 'vol-2': 4 });
+  });
+
+  it('creates a record from an offsets-only sidecar without giving it a facts clock', async () => {
+    const applied = await upsertFromSeriesFile('Berserk', {
+      version: 2,
+      series_title: 'Berserk',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      spine_offset: 6,
+      volumes: []
+    });
+
+    expect(applied).toBe(true);
+    const record = (await getSeriesMetadataForTitle('Berserk'))!;
+    expect(record.spine_offset).toBe(6);
+    expect(record.facts_updated_at).toBeUndefined();
+  });
 });
 
 describe('the tracking unit as a shared fact', () => {

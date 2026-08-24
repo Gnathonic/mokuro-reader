@@ -336,7 +336,8 @@
     if (px === 0) delete next[volumeUuid];
     else next[volumeUuid] = px;
     volumeOffsetsByUuid = next;
-    // 0 tells the writer to delete this volume's key rather than store a no-op.
+    // 0 is stored, not deleted: it is what outranks an alignment published by
+    // another device (see spine-offsets.ts).
     writeSpineOffsets({ volumeOffsets: { [volumeUuid]: px } });
   }
 

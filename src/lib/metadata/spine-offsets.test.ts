@@ -164,21 +164,27 @@ describe('scheduleSpineOffsetWrite', () => {
     });
   });
 
-  it('a zero value deletes that volume key (reset one volume)', async () => {
+  it('a zero value stores that volume key as an explicit reset', async () => {
     scheduleSpineOffsetWrite('One Piece', { volumeOffsets: { 'uuid-a': 0 } });
     await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
 
+    // The zero is KEPT, not deleted: an absent key means "no opinion", which
+    // inherits the offset another device published in series.json.
     const patch = resolvePatch(0, stored({ volume_offsets: { 'uuid-a': 5, 'uuid-b': -2 } }));
-    expect(patch).toEqual({ volume_offsets: { 'uuid-b': -2 } });
+    expect(patch).toEqual({ volume_offsets: { 'uuid-a': 0, 'uuid-b': -2 } });
+    // What the user sees is unchanged — the reader filters zeros.
+    expect(getSpineOffsets(stored(patch as Partial<SeriesMetadata>)).volumeOffsets).toEqual({
+      'uuid-b': -2
+    });
   });
 
-  it('an empty map resets every volume offset (field dropped)', async () => {
+  it('an empty map resets every volume offset (every key zeroed)', async () => {
     scheduleSpineOffsetWrite('One Piece', { volumeOffsets: {} });
     await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
 
     const patch = resolvePatch(0, stored({ volume_offsets: { 'uuid-a': 5, 'uuid-b': -2 } }));
-    // `undefined` is stripped by the store, so the field disappears from the synced JSON.
-    expect(patch).toEqual({ volume_offsets: undefined });
+    expect(patch).toEqual({ volume_offsets: { 'uuid-a': 0, 'uuid-b': 0 } });
+    expect(getSpineOffsets(stored(patch as Partial<SeriesMetadata>)).volumeOffsets).toEqual({});
   });
 
   it('a reset queued before further nudges still clears the untouched volumes', async () => {
@@ -187,14 +193,19 @@ describe('scheduleSpineOffsetWrite', () => {
     await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
 
     const patch = resolvePatch(0, stored({ volume_offsets: { 'uuid-a': 5, 'uuid-b': -2 } }));
-    expect(patch).toEqual({ volume_offsets: { 'uuid-c': 4 } });
+    expect(patch).toEqual({ volume_offsets: { 'uuid-a': 0, 'uuid-b': 0, 'uuid-c': 4 } });
+    expect(getSpineOffsets(stored(patch as Partial<SeriesMetadata>)).volumeOffsets).toEqual({
+      'uuid-c': 4
+    });
   });
 
-  it('a zero series offset clears the field instead of storing 0', async () => {
+  it('a zero series offset is stored as an explicit reset, not dropped', async () => {
     scheduleSpineOffsetWrite('One Piece', { spineOffset: 0 });
     await vi.advanceTimersByTimeAsync(SPINE_OFFSET_WRITE_DELAY_MS);
 
-    expect(resolvePatch(0, stored({ spine_offset: 4 }))).toEqual({ spine_offset: undefined });
+    const patch = resolvePatch(0, stored({ spine_offset: 4 }));
+    expect(patch).toEqual({ spine_offset: 0 });
+    expect(getSpineOffsets(stored(patch as Partial<SeriesMetadata>)).spineOffset).toBe(0);
   });
 
   it('a second burst after the first landed writes again', async () => {

@@ -317,7 +317,7 @@ describe('SeriesSpineShowcase', () => {
     contextMenu(strip, { shiftKey: true });
     await flushSpineOffsetWrites();
 
-    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: undefined });
+    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: 0 });
   });
 
   it('alt+shift+right-click resets only the hovered volume', async () => {
@@ -330,7 +330,7 @@ describe('SeriesSpineShowcase', () => {
     await flushSpineOffsetWrites();
 
     expect(resolvePatch(0, { volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } })).toEqual({
-      volume_offsets: { 'uuid-0': 3 }
+      volume_offsets: { 'uuid-0': 3, 'uuid-1': 0 }
     });
   });
 
@@ -342,10 +342,10 @@ describe('SeriesSpineShowcase', () => {
     await fireEvent.click(getByText('Reset'));
     await flushSpineOffsetWrites();
 
-    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: undefined });
+    expect(resolvePatch(0, { spine_offset: 4 })).toEqual({ spine_offset: 0 });
   });
 
-  it('“Reset all volume offsets” drops every per-volume nudge', async () => {
+  it('“Reset all volume offsets” zeroes every per-volume nudge', async () => {
     emitSeriesMetadata(metaMap({ volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } }));
     const { getByText } = renderShowcase();
     await tick();
@@ -353,8 +353,9 @@ describe('SeriesSpineShowcase', () => {
     await fireEvent.click(getByText('Reset all volume offsets'));
     await flushSpineOffsetWrites();
 
+    // Zeroed, not deleted: an absent key inherits whatever series.json publishes.
     expect(resolvePatch(0, { volume_offsets: { 'uuid-0': 3, 'uuid-1': -5 } })).toEqual({
-      volume_offsets: undefined
+      volume_offsets: { 'uuid-0': 0, 'uuid-1': 0 }
     });
   });
 

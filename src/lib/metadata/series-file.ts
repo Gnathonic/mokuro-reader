@@ -8,10 +8,12 @@ import {
   isRecord,
   normalizeUpdatedAt,
   sanitizeExternalIds,
+  sanitizeSpineOffset,
   sanitizeSynonyms,
   sanitizeTag,
   sanitizeTitles,
-  sanitizeTrackingUnit
+  sanitizeTrackingUnit,
+  sanitizeVolumeOffset
 } from './sanitize';
 import type { SeriesExternalIds, SeriesMetadata, SeriesTitles, TrackingUnit } from './types';
 
@@ -35,7 +37,9 @@ export const FACTLESS_UPDATED_AT = '1970-01-01T00:00:00.000Z';
 /**
  * One volume in the series index. Enough to show a cloud-only volume in the
  * catalog and attach synced progress to it without downloading its `.mokuro`.
- * Never per-user state (progress, offsets, read counts) and never page/OCR data.
+ * Never per-user state (progress, read counts) and never page/OCR data — the
+ * spine `offset` is here because it describes the archive's cover geometry, not
+ * the reader.
  */
 export interface SeriesFileVolume {
   volume_uuid: string;
@@ -52,6 +56,15 @@ export interface SeriesFileVolume {
    * ignore its absence.
    */
   archive_size?: number;
+  /**
+   * Horizontal nudge for this volume's spine on the catalog shelf, in px.
+   *
+   * A file fact like `spine_width`: the same archives have the same cover
+   * geometry, so the alignment one library measured is worth inheriting. INDEX
+   * data, never facts — it does not move `updated_at` and never decides a
+   * facts merge. Omitted when there is no nudge (a zero is never written).
+   */
+  offset?: number;
 }
 
 /**
@@ -72,6 +85,12 @@ export interface SeriesFile {
   tag?: string;
   /** Are these archives volumes or chapters? Absent = auto-detect from the titles. */
   unit?: TrackingUnit;
+  /**
+   * Percent added to the catalog's global horizontal spine step for this
+   * series. Index data like the per-volume `offset` — same reasoning, same
+   * rules, never a fact.
+   */
+  spine_offset?: number;
   updated_at: string;
   volumes: SeriesFileVolume[];
 }
@@ -288,11 +307,40 @@ export function buildSeriesFile(args: {
         localUuids.has(entry.volume_uuid)
     );
   }
+
+  // ---- index data: the shelf alignment ----
+  // Same rules as `archive_size`: this library's value wins where it has one,
+  // the published value rides through where it does not, and neither ever
+  // moves the facts stamp. A device that never linked the series still
+  // publishes the alignment it measured, and a bunko user inherits the
+  // uploader's shelf. A local ZERO is a deliberate reset, so it suppresses the
+  // published value instead of inheriting it back — and is then omitted from
+  // the file, which is what keeps build → parse an identity.
+  const publishedOffsets = new Map<string, number>();
+  for (const entry of existing?.volumes ?? []) {
+    if (entry.offset !== undefined) publishedOffsets.set(entry.volume_uuid, entry.offset);
+  }
+  const localOffsets = meta?.volume_offsets ?? {};
+  volumes = volumes.map((entry) => {
+    const hasLocal = Object.prototype.hasOwnProperty.call(localOffsets, entry.volume_uuid);
+    const local = hasLocal ? sanitizeVolumeOffset(localOffsets[entry.volume_uuid]) : undefined;
+    const offset = local ?? publishedOffsets.get(entry.volume_uuid);
+    if (!offset) {
+      if (entry.offset === undefined) return entry;
+      const cleared = { ...entry };
+      delete cleared.offset;
+      return cleared;
+    }
+    return entry.offset === offset ? entry : { ...entry, offset };
+  });
+
   volumes.sort(compareEntries);
 
   if (!hasSeriesFacts({ external_ids, titles, synonyms, tag, unit }) && volumes.length === 0) {
     return undefined;
   }
+
+  const spineOffset = sanitizeSpineOffset(meta?.spine_offset) ?? existing?.spine_offset;
 
   const file: SeriesFile = {
     version: 2,
@@ -305,6 +353,9 @@ export function buildSeriesFile(args: {
   };
   if (tag) file.tag = tag;
   if (unit) file.unit = unit;
+  // A local 0 (a reset) sanitizes to 0 and therefore drops the field — exactly
+  // what the reset means. Absent locally, the published value rides through.
+  if (spineOffset) file.spine_offset = spineOffset;
   return file;
 }
 
@@ -356,6 +407,9 @@ export function mergeSeriesFileForCache(
   const merged: SeriesFile = { ...base, series_title: seriesTitle, volumes };
   if (!base.tag) delete merged.tag;
   if (!base.unit) delete merged.unit;
+  // The alignment follows the same winner as the facts: a cached copy must not
+  // resurrect an offset the arriving (newer) file cleared.
+  if (!base.spine_offset) delete merged.spine_offset;
   return merged;
 }
 
@@ -385,6 +439,8 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   const spine = value.spine_width;
   if (typeof spine === 'number' && Number.isFinite(spine) && spine > 0) entry.spine_width = spine;
   if (isArchiveSize(value.archive_size)) entry.archive_size = value.archive_size;
+  const offset = sanitizeVolumeOffset(value.offset);
+  if (offset) entry.offset = offset;
   return entry;
 }
 
@@ -444,6 +500,8 @@ export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   if (tag) file.tag = tag;
   const unit = sanitizeTrackingUnit(value.unit);
   if (unit) file.unit = unit;
+  const spineOffset = sanitizeSpineOffset(value.spine_offset);
+  if (spineOffset) file.spine_offset = spineOffset;
   return file;
 }
 

@@ -161,6 +161,19 @@ export function sanitizeVolumeOffsets(value: unknown): Record<string, number> | 
 }
 
 /**
+ * One volume's spine nudge, in px: any finite number, clamped to
+ * ±`VOLUME_OFFSET_LIMIT`.
+ *
+ * `0` is a REAL value here, not a gap — it is how a device that reset its shelf
+ * overrides an alignment another device published (`buildSeriesFile` then omits
+ * the field entirely, so a zero never reaches the file itself).
+ */
+export function sanitizeVolumeOffset(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return clamp(value, VOLUME_OFFSET_LIMIT);
+}
+
+/**
  * The tracking unit is a shared *fact* (it travels in `series.json`), so it is
  * validated like one: exactly one of the two known strings, else undefined —
  * "nobody has corrected it", which sends the reader to auto-detection.

@@ -10,10 +10,11 @@ import type { SeriesMetadata } from './types';
  * (`volume_offsets`, keyed by `volume_uuid` so they follow the volume when the stack
  * is filtered or reordered — "hide read volumes" changes indices, uuids don't).
  *
- * These are user-visible catalog layout, not facts about the series, so they live on
- * the synced `SeriesMetadata` record (root `series-metadata.json`) and are deliberately
- * never published in the shared `series.json` sidecar. Writing them must not touch
- * `facts_updated_at` either — see `updateSeriesMetadata`.
+ * These are user-visible catalog layout AND a property of the archives themselves —
+ * the same covers have the same geometry — so they live on the local `SeriesMetadata`
+ * record and are published as INDEX data in the shared `series.json` sidecar
+ * (`spine_offset` top-level, per-volume `offset` on the entries). Writing them must
+ * never touch `facts_updated_at` — see `updateSeriesMetadata`.
  *
  * Writes are debounced per series: a wheel burst fires a tick every few milliseconds,
  * and each `updateSeriesMetadata` is an IndexedDB transaction plus a liveQuery emission
@@ -32,11 +33,11 @@ export interface SpineOffsets {
 }
 
 export interface SpineOffsetPatch {
-  /** Absolute value (not a delta); `0` clears the stored field. */
+  /** Absolute value (not a delta); `0` is stored as a reset, not deleted. */
   spineOffset?: number;
   /**
-   * Absolute px per volume_uuid; `0` deletes that volume's key. An EMPTY object means
-   * "reset every volume offset for this series".
+   * Absolute px per volume_uuid; `0` is stored as that volume's reset. An EMPTY object
+   * means "reset every volume offset for this series" (every key goes to `0`).
    */
   volumeOffsets?: Record<string, number>;
 }
@@ -127,17 +128,19 @@ function buildPatch(entry: PendingWrite): (existing: SeriesMetadata) => SeriesMe
   return (existing) => {
     const patch: SeriesMetadataPatch = {};
     if (hasSpineOffset) {
-      // 0 is the default; store nothing rather than a no-op field in the synced JSON.
-      patch.spine_offset = spineOffset === 0 ? undefined : spineOffset;
+      // Stored even at 0: a 0 is a deliberate reset, and `buildSeriesFile` needs
+      // to see it to suppress an alignment another device published (an absent
+      // value means "no opinion", which INHERITS the published one).
+      patch.spine_offset = spineOffset;
     }
     if (hasVolumeOffsets || resetVolumes) {
+      // "Reset all" keeps every key at 0 for the same reason: the zeros are what
+      // outrank the published nudges. They never reach the file — the writer
+      // omits zero offsets — and never reach the layout, which filters them.
       const next: Record<string, number> = resetVolumes
-        ? {}
+        ? Object.fromEntries(Object.keys(existing.volume_offsets ?? {}).map((uuid) => [uuid, 0]))
         : { ...(existing.volume_offsets ?? {}) };
-      for (const [uuid, px] of Object.entries(volumeOffsets)) {
-        if (px === 0) delete next[uuid];
-        else next[uuid] = px;
-      }
+      for (const [uuid, px] of Object.entries(volumeOffsets)) next[uuid] = px;
       patch.volume_offsets = Object.keys(next).length > 0 ? next : undefined;
     }
     return patch;
