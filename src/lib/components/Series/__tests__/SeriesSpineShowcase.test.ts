@@ -108,6 +108,16 @@ class IntersectionObserverStub {
 }
 const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
+/**
+ * The cover a row's stored dimensions describe. Dimensions never travel without one:
+ * every writer sets `thumbnail`, `thumbnail_width` and `thumbnail_height` together, and
+ * the shelf only sizes a spine once it has pixels (CompositeCanvas paints nothing for a
+ * volume without them). Fixtures for volumes with NO cover clear both explicitly.
+ */
+function coverFile(): File {
+  return new File([], 'cover.jpg', { type: 'image/jpeg' });
+}
+
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
     volume_uuid: 'uuid-1',
@@ -116,6 +126,7 @@ function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
     volume_title: 'Vol 1',
     page_count: 10,
     isPlaceholder: false,
+    thumbnail: coverFile(),
     thumbnail_width: 250,
     thumbnail_height: 360,
     ...overrides
@@ -470,6 +481,7 @@ describe('SeriesSpineShowcase', () => {
         volume_uuid: `uuid-${String(i).padStart(3, '0')}`,
         volume_title: `Vol ${String(i + 1).padStart(3, '0')}`,
         isPlaceholder: true,
+        thumbnail: undefined,
         thumbnail_width: undefined,
         thumbnail_height: undefined,
         cloudThumbnailFileId: `file-${i}`
@@ -762,7 +774,15 @@ describe('SeriesSpineShowcase marks the spines that are not on this device', () 
 
   /** A spine is only painted once it has pixels — see CompositeCanvas. */
   const painted = (overrides: Partial<VolumeMetadata> = {}) =>
-    volume({ thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }), ...overrides });
+    volume({ thumbnail: coverFile(), ...overrides });
+  /** …and a volume with no cover at all has nothing for a badge to sit on. */
+  const unpainted = (overrides: Partial<VolumeMetadata> = {}) =>
+    volume({
+      thumbnail: undefined,
+      thumbnail_width: undefined,
+      thumbnail_height: undefined,
+      ...overrides
+    });
 
   it('marks exactly the metadata-only and placeholder spines', async () => {
     const { container } = renderShowcase([
@@ -778,8 +798,8 @@ describe('SeriesSpineShowcase marks the spines that are not on this device', () 
     // No thumbnail anywhere: CompositeCanvas skips these volumes, so a badge would float
     // over blank strip.
     const { container } = renderShowcase([
-      volume({ volume_uuid: 'uuid-0', volume_title: 'Vol 1', metadata_only: true }),
-      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', isPlaceholder: true })
+      unpainted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1', metadata_only: true }),
+      unpainted({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', isPlaceholder: true })
     ]);
     await tick();
     expect(badges(container)).toHaveLength(0);
@@ -788,7 +808,7 @@ describe('SeriesSpineShowcase marks the spines that are not on this device', () 
   it('marks only the absent spine that has pixels', async () => {
     const { container } = renderShowcase([
       painted({ volume_uuid: 'uuid-0', volume_title: 'Vol 1', metadata_only: true }),
-      volume({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
+      unpainted({ volume_uuid: 'uuid-1', volume_title: 'Vol 2', metadata_only: true })
     ]);
     await tick();
     expect(badges(container)).toHaveLength(1);
@@ -1023,6 +1043,7 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
       volume_uuid: `c-${String(index).padStart(3, '0')}`,
       volume_title: `Vol ${String(index).padStart(3, '0')}`,
       isPlaceholder: true,
+      thumbnail: undefined,
       thumbnail_width: undefined,
       thumbnail_height: undefined,
       cloudThumbnailFileId: `thumb-${index}`
@@ -1065,23 +1086,48 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
   });
 
-  it('never re-requests a cover for a volume that has none, however often it re-runs', async () => {
+  it('does not chase its own covers while the requests are still out', async () => {
     // The volumes that never gain a thumbnail are the dangerous ones: the raw list the
-    // fetch selects from cannot shrink for them, so anything that re-runs the effect —
-    // a settings write, a re-sort — would re-request every one of them, forever.
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+    // fetch selects from cannot shrink for them, so a fetch that fed itself would
+    // re-request every one of them, forever. Nothing here re-runs the effect, so nothing
+    // may be asked twice.
+    const resolvers = deferredCovers();
     renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
     await tick();
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
 
-    // Something unrelated re-runs the effect.
-    catalogSettings.set({ horizontalStep: 12 });
-    await tick();
-    catalogSettings.set({ horizontalStep: 13 });
+    await landAll(resolvers);
     await tick();
 
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
-    catalogSettings.set({ horizontalStep: 11 });
+  });
+
+  it('asks again for a cover whose request produced nothing', async () => {
+    // A `null` is never cached by the layer below: a 15s timeout, a provider that was not
+    // connected yet, an account saturated by a bulk download all land here and are all
+    // meant to be retried. Holding the uuid across one of those is what leaves a spine
+    // blank until the shelf is reopened.
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+    vi.useFakeTimers();
+    try {
+      renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
+
+      // The shelf asks again on its own, twice, before giving the requests up.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(10);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(15);
+
+      // Released: something unrelated re-runs the effect and they are asked once more.
+      catalogSettings.set({ horizontalStep: 12 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(20);
+      catalogSettings.set({ horizontalStep: 11 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('asks for each cover of a partly-downloaded series past the window once', async () => {

@@ -1157,6 +1157,9 @@ test.describe('spine showcase', () => {
   test('opens for a partly-downloaded series of cover-less volumes without hanging', async ({
     page
   }) => {
+    // Waits out two full cover-retry schedules (see `requestCoverOnce`) plus a quiet
+    // window on top, which is more than the file's default budget.
+    test.setTimeout(90000);
     const watch = watchConsole(page);
     await connectLocalFolder(page);
 
@@ -1203,16 +1206,26 @@ test.describe('spine showcase', () => {
     await page.waitForTimeout(4000);
     const first = await coverRequests();
     expect(Object.keys(first).length).toBeGreaterThan(0);
-    // Two independent surfaces ask for these covers — the shelf and the volume
-    // list's placeholder thumbnails — and each asks ONCE. What must never
-    // happen is a third, fourth, nth ask as each failure re-runs the effect.
+    // Two independent surfaces ask for these covers — the shelf and the volume list's
+    // placeholder thumbnails — and each runs ONE bounded retry schedule (see
+    // `requestCoverOnce`: the first ask plus two retries, 2s and 8s apart, because a
+    // cover that produced nothing has to stay retryable). Four seconds in, that is at
+    // most two asks per surface. What must never happen is a request PER FAILURE: an
+    // effect that re-runs itself once for every answer it gets.
     for (const [path, count] of Object.entries(first)) {
-      expect(count, `${path} was requested ${count} times on first settle`).toBeLessThanOrEqual(2);
+      expect(count, `${path} was requested ${count} times on first settle`).toBeLessThanOrEqual(4);
     }
 
-    // Four more seconds with the shelf on screen: not one further request.
+    // Long enough for both schedules to be spent…
+    await page.waitForTimeout(9000);
+    const settled = await coverRequests();
+    for (const [path, count] of Object.entries(settled)) {
+      expect(count, `${path} was requested ${count} times in all`).toBeLessThanOrEqual(6);
+    }
+
+    // …and then it stops: the shelf is on screen and asks for nothing more.
     await page.waitForTimeout(4000);
-    expect(await coverRequests()).toEqual(first);
+    expect(await coverRequests()).toEqual(settled);
 
     // The main thread is not pegged: frames still tick.
     const frames = await page.evaluate(

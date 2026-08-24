@@ -233,6 +233,25 @@
     }
   }
 
+  /**
+   * Repaint when a bitmap this canvas is waiting for lands in the cache.
+   *
+   * `draw()` reads the cache SYNCHRONOUSLY, so a miss can only be recovered by drawing
+   * again. Its own `thumbnailCache.get(...)` covers the load it started itself, but not a
+   * commit that came from anywhere else — another card sharing the volume, a cover
+   * install, a re-decode after an invalidate. Those used to reach this canvas only if
+   * something happened to re-render it, which is why a cover could arrive and the card
+   * stay blank until it was remounted.
+   *
+   * Subscribed once, for the component's life: the listener re-reads `volumes` when it
+   * fires rather than being torn down and rebuilt on every data change.
+   */
+  $effect(() => {
+    return thumbnailCache.subscribeCommits((volumeUuid) => {
+      if (volumes.some((vol) => vol.volume_uuid === volumeUuid)) drawTrigger++;
+    });
+  });
+
   // Draw effect - reacts to data changes
   $effect(() => {
     // Dependencies - access to track

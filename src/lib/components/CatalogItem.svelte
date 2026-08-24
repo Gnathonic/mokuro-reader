@@ -46,6 +46,7 @@
     getCachedCloudThumbnail,
     type CloudThumbnailResult
   } from '$lib/catalog/cloud-thumbnails';
+  import { requestCoverOnce } from '$lib/catalog/cover-requests';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -446,16 +447,23 @@
   const BASE_HEIGHT = CARD_BASE_HEIGHT;
   const OUTER_PADDING = 25; // pt-4 pb-6 ≈ 25px
 
-  // Get dimensions from volume metadata, with fallback to defaults
+  // Get dimensions from volume metadata, with fallback to defaults.
+  //
+  // PIXELS FIRST: a volume earns an entry here only once it has a thumbnail to draw.
+  // Stored dimensions alone are not enough — CompositeCanvas skips a volume without a
+  // thumbnail (it has nothing to paint), so a stack whose only "dimensions" came from
+  // rows with no cover would render the canvas branch as a correctly-sized, permanently
+  // empty box instead of the honest placeholder below it.
   let thumbnailDimensions = $derived.by(() => {
     const dims = new Map<string, { width: number; height: number }>();
     for (const vol of stackedVolumes) {
+      if (!vol.thumbnail) continue;
       if (vol.thumbnail_width && vol.thumbnail_height) {
         dims.set(vol.volume_uuid, {
           width: vol.thumbnail_width,
           height: vol.thumbnail_height
         });
-      } else if (vol.thumbnail) {
+      } else {
         // Fallback to default aspect ratio for volumes without stored dimensions
         dims.set(vol.volume_uuid, {
           width: BASE_WIDTH,
@@ -646,50 +654,63 @@
   );
 
   /**
-   * Covers already asked for, by uuid. The effect above can re-run for reasons that have
+   * Covers already asked for, by uuid. The effect below can re-run for reasons that have
    * nothing to do with the covers (a settings change, a re-sort), and a second request for
    * the same volume would be pure waste — `fetchCloudThumbnail` coalesces in flight, but
    * the `.then` handlers pile up per call and each one writes state.
+   *
+   * Held only for requests that PRODUCED a cover — see `requestCoverOnce`. A timeout or a
+   * saturated provider mid-bulk-download must be retryable, or one transient failure blanks
+   * this card until it remounts.
    *
    * Deliberately NOT reactive: it is a record of what this card has done, never an input
    * to what it draws.
    */
   const requestedCovers = new Set<string>();
 
+  /**
+   * Store a fetched cover, once. Returns whether it is committed, which is what decides
+   * whether `requestedCovers` keeps the uuid.
+   *
+   * Only-if-absent: this effect re-runs constantly, and re-assigning an entry that is
+   * already there would invalidate `enrichedPlaceholders` → the whole stack geometry → the
+   * canvas draw, for no new pixels.
+   *
+   * Deliberately NOT gated on the run that asked for it still being current. A cover is
+   * keyed by volume uuid and is the right answer for that volume whoever asked; throwing
+   * one away because a settings write superseded the effect mid-flight is how a card ends
+   * up blank with the cover sitting in the session cache, unread until something else
+   * re-renders it. The map is plain state — writing it after the card is gone is inert.
+   */
+  function commitCover(volumeUuid: string, result: CloudThumbnailResult) {
+    if (cloudThumbnailData[volumeUuid]) return true;
+    cloudThumbnailData[volumeUuid] = result;
+    return true;
+  }
+
   // Fetch cloud thumbnails for the volumes the stack is drawing.
   $effect(() => {
     const vols = cloudCoverTargets;
     if (vols.length === 0) return;
-    let cancelled = false;
 
     for (const vol of vols) {
       // Check synchronous cache first
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
       if (cached) {
-        cloudThumbnailData[vol.volume_uuid] = cached;
+        commitCover(vol.volume_uuid, cached);
         continue;
       }
 
-      // One request per volume, whatever else re-runs this effect.
-      if (requestedCovers.has(vol.volume_uuid)) continue;
-      requestedCovers.add(vol.volume_uuid);
-
-      // Fetch async
-      fetchCloudThumbnail(vol).then((result) => {
-        if (cancelled || !result) return;
-        console.log(
-          `[CatalogItem] Cloud thumbnail loaded: ${vol.volume_title} ${result.width}x${result.height}`
-        );
-        cloudThumbnailData[vol.volume_uuid] = result;
-      });
+      // One request per volume that lands one, whatever else re-runs this effect.
+      void requestCoverOnce(requestedCovers, vol, fetchCloudThumbnail, (result) =>
+        commitCover(vol.volume_uuid, result)
+      );
     }
 
-    return () => {
-      cancelled = true;
-      // Don't reset cloudThumbnailData - File objects don't need cleanup (unlike blob URLs),
-      // and resetting triggers expensive enrichedPlaceholders → template flip-flop when the
-      // parent re-renders (e.g., from local thumbnail processing updating the catalog store)
-    };
+    // No teardown: cloudThumbnailData is never reset — File objects need no cleanup
+    // (unlike blob URLs), and resetting triggers an expensive enrichedPlaceholders →
+    // template flip-flop every time the parent re-renders (e.g. local thumbnail
+    // processing updating the catalog store).
   });
 
   // Use series title for navigation so grouping and routing align with user-visible identity.

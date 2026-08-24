@@ -115,19 +115,6 @@ export async function fetchCloudThumbnail(
       const height = bitmap.height;
       bitmap.close();
 
-      // Compare with Image API to detect discrepancies
-      const img = new Image();
-      const imgUrl = URL.createObjectURL(file);
-      const imgDims = await new Promise<{ w: number; h: number }>((resolve) => {
-        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-        img.onerror = () => resolve({ w: 0, h: 0 });
-        img.src = imgUrl;
-      });
-      URL.revokeObjectURL(imgUrl);
-
-      console.log(
-        `[CloudThumbnail] ${volume.volume_title}: bitmap=${width}x${height}, img=${imgDims.w}x${imgDims.h}, file size: ${file.size} bytes`
-      );
       const result: CloudThumbnailResult = { file, width, height };
       cache.set(volume.volume_uuid, result);
       return result;

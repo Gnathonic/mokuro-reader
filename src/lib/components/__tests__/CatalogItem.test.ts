@@ -100,6 +100,16 @@ function localVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   } as VolumeMetadata;
 }
 
+/**
+ * The cover a row's stored dimensions describe. Dimensions never travel without one:
+ * every writer sets `thumbnail`, `thumbnail_width` and `thumbnail_height` together, and
+ * the card only counts a volume as drawable once it has pixels (CompositeCanvas paints
+ * nothing for a volume without them).
+ */
+function coverFile(): File {
+  return new File([], 'cover.jpg', { type: 'image/jpeg' });
+}
+
 function placeholderVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
     volume_uuid: 'uuid-cloud-1',
@@ -211,7 +221,12 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function withThumbnail(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
-    return localVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+    return localVolume({
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
   }
 
   const twoVolumes = () => [
@@ -406,8 +421,18 @@ describe('CatalogItem spine offset resync is stable', () => {
     new Map([['one piece', record(overrides)]]);
 
   const volumes = () => [
-    localVolume({ volume_uuid: 'uuid-0', thumbnail_width: 250, thumbnail_height: 360 }),
-    localVolume({ volume_uuid: 'uuid-1', thumbnail_width: 250, thumbnail_height: 360 })
+    localVolume({
+      volume_uuid: 'uuid-0',
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360
+    }),
+    localVolume({
+      volume_uuid: 'uuid-1',
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360
+    })
   ];
 
   function stackWidth(container: HTMLElement): string {
@@ -530,7 +555,12 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function cover(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
-    return localVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+    return localVolume({
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
   }
 
   beforeEach(() => {
@@ -579,7 +609,13 @@ describe('CatalogItem marks a series whose volumes are all absent', () => {
   it('draws the same mark for a cloud-only (placeholder) series, as before', () => {
     const { container } = render(CatalogItem, {
       props: {
-        volumes: [placeholderVolume({ thumbnail_width: 250, thumbnail_height: 360 })]
+        volumes: [
+          placeholderVolume({
+            thumbnail: coverFile(),
+            thumbnail_width: 250,
+            thumbnail_height: 360
+          })
+        ]
       }
     });
     expect(cloudMarks(container)).toHaveLength(1);
@@ -702,9 +738,19 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   const cover = (overrides: Partial<VolumeMetadata> = {}) =>
-    localVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+    localVolume({
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
   const cloudCover = (overrides: Partial<VolumeMetadata> = {}) =>
-    placeholderVolume({ thumbnail_width: 250, thumbnail_height: 360, ...overrides });
+    placeholderVolume({
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
 
   beforeEach(() => {
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
@@ -773,8 +819,11 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
       mutedTitle: false,
       greenTitle: false,
       chip: null,
+      // None of the CLOUD CARD's identity: no dimming, no muted title, no volume-count
+      // chip and no corner mark. The one absent volume keeps its own spine badge — that
+      // is the per-volume mark, which is exactly what a partly-here series should show.
       cloudMarks: 0,
-      badges: 0
+      badges: 1
     });
   });
 
@@ -1200,5 +1249,157 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     await tick();
 
     expect(drawnUuids()).toEqual(['v-1', 'v-2', 'c-3']);
+  });
+});
+
+/**
+ * The freshly-downloaded-series bug: the card mounts while the series has no cover at
+ * all, and the covers arrive afterwards — a thumbnail generated in the background, a
+ * cover sidecar downloaded, a request that failed the first time.
+ */
+describe('CatalogItem draws the covers that arrive after it mounted', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  const bare = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({ series_title: 'Fresh Series', ...overrides });
+  const generated = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({
+      series_title: 'Fresh Series',
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360,
+      ...overrides
+    });
+  const cloudOnly = (overrides: Partial<VolumeMetadata> = {}) =>
+    placeholderVolume({
+      series_title: 'Fresh Series',
+      cloudThumbnailFileId: `thumb-${overrides.volume_uuid ?? 'c'}`,
+      ...overrides
+    });
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+  });
+
+  afterEach(() => {
+    cleanup();
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  it('replaces "Generating…" with the cover stack once the thumbnails commit', async () => {
+    // Exactly what a download leaves behind: rows with pages but no cover yet.
+    const { container, rerender } = render(CatalogItem, {
+      props: { volumes: [bare({ volume_uuid: 'f-1' }), bare({ volume_uuid: 'f-2' })] }
+    });
+    await tick();
+    expect(container.textContent).toContain('Generating');
+    expect(container.querySelector('canvas')).toBeNull();
+
+    // The background thumbnail pass writes the covers and the catalog re-emits the rows.
+    await rerender({
+      volumes: [generated({ volume_uuid: 'f-1' }), generated({ volume_uuid: 'f-2' })]
+    });
+    await tick();
+
+    expect(container.textContent).not.toContain('Generating');
+    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
+    // Every volume handed to the canvas has pixels: a stack of dimensions with nothing
+    // to paint is a correctly-sized, permanently empty box.
+    expect(props.volumes.map((vol) => vol.volume_uuid)).toEqual(['f-1', 'f-2']);
+    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+  });
+
+  it('asks again for a cover whose request produced nothing', async () => {
+    // A saturated provider mid-bulk-download answers `null`, and nothing below caches
+    // that. Spending the request on it is what leaves the card cover-less until it
+    // remounts — the "no covers until I navigate away and back" report.
+    vi.useFakeTimers();
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            generated({ volume_uuid: 'f-1', volume_title: 'Vol 1' }),
+            cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
+          ]
+        }
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+
+      // The card asks again on its own — nothing else has to re-render it.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases a cover request that never landed, so a re-run can try once more', async () => {
+    vi.useFakeTimers();
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            generated({ volume_uuid: 'f-1', volume_title: 'Vol 1' }),
+            cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
+          ]
+        }
+      });
+      // Spend the whole retry schedule.
+      await vi.advanceTimersByTimeAsync(11000);
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(3);
+
+      // Anything re-runs the effect — during a bulk download the catalog emits constantly.
+      updateCatalogSetting('horizontalStep', 12);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(4);
+      updateCatalogSetting('horizontalStep', 11);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a cover that landed, and does not ask for it twice', async () => {
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
+      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
+      width: 250,
+      height: 360
+    } as never);
+    render(CatalogItem, {
+      props: {
+        volumes: [
+          generated({ volume_uuid: 'f-1', volume_title: 'Vol 1' }),
+          cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
+        ]
+      }
+    });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
+    await tick();
+
+    updateCatalogSetting('horizontalStep', 12);
+    await tick();
+    await tick();
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
+    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+    updateCatalogSetting('horizontalStep', 11);
   });
 });

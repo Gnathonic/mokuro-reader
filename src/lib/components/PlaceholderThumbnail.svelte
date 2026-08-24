@@ -3,6 +3,7 @@
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { fetchCloudThumbnail, getCachedCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
+  import { requestCoverOnce } from '$lib/catalog/cover-requests';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -40,27 +41,35 @@
 
   let hasCloudThumbnailId = $derived(!!volume?.cloudThumbnailFileId);
 
+  /**
+   * Covers this placeholder has asked for and landed. Bounded to one uuid in practice —
+   * a placeholder draws a single volume — but it follows the same rule as the catalog
+   * card and the spine shelf so all three behave alike: the request is only spent when it
+   * produced a cover, so a timeout or a saturated provider stays retryable rather than
+   * leaving the box blank until the view is reopened.
+   *
+   * Deliberately NOT reactive.
+   */
+  const requestedCovers = new Set<string>();
+
   $effect(() => {
     if (!hasCloudThumbnailId || !volume) return;
+    const target = volume;
 
-    const cached = getCachedCloudThumbnail(volume.volume_uuid);
+    const cached = getCachedCloudThumbnail(target.volume_uuid);
     if (cached) {
-      console.log(
-        `[PlaceholderThumbnail] ${volume.volume_title}: using cached ${cached.width}x${cached.height}`
-      );
       const url = URL.createObjectURL(cached.file);
       cloudThumbnailUrl = url;
       return () => URL.revokeObjectURL(url);
     }
 
     let cancelled = false;
-    fetchCloudThumbnail(volume).then((result) => {
-      if (cancelled || !result) return;
-      console.log(
-        `[PlaceholderThumbnail] ${volume.volume_title}: fetched ${result.width}x${result.height}`
-      );
-      const url = URL.createObjectURL(result.file);
-      cloudThumbnailUrl = url;
+    void requestCoverOnce(requestedCovers, target, fetchCloudThumbnail, (result) => {
+      // A superseded run releases the uuid instead of claiming it, so the live run can
+      // ask again — the object URL it would have created has no owner to revoke it.
+      if (cancelled) return false;
+      cloudThumbnailUrl = URL.createObjectURL(result.file);
+      return true;
     });
 
     return () => {

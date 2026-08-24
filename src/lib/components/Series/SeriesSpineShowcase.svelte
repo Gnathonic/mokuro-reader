@@ -49,6 +49,7 @@
     getCachedCloudThumbnail,
     type CloudThumbnailResult
   } from '$lib/catalog/cloud-thumbnails';
+  import { requestCoverOnce } from '$lib/catalog/cover-requests';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -210,43 +211,57 @@
    * emission) would otherwise re-request every volume that has no cover, and each request
    * that resolves writes state that can re-run it again: a shelf that never settles.
    *
+   * Held only for requests that PRODUCED a cover — see `requestCoverOnce`. A timeout or a
+   * saturated provider must stay retryable, or one transient failure leaves that spine
+   * blank until the shelf is reopened.
+   *
    * Deliberately NOT reactive: a record of what this shelf has done, never an input to
    * what it draws.
    */
   const requestedCovers = new Set<string>();
 
+  /**
+   * Only-if-absent: a re-assignment would re-run the whole strip's geometry for nothing.
+   *
+   * Not gated on the asking run still being current — a cover is keyed by volume uuid and
+   * is the right answer for that volume whoever asked (see CatalogItem for the full note).
+   */
+  function commitCover(volumeUuid: string, result: CloudThumbnailResult) {
+    if (cloudThumbnailData[volumeUuid]) return true;
+    cloudThumbnailData[volumeUuid] = result;
+    return true;
+  }
+
   $effect(() => {
-    let cancelled = false;
     for (const vol of coverTargets) {
       // Already have pixels locally, or nothing to fetch: leave it alone.
       if (vol.thumbnail || !vol.cloudThumbnailFileId) continue;
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
       if (cached) {
-        cloudThumbnailData[vol.volume_uuid] = cached;
+        commitCover(vol.volume_uuid, cached);
         continue;
       }
 
-      // One request per volume, whatever else re-runs this effect.
-      if (requestedCovers.has(vol.volume_uuid)) continue;
-      requestedCovers.add(vol.volume_uuid);
-      void fetchCloudThumbnail(vol).then((result) => {
-        if (cancelled || !result) return;
-        cloudThumbnailData[vol.volume_uuid] = result;
-      });
+      // One request per volume that lands one, whatever else re-runs this effect.
+      void requestCoverOnce(requestedCovers, vol, fetchCloudThumbnail, (result) =>
+        commitCover(vol.volume_uuid, result)
+      );
     }
-    return () => {
-      cancelled = true;
-    };
   });
 
-  /** The card's dimension rule: stored size, else the base box once there are pixels. */
+  /**
+   * The card's dimension rule: stored size, else the base box once there are pixels.
+   *
+   * Pixels first, exactly as on the card: stored dimensions on a volume with no cover to
+   * draw would size a spine that CompositeCanvas paints nothing into.
+   */
   function dimensionsOf(vol: VolumeMetadata): Dimensions | undefined {
     const ct = cloudThumbnailData[vol.volume_uuid];
+    if (!ct?.file && !vol.thumbnail) return undefined;
     const width = ct?.width ?? vol.thumbnail_width;
     const height = ct?.height ?? vol.thumbnail_height;
     if (width && height) return { width, height };
-    if (ct?.file || vol.thumbnail) return { width: BASE_WIDTH, height: BASE_HEIGHT };
-    return undefined;
+    return { width: BASE_WIDTH, height: BASE_HEIGHT };
   }
 
   let thumbnailDimensions = $derived.by(() => {
