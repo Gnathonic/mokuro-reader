@@ -37,6 +37,7 @@ import {
   getSeriesMetadataForTitle,
   upsertFromSeriesFile
 } from '$lib/metadata/store';
+import type { SeriesMetadata } from '$lib/metadata/types';
 import {
   deleteSeriesIndex,
   getSeriesIndex,
@@ -968,6 +969,31 @@ class UnifiedCloudManager {
     return fresh;
   }
 
+  /**
+   * The series record for a title that may be a cloud FOLDER name.
+   *
+   * The exact key first — `series_metadata` is keyed by `normalizeSeriesKey`, so
+   * that already absorbs case and whitespace and is the answer for every
+   * ordinary call. Only when it misses does this fall back to a folded scan of
+   * the (small) table, because the one difference the key cannot absorb is the
+   * unicode form: a folder that came back decomposed from the filesystem, or a
+   * record written from a decomposed title.
+   *
+   * Without the fallback `writeSeriesFile` publishes an index full of volumes
+   * (its rows filter DOES fold) and empty of facts — a file that unlinks the
+   * series for every device that reads it, while `catalog.json`, which folds its
+   * own lookup, publishes the same series linked.
+   */
+  private async resolveSeriesMetadata(seriesTitle: string): Promise<SeriesMetadata | undefined> {
+    const exact = await getSeriesMetadataForTitle(seriesTitle);
+    if (exact) return exact;
+
+    const key = normalizeVolumeTitleKey(seriesTitle);
+    if (!key) return undefined;
+    const all = await getAllSeriesMetadata();
+    return Object.values(all).find((meta) => normalizeVolumeTitleKey(meta.series_title) === key);
+  }
+
   /** Volume titles the cloud listing shows as `.cbz` archives in a series folder. */
   private cloudVolumeTitles(seriesTitle: string): Set<string> {
     const titles = new Set<string>();
@@ -1100,9 +1126,9 @@ class UnifiedCloudManager {
     // record is still filed under the old title, and dropping its facts here
     // would publish a file that unlinks the series everywhere else.
     const meta =
-      (await getSeriesMetadataForTitle(seriesTitle)) ??
+      (await this.resolveSeriesMetadata(seriesTitle)) ??
       (options?.localSeriesTitle
-        ? await getSeriesMetadataForTitle(options.localSeriesTitle)
+        ? await this.resolveSeriesMetadata(options.localSeriesTitle)
         : undefined);
 
     // Both gates below need a COMPLETE listing, and only the cache knows it has

@@ -996,6 +996,9 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     vi.clearAllMocks();
     localVolumes.mockResolvedValue([]);
     getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    // `vi.clearAllMocks()` clears calls, not queued return values: reset the
+    // whole-table read here too, or one test's records leak into the next.
+    getAllSeriesMetadata.mockResolvedValue({});
     getSeriesIndex.mockResolvedValue(undefined);
   });
 
@@ -1277,6 +1280,43 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(provider.downloadFile).not.toHaveBeenCalled();
   });
 
+  it('publishes the facts of an NFD folder’s composed series record', async () => {
+    // The volumes filter folds, so the index came out full of volumes and empty
+    // of facts: series.json unlinking the series while catalog.json (which does
+    // fold its lookup) publishes it linked. The two must agree.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile(`${decomposed}/Volume 1.cbz`)]);
+    localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
+    // The record is filed under the COMPOSED title, so the exact-key lookup —
+    // which folds case and whitespace but not the unicode form — finds nothing.
+    getAllSeriesMetadata.mockResolvedValue({
+      [composed.toLowerCase()]: {
+        series_key: composed.toLowerCase(),
+        series_title: composed,
+        external_ids: { anilist: 4242 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-23T00:00:00.000Z',
+        facts_updated_at: '2026-08-23T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
+
+    const file = await uploadedSeriesFile(provider);
+    expect(file.external_ids).toEqual({ anilist: 4242 });
+    expect(file.updated_at).toBe('2026-08-23T00:00:00.000Z');
+  });
+
   it('reads the local rows of an NFD folder name, whose rows are stored composed', async () => {
     // A folder name that made the round trip through a filesystem can come back
     // decomposed while the IndexedDB rows stay composed. Byte-wise, the filter
@@ -1474,6 +1514,9 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     vi.clearAllMocks();
     localVolumes.mockResolvedValue([]);
     getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    // `vi.clearAllMocks()` clears calls, not queued return values: reset the
+    // whole-table read here too, or one test's records leak into the next.
+    getAllSeriesMetadata.mockResolvedValue({});
     getSeriesIndex.mockResolvedValue(undefined);
   });
 
@@ -1738,6 +1781,9 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     vi.clearAllMocks();
     localVolumes.mockResolvedValue([]);
     getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    // `vi.clearAllMocks()` clears calls, not queued return values: reset the
+    // whole-table read here too, or one test's records leak into the next.
+    getAllSeriesMetadata.mockResolvedValue({});
     getSeriesIndex.mockResolvedValue(undefined);
     getAllFiles.mockReturnValue([]);
   });
