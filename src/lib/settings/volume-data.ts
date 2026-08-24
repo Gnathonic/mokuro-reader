@@ -3,6 +3,7 @@ import { derived, writable, readable } from 'svelte/store';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+import { SERIES_SECTION_KEY } from './series-data';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -226,8 +227,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
     const parsed = JSON.parse(storedData);
     return Object.fromEntries(
       Object.entries(parsed)
-        // Filter out entries with empty/invalid volume IDs (bug cleanup)
-        .filter(([key]) => key && key.length > 0)
+        // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
+        // reserved `series` section — series-level reading state shares this file
+        // but is not a volume (see `$lib/settings/series-data`).
+        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {

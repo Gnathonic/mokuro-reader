@@ -15,6 +15,7 @@ import {
   VolumeData,
   archiveAndResetVolumes,
   clearVolumes,
+  parseVolumesFromJson,
   registerCompletionListener,
   totalStats,
   updateProgress,
@@ -124,5 +125,18 @@ describe('totalStats with archived reads', () => {
 
     updateProgress('vol-1', 50, 1000, false); // re-reading
     expect(get(totalStats)!.charsRead).toBe(6000);
+  });
+});
+
+describe('parseVolumesFromJson', () => {
+  it('never turns the reserved series section into a phantom volume', () => {
+    const parsed = parseVolumesFromJson(
+      JSON.stringify({
+        'vol-1': { progress: 3 },
+        series: { 'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+      })
+    );
+
+    expect(Object.keys(parsed)).toEqual(['vol-1']);
   });
 });
