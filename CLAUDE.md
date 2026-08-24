@@ -290,9 +290,15 @@ Rules:
   — same newest-`lastUpdated`-wins merge as the volume map it rides alongside).
 - **Shelf alignment is index data, not a fact.** `spine_offset` (top-level, %)
   and each volume's `offset` (px) ride the file but never move
-  `facts_updated_at`. An explicit `0` is a real reset value and is published;
-  an absent value means "no opinion" and inherits whatever the other side
-  already published. Readers clamp both fields on parse (±50% / ±500px);
+  `facts_updated_at`. An absent value means "no opinion" and inherits whatever
+  the other side already published; a local `0` suppresses the published value
+  at build time and is omitted from the file (build → parse stays an identity).
+  Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
+  this user edited, and a published alignment reaches the shelf from the cached
+  `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
+  and rides back out through `buildSeriesFile`. Filling it into the record would
+  make it ours to republish forever, so the device that measured it could never
+  correct or reset it. Readers clamp both fields on parse (±50% / ±500px);
   mokuro-bunko stores whatever it is sent verbatim (one side owns the range
   rule).
 - **AniList display data (`format`, `status`, volume/chapter totals,
@@ -372,6 +378,10 @@ cloud entry never outranks an existing local entry for that key — the clamped
 value is only adopted when local has no entry at all. See
 `detectBogusSeriesKeys`/`mergeSeriesSections` (`series-data.ts`) and
 `isBogusCloudProfile`/`clampCloudProfileStamps` (`unified-sync-service.ts`).
+Known and out of scope (pre-existing): only the `series` section of
+`volume-data.json` got the clamp and FORFEIT-ON-BOGUS. The volume half still
+merges on the raw, unclamped stamps (`lastProgressUpdate`/`addedOn`/`deletedOn`),
+so a fast-clock device can still out-rank a local progress edit there.
 
 ```json
 {
