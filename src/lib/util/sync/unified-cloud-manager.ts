@@ -14,10 +14,13 @@ import { isMetadataOnly } from '$lib/catalog/volume-state';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
+  FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
   buildSeriesFile,
+  hasSeriesFacts,
   isSeriesFilePath,
   parseSeriesFile,
+  seriesFactsStamp,
   type SeriesFile,
   stringifySeriesFile
 } from '$lib/metadata/series-file';
@@ -112,6 +115,32 @@ function stripManagedFileExtension(path: string): string {
   if (lower.endsWith('.webp')) return path.slice(0, -5);
   if (lower.endsWith('.jpg')) return path.slice(0, -4);
   return path;
+}
+
+/**
+ * Which of two `series_metadata` records folding to the SAME series wins.
+ *
+ * Two can exist at once — a cloud upsert files one under a decomposed title
+ * while a local import files one under the composed spelling — and the table's
+ * key order is an accident, so the scan cannot just take the first match. Same
+ * ranking every other merge in this module uses: a record that says something
+ * about the series beats one that says nothing, and between two that both speak,
+ * the newer FACTS clock wins (never `updated_at`, which every per-user write
+ * bumps).
+ */
+function pickSeriesMetadata(
+  current: SeriesMetadata | undefined,
+  next: SeriesMetadata
+): SeriesMetadata {
+  if (!current) return next;
+
+  const currentHasFacts = hasSeriesFacts(current);
+  const nextHasFacts = hasSeriesFacts(next);
+  if (currentHasFacts !== nextHasFacts) return nextHasFacts ? next : current;
+
+  const currentStamp = seriesFactsStamp(current) ?? FACTLESS_UPDATED_AT;
+  const nextStamp = seriesFactsStamp(next) ?? FACTLESS_UPDATED_AT;
+  return nextStamp > currentStamp ? next : current;
 }
 
 /**
@@ -991,7 +1020,12 @@ class UnifiedCloudManager {
     const key = normalizeVolumeTitleKey(seriesTitle);
     if (!key) return undefined;
     const all = await getAllSeriesMetadata();
-    return Object.values(all).find((meta) => normalizeVolumeTitleKey(meta.series_title) === key);
+    let best: SeriesMetadata | undefined;
+    for (const meta of Object.values(all)) {
+      if (normalizeVolumeTitleKey(meta.series_title) !== key) continue;
+      best = pickSeriesMetadata(best, meta);
+    }
+    return best;
   }
 
   /** Volume titles the cloud listing shows as `.cbz` archives in a series folder. */

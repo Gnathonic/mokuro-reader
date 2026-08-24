@@ -1317,6 +1317,103 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     expect(file.updated_at).toBe('2026-08-23T00:00:00.000Z');
   });
 
+  it('picks the record WITH facts when two spellings fold to one series', async () => {
+    // A cloud upsert can file a record under the decomposed title while a local
+    // import filed one under the composed one. Both fold to this folder, and
+    // whichever comes first in the table is an accident of key order — the one
+    // that says something has to win, or a write silently publishes an unlink.
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+
+    const factless = {
+      series_key: decomposed.toLowerCase(),
+      series_title: decomposed,
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      read_count: 0,
+      updated_at: '2026-08-24T00:00:00.000Z'
+    };
+    const linked = {
+      series_key: composed.toLowerCase(),
+      series_title: composed,
+      external_ids: { anilist: 4242 },
+      titles: {},
+      synonyms: [],
+      read_count: 0,
+      updated_at: '2026-08-20T00:00:00.000Z',
+      facts_updated_at: '2026-08-20T00:00:00.000Z'
+    };
+
+    for (const records of [
+      { a: factless, b: linked },
+      { a: linked, b: factless }
+    ]) {
+      vi.clearAllMocks();
+      const cache = loadedCache();
+      const provider = makeRenameProvider();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(cache);
+      getBySeries.mockReturnValue([cloudFile(`${decomposed}/Volume 1.cbz`)]);
+      localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
+      getSeriesMetadataForTitle.mockResolvedValue(undefined);
+      getSeriesIndex.mockResolvedValue(undefined);
+      getAllSeriesMetadata.mockResolvedValue({
+        [records.a.series_key]: records.a,
+        [records.b.series_key]: records.b
+      });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
+
+      const file = await uploadedSeriesFile(provider);
+      // Never the factless record, however the table happens to be ordered — and
+      // never its (newer) per-user stamp either.
+      expect(file.external_ids).toEqual({ anilist: 4242 });
+      expect(file.updated_at).toBe('2026-08-20T00:00:00.000Z');
+    }
+  });
+
+  it('picks the newest facts clock when both spellings carry facts', async () => {
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(cache);
+    getBySeries.mockReturnValue([cloudFile(`${decomposed}/Volume 1.cbz`)]);
+    localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
+    getAllSeriesMetadata.mockResolvedValue({
+      [decomposed.toLowerCase()]: {
+        series_key: decomposed.toLowerCase(),
+        series_title: decomposed,
+        external_ids: { anilist: 1 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-21T00:00:00.000Z',
+        facts_updated_at: '2026-08-21T00:00:00.000Z'
+      },
+      [composed.toLowerCase()]: {
+        series_key: composed.toLowerCase(),
+        series_title: composed,
+        external_ids: { anilist: 2 },
+        titles: {},
+        synonyms: [],
+        read_count: 0,
+        updated_at: '2026-08-22T00:00:00.000Z',
+        facts_updated_at: '2026-08-22T00:00:00.000Z'
+      }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
+
+    const file = await uploadedSeriesFile(provider);
+    expect(file.external_ids).toEqual({ anilist: 2 });
+  });
+
   it('reads the local rows of an NFD folder name, whose rows are stored composed', async () => {
     // A folder name that made the round trip through a filesystem can come back
     // decomposed while the IndexedDB rows stay composed. Byte-wise, the filter
