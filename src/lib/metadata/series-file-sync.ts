@@ -7,7 +7,7 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { isCbzFile } from '$lib/util/sync/syncable-file';
 import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
-import { hasSeriesFacts, isSeriesFilePath } from './series-file';
+import { hasSeriesFacts, isSeriesFilePath, type SeriesFileVolume } from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { backfillNewlyLinkedSeries, backfillSeriesEntries } from './series-backfill';
 import {
@@ -85,6 +85,27 @@ interface ScheduleOptions {
    * price of not clobbering.
    */
   duringBackupRun?: boolean;
+  /**
+   * Entries a CALLER already pulled a sidecar for and built itself —
+   * `cover-service.ts`'s render-demand bare-placeholder resolution (decision-
+   * tree case 3), the SAME shape `series-backfill.ts` hands its own direct
+   * `unifiedCloudManager.writeSeriesFile` call. Threaded straight through to
+   * that same `cloudMeasuredVolumes` parameter when the debounced write fires
+   * (see `performWrite`) — without this, a caller's freshly-stamped entry
+   * (`mokuro_size`/`mokuro_modified`/`cover_size`/`cover_modified`) would fall
+   * back to `buildSeriesFile`'s installed-row fill path, publish PERMANENTLY
+   * STAMPLESS, and — under the stampless-never-stale migration-safety
+   * inversion (`cloud-sidecar-stamps.ts`) — never be re-verified by staleness
+   * detection on any device again.
+   *
+   * UNLIKE every other option above, this one ACCUMULATES across coalesced
+   * calls for the same series rather than the latest call simply winning
+   * (see `scheduleSeriesFileWrite`): two different render-demand resolutions
+   * for two different bare placeholders in the same series, landing within
+   * the same debounce window, must not have the first one's entry silently
+   * dropped by the second one's call.
+   */
+  cloudMeasuredVolumes?: SeriesFileVolume[];
 }
 
 /** Is there a connected provider that can actually be written to? */
@@ -333,7 +354,16 @@ async function performWrite(seriesKey: string): Promise<void> {
     // already free for a self-write (the listing stamp matches our cache) and
     // is the only thing standing between a mid-run PUT and another device's
     // series.json (see `ScheduleOptions.duringBackupRun`'s REVISION note).
-    await unifiedCloudManager.writeSeriesFile(seriesTitle);
+    // The second argument is omitted entirely (not passed as `undefined`)
+    // when nothing was threaded through — same call shape as before this
+    // option existed, for every write that isn't carrying one.
+    if (options?.cloudMeasuredVolumes?.length) {
+      await unifiedCloudManager.writeSeriesFile(seriesTitle, {
+        cloudMeasuredVolumes: options.cloudMeasuredVolumes
+      });
+    } else {
+      await unifiedCloudManager.writeSeriesFile(seriesTitle);
+    }
   } catch (error) {
     // Best-effort by contract: a server that compiles series.json itself
     // rejects the write by design, and the next fact edit or backup rewrites
@@ -357,13 +387,28 @@ async function performWrite(seriesKey: string): Promise<void> {
  * at fire time would be answering the wrong question. A later call for the
  * same series (a fact edit, another volume's completion) coalesces exactly
  * like `pendingTitles` does — its options simply win, same as its title does.
+ *
+ * `cloudMeasuredVolumes` is the one exception to "simply win": it ACCUMULATES
+ * across coalesced calls (latest entry wins per `volume_uuid`), so a second
+ * caller's freshly-built entry can never silently erase a first caller's —
+ * see `ScheduleOptions.cloudMeasuredVolumes`'s own doc for why that matters.
  */
 export function scheduleSeriesFileWrite(seriesTitle: string, options?: ScheduleOptions): void {
   const key = normalizeSeriesKey(seriesTitle);
   if (!key) return;
 
   pendingTitles.set(key, seriesTitle);
-  pendingOptions.set(key, options ?? {});
+
+  const nextOptions: ScheduleOptions = { ...options };
+  const priorEntries = pendingOptions.get(key)?.cloudMeasuredVolumes;
+  if (priorEntries?.length || options?.cloudMeasuredVolumes?.length) {
+    const merged = new Map<string, SeriesFileVolume>();
+    for (const entry of priorEntries ?? []) merged.set(entry.volume_uuid, entry);
+    for (const entry of options?.cloudMeasuredVolumes ?? []) merged.set(entry.volume_uuid, entry);
+    nextOptions.cloudMeasuredVolumes = [...merged.values()];
+  }
+  pendingOptions.set(key, nextOptions);
+
   const existing = timers.get(key);
   if (existing) clearTimeout(existing);
   timers.set(

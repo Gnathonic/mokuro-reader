@@ -1282,10 +1282,15 @@ class UnifiedCloudManager {
     options?: {
       localSeriesTitle?: string;
       /**
-       * Entries `series-backfill.ts` built by pulling sidecars straight from
-       * the cloud folder for THIS write — see `buildSeriesFile`'s own doc for
-       * the rank (above published, below installed). Never populated by any
-       * other caller: every other write publishes local state only.
+       * Entries a caller built by pulling sidecars straight from the cloud
+       * folder for THIS write — see `buildSeriesFile`'s own doc for the rank
+       * (above published, below installed). Two producers: `series-
+       * backfill.ts`'s own direct call (a whole-series reconcile sweep) and
+       * `series-file-sync.ts`'s debounced `performWrite`, which threads
+       * through whatever `ScheduleOptions.cloudMeasuredVolumes` a caller
+       * scheduled with — `cover-service.ts`'s render-demand bare-placeholder
+       * resolution (decision-tree case 3) is that debounced path's own
+       * producer. Every OTHER write publishes local state only.
        */
       cloudMeasuredVolumes?: SeriesFileVolume[];
     }

@@ -54,9 +54,14 @@ import { installCover } from './cover-persist';
  *    throttled through the SAME cross-series `acquireBackfillSlot` pool —
  *    render-demand browsing must not stampede a provider any more than a
  *    reconcile sweep may), materialize the row under the mokuro's REAL uuid,
- *    install the cover, and hand the entry to the per-series debounced
- *    `series.json` writer so the index converges too (best-effort — its own
- *    gates apply at fire time, same as every other producer of that file).
+ *    install the cover, and hand the FULLY-STAMPED entry to the per-series
+ *    debounced `series.json` writer via `ScheduleOptions.cloudMeasuredVolumes`
+ *    — the SAME mechanism `series-backfill.ts`'s own direct publish uses, so
+ *    the entry's `mokuro_size`/`mokuro_modified`/cover stamps survive into
+ *    the published file rather than falling back to the installed-row fill
+ *    path and landing stampless — so the index converges too (best-effort —
+ *    its own gates apply at fire time, same as every other producer of that
+ *    file).
  * 4. A BARE placeholder whose archive has NO sidecar at all (image-only) →
  *    the same zero-count entry convention `series-backfill.ts` uses for this
  *    case, no pull.
@@ -328,7 +333,13 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
   });
   // Best-effort convergence: the debounced writer's own gates (writable
   // provider, not server-compiled, listing) apply at fire time, not here.
-  scheduleSeriesFileWrite(folderTitle);
+  // The entry itself is threaded through as `cloudMeasuredVolumes` — without
+  // it the eventual publish would fall back to `buildSeriesFile`'s installed-
+  // row fill path and land PERMANENTLY STAMPLESS (mokuro/cover stamps all
+  // dropped), which under the stampless-never-stale inversion can then never
+  // be re-verified by staleness detection again (see `ScheduleOptions.
+  // cloudMeasuredVolumes`'s own doc in `series-file-sync.ts`).
+  scheduleSeriesFileWrite(folderTitle, { cloudMeasuredVolumes: [entry] });
   if (changed === 0) return false;
   if (!cover) return true; // no cover sidecar anywhere in the listing: genuinely nothing to fetch
 

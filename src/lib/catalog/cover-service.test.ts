@@ -346,7 +346,32 @@ describe('decision tree case 3: a bare placeholder with a sidecar', () => {
     // mean a row existing at BOTH uuids.
     expect(await db.volumes.get(derivedUuid)).toBeUndefined();
 
-    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledWith('One Piece');
+    // Not just "was the write scheduled" — the FULLY-STAMPED entry itself
+    // must be threaded through as `cloudMeasuredVolumes`. Without this, the
+    // eventual publish falls back to the installed-row fill path and the
+    // entry lands stampless forever (see `ScheduleOptions.cloudMeasuredVolumes`'s
+    // doc in `series-file-sync.ts`) — this is the exact regression a shallow
+    // "was the mock called" assertion would miss. The end-to-end threading
+    // all the way to `unifiedCloudManager.writeSeriesFile` is covered
+    // separately in `cover-service.publish.test.ts`, which does not mock
+    // `series-file-sync.ts` at all.
+    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledTimes(1);
+    const [folderTitle, options] = scheduleSeriesFileWriteMock.mock.calls[0];
+    expect(folderTitle).toBe('One Piece');
+    expect(options.cloudMeasuredVolumes).toEqual([
+      {
+        volume_uuid: 'real-mokuro-uuid',
+        volume_title: 'Volume 01',
+        page_count: 12,
+        character_count: 300,
+        mokuro_version: '0.4.12',
+        archive_size: 12345,
+        mokuro_size: 500,
+        mokuro_modified: Math.floor(Date.parse('2026-01-01T00:00:00.000Z') / 1000),
+        cover_size: 900,
+        cover_modified: Math.floor(Date.parse('2026-01-01T00:00:00.000Z') / 1000)
+      }
+    ]);
   });
 });
 
@@ -365,7 +390,11 @@ describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image
     expect(persisted.page_count).toBe(0);
     expect(persisted.character_count).toBe(0);
     expect(pullMokuroEntryMock).not.toHaveBeenCalled();
-    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledWith('One Piece');
+    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledTimes(1);
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][0]).toBe('One Piece');
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][1].cloudMeasuredVolumes).toEqual([
+      expect.objectContaining({ volume_uuid: expectedUuid, volume_title: 'Volume 02' })
+    ]);
   });
 });
 
@@ -387,8 +416,13 @@ describe('read-only providers: local materialization is never skipped, only the 
     // `scheduleSeriesFileWrite`, whose own internal `hasWritableProvider()`
     // gate (covered by series-file-sync's own tests) is what actually skips
     // the PUT for a read-only share. This pins that cover-service.ts keeps
-    // calling it unconditionally rather than special-casing read-only itself.
-    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledWith('One Piece');
+    // calling it unconditionally, WITH the stamped entry, rather than
+    // special-casing read-only itself.
+    expect(scheduleSeriesFileWriteMock).toHaveBeenCalledTimes(1);
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][0]).toBe('One Piece');
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][1].cloudMeasuredVolumes).toEqual([
+      expect.objectContaining({ volume_uuid: expectedUuid, volume_title: 'Volume 03' })
+    ]);
   });
 });
 

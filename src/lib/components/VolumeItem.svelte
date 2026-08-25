@@ -265,17 +265,45 @@
     });
   });
 
-  // Create blob URL from inline thumbnail
+  // Create blob URL from inline thumbnail. Keyed on content identity, not
+  // `liveVolume` object identity: a catalog-wide re-derive hands every
+  // mounted row a BRAND NEW `liveVolume` object on every emission — even one
+  // this row's own thumbnail had no part in — and a fresh IndexedDB read
+  // yields a brand new `File` instance per read regardless of whether the
+  // stored bytes changed. Without this key, the effect below would tear down
+  // and recreate the object URL (forcing a real browser re-decode/re-paint)
+  // on every unrelated re-derive, for every row on screen. Mirrors
+  // `CatalogListItem.svelte`'s own thumbnail-key pattern.
   let thumbnailUrl = $state<string | undefined>(undefined);
+  let thumbnailKey = $state<string | undefined>(undefined);
+
+  function getThumbnailKey(volumeUuid: string, thumbnail?: File): string | undefined {
+    if (!thumbnail) return undefined;
+    return `${volumeUuid}:${thumbnail.size}:${thumbnail.lastModified}`;
+  }
+
   $effect(() => {
-    if (!liveVolume.thumbnail) {
-      thumbnailUrl = undefined;
-      return;
+    const nextKey = liveVolume
+      ? getThumbnailKey(liveVolume.volume_uuid, liveVolume.thumbnail)
+      : undefined;
+    if (nextKey === thumbnailKey) {
+      return; // Same cover as already rendered — nothing to do.
     }
 
-    const url = URL.createObjectURL(liveVolume.thumbnail);
-    thumbnailUrl = url;
-    return () => URL.revokeObjectURL(url);
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+      thumbnailUrl = undefined;
+    }
+
+    thumbnailKey = nextKey;
+    if (!liveVolume?.thumbnail) return;
+    thumbnailUrl = URL.createObjectURL(liveVolume.thumbnail);
+  });
+
+  onDestroy(() => {
+    if (thumbnailUrl) {
+      URL.revokeObjectURL(thumbnailUrl);
+    }
   });
 
   // Some insert/update paths can miss live notifications for blob fields.

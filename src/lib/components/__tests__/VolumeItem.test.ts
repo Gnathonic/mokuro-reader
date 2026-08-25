@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
+import { tick } from 'svelte';
 
 // VolumeItem sits on top of the whole app (Dexie, the sync stack, the download queue,
 // the reading-speed model). None of that decides whether the "not on this device" badge
@@ -435,5 +436,80 @@ describe('VolumeItem completion', () => {
 
     expect(container.querySelector('[title="Mark as read"]')).not.toBeNull();
     expect(container.querySelector('[title="Mark as unread"]')).toBeNull();
+  });
+});
+
+describe('VolumeItem cover object-URL identity (mirrors CatalogListItem.svelte)', () => {
+  const originalCreate = globalThis.URL.createObjectURL;
+  const originalRevoke = globalThis.URL.revokeObjectURL;
+  let created: string[] = [];
+  let revoked: string[] = [];
+
+  beforeEach(() => {
+    created = [];
+    revoked = [];
+    globalThis.URL.createObjectURL = vi.fn(() => {
+      const url = `blob:cover-${created.length + 1}`;
+      created.push(url);
+      return url;
+    }) as unknown as typeof URL.createObjectURL;
+    globalThis.URL.revokeObjectURL = vi.fn((url: string) => {
+      revoked.push(url);
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    catalogVolumes.set({});
+    globalThis.URL.createObjectURL = originalCreate;
+    globalThis.URL.revokeObjectURL = originalRevoke;
+  });
+
+  it('PIN: a catalog re-derive that hands back an equivalent-but-new File for the SAME cover never churns the object URL', async () => {
+    // `liveVolume` is `$catalogVolumes?.[uuid] ?? volume` — a whole-table
+    // liveQuery re-derive replaces the WHOLE map with fresh row objects
+    // (and IndexedDB gives a fresh File instance per read) even for a row
+    // whose own cover never changed. Object identity alone would tear down
+    // and recreate the object URL (forcing a real browser re-decode/
+    // re-paint) on every unrelated re-derive.
+    const lastModified = 1_700_000_000_000;
+    const coverA = new File(['same-bytes'], 'cover.jpg', { type: 'image/jpeg', lastModified });
+    const v = volume({ thumbnail: coverA });
+    const { container } = render(VolumeItem, { props: { volume: v, variant: 'list' } });
+    await tick();
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+
+    const coverAAgain = new File(['same-bytes'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified
+    });
+    catalogVolumes.set({ [v.volume_uuid]: { ...v, thumbnail: coverAAgain } });
+    await tick();
+
+    expect(created).toEqual(['blob:cover-1']); // no second createObjectURL call
+    expect(revoked).toEqual([]); // the live URL was never revoked
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+  });
+
+  it('still swaps the object URL for a GENUINELY new cover on the same uuid', async () => {
+    const coverOld = new File(['old'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified: 1_700_000_000_000
+    });
+    const v = volume({ thumbnail: coverOld });
+    const { container } = render(VolumeItem, { props: { volume: v, variant: 'list' } });
+    await tick();
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+
+    const coverNew = new File(['new-bytes-different-size'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified: 1_700_000_005_000
+    });
+    catalogVolumes.set({ [v.volume_uuid]: { ...v, thumbnail: coverNew } });
+    await tick();
+
+    expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
+    expect(revoked).toEqual(['blob:cover-1']);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-2');
   });
 });

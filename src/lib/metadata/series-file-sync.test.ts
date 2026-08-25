@@ -27,7 +27,12 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   providerManager: { status: providerStatus }
 }));
 
-const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
+const writeSeriesFile = vi.hoisted(() =>
+  vi.fn(
+    async (_seriesTitle: string, _options?: { cloudMeasuredVolumes?: Record<string, unknown>[] }) =>
+      'written' as const
+  )
+);
 const backfillSeriesEntries = vi.hoisted(() => vi.fn(async () => {}));
 const backfillNewlyLinkedSeries = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./series-backfill', () => ({ backfillSeriesEntries, backfillNewlyLinkedSeries }));
@@ -306,6 +311,105 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile).toHaveBeenCalledTimes(1);
     expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+  });
+
+  it('threads `cloudMeasuredVolumes` straight through to the writer', async () => {
+    // The mechanism `cover-service.ts`'s render-demand publish (decision-tree
+    // case 3) relies on: a caller's freshly-pulled, fully-stamped entry must
+    // reach `unifiedCloudManager.writeSeriesFile`'s own `cloudMeasuredVolumes`
+    // parameter, not be silently dropped by the debounced path.
+    const entry = {
+      volume_uuid: 'real-uuid',
+      volume_title: 'Volume 1',
+      page_count: 12,
+      character_count: 300,
+      mokuro_version: '0.4.12',
+      mokuro_size: 500,
+      mokuro_modified: 1_700_000_000
+    };
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [entry] });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece', {
+      cloudMeasuredVolumes: [entry]
+    });
+  });
+
+  it('omits the second argument entirely when nothing was threaded through — same call shape as before this option existed', async () => {
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(writeSeriesFile.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('ACCUMULATES `cloudMeasuredVolumes` across coalesced calls for the same series — unlike every other option, a later call must not drop an earlier one’s entry', async () => {
+    const entryA = {
+      volume_uuid: 'uuid-a',
+      volume_title: 'Volume 1',
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    };
+    const entryB = {
+      volume_uuid: 'uuid-b',
+      volume_title: 'Volume 2',
+      page_count: 2,
+      character_count: 2,
+      mokuro_version: '0.4.11'
+    };
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [entryA] });
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [entryB] });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    const [, options = {}] = writeSeriesFile.mock.calls[0];
+    expect(options.cloudMeasuredVolumes).toEqual(expect.arrayContaining([entryA, entryB]));
+    expect(options.cloudMeasuredVolumes).toHaveLength(2);
+  });
+
+  it('keeps the LATEST entry for the same uuid when two coalesced calls both describe it', async () => {
+    const stale = {
+      volume_uuid: 'uuid-a',
+      volume_title: 'Volume 1',
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    };
+    const fresh = {
+      volume_uuid: 'uuid-a',
+      volume_title: 'Volume 1',
+      page_count: 5,
+      character_count: 50,
+      mokuro_version: '0.4.12'
+    };
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [stale] });
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [fresh] });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    const [, options = {}] = writeSeriesFile.mock.calls[0];
+    expect(options.cloudMeasuredVolumes).toEqual([fresh]);
+  });
+
+  it('does not let `cloudMeasuredVolumes` bleed the "last option wins" rule for duringBackupRun the other way either', async () => {
+    // A `cloudMeasuredVolumes` call followed by a plain `duringBackupRun`
+    // call for the same series: `duringBackupRun` still simply overwrites
+    // (per the existing "last call wins" contract), while the entries
+    // accumulated so far are preserved rather than dropped.
+    const entry = {
+      volume_uuid: 'uuid-a',
+      volume_title: 'Volume 1',
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    };
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [entry] });
+    scheduleSeriesFileWrite('One Piece', { duringBackupRun: true });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled(); // duringBackupRun's own effect still applies
+    const [, options = {}] = writeSeriesFile.mock.calls[0];
+    expect(options.cloudMeasuredVolumes).toEqual([entry]);
   });
 
   it('gives up on a listing refresh that hangs, and the next flush tries again', async () => {
