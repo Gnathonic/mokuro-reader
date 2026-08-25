@@ -42,21 +42,50 @@
   // lifecycle (create/revoke), never the fetch.
   let cloudThumbnailUrl: string | null = $state(null);
 
+  // A CATALOG-WIDE re-derive (any row anywhere committing) hands every mounted card a
+  // BRAND NEW `volume` object, even for a row whose own cover has not changed — Dexie
+  // gives back a fresh `File` instance per read regardless. Without this key, the effect
+  // below would treat every re-derive as "a new cover", tearing down and recreating the
+  // object URL (and forcing the browser to re-decode/re-paint the `<img>`) for every
+  // already-painted card on screen, every time. `size`+`lastModified` is cheap to compare
+  // and, unlike object identity, survives a structured-clone round trip through IndexedDB
+  // unchanged — a GENUINELY new cover (a fresh fetch, a self-heal overwrite) always gets a
+  // new `lastModified` (see `cloud-thumbnails.ts`), so this never masks a real update.
+  let renderedCoverKey: string | null = null;
+  let activeThumbnailUrl: string | null = null; // mirrors `cloudThumbnailUrl`; read/written outside reactivity so comparing it never itself triggers a re-run.
+
+  function releaseActiveThumbnailUrl(): void {
+    if (activeThumbnailUrl) {
+      URL.revokeObjectURL(activeThumbnailUrl);
+      activeThumbnailUrl = null;
+    }
+  }
+
   $effect(() => {
     const file = volume?.thumbnail;
+    const uuid = volume?.volume_uuid;
+    const key = file && uuid ? `${uuid}:${file.size}:${file.lastModified}` : null;
+    if (key === renderedCoverKey) return; // Same cover as already rendered — nothing to do.
+    renderedCoverKey = key;
+
+    releaseActiveThumbnailUrl();
     if (!file) {
       cloudThumbnailUrl = null;
       return;
     }
     const url = URL.createObjectURL(file);
+    activeThumbnailUrl = url;
     cloudThumbnailUrl = url;
-    // Revoked on the next run (a re-sort, the next page of results, the cover itself
-    // landing) as well as on teardown — a stale, revoked URL left in state keeps the
-    // <img> branch rendering a broken-image icon where the new volume's box belongs.
-    return () => {
-      URL.revokeObjectURL(url);
-      if (cloudThumbnailUrl === url) cloudThumbnailUrl = null;
-    };
+  });
+
+  // Revoke whatever is active when this component is torn down. Deliberately a SEPARATE
+  // effect with no reactive reads of its own (so it runs its body once, on mount, and its
+  // cleanup only on unmount) — folding this into the effect above would tie revocation to
+  // Svelte's automatic "run the previous cleanup before every re-run" behavior, which fires
+  // on EVERY re-run regardless of the early return above and would revoke a URL this
+  // component is still actively showing.
+  $effect(() => {
+    return () => releaseActiveThumbnailUrl();
   });
 
   // Ask for the cover once, whatever this box currently shows. `requestCover` is

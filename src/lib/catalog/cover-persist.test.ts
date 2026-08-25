@@ -8,11 +8,24 @@ vi.mock('$lib/catalog/db', async () => {
   return { db: new CatalogDexieV3('mokuro_v3_cover_persist_test') };
 });
 
+// The Worker-backed decode cache is orthogonal to persistence; stubbed so
+// this file only has to assert on the ONE call this module makes into it
+// (invalidate on an 'overwrite'), not load the real Worker plumbing.
+const { thumbnailCacheInvalidate } = vi.hoisted(() => ({
+  thumbnailCacheInvalidate: vi.fn()
+}));
+vi.mock('$lib/catalog/thumbnail-cache', () => ({
+  thumbnailCache: {
+    invalidate: (...a: Parameters<typeof thumbnailCacheInvalidate>) =>
+      thumbnailCacheInvalidate(...a)
+  }
+}));
+
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
   _resetCoverPersistForTests,
-  COVER_PERSIST_DEBOUNCE_MS,
+  COVER_PERSIST_BASE_DELAY_MS,
   flushPendingCoverPersists,
   installCover
 } from './cover-persist';
@@ -47,6 +60,7 @@ async function addRow(overrides: Partial<VolumeMetadata> = {}) {
 
 beforeEach(() => {
   _resetCoverPersistForTests();
+  thumbnailCacheInvalidate.mockClear();
 });
 
 afterEach(async () => {
@@ -160,6 +174,19 @@ describe('installCover', () => {
     const fresh = (await db.volumes.get('v-1')) as VolumeMetadata;
     expect(fresh.thumbnail_width).toBe(210);
     expect(fresh.cover_size).toBe(4096);
+    // The canvas-side decode cache is keyed by uuid and never told about a
+    // row-level update on its own — without this, a card that already
+    // decoded the STALE bitmap under this uuid would keep painting it.
+    expect(thumbnailCacheInvalidate).toHaveBeenCalledWith('v-1');
+  });
+
+  it('in fill mode, never invalidates the decode cache — there was nothing stale to begin with', async () => {
+    await addRow();
+
+    installCover('v-1', coverResult());
+    await flushPendingCoverPersists();
+
+    expect(thumbnailCacheInvalidate).not.toHaveBeenCalled();
   });
 
   it('never touches a fully-installed volume at all', async () => {
@@ -254,7 +281,7 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     installCover('v-a', coverResult('a.webp'));
     installCover('v-b', coverResult('b.webp'));
 
-    await new Promise((resolve) => setTimeout(resolve, COVER_PERSIST_DEBOUNCE_MS + 200));
+    await new Promise((resolve) => setTimeout(resolve, COVER_PERSIST_BASE_DELAY_MS + 200));
     sub.unsubscribe();
 
     expect(emissions).toBe(1);

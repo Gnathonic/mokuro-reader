@@ -102,4 +102,58 @@ describe('PlaceholderThumbnail cover lifetime', () => {
 
     expect(requestCover).not.toHaveBeenCalled();
   });
+
+  it('PIN: a catalog re-derive that hands back an equivalent-but-new File for the SAME cover never churns the object URL', async () => {
+    // A whole-table liveQuery re-derive (any row anywhere committing, not
+    // necessarily this one) gives every mounted card a BRAND NEW `volume`
+    // object, and IndexedDB reads give a brand new `File` instance per read
+    // even for byte-identical data — object identity alone would make this
+    // component tear down and recreate its object URL (forcing the browser
+    // to re-decode/re-paint) on every unrelated re-derive. `size` +
+    // `lastModified` is what a structured-clone round trip preserves, so two
+    // reads of the SAME stored cover carry the same key.
+    const lastModified = 1_700_000_000_000;
+    const coverA = new File(['same-bytes'], 'cover.jpg', { type: 'image/jpeg', lastModified });
+    const { container, rerender } = render(PlaceholderThumbnail, {
+      props: { volume: volume('c-5', { thumbnail: coverA }) }
+    });
+    await tick();
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+
+    // A DIFFERENT File instance, same uuid, same size, same lastModified —
+    // exactly what a fresh IndexedDB read of the unchanged row looks like.
+    const coverAAgain = new File(['same-bytes'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified
+    });
+    await rerender({ volume: volume('c-5', { thumbnail: coverAAgain }) });
+    await tick();
+
+    expect(created).toEqual(['blob:cover-1']); // no second createObjectURL call
+    expect(revoked).toEqual([]); // the live URL was never revoked
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+  });
+
+  it('still swaps the object URL for a GENUINELY new cover on the same uuid (a self-heal overwrite)', async () => {
+    const coverOld = new File(['old'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified: 1_700_000_000_000
+    });
+    const { container, rerender } = render(PlaceholderThumbnail, {
+      props: { volume: volume('c-6', { thumbnail: coverOld }) }
+    });
+    await tick();
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+
+    const coverNew = new File(['new-bytes-different-size'], 'cover.jpg', {
+      type: 'image/jpeg',
+      lastModified: 1_700_000_005_000 // a later fetch
+    });
+    await rerender({ volume: volume('c-6', { thumbnail: coverNew }) });
+    await tick();
+
+    expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
+    expect(revoked).toEqual(['blob:cover-1']);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-2');
+  });
 });
