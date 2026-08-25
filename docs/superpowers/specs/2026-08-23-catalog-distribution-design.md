@@ -37,9 +37,11 @@ At the root of the library folder. Name-related data ONLY — everything needed 
 
 Entry = the FACTS subset of that series' `series.json` (same keys, same meaning, same facts stamp). Compact JSON. Factless series (no link/titles/tag) still get an entry carrying just `series_title` + stamp — the catalog must list them by folder name.
 
-### `series.json` (v2 + `archive_size`)
+### `series.json` (v2 + `archive_size` + freshness stamps)
 
 Facts + volume index. Volume entries MAY carry `archive_size` (bytes of the `.cbz`; optional, 2026-08-23): a fact of the archive like `spine_width`, compiled by bunko and recorded by clients wherever known (backup upload, cloud download, listing). Readers ignore it when absent. Covers stay OUT of it — the existing per-volume cover sidecars (`<Series>/<Volume>.webp|jpg` next to the `.cbz`) remain the universal cover source; bunko generates missing ones.
+
+Volume entries MAY also carry freshness stamps (optional, 2026-08-24): `mokuro_size`/`mokuro_modified` (the `.mokuro`/`.mokuro.gz` sidecar's stat) and `cover_size`/`cover_modified` (the cover sidecar's stat) — integer bytes and integer epoch SECONDS (`int(st_mtime)`, truncated; never sub-second, since a generic WebDAV client only ever sees second-precision `Last-Modified` dates). Absent, not `null`, when the sidecar doesn't exist or its stat is unknown. Staleness rule: a client rebuilds/re-fetches the referenced sidecar when the stamped size differs from what it has, or the stamped `_modified` is strictly newer than what it stored; an older-or-equal `_modified` at an equal size is fresh, and an entry it already has with no stamp at all is treated as stale exactly once, self-healing to a real stamp on the next compare. The contract's §2 (`2026-08-23-catalog-distribution-bunko.md`) is the byte-exact definition, including bunko's key ordering.
 
 ## Producers
 
