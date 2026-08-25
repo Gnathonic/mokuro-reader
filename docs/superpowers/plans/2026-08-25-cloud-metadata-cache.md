@@ -4,7 +4,7 @@
 
 **Goal:** Move cloud-volume enrichment out of the `volumes` table into an expiring, account-scoped cache so the local library stays small and cloud browsing stops triggering full-table scan storms.
 
-**Architecture:** A new `cloud_volume_cache` Dexie table keyed by `[account_scope+path]` holds the thumbnail blob and freshness stamps for cloud volumes the user has neither installed nor read. `volumes` keeps only installed volumes and metadata-only rows that carry reading history. The catalog renders cloud series from `series_index` (identity/counts) joined with the cache (covers), so cover writes never touch `volumes` and never fire its liveQuery. The remaining hot full-table scans are narrowed to indexed per-series queries, and the catalog's liveQuery is coalesced.
+**Architecture:** A new `cloud_covers` Dexie table keyed by `[account_scope+path]` holds just the thumbnail blob (plus its dimensions) for cloud volumes the user has neither installed nor read, and a `last_accessed` stamp that drives its own expiry — nothing else, because `series_index` already caches every other per-volume field (identity, counts, and the cover sidecar's own `cover_size`/`cover_modified` stamps). `volumes` keeps only installed volumes and metadata-only rows that carry reading history. The catalog renders a cloud series by joining three sources: the listing (which files exist), `series_index` (identity/counts), and `cloud_covers` (the blob) — so cover writes never touch `volumes` and never fire its liveQuery. The remaining hot full-table scans are narrowed to indexed per-series queries, and the catalog's liveQuery is coalesced.
 
 **Tech Stack:** SvelteKit 5 (runes), Dexie 4 / IndexedDB, Vitest + @testing-library/svelte.
 
@@ -14,7 +14,8 @@
 
 - **No migration code.** The feature never shipped; no user database contains `metadata_only` rows. The schema change is purely additive (a new table). Never write upgrade logic that moves, rewrites, or deletes existing rows.
 - **Expiry is age-only: 14 days since last access.** No size quotas, no LRU byte budgets.
-- **Cache key is `[account_scope+path]`.** Cloud UUIDs are unavailable. `account_scope` must never contain a secret (no passwords, no tokens).
+- **Cache key is `[account_scope+path]`, the primary key of the `cloud_covers` table.** Cloud UUIDs are unavailable. `account_scope` must never contain a secret (no passwords, no tokens).
+- **The cover table stores blobs and nothing else — every other per-volume field comes from `series_index`.** Never duplicate a field that table already holds. A cover is considered stale by comparing `series_index`'s `cover_size`/`cover_modified` for that volume against the current listing, never by anything stored in `cloud_covers` itself.
 - **`volumes` holds only:** installed volumes, and metadata-only rows for volumes with reading history.
 - **Svelte 5 performance rule (CLAUDE.md):** `$derived` runs per component instance; never put expensive work there.
 - **Existing test suite must stay green:** `npm test` (2,385 tests at plan time). Run `npx prettier --write` on touched files before committing (husky enforces prettier + eslint).
@@ -182,113 +183,108 @@ git commit -m "feat(catalog): account-scoped cloud cache keys"
 
 ---
 
-### Task 2: The cache table (collapsed schema v2) and its CRUD
+### Task 2: The cover table (collapsed schema v2) and its CRUD
 
 **Files:**
 
-- Modify: `src/lib/catalog/db-v3.ts` (add the `cloud_volume_cache` table field ~line 18; replace the `version(2)`/`version(3)`/`version(4)` blocks at lines 32–59 with one `version(2)` — see Step 3)
-- Create: `src/lib/catalog/cloud-cache.ts`
-- Create: `src/lib/catalog/cloud-cache.test.ts`
+- Modify: `src/lib/catalog/db-v3.ts` (add the `cloud_covers` table field ~line 18; replace the `version(2)`/`version(3)`/`version(4)` blocks at lines 32–59 with one `version(2)` — see Step 3)
+- Create: `src/lib/catalog/cloud-covers.ts`
+- Create: `src/lib/catalog/cloud-covers.test.ts`
 
 **Interfaces:**
 
 - Consumes: `cloudCacheKey`, `normalizeCachePath`, `activeAccountScope` (Task 1)
-- Produces: `interface CloudVolumeCacheEntry`, `putCloudCacheEntries(entries: CloudVolumeCacheEntry[]): Promise<void>`, `getCloudCacheForSeries(scope: string, seriesKey: string): Promise<CloudVolumeCacheEntry[]>`, `touchCloudCacheEntries(scope: string, paths: string[]): Promise<void>`
+- Produces: `interface CloudCover`, `putCloudCovers(covers: CloudCover[]): Promise<void>`, `getCloudCovers(scope: string, paths: string[]): Promise<Map<string, CloudCover>>`, `touchCloudCovers(scope: string, paths: string[], nowMs?: number): Promise<void>`
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// src/lib/catalog/cloud-cache.test.ts
+// src/lib/catalog/cloud-covers.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { db } from './db';
-import {
-  putCloudCacheEntries,
-  getCloudCacheForSeries,
-  touchCloudCacheEntries,
-  type CloudVolumeCacheEntry
-} from './cloud-cache';
+import { putCloudCovers, getCloudCovers, touchCloudCovers, type CloudCover } from './cloud-covers';
 
-function entry(over: Partial<CloudVolumeCacheEntry> = {}): CloudVolumeCacheEntry {
+function cover(over: Partial<CloudCover> = {}): CloudCover {
   return {
     account_scope: 'mega:a@b.com',
     path: 'Dr Stone/Volume 01.cbz',
-    series_key: 'dr stone',
-    series_title: 'Dr Stone',
-    volume_title: 'Volume 01',
-    volume_uuid: 'uuid-1',
-    page_count: 180,
-    character_count: 12345,
-    archive_size: 120000000,
+    thumbnail: new File([new Uint8Array([1, 2, 3])], 'c.webp', { type: 'image/webp' }),
+    width: 250,
+    height: 350,
     last_accessed: 1756000000000,
     ...over
   };
 }
 
 beforeEach(async () => {
-  await db.cloud_volume_cache.clear();
+  await db.cloud_covers.clear();
 });
 
-describe('cloud cache CRUD', () => {
-  it('round-trips an entry under its composite key', async () => {
-    await putCloudCacheEntries([entry()]);
-    const rows = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].volume_uuid).toBe('uuid-1');
+describe('cloud cover CRUD', () => {
+  it('round-trips a cover under its composite key', async () => {
+    await putCloudCovers([cover()]);
+    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(rows.size).toBe(1);
+    expect(rows.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
   });
 
   it('keeps two accounts separate even for the identical path', async () => {
-    await putCloudCacheEntries([
-      entry({ account_scope: 'mega:a@b.com', volume_uuid: 'from-a' }),
-      entry({ account_scope: 'mega:other@b.com', volume_uuid: 'from-other' })
+    await putCloudCovers([
+      cover({ account_scope: 'mega:a@b.com', width: 111 }),
+      cover({ account_scope: 'mega:other@b.com', width: 222 })
     ]);
-    const a = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    const other = await getCloudCacheForSeries('mega:other@b.com', 'dr stone');
-    expect(a.map((r) => r.volume_uuid)).toEqual(['from-a']);
-    expect(other.map((r) => r.volume_uuid)).toEqual(['from-other']);
+    const a = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const other = await getCloudCovers('mega:other@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(a.get('Dr Stone/Volume 01.cbz')?.width).toBe(111);
+    expect(other.get('Dr Stone/Volume 01.cbz')?.width).toBe(222);
   });
 
   it('normalizes the path on write so a decomposed listing hits the same row', async () => {
-    await putCloudCacheEntries([entry({ path: '//Dr Stone//Volume 01.cbz' })]);
-    const rows = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].path).toBe('Dr Stone/Volume 01.cbz');
+    await putCloudCovers([cover({ path: '//Dr Stone//Volume 01.cbz' })]);
+    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(rows.size).toBe(1);
   });
 
   it('touch updates last_accessed without rewriting the blob', async () => {
-    const blob = new File([new Uint8Array([1, 2, 3])], 'c.webp', { type: 'image/webp' });
-    await putCloudCacheEntries([entry({ thumbnail: blob, last_accessed: 1000 })]);
-    await touchCloudCacheEntries('mega:a@b.com', ['Dr Stone/Volume 01.cbz'], 9999);
-    const rows = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    expect(rows[0].last_accessed).toBe(9999);
-    expect(rows[0].thumbnail).toBeInstanceOf(File);
+    await putCloudCovers([cover({ last_accessed: 1000 })]);
+    await touchCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz'], 9999);
+    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(rows.get('Dr Stone/Volume 01.cbz')?.last_accessed).toBe(9999);
+    expect(rows.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
 
-  it('reads one series without loading the rest of the cache', async () => {
-    await putCloudCacheEntries([
-      entry({ path: 'Dr Stone/Volume 01.cbz', series_key: 'dr stone' }),
-      entry({ path: 'Naruto/Volume 01.cbz', series_key: 'naruto', volume_uuid: 'uuid-n' })
+  it('reads only the requested paths, keyed by normalized path — never the rest of the table', async () => {
+    await putCloudCovers([
+      cover({ path: 'Dr Stone/Volume 01.cbz' }),
+      cover({ path: 'Naruto/Volume 01.cbz', width: 999 })
     ]);
-    const rows = await getCloudCacheForSeries('mega:a@b.com', 'naruto');
-    expect(rows.map((r) => r.volume_uuid)).toEqual(['uuid-n']);
+    const rows = await getCloudCovers('mega:a@b.com', ['Naruto/Volume 01.cbz']);
+    expect(Array.from(rows.keys())).toEqual(['Naruto/Volume 01.cbz']);
+    expect(rows.get('Naruto/Volume 01.cbz')?.width).toBe(999);
+  });
+
+  it('returns an empty map for an empty path list, without touching the db', async () => {
+    const rows = await getCloudCovers('mega:a@b.com', []);
+    expect(rows.size).toBe(0);
   });
 });
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `npx vitest run src/lib/catalog/cloud-cache.test.ts`
-Expected: FAIL — cannot resolve `./cloud-cache`.
+Run: `npx vitest run src/lib/catalog/cloud-covers.test.ts`
+Expected: FAIL — cannot resolve `./cloud-covers`.
 
 - [ ] **Step 3: Add the table to the schema**
 
 In `src/lib/catalog/db-v3.ts`, add the field beside the others (~line 18):
 
 ```ts
-  cloud_volume_cache!: Table<CloudVolumeCacheEntry>;
+  cloud_covers!: Table<CloudCover>;
 ```
 
-Import the type at the top: `import type { CloudVolumeCacheEntry } from './cloud-cache';`
+Import the type at the top: `import type { CloudCover } from './cloud-covers';`
 
 Then **replace the whole `version(2)`/`version(3)`/`version(4)` sequence with a single `version(2)`**. Verified 2026-08-25: only `version(1)` has ever shipped — `main` and `develop` both declare it alone, and the commits that added `series_metadata` (a3d41deb), `series_index`, and `catalog_index` (11a1f8de) are contained in `feat/series-metadata` and no other branch. Those three versions are development history of an unreleased branch, so preserving them as separate upgrade steps would encode a migration path no database has ever taken. There are no `.upgrade()` callbacks and no code reads `db.verno`, so collapsing is a pure simplification.
 
@@ -310,12 +306,16 @@ this.version(1).stores({
 // `catalog_index` were separate versions during development but never
 // shipped, so no database exists at those intermediate versions and the
 // steps between them are fiction. A released client upgrades 1 -> 2 once
-// and gets all four tables.
+// and gets all four new tables.
 //
-// `cloud_volume_cache` is the cloud metadata cache: enrichment for volumes
-// the user has neither installed nor read, keyed by account + path because
-// providers expose no uuid for a file the client has not opened, and the
-// same path under a different account is a different file.
+// `cloud_covers` holds ONLY the thumbnail blob (+ dimensions) for a cloud
+// volume the user has neither installed nor read, keyed by account + path
+// because providers expose no uuid for a file the client has not opened, and
+// the same path under a different account is a different file. Everything
+// else a cloud card needs — title, counts, the cover sidecar's own
+// size/modified stamps — already lives in the cached `series_index` row for
+// that series, so this table carries no other field and needs no secondary
+// index: a read is always "these exact paths for this account."
 this.version(2).stores({
   volumes: 'volume_uuid, series_uuid, series_title',
   volume_ocr: 'volume_uuid',
@@ -323,7 +323,7 @@ this.version(2).stores({
   series_metadata: 'series_key',
   series_index: 'series_key',
   catalog_index: 'series_key',
-  cloud_volume_cache: '[account_scope+path], [account_scope+series_key], last_accessed'
+  cloud_covers: '[account_scope+path], last_accessed'
 });
 ```
 
@@ -332,96 +332,93 @@ this.version(2).stores({
 - [ ] **Step 4: Implement the CRUD module**
 
 ```ts
-// src/lib/catalog/cloud-cache.ts
+// src/lib/catalog/cloud-covers.ts
 import { db } from './db';
 import { normalizeCachePath } from './cloud-cache-key';
 
 /**
- * One cloud volume's enrichment, cached because the user browsed past it.
+ * One cloud volume's thumbnail, cached because the user browsed past it.
+ *
+ * Deliberately narrow: everything else a cloud card needs — title, counts,
+ * archive size, the cover sidecar's own size/modified stamps — already lives
+ * in the cached `series_index` row for that series. Duplicating those fields
+ * here would just be a second invalidation path to get wrong. This table
+ * exists only for the one thing nothing else holds: the blob.
  *
  * NOT a `volumes` row: nothing here is a relationship with the volume, it is
- * catalog knowledge that may be discarded at any time (see `pruneExpiredCloudCache`).
- * A volume the user installs or reads graduates to a real `volumes` row and its
- * cache entry becomes redundant.
+ * catalog knowledge that may be discarded at any time (see
+ * `pruneExpiredCloudCovers`). A volume the user installs or reads graduates
+ * to a real `volumes` row and its cover entry becomes redundant.
  *
- * PK is `[account_scope+path]` because providers do not expose volume uuids for
- * files the client has not opened, and the same path under a different account
- * is a different file.
+ * PK is `[account_scope+path]` because providers do not expose volume uuids
+ * for files the client has not opened, and the same path under a different
+ * account is a different file.
  */
-export interface CloudVolumeCacheEntry {
+export interface CloudCover {
   account_scope: string;
   /** Library-relative path, normalized by `normalizeCachePath`. */
   path: string;
-  series_key: string;
-  series_title: string;
-  volume_title: string;
-  /** From the series.json entry when one exists; else derived from the path. */
-  volume_uuid: string;
-  page_count: number;
-  character_count: number;
-  archive_size?: number;
-  thumbnail?: File;
-  thumbnail_width?: number;
-  thumbnail_height?: number;
-  /** Freshness stamps for the cover sidecar this thumbnail came from. */
-  cover_size?: number;
-  cover_modified?: number;
-  /** Epoch ms. Drives expiry — see `pruneExpiredCloudCache`. */
+  thumbnail: File;
+  width: number;
+  height: number;
+  /**
+   * Epoch ms. Drives expiry only — see `pruneExpiredCloudCovers`. Staleness
+   * of the cover ITSELF is decided elsewhere, by comparing `series_index`'s
+   * `cover_size`/`cover_modified` for this volume against the current
+   * listing; nothing stored on this row participates in that comparison.
+   */
   last_accessed: number;
 }
 
-/** Write entries, normalizing paths so every caller lands on the same key. */
-export async function putCloudCacheEntries(entries: CloudVolumeCacheEntry[]): Promise<void> {
-  if (entries.length === 0) return;
-  await db.cloud_volume_cache.bulkPut(
-    entries.map((e) => ({ ...e, path: normalizeCachePath(e.path) }))
-  );
+/** Write covers, normalizing paths so every caller lands on the same key. */
+export async function putCloudCovers(covers: CloudCover[]): Promise<void> {
+  if (covers.length === 0) return;
+  await db.cloud_covers.bulkPut(covers.map((c) => ({ ...c, path: normalizeCachePath(c.path) })));
 }
 
 /**
- * One series' cached entries for one account, via the `[account_scope+series_key]`
- * index — an indexed range read, never a table scan. This is the read the catalog
- * and series page make, and keeping it indexed is the whole point of the split.
+ * The requested paths' cached covers for one account, via the primary key —
+ * an indexed point read per path, never a table scan. Callers already know
+ * which paths are on screen (from the listing joined with `series_index`), so
+ * this never needs to discover paths itself, and an empty request short-
+ * circuits before touching the db.
  */
-export async function getCloudCacheForSeries(
+export async function getCloudCovers(
   scope: string,
-  seriesKey: string
-): Promise<CloudVolumeCacheEntry[]> {
-  return db.cloud_volume_cache
-    .where('[account_scope+series_key]')
-    .equals([scope, seriesKey])
-    .toArray();
+  paths: string[]
+): Promise<Map<string, CloudCover>> {
+  if (paths.length === 0) return new Map();
+  const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
+  const rows = await db.cloud_covers.where('[account_scope+path]').anyOf(keys).toArray();
+  return new Map(rows.map((r) => [r.path, r]));
 }
 
 /**
- * Mark entries as used, so browsing keeps them alive and neglect expires them.
+ * Mark covers as used, so browsing keeps them alive and neglect expires them.
  * Modifies only the timestamp: the thumbnail blob is left in place rather than
  * rewritten, which would cost a fresh blob write per view.
  */
-export async function touchCloudCacheEntries(
+export async function touchCloudCovers(
   scope: string,
   paths: string[],
   nowMs: number = Date.now()
 ): Promise<void> {
   if (paths.length === 0) return;
   const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
-  await db.cloud_volume_cache
-    .where('[account_scope+path]')
-    .anyOf(keys)
-    .modify({ last_accessed: nowMs });
+  await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ last_accessed: nowMs });
 }
 ```
 
 - [ ] **Step 5: Run the test — expect PASS**
 
-Run: `npx vitest run src/lib/catalog/cloud-cache.test.ts`
+Run: `npx vitest run src/lib/catalog/cloud-covers.test.ts`
 
 - [ ] **Step 6: Commit**
 
 ```bash
-npx prettier --write src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/lib/catalog/db-v3.ts
-git add src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/lib/catalog/db-v3.ts
-git commit -m "feat(catalog): cloud_volume_cache table; collapse unshipped schema versions"
+npx prettier --write src/lib/catalog/cloud-covers.ts src/lib/catalog/cloud-covers.test.ts src/lib/catalog/db-v3.ts
+git add src/lib/catalog/cloud-covers.ts src/lib/catalog/cloud-covers.test.ts src/lib/catalog/db-v3.ts
+git commit -m "feat(catalog): cloud_covers table; collapse unshipped schema versions"
 ```
 
 ---
@@ -430,112 +427,112 @@ git commit -m "feat(catalog): cloud_volume_cache table; collapse unshipped schem
 
 **Files:**
 
-- Modify: `src/lib/catalog/cloud-cache.ts` (add prune + constant)
-- Modify: `src/lib/catalog/cloud-cache.test.ts` (add the expiry describe block)
+- Modify: `src/lib/catalog/cloud-covers.ts` (add prune + constant)
+- Modify: `src/lib/catalog/cloud-covers.test.ts` (add the expiry describe block)
 - Modify: `src/routes/+layout.svelte` (call the prune once on app start, beside the existing startup work)
 
 **Interfaces:**
 
-- Produces: `CLOUD_CACHE_MAX_AGE_MS` (14 days), `pruneExpiredCloudCache(nowMs?: number): Promise<number>`
+- Produces: `CLOUD_COVER_MAX_AGE_MS` (14 days), `pruneExpiredCloudCovers(nowMs?: number): Promise<number>`
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// append to src/lib/catalog/cloud-cache.test.ts
-import { pruneExpiredCloudCache, CLOUD_CACHE_MAX_AGE_MS } from './cloud-cache';
+// append to src/lib/catalog/cloud-covers.test.ts
+import { pruneExpiredCloudCovers, CLOUD_COVER_MAX_AGE_MS } from './cloud-covers';
 
-describe('cloud cache expiry', () => {
+describe('cloud cover expiry', () => {
   const NOW = 1_800_000_000_000;
 
   it('is 14 days', () => {
-    expect(CLOUD_CACHE_MAX_AGE_MS).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(CLOUD_COVER_MAX_AGE_MS).toBe(14 * 24 * 60 * 60 * 1000);
   });
 
-  it('deletes entries untouched for longer than the max age', async () => {
-    await putCloudCacheEntries([
-      entry({ path: 'Old/Volume 01.cbz', last_accessed: NOW - CLOUD_CACHE_MAX_AGE_MS - 1 }),
-      entry({ path: 'Fresh/Volume 01.cbz', series_key: 'fresh', last_accessed: NOW - 1000 })
+  it('deletes covers untouched for longer than the max age', async () => {
+    await putCloudCovers([
+      cover({ path: 'Old/Volume 01.cbz', last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS - 1 }),
+      cover({ path: 'Fresh/Volume 01.cbz', last_accessed: NOW - 1000 })
     ]);
 
-    const deleted = await pruneExpiredCloudCache(NOW);
+    const deleted = await pruneExpiredCloudCovers(NOW);
 
     expect(deleted).toBe(1);
-    expect(await getCloudCacheForSeries('mega:a@b.com', 'dr stone')).toHaveLength(0);
-    expect(await getCloudCacheForSeries('mega:a@b.com', 'fresh')).toHaveLength(1);
+    expect((await getCloudCovers('mega:a@b.com', ['Old/Volume 01.cbz'])).size).toBe(0);
+    expect((await getCloudCovers('mega:a@b.com', ['Fresh/Volume 01.cbz'])).size).toBe(1);
   });
 
-  it('keeps an entry exactly at the boundary', async () => {
-    await putCloudCacheEntries([entry({ last_accessed: NOW - CLOUD_CACHE_MAX_AGE_MS })]);
-    expect(await pruneExpiredCloudCache(NOW)).toBe(0);
+  it('keeps a cover exactly at the boundary', async () => {
+    await putCloudCovers([cover({ last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS })]);
+    expect(await pruneExpiredCloudCovers(NOW)).toBe(0);
   });
 
   it('prunes across every account, not just the connected one', async () => {
-    const stale = NOW - CLOUD_CACHE_MAX_AGE_MS - 1;
-    await putCloudCacheEntries([
-      entry({ account_scope: 'mega:a@b.com', last_accessed: stale }),
-      entry({ account_scope: 'webdav:h|nathan', last_accessed: stale })
+    const stale = NOW - CLOUD_COVER_MAX_AGE_MS - 1;
+    await putCloudCovers([
+      cover({ account_scope: 'mega:a@b.com', last_accessed: stale }),
+      cover({ account_scope: 'webdav:h|nathan', last_accessed: stale })
     ]);
-    expect(await pruneExpiredCloudCache(NOW)).toBe(2);
+    expect(await pruneExpiredCloudCovers(NOW)).toBe(2);
   });
 });
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `npx vitest run src/lib/catalog/cloud-cache.test.ts`
-Expected: FAIL — `pruneExpiredCloudCache is not a function`.
+Run: `npx vitest run src/lib/catalog/cloud-covers.test.ts`
+Expected: FAIL — `pruneExpiredCloudCovers is not a function`.
 
 - [ ] **Step 3: Implement**
 
 ```ts
-// append to src/lib/catalog/cloud-cache.ts
+// append to src/lib/catalog/cloud-covers.ts
 
-/** Entries untouched for this long are discarded. Age only — no size quota. */
-export const CLOUD_CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** Covers untouched for this long are discarded. Age only — no size quota. */
+export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
- * Drop entries nobody has looked at in `CLOUD_CACHE_MAX_AGE_MS`. Returns how
+ * Drop covers nobody has looked at in `CLOUD_COVER_MAX_AGE_MS`. Returns how
  * many were deleted.
  *
- * Deletes through the `last_accessed` index rather than scanning: the cache is
- * the big table, and a full scan here would reintroduce exactly the cost this
+ * Deletes through the `last_accessed` index rather than scanning: this table
+ * carries blobs, and a full scan here would reintroduce exactly the cost this
  * split exists to remove. Account-agnostic on purpose — an account the user
  * stopped using should age out, not linger because it is disconnected.
  */
-export async function pruneExpiredCloudCache(nowMs: number = Date.now()): Promise<number> {
-  const cutoff = nowMs - CLOUD_CACHE_MAX_AGE_MS;
-  return db.cloud_volume_cache.where('last_accessed').below(cutoff).delete();
+export async function pruneExpiredCloudCovers(nowMs: number = Date.now()): Promise<number> {
+  const cutoff = nowMs - CLOUD_COVER_MAX_AGE_MS;
+  return db.cloud_covers.where('last_accessed').below(cutoff).delete();
 }
 ```
 
 - [ ] **Step 4: Run the test — expect PASS**
 
-Run: `npx vitest run src/lib/catalog/cloud-cache.test.ts`
+Run: `npx vitest run src/lib/catalog/cloud-covers.test.ts`
 
 - [ ] **Step 5: Sweep once on app start**
 
 In `src/routes/+layout.svelte`, inside the existing `onMount` beside the other startup calls, add a fire-and-forget sweep. It must never block boot and never surface UI:
 
 ```ts
-void import('$lib/catalog/cloud-cache')
-  .then((m) => m.pruneExpiredCloudCache())
-  .catch((error) => console.debug('[cloud-cache] prune skipped:', error));
+void import('$lib/catalog/cloud-covers')
+  .then((m) => m.pruneExpiredCloudCovers())
+  .catch((error) => console.debug('[cloud-covers] prune skipped:', error));
 ```
 
 - [ ] **Step 6: Verify and commit**
 
 ```bash
 npm run check && npx vitest run src/lib/catalog
-npx prettier --write src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/routes/+layout.svelte
-git add src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/routes/+layout.svelte
-git commit -m "feat(catalog): expire cloud cache entries after 14 days"
+npx prettier --write src/lib/catalog/cloud-covers.ts src/lib/catalog/cloud-covers.test.ts src/routes/+layout.svelte
+git add src/lib/catalog/cloud-covers.ts src/lib/catalog/cloud-covers.test.ts src/routes/+layout.svelte
+git commit -m "feat(catalog): expire cloud covers after 14 days"
 ```
 
 ---
 
-### Task 4: Route cover installs to the cache instead of `volumes`
+### Task 4: Route cover installs to the cover table instead of `volumes`
 
-Today `installCover` writes a `volumes` row for every cover, which is what fires the liveQuery storm. After this task, a cover for a cloud volume with no local row lands in the cache; a cover for an installed or history-carrying volume keeps its current path.
+Today `installCover` writes a `volumes` row for every cover, which is what fires the liveQuery storm. After this task, a cover for a cloud volume with no local row lands in `cloud_covers`; a cover for an installed or history-carrying volume keeps its current path.
 
 **Files:**
 
@@ -544,17 +541,17 @@ Today `installCover` writes a `volumes` row for every cover, which is what fires
 
 **Interfaces:**
 
-- Consumes: `putCloudCacheEntries`, `CloudVolumeCacheEntry` (Task 2), `activeAccountScope` (Task 1)
+- Consumes: `putCloudCovers`, `CloudCover` (Task 2), `activeAccountScope` (Task 1)
 - Produces: unchanged public surface — `installCover` and `flushPendingCoverPersists` keep their current names and signatures.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // append to src/lib/catalog/cover-persist.test.ts
-import { getCloudCacheForSeries } from './cloud-cache';
+import { getCloudCovers } from './cloud-covers';
 
 describe('cover installs route by relationship', () => {
-  it('writes a cloud volume’s cover to the cache, never to volumes', async () => {
+  it('writes a cloud volume’s cover to cloud_covers, never to volumes', async () => {
     const before = await db.volumes.count();
     installCover(
       {
@@ -573,10 +570,9 @@ describe('cover installs route by relationship', () => {
     await flushPendingCoverPersists();
 
     expect(await db.volumes.count()).toBe(before);
-    const cached = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    expect(cached).toHaveLength(1);
-    expect(cached[0].thumbnail).toBeInstanceOf(File);
-    expect(cached[0].thumbnail_width).toBe(250);
+    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
 
   it('still writes onto a metadata-only row that has reading history', async () => {
@@ -618,14 +614,14 @@ Add to the file's existing mock of `$lib/util/sync/unified-cloud-manager` an act
 - [ ] **Step 2: Run it and confirm it fails**
 
 Run: `npx vitest run src/lib/catalog/cover-persist.test.ts`
-Expected: FAIL — the cloud cover is written to `volumes`, so `db.volumes.count()` grew and the cache is empty.
+Expected: FAIL — the cloud cover is written to `volumes`, so `db.volumes.count()` grew and `cloud_covers` is empty.
 
 - [ ] **Step 3: Implement the routing**
 
-In `flushPendingCoverPersists`, split the drained queue by destination before writing. Inside the existing `db.transaction('rw', db.volumes, …)`, keep only the entries whose row exists; collect the rest for the cache:
+In `flushPendingCoverPersists`, split the drained queue by destination before writing. Inside the existing `db.transaction('rw', db.volumes, …)`, keep only the entries whose row exists; collect the rest for the cover table:
 
 ```ts
-const forCache: CloudVolumeCacheEntry[] = [];
+const forCoverTable: CloudCover[] = [];
 const scope = activeAccountScope();
 
 await db.transaction('rw', db.volumes, async () => {
@@ -638,47 +634,38 @@ await db.transaction('rw', db.volumes, async () => {
       await db.volumes.update(volumeUuid, pending.patch);
       continue;
     }
-    // No row: catalog knowledge. It belongs in the cache, and only when we can
-    // attribute it to an account — an unscoped write would blend accounts.
+    // No row: catalog knowledge. It belongs in cloud_covers, and only when we
+    // can attribute it to an account — an unscoped write would blend accounts.
     if (scope && pending.cachePath) {
-      forCache.push({ ...pending.cacheEntry, account_scope: scope, last_accessed: Date.now() });
+      forCoverTable.push({
+        account_scope: scope,
+        path: pending.cachePath,
+        thumbnail: pending.thumbnail,
+        width: pending.width,
+        height: pending.height,
+        last_accessed: Date.now()
+      });
     }
   }
 });
 
-await putCloudCacheEntries(forCache);
+await putCloudCovers(forCoverTable);
 ```
 
-`installCover` must capture the cache fields at schedule time, while the listing snapshot is still in hand — never re-read them at flush time, which would break the decision-time snapshot rule the stamps already follow. Extend the queued `pending` object:
+`installCover` must capture the cover fields at schedule time, while the fetched blob is still in hand — never re-read them at flush time, which would break the decision-time snapshot rule the stamps already follow. Because `CloudCover` is now just the blob, dimensions and path, this capture is a straight passthrough of what the cover fetch already returned. Extend the queued `pending` object:
 
 ```ts
 const cachePath = (volume as VolumeMetadata & { cloudPath?: string }).cloudPath;
 pending.set(volume.volume_uuid, {
   patch, // unchanged: what a volumes row would receive
   cachePath,
-  cacheEntry: cachePath
-    ? {
-        account_scope: '', // filled at flush, from the scope live then
-        path: cachePath,
-        series_key: normalizeSeriesKey(volume.series_title),
-        series_title: volume.series_title,
-        volume_title: volume.volume_title,
-        volume_uuid: volume.volume_uuid,
-        page_count: volume.page_count ?? 0,
-        character_count: volume.character_count ?? 0,
-        archive_size: volume.archive_size,
-        thumbnail: result.file,
-        thumbnail_width: result.width,
-        thumbnail_height: result.height,
-        cover_size: volume.cloudThumbnailSize,
-        cover_modified: volume.cloudThumbnailModifiedTime,
-        last_accessed: 0 // stamped at flush
-      }
-    : undefined
+  thumbnail: result.file,
+  width: result.width,
+  height: result.height
 });
 ```
 
-A volume with no `cloudPath` has no cache identity, so it is queued for the row path only; if it has no row either, the flush drops it (nothing to attribute it to).
+A volume with no `cloudPath` has no cover-table identity, so it is queued for the row path only; if it has no row either, the flush drops it (nothing to attribute it to).
 
 - [ ] **Step 4: Run the test — expect PASS**
 
@@ -690,7 +677,7 @@ Run: `npx vitest run src/lib/catalog/cover-persist.test.ts`
 npx vitest run
 npx prettier --write src/lib/catalog/cover-persist.ts src/lib/catalog/cover-persist.test.ts
 git add src/lib/catalog/cover-persist.ts src/lib/catalog/cover-persist.test.ts
-git commit -m "feat(catalog): cloud covers persist to the cache, not the volumes table"
+git commit -m "feat(catalog): cloud covers persist to cloud_covers, not the volumes table"
 ```
 
 ---
@@ -704,13 +691,15 @@ git commit -m "feat(catalog): cloud covers persist to the cache, not the volumes
 
 **Interfaces:**
 
-- Consumes: `putCloudCacheEntries` (Task 2)
+- Consumes: `putCloudCovers` (Task 2, via Task 4's `installCover` routing)
 - Produces: no new exports; `requestCover` behaviour changes for volumes with no local row.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // append to src/lib/catalog/cover-service.test.ts
+import { getCloudCovers } from './cloud-covers';
+
 describe('browsing does not mint volumes rows', () => {
   it('an indexed placeholder is cached, not materialized', async () => {
     const before = await db.volumes.count();
@@ -718,13 +707,13 @@ describe('browsing does not mint volumes rows', () => {
     await settleCoverService();
 
     expect(await db.volumes.count()).toBe(before);
-    const cached = await getCloudCacheForSeries('mega:a@b.com', 'dr stone');
-    expect(cached.map((c) => c.volume_uuid)).toContain('idx-1');
+    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 03.cbz']);
+    expect(cached.has('Dr Stone/Volume 03.cbz')).toBe(true);
   });
 
   it('a volume with reading history still gets its row', async () => {
     // history rows are created by the download/read path, not by browsing:
-    // requesting a cover for one must fill the row, not the cache.
+    // requesting a cover for one must fill the row, not the cover table.
     await db.volumes.put(metadataOnlyRow({ volume_uuid: 'hist-1' }) as never);
     requestCover({
       volume_uuid: 'hist-1',
@@ -748,7 +737,7 @@ Expected: FAIL — `db.volumes.count()` grew by one.
 
 - [ ] **Step 3: Remove the materialize-on-render branch**
 
-In `cover-service.ts`, the decision-tree branch that calls `materializeSeriesVolumes` for an index-adopted placeholder is deleted. The cover result flows to `installCover` exactly as before; Task 4's routing decides where it lands. Keep the bare-placeholder branch that pulls a `.mokuro` to _build_ an entry — that data now populates the cache entry rather than a row.
+In `cover-service.ts`, the decision-tree branch that calls `materializeSeriesVolumes` for an index-adopted placeholder is deleted. The cover result flows to `installCover` exactly as before; Task 4's routing decides where it lands. Keep the bare-placeholder branch that pulls a `.mokuro` to build a full row's worth of fields — that data still feeds `pending.patch` for the case a volume graduates to an installed/history row, but it no longer needs to populate a cover-table entry: Task 4's `installCover` now captures the cover's `cachePath` plus the fetched blob and dimensions directly, and nothing else lands in `cloud_covers`.
 
 Delete the now-unused `materializeSeriesVolumes` import if nothing else in the file uses it.
 
@@ -761,134 +750,190 @@ Run: `npx vitest run src/lib/catalog/cover-service.test.ts`
 ```bash
 npx prettier --write src/lib/catalog/cover-service.ts src/lib/catalog/cover-service.test.ts
 git add src/lib/catalog/cover-service.ts src/lib/catalog/cover-service.test.ts
-git commit -m "feat(catalog): browsing caches cloud metadata instead of minting rows"
+git commit -m "feat(catalog): browsing caches cloud covers instead of minting rows"
 ```
 
 ---
 
-### Task 6: Render cloud series from the cache
+### Task 6: Render cloud series by joining the listing, `series_index` and `cloud_covers`
 
-The catalog currently gets cloud enrichment by reading materialized rows out of `volumes`. It must now join `series_index` (identity/counts) with the cache (covers), per rendered series.
+The catalog already joins `series_index` into placeholder generation for identity and counts — `generatePlaceholders` takes an `indexMap` parameter (the cached `series.json` per series), wired through `volumesWithPlaceholders` in `index.ts` as its third `derived` input, with a content-based `seriesIndexSignature` so a liveQuery re-emission that changed nothing does not trigger a recompute. What a placeholder still cannot show is a cover blob — today that only exists once a cover-fetch path (Task 4/5) installs it, and until now the only place to install it was a `volumes` row. This task adds `cloud_covers` as the fourth input, so an already-cached cover blob shows up on a placeholder the moment it exists, keyed by the placeholder's cloud path, with no `volumes` row involved.
 
 **Files:**
 
-- Modify: `src/lib/catalog/placeholders.ts` (`generatePlaceholders` ~line 266 — accept cached entries and use them for cover/count enrichment)
-- Modify: `src/lib/catalog/index.ts` (`volumesWithPlaceholders` ~line 125 — supply the cached entries)
-- Create: `src/lib/catalog/cloud-cache-store.ts` (a Dexie `liveQuery` over the cache, keyed by the active scope, exposing `Map<path, CloudVolumeCacheEntry>`)
-- Modify: `src/lib/catalog/catalog-store.test.ts`
+- Modify: `src/lib/catalog/placeholders.ts` (`generatePlaceholders` ~line 267 — accept a cover map and set `thumbnail`/`thumbnail_width`/`thumbnail_height` on a placeholder when its `cloudPath` has a cached cover)
+- Modify: `src/lib/catalog/placeholders.test.ts` (the enrichment tests — a placeholder actually carrying the cached blob)
+- Modify: `src/lib/catalog/index.ts` (`volumesWithPlaceholders` ~line 124 — add `cloudCoverMap` as a fourth `derived` input, alongside `volumes`, `unifiedCloudManager.cloudFiles`, `seriesIndexMap`, with its own content signature)
+- Create: `src/lib/catalog/cloud-covers-store.ts` (a live view over `cloud_covers`, scoped to exactly the paths the current listing names, exposing `Map<path, CloudCover>`)
+- Modify: `src/lib/catalog/catalog-store.test.ts` (the call-through and recompute-coalescing tests — `generatePlaceholders` is mocked in this file, so it cannot assert enrichment content)
 
 **Interfaces:**
 
-- Consumes: `getCloudCacheForSeries`, `CloudVolumeCacheEntry`, `activeAccountScope`
-- Produces: `cloudCacheMap: Readable<Map<string, CloudVolumeCacheEntry>>` (key = normalized path)
+- Consumes: `getCloudCovers`, `CloudCover`, `activeAccountScope` (Task 2/1); `unifiedCloudManager.cloudFiles` (existing)
+- Produces: `cloudCoverMap: Readable<Map<string, CloudCover>>` (key = normalized path)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
+
+First, the enrichment logic itself — `generatePlaceholders` already runs for real in this file (only `$app/environment` and `cloud-ocr-upgrade` are mocked):
 
 ```ts
-// append to src/lib/catalog/catalog-store.test.ts
-describe('cloud enrichment comes from the cache', () => {
-  it('a placeholder shows the cached cover without any volumes row', () => {
-    cloudFiles.set(
-      new Map([
-        [
-          'Dr Stone',
-          [
-            {
-              provider: 'mega',
-              fileId: 'f',
-              path: 'Dr Stone/Volume 01.cbz',
-              modifiedTime: 't',
-              size: 1
-            }
-          ]
-        ]
-      ])
-    );
-    cloudCache.set(
-      new Map([
-        [
-          'Dr Stone/Volume 01.cbz',
-          {
-            thumbnail: new File([new Uint8Array([1])], 'c.webp'),
-            thumbnail_width: 250,
-            thumbnail_height: 350,
-            page_count: 180,
-            character_count: 4321,
-            volume_uuid: 'cached-1'
-          }
-        ]
-      ])
-    );
+// append to src/lib/catalog/placeholders.test.ts
+describe('generatePlaceholders with a cover map', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+  ]);
 
-    let latest: Record<string, VolumeMetadata> = {};
-    const unsub = volumesWithPlaceholders.subscribe((v) => (latest = v));
+  it('attaches a cached cover by cloud path, without needing an index entry', () => {
+    const covers = new Map([
+      [
+        'One Piece/Volume 1.cbz',
+        {
+          account_scope: 'mega:a@b.com',
+          path: 'One Piece/Volume 1.cbz',
+          thumbnail: new File([new Uint8Array([1])], 'c.webp'),
+          width: 250,
+          height: 350,
+          last_accessed: 1000
+        }
+      ]
+    ]);
 
-    const drawn = Object.values(latest).find((v) => v.volume_title === 'Volume 01');
-    expect(drawn?.thumbnail).toBeInstanceOf(File);
-    expect(drawn?.character_count).toBe(4321);
-    unsub();
+    const placeholders = generatePlaceholders(cloudFiles, [], undefined, covers);
+
+    expect(placeholders[0].thumbnail).toBeInstanceOf(File);
+    expect(placeholders[0].thumbnail_width).toBe(250);
+    expect(placeholders[0].thumbnail_height).toBe(350);
+  });
+
+  it('leaves a placeholder bare when its path has no cached cover', () => {
+    const placeholders = generatePlaceholders(cloudFiles, [], undefined, new Map());
+    expect(placeholders[0].thumbnail).toBeUndefined();
   });
 });
 ```
 
-Add a `cloudCache` hoisted store to the file's mocks alongside `cloudFiles`, mocking `$lib/catalog/cloud-cache-store`.
+Second, that `volumesWithPlaceholders` actually threads the cover map through and coalesces its own recompute the same way it already does for `seriesIndexMap` — `generatePlaceholders` is mocked in this file, so this is a call-through/recompute test, not an enrichment test:
+
+```ts
+// append to src/lib/catalog/catalog-store.test.ts, inside describe('volumesWithPlaceholders', ...)
+it('passes the cover map to generatePlaceholders and recomputes only when its content changes', () => {
+  const generate = vi.mocked(generatePlaceholders);
+  generate.mockClear();
+  cloudFiles.set(cloudListing);
+  seriesIndexMap.set(new Map([['one piece', indexRecord('2026-08-17T00:00:00.000Z')]]));
+
+  const coverAt = (lastAccessed: number, blobLength = 3) => ({
+    account_scope: 'webdav:h|nathan',
+    path: 'One Piece/Volume 2.cbz',
+    thumbnail: new File([new Uint8Array(blobLength)], 'c.webp'),
+    width: 250,
+    height: 350,
+    last_accessed: lastAccessed
+  });
+  cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
+
+  const unsubscribe = volumesWithPlaceholders.subscribe(() => {});
+  expect(generate).toHaveBeenCalledTimes(1);
+  expect(generate).toHaveBeenLastCalledWith(
+    cloudListing,
+    expect.any(Array),
+    expect.any(Map) as unknown as Map<string, unknown>,
+    expect.any(Map) as unknown as Map<string, unknown>
+  );
+
+  // A touch bumps last_accessed and re-emits a fresh Map, but the cached blob
+  // — and therefore what a placeholder would show — hasn't changed.
+  cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000)]]));
+  expect(generate).toHaveBeenCalledTimes(1);
+
+  // A genuinely different blob does recompute.
+  cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000, 4)]]));
+  expect(generate).toHaveBeenCalledTimes(2);
+
+  unsubscribe();
+  cloudFiles.set(new Map());
+  cloudCoverMap.set(new Map());
+});
+```
+
+Add a `cloudCoverMap` hoisted store to the file's `vi.hoisted` block alongside `cloudFiles`/`seriesIndexMap`, and `vi.mock('$lib/catalog/cloud-covers-store', () => ({ cloudCoverMap }));`.
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `npx vitest run src/lib/catalog/catalog-store.test.ts`
-Expected: FAIL — the placeholder has no thumbnail.
+Run: `npx vitest run src/lib/catalog/placeholders.test.ts src/lib/catalog/catalog-store.test.ts`
+Expected: FAIL — `generatePlaceholders` takes at most 3 params today, and `cloud-covers-store` does not exist.
 
-- [ ] **Step 3: Add the cache store**
+- [ ] **Step 3: Add the cover store**
 
 ```ts
-// src/lib/catalog/cloud-cache-store.ts
+// src/lib/catalog/cloud-covers-store.ts
 import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { db } from './db';
-import { activeAccountScope } from './cloud-cache-key';
-import type { CloudVolumeCacheEntry } from './cloud-cache';
+import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
+import { getCloudCovers, type CloudCover } from './cloud-covers';
+import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 
 /**
- * The active account's cached cloud enrichment, by normalized path.
+ * The active account's cached covers for exactly the paths currently listed.
  *
- * Scoped by account at the query, so the map only ever holds entries the
- * connected provider could serve. Empty when nothing is connected — the catalog
- * then draws bare placeholders, which is the correct fallback.
+ * `cloud_covers` can hold thousands of blobs across a large catalog, so this
+ * never reads the whole table for one account — only the on-screen path set,
+ * rebuilt from the cloud listing each time it changes. Still backed by a
+ * Dexie `liveQuery` per path set, so a cover finishing its download (Task 4's
+ * write) is picked up without a manual refresh.
  */
-export const cloudCacheMap: Readable<Map<string, CloudVolumeCacheEntry>> = readable(
-  new Map<string, CloudVolumeCacheEntry>(),
+export const cloudCoverMap: Readable<Map<string, CloudCover>> = readable(
+  new Map<string, CloudCover>(),
   (set) => {
-    const sub = liveQuery(async () => {
+    let inner: { unsubscribe: () => void } | null = null;
+
+    const outer = unifiedCloudManager.cloudFiles.subscribe((listing) => {
+      inner?.unsubscribe();
+      inner = null;
+
       const scope = activeAccountScope();
-      if (!scope) return [] as CloudVolumeCacheEntry[];
-      return db.cloud_volume_cache
-        .where('[account_scope+path]')
-        .between([scope, ''], [scope, '￿'])
-        .toArray();
-    }).subscribe({
-      next: (rows) => set(new Map(rows.map((r) => [r.path, r]))),
-      error: (err) => console.debug('[cloud-cache] live query failed:', err)
+      const paths = Array.from(listing.values()).flatMap((files) =>
+        files.map((f) => normalizeCachePath(f.path))
+      );
+      if (!scope || paths.length === 0) {
+        set(new Map());
+        return;
+      }
+
+      inner = liveQuery(() => getCloudCovers(scope, paths)).subscribe({
+        next: (covers) => set(covers),
+        error: (err) => console.debug('[cloud-covers] live query failed:', err)
+      });
     });
-    return () => sub.unsubscribe();
+
+    return () => {
+      inner?.unsubscribe();
+      outer();
+    };
   }
 );
 ```
 
+`db` and `liveQuery` are unused imports if your editor complains — `db` is threaded through `getCloudCovers`, kept here only if a future direct query needs it; drop it if lint flags it as unused.
+
 - [ ] **Step 4: Join it in `generatePlaceholders`**
 
-Give `generatePlaceholders` an extra parameter `cache: Map<string, CloudVolumeCacheEntry>` and, where it builds each placeholder, prefer cached `thumbnail`/`thumbnail_width`/`thumbnail_height`/`page_count`/`character_count`/`volume_uuid` over the derived values. In `catalog/index.ts`, join `cloudCacheMap` into `volumesWithPlaceholders`'s inputs and pass it through — extending the existing memo signature so a cache emission recomputes placeholders but an unrelated write does not.
+Give `generatePlaceholders` a fourth, optional parameter `coverMap?: Map<string, CloudCover>`. Where it currently reads `thumbnailMap.get(basePath)` to decorate a placeholder with `cloudThumbnailFileId`/`cloudThumbnailPath`/etc (the pointer to where a cover CAN be fetched from), also look up `coverMap?.get(normalizeCachePath(cloudFile.path))` and, when present, set `placeholder.thumbnail`, `placeholder.thumbnail_width`, `placeholder.thumbnail_height` from it — the blob ALREADY fetched, as opposed to the sidecar pointer to one that might not be. The two are independent: a placeholder can carry a fetch pointer with no cached blob yet (first render), or — after Task 4 — a cached blob for a path whose sidecar pointer already resolved once.
 
-- [ ] **Step 5: Run the test — expect PASS**
+In `catalog/index.ts`, add `cloudCoverMap` as the fourth member of the `derived([...])` input array. Because it is liveQuery-backed like `seriesIndexMap`, it re-emits a brand-new `Map` of brand-new row objects on every write to `cloud_covers` — including a `touchCloudCovers` write that changes nothing a placeholder would show. Give it the same treatment `seriesIndexSignature` already gives `seriesIndexMap`: a content signature (path + blob byte length is enough — a cover overwrite is the only case that should force a recompute, and a same-length coincidental overwrite recomputing anyway is a harmless false positive) compared against the previous signature, alongside the existing `volumes`/`cloudFiles` reference checks and `indexSignature` check, before calling `generatePlaceholders` again.
 
-Run: `npx vitest run src/lib/catalog/catalog-store.test.ts`
+- [ ] **Step 5: Run the tests — expect PASS**
+
+Run: `npx vitest run src/lib/catalog/placeholders.test.ts src/lib/catalog/catalog-store.test.ts`
 
 - [ ] **Step 6: Full suite and commit**
 
 ```bash
 npx vitest run && npm run check
-npx prettier --write src/lib/catalog/cloud-cache-store.ts src/lib/catalog/placeholders.ts src/lib/catalog/index.ts src/lib/catalog/catalog-store.test.ts
-git add src/lib/catalog/cloud-cache-store.ts src/lib/catalog/placeholders.ts src/lib/catalog/index.ts src/lib/catalog/catalog-store.test.ts
-git commit -m "feat(catalog): render cloud enrichment from the cache"
+npx prettier --write src/lib/catalog/cloud-covers-store.ts src/lib/catalog/placeholders.ts src/lib/catalog/placeholders.test.ts src/lib/catalog/index.ts src/lib/catalog/catalog-store.test.ts
+git add src/lib/catalog/cloud-covers-store.ts src/lib/catalog/placeholders.ts src/lib/catalog/placeholders.test.ts src/lib/catalog/index.ts src/lib/catalog/catalog-store.test.ts
+git commit -m "feat(catalog): render cloud covers from cloud_covers, keyed by path"
 ```
 
 ---
@@ -1113,7 +1158,7 @@ In the browser running the dev server, clear site data for `http://localhost:517
 
 - [ ] **Step 2: Rebuild by browsing**
 
-Connect the cloud provider, open the catalog, and let it settle. Then open several series so the cache populates.
+Connect the cloud provider, open the catalog, and let it settle. Then open several series so `cloud_covers` populates.
 
 - [ ] **Step 3: Measure the scan rate**
 
@@ -1143,10 +1188,10 @@ const count = (s) =>
     const t = db.transaction(s, 'readonly').objectStore(s).count();
     t.onsuccess = () => res(t.result);
   });
-console.log({ volumes: await count('volumes'), cache: await count('cloud_volume_cache') });
+console.log({ volumes: await count('volumes'), covers: await count('cloud_covers') });
 ```
 
-Expected: `volumes` in the hundreds (installed + history), `cloud_volume_cache` holding the browsed remainder.
+Expected: `volumes` in the hundreds (installed + history), `cloud_covers` holding the browsed remainder — thumbnails only, so its per-row size is smaller than the old fat-row cache would have been.
 
 - [ ] **Step 5: Record the numbers and commit**
 
