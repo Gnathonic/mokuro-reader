@@ -130,13 +130,28 @@ export function buildCloudSidecarStamps(
  *
  * - No sidecar in the listing at all → never stale: nothing to compare
  *   against and nothing to (re)fetch.
- * - A sidecar IS listed but the entry carries no stamp at all (built before
- *   this scheme existed, or by an older client) → stale exactly once, so the
- *   next backfill pass self-heals it and stamps it for good.
- * - Otherwise: stale when the size differs, or when the listing's mtime is
- *   STRICTLY newer than the stored one. Equal-or-older mtime with an equal
- *   size is never stale — a provider whose mtimes drift backwards or repeat
- *   must not cause a re-pull loop.
+ * - The entry carries NO stamp at all (written by pre-stamp code — in
+ *   practice EVERY entry a library accumulated before this scheme existed) →
+ *   never stale. The entry ADOPTS the current listing as its baseline
+ *   instead of being pulled: a stamp is listing metadata (size/mtime), not
+ *   file content, and a stampless entry already carries the real data
+ *   (uuid, counts) a pull would produce — re-downloading the mokuro to learn
+ *   its own size gains zero information. The stamp attaches organically the
+ *   next time ANY write touches this entry (an installed row's own write
+ *   stamps it via `buildCloudSidecarStamps`; a genuinely-pulled entry for
+ *   the SAME series carries every other entry through unchanged); until
+ *   then it stays unstamped, which costs nothing.
+ *
+ *   (DECIDED 2026-08-24, field regression: the previous "stampless + listed
+ *   = stale, heal once" rule is a library-wide pull storm in practice — a
+ *   197-series library upgrading from pre-stamp code queued ~1800 multi-MB
+ *   pulls in one pass, starving the catalog's own cover fetches on the same
+ *   provider connection until cards went blank. Never bring back heal-once
+ *   without a rate limit that accounts for a whole-library migration.)
+ * - Otherwise (the entry DOES carry a stamp): stale when the size differs,
+ *   or when the listing's mtime is STRICTLY newer than the stored one.
+ *   Equal-or-older mtime with an equal size is never stale — a provider
+ *   whose mtimes drift backwards or repeat must not cause a re-pull loop.
  */
 export function isSidecarStale(
   entryStamp: { size?: number; modified?: number },
@@ -144,7 +159,7 @@ export function isSidecarStale(
 ): boolean {
   if (!listingStamp) return false;
   const hasEntryStamp = entryStamp.size !== undefined || entryStamp.modified !== undefined;
-  if (!hasEntryStamp) return true;
+  if (!hasEntryStamp) return false;
   if (entryStamp.size !== listingStamp.size) return true;
   if (
     listingStamp.modified !== undefined &&

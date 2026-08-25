@@ -105,8 +105,15 @@ describe('isSidecarStale', () => {
     expect(isSidecarStale({ size: 10, modified: 5 }, undefined)).toBe(false);
   });
 
-  it('is stale (heal once) when the entry has no stamp but the listing has a sidecar', () => {
-    expect(isSidecarStale({}, { size: 10, modified: 5 })).toBe(true);
+  it('is NEVER stale when the entry has no stamp — adopts the listing as baseline, not a pull candidate', () => {
+    // 2026-08-24 field regression: the old "heal once" rule here queued
+    // ~1800 pulls for a 197-series library whose entries predate the
+    // stamp scheme. A stampless entry already carries the real uuid/counts a
+    // pull would produce, so it is never re-pulled for the stamp alone.
+    expect(isSidecarStale({}, { size: 10, modified: 5 })).toBe(false);
+    expect(
+      isSidecarStale({ size: undefined, modified: undefined }, { size: 10, modified: 5 })
+    ).toBe(false);
   });
 
   it('is stale when the size differs', () => {

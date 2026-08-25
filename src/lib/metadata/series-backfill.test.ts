@@ -452,6 +452,46 @@ describe('re-entrancy', () => {
   });
 });
 
+describe('the stampless-migration fix (field regression 2026-08-24)', () => {
+  it('N series whose entries are all complete-but-stampless: ZERO pulls, ZERO cover fetches, ZERO publishes', async () => {
+    // Reproduces the reported regression at scale: a library upgrading from
+    // pre-stamp code has every entry in every series.json stampless (real
+    // report: 197 series, ~1800 archives). The listing DOES show a
+    // `.mokuro`/cover sidecar next to each archive — the exact shape that
+    // used to trip "stampless + listed = stale, heal once" and queue a pull
+    // per archive. None of that may happen any more.
+    const titles = Array.from({ length: 10 }, (_, i) => `Series ${i}`);
+    getCloudVolumesBySeries.mockImplementation((title: string) => [
+      cloudFile(`${title}/Volume 01.cbz`, 100),
+      cloudFile(`${title}/Volume 01.mokuro`, 50_000_000, '2026-06-01T00:00:00.000Z'),
+      cloudFile(`${title}/Volume 01.webp`, 900, '2026-06-01T00:00:00.000Z')
+    ]);
+    refreshSeriesIndexForSeries.mockImplementation(async (title: string) =>
+      seriesFile([
+        {
+          // Complete: a real uuid and real counts, exactly what a pre-stamp
+          // client (or this client before it ever saw a listing sidecar)
+          // would have written. No mokuro_*/cover_* fields at all.
+          volume_uuid: `${title}-v1`,
+          volume_title: 'Volume 01',
+          page_count: 200,
+          character_count: 50_000,
+          mokuro_version: '0.4.11'
+        }
+      ])
+    );
+
+    await Promise.all(titles.map((title) => backfillSeriesEntries(title)));
+
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    // Leg (b) of the previous fix still holds too: nothing here is even a
+    // CANDIDATE, so the volumes table is never scanned either.
+    expect(volumesToArray).not.toHaveBeenCalled();
+  });
+});
+
 describe('the write-slot fix: cross-series concurrency caps', () => {
   /** A different series per index, each with its own genuine gap (no published entry at all). */
   function setUpStaleSeries(count: number): string[] {
@@ -626,37 +666,22 @@ describe('freshness stamps: stale re-pull vs. no-op', () => {
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
-  it('heals a stampless entry once when the listing shows a sidecar, then goes quiet', async () => {
+  it('a stampless COMPLETE entry is never a pull candidate, even when the listing has the sidecar', async () => {
+    // DECIDED 2026-08-24 (field regression, overrides the old "heal once"
+    // behavior): the entry already carries a real uuid and real counts —
+    // exactly what a pull would produce — so pulling it again to learn its
+    // OWN listing size/mtime gains zero information. It adopts the listing
+    // as baseline silently; the stamp attaches later via the organic path
+    // (an installed row's own write, `buildCloudSidecarStamps`), never by a
+    // dedicated pull.
     getCloudVolumesBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 01.cbz', 100),
       cloudFile('One Piece/Volume 01.mokuro', 321, '2026-06-01T00:00:00.000Z')
     ]);
-    // First pass: no stamps at all (an entry built before this scheme, or by
-    // an older client) — heals once.
-    refreshSeriesIndexForSeries.mockResolvedValueOnce(withMokuroEntry()).mockResolvedValueOnce(
-      withMokuroEntry({
-        mokuro_size: 321,
-        mokuro_modified: Math.floor(Date.parse('2026-06-01T00:00:00.000Z') / 1000)
-      })
-    );
-    downloadFile.mockResolvedValue(plainMokuro());
+    refreshSeriesIndexForSeries.mockResolvedValue(withMokuroEntry()); // no stamps at all
 
     await backfillSeriesEntries('One Piece');
-    expect(downloadFile).toHaveBeenCalledTimes(1);
 
-    // Second pass: the SAME listing, now against the healed (stamped) entry —
-    // must go quiet.
-    downloadFile.mockClear();
-    writeSeriesFile.mockClear();
-    _resetSeriesBackfillForTests();
-    refreshSeriesIndexForSeries.mockReset();
-    refreshSeriesIndexForSeries.mockResolvedValue(
-      withMokuroEntry({
-        mokuro_size: 321,
-        mokuro_modified: Math.floor(Date.parse('2026-06-01T00:00:00.000Z') / 1000)
-      })
-    );
-    await backfillSeriesEntries('One Piece');
     expect(downloadFile).not.toHaveBeenCalled();
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
@@ -784,24 +809,20 @@ describe('cover freshness stamps', () => {
     expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
-  it('heals a stampless cover once when the listing has one', async () => {
+  it('a stampless cover is never a pull candidate, even when the listing has one', async () => {
+    // Same inversion as the mokuro side: a stampless cover adopts the
+    // listing as baseline instead of triggering a fetch.
     getCloudVolumesBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 01.cbz', 100),
       cloudFile('One Piece/Volume 01.mokuro', 321, '2026-06-01T00:00:00.000Z'),
       cloudFile('One Piece/Volume 01.webp', 900, '2026-07-01T00:00:00.000Z')
     ]);
-    refreshSeriesIndexForSeries
-      .mockResolvedValueOnce(withCoverEntry()) // no cover stamps at all
-      .mockResolvedValueOnce(withCoverEntry({ cover_size: 900, cover_modified: 1 }));
-    fetchCloudThumbnail.mockResolvedValue({
-      file: new File([''], 'v1.webp'),
-      width: 10,
-      height: 10
-    });
+    refreshSeriesIndexForSeries.mockResolvedValue(withCoverEntry()); // no cover stamps at all
 
     await backfillSeriesEntries('One Piece');
 
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled();
   });
 
   it('does not clobber a thumbnail measured locally when the row installs while the cover fetch is in flight', async () => {
