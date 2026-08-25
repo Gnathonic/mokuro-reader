@@ -80,11 +80,13 @@ export class OneDriveProvider implements SyncProvider {
       : hasCredentials
         ? 'Configured (not connected)'
         : 'Not configured';
+    const accountId = onedriveTokenManager.getActiveAccountId();
     return {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
-      statusMessage
+      statusMessage,
+      accountScope: accountId ? `onedrive:${accountId}` : undefined
     };
   }
 

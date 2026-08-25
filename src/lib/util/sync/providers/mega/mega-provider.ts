@@ -243,7 +243,8 @@ export class MegaProvider implements SyncProvider {
           ? 'MEGA session expired — please reconnect'
           : hasSession || hasLegacy
             ? 'Configured (not connected)'
-            : 'Not configured'
+            : 'Not configured',
+      accountScope: this.reconnectEmail ? `mega:${this.reconnectEmail}` : undefined
     };
   }
 

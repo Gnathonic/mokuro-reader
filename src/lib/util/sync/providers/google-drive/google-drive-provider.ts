@@ -125,7 +125,12 @@ class GoogleDriveProvider implements SyncProvider {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
-      statusMessage
+      statusMessage,
+      // OAuth2 implicit flow exposes no stable per-account identifier (no ID
+      // token, no userinfo call) and only one Google account can be connected
+      // at a time — so "default" is the whole account space this provider
+      // can ever occupy, not a stand-in for a real discriminator.
+      accountScope: authenticated ? 'google-drive:default' : undefined
     };
   }
 

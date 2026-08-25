@@ -58,7 +58,12 @@ export class FilesystemProvider implements SyncProvider {
         ? `Connected to folder "${this.rootHandle?.name ?? ''}"`
         : this.hasStoredHandle
           ? 'Folder permission needs to be reconnected'
-          : 'Not configured'
+          : 'Not configured',
+      // The picked folder's own name is the only non-secret discriminator the
+      // File System Access API exposes; two different folders that happen to
+      // share a basename would collide, but that's an acceptable rough edge
+      // versus never scoping this provider's cache at all.
+      accountScope: this.rootHandle?.name ? `filesystem:${this.rootHandle.name}` : undefined
     };
   }
 

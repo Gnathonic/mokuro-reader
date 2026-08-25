@@ -119,7 +119,9 @@ export class WebDAVProvider implements SyncProvider {
 
   getStatus(): ProviderStatus {
     // Only serverUrl is required - username/password are optional for some servers
-    const hasCredentials = !!(browser && localStorage.getItem(STORAGE_KEYS.SERVER_URL));
+    const serverUrl = browser ? localStorage.getItem(STORAGE_KEYS.SERVER_URL) : null;
+    const username = browser ? localStorage.getItem(STORAGE_KEYS.USERNAME) : null;
+    const hasCredentials = !!serverUrl;
     const isConnected = this.isAuthenticated();
 
     return {
@@ -135,7 +137,11 @@ export class WebDAVProvider implements SyncProvider {
           : 'Not configured',
       isReadOnly: this._isReadOnly,
       serverCompilesMetadata: this._serverCompilesMetadata,
-      metadataPermissions: this._capabilities?.metadata
+      metadataPermissions: this._capabilities?.metadata,
+      // username is optional (some servers support password-only or no auth),
+      // so it's an extra discriminator on top of the required serverUrl, not
+      // a requirement in its own right.
+      accountScope: serverUrl ? `webdav:${serverUrl}${username ? `|${username}` : ''}` : undefined
     };
   }
 

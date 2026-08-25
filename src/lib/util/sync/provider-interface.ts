@@ -130,6 +130,14 @@ export interface ProviderStatus {
    * any provider that doesn't support the concept at all.
    */
   metadataPermissions?: SeriesMetadataPermissions;
+  /**
+   * Stable, non-secret identifier for the connected account, used to scope the
+   * cloud metadata cache so switching accounts cannot cross-contaminate it.
+   * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
+   * this is persisted to IndexedDB. Absent = the provider cannot identify an
+   * account, and the cache is skipped entirely for it.
+   */
+  accountScope?: string;
 }
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
