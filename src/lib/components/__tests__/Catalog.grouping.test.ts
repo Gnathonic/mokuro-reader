@@ -2,32 +2,30 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const { catalogStore, notOnDeviceDisplay, miscSettings, queueSeriesVolumes, readingVolumes } =
-  vi.hoisted(() => {
-    function createStore<T>(initial: T) {
-      const subs = new Set<(v: T) => void>();
-      let current = initial;
-      return {
-        subscribe(fn: (v: T) => void) {
-          subs.add(fn);
-          fn(current);
-          return () => subs.delete(fn);
-        },
-        set(v: T) {
-          current = v;
-          subs.forEach((fn) => fn(current));
-        }
-      };
-    }
+const { catalogStore, miscSettings, queueSeriesVolumes, readingVolumes } = vi.hoisted(() => {
+  function createStore<T>(initial: T) {
+    const subs = new Set<(v: T) => void>();
+    let current = initial;
     return {
-      queueSeriesVolumes: vi.fn(),
-      catalogStore: createStore<unknown[] | null>([]),
-      notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
-      miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' }),
-      // The reading record the smart sort reads completion and recency from.
-      readingVolumes: createStore<Record<string, unknown>>({})
+      subscribe(fn: (v: T) => void) {
+        subs.add(fn);
+        fn(current);
+        return () => subs.delete(fn);
+      },
+      set(v: T) {
+        current = v;
+        subs.forEach((fn) => fn(current));
+      }
     };
-  });
+  }
+  return {
+    queueSeriesVolumes: vi.fn(),
+    catalogStore: createStore<unknown[] | null>([]),
+    miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' }),
+    // The reading record the smart sort reads completion and recency from.
+    readingVolumes: createStore<Record<string, unknown>>({})
+  };
+});
 
 function emptyStore<T>(value: T) {
   return {
@@ -42,7 +40,6 @@ vi.mock('$lib/catalog', () => ({
   catalog: catalogStore,
   volumes: emptyStore<Record<string, unknown>>({})
 }));
-vi.mock('$lib/settings/settings', () => ({ notOnDeviceDisplay }));
 vi.mock('$lib/settings', () => ({
   miscSettings,
   updateMiscSetting: vi.fn(),
@@ -111,13 +108,12 @@ function titlesIn(container: HTMLElement, testId: string): string[] {
   return [...region.querySelectorAll('p.font-semibold')].map((el) => el.textContent?.trim() ?? '');
 }
 
-describe('Catalog groups not-on-device series by the display setting', () => {
+describe('Catalog always groups not-on-device series into the cloud section', () => {
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
   });
 
-  it('mixes absent series into the library by default', () => {
+  it('sections absent series with the cloud ones', () => {
     catalogStore.set([
       series('Here', [volume('Here')]),
       series('Gone', [volume('Gone', { metadata_only: true })]),
@@ -125,30 +121,11 @@ describe('Catalog groups not-on-device series by the display setting', () => {
     ]);
 
     const { container } = render(Catalog);
-    expect(titlesIn(container, 'catalog-library')).toEqual(['Gone', 'Here']);
-    expect(titlesIn(container, 'catalog-cloud')).toEqual(['Cloud']);
-  });
-
-  it('regroups instantly when the setting flips — no reload, no data change', async () => {
-    catalogStore.set([
-      series('Here', [volume('Here')]),
-      series('Gone', [volume('Gone', { metadata_only: true })]),
-      series('Cloud', [volume('Cloud', { isPlaceholder: true })])
-    ]);
-
-    const { container } = render(Catalog);
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
-
     expect(titlesIn(container, 'catalog-library')).toEqual(['Here']);
     expect(titlesIn(container, 'catalog-cloud')).toEqual(['Cloud', 'Gone']);
-
-    notOnDeviceDisplay.set('mixed');
-    await tick();
-    expect(titlesIn(container, 'catalog-library')).toEqual(['Gone', 'Here']);
   });
 
-  it('keeps a partly-installed series in the library in either mode', async () => {
+  it('keeps a partly-installed series in the library', () => {
     catalogStore.set([
       series('Half', [
         volume('Half'),
@@ -158,10 +135,6 @@ describe('Catalog groups not-on-device series by the display setting', () => {
 
     const { container } = render(Catalog);
     expect(titlesIn(container, 'catalog-library')).toEqual(['Half']);
-
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
-    expect(titlesIn(container, 'catalog-library')).toEqual(['Half']);
     expect(titlesIn(container, 'catalog-cloud')).toEqual([]);
   });
 });
@@ -169,7 +142,6 @@ describe('Catalog groups not-on-device series by the display setting', () => {
 describe('Catalog cloud section counts and queues everything it holds', () => {
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
     queueSeriesVolumes.mockClear();
   });
 
@@ -199,16 +171,12 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     return button as HTMLElement;
   }
 
-  it('counts what the button will fetch, in either display mode', async () => {
+  it('counts what the button will fetch', async () => {
     mixedCatalog();
     const { container } = render(Catalog);
 
     // Every volume that is off the device and has a cloud copy — the metadata-only ones
-    // included, wherever their card is currently filed.
-    expect(breakdown(container)).toBe('3 Drive');
-
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
+    // included.
     expect(breakdown(container)).toBe('3 Drive');
   });
 
@@ -235,11 +203,9 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     ]);
   });
 
-  it('queues the same set once the display setting has moved the cards around', async () => {
+  it('queues every downloadable volume from the section', async () => {
     mixedCatalog();
     const { container } = render(Catalog);
-
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
     await fireEvent.click(downloadAll(container));
 
@@ -265,16 +231,12 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
     expect(breakdown(container)).toBe('1 Drive');
   });
 
-  it('keeps the section heading count fresh across a live flip', async () => {
+  it('counts every sectioned series in the heading', async () => {
     mixedCatalog();
     const { container } = render(Catalog);
     const heading = () =>
       container.querySelector('[data-testid="catalog-cloud"] h4')?.textContent?.trim() ?? '';
 
-    expect(heading()).toBe('Available in Drive (1 series)');
-
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
     expect(heading()).toBe('Available in Drive (2 series)');
   });
 });
@@ -282,7 +244,6 @@ describe('Catalog cloud section counts and queues everything it holds', () => {
 describe('Catalog smart-sorts an all-absent series by its read state', () => {
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
     miscSettings.set({ galleryLayout: 'list', gallerySorting: 'ASC' });
     readingVolumes.set({});
   });
@@ -300,7 +261,6 @@ describe('Catalog smart-sorts an all-absent series by its read state', () => {
     ]);
 
     const { container } = render(Catalog);
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
 
     // Read state, not absence, decides the order: most recently read first, finished last —
@@ -308,7 +268,7 @@ describe('Catalog smart-sorts an all-absent series by its read state', () => {
     expect(titlesIn(container, 'catalog-cloud')).toEqual(['Unread', 'Cloud', 'Read']);
   });
 
-  it('keeps that order in mixed mode, where the same card sits in the library', async () => {
+  it('keeps that order when the section holds only absent series', async () => {
     miscSettings.set({ galleryLayout: 'list', gallerySorting: 'SMART' });
     readingVolumes.set({
       'Read-1': { completed: true, progress: 10, lastProgressUpdate: '2026-08-01T00:00:00.000Z' },
@@ -320,6 +280,7 @@ describe('Catalog smart-sorts an all-absent series by its read state', () => {
     ]);
 
     const { container } = render(Catalog);
-    expect(titlesIn(container, 'catalog-library')).toEqual(['Unread', 'Read']);
+    expect(titlesIn(container, 'catalog-library')).toEqual([]);
+    expect(titlesIn(container, 'catalog-cloud')).toEqual(['Unread', 'Read']);
   });
 });

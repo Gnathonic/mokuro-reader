@@ -5,7 +5,6 @@ import {
   migrateProfiles,
   grayscaleActive,
   imageFilter,
-  notOnDeviceDisplay,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -122,9 +121,10 @@ describe('imageFilter', () => {
 });
 
 describe('preferredTitleLanguage migration', () => {
-  it('defaults a profile with no catalogSettings.preferredTitleLanguage to imported', () => {
+  it('defaults a profile with no catalogSettings.preferredTitleLanguage to native', () => {
+    // Japanese is the default: this is a Japanese learning app (user ruling 2026-08-24).
     const out = migrateProfiles({ Test: { catalogSettings: { stackCount: 2 } } as any });
-    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('imported');
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
     // Existing catalog values must survive the merge
     expect(out.Test.catalogSettings.stackCount).toBe(2);
   });
@@ -136,17 +136,17 @@ describe('preferredTitleLanguage migration', () => {
     expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('romaji');
   });
 
-  it('coerces an unknown preferredTitleLanguage back to imported', () => {
+  it('coerces an unknown preferredTitleLanguage back to native', () => {
     const out = migrateProfiles({
       Test: { catalogSettings: { preferredTitleLanguage: 'klingon' } } as any
     });
-    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('imported');
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
   });
 });
 
 describe('preferredTitleLanguage store', () => {
   afterEach(() => {
-    updateCatalogSetting('preferredTitleLanguage', 'imported');
+    updateCatalogSetting('preferredTitleLanguage', 'native');
   });
 
   it('emits only when the language itself changes', () => {
@@ -154,17 +154,17 @@ describe('preferredTitleLanguage store', () => {
     // primitive dedupes: an unrelated write must not rebuild the whole library.
     const seen: string[] = [];
     const unsubscribe = preferredTitleLanguage.subscribe((value) => seen.push(value));
-    expect(seen).toEqual(['imported']);
+    expect(seen).toEqual(['native']);
 
     updateSetting('pagedGap', 9);
     updateCatalogSetting('stackCount', 5);
-    expect(seen).toEqual(['imported']);
+    expect(seen).toEqual(['native']);
 
     updateCatalogSetting('preferredTitleLanguage', 'english');
-    expect(seen).toEqual(['imported', 'english']);
+    expect(seen).toEqual(['native', 'english']);
 
     updateCatalogSetting('preferredTitleLanguage', 'english');
-    expect(seen).toEqual(['imported', 'english']);
+    expect(seen).toEqual(['native', 'english']);
 
     unsubscribe();
   });
@@ -187,49 +187,14 @@ describe('pushProgressToAniList migration', () => {
   });
 });
 
-describe('notOnDeviceDisplay migration', () => {
-  it('defaults to mixed for profiles saved before the setting existed', () => {
-    const out = migrateProfiles({ Test: { catalogSettings: { stackCount: 2 } } as any });
-    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('mixed');
-  });
-
-  it('preserves an explicit choice', () => {
+describe('notOnDeviceDisplay removal', () => {
+  it('strips the retired key from stored profiles', () => {
+    // The mixed/cloud-section display mode was removed 2026-08-24: cloud content
+    // is always its own section now, with no setting to change it.
     const out = migrateProfiles({
-      Test: { catalogSettings: { notOnDeviceDisplay: 'cloud-section' } } as any
+      Test: { catalogSettings: { notOnDeviceDisplay: 'mixed', stackCount: 2 } } as any
     });
-    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('cloud-section');
-  });
-
-  it('coerces an unknown value back to mixed', () => {
-    const out = migrateProfiles({
-      Test: { catalogSettings: { notOnDeviceDisplay: 'sideways' } } as any
-    });
-    expect(out.Test.catalogSettings.notOnDeviceDisplay).toBe('mixed');
-  });
-});
-
-describe('notOnDeviceDisplay store', () => {
-  afterEach(() => {
-    updateCatalogSetting('notOnDeviceDisplay', 'mixed');
-  });
-
-  it('emits only when the placement itself changes', () => {
-    // Joined as a primitive for the same reason as preferredTitleLanguage: the catalog
-    // must not re-group on every unrelated settings write.
-    const seen: string[] = [];
-    const unsubscribe = notOnDeviceDisplay.subscribe((value) => seen.push(value));
-    expect(seen).toEqual(['mixed']);
-
-    updateSetting('pagedGap', 7);
-    updateCatalogSetting('stackCount', 4);
-    expect(seen).toEqual(['mixed']);
-
-    updateCatalogSetting('notOnDeviceDisplay', 'cloud-section');
-    expect(seen).toEqual(['mixed', 'cloud-section']);
-
-    updateCatalogSetting('notOnDeviceDisplay', 'cloud-section');
-    expect(seen).toEqual(['mixed', 'cloud-section']);
-
-    unsubscribe();
+    expect('notOnDeviceDisplay' in out.Test.catalogSettings).toBe(false);
+    expect(out.Test.catalogSettings.stackCount).toBe(2);
   });
 });

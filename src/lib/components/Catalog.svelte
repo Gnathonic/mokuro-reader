@@ -12,7 +12,6 @@
     UploadSolid
   } from 'flowbite-svelte-icons';
   import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
-  import { notOnDeviceDisplay } from '$lib/settings/settings';
   import { partitionCatalogSeries } from '$lib/catalog/catalog';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
@@ -234,9 +233,8 @@
   });
 
   // The three regions, decided in ONE pass over the sorted catalog (never per card).
-  // `$notOnDeviceDisplay` only moves series with nothing readable here; it is joined as a
-  // primitive so an unrelated settings write cannot re-group the library.
-  let sections = $derived(partitionCatalogSeries(sortedCatalog, $notOnDeviceDisplay));
+  // Series with nothing readable here always render in their own cloud section.
+  let sections = $derived(partitionCatalogSeries(sortedCatalog));
   let localSeries = $derived(sections.localSeries);
   let placeholderSeries = $derived(sections.cloudSeries);
 

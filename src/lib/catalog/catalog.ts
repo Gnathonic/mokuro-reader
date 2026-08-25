@@ -4,7 +4,6 @@ import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { resolveDisplayTitle, seriesSearchTerms } from '$lib/metadata/display-title';
 import { sortVolumes } from './sort-volumes';
 import { isVolumeInstalled, needsDownload } from './volume-state';
-import type { NotOnDeviceDisplay } from '$lib/settings/settings';
 
 export interface Series {
   /** Raw `series_title` — grouping key, route key and cloud folder name. Never derived. */
@@ -96,28 +95,21 @@ export interface CatalogSections {
 }
 
 /**
- * Split the catalog into the two regions the gallery draws.
- *
- * `mode` only decides where a series with NO pages on this device goes: mixed leaves it
- * in the library (where its covers and read history have always been), cloud-section
- * groups it with the cloud-only ones. A series with even one installed volume is library
- * either way — it has something to open.
+ * Split the catalog into the two regions the gallery draws: series with something
+ * readable on this device, and series whose every volume would need a download.
+ * (There used to be a "mixed with library" mode; removed 2026-08-24 — cloud
+ * content is always its own section, no setting.)
  *
  * Computed once per recompute for the whole catalog, never per card (see CLAUDE.md
  * "Svelte 5 Reactive Performance"), and order-preserving so the caller's sort survives.
  */
-export function partitionCatalogSeries(
-  series: Series[],
-  mode: NotOnDeviceDisplay
-): CatalogSections {
+export function partitionCatalogSeries(series: Series[]): CatalogSections {
   const sections: CatalogSections = { localSeries: [], cloudSeries: [] };
 
   for (const entry of series) {
     if (entry.volumes.length === 0) continue;
 
-    const allAbsent = entry.volumes.every(needsDownload);
-    const cloudOnly = entry.volumes.every((vol) => vol.isPlaceholder);
-    if (cloudOnly || (mode === 'cloud-section' && allAbsent)) {
+    if (entry.volumes.every(needsDownload)) {
       sections.cloudSeries.push(entry);
     } else {
       sections.localSeries.push(entry);
@@ -129,17 +121,15 @@ export function partitionCatalogSeries(
 
 /**
  * Split ONE series' rows (placeholders already removed) into the main volume list and the
- * ones the cloud section takes over. In mixed mode the section takes nothing: absent rows
- * stay in place, exactly as before.
+ * ones the cloud section takes over.
  *
  * The absent rows are still real rows wherever they are drawn — same component, same
  * progress, same download and delete actions.
  */
-export function partitionSeriesVolumes(
-  volumes: VolumeMetadata[],
-  mode: NotOnDeviceDisplay
-): { listed: VolumeMetadata[]; absent: VolumeMetadata[] } {
-  if (mode !== 'cloud-section') return { listed: volumes, absent: [] };
+export function partitionSeriesVolumes(volumes: VolumeMetadata[]): {
+  listed: VolumeMetadata[];
+  absent: VolumeMetadata[];
+} {
   return {
     listed: volumes.filter(isVolumeInstalled),
     absent: volumes.filter(needsDownload)

@@ -4,43 +4,36 @@ import { tick } from 'svelte';
 
 // SeriesView sits on top of the whole app; everything below the placement decision is
 // stubbed. What is under test is where a volume whose pages are gone gets DRAWN.
-const {
-  currentSeries,
-  notOnDeviceDisplay,
-  routeParams,
-  providerStatus,
-  queueSeriesVolumes,
-  readingProgress
-} = vi.hoisted(() => {
-  function createStore<T>(initial: T) {
-    const subs = new Set<(v: T) => void>();
-    let current = initial;
+const { currentSeries, routeParams, providerStatus, queueSeriesVolumes, readingProgress } =
+  vi.hoisted(() => {
+    function createStore<T>(initial: T) {
+      const subs = new Set<(v: T) => void>();
+      let current = initial;
+      return {
+        subscribe(fn: (v: T) => void) {
+          subs.add(fn);
+          fn(current);
+          return () => subs.delete(fn);
+        },
+        set(v: T) {
+          current = v;
+          subs.forEach((fn) => fn(current));
+        }
+      };
+    }
     return {
-      subscribe(fn: (v: T) => void) {
-        subs.add(fn);
-        fn(current);
-        return () => subs.delete(fn);
-      },
-      set(v: T) {
-        current = v;
-        subs.forEach((fn) => fn(current));
-      }
+      queueSeriesVolumes: vi.fn(),
+      readingProgress: createStore<Record<string, number>>({}),
+      providerStatus: createStore({
+        hasAnyAuthenticated: false,
+        currentProviderType: null as string | null,
+        providers: {} as Record<string, unknown>,
+        needsAttention: false
+      }),
+      currentSeries: createStore<unknown[]>([]),
+      routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
     };
-  }
-  return {
-    queueSeriesVolumes: vi.fn(),
-    readingProgress: createStore<Record<string, number>>({}),
-    providerStatus: createStore({
-      hasAnyAuthenticated: false,
-      currentProviderType: null as string | null,
-      providers: {} as Record<string, unknown>,
-      needsAttention: false
-    }),
-    currentSeries: createStore<unknown[]>([]),
-    notOnDeviceDisplay: createStore<'mixed' | 'cloud-section'>('mixed'),
-    routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
-  };
-});
+  });
 
 function emptyStore<T>(value: T) {
   return {
@@ -57,7 +50,6 @@ vi.mock('$lib/catalog', () => ({
   volumes: emptyStore<Record<string, unknown>>({})
 }));
 vi.mock('$lib/settings/settings', () => ({
-  notOnDeviceDisplay,
   preferredTitleLanguage: emptyStore('imported')
 }));
 vi.mock('$lib/settings', () => ({
@@ -176,7 +168,6 @@ describe('SeriesView places not-on-device volumes by the display setting', () =>
 
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
     providerStatus.set({
       hasAnyAuthenticated: false,
       currentProviderType: null,
@@ -185,31 +176,16 @@ describe('SeriesView places not-on-device volumes by the display setting', () =>
     });
   });
 
-  it('lists a removed volume in place, with no section of its own, in mixed mode', () => {
+  it('draws a removed volume under "Available in …"', () => {
     currentSeries.set([volume('Vol 1'), volume('Vol 2', { metadata_only: true })]);
     const { container } = render(SeriesView);
 
-    expect(pageOrder(container)).toEqual(['Vol 1', 'Vol 2']);
-  });
-
-  it('moves it under "Available in …" the moment the setting flips', async () => {
-    currentSeries.set([volume('Vol 1'), volume('Vol 2', { metadata_only: true })]);
-    const { container } = render(SeriesView);
-
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
     expect(pageOrder(container)).toEqual(['Vol 1', 'Available in Drive (1)', 'Vol 2']);
-
-    notOnDeviceDisplay.set('mixed');
-    await tick();
-    expect(pageOrder(container)).toEqual(['Vol 1', 'Vol 2']);
   });
 
   it('keeps the moved row a real volume row — badge, download and delete included', async () => {
     currentSeries.set([volume('Vol 1'), volume('Vol 2', { metadata_only: true })]);
     const { container } = render(SeriesView);
-
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
 
     // The badge is the "not on this device" mark VolumeItem draws; a PlaceholderVolumeItem
@@ -221,8 +197,6 @@ describe('SeriesView places not-on-device volumes by the display setting', () =>
   it('never hides a removed volume that has nowhere to download from', async () => {
     currentSeries.set([volume('Vol 1', { metadata_only: true })]);
     const { container } = render(SeriesView);
-
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
     expect(pageOrder(container)).toEqual(['Available in Drive (1)', 'Vol 1']);
   });
@@ -294,7 +268,6 @@ describe('SeriesView only offers a cloud section there is something to offer in'
 
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
     providerStatus.set({
       hasAnyAuthenticated: false,
       currentProviderType: null,
@@ -315,13 +288,6 @@ describe('SeriesView only offers a cloud section there is something to offer in'
       cloudProvider: 'google-drive'
     });
 
-  it('draws no empty section in mixed mode with no provider connected', () => {
-    currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
-    const { container } = render(SeriesView);
-
-    expect(heading(container)).toBeNull();
-  });
-
   it('draws it again once a provider is connected', async () => {
     currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
     const { container } = render(SeriesView);
@@ -340,8 +306,6 @@ describe('SeriesView only offers a cloud section there is something to offer in'
   it('still shows the section for a moved row with no provider — it is the only place it is drawn', async () => {
     currentSeries.set([volume('Vol 0'), removedWithCachedId()]);
     const { container } = render(SeriesView);
-
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
 
     expect(heading(container)).toBe('Available in Drive (1)');
@@ -362,7 +326,6 @@ describe('SeriesView downloads every volume of the series that is not here', () 
 
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
     providerStatus.set({
       hasAnyAuthenticated: false,
       currentProviderType: null,
@@ -409,7 +372,6 @@ describe('SeriesView downloads every volume of the series that is not here', () 
     currentSeries.set([volume('Vol 1'), removed('Vol 2')]);
 
     const { container } = render(SeriesView);
-    notOnDeviceDisplay.set('cloud-section');
     await tick();
     await fireEvent.click(downloadAll(container));
     await vi.waitFor(() => expect(queueSeriesVolumes).toHaveBeenCalledTimes(1));
@@ -427,7 +389,6 @@ describe('SeriesView keeps a partly-downloaded series whole', () => {
 
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
   });
 
   const mixedSeries = () => [
@@ -436,25 +397,9 @@ describe('SeriesView keeps a partly-downloaded series whole', () => {
     volume('Vol 3', { isPlaceholder: true, cloudFileId: 'file-3', cloudProvider: 'google-drive' })
   ];
 
-  it('lists every volume in mixed mode', () => {
+  it('lists every volume, absent ones under the section', () => {
     currentSeries.set(mixedSeries());
     const { container } = render(SeriesView);
-
-    expect(pageOrder(container)).toEqual([
-      'Vol 1',
-      'Vol 2',
-      'Available in Drive (1)',
-      // The cloud-only volume keeps its own row under the section heading.
-      'Vol 3'
-    ]);
-  });
-
-  it('lists every volume in cloud-section mode too', async () => {
-    currentSeries.set(mixedSeries());
-    const { container } = render(SeriesView);
-
-    notOnDeviceDisplay.set('cloud-section');
-    await tick();
 
     expect(pageOrder(container)).toEqual(['Vol 1', 'Available in Drive (2)', 'Vol 2', 'Vol 3']);
   });
@@ -468,7 +413,6 @@ describe('SeriesView orders a cloud-only series by volume, not by page count', (
 
   afterEach(() => {
     cleanup();
-    notOnDeviceDisplay.set('mixed');
   });
 
   /** A bare share: nothing is known about it until it is downloaded. */

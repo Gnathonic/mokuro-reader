@@ -28,7 +28,7 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
-  import { notOnDeviceDisplay, preferredTitleLanguage } from '$lib/settings/settings';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
   import { partitionSeriesVolumes } from '$lib/catalog/catalog';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
@@ -249,17 +249,13 @@
   let notInstalled = $derived(manga.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol)));
 
   // Where the rows whose pages are gone are DRAWN (display only — they keep their data,
-  // their progress and every action they had). In mixed mode `absent` is empty and the
-  // main list is exactly `manga`, as it has always been.
-  let volumeSections = $derived(partitionSeriesVolumes(manga, $notOnDeviceDisplay));
+  // their progress and every action they had).
+  let volumeSections = $derived(partitionSeriesVolumes(manga));
   let listedVolumes = $derived(volumeSections.listed);
   let sectionVolumes = $derived(volumeSections.absent);
-  // The header counts what the section is offering: the rows it now holds in
-  // cloud-section mode, the downloadable rows still up in the list in mixed mode.
-  let cloudSectionCount = $derived(
-    placeholders.length +
-      ($notOnDeviceDisplay === 'cloud-section' ? sectionVolumes.length : notInstalled.length)
-  );
+  // The header counts what the section is offering: the absent rows it holds
+  // plus the cloud-only placeholders.
+  let cloudSectionCount = $derived(placeholders.length + sectionVolumes.length);
   // Raw folder title (identity) and its human-facing overlay. The overlay is
   // presentation only: rename/cloud/delete flows below keep using seriesTitle.
   let seriesTitle = $derived(manga[0]?.series_title || placeholders[0]?.series_title || '');
@@ -352,11 +348,7 @@
   // fetch them from — otherwise an offer of "available in <cloud>" would head an empty
   // section built from a cached cloud id nothing can act on.
   // Declared here because it reads `hasAnyProvider`, which the provider block above sets up.
-  let showCloudSection = $derived(
-    sectionVolumes.length > 0 ||
-      placeholders.length > 0 ||
-      (notInstalled.length > 0 && hasAnyProvider)
-  );
+  let showCloudSection = $derived(sectionVolumes.length > 0 || placeholders.length > 0);
   let isCloudReady = $derived(hasAnyProvider && cacheHasLoaded);
 
   // Check if current provider is WebDAV and in read-only mode

@@ -6,8 +6,7 @@
   import {
     catalogSettings,
     updateCatalogSetting,
-    type CatalogStackingPreset,
-    type NotOnDeviceDisplay
+    type CatalogStackingPreset
   } from '$lib/settings/settings';
   import { nav } from '$lib/util/hash-router';
   import { isCatalog } from '$lib/util';
@@ -18,11 +17,6 @@
     { value: 'default', name: 'Default' },
     { value: 'spine', name: 'Spine Showcase' },
     { value: 'custom', name: 'Custom' }
-  ];
-
-  const notOnDeviceOptions: { value: NotOnDeviceDisplay; name: string }[] = [
-    { value: 'mixed', name: 'Mixed with library' },
-    { value: 'cloud-section', name: 'Grouped with cloud volumes' }
   ];
 
   const titleLanguageOptions: { value: DisplayTitleLanguage; name: string }[] = [
@@ -272,21 +266,6 @@
         Applies to series with alt titles (AniList link or manual titles). Folder names are never
         changed; when a language is missing the reader falls back to English → Romaji → Native →
         folder name.
-      </p>
-    </div>
-
-    <div>
-      <Label class="mb-2 text-sm font-medium">Volumes not on this device</Label>
-      <Select
-        items={notOnDeviceOptions}
-        value={$catalogSettings?.notOnDeviceDisplay ?? 'mixed'}
-        onchange={(e) =>
-          updateCatalogSetting('notOnDeviceDisplay', e.currentTarget.value as NotOnDeviceDisplay)}
-      />
-      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-        Where volumes whose pages were removed (and series with none left here) are shown. Display
-        only — nothing is downloaded, moved or deleted, and every row keeps its progress and its
-        actions.
       </p>
     </div>
 

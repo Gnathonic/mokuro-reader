@@ -126,13 +126,6 @@ export type CatalogStackingPreset = 'compact' | 'default' | 'spine' | 'custom';
  * Display only: it moves nothing, downloads nothing and deletes nothing. The rows keep
  * their real data and actions wherever they are drawn.
  */
-export type NotOnDeviceDisplay = 'mixed' | 'cloud-section';
-
-const NOT_ON_DEVICE_DISPLAYS: NotOnDeviceDisplay[] = ['mixed', 'cloud-section'];
-
-export function isNotOnDeviceDisplay(value: unknown): value is NotOnDeviceDisplay {
-  return NOT_ON_DEVICE_DISPLAYS.includes(value as NotOnDeviceDisplay);
-}
 
 export type CatalogSettings = {
   stackingPreset: CatalogStackingPreset;
@@ -148,8 +141,6 @@ export type CatalogSettings = {
   preferredTitleLanguage: DisplayTitleLanguage;
   /** Master switch for pushing completions to AniList (per-series tracking must also be on). */
   pushProgressToAniList: boolean;
-  /** Where not-on-this-device volumes and series are drawn. Display only. */
-  notOnDeviceDisplay: NotOnDeviceDisplay;
 };
 
 export type Settings = {
@@ -373,9 +364,8 @@ const defaultSettings: Settings = {
     centerVertical: false,
     compactCloudSeries: false,
     dropShadow: true,
-    preferredTitleLanguage: 'imported',
-    pushProgressToAniList: true,
-    notOnDeviceDisplay: 'mixed'
+    preferredTitleLanguage: 'native',
+    pushProgressToAniList: true
   }
 };
 
@@ -505,14 +495,12 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // Validate preferredTitleLanguage (added 2026-08 with series metadata linking).
     // Same guard the cloud-metadata boundary uses, so one list defines the languages.
     if (!isDisplayTitleLanguage(migratedProfile.catalogSettings.preferredTitleLanguage)) {
-      migratedProfile.catalogSettings.preferredTitleLanguage = 'imported';
+      migratedProfile.catalogSettings.preferredTitleLanguage = 'native';
     }
 
-    // Validate notOnDeviceDisplay (added 2026-08 with the not-on-device affordances).
-    // An unknown stored value must fall back to the rendering the catalog has always had.
-    if (!isNotOnDeviceDisplay(migratedProfile.catalogSettings.notOnDeviceDisplay)) {
-      migratedProfile.catalogSettings.notOnDeviceDisplay = 'mixed';
-    }
+    // The not-on-device display mode was removed 2026-08-24 (cloud content is
+    // always its own section now); strip the stored key so profiles converge.
+    delete (migratedProfile.catalogSettings as { notOnDeviceDisplay?: unknown }).notOnDeviceDisplay;
 
     // Validate pushProgressToAniList (added 2026-08 with series metadata tracking).
     // A malformed/legacy stored value (e.g. a stringified boolean) must not
@@ -655,19 +643,7 @@ export const catalogSettings = derived(settings, ($settings) => $settings?.catal
  */
 export const preferredTitleLanguage: Readable<DisplayTitleLanguage> = derived(
   settings,
-  ($settings) => $settings?.catalogSettings?.preferredTitleLanguage ?? 'imported'
-);
-
-/**
- * Where not-on-this-device volumes/series are drawn, on its own.
- *
- * A primitive for the same reason as `preferredTitleLanguage` above: the catalog and the
- * series page group on this value, and joining the whole `catalogSettings` object would
- * re-group the library on every unrelated settings write.
- */
-export const notOnDeviceDisplay: Readable<NotOnDeviceDisplay> = derived(
-  settings,
-  ($settings) => $settings?.catalogSettings?.notOnDeviceDisplay ?? 'mixed'
+  ($settings) => $settings?.catalogSettings?.preferredTitleLanguage ?? 'native'
 );
 
 // A store that updates every minute to trigger schedule checks
