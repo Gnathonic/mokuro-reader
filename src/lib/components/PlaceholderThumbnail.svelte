@@ -2,8 +2,7 @@
   import type { VolumeMetadata } from '$lib/types';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { fetchCloudThumbnail, getCachedCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
-  import { requestCoverOnce } from '$lib/catalog/cover-requests';
+  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -36,57 +35,35 @@
   const stepH = 35;
   let stepV = $derived(stackCount > 1 ? Math.min(40, 35 / (stackCount - 1)) : 0);
 
-  // Cloud thumbnail state
+  // Cloud thumbnail state — an object URL over `volume.thumbnail`, kept in sync with it.
+  // Delivery of a fetched cover is the DB write itself (`cover-service.ts`): once a cover
+  // lands, the catalog re-derives and this component's OWN `volume` prop arrives with
+  // `thumbnail` already on it, from the parent. This effect only manages the object URL's
+  // lifecycle (create/revoke), never the fetch.
   let cloudThumbnailUrl: string | null = $state(null);
 
-  let hasCloudThumbnailId = $derived(!!volume?.cloudThumbnailFileId);
-
-  /**
-   * Covers this placeholder has asked for and landed. Bounded to one uuid in practice —
-   * a placeholder draws a single volume — but it follows the same rule as the catalog
-   * card and the spine shelf so all three behave alike: the request is only spent when it
-   * produced a cover, so a timeout or a saturated provider stays retryable rather than
-   * leaving the box blank until the view is reopened.
-   *
-   * Deliberately NOT reactive.
-   */
-  const requestedCovers = new Set<string>();
-
   $effect(() => {
-    if (!hasCloudThumbnailId || !volume) return;
-    const target = volume;
-
-    const cached = getCachedCloudThumbnail(target.volume_uuid);
-    if (cached) {
-      const url = URL.createObjectURL(cached.file);
-      cloudThumbnailUrl = url;
-      // Cleared as well as revoked: this component is reused across volumes (a re-sort,
-      // the next page of results), and a state variable still holding a revoked URL keeps
-      // the <img> branch rendering — a broken-image icon where the new volume's
-      // placeholder belongs. Guarded, so a run that has already been superseded cannot
-      // wipe the URL its successor just created.
-      return () => {
-        URL.revokeObjectURL(url);
-        if (cloudThumbnailUrl === url) cloudThumbnailUrl = null;
-      };
+    const file = volume?.thumbnail;
+    if (!file) {
+      cloudThumbnailUrl = null;
+      return;
     }
-
-    let cancelled = false;
-    void requestCoverOnce(requestedCovers, target, fetchCloudThumbnail, (result) => {
-      // A superseded run releases the uuid instead of claiming it, so the live run can
-      // ask again — the object URL it would have created has no owner to revoke it.
-      if (cancelled) return false;
-      cloudThumbnailUrl = URL.createObjectURL(result.file);
-      return true;
-    });
-
+    const url = URL.createObjectURL(file);
+    cloudThumbnailUrl = url;
+    // Revoked on the next run (a re-sort, the next page of results, the cover itself
+    // landing) as well as on teardown — a stale, revoked URL left in state keeps the
+    // <img> branch rendering a broken-image icon where the new volume's box belongs.
     return () => {
-      cancelled = true;
-      if (cloudThumbnailUrl) {
-        URL.revokeObjectURL(cloudThumbnailUrl);
-        cloudThumbnailUrl = null;
-      }
+      URL.revokeObjectURL(url);
+      if (cloudThumbnailUrl === url) cloudThumbnailUrl = null;
     };
+  });
+
+  // Ask for the cover once, whatever this box currently shows. `requestCover` is
+  // idempotent and fire-and-forget — the service's own dedupe makes a redundant call on
+  // every re-run of this effect free.
+  $effect(() => {
+    if (volume && isCoverFetchTarget(volume)) requestCover(volume);
   });
 </script>
 

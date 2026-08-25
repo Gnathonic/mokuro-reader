@@ -52,13 +52,7 @@
   import { needsDownload } from '$lib/catalog/volume-state';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import { isVolumeComplete } from '$lib/util/volume-helpers';
-  import {
-    fetchCloudThumbnail,
-    getCachedCloudThumbnail,
-    type CloudThumbnailResult
-  } from '$lib/catalog/cloud-thumbnails';
-  import { requestCoverOnce } from '$lib/catalog/cover-requests';
-  import { scheduleCatalogCoverPersist } from '$lib/catalog/cover-persist';
+  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -112,45 +106,16 @@
     seriesNeedsDownload ? seriesVolumes : seriesVolumes.filter((vol) => vol.isPlaceholder)
   );
 
-  /**
-   * A volume plus whatever cover this card has fetched for it.
-   *
-   * Applied to BOTH halves of the stack, because the fetch targets both: a metadata-only
-   * row has no pixels of its own and a cover sidecar in the cloud, exactly like a
-   * placeholder, so enriching only the cloud half spends the request and leaves the spine
-   * blank (CompositeCanvas paints nothing for a volume without a thumbnail).
-   *
-   * A volume that already has its own cover is left alone: it was measured from the
-   * volume's own pages or picked by hand, and the sidecar is a guess by comparison — the
-   * same precedence `cover-install.ts` applies when it writes one.
-   */
-  function withFetchedCover(vol: VolumeMetadata): VolumeMetadata {
-    if (vol.thumbnail) return vol;
-    const ct = cloudThumbnailData[vol.volume_uuid];
-    if (!ct) return vol;
-    return { ...vol, thumbnail: ct.file, thumbnail_width: ct.width, thumbnail_height: ct.height };
-  }
-
-  // The local rows the stack draws, each carrying whatever cover has been found for it.
-  let enrichedLocalVolumes = $derived(localVolumes.map(withFetchedCover));
-
-  // The cloud half, same treatment. Includes ALL target volumes (not just those with
-  // loaded thumbnails) so that stackedVolumes.length is stable. CompositeCanvas skips
-  // volumes without thumbnail, so positions are pre-allocated: each thumbnail pops into
-  // its fixed slot without shifting existing ones.
-  let enrichedPlaceholders = $derived.by(() => {
-    if (cloudStackVolumes.length === 0) return [];
-    return cloudStackVolumes.map(withFetchedCover);
-  });
-
-  // Unread across the WHOLE series — what "hide read" hides. Built from the same arrays the
-  // stack rule merges (enriched rows, enriched cloud volumes) so the references match, and
-  // spanning both absent states: a finished cloud volume hides like any other.
-  let unreadVolumes = $derived([...enrichedLocalVolumes, ...enrichedPlaceholders].filter(isUnread));
-
-  // The same list over the RAW volumes. The cover fetch below selects with this one so its
-  // targets never depend on the covers it is fetching (see `cloudCoverTargets`).
-  let rawUnreadVolumes = $derived([...localVolumes, ...cloudStackVolumes].filter(isUnread));
+  // Delivery of a fetched cover is now the DB write itself (`cover-service.ts`): once a
+  // cover lands, `db.volumes.update(...)` fires the `volumes` liveQuery → `volumesWith-
+  // Placeholders` → the catalog re-derives → this card's OWN `volumes` prop arrives with
+  // `thumbnail`/`thumbnail_width`/`thumbnail_height` already on it, from the parent. There
+  // is no per-card enrichment step any more — `localVolumes`/`cloudStackVolumes` (the raw
+  // props, already filtered above) are exactly what the stack draws.
+  //
+  // Unread across the WHOLE series — what "hide read" hides. Spans both absent states: a
+  // finished cloud volume hides like any other.
+  let unreadVolumes = $derived([...localVolumes, ...cloudStackVolumes].filter(isUnread));
 
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
@@ -167,9 +132,9 @@
   // like a cloud one — same treatment, only the covers arrive sooner.
   let stackedVolumes = $derived(
     selectCardStackVolumes({
-      localVolumes: seriesNeedsDownload ? [] : enrichedLocalVolumes,
+      localVolumes: seriesNeedsDownload ? [] : localVolumes,
       unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
-      placeholders: enrichedPlaceholders,
+      placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
       compactCloud: useCompactForCloud,
@@ -513,9 +478,6 @@
       : false
   );
 
-  // Cloud thumbnail data keyed by volume_uuid (File objects, no blob URLs needed)
-  let cloudThumbnailData: Record<string, CloudThumbnailResult> = $state({});
-
   // Base thumbnail dimensions (shared with the series editor's spine shelf)
   const BASE_WIDTH = CARD_BASE_WIDTH;
   const BASE_HEIGHT = CARD_BASE_HEIGHT;
@@ -700,13 +662,13 @@
   });
 
   /**
-   * The covers to fetch: exactly the cloud-only volumes THE STACK WILL DRAW.
-   *
-   * Run over the RAW volumes, never the enriched ones — the selection rule is the single
-   * source of truth for what is drawn (cloud cap for an absent series, local rules for a
-   * partly-downloaded one), and reading the fetched data back in here would make each
-   * arriving cover re-run the fetch: thumbnails loaded → containerDimensions changed →
-   * placeholderStepSizes recomputed → effect re-triggered → loop.
+   * The covers to ASK FOR: exactly the cloud-only volumes THE STACK WILL DRAW, filtered to
+   * `isCoverFetchTarget` — no thumbnail yet (a placeholder, or a decorated row), or a
+   * PERSISTED row whose own cover stamp is stale against the current listing (the
+   * self-heal case; see `cover-service.ts`). Delivery is the DB write itself
+   * (`cover-service.ts`'s `requestCover`) — there is nothing to commit here, and nothing
+   * enriched to re-run this effect: once a cover lands, `db.volumes.update(...)` is what
+   * eventually brings a fresh `volumes` prop back down from the parent.
    *
    * Slicing this list to the cloud cap independently is what left a 42-volume series with
    * one local volume showing spines 1-25 and 42: the rest were in the stack with no cover
@@ -715,83 +677,20 @@
   let cloudCoverTargets = $derived(
     selectCardStackVolumes({
       localVolumes: seriesNeedsDownload ? [] : localVolumes,
-      // The RAW unread list, not the one built over the enriched copies: `enrichedPlaceholders`
-      // carries the fetched covers, so depending on it here would make every arriving cover
-      // re-run this effect and re-request whatever had not landed yet.
-      unreadVolumes: seriesNeedsDownload ? [] : rawUnreadVolumes,
+      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
       placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
       compactCloud: useCompactForCloud,
       compare: sortVolumes
-    }).filter((vol) => !vol.thumbnail && !!vol.cloudThumbnailFileId)
+    }).filter(isCoverFetchTarget)
   );
 
-  /**
-   * Covers already asked for, by uuid. The effect below can re-run for reasons that have
-   * nothing to do with the covers (a settings change, a re-sort), and a second request for
-   * the same volume would be pure waste — `fetchCloudThumbnail` coalesces in flight, but
-   * the `.then` handlers pile up per call and each one writes state.
-   *
-   * Held only for requests that PRODUCED a cover — see `requestCoverOnce`. A timeout or a
-   * saturated provider mid-bulk-download must be retryable, or one transient failure blanks
-   * this card until it remounts.
-   *
-   * Deliberately NOT reactive: it is a record of what this card has done, never an input
-   * to what it draws.
-   */
-  const requestedCovers = new Set<string>();
-
-  /**
-   * Store a fetched cover, once. Returns whether it is committed, which is what decides
-   * whether `requestedCovers` keeps the uuid.
-   *
-   * Only-if-absent: this effect re-runs constantly, and re-assigning an entry that is
-   * already there would invalidate `enrichedPlaceholders` → the whole stack geometry → the
-   * canvas draw, for no new pixels.
-   *
-   * Deliberately NOT gated on the run that asked for it still being current. A cover is
-   * keyed by volume uuid and is the right answer for that volume whoever asked; throwing
-   * one away because a settings write superseded the effect mid-flight is how a card ends
-   * up blank with the cover sitting in the session cache, unread until something else
-   * re-renders it. The map is plain state — writing it after the card is gone is inert.
-   *
-   * Also queues the cover for BACKGROUND persistence (`cover-persist.ts`) when `vol` has a
-   * DB row — a metadata-only row (materialized or retained), never a pure placeholder. That
-   * queue is what makes the cover survive to the next session instead of re-fetching from
-   * the cloud every time; it never blocks or delays this function, which stays synchronous
-   * so the card paints the instant the fetch resolves.
-   */
-  function commitCover(vol: VolumeMetadata, result: CloudThumbnailResult) {
-    if (cloudThumbnailData[vol.volume_uuid]) return true;
-    cloudThumbnailData[vol.volume_uuid] = result;
-    scheduleCatalogCoverPersist(vol, result);
-    return true;
-  }
-
-  // Fetch cloud thumbnails for the volumes the stack is drawing.
+  // Ask for every target's cover. `requestCover` is idempotent and fire-and-forget — the
+  // service's own dedupe (in-flight + settled ledgers) makes a redundant call on every
+  // re-run of this effect free, so there is no per-card ledger to maintain any more.
   $effect(() => {
-    const vols = cloudCoverTargets;
-    if (vols.length === 0) return;
-
-    for (const vol of vols) {
-      // Check synchronous cache first
-      const cached = getCachedCloudThumbnail(vol.volume_uuid);
-      if (cached) {
-        commitCover(vol, cached);
-        continue;
-      }
-
-      // One request per volume that lands one, whatever else re-runs this effect.
-      void requestCoverOnce(requestedCovers, vol, fetchCloudThumbnail, (result) =>
-        commitCover(vol, result)
-      );
-    }
-
-    // No teardown: cloudThumbnailData is never reset — File objects need no cleanup
-    // (unlike blob URLs), and resetting triggers an expensive enrichedPlaceholders →
-    // template flip-flop every time the parent re-renders (e.g. local thumbnail
-    // processing updating the catalog store).
+    for (const vol of cloudCoverTargets) requestCover(vol);
   });
 
   // Use series title for navigation so grouping and routing align with user-visible identity.

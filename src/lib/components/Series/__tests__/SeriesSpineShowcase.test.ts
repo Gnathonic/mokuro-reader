@@ -67,9 +67,28 @@ vi.mock('$lib/metadata/store', () => ({ updateSeriesMetadata, seriesMetadataMap 
 vi.mock('$lib/settings/settings', () => ({ catalogSettings }));
 // Mocked so the real module (Dexie-backed volume data) stays out of the graph.
 vi.mock('$lib/settings/volume-data', () => ({ progress: progressStore }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// Cover fetching/delivery is `cover-service.ts`'s job now (decision tree,
+// dedupe, retry and persistence are covered end to end in
+// `cover-service.test.ts`/`cover-service.retry.test.ts` against a real
+// Dexie). The real module pulls in db/materialize/unified-cloud-manager — a
+// graph this file deliberately does not load — so `isCoverFetchTarget` is
+// reimplemented here as the same small pure predicate (this file's fixtures
+// never exercise the stale-row-mismatch branch, which is `cover-service.
+// test.ts`'s job to pin); only `requestCover` needs to be a spy.
+const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
+  requestCoverMock: vi.fn(),
+  isCoverFetchTargetMock: vi.fn(
+    (vol: { thumbnail?: unknown; isPlaceholder?: boolean; cloudThumbnailFileId?: string }) => {
+      if (vol.thumbnail) return false;
+      if (vol.isPlaceholder) return true;
+      return !!vol.cloudThumbnailFileId;
+    }
+  )
+}));
+vi.mock('$lib/catalog/cover-service', () => ({
+  requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
+  isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
+    isCoverFetchTargetMock(...a)
 }));
 vi.mock('$lib/util/sync', () => ({ providerManager: { status: providerStatus } }));
 // Transparent pass-through wrapper — records the props each mount receives, then delegates
@@ -90,7 +109,6 @@ import SeriesSpineShowcase from '../SeriesSpineShowcase.svelte';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites } from '$lib/metadata/spine-offsets';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import {
   computeStepSizes,
   computeUniformHeight,
@@ -244,12 +262,20 @@ function makeScrollable(strip: HTMLElement, { scrollWidth = 1200, clientWidth = 
   });
 }
 
+// Every mounted SeriesSpineShowcase's own cover-request effect calls this,
+// whether or not a given describe block cares — cleared before EVERY test in
+// the file (not just the ones that assert on it) so calls never carry over
+// between unrelated tests/describe blocks.
+beforeEach(() => {
+  requestCoverMock.mockClear();
+});
+
 describe('SeriesSpineShowcase', () => {
   beforeEach(() => {
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
       IntersectionObserverStub;
     updateSeriesMetadata.mockClear();
-    vi.mocked(fetchCloudThumbnail).mockClear();
+    requestCoverMock.mockClear();
     catalogSettings.set({ horizontalStep: 11 });
     progressStore.set({});
     emitSeriesMetadata(new Map());
@@ -485,7 +511,7 @@ describe('SeriesSpineShowcase', () => {
     expect(escaped).toBe(true); // untouched: the modal's guard still gets it
   });
 
-  it('caps how many volumes it renders and fetches thumbnails for', async () => {
+  it('caps how many volumes it renders, and requests a cover for each one it draws', async () => {
     const many = Array.from({ length: 70 }, (_, i) =>
       volume({
         volume_uuid: `uuid-${String(i).padStart(3, '0')}`,
@@ -500,7 +526,7 @@ describe('SeriesSpineShowcase', () => {
     const { getByText } = renderShowcase(many);
     await tick();
 
-    expect(vi.mocked(fetchCloudThumbnail)).toHaveBeenCalledTimes(60);
+    expect(requestCoverMock).toHaveBeenCalledTimes(60);
     expect(getByText('Showing first 60 of 70 volumes')).toBeTruthy();
   });
 
@@ -986,18 +1012,10 @@ describe('SeriesSpineShowcase measures the same volumes the card does', () => {
       IntersectionObserverStub;
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => ({
-      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
-      width: 250,
-      height: 360
-    }));
   });
 
   afterEach(() => {
     cleanup();
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => null);
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
   });
 
@@ -1017,7 +1035,9 @@ describe('SeriesSpineShowcase measures the same volumes the card does', () => {
     // A partly-downloaded series of 66: the card stacks all of them (local rules — no
     // cloud cap), while the shelf DRAWS only 60 (its own memory cap). The uniform height
     // is averaged over the card's stack, so the shelf needs dimensions for every one of
-    // them or the spines it shares with the card come out a different size.
+    // them or the spines it shares with the card come out a different size. Delivery
+    // itself (fetch → install → row) is `cover-service.ts`'s contract, covered end to end
+    // there — this shelf's own job stops at asking for the right set.
     const volumes = [
       ...Array.from({ length: 65 }, (_, i) => cloudNoDims(i + 1)),
       volume({
@@ -1027,13 +1047,21 @@ describe('SeriesSpineShowcase measures the same volumes the card does', () => {
       })
     ];
     renderShowcase(volumes);
+    await tick();
 
-    // 65 cloud covers fetched; the local volume has its own.
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65));
+    // 65 cloud covers requested; the local volume already has its own (not a target).
+    expect(requestCoverMock).toHaveBeenCalledTimes(65);
   });
 });
 
-describe('SeriesSpineShowcase settles instead of chasing its own covers', () => {
+describe('SeriesSpineShowcase requests one cover per volume, not a chase', () => {
+  // Retry-on-nothing, release-on-failure and dedupe are `cover-service.ts`'s own contract
+  // now (`cover-service.test.ts`'s "retry" and "dedupe" blocks, plus `cover-service.retry.
+  // test.ts`'s fake-timer backoff pins) — this shelf no longer tracks any of that itself.
+  // What is still this component's OWN responsibility is deriving `coverTargets` from
+  // PROPS, never from anything the fetch itself writes — a target list derived from
+  // enriched/fetched state would re-request everything outstanding every time one cover
+  // lands, which is the property this block still pins.
   beforeEach(() => {
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
       IntersectionObserverStub;
@@ -1043,8 +1071,6 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
 
   afterEach(() => {
     cleanup();
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockImplementation(async () => null);
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
   });
 
@@ -1059,89 +1085,32 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
       cloudThumbnailFileId: `thumb-${index}`
     });
 
-  /** Hand each cover over one at a time, the way a listing really lands. */
-  function deferredCovers() {
-    const resolvers: (() => void)[] = [];
-    vi.mocked(fetchCloudThumbnail).mockImplementation(
-      (vol) =>
-        new Promise((resolve) => {
-          resolvers.push(() =>
-            resolve({
-              file: new File([], `${vol.volume_uuid}.jpg`, { type: 'image/jpeg' }),
-              width: 250,
-              height: 360
-            } as never)
-          );
-        })
-    );
-    return resolvers;
-  }
-
-  async function landAll(resolvers: (() => void)[]) {
-    for (const resolve of [...resolvers]) {
-      resolve();
-      await tick();
-      await tick();
-    }
-    await tick();
-  }
-
-  it('asks for each cover of a cloud-only series once', async () => {
-    const resolvers = deferredCovers();
+  it('asks for each cover of a cloud-only series exactly once per render, however many volumes', async () => {
     renderShowcase(Array.from({ length: 6 }, (_, i) => cloudNoCover(i + 1)));
     await tick();
 
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
-    await landAll(resolvers);
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
+    expect(requestCoverMock).toHaveBeenCalledTimes(6);
   });
 
-  it('does not chase its own covers while the requests are still out', async () => {
-    // The volumes that never gain a thumbnail are the dangerous ones: the raw list the
-    // fetch selects from cannot shrink for them, so a fetch that fed itself would
-    // re-request every one of them, forever. Nothing here re-runs the effect, so nothing
-    // may be asked twice.
-    const resolvers = deferredCovers();
-    renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
+  it('does not re-request on an unrelated re-render — target derivation is not fed by fetch state', async () => {
+    const { rerender } = renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
     await tick();
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
+    expect(requestCoverMock).toHaveBeenCalledTimes(5);
+    requestCoverMock.mockClear();
 
-    await landAll(resolvers);
+    // Same volumes, same props identity in spirit — a re-render for an unrelated reason
+    // (e.g. a settings change bubbling through) must still ask for exactly the same set,
+    // never more (which would signal the target list is feeding on its own side effects).
+    await rerender({
+      seriesTitle: 'One Piece',
+      volumes: Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1))
+    });
     await tick();
 
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
-  });
-
-  it('asks again for a cover whose request produced nothing', async () => {
-    // A `null` is never cached by the layer below: a 15s timeout, a provider that was not
-    // connected yet, an account saturated by a bulk download all land here and are all
-    // meant to be retried. Holding the uuid across one of those is what leaves a spine
-    // blank until the shelf is reopened.
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
-    vi.useFakeTimers();
-    try {
-      renderShowcase(Array.from({ length: 5 }, (_, i) => cloudNoCover(i + 1)));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(5);
-
-      // The shelf asks again on its own, twice, before giving the requests up.
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(10);
-      await vi.advanceTimersByTimeAsync(8000);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(15);
-
-      // Released: something unrelated re-runs the effect and they are asked once more.
-      catalogSettings.set({ horizontalStep: 12 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(20);
-      catalogSettings.set({ horizontalStep: 11 });
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(requestCoverMock).toHaveBeenCalledTimes(5);
   });
 
   it('asks for each cover of a partly-downloaded series past the window once', async () => {
-    const resolvers = deferredCovers();
     renderShowcase([
       ...Array.from({ length: 65 }, (_, i) => cloudNoCover(i + 1)),
       volume({
@@ -1152,11 +1121,7 @@ describe('SeriesSpineShowcase settles instead of chasing its own covers', () => 
     ]);
     await tick();
 
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65);
-    await landAll(resolvers);
-    // Every cover landed and nothing was requested twice — the measurement window fix
-    // still covers all 65, and the fetch never chased the state it writes.
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(65);
+    expect(requestCoverMock).toHaveBeenCalledTimes(65);
   });
 });
 

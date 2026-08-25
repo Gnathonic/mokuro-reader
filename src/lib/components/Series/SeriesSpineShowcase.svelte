@@ -49,12 +49,7 @@
     canEditSeriesMetadata
   } from '$lib/util/sync/metadata-permissions';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import {
-    fetchCloudThumbnail,
-    getCachedCloudThumbnail,
-    type CloudThumbnailResult
-  } from '$lib/catalog/cloud-thumbnails';
-  import { requestCoverOnce } from '$lib/catalog/cover-requests';
+  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -173,85 +168,36 @@
    */
   let displayedVolumes = $derived(sortedVolumes.slice(0, MAX_SHOWCASE_VOLUMES));
 
-  // Cloud placeholders enriched with their fetched thumbnail, exactly like the catalog
-  // card: the volume keeps its slot in the strip whether or not the image has landed, so
-  // each thumbnail pops into a fixed position instead of shifting the ones already drawn.
-  let cloudThumbnailData = $state<Record<string, CloudThumbnailResult>>({});
-  let showcaseVolumes = $derived(
-    displayedVolumes.map((vol) => {
-      const ct = cloudThumbnailData[vol.volume_uuid];
-      return ct
-        ? { ...vol, thumbnail: ct.file, thumbnail_width: ct.width, thumbnail_height: ct.height }
-        : vol;
-    })
-  );
+  // Delivery of a fetched cover is now the DB write itself (`cover-service.ts`): once a
+  // cover lands, the catalog re-derives and this shelf's OWN `volumes` prop arrives with
+  // `thumbnail`/`thumbnail_width`/`thumbnail_height` already on it, from the parent. There
+  // is no per-shelf enrichment step any more.
+  let showcaseVolumes = $derived(displayedVolumes);
 
   /**
    * Every volume this shelf needs a cover for: the ones it DRAWS (`displayedVolumes`, its
    * 60-spine memory cap) plus the ones it MEASURES (`cardVolumes`, the card's own stack,
    * which a partly-downloaded series can push past that window). Measuring is cheap —
    * one image each, and the uniform height is an average over all of them — while drawing
-   * is what the cap exists for, so the two lists are allowed to differ.
-   *
-   * Props/settings only, never the enriched list: depending on `cloudThumbnailData` here
-   * would make each arriving thumbnail re-run the effect that fetches thumbnails.
+   * is what the cap exists for, so the two lists are allowed to differ. Filtered to
+   * `isCoverFetchTarget` — see `cover-service.ts` for the shared rule (no thumbnail yet, or
+   * a persisted row whose own stamp is stale against the listing).
    */
   let coverTargets = $derived.by(() => {
     const seen = new Set<string>();
     const targets: VolumeMetadata[] = [];
     for (const vol of [...displayedVolumes, ...cardVolumes]) {
-      if (seen.has(vol.volume_uuid)) continue;
+      if (seen.has(vol.volume_uuid) || !isCoverFetchTarget(vol)) continue;
       seen.add(vol.volume_uuid);
       targets.push(vol);
     }
     return targets;
   });
 
-  /**
-   * Covers already asked for, by uuid.
-   *
-   * `coverTargets` is built from the RAW volumes, which never gain a thumbnail — the
-   * fetched ones live in `cloudThumbnailData` — so the target list cannot shrink as covers
-   * land. Anything that re-runs this effect (a settings write, a re-sort, a metadata
-   * emission) would otherwise re-request every volume that has no cover, and each request
-   * that resolves writes state that can re-run it again: a shelf that never settles.
-   *
-   * Held only for requests that PRODUCED a cover — see `requestCoverOnce`. A timeout or a
-   * saturated provider must stay retryable, or one transient failure leaves that spine
-   * blank until the shelf is reopened.
-   *
-   * Deliberately NOT reactive: a record of what this shelf has done, never an input to
-   * what it draws.
-   */
-  const requestedCovers = new Set<string>();
-
-  /**
-   * Only-if-absent: a re-assignment would re-run the whole strip's geometry for nothing.
-   *
-   * Not gated on the asking run still being current — a cover is keyed by volume uuid and
-   * is the right answer for that volume whoever asked (see CatalogItem for the full note).
-   */
-  function commitCover(volumeUuid: string, result: CloudThumbnailResult) {
-    if (cloudThumbnailData[volumeUuid]) return true;
-    cloudThumbnailData[volumeUuid] = result;
-    return true;
-  }
-
+  // Ask for every target's cover. `requestCover` is idempotent and fire-and-forget — the
+  // service's own dedupe makes a redundant call on every re-run of this effect free.
   $effect(() => {
-    for (const vol of coverTargets) {
-      // Already have pixels locally, or nothing to fetch: leave it alone.
-      if (vol.thumbnail || !vol.cloudThumbnailFileId) continue;
-      const cached = getCachedCloudThumbnail(vol.volume_uuid);
-      if (cached) {
-        commitCover(vol.volume_uuid, cached);
-        continue;
-      }
-
-      // One request per volume that lands one, whatever else re-runs this effect.
-      void requestCoverOnce(requestedCovers, vol, fetchCloudThumbnail, (result) =>
-        commitCover(vol.volume_uuid, result)
-      );
-    }
+    for (const vol of coverTargets) requestCover(vol);
   });
 
   /**
@@ -261,10 +207,9 @@
    * draw would size a spine that CompositeCanvas paints nothing into.
    */
   function dimensionsOf(vol: VolumeMetadata): Dimensions | undefined {
-    const ct = cloudThumbnailData[vol.volume_uuid];
-    if (!ct?.file && !vol.thumbnail) return undefined;
-    const width = ct?.width ?? vol.thumbnail_width;
-    const height = ct?.height ?? vol.thumbnail_height;
+    if (!vol.thumbnail) return undefined;
+    const width = vol.thumbnail_width;
+    const height = vol.thumbnail_height;
     if (width && height) return { width, height };
     return { width: BASE_WIDTH, height: BASE_HEIGHT };
   }

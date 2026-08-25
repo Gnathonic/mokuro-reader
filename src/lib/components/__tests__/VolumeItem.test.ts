@@ -94,14 +94,31 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 vi.mock('../BackupButton.svelte', () => ({ default: () => ({}) }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// VolumeItem renders `PlaceholderThumbnail`, which only REQUESTS a cover now
+// (`$lib/catalog/cover-service`) — delivery/fetch mechanics are that
+// module's own contract, covered end to end in `cover-service.test.ts`. The
+// real module pulls in db/materialize/unified-cloud-manager, a graph this
+// file's "stub everything below the template" philosophy deliberately does
+// not load, so it is mocked the same way as the other cover-drawing
+// surfaces (CatalogItem.test.ts, SeriesSpineShowcase.test.ts).
+const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
+  requestCoverMock: vi.fn(),
+  isCoverFetchTargetMock: vi.fn(
+    (vol: { thumbnail?: unknown; isPlaceholder?: boolean; cloudThumbnailFileId?: string }) => {
+      if (vol.thumbnail) return false;
+      if (vol.isPlaceholder) return true;
+      return !!vol.cloudThumbnailFileId;
+    }
+  )
+}));
+vi.mock('$lib/catalog/cover-service', () => ({
+  requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
+  isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
+    isCoverFetchTargetMock(...a)
 }));
 
 import VolumeItem from '../VolumeItem.svelte';
 import { promptConfirmation, showSnackbar } from '$lib/util';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -307,7 +324,7 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     cleanup();
     vi.mocked(promptConfirmation).mockClear();
     vi.mocked(showSnackbar).mockClear();
-    vi.mocked(fetchCloudThumbnail).mockClear();
+    requestCoverMock.mockClear();
   });
 
   function placeholder(overrides: Partial<VolumeMetadata> = {}) {
@@ -378,7 +395,7 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
   });
 
-  it('still fetches the cloud cover sidecar for its grid card', () => {
+  it('still requests the cloud cover for its grid card', () => {
     render(VolumeItem, {
       props: {
         volume: placeholder({ cloudThumbnailFileId: 'thumb-1', cloudThumbnailPath: 'S/V.webp' }),
@@ -386,8 +403,8 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
       }
     });
 
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(fetchCloudThumbnail).mock.calls[0][0]).toMatchObject({
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    expect(requestCoverMock.mock.calls[0][0]).toMatchObject({
       volume_uuid: 'uuid-1',
       cloudThumbnailFileId: 'thumb-1'
     });

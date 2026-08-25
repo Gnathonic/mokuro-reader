@@ -111,11 +111,14 @@ vi.mock('$lib/metadata/link-search', () => ({
   createLinkSearch: () => ({ setQuery: vi.fn(), cancel: vi.fn() }),
   describeSearchError: (e: unknown) => String(e)
 }));
-// SeriesSpineShowcase pulls the cloud-thumbnail fetcher; keep the sync/download graph out
-// of a test about the modal (its own suite covers the shelf's behaviour).
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// SeriesSpineShowcase only REQUESTS a cover now (`$lib/catalog/cover-
+// service`); its real module pulls in db/materialize/unified-cloud-manager —
+// keep that graph out of a test about the modal (the shelf's own suite,
+// `SeriesSpineShowcase.test.ts`, covers its cover-request behaviour, and
+// `cover-service.test.ts` covers delivery).
+vi.mock('$lib/catalog/cover-service', () => ({
+  requestCover: vi.fn(),
+  isCoverFetchTarget: vi.fn(() => false)
 }));
 vi.mock('$lib/metadata/anilist-auth', () => ({
   getAniListClientId: () => h.auth.clientId,

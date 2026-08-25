@@ -14,7 +14,7 @@ import {
   _resetCoverPersistForTests,
   COVER_PERSIST_DEBOUNCE_MS,
   flushPendingCoverPersists,
-  scheduleCatalogCoverPersist
+  installCover
 } from './cover-persist';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
@@ -54,43 +54,29 @@ afterEach(async () => {
   await db.volumes.clear();
 });
 
-describe('scheduleCatalogCoverPersist', () => {
-  it('is a no-op for a volume with no DB row (a placeholder)', async () => {
-    const placeholder = {
-      volume_uuid: 'p-1',
-      series_uuid: 's',
-      series_title: 'One Piece',
-      volume_title: 'Volume 1',
-      mokuro_version: 'unknown',
-      page_count: 0,
-      character_count: 0,
-      page_char_counts: [],
-      isPlaceholder: true
-    } as VolumeMetadata;
-
-    scheduleCatalogCoverPersist(placeholder, coverResult());
+describe('installCover', () => {
+  it('is a no-op for a volume with no DB row (a placeholder never reaches this queue)', async () => {
+    installCover('p-1', coverResult());
     await flushPendingCoverPersists();
 
     // Nothing to assert against a row that was never created — the point is
-    // this must not throw and must not create one.
+    // this must not throw and must not create one. Materializing a row for a
+    // placeholder is `cover-service.ts`'s job, done BEFORE calling this.
     expect(await db.volumes.get('p-1')).toBeUndefined();
   });
 
   it('persists the round trip: fetch once, next-session-equivalent read serves from the row', async () => {
-    await addRow({
-      cloudThumbnailFileId: 'thumb-1',
-      cloudThumbnailPath: 'One Piece/Volume 1.webp',
-      cloudThumbnailSize: 4096,
-      cloudThumbnailModifiedTime: '2026-06-01T00:00:00.000Z'
-    });
-    const row = (await db.volumes.get('v-1')) as VolumeMetadata;
+    await addRow();
 
     // fake-indexeddb under jsdom cannot structured-clone a File (it reads
     // back as `{}`), so the File itself is asserted on the WRITE call, not a
     // subsequent read — same workaround `cover-install.test.ts` documents.
     const update = vi.spyOn(db.volumes, 'update');
 
-    scheduleCatalogCoverPersist(row, coverResult());
+    installCover('v-1', coverResult(), {
+      size: 4096,
+      modifiedTime: '2026-06-01T00:00:00.000Z'
+    });
     await flushPendingCoverPersists();
 
     expect(update).toHaveBeenCalledWith('v-1', {
@@ -117,11 +103,10 @@ describe('scheduleCatalogCoverPersist', () => {
     // job stops at "the row carries what a next session would read".
   });
 
-  it('never overwrites a row that installed for real mid-flight', async () => {
+  it('never overwrites a row that installed for real mid-flight, even in overwrite mode', async () => {
     await addRow();
-    const row = (await db.volumes.get('v-1')) as VolumeMetadata;
 
-    scheduleCatalogCoverPersist(row, coverResult());
+    installCover('v-1', coverResult(), {}, 'overwrite');
 
     // The user downloaded the volume before the flush ran: it is INSTALLED
     // now, with a thumbnail measured from its own pages.
@@ -140,15 +125,14 @@ describe('scheduleCatalogCoverPersist', () => {
     expect(fresh.cover_size).toBeUndefined(); // never stamped either
   });
 
-  it('never touches a row that already has a thumbnail (an earlier commit, or cover-install)', async () => {
+  it('in fill mode (default), never touches a row that already has a thumbnail', async () => {
     await addRow({
       thumbnail: new File(['existing'], 'existing.webp'),
       thumbnail_width: 111,
       thumbnail_height: 111
     });
-    const row = (await db.volumes.get('v-1')) as VolumeMetadata;
 
-    scheduleCatalogCoverPersist(row, coverResult());
+    installCover('v-1', coverResult());
     await flushPendingCoverPersists();
 
     const fresh = (await db.volumes.get('v-1')) as VolumeMetadata;
@@ -156,24 +140,44 @@ describe('scheduleCatalogCoverPersist', () => {
     expect(fresh.cover_size).toBeUndefined();
   });
 
+  it('in overwrite mode, replaces an existing thumbnail (the stale-row self-heal case)', async () => {
+    await addRow({
+      thumbnail: new File(['stale'], 'stale.webp'),
+      thumbnail_width: 50,
+      thumbnail_height: 50,
+      cover_size: 10,
+      cover_modified: 1
+    });
+
+    installCover(
+      'v-1',
+      coverResult(),
+      { size: 4096, modifiedTime: '2026-06-01T00:00:00.000Z' },
+      'overwrite'
+    );
+    await flushPendingCoverPersists();
+
+    const fresh = (await db.volumes.get('v-1')) as VolumeMetadata;
+    expect(fresh.thumbnail_width).toBe(210);
+    expect(fresh.cover_size).toBe(4096);
+  });
+
   it('never touches a fully-installed volume at all', async () => {
     // Neither placeholder nor metadata_only: a real installed row.
     await addRow({ metadata_only: undefined });
-    const row = (await db.volumes.get('v-1')) as VolumeMetadata;
 
-    scheduleCatalogCoverPersist(row, coverResult());
+    installCover('v-1', coverResult());
     await flushPendingCoverPersists();
 
     const fresh = (await db.volumes.get('v-1')) as VolumeMetadata;
     expect(fresh.thumbnail).toBeUndefined();
   });
 
-  it('omits the stamp fields when the volume carries no listing size/mtime', async () => {
-    await addRow({ cloudThumbnailFileId: 'thumb-1' }); // no size/modifiedTime
-    const row = (await db.volumes.get('v-1')) as VolumeMetadata;
+  it('omits the stamp fields when the caller has no listing size/mtime', async () => {
+    await addRow();
     const update = vi.spyOn(db.volumes, 'update');
 
-    scheduleCatalogCoverPersist(row, coverResult());
+    installCover('v-1', coverResult());
     await flushPendingCoverPersists();
 
     expect(update).toHaveBeenCalledWith('v-1', {
@@ -190,7 +194,7 @@ describe('scheduleCatalogCoverPersist', () => {
 });
 
 describe('write-storm avoidance: coalescing a burst into a bounded number of transactions', () => {
-  it('N schedule() calls flush as exactly ONE transaction (one liveQuery emission), never N', async () => {
+  it('N installCover() calls flush as exactly ONE transaction (one liveQuery emission), never N', async () => {
     const N = 25;
     for (let i = 0; i < N; i++) {
       await addRow({ volume_uuid: `v-${i}`, volume_title: `Volume ${i}` });
@@ -209,8 +213,7 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     emissions = 0;
 
     for (let i = 0; i < N; i++) {
-      const row = (await db.volumes.get(`v-${i}`)) as VolumeMetadata;
-      scheduleCatalogCoverPersist(row, coverResult(`v-${i}.webp`));
+      installCover(`v-${i}`, coverResult(`v-${i}.webp`));
     }
 
     // Nothing has flushed yet — N queued results collapse into ONE flush,
@@ -233,13 +236,11 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
 
   it('the debounce timer itself coalesces a real-time burst into one flush', async () => {
     // Unlike the test above (which flushes explicitly to avoid a slow real
-    // wait), this one lets the actual timer fire, proving `scheduleCatalog-
-    // CoverPersist` only ever arms ONE timer no matter how many times it is
-    // called while one is already pending.
+    // wait), this one lets the actual timer fire, proving `installCover`
+    // only ever arms ONE timer no matter how many times it is called while
+    // one is already pending.
     await addRow({ volume_uuid: 'v-a' });
     await addRow({ volume_uuid: 'v-b' });
-    const rowA = (await db.volumes.get('v-a')) as VolumeMetadata;
-    const rowB = (await db.volumes.get('v-b')) as VolumeMetadata;
 
     let emissions = 0;
     const sub = liveQuery(() => db.volumes.toArray()).subscribe({
@@ -250,8 +251,8 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     await vi.waitFor(() => expect(emissions).toBeGreaterThanOrEqual(1));
     emissions = 0;
 
-    scheduleCatalogCoverPersist(rowA, coverResult('a.webp'));
-    scheduleCatalogCoverPersist(rowB, coverResult('b.webp'));
+    installCover('v-a', coverResult('a.webp'));
+    installCover('v-b', coverResult('b.webp'));
 
     await new Promise((resolve) => setTimeout(resolve, COVER_PERSIST_DEBOUNCE_MS + 200));
     sub.unsubscribe();
@@ -261,12 +262,12 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     expect(((await db.volumes.get('v-b')) as VolumeMetadata).thumbnail_width).toBe(210);
   }, 10000);
 
-  it('commitCover-equivalent scheduling never blocks — persistence is background', async () => {
-    // scheduleCatalogCoverPersist is synchronous (no returned promise to
-    // await), matching CatalogItem's requirement that the card paints
-    // immediately and persistence happens as a pure background side effect.
-    const result = scheduleCatalogCoverPersist(metadataOnlyRow(), coverResult());
+  it('installCover never blocks — persistence is background', async () => {
+    // installCover is synchronous (no returned promise to await), matching
+    // the requirement that the card paints immediately and persistence
+    // happens as a pure background side effect.
+    const result = installCover('v-1', coverResult());
     expect(result).toBeUndefined();
-    await flushPendingCoverPersists(); // drain the timer this schedule armed
+    await flushPendingCoverPersists(); // drain the timer this call armed
   });
 });

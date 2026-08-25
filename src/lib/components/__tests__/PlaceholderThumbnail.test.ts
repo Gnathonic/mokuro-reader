@@ -1,20 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
-// The cover pipeline is exercised in its own suites; here only the CACHED branch
-// matters — the one that paints synchronously and owns an object URL.
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// The cover pipeline itself (fetch, dedupe, delivery) is exercised in
+// `cover-service.test.ts` against a real Dexie; this component's own job —
+// tested here — is just the object-URL lifecycle over `volume.thumbnail`
+// (which the SERVICE delivers by writing to the row, not to this component)
+// plus asking for a cover exactly when `isCoverFetchTarget` says to.
+const { requestCover, isCoverFetchTarget } = vi.hoisted(() => ({
+  requestCover: vi.fn(),
+  isCoverFetchTarget: vi.fn(() => true)
 }));
-vi.mock('$lib/catalog/cover-requests', () => ({ requestCoverOnce: vi.fn(async () => {}) }));
+vi.mock('$lib/catalog/cover-service', () => ({ requestCover, isCoverFetchTarget }));
 
 import { tick } from 'svelte';
 import PlaceholderThumbnail from '../PlaceholderThumbnail.svelte';
-import { getCachedCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import type { VolumeMetadata } from '$lib/types';
 
-function volume(uuid: string): VolumeMetadata {
+function volume(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
     volume_uuid: uuid,
     series_uuid: 'series-uuid',
@@ -22,7 +24,8 @@ function volume(uuid: string): VolumeMetadata {
     volume_title: 'Vol 1',
     page_count: 10,
     isPlaceholder: true,
-    cloudThumbnailFileId: `thumb-${uuid}`
+    cloudThumbnailFileId: `thumb-${uuid}`,
+    ...overrides
   } as VolumeMetadata;
 }
 
@@ -35,6 +38,9 @@ describe('PlaceholderThumbnail cover lifetime', () => {
   beforeEach(() => {
     created = [];
     revoked = [];
+    requestCover.mockClear();
+    isCoverFetchTarget.mockClear();
+    isCoverFetchTarget.mockReturnValue(true);
     globalThis.URL.createObjectURL = vi.fn(() => {
       const url = `blob:cover-${created.length + 1}`;
       created.push(url);
@@ -43,39 +49,57 @@ describe('PlaceholderThumbnail cover lifetime', () => {
     globalThis.URL.revokeObjectURL = vi.fn((url: string) => {
       revoked.push(url);
     });
-    vi.mocked(getCachedCloudThumbnail).mockImplementation((uuid: string) =>
-      uuid === 'c-1'
-        ? ({
-            file: new File([], 'cover.jpg', { type: 'image/jpeg' }),
-            width: 250,
-            height: 360
-          } as never)
-        : undefined
-    );
   });
 
   afterEach(() => {
     cleanup();
     globalThis.URL.createObjectURL = originalCreate;
     globalThis.URL.revokeObjectURL = originalRevoke;
-    vi.mocked(getCachedCloudThumbnail).mockReset();
+  });
+
+  it('renders the row-delivered thumbnail as an object URL', async () => {
+    const cover = new File([], 'cover.jpg', { type: 'image/jpeg' });
+    const { container } = render(PlaceholderThumbnail, {
+      props: { volume: volume('c-1', { thumbnail: cover }) }
+    });
+    await tick();
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
   });
 
   it('stops showing a cover whose URL it revoked when the volume changes', async () => {
     // The card reuses one PlaceholderThumbnail across volumes (a re-sort, a page of
     // results). Revoking without clearing the state leaves the <img> pointing at a dead
     // blob URL: a broken-image icon where the next volume's placeholder belongs.
+    const cover = new File([], 'cover.jpg', { type: 'image/jpeg' });
     const { container, rerender } = render(PlaceholderThumbnail, {
-      props: { volume: volume('c-1') }
+      props: { volume: volume('c-1', { thumbnail: cover }) }
     });
     await tick();
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
 
-    await rerender({ volume: volume('c-2') });
+    await rerender({ volume: volume('c-2') }); // no thumbnail: still session-cache-less
     await tick();
 
     expect(revoked).toEqual(['blob:cover-1']);
     expect(container.querySelector('img')).toBeNull();
     expect(container.textContent).toContain('No thumbnail');
+  });
+
+  it('asks the service for a cover when the volume is a fetch target', async () => {
+    render(PlaceholderThumbnail, { props: { volume: volume('c-3') } });
+    await tick();
+
+    expect(requestCover).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'c-3' }));
+  });
+
+  it('does not ask when the volume is not a fetch target (e.g. already has a fresh thumbnail)', async () => {
+    isCoverFetchTarget.mockReturnValue(false);
+    render(PlaceholderThumbnail, {
+      props: { volume: volume('c-4', { thumbnail: new File([], 'cover.jpg') }) }
+    });
+    await tick();
+
+    expect(requestCover).not.toHaveBeenCalled();
   });
 });

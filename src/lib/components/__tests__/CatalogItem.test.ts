@@ -55,18 +55,32 @@ vi.mock('$lib/util/download-queue', () => ({
     getSeriesQueueStatus: () => ({ hasQueued: false, hasDownloading: false })
   }
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// Cover fetching/delivery is `cover-service.ts`'s job now (its own decision
+// tree, dedupe, retry and persistence are covered end to end in
+// `cover-service.test.ts`/`cover-service.retry.test.ts` against a real
+// Dexie). This file's job is only the WIRING: does the card ask for a cover
+// for exactly the volumes that need one. The real `cover-service.ts` pulls in
+// db/materialize/unified-cloud-manager — a graph this file deliberately does
+// not load (same reason `cloud-thumbnails`/`download-queue` are stubbed
+// below) — so `isCoverFetchTarget` is reimplemented here as the same small
+// pure predicate (no-thumbnail-yet gating; this file's fixtures never
+// exercise the stale-row-mismatch branch, which is `cover-service.test.ts`'s
+// job to pin).
+const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
+  requestCoverMock: vi.fn(),
+  isCoverFetchTargetMock: vi.fn(
+    (vol: { thumbnail?: unknown; isPlaceholder?: boolean; cloudThumbnailFileId?: string }) => {
+      if (vol.thumbnail) return false;
+      if (vol.isPlaceholder) return true;
+      return !!vol.cloudThumbnailFileId;
+    }
+  )
 }));
-// The persistence side effect of a committed cover is its own module
-// (`cover-persist.ts`, tested in `cover-persist.test.ts` against a real
-// Dexie) — stub it here too, same reason as `cloud-thumbnails`: it imports
-// `$lib/catalog/db`, which this file's tests must not drag in.
-const { scheduleCatalogCoverPersist } = vi.hoisted(() => ({
-  scheduleCatalogCoverPersist: vi.fn()
+vi.mock('$lib/catalog/cover-service', () => ({
+  requestCover: (...a: Parameters<typeof requestCoverMock>) => requestCoverMock(...a),
+  isCoverFetchTarget: (...a: Parameters<typeof isCoverFetchTargetMock>) =>
+    isCoverFetchTargetMock(...a)
 }));
-vi.mock('$lib/catalog/cover-persist', () => ({ scheduleCatalogCoverPersist }));
 
 // What the card actually asked to be drawn. Transparent pass-through: records the props,
 // then renders the real component (same trick as the spine shelf's suite).
@@ -123,7 +137,6 @@ import CatalogItem from '../CatalogItem.svelte';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { updateCatalogSetting } from '$lib/settings/settings';
 import { updateProgress } from '$lib/settings';
 
@@ -167,6 +180,14 @@ function getCard(container: HTMLElement): HTMLElement {
   if (!card) throw new Error('card element not found');
   return card as HTMLElement;
 }
+
+// Every mounted CatalogItem's own cover-request effect calls this, whether or
+// not a given describe block cares — cleared before EVERY test in the file
+// (not just the ones that assert on it) so calls never carry over between
+// unrelated tests.
+beforeEach(() => {
+  requestCoverMock.mockClear();
+});
 
 describe('CatalogItem hover + "e" opens the series editor', () => {
   beforeEach(() => {
@@ -1349,19 +1370,12 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
       IntersectionObserverStub;
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
-      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
-      width: 250,
-      height: 360
-    } as never);
     updateCatalogSetting('stackCount', 0);
   });
 
   afterEach(() => {
     cleanup();
     updateCatalogSetting('stackCount', 3);
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
   });
 
@@ -1369,6 +1383,10 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     const props = compositeCanvasProps.at(-1);
     if (!props) throw new Error('CompositeCanvas was never mounted');
     return (props.volumes as VolumeMetadata[]).map((vol) => vol.volume_uuid);
+  }
+
+  function requestedUuids(): string[] {
+    return requestCoverMock.mock.calls.map(([vol]) => (vol as VolumeMetadata).volume_uuid);
   }
 
   const mixedSeries = () => [
@@ -1385,86 +1403,14 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     expect(drawnUuids()).toEqual(['v-1', 'v-2', 'c-3', 'c-4']);
   });
 
-  it('fetches the covers of those cloud-only volumes so they actually paint', async () => {
-    const { container } = render(CatalogItem, { props: { volumes: mixedSeries() } });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2));
+  it('asks the cover service for exactly the cloud-only volumes, not the ones already painted', async () => {
+    // Cover delivery itself (fetch → install → row → re-render) is
+    // `cover-service.ts`'s contract, covered end to end there. This card's
+    // own job stops at asking for the right set.
+    render(CatalogItem, { props: { volumes: mixedSeries() } });
     await tick();
 
-    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
-    const cloudSpines = props.volumes.filter((vol) => vol.volume_uuid.startsWith('c-'));
-    expect(cloudSpines.every((vol) => !!vol.thumbnail)).toBe(true);
-    // …and once painted, each carries the not-on-device mark.
-    expect(container.querySelectorAll('[data-testid="download-badge"]')).toHaveLength(2);
-  });
-
-  it('asks for each missing cover once — the fetch must not feed itself', async () => {
-    // The effect that fetches covers writes `cloudThumbnailData`. If its target list is
-    // derived from the ENRICHED volumes (which carry that data), every arriving cover
-    // re-runs it and re-requests everything still outstanding: quadratic fetches, a
-    // permanently busy effect, and a frozen card.
-    let resolvers: (() => void)[] = [];
-    vi.mocked(fetchCloudThumbnail).mockImplementation(
-      (vol) =>
-        new Promise((resolve) => {
-          resolvers.push(() =>
-            resolve({
-              file: new File([], `${vol.volume_uuid}.jpg`, { type: 'image/jpeg' }),
-              width: 250,
-              height: 360
-            } as never)
-          );
-        })
-    );
-
-    render(CatalogItem, {
-      props: {
-        volumes: [
-          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
-          ...Array.from({ length: 6 }, (_, i) =>
-            cloudOnly({ volume_uuid: `c-${i + 2}`, volume_title: `Vol ${i + 2}` })
-          )
-        ]
-      }
-    });
-    await tick();
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
-
-    // Let the covers land one at a time, the way a real listing does.
-    for (const resolve of [...resolvers]) {
-      resolve();
-      await tick();
-      await tick();
-    }
-    await tick();
-
-    // Still six: one request per volume, no re-request storm as each one arrives.
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(6);
-  });
-
-  it('paints the metadata-only row it just fetched a cover for', async () => {
-    // A row whose files were removed is drawn from the stack's LOCAL half, but
-    // the cover fetch targets it too (no thumbnail, a cover sidecar in the
-    // cloud). If only the placeholder half is enriched, the request is spent and
-    // the spine stays blank — CompositeCanvas paints nothing without pixels.
-    render(CatalogItem, {
-      props: {
-        volumes: [
-          painted({ volume_uuid: 'v-1', volume_title: 'Vol 1' }),
-          localVolume({
-            volume_uuid: 'm-2',
-            volume_title: 'Vol 2',
-            metadata_only: true,
-            cloudThumbnailFileId: 'thumb-m-2'
-          })
-        ]
-      }
-    });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
-    await tick();
-
-    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
-    expect(props.volumes.map((vol) => vol.volume_uuid)).toEqual(['v-1', 'm-2']);
-    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+    expect(requestedUuids().sort()).toEqual(['c-3', 'c-4']);
   });
 
   it('keeps a volume that is missing from the middle in its own place', async () => {
@@ -1482,11 +1428,10 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     expect(drawnUuids()).toEqual(['v-1', 'c-2', 'v-3']);
   });
 
-  it('stacks AND paints every volume of a partly-here series, past the cloud cap', async () => {
+  it('stacks every volume of a partly-here series, past the cloud cap, and asks a cover for each cloud one', async () => {
     // The user's own shelf: 42 volumes, only the last one downloaded. The 25-cover cap is
     // for a series whose whole stack comes from the cloud; this one is stacked by the
-    // local rules, all of it — and a spine with no cover fetched for it is a spine the
-    // canvas never paints, so the covers have to be asked for too.
+    // local rules, all of it.
     const volumes = [
       ...Array.from({ length: 41 }, (_, i) =>
         cloudOnly({ volume_uuid: `c-${i + 1}`, volume_title: `Vol ${i + 1}` })
@@ -1494,14 +1439,11 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
       painted({ volume_uuid: 'v-42', volume_title: 'Vol 42' })
     ];
     render(CatalogItem, { props: { volumes } });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(41));
     await tick();
 
     expect(drawnUuids()).toHaveLength(42);
     expect(drawnUuids().at(-1)).toBe('v-42');
-    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
-    // Every spine has pixels: nothing is silently trimmed out of the picture.
-    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
+    expect(requestedUuids()).toHaveLength(41);
   });
 
   it('hides a finished volume of either kind when "hide read" is on', async () => {
@@ -1540,13 +1482,14 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
 });
 
 /**
- * Persistent catalog-card covers (`cover-persist.ts`): a metadata-only row's
- * fetched cover must be queued for background persistence, a pure
- * placeholder's must not, and a row that already has a thumbnail must never
- * even be asked for one — that invariant is what lets a persisted cover cost
- * zero network on the NEXT session.
+ * Cover delivery is unified behind `cover-service.ts`: every surface that
+ * draws a cloud cover only REQUESTS one (`requestCover`), and delivery lands
+ * through the DB (see `cover-service.test.ts`, `cover-persist.test.ts`).
+ * This card's own responsibility is narrower — asking for a cover for every
+ * eligible volume (a placeholder, or a real row with a cover id and no
+ * thumbnail), and NEVER asking for one a row already carries.
  */
-describe('CatalogItem persists covers for volumes that have a DB row', () => {
+describe('CatalogItem requests covers for exactly the volumes that need one', () => {
   class IntersectionObserverStub {
     observe() {}
     unobserve() {}
@@ -1578,57 +1521,43 @@ describe('CatalogItem persists covers for volumes that have a DB row', () => {
       IntersectionObserverStub;
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
-    scheduleCatalogCoverPersist.mockClear();
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
-      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
-      width: 250,
-      height: 360
-    } as never);
   });
 
   afterEach(() => {
     cleanup();
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
   });
 
-  it('queues a persist for a metadata-only row once its cover fetch lands', async () => {
+  it('requests a cover for a metadata-only row with no thumbnail yet', async () => {
     render(CatalogItem, {
       props: {
         volumes: [metadataOnlyRow({ volume_uuid: 'm-1', volume_title: 'Vol 1' })]
       }
     });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
     await tick();
 
-    expect(scheduleCatalogCoverPersist).toHaveBeenCalledTimes(1);
-    const [vol, result] = scheduleCatalogCoverPersist.mock.calls[0];
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    const [vol] = requestCoverMock.mock.calls[0];
     expect(vol.volume_uuid).toBe('m-1');
     expect(vol.isPlaceholder).toBeFalsy();
-    expect(result.width).toBe(250);
   });
 
-  it('a pure placeholder is still handed to scheduleCatalogCoverPersist, carrying isPlaceholder — the module itself is the guard', async () => {
-    // `commitCover` calls `scheduleCatalogCoverPersist` uniformly for every
-    // committed cover; the "no DB row → no-op" rule lives INSIDE that module
-    // (see `cover-persist.test.ts`'s own "is a no-op for a volume with no DB
-    // row" pin), not as a second copy of the check here. This test only
-    // confirms the call site passes `isPlaceholder` through faithfully, so
-    // that guard has something to act on.
+  it('requests a cover for a pure placeholder too, forwarding it whole (isPlaceholder intact)', async () => {
+    // `cover-service.ts` reads `isPlaceholder` itself to pick the right
+    // decision-tree branch (materialize-then-install vs. install-only) — the
+    // card must hand over the volume as-is, not a stripped copy.
     render(CatalogItem, {
       props: {
         volumes: [cloudOnly({ volume_uuid: 'c-1', volume_title: 'Vol 1' })]
       }
     });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
     await tick();
 
-    expect(scheduleCatalogCoverPersist).toHaveBeenCalledTimes(1);
-    expect(scheduleCatalogCoverPersist.mock.calls[0][0].isPlaceholder).toBe(true);
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    expect(requestCoverMock.mock.calls[0][0].isPlaceholder).toBe(true);
   });
 
-  it('PIN: a row WITH a thumbnail never enters cloudCoverTargets — no fetch, no cache lookup, zero network next session', async () => {
+  it('PIN: a row WITH a thumbnail never enters cloudCoverTargets — zero requests, zero network next session', async () => {
     // The "next session" simulation: a row that a PRIOR session's commit
     // already persisted a thumbnail onto. If this row were still treated as
     // a fetch target, a session boundary would cost a network round trip
@@ -1645,8 +1574,7 @@ describe('CatalogItem persists covers for volumes that have a DB row', () => {
     await tick();
     await tick();
 
-    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
-    expect(scheduleCatalogCoverPersist).not.toHaveBeenCalled();
+    expect(requestCoverMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1688,8 +1616,6 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
       IntersectionObserverStub;
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
-    vi.mocked(fetchCloudThumbnail).mockReset();
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
   });
 
   afterEach(() => {
@@ -1720,66 +1646,17 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
     expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
   });
 
-  it('asks again for a cover whose request produced nothing', async () => {
-    // A saturated provider mid-bulk-download answers `null`, and nothing below caches
-    // that. Spending the request on it is what leaves the card cover-less until it
-    // remounts — the "no covers until I navigate away and back" report.
-    vi.useFakeTimers();
-    try {
-      render(CatalogItem, {
-        props: {
-          volumes: [
-            generated({ volume_uuid: 'f-1', volume_title: 'Vol 1' }),
-            cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
-          ]
-        }
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+  // Retry-on-nothing, release-on-failure and dedupe are `cover-service.ts`'s
+  // own contract now (`cover-service.test.ts`'s "retry" and "dedupe" describe
+  // blocks, plus `cover-service.retry.test.ts`'s fake-timer backoff pins) —
+  // this card no longer tracks any of that itself, so there is nothing left
+  // to re-test at this layer beyond the wiring already covered above
+  // ("CatalogItem requests covers for exactly the volumes that need one").
 
-      // The card asks again on its own — nothing else has to re-render it.
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2);
-
-      await vi.advanceTimersByTimeAsync(8000);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(3);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('releases a cover request that never landed, so a re-run can try once more', async () => {
-    vi.useFakeTimers();
-    try {
-      render(CatalogItem, {
-        props: {
-          volumes: [
-            generated({ volume_uuid: 'f-1', volume_title: 'Vol 1' }),
-            cloudOnly({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
-          ]
-        }
-      });
-      // Spend the whole retry schedule.
-      await vi.advanceTimersByTimeAsync(11000);
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(3);
-
-      // Anything re-runs the effect — during a bulk download the catalog emits constantly.
-      updateCatalogSetting('horizontalStep', 12);
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(fetchCloudThumbnail).toHaveBeenCalledTimes(4);
-      updateCatalogSetting('horizontalStep', 11);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('keeps a cover that landed, and does not ask for it twice', async () => {
-    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
-      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
-      width: 250,
-      height: 360
-    } as never);
+  it('re-derives its cover-request targets when the catalog re-emits rows (a bulk-download tick, a setting change)', async () => {
+    // A re-render must recompute `cloudCoverTargets` from the FRESH volumes
+    // prop, not from stale local state — a cloud-only volume still without a
+    // thumbnail after some unrelated re-render must still show up as a target.
     render(CatalogItem, {
       props: {
         volumes: [
@@ -1788,16 +1665,22 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
         ]
       }
     });
-    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
     await tick();
+    expect(requestCoverMock).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'c-2' }));
 
     updateCatalogSetting('horizontalStep', 12);
     await tick();
-    await tick();
-
-    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
-    const props = compositeCanvasProps.at(-1) as { volumes: VolumeMetadata[] };
-    expect(props.volumes.filter((vol) => !vol.thumbnail)).toEqual([]);
-    updateCatalogSetting('horizontalStep', 11);
+    try {
+      // `requestCover` is idempotent by contract, so a redundant call here is
+      // harmless — the card is not expected to suppress it itself.
+      expect(requestCoverMock).toHaveBeenCalledWith(
+        expect.objectContaining({ volume_uuid: 'c-2' })
+      );
+      expect(requestCoverMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ volume_uuid: 'f-1' })
+      );
+    } finally {
+      updateCatalogSetting('horizontalStep', 11);
+    }
   });
 });

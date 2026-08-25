@@ -22,9 +22,15 @@ vi.mock('$lib/util', () => ({ showSnackbar: vi.fn(), promptConfirmation: vi.fn()
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { deleteFile: vi.fn() }
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
-  fetchCloudThumbnail: vi.fn(async () => null),
-  getCachedCloudThumbnail: vi.fn(() => undefined)
+// PlaceholderVolumeItem renders `PlaceholderThumbnail`, which only REQUESTS a
+// cover now (`$lib/catalog/cover-service`) — its real module pulls in
+// db/materialize/unified-cloud-manager, a graph this file does not otherwise
+// load. Stubbed the same way as the other cover-drawing surfaces
+// (CatalogItem.test.ts, SeriesSpineShowcase.test.ts, VolumeItem.test.ts); no
+// test here asserts on it, this is purely keeping the module graph out.
+vi.mock('$lib/catalog/cover-service', () => ({
+  requestCover: vi.fn(),
+  isCoverFetchTarget: vi.fn(() => false)
 }));
 
 import PlaceholderVolumeItem from '../PlaceholderVolumeItem.svelte';

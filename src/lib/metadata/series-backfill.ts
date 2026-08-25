@@ -2,6 +2,7 @@ import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
+import { flushPendingCoverPersists, installCover } from '$lib/catalog/cover-persist';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
 import { buildPageCharCounts, decodeMokuroSidecar } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
@@ -14,7 +15,6 @@ import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import {
   groupSeriesSidecarFiles,
-  isoToEpochSeconds,
   isSidecarStale,
   stampFromSidecarFiles,
   type SeriesSidecarFiles
@@ -79,7 +79,13 @@ const BACKFILL_PASS_CONCURRENCY = 2;
 let activeBackfillPasses = 0;
 const waitingBackfillPasses: Array<() => void> = [];
 
-function acquireBackfillSlot(): Promise<void> {
+/**
+ * Exported so `cover-service.ts`'s render-demand single-archive pulls share
+ * this SAME pool: "fast browsing can't stampede a provider" applies to a
+ * .mokuro pull triggered by scrolling past a bare placeholder exactly as much
+ * as one triggered by a reconcile sweep — one budget, not two.
+ */
+export function acquireBackfillSlot(): Promise<void> {
   if (activeBackfillPasses < BACKFILL_PASS_CONCURRENCY) {
     activeBackfillPasses += 1;
     return Promise.resolve();
@@ -92,7 +98,7 @@ function acquireBackfillSlot(): Promise<void> {
   });
 }
 
-function releaseBackfillSlot(): void {
+export function releaseBackfillSlot(): void {
   activeBackfillPasses -= 1;
   waitingBackfillPasses.shift()?.();
 }
@@ -120,8 +126,14 @@ function archiveStemOf(path: string): string {
   return basename(path).replace(/\.cbz$/i, '');
 }
 
-/** Zero-count entry for an archive with no sidecar at all — the image-only convention `volumeToIndexEntry` gives an installed image-only volume. */
-function buildImageOnlyEntry(
+/**
+ * Zero-count entry for an archive with no sidecar at all — the image-only
+ * convention `volumeToIndexEntry` gives an installed image-only volume.
+ * Exported for `cover-service.ts`'s render-demand path (decision-tree case
+ * 4), which builds an entry for exactly one archive the same way this module
+ * does for a whole series — reused, not re-derived.
+ */
+export function buildImageOnlyEntry(
   folderTitle: string,
   archiveStem: string,
   archiveFile: CloudFileMetadata
@@ -150,8 +162,12 @@ function buildImageOnlyEntry(
  * read (`groupSeriesSidecarFiles`); it is used here for BOTH the download and
  * the stamp below, so there is no second listing lookup to race a concurrent
  * re-list — the stamp always describes exactly the bytes that were pulled.
+ *
+ * Exported for `cover-service.ts`'s render-demand path (decision-tree case
+ * 3: a bare placeholder with a real sidecar) — the SAME pull, whether it is
+ * triggered by a backfill pass or by a card being scrolled into view.
  */
-async function pullMokuroEntry(
+export async function pullMokuroEntry(
   provider: SyncProvider,
   archiveStem: string,
   sidecarFile: CloudFileMetadata
@@ -320,14 +336,17 @@ function excludeInstalledCandidates(
  * `fetchCloudThumbnail` is a network fetch that can take up to 15s
  * (`FETCH_TIMEOUT_MS`), during which a download can finish and INSTALL the
  * volume with a thumbnail measured from its own pages. The snapshot read
- * above is that old by the time the network answers, so — same pattern
- * `runCoverInstall` documents in `cover-install.ts` — the row is re-read and
- * re-tested INSIDE the transaction that performs the write, and the write is
- * skipped if it no longer needs one.
+ * above is that old by the time the network answers, so the actual write
+ * routes through `cover-persist.ts`'s shared queue (`installCover`, `mode:
+ * 'overwrite'` — this row already HAS a thumbnail, which is the entire
+ * premise of "stale"), the same re-read-and-re-test-inside-the-transaction
+ * guard `cover-install.ts`'s `runCoverInstall` and `cover-service.ts` both
+ * use. Flushed immediately (not left to the debounce) since this runs inside
+ * an already-async backfill pass, not a UI burst — see `flushPendingCoverPersists`.
  *
  * Also RESTAMPS the row from `cover` — the same listing record the fetch was
  * made against — with `cover_size`/`cover_modified`, mirroring
- * `cover-persist.ts`'s catalog-card path. This is what lets a FUTURE pass
+ * `cover-service.ts`'s catalog-card path. This is what lets a FUTURE pass
  * (here, or a row-level check elsewhere) decide staleness from the row alone
  * without guessing, whichever path most recently touched it.
  */
@@ -347,20 +366,13 @@ async function refreshStaleCover(
   });
   if (!result) return;
 
-  const patch: Partial<VolumeMetadata> = {
-    thumbnail: result.file,
-    thumbnail_width: result.width,
-    thumbnail_height: result.height
-  };
-  if (isArchiveSize(cover.size)) patch.cover_size = cover.size;
-  const coverModified = isoToEpochSeconds(cover.modifiedTime);
-  if (coverModified !== undefined) patch.cover_modified = coverModified;
-
-  await db.transaction('rw', db.volumes, async () => {
-    const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
-    if (!fresh || !needsDownload(fresh)) return;
-    await db.volumes.update(volumeUuid, patch);
-  });
+  installCover(
+    volumeUuid,
+    result,
+    { size: cover.size, modifiedTime: cover.modifiedTime },
+    'overwrite'
+  );
+  await flushPendingCoverPersists();
 }
 
 /**
