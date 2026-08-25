@@ -9,6 +9,7 @@ import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
 import { hasSeriesFacts, isSeriesFilePath } from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
+import { backfillNewlyLinkedSeries, backfillSeriesEntries } from './series-backfill';
 import {
   getAllSeriesMetadata,
   registerFactsChangeListener,
@@ -156,6 +157,37 @@ async function hasPublishableFacts(seriesTitle: string): Promise<boolean> {
   return Object.values(metas).some(
     (meta) => normalizeVolumeTitleKey(meta.series_title) === key && hasSeriesFacts(meta)
   );
+}
+
+/**
+ * The link-event trigger for the sidecar backfill: a fact edit just made
+ * `series.json` PUBLISHABLE for a series this device has nothing local for
+ * (the exact `hasBackedUpVolume` false / `hasPublishableFacts` true split that
+ * decides whether `runWrite` below publishes a facts-only file into an
+ * existing cloud folder). That is precisely "a series the user linked without
+ * downloading anything" from the feature's own framing — worth converging
+ * immediately rather than waiting for a later series open or reconcile pass.
+ *
+ * Hooked off the FACTS-CHANGE side deliberately, never off `writeSeriesFile`'s
+ * own completion: the backfill's own publish goes through that same function,
+ * and hooking a trigger onto "a write just finished" would have the backfill
+ * re-enqueue itself. `registerFactsChangeListener` only fires for a genuine
+ * local fact edit (never for `upsertFromSeriesFile`, which applies what a
+ * sidecar already says), so there is no such loop here.
+ *
+ * Every other gate (writable provider, not server-compiled, one in flight per
+ * series) is still enforced inside `backfillNewlyLinkedSeries` itself — this
+ * only decides whether the "nothing local for this series" precondition
+ * holds. Best-effort: never throws, never surfaces UI.
+ */
+async function maybeBackfillNewlyLinkedSeries(seriesTitle: string): Promise<void> {
+  try {
+    if (await hasBackedUpVolume(seriesTitle)) return;
+    if (!(await hasPublishableFacts(seriesTitle))) return;
+    await backfillNewlyLinkedSeries(seriesTitle);
+  } catch (error) {
+    console.debug(`[series-file-sync] could not backfill newly linked '${seriesTitle}':`, error);
+  }
 }
 
 /**
@@ -518,7 +550,17 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
   for (const [title, state] of folders) {
     if (!state.hasArchive) continue;
     seriesFolders += 1;
-    if (!state.hasSidecar) candidates.push(title);
+    if (!state.hasSidecar) {
+      candidates.push(title);
+    } else {
+      // The OTHER half of convergence: a folder that already has a
+      // series.json may still be missing entries for archives the listing
+      // shows (facts-only, or partial). Fire-and-forget and re-entrancy-safe
+      // per series — a folder with nothing to fill costs one cached index
+      // read and zero downloads, so sweeping every sidecar-bearing folder on
+      // every reconcile pass is cheap in the common case.
+      void backfillSeriesEntries(title);
+    }
   }
   if (seriesFolders === 0) return;
 
@@ -553,6 +595,16 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
  * archive, no `series.json`, and at least one non-placeholder local row gets a
  * write queued, and the catalog follows if anything was queued or the root
  * `catalog.json` is missing outright.
+ *
+ * A SECOND hole gets closed here too, for a folder that already HAS a
+ * `series.json`: the file can still be facts-only or partial (a series linked
+ * without downloading anything, or one whose entries never finished
+ * converging). Every such folder is swept through `backfillSeriesEntries`
+ * (`series-backfill.ts`), which pulls just the missing/stale archives'
+ * sidecars and republishes the file — see that module for the trigger scope,
+ * the gap-OR-stale rule and its own gates. Fire-and-forget the same as the
+ * missing-sidecar half, and equally cheap for a folder with nothing to fill:
+ * one cached index read and zero downloads.
  *
  * Idempotent by construction — a completed write shows up in the next listing
  * and stops qualifying — and convergent, because the local-row test mirrors the
@@ -603,9 +655,10 @@ export function initSeriesFileSync(): () => void {
   if (!browser) return () => {};
   if (teardown) return teardown;
 
-  const unregisterFacts = registerFactsChangeListener((seriesTitle) =>
-    scheduleSeriesFileWrite(seriesTitle)
-  );
+  const unregisterFacts = registerFactsChangeListener((seriesTitle) => {
+    scheduleSeriesFileWrite(seriesTitle);
+    void maybeBackfillNewlyLinkedSeries(seriesTitle);
+  });
   // The non-facts trigger: a shelf alignment change republishes the sidecar
   // with the SAME facts stamp (see `registerIndexChangeListener`). Both funnel
   // into the same per-series debounce, so an edit that moves both costs one write.

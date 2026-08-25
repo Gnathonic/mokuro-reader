@@ -22,6 +22,11 @@ vi.mock('$lib/catalog/cover-install', () => ({
   installCoversForSeries: (t: string) => installCoversForSeries(t)
 }));
 
+const backfillSeriesEntries = vi.fn(async (_title: string) => {});
+vi.mock('./series-backfill', () => ({
+  backfillSeriesEntries: (t: string) => backfillSeriesEntries(t)
+}));
+
 import { openSeries } from './series-open';
 
 const file: SeriesFile = {
@@ -75,6 +80,20 @@ describe('openSeries', () => {
     await openSeries('Bare Share');
     expect(materializeSeriesVolumes).not.toHaveBeenCalled();
     expect(installCoversForSeries).not.toHaveBeenCalled();
+  });
+
+  it('kicks off the sidecar gap-fill backfill for the series, without waiting on it', async () => {
+    let releaseBackfill!: () => void;
+    backfillSeriesEntries.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        releaseBackfill = resolve;
+      })
+    );
+
+    await openSeries('Dr Stone');
+
+    expect(backfillSeriesEntries).toHaveBeenCalledWith('Dr Stone');
+    releaseBackfill();
   });
 
   it('de-duplicates concurrent opens of the same series', async () => {

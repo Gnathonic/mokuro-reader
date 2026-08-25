@@ -65,6 +65,28 @@ export interface SeriesFileVolume {
    * facts merge. Omitted when there is no nudge (a zero is never written).
    */
   offset?: number;
+  /**
+   * Bytes of the `.mokuro`/`.mokuro.gz` sidecar this entry's counts were built
+   * from, per the CLOUD LISTING'S record of that file — never a local stat,
+   * never `Date.now()`. Paired with {@link mokuro_modified} so a later reader
+   * (this device or another) can tell whether the sidecar has moved since this
+   * entry was built without downloading it again. Absent when the entry was
+   * never built from a listed sidecar (a fact edit's own build, an image-only
+   * archive with no sidecar at all, or a file written before this field
+   * existed).
+   */
+  mokuro_size?: number;
+  /**
+   * Epoch SECONDS (truncated, never rounded) of the sidecar's listing
+   * `modifiedTime` at the moment this entry was built. Same provenance rule as
+   * {@link mokuro_size}: the listing's stamp, captured once, at the decision to
+   * pull — never a fresher re-read, and never local wall-clock time.
+   */
+  mokuro_modified?: number;
+  /** Bytes of this volume's cover sidecar, per the listing at build time. */
+  cover_size?: number;
+  /** Epoch SECONDS (truncated) of the cover sidecar's listing `modifiedTime`. */
+  cover_modified?: number;
 }
 
 /**
@@ -111,6 +133,15 @@ export function isArchiveSize(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
+/**
+ * A usable epoch-seconds stamp: a non-negative integer. Shared by every
+ * `*_modified` field's parser AND writer, so build → JSON → parse stays an
+ * identity the same way `isArchiveSize` keeps it for the size fields.
+ */
+export function isEpochSeconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
 /** Project a local volume onto its index entry (index fields only). */
 export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
   const entry: SeriesFileVolume = {
@@ -125,6 +156,46 @@ export function volumeToIndexEntry(volume: VolumeMetadata): SeriesFileVolume {
   if (isSpineWidth(volume.spine_width)) entry.spine_width = volume.spine_width;
   if (isArchiveSize(volume.archive_size)) entry.archive_size = volume.archive_size;
   return entry;
+}
+
+/**
+ * The current cloud listing's sizes/mtimes for one volume's sidecars, keyed
+ * elsewhere by folded `volume_title`. Epoch seconds, truncated — the exact
+ * shape `SeriesFileVolume`'s `mokuro_*`/`cover_*` fields carry, built by
+ * `cloud-sidecar-stamps.ts` from `CloudFileMetadata.size`/`modifiedTime` and
+ * consumed by `buildSeriesFile` to stamp an INSTALLED row's own entry.
+ */
+export interface CloudSidecarStamp {
+  mokuro_size?: number;
+  mokuro_modified?: number;
+  cover_size?: number;
+  cover_modified?: number;
+}
+
+/**
+ * Reassemble a `SeriesFileVolume` in the CANONICAL wire order — see
+ * `parseVolumeEntry`'s note by the same name. A caller that patches
+ * size/stamp fields onto an entry which might already carry `offset` (which
+ * must stay LAST) should rebuild through here rather than mutate in place, so
+ * the result re-serializes byte-for-byte in the pinned order no matter which
+ * fields happened to already be set or in what order they were assigned.
+ */
+export function orderVolumeEntryFields(entry: SeriesFileVolume): SeriesFileVolume {
+  const ordered: SeriesFileVolume = {
+    volume_uuid: entry.volume_uuid,
+    volume_title: entry.volume_title,
+    page_count: entry.page_count,
+    character_count: entry.character_count,
+    mokuro_version: entry.mokuro_version
+  };
+  if (entry.spine_width !== undefined) ordered.spine_width = entry.spine_width;
+  if (entry.archive_size !== undefined) ordered.archive_size = entry.archive_size;
+  if (entry.mokuro_size !== undefined) ordered.mokuro_size = entry.mokuro_size;
+  if (entry.mokuro_modified !== undefined) ordered.mokuro_modified = entry.mokuro_modified;
+  if (entry.cover_size !== undefined) ordered.cover_size = entry.cover_size;
+  if (entry.cover_modified !== undefined) ordered.cover_modified = entry.cover_modified;
+  if (entry.offset !== undefined) ordered.offset = entry.offset;
+  return ordered;
 }
 
 /** `sortVolumes` only reads `volume_title`, which every index entry carries. */
@@ -218,6 +289,24 @@ function localFacts(meta: SeriesMetadata): SeriesFacts {
  * this series) prunes entries whose volume is neither in the cloud nor installed
  * here, which is how a deleted volume eventually leaves the index.
  *
+ * `cloudMeasuredVolumes` — entries the sidecar-backfill pass (`series-backfill.ts`)
+ * built by pulling a volume's `.mokuro`/`.mokuro.gz` straight from the cloud
+ * folder — rank ABOVE the published copy (the pulled sidecar IS the cloud's
+ * current content: it self-heals a stale published entry after a re-OCR
+ * upload) but BELOW an installed row, which is still measured on this device.
+ * Applied by folded `volume_title`, not just uuid: a re-OCR can mint a new
+ * `volume_uuid` for the same archive, so the stale published entry under the
+ * OLD uuid is retired rather than left beside the fresh one under the new.
+ *
+ * `cloudSidecarStamps` — the current listing's `.mokuro`/cover file sizes and
+ * mtimes (epoch seconds), keyed by folded volume title. When an INSTALLED row
+ * builds its own entry below, this is where it picks up `mokuro_size` /
+ * `mokuro_modified` / `cover_size` / `cover_modified` if (and only if) the
+ * listing shows that volume's sidecar right now — an installed row has no
+ * other way to know a cloud file's stat. Absent (or missing an entry for a
+ * title) simply leaves those fields off; nothing is ever inherited from the
+ * published copy for them the way `archive_size` is.
+ *
  * Returns `undefined` when there is nothing worth uploading (no facts, no volumes).
  */
 export function buildSeriesFile(args: {
@@ -226,8 +315,18 @@ export function buildSeriesFile(args: {
   localVolumes: VolumeMetadata[];
   existing?: SeriesFile;
   cloudVolumeTitles?: Set<string>;
+  cloudMeasuredVolumes?: SeriesFileVolume[];
+  cloudSidecarStamps?: Map<string, CloudSidecarStamp>;
 }): SeriesFile | undefined {
-  const { seriesTitle, meta, localVolumes, existing, cloudVolumeTitles } = args;
+  const {
+    seriesTitle,
+    meta,
+    localVolumes,
+    existing,
+    cloudVolumeTitles,
+    cloudMeasuredVolumes,
+    cloudSidecarStamps
+  } = args;
 
   const local = meta ? localFacts(meta) : undefined;
   const localStamp = local?.updated_at;
@@ -276,6 +375,28 @@ export function buildSeriesFile(args: {
 
   const byUuid = new Map<string, SeriesFileVolume>();
   for (const entry of existing?.volumes ?? []) byUuid.set(entry.volume_uuid, entry);
+
+  // The sidecar-backfill's own entries: the pulled sidecar IS the cloud's
+  // current content, so it overrides whatever is published for that VOLUME —
+  // not just that uuid. A re-OCR mints a new `volume_uuid` for the same
+  // archive, so the stale published entry (still sitting under the old uuid)
+  // is retired by folded title before the fresh one is set; otherwise the two
+  // would coexist as two rows for one archive. Applied before the installed
+  // loop below, which — being measured on this device — still gets the last
+  // word for any of these same volumes.
+  for (const entry of cloudMeasuredVolumes ?? []) {
+    const titleKey = normalizeVolumeTitleKey(entry.volume_title);
+    for (const [uuid, published] of byUuid) {
+      if (
+        uuid !== entry.volume_uuid &&
+        normalizeVolumeTitleKey(published.volume_title) === titleKey
+      ) {
+        byUuid.delete(uuid);
+      }
+    }
+    byUuid.set(entry.volume_uuid, entry);
+  }
+
   // Non-installed rows FILL a missing entry only: they never override the
   // published copy (which may describe a re-OCR this device has not seen), and
   // they are absent from `localUuids`, so they never exempt an entry from the
@@ -297,6 +418,17 @@ export function buildSeriesFile(args: {
     if (entry.archive_size === undefined && publishedSize !== undefined) {
       entry.archive_size = publishedSize;
     }
+    // An installed row has no local way to know a CLOUD file's stat — the only
+    // source is the listing itself, passed in by the caller that already read
+    // it. Set only when the listing shows that sidecar right now; never
+    // inherited from whatever is already published (unlike `archive_size`
+    // above), so an installed row whose cloud sidecar is stale/missing simply
+    // carries no stamp rather than a stale or borrowed one.
+    const stamps = cloudSidecarStamps?.get(normalizeVolumeTitleKey(volume.volume_title));
+    if (stamps?.mokuro_size !== undefined) entry.mokuro_size = stamps.mokuro_size;
+    if (stamps?.mokuro_modified !== undefined) entry.mokuro_modified = stamps.mokuro_modified;
+    if (stamps?.cover_size !== undefined) entry.cover_size = stamps.cover_size;
+    if (stamps?.cover_modified !== undefined) entry.cover_modified = stamps.cover_modified;
     byUuid.set(volume.volume_uuid, entry);
   }
 
@@ -453,9 +585,21 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
     character_count,
     mokuro_version
   };
+  // Field insertion order here is the WIRE order (`JSON.stringify` walks
+  // key-insertion order): volume_uuid..mokuro_version above, then
+  // spine_width?, archive_size?, mokuro_size?, mokuro_modified?, cover_size?,
+  // cover_modified?, and `offset` LAST — the one INDEX field among the
+  // per-volume facts. The server compiler emits exactly this order and an
+  // entry carried through unchanged from a parsed file must re-serialize
+  // byte-for-byte the same way, so this order is a contract, not a style
+  // choice — see docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2.
   const spine = value.spine_width;
   if (typeof spine === 'number' && Number.isFinite(spine) && spine > 0) entry.spine_width = spine;
   if (isArchiveSize(value.archive_size)) entry.archive_size = value.archive_size;
+  if (isArchiveSize(value.mokuro_size)) entry.mokuro_size = value.mokuro_size;
+  if (isEpochSeconds(value.mokuro_modified)) entry.mokuro_modified = value.mokuro_modified;
+  if (isArchiveSize(value.cover_size)) entry.cover_size = value.cover_size;
+  if (isEpochSeconds(value.cover_modified)) entry.cover_modified = value.cover_modified;
   const offset = sanitizeVolumeOffset(value.offset);
   if (offset) entry.offset = offset;
   return entry;

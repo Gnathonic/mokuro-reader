@@ -28,6 +28,9 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
+const backfillSeriesEntries = vi.hoisted(() => vi.fn(async () => {}));
+const backfillNewlyLinkedSeries = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./series-backfill', () => ({ backfillSeriesEntries, backfillNewlyLinkedSeries }));
 
 /**
  * The provider's file cache, as the listing of paths it holds.
@@ -676,5 +679,89 @@ describe('series-file-sync', () => {
     await updateSeriesMetadata('One Piece', { tag: 'green' });
     await vi.advanceTimersByTimeAsync(2000);
     expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('series-file-sync — the link-event backfill trigger', () => {
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    _resetListingRefreshForTests();
+    _resetWriteSlotsForTests();
+    writeSeriesFile.mockResolvedValue('written');
+    fetchAllCloudVolumes.mockResolvedValue(undefined);
+    cloudPaths.length = 0;
+    providerStatus.set({
+      providers: {},
+      hasAnyAuthenticated: true,
+      needsAttention: false,
+      currentProviderType: 'webdav'
+    });
+    volumeRows.length = 0;
+    metaRows.clear();
+    dispose = initSeriesFileSync();
+  });
+
+  afterEach(() => {
+    dispose?.();
+    dispose = undefined;
+    vi.useRealTimers();
+  });
+
+  it('backfills IMMEDIATELY (not debounced) when a fact edit makes series.json publishable for a series with nothing local', async () => {
+    // A cloud folder exists (the archive is backed up by SOMEONE), but this
+    // device holds no row for it at all — the "linked a series never
+    // downloaded" case `hasPublishableFacts` exists for.
+    backUp('One Piece', 'Volume 1');
+
+    await updateSeriesMetadata('One Piece', { tag: 'color' });
+    await vi.waitFor(() => {
+      expect(backfillNewlyLinkedSeries).toHaveBeenCalledWith('One Piece');
+    });
+    // Immediately — no need to advance the 2s write debounce for the trigger
+    // itself (the scheduled `series.json` WRITE still debounces separately).
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+  });
+
+  it('does NOT backfill when the series already has a locally backed-up volume', async () => {
+    backUp('One Piece', 'Volume 1');
+    addVolume('One Piece', 'Volume 1'); // a real local row matching the cloud title
+
+    await updateSeriesMetadata('One Piece', { tag: 'color' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(backfillNewlyLinkedSeries).not.toHaveBeenCalled();
+  });
+
+  it('does NOT backfill when there is no cloud folder for the series yet', async () => {
+    // No `backUp()` call: the folder does not exist in the cloud listing.
+    await updateSeriesMetadata('One Piece', { tag: 'color' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(backfillNewlyLinkedSeries).not.toHaveBeenCalled();
+  });
+
+  it('does NOT backfill for a per-user edit that carries no facts change', async () => {
+    backUp('One Piece', 'Volume 1');
+    await updateSeriesMetadata('One Piece', { linked_at: '2026-01-01T00:00:00.000Z' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(backfillNewlyLinkedSeries).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-enqueue when the backfill (or any write) later completes — hooked off the facts-change side only', async () => {
+    backUp('One Piece', 'Volume 1');
+
+    await updateSeriesMetadata('One Piece', { tag: 'color' });
+    await vi.waitFor(() => {
+      expect(backfillNewlyLinkedSeries).toHaveBeenCalledTimes(1);
+    });
+
+    // The debounced facts-only write now fires too. `writeSeriesFile`
+    // completing must not be a trigger of its own — only a genuine local fact
+    // edit (`registerFactsChangeListener`) is.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(backfillNewlyLinkedSeries).toHaveBeenCalledTimes(1);
   });
 });

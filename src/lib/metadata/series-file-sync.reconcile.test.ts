@@ -28,6 +28,11 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 const writeSeriesFile = vi.hoisted(() => vi.fn(async () => 'written' as const));
+const backfillSeriesEntries = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./series-backfill', () => ({
+  backfillSeriesEntries,
+  backfillNewlyLinkedSeries: vi.fn(async () => {})
+}));
 const fetchAllCloudVolumes = vi.hoisted(() => vi.fn(async (_options?: unknown) => {}));
 const cloudListing = vi.hoisted(() => ({ files: [] as { path: string }[] }));
 const getAllCloudVolumes = vi.hoisted(() => vi.fn(() => cloudListing.files));
@@ -151,6 +156,29 @@ describe('reconcileMissingMetadataFiles', () => {
     await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
 
     expect(writtenTitles()).toEqual(['One Piece']);
+  });
+
+  it('sweeps a folder that ALREADY has a sidecar for gap-fill (the OTHER half of convergence)', async () => {
+    cloudListing.files = [
+      { path: 'One Piece/Volume 1.cbz' },
+      { path: 'One Piece/series.json' },
+      { path: 'catalog.json' }
+    ];
+
+    await reconcileMissingMetadataFiles();
+
+    expect(backfillSeriesEntries).toHaveBeenCalledWith('One Piece');
+    // Not the "missing sidecar" scheduling path — no debounced write queued
+    // for it, the backfill (mocked here) is the whole story for this folder.
+    expect(writtenTitles()).toEqual([]);
+  });
+
+  it('never sweeps a bare folder that has no sidecar at all', async () => {
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+
+    expect(backfillSeriesEntries).not.toHaveBeenCalled();
   });
 
   it('publishes a facts-only series.json for a linked series with no local rows', async () => {

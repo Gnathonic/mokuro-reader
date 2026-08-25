@@ -23,8 +23,10 @@ import {
   parseSeriesFile,
   seriesFactsStamp,
   type SeriesFile,
+  type SeriesFileVolume,
   stringifySeriesFile
 } from '$lib/metadata/series-file';
+import { buildCloudSidecarStamps } from '$lib/metadata/cloud-sidecar-stamps';
 import {
   CATALOG_FILE_NAME,
   buildCatalogFile,
@@ -1277,7 +1279,16 @@ class UnifiedCloudManager {
    */
   async writeSeriesFile(
     seriesTitle: string,
-    options?: { localSeriesTitle?: string }
+    options?: {
+      localSeriesTitle?: string;
+      /**
+       * Entries `series-backfill.ts` built by pulling sidecars straight from
+       * the cloud folder for THIS write — see `buildSeriesFile`'s own doc for
+       * the rank (above published, below installed). Never populated by any
+       * other caller: every other write publishes local state only.
+       */
+      cloudMeasuredVolumes?: SeriesFileVolume[];
+    }
   ): Promise<'written' | 'skipped' | 'read-only'> {
     const provider = this.getActiveProvider();
     if (!provider) return 'skipped';
@@ -1336,12 +1347,21 @@ class UnifiedCloudManager {
       return 'skipped';
     }
 
+    // Cheap: the folder's listing is already fetched (the `cache?.isLoaded()`
+    // gate above), so this is a local grouping pass, not a network call. Built
+    // on every write, not just a backfill-triggered one — an ordinary install
+    // or fact edit is exactly where an INSTALLED row picks up its own
+    // `mokuro_size`/`cover_size` stamps (see `buildSeriesFile`).
+    const cloudSidecarStamps = buildCloudSidecarStamps(this.getCloudVolumesBySeries(folderTitle));
+
     const file = buildSeriesFile({
       seriesTitle: folderTitle,
       meta,
       localVolumes,
       existing,
-      cloudVolumeTitles: cloudTitles
+      cloudVolumeTitles: cloudTitles,
+      cloudMeasuredVolumes: options?.cloudMeasuredVolumes,
+      cloudSidecarStamps
     });
     if (!file) return 'skipped';
 

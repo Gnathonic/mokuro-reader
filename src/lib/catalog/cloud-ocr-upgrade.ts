@@ -36,7 +36,16 @@ function countCharsInLines(lines: unknown): number {
   return total;
 }
 
-function buildPageCharCounts(pages: unknown[]): { totalChars: number; cumulative: number[] } {
+/**
+ * Exported for `series-backfill.ts`, which needs the same char math to compute
+ * a sidecar-derived `series.json` entry's `character_count` — the one
+ * definition of "how many characters does this mokuro have", shared rather
+ * than re-implemented.
+ */
+export function buildPageCharCounts(pages: unknown[]): {
+  totalChars: number;
+  cumulative: number[];
+} {
   let totalChars = 0;
   const cumulative: number[] = [];
 
@@ -55,7 +64,12 @@ function buildPageCharCounts(pages: unknown[]): { totalChars: number; cumulative
   return { totalChars, cumulative };
 }
 
-async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
+/**
+ * Exported for `series-backfill.ts`, which pulls the same `.mokuro`/`.mokuro.gz`
+ * sidecars straight from a cloud folder listing (rather than a placeholder's
+ * matched sidecar) and needs the identical gunzip-and-rename handling.
+ */
+export async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
   if (sidecarPath.toLowerCase().endsWith('.mokuro')) {
     console.log('[Cloud OCR Upgrade] Decoding plain mokuro sidecar:', sidecarPath, blob.size);
     return new File([blob], sidecarPath.split('/').pop() || sidecarPath, {

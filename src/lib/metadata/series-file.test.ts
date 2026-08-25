@@ -5,6 +5,7 @@ import {
   buildSeriesFile,
   isSeriesFilePath,
   mergeSeriesFileForCache,
+  orderVolumeEntryFields,
   parseSeriesFile,
   stringifySeriesFile,
   volumeToIndexEntry,
@@ -634,6 +635,281 @@ describe('buildSeriesFile and a published archive_size', () => {
   });
 });
 
+describe('buildSeriesFile and cloudMeasuredVolumes (the sidecar backfill)', () => {
+  function published(): SeriesFile {
+    return {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-16T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 5,
+          character_count: 50,
+          mokuro_version: '0.4.0'
+        }
+      ]
+    };
+  }
+
+  it('overrides a stale published entry for the same uuid', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [],
+      existing: published(),
+      cloudMeasuredVolumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 300,
+          character_count: 9000,
+          mokuro_version: '0.4.12'
+        }
+      ]
+    })!;
+    expect(file.volumes).toEqual([
+      {
+        volume_uuid: 'vol-1',
+        volume_title: 'Vol 1',
+        page_count: 300,
+        character_count: 9000,
+        mokuro_version: '0.4.12'
+      }
+    ]);
+  });
+
+  it('retires the stale entry by folded title when a re-OCR minted a new uuid', () => {
+    // A re-upload can change `volume_uuid`. Without a title-based retirement
+    // the archive would show up TWICE: once under the old (stale) uuid and
+    // once under the fresh one.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [],
+      existing: published(),
+      cloudMeasuredVolumes: [
+        {
+          volume_uuid: 'vol-1-reocr',
+          volume_title: 'Vol 1',
+          page_count: 300,
+          character_count: 9000,
+          mokuro_version: '0.4.12'
+        }
+      ]
+    })!;
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0].volume_uuid).toBe('vol-1-reocr');
+  });
+
+  it('fills a genuine gap the published index had no entry for', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [],
+      existing: published(),
+      cloudMeasuredVolumes: [
+        {
+          volume_uuid: 'vol-2',
+          volume_title: 'Vol 2',
+          page_count: 10,
+          character_count: 200,
+          mokuro_version: '0.4.12'
+        }
+      ]
+    })!;
+    expect(file.volumes.map((v) => v.volume_uuid).sort()).toEqual(['vol-1', 'vol-2']);
+  });
+
+  it('still loses to an INSTALLED row for the same volume', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ character_count: 42 })], // installed, measured here
+      existing: published(),
+      cloudMeasuredVolumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 300,
+          character_count: 9000,
+          mokuro_version: '0.4.12'
+        }
+      ]
+    })!;
+    expect(file.volumes).toEqual([
+      {
+        volume_uuid: 'vol-1',
+        volume_title: 'Vol 1',
+        page_count: 2,
+        character_count: 42,
+        mokuro_version: '0.2.1'
+      }
+    ]);
+  });
+});
+
+describe('buildSeriesFile and cloudSidecarStamps (installed rows)', () => {
+  it('stamps an installed entry from the listing snapshot when it has one', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      cloudSidecarStamps: new Map([
+        [
+          'vol 1',
+          {
+            mokuro_size: 4096,
+            mokuro_modified: 1_700_000_000,
+            cover_size: 512,
+            cover_modified: 1_700_000_100
+          }
+        ]
+      ])
+    })!;
+    expect(file.volumes[0]).toMatchObject({
+      mokuro_size: 4096,
+      mokuro_modified: 1_700_000_000,
+      cover_size: 512,
+      cover_modified: 1_700_000_100
+    });
+  });
+
+  it('leaves the stamps absent when the listing has nothing for that title', () => {
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      cloudSidecarStamps: new Map()
+    })!;
+    expect(file.volumes[0].mokuro_size).toBeUndefined();
+    expect(file.volumes[0].mokuro_modified).toBeUndefined();
+  });
+
+  it('never inherits a stamp from the published copy the way archive_size does', () => {
+    const existing: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'vol-1',
+          volume_title: 'Vol 1',
+          page_count: 2,
+          character_count: 123,
+          mokuro_version: '0.2.1',
+          mokuro_size: 999,
+          mokuro_modified: 1
+        }
+      ]
+    };
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      existing
+      // No cloudSidecarStamps passed — nothing to stamp with.
+    })!;
+    expect(file.volumes[0].mokuro_size).toBeUndefined();
+    expect(file.volumes[0].mokuro_modified).toBeUndefined();
+  });
+});
+
+describe('the volume-entry wire order (bunko parity contract)', () => {
+  // docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2 pins the
+  // exact key order the server compiler emits: volume_uuid, volume_title,
+  // page_count, character_count, mokuro_version, spine_width?, archive_size?,
+  // mokuro_size?, mokuro_modified?, cover_size?, cover_modified?, offset?. The
+  // reader's writer must match byte-for-byte since `stringifySeriesFile` is a
+  // plain `JSON.stringify` (key-insertion order).
+  it('serializes an entry carrying every optional field in the pinned order', () => {
+    const entry = orderVolumeEntryFields({
+      // Deliberately scrambled insertion order going IN, to prove the
+      // assembler — not incidental call-site ordering — is what pins the
+      // output.
+      offset: 25,
+      cover_modified: 1_700_000_400,
+      cover_size: 512,
+      mokuro_modified: 1_700_000_100,
+      mokuro_size: 4096,
+      archive_size: 193_000_000,
+      spine_width: 17,
+      mokuro_version: '0.4.12',
+      character_count: 9000,
+      page_count: 300,
+      volume_title: 'Vol 1',
+      volume_uuid: 'vol-1'
+    });
+
+    const file: SeriesFile = {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-24T00:00:00.000Z',
+      volumes: [entry]
+    };
+
+    expect(stringifySeriesFile(file)).toBe(
+      '{"version":2,"series_title":"One Piece","external_ids":{},"titles":{},"synonyms":[],' +
+        '"updated_at":"2026-08-24T00:00:00.000Z","volumes":[{"volume_uuid":"vol-1",' +
+        '"volume_title":"Vol 1","page_count":300,"character_count":9000,' +
+        '"mokuro_version":"0.4.12","spine_width":17,"archive_size":193000000,' +
+        '"mokuro_size":4096,"mokuro_modified":1700000100,"cover_size":512,' +
+        '"cover_modified":1700000400,"offset":25}]}'
+    );
+  });
+
+  it('keeps the pinned order for an entry a real file parses into', () => {
+    const parsed = parseSeriesFile({
+      version: 2,
+      series_title: 'S',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-24T00:00:00.000Z',
+      volumes: [
+        {
+          volume_uuid: 'v1',
+          volume_title: 'V1',
+          page_count: 1,
+          character_count: 1,
+          mokuro_version: '0.4.0',
+          spine_width: 10,
+          archive_size: 100,
+          mokuro_size: 200,
+          mokuro_modified: 300,
+          cover_size: 400,
+          cover_modified: 500,
+          offset: 5
+        }
+      ]
+    })!;
+    expect(Object.keys(parsed.volumes[0])).toEqual([
+      'volume_uuid',
+      'volume_title',
+      'page_count',
+      'character_count',
+      'mokuro_version',
+      'spine_width',
+      'archive_size',
+      'mokuro_size',
+      'mokuro_modified',
+      'cover_size',
+      'cover_modified',
+      'offset'
+    ]);
+  });
+});
+
 describe('parseSeriesFile', () => {
   const valid = {
     version: 2,
@@ -760,6 +1036,46 @@ describe('parseSeriesFile', () => {
       volumes: [{ ...valid.volumes[0], archive_size: 1 }]
     })!;
     expect(kept.volumes[0].archive_size).toBe(1);
+  });
+
+  it('round-trips the sidecar freshness stamps (mokuro_size/modified, cover_size/modified)', () => {
+    const stamped = {
+      ...valid.volumes[0],
+      mokuro_size: 4096,
+      mokuro_modified: 1_700_000_000,
+      cover_size: 512,
+      cover_modified: 1_700_000_100
+    };
+    const parsed = parseSeriesFile({ ...valid, volumes: [stamped] })!;
+    expect(parsed.volumes[0]).toEqual(stamped);
+  });
+
+  it('drops junk or absent stamps instead of inventing a value', () => {
+    for (const bad of [-1, 1.5, Infinity, 'now', null]) {
+      const parsed = parseSeriesFile({
+        ...valid,
+        volumes: [
+          {
+            ...valid.volumes[0],
+            mokuro_size: bad,
+            mokuro_modified: bad,
+            cover_size: bad,
+            cover_modified: bad
+          }
+        ]
+      })!;
+      expect('mokuro_size' in parsed.volumes[0]).toBe(false);
+      expect('mokuro_modified' in parsed.volumes[0]).toBe(false);
+      expect('cover_size' in parsed.volumes[0]).toBe(false);
+      expect('cover_modified' in parsed.volumes[0]).toBe(false);
+    }
+    // 0 is a valid epoch-seconds stamp (the unix epoch) even though it is not
+    // a valid SIZE — the two guards are deliberately different.
+    const zeroModified = parseSeriesFile({
+      ...valid,
+      volumes: [{ ...valid.volumes[0], mokuro_modified: 0 }]
+    })!;
+    expect(zeroModified.volumes[0].mokuro_modified).toBe(0);
   });
 
   it('ignores a legacy page_char_counts array instead of carrying it into the cache', () => {

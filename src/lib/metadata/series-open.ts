@@ -1,6 +1,7 @@
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
+import { backfillSeriesEntries } from './series-backfill';
 import { normalizeSeriesKey } from './series-key';
 
 /**
@@ -52,6 +53,12 @@ export function openSeries(seriesTitle: string): Promise<void> {
     try {
       const file = await unifiedCloudManager.refreshSeriesIndexForSeries(seriesTitle);
       if (!file) return;
+
+      // Fire-and-forget: a facts-only or partial series.json converges toward
+      // having every archive's entry, but pulling sidecars must not hold up
+      // materialization or the caller waiting on it. Best-effort by contract —
+      // never rejects, never surfaces UI.
+      void backfillSeriesEntries(seriesTitle);
 
       await materializeSeriesVolumes({
         seriesTitle,
