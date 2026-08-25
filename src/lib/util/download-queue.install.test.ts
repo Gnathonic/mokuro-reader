@@ -6,21 +6,29 @@ import type { VolumeMetadata } from '$lib/types';
  * here. Everything around it — the worker pool, the providers, the queue — is
  * plumbing and is stubbed.
  */
-const { volumesGet, volumesUpdate, saveVolume, processVolume, deleteVolumeCompletely } = vi.hoisted(
-  () => ({
-    volumesGet: vi.fn(async () => undefined as VolumeMetadata | undefined),
-    volumesUpdate: vi.fn(async () => 1),
-    saveVolume: vi.fn(async () => {}),
-    processVolume: vi.fn(),
-    deleteVolumeCompletely: vi.fn(async () => {})
-  })
-);
+const {
+  volumesGet,
+  volumesUpdate,
+  saveVolume,
+  processVolume,
+  deleteVolumeCompletely,
+  ocrGet,
+  filesGet
+} = vi.hoisted(() => ({
+  volumesGet: vi.fn(async () => undefined as VolumeMetadata | undefined),
+  volumesUpdate: vi.fn(async () => 1),
+  saveVolume: vi.fn(async () => {}),
+  processVolume: vi.fn(),
+  deleteVolumeCompletely: vi.fn(async () => {}),
+  ocrGet: vi.fn(async () => undefined as unknown),
+  filesGet: vi.fn(async () => undefined as unknown)
+}));
 
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: { get: volumesGet, update: volumesUpdate },
-    volume_ocr: { get: vi.fn(async () => undefined) },
-    volume_files: { get: vi.fn(async () => undefined) }
+    volume_ocr: { get: ocrGet },
+    volume_files: { get: filesGet }
   }
 }));
 vi.mock('./progress-tracker', () => ({
@@ -53,6 +61,8 @@ vi.mock('$lib/import', () => ({
 vi.mock('$lib/catalog/stranded-rows', () => ({
   dropStrandedMetadataOnlyRow: vi.fn(async () => {})
 }));
+const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
+vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
 
 import { processVolumeData } from './download-queue';
 
@@ -98,6 +108,7 @@ afterEach(async () => {
   vi.mocked(volumesGet).mockResolvedValue(undefined);
   vi.mocked(saveVolume).mockClear();
   vi.mocked(deleteVolumeCompletely).mockClear();
+  scheduleSeriesFileWrite.mockClear();
   // The OCR/file rows are what `shouldReplaceDownloadedVolume` reads: a test that seeds
   // them must not decide the next test's install path.
   const { db } = await import('$lib/catalog/db');
@@ -141,6 +152,36 @@ describe('installing a downloaded volume', () => {
 
     expect(saveVolume).not.toHaveBeenCalled();
     expect(volumesUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('backfilling the series index after a download', () => {
+  // The opportunistic half of the facts-only series.json: the file was
+  // created when the user linked a series they had nothing of, and each
+  // download is what fills its volume entries in. The reconcile pass cannot
+  // do it (it only schedules folders MISSING a sidecar), so the install is
+  // the only trigger there is.
+  it('schedules a series.json write for the installed series', async () => {
+    processVolume.mockResolvedValue(processed());
+
+    await processVolumeData([], placeholder(), 123);
+
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('schedules nothing when the download left the existing volume in place', async () => {
+    // Fully installed OCR volume already on the device: the download declines
+    // to replace it, so nothing about the series index changed either.
+    processVolume.mockResolvedValue(processed());
+    volumesGet.mockResolvedValueOnce(
+      placeholder({ isPlaceholder: false, mokuro_version: '0.4.11' }) as VolumeMetadata
+    );
+    ocrGet.mockResolvedValueOnce({ volume_uuid: 'uuid-1', pages: [] });
+    filesGet.mockResolvedValueOnce({ volume_uuid: 'uuid-1', files: {} });
+
+    await processVolumeData([], placeholder(), 123);
+
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 });
 

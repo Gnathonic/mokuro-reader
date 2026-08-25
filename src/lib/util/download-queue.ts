@@ -32,6 +32,7 @@ import {
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
@@ -449,6 +450,17 @@ export async function processVolumeData(
     // put those bytes on it, so it has no business restamping its size.
     // `saveVolume` writes the row with a `put`, so this has to come after it.
     await recordArchiveSize(processedVolume.metadata.volumeUuid, archiveBytes);
+
+    // The opportunistic half of a facts-only series.json: the file may have
+    // been created when the user linked a series they had nothing of, and an
+    // install is what fills its volume entries in. The reconcile pass cannot
+    // do it — it only schedules folders MISSING a sidecar — so this is the
+    // only trigger. Debounced per series, so a burst of downloads costs one
+    // write; the gates re-check at fire time (writable provider, listing),
+    // and a server that compiles the file itself just intercepts the PUT.
+    // Inside the replace branch on purpose: a download that left the existing
+    // volume alone changed nothing the index describes.
+    scheduleSeriesFileWrite(processedVolume.metadata.series);
   }
 
   // Update cloud file description if folder name doesn't match series title
