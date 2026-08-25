@@ -93,25 +93,62 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnail>) => fetchCloudThumbnail(...a)
 }));
 
-const { volumeRows } = vi.hoisted(() => ({ volumeRows: [] as Record<string, unknown>[] }));
+// `toArray` is its own `vi.fn()` (not an inline arrow) so a concurrency test
+// can override it with a deferred/instrumented implementation per call,
+// and so "was it called at all" is directly assertable — the mechanism
+// leg (b) of the write-slot fix exists to prove (a converged series must
+// never reach this scan).
+const { volumeRows, volumesToArray } = vi.hoisted(() => ({
+  volumeRows: [] as Record<string, unknown>[],
+  volumesToArray: vi.fn(async () => [] as Record<string, unknown>[])
+}));
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
-      toArray: async () => [...volumeRows],
+      toArray: (...a: Parameters<typeof volumesToArray>) => volumesToArray(...a),
       get: async (uuid: string) => volumeRows.find((v) => v.volume_uuid === uuid),
       update: async (uuid: string, patch: Record<string, unknown>) => {
         const row = volumeRows.find((v) => v.volume_uuid === uuid);
         if (row) Object.assign(row, patch);
       }
-    }
+    },
+    // Real Dexie serializes overlapping `rw` transactions; this fire-through
+    // stand-in is sufficient here because every test drives the race by hand
+    // (mutating `volumeRows` directly between a deferred fetch and its
+    // release), not by relying on real lock ordering.
+    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
 }));
+
+// A PARTIAL mock: the real semaphore logic keeps running (so the tests below
+// exercise the actual cap, not a stub), but wrapped in `vi.fn()` so calls can
+// be counted/ordered — proof leg (c) of the write-slot fix needs (publishes
+// actually acquire this pool, not just "a write happens").
+const { acquireWriteSlotSpy, releaseWriteSlotSpy } = vi.hoisted(() => ({
+  acquireWriteSlotSpy: vi.fn(),
+  releaseWriteSlotSpy: vi.fn()
+}));
+vi.mock('./write-slot', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./write-slot')>();
+  return {
+    ...actual,
+    acquireWriteSlot: (...a: Parameters<typeof actual.acquireWriteSlot>) => {
+      acquireWriteSlotSpy(...a);
+      return actual.acquireWriteSlot(...a);
+    },
+    releaseWriteSlot: (...a: Parameters<typeof actual.releaseWriteSlot>) => {
+      releaseWriteSlotSpy(...a);
+      return actual.releaseWriteSlot(...a);
+    }
+  };
+});
 
 import {
   _resetSeriesBackfillForTests,
   backfillNewlyLinkedSeries,
   backfillSeriesEntries
 } from './series-backfill';
+import { _resetWriteSlotForTests } from './write-slot';
 
 function cloudFile(
   path: string,
@@ -164,6 +201,7 @@ function plainMokuro(overrides: Record<string, unknown> = {}): Blob {
 beforeEach(() => {
   vi.clearAllMocks();
   _resetSeriesBackfillForTests();
+  _resetWriteSlotForTests();
   status = {
     hasAnyAuthenticated: true,
     currentProviderType: 'webdav',
@@ -176,6 +214,9 @@ beforeEach(() => {
   writeSeriesFile.mockResolvedValue('written');
   materializeSeriesVolumes.mockResolvedValue(0);
   installCoversForSeries.mockResolvedValue(0);
+  // `clearAllMocks` drops implementations too — re-pin the default so a
+  // `mockImplementationOnce` in one test cannot leak into the next.
+  volumesToArray.mockImplementation(async () => [...volumeRows]);
 });
 
 afterEach(() => {
@@ -201,6 +242,36 @@ describe('gap detection', () => {
 
     expect(downloadFile).not.toHaveBeenCalled();
     expect(writeSeriesFile).not.toHaveBeenCalled();
+    // Write-slot fix leg (b): the gap-or-stale check must run against the
+    // listing + cached index ALONE — a converged series must never reach the
+    // `db.volumes` scan, let alone the backfill-pass slot.
+    expect(volumesToArray).not.toHaveBeenCalled();
+  });
+
+  it('N converged series cost ZERO volumes-table scans and ZERO writes', async () => {
+    // Same shape `reconcileMissingMetadataFiles` sweeps: many sidecar-bearing
+    // folders, every one of them already fully converged.
+    const titles = ['One Piece', 'Berserk', 'Naruto', 'Bleach', 'Dr Stone'];
+    getCloudVolumesBySeries.mockImplementation((title: string) => [
+      cloudFile(`${title}/Volume 01.cbz`, 100)
+    ]);
+    refreshSeriesIndexForSeries.mockImplementation(async (title: string) =>
+      seriesFile([
+        {
+          volume_uuid: `${title}-v1`,
+          volume_title: 'Volume 01',
+          page_count: 2,
+          character_count: 5,
+          mokuro_version: '0.4.0'
+        }
+      ])
+    );
+
+    await Promise.all(titles.map((title) => backfillSeriesEntries(title)));
+
+    expect(volumesToArray).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
   });
 
   it('matches an archive to its entry on a FOLDED volume title', async () => {
@@ -378,6 +449,116 @@ describe('re-entrancy', () => {
     resolveIndex(seriesFile([]));
     await Promise.all([first, second]);
     expect(getCloudVolumesBySeries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the write-slot fix: cross-series concurrency caps', () => {
+  /** A different series per index, each with its own genuine gap (no published entry at all). */
+  function setUpStaleSeries(count: number): string[] {
+    const titles = Array.from({ length: count }, (_, i) => `Series ${i}`);
+    getCloudVolumesBySeries.mockImplementation((title: string) => [
+      // No sidecar in the listing either — the image-only path, so the ONLY
+      // async work gated behind the backfill-pass slot is the volumes scan
+      // and the write, which is exactly what this test needs to control.
+      cloudFile(`${title}/Volume 01.cbz`, 100)
+    ]);
+    refreshSeriesIndexForSeries.mockImplementation(async () => seriesFile([]));
+    return titles;
+  }
+
+  it('never runs more than BACKFILL_PASS_CONCURRENCY (2) volumes-table scans at once', async () => {
+    const titles = setUpStaleSeries(5);
+
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    volumesToArray.mockImplementation(
+      () =>
+        new Promise<Record<string, unknown>[]>((resolve) => {
+          active += 1;
+          peak = Math.max(peak, active);
+          releases.push(() => {
+            active -= 1;
+            resolve([]);
+          });
+        })
+    );
+
+    const passes = titles.map((title) => backfillSeriesEntries(title));
+
+    // Let every pass reach (and block on) the scan it can reach.
+    await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+    // Only 2 of the 5 could possibly have gotten a slot yet.
+    expect(active).toBeLessThanOrEqual(2);
+
+    // Drain the queue: release whichever scans are currently blocked, which
+    // frees their pass-slot for the next waiting series — but each release
+    // still has to fall all the way through the REST of that pass (write,
+    // materialize, install-covers, `finally { releaseBackfillSlot() }`)
+    // before a waiting series can acquire the freed slot and call `toArray`
+    // itself. That is many microtask hops deep, so this polls across real
+    // macrotask boundaries (`setTimeout`) rather than a fixed number of
+    // `Promise.resolve()` ticks, which underran it and hung the test.
+    let settled = false;
+    void Promise.all(passes).then(() => {
+      settled = true;
+    });
+    while (!settled) {
+      while (releases.length > 0) releases.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await Promise.all(passes);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(peak).toBe(2); // 5 concurrent stale series DID contend for the cap
+    expect(volumesToArray).toHaveBeenCalledTimes(5);
+  });
+
+  it('a publish acquires the SAME shared write-slot pool the debounced writer uses', async () => {
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 100),
+      cloudFile('One Piece/Volume 01.mokuro', 50)
+    ]);
+    refreshSeriesIndexForSeries.mockResolvedValueOnce(seriesFile([])).mockResolvedValueOnce(
+      seriesFile([
+        {
+          volume_uuid: 'vol-uuid-from-mokuro',
+          volume_title: 'Volume 01',
+          page_count: 2,
+          character_count: 5,
+          mokuro_version: '0.4.12'
+        }
+      ])
+    );
+    downloadFile.mockResolvedValue(plainMokuro());
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(acquireWriteSlotSpy).toHaveBeenCalledTimes(1);
+    expect(releaseWriteSlotSpy).toHaveBeenCalledTimes(1);
+    // Acquired before the PUT, released after — not merely called at some
+    // point during the pass.
+    const acquireOrder = acquireWriteSlotSpy.mock.invocationCallOrder[0];
+    const writeOrder = writeSeriesFile.mock.invocationCallOrder[0];
+    const releaseOrder = releaseWriteSlotSpy.mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(writeOrder);
+    expect(releaseOrder).toBeGreaterThan(writeOrder);
+  });
+
+  it('releases the write slot even when the publish throws', async () => {
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 100),
+      cloudFile('One Piece/Volume 01.mokuro', 50)
+    ]);
+    refreshSeriesIndexForSeries.mockResolvedValue(seriesFile([]));
+    downloadFile.mockResolvedValue(plainMokuro());
+    writeSeriesFile.mockRejectedValueOnce(new Error('offline'));
+
+    await backfillSeriesEntries('One Piece'); // never throws out to the caller
+
+    expect(acquireWriteSlotSpy).toHaveBeenCalledTimes(1);
+    expect(releaseWriteSlotSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -621,6 +802,48 @@ describe('cover freshness stamps', () => {
     await backfillSeriesEntries('One Piece');
 
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clobber a thumbnail measured locally when the row installs while the cover fetch is in flight', async () => {
+    // Mirrors `cover-install.test.ts`'s own race test: a download can finish
+    // during `fetchCloudThumbnail`'s up-to-15s fetch, installing the volume
+    // with a REAL thumbnail measured from its own pages. The pre-fetch
+    // `needsDownload` snapshot is stale by the time the network answers, so
+    // the write must re-check inside a transaction and skip.
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 100),
+      cloudFile('One Piece/Volume 01.mokuro', 321, '2026-06-01T00:00:00.000Z'),
+      cloudFile('One Piece/Volume 01.webp', 900, '2026-07-01T00:00:00.000Z')
+    ]);
+    refreshSeriesIndexForSeries
+      .mockResolvedValueOnce(withCoverEntry({ cover_size: 100, cover_modified: 1 }))
+      .mockResolvedValueOnce(withCoverEntry());
+
+    let releaseFetch!: (result: { file: File; width: number; height: number }) => void;
+    fetchCloudThumbnail.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseFetch = resolve;
+      })
+    );
+
+    const pass = backfillSeriesEntries('One Piece');
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalled());
+
+    // The volume installs mid-fetch: a real download measured a real cover.
+    const row = volumeRows.find((v) => v.volume_uuid === 'v1')!;
+    Object.assign(row, {
+      metadata_only: undefined,
+      thumbnail: 'REAL-PAGE-THUMBNAIL',
+      thumbnail_width: 999,
+      thumbnail_height: 999
+    });
+
+    releaseFetch({ file: new File([''], 'v1.webp'), width: 10, height: 10 });
+    await pass;
+
+    const fresh = volumeRows.find((v) => v.volume_uuid === 'v1')!;
+    expect(fresh.thumbnail).toBe('REAL-PAGE-THUMBNAIL');
+    expect(fresh.thumbnail_width).toBe(999);
   });
 });
 

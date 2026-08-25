@@ -20,6 +20,7 @@ import {
 } from './cloud-sidecar-stamps';
 import { isArchiveSize, orderVolumeEntryFields, type SeriesFileVolume } from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
+import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
 
 /**
  * Converges a `series.json` that has facts (or a partial index) but is
@@ -46,10 +47,54 @@ import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
  * Both are re-entrancy-safe per series (`normalizeSeriesKey`) and never throw
  * — failures are logged at debug and swallowed, same contract as every other
  * background metadata pass in this app.
+ *
+ * Two SEPARATE concurrency budgets keep a reconcile pass over a large
+ * half-converged library from becoming the exact "200 concurrent scans + 200
+ * concurrent PUTs" stampede `series-file-sync.ts`'s own `WRITE_CONCURRENCY`
+ * was written to prevent (see `write-slot.ts`):
+ *
+ * - {@link acquireBackfillSlot} bounds how many series' worth of EXPENSIVE
+ *   work (the `db.volumes.toArray()` scan, the sidecar pulls, the write) run
+ *   at once — module-local to this file, since it is specifically the
+ *   backfill's own fan-out that needs bounding. A CONVERGED series never
+ *   touches this budget at all: the cheap listing-only candidate check runs
+ *   first and returns immediately when there is nothing to do, so a sweep
+ *   over N already-converged folders costs N cache reads, not N queued slots.
+ * - The final publish additionally acquires `write-slot.ts`'s shared
+ *   `acquireWriteSlot`, the SAME pool the debounced fact-edit writer uses —
+ *   so a burst of backfill-triggered writes and a burst of ordinary
+ *   debounced writes share one PUT budget instead of two independent ones.
  */
 
 /** Sidecar pulls in flight at once, per series. Small on purpose — see `cloud-ocr-upgrade.ts`. */
 const PULL_CONCURRENCY = 2;
+
+/**
+ * How many series' worth of expensive backfill work (volumes scan, pulls,
+ * write) may run at once, across every series. Mirrors `WRITE_CONCURRENCY` —
+ * see the module doc above for why this is a SEPARATE pool from it.
+ */
+const BACKFILL_PASS_CONCURRENCY = 2;
+let activeBackfillPasses = 0;
+const waitingBackfillPasses: Array<() => void> = [];
+
+function acquireBackfillSlot(): Promise<void> {
+  if (activeBackfillPasses < BACKFILL_PASS_CONCURRENCY) {
+    activeBackfillPasses += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    waitingBackfillPasses.push(() => {
+      activeBackfillPasses += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseBackfillSlot(): void {
+  activeBackfillPasses -= 1;
+  waitingBackfillPasses.shift()?.();
+}
 
 /** series_key → the pass currently running for it. */
 const inFlight = new Map<string, Promise<void>>();
@@ -199,28 +244,23 @@ async function buildEntryForTask(
 
 /**
  * Decide, per cloud archive, whether it needs a (re)built entry — the
- * gap-OR-stale rule. Never touches the network; pure over one listing
- * snapshot plus the existing published index and the local installed set.
- *
- * An archive whose folded title matches a LOCALLY INSTALLED volume of this
- * series is skipped outright, pull included: an installed row always wins the
- * final rank (see `buildSeriesFile`), so pulling its sidecar here would only
- * be wasted bandwidth — the entry `writeSeriesFile` publishes for it comes
- * from the install itself.
+ * gap-OR-stale rule. Pure over one listing snapshot plus the existing
+ * published index; touches NEITHER the network NOR `db.volumes` (the local
+ * installed-volume exclusion is a SEPARATE, later filter — see
+ * `excludeInstalledCandidates` — specifically so a fully-converged series
+ * never pays for a table scan just to learn it has nothing to do).
  */
-function planBackfillTasks(
-  folderTitle: string,
+function planCandidateArchives(
   archives: CloudFileMetadata[],
   existingByTitle: Map<string, SeriesFileVolume>,
-  installedTitleKeys: Set<string>,
   sidecarGroups: Map<string, SeriesSidecarFiles>
 ): BackfillTask[] {
-  const tasks: BackfillTask[] = [];
+  const candidates: BackfillTask[] = [];
 
   for (const archiveFile of archives) {
     const archiveStem = archiveStemOf(archiveFile.path);
     const titleKey = normalizeVolumeTitleKey(archiveStem);
-    if (!titleKey || installedTitleKeys.has(titleKey)) continue;
+    if (!titleKey) continue;
 
     const sidecars = sidecarGroups.get(titleKey);
     const existingEntry = existingByTitle.get(titleKey);
@@ -241,7 +281,7 @@ function planBackfillTasks(
       );
 
     if (!needsMokuroPull && !needsCoverRefetch) continue;
-    tasks.push({
+    candidates.push({
       archiveStem,
       titleKey,
       archiveFile,
@@ -252,10 +292,38 @@ function planBackfillTasks(
     });
   }
 
-  return tasks;
+  return candidates;
 }
 
-/** Overwrite a materialized/metadata-only row's cover from a stale cover sidecar. Never touches an installed row — its thumbnail was measured from its own pages, not a cloud guess. */
+/**
+ * The local half of the exclusion: an archive whose folded title matches a
+ * LOCALLY INSTALLED volume of this series is dropped, pull included — an
+ * installed row always wins the final rank (see `buildSeriesFile`), so
+ * pulling its sidecar here would only be wasted bandwidth. Requires a
+ * `db.volumes` scan, so it is applied AFTER `planCandidateArchives` finds at
+ * least one real candidate, never before — that ordering is what keeps a
+ * converged sweep from touching the volumes table at all.
+ */
+function excludeInstalledCandidates(
+  candidates: BackfillTask[],
+  installedTitleKeys: Set<string>
+): BackfillTask[] {
+  return candidates.filter((task) => !installedTitleKeys.has(task.titleKey));
+}
+
+/**
+ * Overwrite a materialized/metadata-only row's cover from a stale cover
+ * sidecar. Never touches an installed row — its thumbnail was measured from
+ * its own pages, not a cloud guess.
+ *
+ * `fetchCloudThumbnail` is a network fetch that can take up to 15s
+ * (`FETCH_TIMEOUT_MS`), during which a download can finish and INSTALL the
+ * volume with a thumbnail measured from its own pages. The snapshot read
+ * above is that old by the time the network answers, so — same pattern
+ * `runCoverInstall` documents in `cover-install.ts` — the row is re-read and
+ * re-tested INSIDE the transaction that performs the write, and the write is
+ * skipped if it no longer needs one.
+ */
 async function refreshStaleCover(
   providerType: SyncProvider['type'],
   volumeUuid: string,
@@ -272,10 +340,14 @@ async function refreshStaleCover(
   });
   if (!result) return;
 
-  await db.volumes.update(volumeUuid, {
-    thumbnail: result.file,
-    thumbnail_width: result.width,
-    thumbnail_height: result.height
+  await db.transaction('rw', db.volumes, async () => {
+    const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
+    if (!fresh || !needsDownload(fresh)) return;
+    await db.volumes.update(volumeUuid, {
+      thumbnail: result.file,
+      thumbnail_width: result.width,
+      thumbnail_height: result.height
+    });
   });
 }
 
@@ -285,6 +357,7 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return;
 
+  // ---- CHEAP phase: listing + cached index only, no `db.volumes` scan. ----
   const folderTitle = unifiedCloudManager.resolveCloudFolderTitle(seriesTitle);
   const folderFiles = unifiedCloudManager.getCloudVolumesBySeries(folderTitle);
   const archives = folderFiles.filter((file) => isCbzFile(basename(file.path)));
@@ -298,86 +371,101 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
     existingByTitle.set(normalizeVolumeTitleKey(entry.volume_title), entry);
   }
 
-  const localKey = normalizeVolumeTitleKey(folderTitle);
-  const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
-  const installedTitleKeys = new Set(
-    allVolumes
-      .filter((v) => normalizeVolumeTitleKey(v.series_title) === localKey && isVolumeInstalled(v))
-      .map((v) => normalizeVolumeTitleKey(v.volume_title))
-  );
-
   const sidecarGroups = groupSeriesSidecarFiles(folderFiles);
-  const tasks = planBackfillTasks(
-    folderTitle,
-    archives,
-    existingByTitle,
-    installedTitleKeys,
-    sidecarGroups
-  );
-  // Zero gaps and nothing stale: not even a listing beyond the one already in
-  // hand was needed, and certainly no download.
-  if (tasks.length === 0) return;
+  const candidates = planCandidateArchives(archives, existingByTitle, sidecarGroups);
+  // Zero gaps and nothing stale: not even a `db.volumes` scan was needed,
+  // let alone the backfill-pass slot, a download, or a write. This is what
+  // keeps a reconcile sweep over a library that is mostly already converged
+  // from costing anything beyond the listing it already had in hand.
+  if (candidates.length === 0) return;
 
-  const builtEntries: SeriesFileVolume[] = [];
-  const coverRefreshes: Array<{ volumeUuid: string; cover: CloudFileMetadata }> = [];
+  // ---- EXPENSIVE phase: table scan, pulls, write — capped at
+  // BACKFILL_PASS_CONCURRENCY across every series in flight. ----
+  await acquireBackfillSlot();
+  try {
+    const localKey = normalizeVolumeTitleKey(folderTitle);
+    const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
+    const installedTitleKeys = new Set(
+      allVolumes
+        .filter((v) => normalizeVolumeTitleKey(v.series_title) === localKey && isVolumeInstalled(v))
+        .map((v) => normalizeVolumeTitleKey(v.volume_title))
+    );
 
-  let next = 0;
-  const worker = async () => {
-    while (next < tasks.length) {
-      const task = tasks[next++];
-      try {
-        const entry = await buildEntryForTask(folderTitle, task, provider);
-        if (!entry) continue;
-        builtEntries.push(entry);
-        if (task.needsCoverRefetch && task.sidecars?.cover) {
-          coverRefreshes.push({ volumeUuid: entry.volume_uuid, cover: task.sidecars.cover });
+    const tasks = excludeInstalledCandidates(candidates, installedTitleKeys);
+    if (tasks.length === 0) return;
+
+    const builtEntries: SeriesFileVolume[] = [];
+    const coverRefreshes: Array<{ volumeUuid: string; cover: CloudFileMetadata }> = [];
+
+    let next = 0;
+    const worker = async () => {
+      while (next < tasks.length) {
+        const task = tasks[next++];
+        try {
+          const entry = await buildEntryForTask(folderTitle, task, provider);
+          if (!entry) continue;
+          builtEntries.push(entry);
+          if (task.needsCoverRefetch && task.sidecars?.cover) {
+            coverRefreshes.push({ volumeUuid: entry.volume_uuid, cover: task.sidecars.cover });
+          }
+        } catch (error) {
+          // A malformed/unreadable sidecar costs this ONE volume, never the
+          // series or the rest of the queue.
+          console.debug(
+            `[series-backfill] skipping '${task.archiveStem}' in '${folderTitle}':`,
+            error
+          );
         }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PULL_CONCURRENCY, tasks.length) }, () => worker())
+    );
+
+    if (builtEntries.length === 0) return;
+
+    let result: 'written' | 'skipped' | 'read-only';
+    // The SAME shared pool the debounced fact-edit writer uses (`write-slot.ts`),
+    // so a burst of backfill publishes and a burst of ordinary debounced
+    // writes share one PUT budget rather than two independent ones.
+    await acquireWriteSlot();
+    try {
+      result = await unifiedCloudManager.writeSeriesFile(folderTitle, {
+        cloudMeasuredVolumes: builtEntries
+      });
+    } finally {
+      releaseWriteSlot();
+    }
+    if (result !== 'written') return;
+
+    // Flesh the series out locally with the same pipeline `openSeries` uses:
+    // materialize the completed entries into metadata-only rows (real uuids,
+    // from the entries just built) and install their covers from the cloud
+    // sidecars. Cheap when there is nothing to do — both are no-ops for rows
+    // that already have what they need.
+    const fresh = await unifiedCloudManager.refreshSeriesIndexForSeries(folderTitle);
+    if (fresh) {
+      const cloudVolumeTitles = unifiedCloudManager.cloudVolumeTitlesFor(folderTitle);
+      await materializeSeriesVolumes({
+        seriesTitle: folderTitle,
+        entries: fresh.volumes,
+        cloudVolumeTitles
+      });
+    }
+    await installCoversForSeries(folderTitle);
+
+    // `installCoversForSeries` only fills a BLANK cover; a row that already
+    // had one (materialized by an earlier pass) needs an explicit refetch to
+    // pick up a changed cover sidecar.
+    for (const { volumeUuid, cover } of coverRefreshes) {
+      try {
+        await refreshStaleCover(provider.type, volumeUuid, cover);
       } catch (error) {
-        // A malformed/unreadable sidecar costs this ONE volume, never the
-        // series or the rest of the queue.
-        console.debug(
-          `[series-backfill] skipping '${task.archiveStem}' in '${folderTitle}':`,
-          error
-        );
+        console.debug(`[series-backfill] could not refresh cover for '${volumeUuid}':`, error);
       }
     }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(PULL_CONCURRENCY, tasks.length) }, () => worker())
-  );
-
-  if (builtEntries.length === 0) return;
-
-  const result = await unifiedCloudManager.writeSeriesFile(folderTitle, {
-    cloudMeasuredVolumes: builtEntries
-  });
-  if (result !== 'written') return;
-
-  // Flesh the series out locally with the same pipeline `openSeries` uses:
-  // materialize the completed entries into metadata-only rows (real uuids,
-  // from the entries just built) and install their covers from the cloud
-  // sidecars. Cheap when there is nothing to do — both are no-ops for rows
-  // that already have what they need.
-  const fresh = await unifiedCloudManager.refreshSeriesIndexForSeries(folderTitle);
-  if (fresh) {
-    const cloudVolumeTitles = unifiedCloudManager.cloudVolumeTitlesFor(folderTitle);
-    await materializeSeriesVolumes({
-      seriesTitle: folderTitle,
-      entries: fresh.volumes,
-      cloudVolumeTitles
-    });
-  }
-  await installCoversForSeries(folderTitle);
-
-  // `installCoversForSeries` only fills a BLANK cover; a row that already had
-  // one (materialized by an earlier pass) needs an explicit refetch to pick up
-  // a changed cover sidecar.
-  for (const { volumeUuid, cover } of coverRefreshes) {
-    try {
-      await refreshStaleCover(provider.type, volumeUuid, cover);
-    } catch (error) {
-      console.debug(`[series-backfill] could not refresh cover for '${volumeUuid}':`, error);
-    }
+  } finally {
+    releaseBackfillSlot();
   }
 }
 
@@ -422,7 +510,9 @@ export function backfillNewlyLinkedSeries(seriesTitle: string): Promise<void> {
   return schedule(seriesTitle, false);
 }
 
-/** Test hook: forget in-flight backfill passes. */
+/** Test hook: forget in-flight backfill passes and the pass-concurrency bookkeeping. */
 export function _resetSeriesBackfillForTests(): void {
   inFlight.clear();
+  activeBackfillPasses = 0;
+  waitingBackfillPasses.length = 0;
 }

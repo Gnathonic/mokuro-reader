@@ -15,6 +15,7 @@ import {
   registerFactsChangeListener,
   registerIndexChangeListener
 } from './store';
+import { acquireWriteSlot, releaseWriteSlot, _resetWriteSlotForTests } from './write-slot';
 
 /**
  * The automatic half of the `series.json` index: local fact edits (link,
@@ -277,38 +278,6 @@ export function ensureFreshCloudListing(): Promise<boolean> {
 }
 
 /**
- * How many series writes may be in flight at once.
- *
- * The debounce is per series but not staggered, so a burst puts every timer on
- * the SAME 2000 ms mark and they all come due together: a reconcile pass over a
- * 200-folder library, an import batch, a tagging spree. Uncapped that is 200
- * concurrent `db.volumes.toArray()` scans and 200 concurrent PUTs at a provider
- * that will rate-limit or simply fall over. Two keeps the pipe busy across the
- * round trip without becoming a stampede.
- */
-const WRITE_CONCURRENCY = 2;
-let activeWrites = 0;
-const waitingWrites: Array<() => void> = [];
-
-function acquireWriteSlot(): Promise<void> {
-  if (activeWrites < WRITE_CONCURRENCY) {
-    activeWrites += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    waitingWrites.push(() => {
-      activeWrites += 1;
-      resolve();
-    });
-  });
-}
-
-function releaseWriteSlot(): void {
-  activeWrites -= 1;
-  waitingWrites.shift()?.();
-}
-
-/**
  * series_key → the write currently running for it.
  *
  * A timer that has already fired is past cancelling: the write is inside its
@@ -321,8 +290,7 @@ const inFlightWrites = new Map<string, Promise<void>>();
 
 /** Test hook: drop the write-concurrency and in-flight bookkeeping. */
 export function _resetWriteSlotsForTests(): void {
-  activeWrites = 0;
-  waitingWrites.length = 0;
+  _resetWriteSlotForTests();
   inFlightWrites.clear();
 }
 
