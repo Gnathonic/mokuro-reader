@@ -65,6 +65,16 @@ per-volume **thumbnail blob** and its freshness stamps.
    `metadata_only` rows. The entire schema migration is _adding a new table_. No cleanup, no
    data movement. The developer's own oversized database is handled by wiping local web-app
    storage and letting it rebuild.
+
+   **Corollary (verified 2026-08-25):** schema versions 2, 3 and 4 — `series_metadata`,
+   `series_index`, `catalog_index` — are also unshipped. `main` and `develop` both declare
+   `version(1)` alone, and the commits introducing the others (a3d41deb, 11a1f8de) are
+   contained only in `feat/series-metadata`. There are no `.upgrade()` callbacks and no code
+   reads `db.verno`. So the branch's four versions collapse to **one new `version(2)`**
+   declaring the final table set; keeping them separate would encode upgrade steps no
+   database has ever taken. Developer databases sitting at version 3 or 4 will refuse to
+   open (`VersionError`) until site data is cleared — which this plan does anyway.
+
 2. **Composite key: account scope + path.** Cloud volume UUIDs are not available from
    providers, so the key is the file's **path**, scoped by **provider + account**, so that
    switching accounts or providers cannot cross-contaminate the cache.

@@ -182,11 +182,11 @@ git commit -m "feat(catalog): account-scoped cloud cache keys"
 
 ---
 
-### Task 2: The cache table (schema v5) and its CRUD
+### Task 2: The cache table (collapsed schema v2) and its CRUD
 
 **Files:**
 
-- Modify: `src/lib/catalog/db-v3.ts` (add `cloud_volume_cache` table field ~line 18; add `this.version(5).stores({...})` after the v4 block ~line 58)
+- Modify: `src/lib/catalog/db-v3.ts` (add the `cloud_volume_cache` table field ~line 18; replace the `version(2)`/`version(3)`/`version(4)` blocks at lines 32–59 with one `version(2)` — see Step 3)
 - Create: `src/lib/catalog/cloud-cache.ts`
 - Create: `src/lib/catalog/cloud-cache.test.ts`
 
@@ -290,14 +290,33 @@ In `src/lib/catalog/db-v3.ts`, add the field beside the others (~line 18):
 
 Import the type at the top: `import type { CloudVolumeCacheEntry } from './cloud-cache';`
 
-Then append this version block after the existing `this.version(4)` block. Every earlier version stays untouched — Dexie needs the full history, and this change is purely additive:
+Then **replace the whole `version(2)`/`version(3)`/`version(4)` sequence with a single `version(2)`**. Verified 2026-08-25: only `version(1)` has ever shipped — `main` and `develop` both declare it alone, and the commits that added `series_metadata` (a3d41deb), `series_index`, and `catalog_index` (11a1f8de) are contained in `feat/series-metadata` and no other branch. Those three versions are development history of an unreleased branch, so preserving them as separate upgrade steps would encode a migration path no database has ever taken. There are no `.upgrade()` callbacks and no code reads `db.verno`, so collapsing is a pure simplification.
+
+The constructor becomes exactly this:
 
 ```ts
-// v3.5: cloud metadata cache. Enrichment for cloud volumes the user has
-// neither installed nor read, scoped to the account it came from so
-// switching accounts cannot cross-contaminate. Additive — no data
-// migration: the render-demand rows this replaces never shipped.
-this.version(5).stores({
+// v1: the shipped schema — three tables, thumbnails inlined in volumes.
+// This is the only version any released build has written, so it must stay
+// exactly as-is for every existing user database to upgrade from.
+this.version(1).stores({
+  volumes: 'volume_uuid, series_uuid, series_title',
+  volume_ocr: 'volume_uuid',
+  volume_files: 'volume_uuid'
+});
+
+// v2: everything the series-metadata work adds, in one step.
+//
+// Collapsed deliberately: `series_metadata`, `series_index` and
+// `catalog_index` were separate versions during development but never
+// shipped, so no database exists at those intermediate versions and the
+// steps between them are fiction. A released client upgrades 1 -> 2 once
+// and gets all four tables.
+//
+// `cloud_volume_cache` is the cloud metadata cache: enrichment for volumes
+// the user has neither installed nor read, keyed by account + path because
+// providers expose no uuid for a file the client has not opened, and the
+// same path under a different account is a different file.
+this.version(2).stores({
   volumes: 'volume_uuid, series_uuid, series_title',
   volume_ocr: 'volume_uuid',
   volume_files: 'volume_uuid',
@@ -307,6 +326,8 @@ this.version(5).stores({
   cloud_volume_cache: '[account_scope+path], [account_scope+series_key], last_accessed'
 });
 ```
+
+**Consequence for anyone running this branch:** a local database currently at version 3 or 4 is _newer_ than the declared version 2, so Dexie will refuse to open it with a `VersionError`. That is expected and affects only developer machines — clearing site data for the origin (Task 9, Step 1) resolves it, and no released database is at those versions.
 
 - [ ] **Step 4: Implement the CRUD module**
 
@@ -400,7 +421,7 @@ Run: `npx vitest run src/lib/catalog/cloud-cache.test.ts`
 ```bash
 npx prettier --write src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/lib/catalog/db-v3.ts
 git add src/lib/catalog/cloud-cache.ts src/lib/catalog/cloud-cache.test.ts src/lib/catalog/db-v3.ts
-git commit -m "feat(catalog): cloud_volume_cache table (schema v5)"
+git commit -m "feat(catalog): cloud_volume_cache table; collapse unshipped schema versions"
 ```
 
 ---
