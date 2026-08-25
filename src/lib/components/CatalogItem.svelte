@@ -58,6 +58,7 @@
     type CloudThumbnailResult
   } from '$lib/catalog/cloud-thumbnails';
   import { requestCoverOnce } from '$lib/catalog/cover-requests';
+  import { scheduleCatalogCoverPersist } from '$lib/catalog/cover-persist';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -754,10 +755,17 @@
    * one away because a settings write superseded the effect mid-flight is how a card ends
    * up blank with the cover sitting in the session cache, unread until something else
    * re-renders it. The map is plain state — writing it after the card is gone is inert.
+   *
+   * Also queues the cover for BACKGROUND persistence (`cover-persist.ts`) when `vol` has a
+   * DB row — a metadata-only row (materialized or retained), never a pure placeholder. That
+   * queue is what makes the cover survive to the next session instead of re-fetching from
+   * the cloud every time; it never blocks or delays this function, which stays synchronous
+   * so the card paints the instant the fetch resolves.
    */
-  function commitCover(volumeUuid: string, result: CloudThumbnailResult) {
-    if (cloudThumbnailData[volumeUuid]) return true;
-    cloudThumbnailData[volumeUuid] = result;
+  function commitCover(vol: VolumeMetadata, result: CloudThumbnailResult) {
+    if (cloudThumbnailData[vol.volume_uuid]) return true;
+    cloudThumbnailData[vol.volume_uuid] = result;
+    scheduleCatalogCoverPersist(vol, result);
     return true;
   }
 
@@ -770,13 +778,13 @@
       // Check synchronous cache first
       const cached = getCachedCloudThumbnail(vol.volume_uuid);
       if (cached) {
-        commitCover(vol.volume_uuid, cached);
+        commitCover(vol, cached);
         continue;
       }
 
       // One request per volume that lands one, whatever else re-runs this effect.
       void requestCoverOnce(requestedCovers, vol, fetchCloudThumbnail, (result) =>
-        commitCover(vol.volume_uuid, result)
+        commitCover(vol, result)
       );
     }
 

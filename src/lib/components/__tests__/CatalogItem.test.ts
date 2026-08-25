@@ -59,6 +59,14 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: vi.fn(async () => null),
   getCachedCloudThumbnail: vi.fn(() => undefined)
 }));
+// The persistence side effect of a committed cover is its own module
+// (`cover-persist.ts`, tested in `cover-persist.test.ts` against a real
+// Dexie) — stub it here too, same reason as `cloud-thumbnails`: it imports
+// `$lib/catalog/db`, which this file's tests must not drag in.
+const { scheduleCatalogCoverPersist } = vi.hoisted(() => ({
+  scheduleCatalogCoverPersist: vi.fn()
+}));
+vi.mock('$lib/catalog/cover-persist', () => ({ scheduleCatalogCoverPersist }));
 
 // What the card actually asked to be drawn. Transparent pass-through: records the props,
 // then renders the real component (same trick as the spine shelf's suite).
@@ -1528,6 +1536,117 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     await tick();
 
     expect(drawnUuids()).toEqual(['v-1', 'v-2', 'c-3']);
+  });
+});
+
+/**
+ * Persistent catalog-card covers (`cover-persist.ts`): a metadata-only row's
+ * fetched cover must be queued for background persistence, a pure
+ * placeholder's must not, and a row that already has a thumbnail must never
+ * even be asked for one — that invariant is what lets a persisted cover cost
+ * zero network on the NEXT session.
+ */
+describe('CatalogItem persists covers for volumes that have a DB row', () => {
+  class IntersectionObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+  const cloudOnly = (overrides: Partial<VolumeMetadata> = {}) =>
+    placeholderVolume({
+      series_title: 'One Piece',
+      cloudThumbnailFileId: `thumb-${overrides.volume_uuid ?? 'c'}`,
+      ...overrides
+    });
+
+  /** A materialized/retained row: a real DB row (not a placeholder) with no thumbnail yet. */
+  const metadataOnlyRow = (overrides: Partial<VolumeMetadata> = {}) =>
+    localVolume({
+      series_title: 'One Piece',
+      metadata_only: true,
+      cloudThumbnailFileId: `thumb-${overrides.volume_uuid ?? 'm'}`,
+      ...overrides
+    });
+
+  beforeEach(() => {
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub;
+    emitSeriesMetadata(new Map());
+    compositeCanvasProps.length = 0;
+    scheduleCatalogCoverPersist.mockClear();
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue({
+      file: new File([], 'cloud.jpg', { type: 'image/jpeg' }),
+      width: 250,
+      height: 360
+    } as never);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchCloudThumbnail).mockReset();
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(null as never);
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+  });
+
+  it('queues a persist for a metadata-only row once its cover fetch lands', async () => {
+    render(CatalogItem, {
+      props: {
+        volumes: [metadataOnlyRow({ volume_uuid: 'm-1', volume_title: 'Vol 1' })]
+      }
+    });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
+    await tick();
+
+    expect(scheduleCatalogCoverPersist).toHaveBeenCalledTimes(1);
+    const [vol, result] = scheduleCatalogCoverPersist.mock.calls[0];
+    expect(vol.volume_uuid).toBe('m-1');
+    expect(vol.isPlaceholder).toBeFalsy();
+    expect(result.width).toBe(250);
+  });
+
+  it('a pure placeholder is still handed to scheduleCatalogCoverPersist, carrying isPlaceholder — the module itself is the guard', async () => {
+    // `commitCover` calls `scheduleCatalogCoverPersist` uniformly for every
+    // committed cover; the "no DB row → no-op" rule lives INSIDE that module
+    // (see `cover-persist.test.ts`'s own "is a no-op for a volume with no DB
+    // row" pin), not as a second copy of the check here. This test only
+    // confirms the call site passes `isPlaceholder` through faithfully, so
+    // that guard has something to act on.
+    render(CatalogItem, {
+      props: {
+        volumes: [cloudOnly({ volume_uuid: 'c-1', volume_title: 'Vol 1' })]
+      }
+    });
+    await vi.waitFor(() => expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1));
+    await tick();
+
+    expect(scheduleCatalogCoverPersist).toHaveBeenCalledTimes(1);
+    expect(scheduleCatalogCoverPersist.mock.calls[0][0].isPlaceholder).toBe(true);
+  });
+
+  it('PIN: a row WITH a thumbnail never enters cloudCoverTargets — no fetch, no cache lookup, zero network next session', async () => {
+    // The "next session" simulation: a row that a PRIOR session's commit
+    // already persisted a thumbnail onto. If this row were still treated as
+    // a fetch target, a session boundary would cost a network round trip
+    // every time instead of reading straight from IndexedDB.
+    const alreadyPersisted = metadataOnlyRow({
+      volume_uuid: 'm-2',
+      volume_title: 'Vol 2',
+      thumbnail: coverFile(),
+      thumbnail_width: 250,
+      thumbnail_height: 360
+    });
+
+    render(CatalogItem, { props: { volumes: [alreadyPersisted] } });
+    await tick();
+    await tick();
+
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    expect(scheduleCatalogCoverPersist).not.toHaveBeenCalled();
   });
 });
 

@@ -868,6 +868,133 @@ describe('cover freshness stamps', () => {
   });
 });
 
+describe('row-level cover staleness (persistent catalog-card covers, design point 3)', () => {
+  // Row-level checks piggyback on an EXPENSIVE phase some OTHER archive in
+  // the series already earned (see `findStaleRowCovers`'s own doc) — so
+  // every test here gives Volume 01 a genuine mokuro gap purely to enter
+  // that phase, and puts the row-level scenario under test on Volume 02,
+  // which the SERIES.JSON entry itself already describes as fully fresh
+  // (matching mokuro stamps, no cover stamp opinion) so only the ROW's own
+  // stamp can be the source of any staleness verdict.
+  function twoVolumeListing(
+    volume2Cover: { size: number; modifiedTime: string } = {
+      size: 900,
+      modifiedTime: '2026-07-01T00:00:00.000Z'
+    }
+  ) {
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 100),
+      cloudFile('One Piece/Volume 01.mokuro', 50),
+      cloudFile('One Piece/Volume 02.cbz', 100),
+      cloudFile('One Piece/Volume 02.mokuro', 321, '2026-06-01T00:00:00.000Z'),
+      cloudFile('One Piece/Volume 02.webp', volume2Cover.size, volume2Cover.modifiedTime)
+    ]);
+  }
+
+  /** Volume 01 has no entry at all (the gap); Volume 02's is fully fresh. */
+  function existingIndex(): SeriesFile {
+    return seriesFile([
+      {
+        volume_uuid: 'v2',
+        volume_title: 'Volume 02',
+        page_count: 2,
+        character_count: 5,
+        mokuro_version: '0.4.0',
+        mokuro_size: 321,
+        mokuro_modified: Math.floor(Date.parse('2026-06-01T00:00:00.000Z') / 1000)
+      }
+    ]);
+  }
+
+  function metadataOnlyRowV2(overrides: Record<string, unknown> = {}) {
+    volumeRows.push({
+      volume_uuid: 'v2',
+      series_title: 'One Piece',
+      volume_title: 'Volume 02',
+      mokuro_version: '0.4.0',
+      page_count: 2,
+      character_count: 5,
+      page_char_counts: [],
+      metadata_only: true,
+      thumbnail: 'OLD-THUMBNAIL',
+      thumbnail_width: 100,
+      thumbnail_height: 100,
+      ...overrides
+    });
+  }
+
+  beforeEach(() => {
+    twoVolumeListing();
+    refreshSeriesIndexForSeries
+      .mockResolvedValueOnce(existingIndex())
+      .mockResolvedValueOnce(existingIndex());
+    downloadFile.mockResolvedValue(plainMokuro()); // Volume 01's gap pull
+  });
+
+  it('stale row stamps trigger exactly one refetch + restamp', async () => {
+    metadataOnlyRowV2({ cover_size: 100, cover_modified: 1 }); // stale vs the listing's 900 @ 2026-07-01
+    fetchCloudThumbnail.mockResolvedValue({
+      file: new File([''], 'v2.webp'),
+      width: 20,
+      height: 20
+    });
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+    const row = volumeRows.find((v) => v.volume_uuid === 'v2')!;
+    expect(row.thumbnail_width).toBe(20); // restamped with the new cover
+    expect(row.cover_size).toBe(900);
+    expect(row.cover_modified).toBe(Math.floor(Date.parse('2026-07-01T00:00:00.000Z') / 1000));
+  });
+
+  it('a stampless row thumbnail is untouched, even though the listing has a cover sidecar', async () => {
+    metadataOnlyRowV2(); // no cover_size/cover_modified at all
+    fetchCloudThumbnail.mockResolvedValue({
+      file: new File([''], 'v2.webp'),
+      width: 20,
+      height: 20
+    });
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    const row = volumeRows.find((v) => v.volume_uuid === 'v2')!;
+    expect(row.thumbnail).toBe('OLD-THUMBNAIL');
+    expect(row.thumbnail_width).toBe(100);
+  });
+
+  it("an installed volume's page-measured thumbnail is never replaced, even with stale-looking row stamps", async () => {
+    metadataOnlyRowV2({
+      metadata_only: undefined, // installed: real pages, real thumbnail
+      cover_size: 100, // would read as stale if it were even considered
+      cover_modified: 1
+    });
+    fetchCloudThumbnail.mockResolvedValue({
+      file: new File([''], 'v2.webp'),
+      width: 20,
+      height: 20
+    });
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    const row = volumeRows.find((v) => v.volume_uuid === 'v2')!;
+    expect(row.thumbnail).toBe('OLD-THUMBNAIL');
+    expect(row.thumbnail_width).toBe(100);
+    expect(row.cover_size).toBe(100); // untouched too
+  });
+
+  it('does NOT re-fetch a row cover on an older-or-equal listing mtime with an equal size', async () => {
+    const coverModified = Math.floor(Date.parse('2026-07-01T00:00:00.000Z') / 1000);
+    metadataOnlyRowV2({ cover_size: 900, cover_modified: coverModified });
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+  });
+});
+
 describe('backfillNewlyLinkedSeries (the link-event trigger)', () => {
   it('proceeds even when the listing shows no series.json yet, and flushes the local pipeline', async () => {
     getCloudVolumesBySeries.mockReturnValue([

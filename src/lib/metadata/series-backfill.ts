@@ -14,6 +14,7 @@ import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import {
   groupSeriesSidecarFiles,
+  isoToEpochSeconds,
   isSidecarStale,
   stampFromSidecarFiles,
   type SeriesSidecarFiles
@@ -323,6 +324,12 @@ function excludeInstalledCandidates(
  * `runCoverInstall` documents in `cover-install.ts` — the row is re-read and
  * re-tested INSIDE the transaction that performs the write, and the write is
  * skipped if it no longer needs one.
+ *
+ * Also RESTAMPS the row from `cover` — the same listing record the fetch was
+ * made against — with `cover_size`/`cover_modified`, mirroring
+ * `cover-persist.ts`'s catalog-card path. This is what lets a FUTURE pass
+ * (here, or a row-level check elsewhere) decide staleness from the row alone
+ * without guessing, whichever path most recently touched it.
  */
 async function refreshStaleCover(
   providerType: SyncProvider['type'],
@@ -340,15 +347,64 @@ async function refreshStaleCover(
   });
   if (!result) return;
 
+  const patch: Partial<VolumeMetadata> = {
+    thumbnail: result.file,
+    thumbnail_width: result.width,
+    thumbnail_height: result.height
+  };
+  if (isArchiveSize(cover.size)) patch.cover_size = cover.size;
+  const coverModified = isoToEpochSeconds(cover.modifiedTime);
+  if (coverModified !== undefined) patch.cover_modified = coverModified;
+
   await db.transaction('rw', db.volumes, async () => {
     const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
     if (!fresh || !needsDownload(fresh)) return;
-    await db.volumes.update(volumeUuid, {
-      thumbnail: result.file,
-      thumbnail_width: result.width,
-      thumbnail_height: result.height
-    });
+    await db.volumes.update(volumeUuid, patch);
   });
+}
+
+/**
+ * Row-level cover staleness: an archive whose folded title has a LOCAL
+ * metadata-only row WITH a thumbnail, whose own recorded `cover_size`/
+ * `cover_modified` stamp is stale against the CURRENT listing. Independent of
+ * whether the series.json ENTRY's own cover stamp is stale — the row is what
+ * a catalog card actually reads from, and its stamp may have been set by a
+ * completely different path (`cover-persist.ts`'s catalog-card commit,
+ * `cover-install.ts`'s initial fill, or an earlier run of this very function)
+ * than whatever wrote the published entry.
+ *
+ * Deliberately only checked here, piggybacking on an EXPENSIVE phase some
+ * other archive in this series already earned (a genuine mokuro gap/staleness
+ * elsewhere) — never a reason on its own to enter it. A row-only-stale cover
+ * with nothing else to do in the series would go unnoticed until the next
+ * pass that DOES have a reason to scan; the alternative (scanning `db.volumes`
+ * for cover staleness alone) would reintroduce exactly the per-series
+ * always-scan cost the write-slot fix (round 1) removed. Same stampless
+ * exemption as everywhere else: a thumbnail with no recorded stamp (measured
+ * from the volume's own pages, or installed by older code) is never forced
+ * stale.
+ */
+function findStaleRowCovers(
+  allVolumes: VolumeMetadata[],
+  localKey: string,
+  sidecarGroups: Map<string, SeriesSidecarFiles>
+): Array<{ volumeUuid: string; cover: CloudFileMetadata }> {
+  const stale: Array<{ volumeUuid: string; cover: CloudFileMetadata }> = [];
+  for (const row of allVolumes) {
+    if (normalizeVolumeTitleKey(row.series_title) !== localKey) continue;
+    if (!needsDownload(row) || !row.thumbnail) continue;
+
+    const sidecars = sidecarGroups.get(normalizeVolumeTitleKey(row.volume_title));
+    if (!sidecars?.cover) continue;
+
+    const stamp = stampFromSidecarFiles(sidecars);
+    const isStale = isSidecarStale(
+      { size: row.cover_size, modified: row.cover_modified },
+      { size: stamp.cover_size, modified: stamp.cover_modified }
+    );
+    if (isStale) stale.push({ volumeUuid: row.volume_uuid, cover: sidecars.cover });
+  }
+  return stale;
 }
 
 async function runBackfill(seriesTitle: string, requireExisting: boolean): Promise<void> {
@@ -392,72 +448,80 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
     );
 
     const tasks = excludeInstalledCandidates(candidates, installedTitleKeys);
-    if (tasks.length === 0) return;
+    // Row-level cover staleness piggybacks on this scan (see
+    // `findStaleRowCovers`'s own doc for why it is not a trigger on its own).
+    const coverRefreshes = findStaleRowCovers(allVolumes, localKey, sidecarGroups);
 
     const builtEntries: SeriesFileVolume[] = [];
-    const coverRefreshes: Array<{ volumeUuid: string; cover: CloudFileMetadata }> = [];
-
-    let next = 0;
-    const worker = async () => {
-      while (next < tasks.length) {
-        const task = tasks[next++];
-        try {
-          const entry = await buildEntryForTask(folderTitle, task, provider);
-          if (!entry) continue;
-          builtEntries.push(entry);
-          if (task.needsCoverRefetch && task.sidecars?.cover) {
-            coverRefreshes.push({ volumeUuid: entry.volume_uuid, cover: task.sidecars.cover });
+    if (tasks.length > 0) {
+      let next = 0;
+      const worker = async () => {
+        while (next < tasks.length) {
+          const task = tasks[next++];
+          try {
+            const entry = await buildEntryForTask(folderTitle, task, provider);
+            if (!entry) continue;
+            builtEntries.push(entry);
+            if (task.needsCoverRefetch && task.sidecars?.cover) {
+              coverRefreshes.push({ volumeUuid: entry.volume_uuid, cover: task.sidecars.cover });
+            }
+          } catch (error) {
+            // A malformed/unreadable sidecar costs this ONE volume, never the
+            // series or the rest of the queue.
+            console.debug(
+              `[series-backfill] skipping '${task.archiveStem}' in '${folderTitle}':`,
+              error
+            );
           }
-        } catch (error) {
-          // A malformed/unreadable sidecar costs this ONE volume, never the
-          // series or the rest of the queue.
-          console.debug(
-            `[series-backfill] skipping '${task.archiveStem}' in '${folderTitle}':`,
-            error
-          );
         }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(PULL_CONCURRENCY, tasks.length) }, () => worker())
+      );
+    }
+
+    if (builtEntries.length > 0) {
+      let result: 'written' | 'skipped' | 'read-only';
+      // The SAME shared pool the debounced fact-edit writer uses (`write-slot.ts`),
+      // so a burst of backfill publishes and a burst of ordinary debounced
+      // writes share one PUT budget rather than two independent ones.
+      await acquireWriteSlot();
+      try {
+        result = await unifiedCloudManager.writeSeriesFile(folderTitle, {
+          cloudMeasuredVolumes: builtEntries
+        });
+      } finally {
+        releaseWriteSlot();
       }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(PULL_CONCURRENCY, tasks.length) }, () => worker())
-    );
 
-    if (builtEntries.length === 0) return;
-
-    let result: 'written' | 'skipped' | 'read-only';
-    // The SAME shared pool the debounced fact-edit writer uses (`write-slot.ts`),
-    // so a burst of backfill publishes and a burst of ordinary debounced
-    // writes share one PUT budget rather than two independent ones.
-    await acquireWriteSlot();
-    try {
-      result = await unifiedCloudManager.writeSeriesFile(folderTitle, {
-        cloudMeasuredVolumes: builtEntries
-      });
-    } finally {
-      releaseWriteSlot();
+      if (result === 'written') {
+        // Flesh the series out locally with the same pipeline `openSeries`
+        // uses: materialize the completed entries into metadata-only rows
+        // (real uuids, from the entries just built) and install their covers
+        // from the cloud sidecars. Cheap when there is nothing to do — both
+        // are no-ops for rows that already have what they need.
+        const fresh = await unifiedCloudManager.refreshSeriesIndexForSeries(folderTitle);
+        if (fresh) {
+          const cloudVolumeTitles = unifiedCloudManager.cloudVolumeTitlesFor(folderTitle);
+          await materializeSeriesVolumes({
+            seriesTitle: folderTitle,
+            entries: fresh.volumes,
+            cloudVolumeTitles
+          });
+        }
+        await installCoversForSeries(folderTitle);
+      }
     }
-    if (result !== 'written') return;
-
-    // Flesh the series out locally with the same pipeline `openSeries` uses:
-    // materialize the completed entries into metadata-only rows (real uuids,
-    // from the entries just built) and install their covers from the cloud
-    // sidecars. Cheap when there is nothing to do — both are no-ops for rows
-    // that already have what they need.
-    const fresh = await unifiedCloudManager.refreshSeriesIndexForSeries(folderTitle);
-    if (fresh) {
-      const cloudVolumeTitles = unifiedCloudManager.cloudVolumeTitlesFor(folderTitle);
-      await materializeSeriesVolumes({
-        seriesTitle: folderTitle,
-        entries: fresh.volumes,
-        cloudVolumeTitles
-      });
-    }
-    await installCoversForSeries(folderTitle);
 
     // `installCoversForSeries` only fills a BLANK cover; a row that already
-    // had one (materialized by an earlier pass) needs an explicit refetch to
-    // pick up a changed cover sidecar.
+    // had one (freshly materialized above, OR a pre-existing row with a
+    // stale cover `findStaleRowCovers` found) needs an explicit refetch to
+    // pick up a changed cover sidecar. Deduped by uuid: an entry-driven and a
+    // row-driven refresh can legitimately name the same volume.
+    const refreshedUuids = new Set<string>();
     for (const { volumeUuid, cover } of coverRefreshes) {
+      if (refreshedUuids.has(volumeUuid)) continue;
+      refreshedUuids.add(volumeUuid);
       try {
         await refreshStaleCover(provider.type, volumeUuid, cover);
       } catch (error) {

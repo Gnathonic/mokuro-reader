@@ -10,7 +10,8 @@ import {
 import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
-  indexCloudFilesByPath
+  indexCloudFilesByPath,
+  indexCoverFilesByArchiveKey
 } from '$lib/catalog/placeholders';
 import { routeParams } from '$lib/util/hash-router';
 import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
@@ -111,12 +112,14 @@ let lastPlaceholderInputs: {
 let lastPlaceholders: VolumeMetadata[] = [];
 
 /**
- * The listing's archives by path, rebuilt only when the listing itself changes.
- * The catalog re-derives on every settings-adjacent emission; re-indexing a
- * few thousand cloud files each time would be pure waste.
+ * The listing's archives (and their cover sidecars) by path, rebuilt only
+ * when the listing itself changes. The catalog re-derives on every
+ * settings-adjacent emission; re-indexing a few thousand cloud files each
+ * time would be pure waste.
  */
 let lastCloudFiles: unknown = null;
 let lastCloudIndex = new Map<string, CloudVolumeWithProvider>();
+let lastCoverIndex = new Map<string, CloudVolumeWithProvider>();
 
 // Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
@@ -145,16 +148,22 @@ export const volumesWithPlaceholders = derived(
       // A metadata-only row shadows the placeholder its cloud file would have
       // produced (a path with a local row is not "cloud only"), so it has to be
       // given the same cloud fields here or there would be nothing to download
-      // it from. Decorating the copy in the catalog, never the stored row: the
-      // fileId belongs to the current listing, not to the volume.
+      // it from — and, when the listing has one, the same cover-sidecar
+      // decoration a placeholder gets, so a materialized row with no
+      // thumbnail yet can have its cover fetched (and persisted — see
+      // `CatalogItem.svelte`'s `commitCover`) from the catalog grid itself,
+      // without waiting for its series to be opened. Decorating the copy in
+      // the catalog, never the stored row: the fileId belongs to the current
+      // listing, not to the volume.
       if (localVolumes.some(isMetadataOnly)) {
         if (lastCloudFiles !== $cloudFiles) {
           lastCloudIndex = indexCloudFilesByPath($cloudFiles);
+          lastCoverIndex = indexCoverFilesByArchiveKey($cloudFiles);
           lastCloudFiles = $cloudFiles;
         }
         for (const vol of localVolumes) {
           if (!isMetadataOnly(vol)) continue;
-          const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol);
+          const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol, lastCoverIndex);
           if (cloudFields) combined[vol.volume_uuid] = { ...vol, ...cloudFields };
         }
       }

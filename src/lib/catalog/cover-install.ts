@@ -1,7 +1,7 @@
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
-import { indexCoverSidecarsByBasePath } from '$lib/catalog/placeholders';
+import { indexCoverSidecarsByBasePath, type CoverSidecarInfo } from '$lib/catalog/placeholders';
 import { needsDownload } from '$lib/catalog/volume-state';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -34,10 +34,8 @@ function coverKey(seriesTitle: string, volumeTitle: string): string {
 }
 
 /** Re-key the listing's cover index (lowercased base paths) onto {@link coverKey}. */
-function foldCoverIndex(
-  index: Map<string, { fileId: string; path: string }>
-): Map<string, { fileId: string; path: string }> {
-  const folded = new Map<string, { fileId: string; path: string }>();
+function foldCoverIndex(index: Map<string, CoverSidecarInfo>): Map<string, CoverSidecarInfo> {
+  const folded = new Map<string, CoverSidecarInfo>();
   for (const [basePath, info] of index) {
     const cut = basePath.lastIndexOf('/');
     if (cut < 0) continue; // Not `<Series>/<Volume>`: nothing a row can be paired with.

@@ -75,6 +75,16 @@ export interface VolumeMetadata {
   cloudPath?: string; // Full path for series extraction during download
   cloudThumbnailFileId?: string; // Provider-specific file ID for cloud thumbnail sidecar
   cloudThumbnailPath?: string; // Full path to the thumbnail sidecar (e.g. "Series/Volume.webp" or "Series/Volume.jpg")
+  /**
+   * The cloud LISTING's own size/mtime for `cloudThumbnailFileId`, decorated
+   * onto a placeholder or a metadata-only row's in-memory copy alongside the
+   * other `cloudThumbnail*` fields — never stored on the row itself. This is
+   * the DECISION-TIME snapshot a cover fetch is committed against: see
+   * `cover_size`/`cover_modified` below for the PERSISTED counterpart derived
+   * from it once a fetch actually lands.
+   */
+  cloudThumbnailSize?: number;
+  cloudThumbnailModifiedTime?: string;
 
   // Legacy Drive-specific fields (kept for backward compatibility)
   // When present without cloudProvider, assumed to be google-drive
@@ -98,6 +108,28 @@ export interface VolumeMetadata {
    * `getArchiveSize` (`$lib/util/cloud-fields`), which prefers a live listing.
    */
   archive_size?: number;
+
+  /**
+   * The cloud LISTING's size (bytes) / mtime (epoch seconds, truncated) for
+   * the cover sidecar a PERSISTED `thumbnail` on this row came from — set
+   * only when the thumbnail was fetched from the cloud with a decision-time
+   * listing snapshot in hand (the catalog card's cover-persist path, or a
+   * backfill's stale-cover refresh); absent for a thumbnail measured from the
+   * volume's own pages (an installed volume) or installed by older code that
+   * predates this scheme.
+   *
+   * Mirrors `SeriesFileVolume.cover_size`/`cover_modified`
+   * (`$lib/metadata/series-file`) in name and exact semantics — same guards
+   * (`isArchiveSize`/epoch-seconds), same staleness rule
+   * (`isSidecarStale`/`$lib/metadata/cloud-sidecar-stamps`): ABSENT is never
+   * treated as stale on its own (a stampless thumbnail adopts the listing as
+   * baseline rather than being re-fetched — the same migration-safety
+   * inversion as the series-index entry stamps). Never read as a source of
+   * truth by anything other than the staleness check that decides whether to
+   * re-fetch — the reader always prefers the row's OWN `thumbnail` file.
+   */
+  cover_size?: number;
+  cover_modified?: number;
 }
 
 // v3 table: volume_ocr

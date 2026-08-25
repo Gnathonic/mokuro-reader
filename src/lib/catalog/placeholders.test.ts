@@ -11,6 +11,7 @@ import {
   cloudFieldsForRemovedVolume,
   generatePlaceholders,
   indexCloudFilesByPath,
+  indexCoverFilesByArchiveKey,
   indexCoverSidecarsByBasePath,
   isIndexedPlaceholder
 } from './placeholders';
@@ -445,17 +446,107 @@ describe('a metadata-only row and the cloud', () => {
 
     expect(index.size).toBe(0);
   });
+
+  it('also gets the cover-sidecar fields when the listing has one, closing the gap that otherwise left a materialized row uncoverable until its series was opened', () => {
+    const archiveIndex = indexCloudFilesByPath(cloudFiles);
+    const coverIndex = indexCoverFilesByArchiveKey(
+      new Map([
+        [
+          'One Piece',
+          [
+            cloudFile('One Piece/Volume 1.cbz', 'file-1'),
+            { ...cloudFile('One Piece/Volume 1.webp', 'cover-1'), size: 512 }
+          ]
+        ]
+      ])
+    );
+
+    const fields = cloudFieldsForRemovedVolume(
+      archiveIndex,
+      localVolume({ metadata_only: true }),
+      coverIndex
+    );
+
+    expect(fields).toMatchObject({
+      cloudThumbnailFileId: 'cover-1',
+      cloudThumbnailPath: 'One Piece/Volume 1.webp',
+      cloudThumbnailSize: 512,
+      cloudThumbnailModifiedTime: '2026-08-17T00:00:00.000Z'
+    });
+  });
+
+  it('omits the cover fields entirely when the listing has no cover sidecar for this title', () => {
+    const archiveIndex = indexCloudFilesByPath(cloudFiles);
+    const fields = cloudFieldsForRemovedVolume(
+      archiveIndex,
+      localVolume({ metadata_only: true }),
+      new Map() // empty cover index
+    );
+
+    expect(fields).toBeDefined();
+    expect('cloudThumbnailFileId' in fields!).toBe(false);
+  });
+});
+
+describe('indexCoverFilesByArchiveKey', () => {
+  it('indexes a cover sidecar by the SAME folded key cloudFieldsForRemovedVolume looks archives up by', () => {
+    const index = indexCoverFilesByArchiveKey(
+      new Map([['One Piece', [cloudFile('One Piece/Volume 1.webp', 'cover-1')]]])
+    );
+
+    expect(index.get('one piece/volume 1')?.fileId).toBe('cover-1');
+  });
+
+  it('folds case, whitespace and unicode form, same as every other cloud lookup here', () => {
+    const composed = 'ポケモン';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+
+    const index = indexCoverFilesByArchiveKey(
+      new Map([['One Piece', [cloudFile(`one  piece/${decomposed}.WEBP`, 'cover-1')]]])
+    );
+
+    expect(index.get(`one piece/${composed.toLowerCase()}`)?.fileId).toBe('cover-1');
+  });
+
+  it('prefers .webp over .jpg for the same volume', () => {
+    const index = indexCoverFilesByArchiveKey(
+      new Map([
+        [
+          'One Piece',
+          [cloudFile('One Piece/Volume 1.jpg', 'jpg'), cloudFile('One Piece/Volume 1.webp', 'webp')]
+        ]
+      ])
+    );
+
+    expect(index.get('one piece/volume 1')?.fileId).toBe('webp');
+  });
+
+  it('ignores the archive itself and series.json', () => {
+    const index = indexCoverFilesByArchiveKey(
+      new Map([
+        [
+          'One Piece',
+          [cloudFile('One Piece/Volume 1.cbz', 'cbz'), cloudFile('One Piece/series.json', 'sj')]
+        ]
+      ])
+    );
+
+    expect(index.size).toBe(0);
+  });
 });
 
 describe('indexCoverSidecarsByBasePath', () => {
   const f = (path: string, fileId: string) =>
     ({ provider: 'webdav', fileId, path, modifiedTime: '', size: 1 }) as never;
 
-  it('keys covers by lowercased base path', () => {
+  it('keys covers by lowercased base path, carrying the listing stamp too', () => {
     const index = indexCoverSidecarsByBasePath([f('Dr Stone/Volume 1.webp', 'c1')]);
     expect(index.get('dr stone/volume 1')).toEqual({
       fileId: 'c1',
-      path: 'Dr Stone/Volume 1.webp'
+      path: 'Dr Stone/Volume 1.webp',
+      size: 1,
+      modifiedTime: ''
     });
   });
 

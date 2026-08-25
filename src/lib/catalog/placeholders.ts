@@ -115,6 +115,14 @@ function* allListedFiles(
 /** The extensions a per-volume cover sidecar can have. */
 const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
 
+/** One listed cover sidecar's identity plus its listing stamp (bytes + ISO mtime). */
+export interface CoverSidecarInfo {
+  fileId: string;
+  path: string;
+  size: number;
+  modifiedTime: string;
+}
+
 /**
  * Index the per-volume cover sidecars of a listing by their base path
  * (`<Series>/<Volume>`), LOWERCASED so a casing difference between a stored
@@ -124,19 +132,64 @@ const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
  * The universal cover source: placeholders read it to decorate a cloud-only
  * volume, and `cover-install.ts` reads it to inline a cover onto a materialized
  * row. One definition, so the two can never disagree about which file is a
- * volume's cover.
+ * volume's cover. Carries the listing's own `size`/`modifiedTime` alongside the
+ * identity — the decision-time stamp a cover-persist path needs to record, not
+ * just the `fileId`/`path` a download needs.
  */
 export function indexCoverSidecarsByBasePath(
   files: Iterable<CloudFileMetadata>
-): Map<string, { fileId: string; path: string }> {
-  const index = new Map<string, { fileId: string; path: string }>();
+): Map<string, CoverSidecarInfo> {
+  const index = new Map<string, CoverSidecarInfo>();
   for (const file of files) {
     if (isSeriesFilePath(file.path)) continue;
     const match = file.path.match(COVER_EXT_REGEX);
     if (!match) continue;
     const key = file.path.slice(0, -match[0].length).toLowerCase();
     const isWebp = match[1].toLowerCase() === 'webp';
-    if (!index.has(key) || isWebp) index.set(key, { fileId: file.fileId, path: file.path });
+    if (!index.has(key) || isWebp) {
+      index.set(key, {
+        fileId: file.fileId,
+        path: file.path,
+        size: file.size,
+        modifiedTime: file.modifiedTime
+      });
+    }
+  }
+  return index;
+}
+
+/** {@link archiveKey} for a listed cover sidecar (`<Series>/<Volume>.webp|.jpg|.jpeg`). */
+function cloudCoverArchiveKey(path: string): string {
+  const trimmed = path.replace(/^\/+|\/+$/g, '');
+  const match = trimmed.match(COVER_EXT_REGEX);
+  if (!match) return '';
+  const withoutExt = trimmed.slice(0, -match[0].length);
+  const cut = withoutExt.lastIndexOf('/');
+  if (cut < 0) return '';
+  return archiveKey(withoutExt.slice(0, cut), withoutExt.slice(cut + 1));
+}
+
+/**
+ * Cover sidecars indexed by {@link archiveKey} — the SAME folded key
+ * `cloudFieldsForRemovedVolume` looks archives up by — so a metadata-only
+ * row's cover can be found the same way its archive already is. `.webp` wins
+ * over `.jpg`/`.jpeg`, same rule as {@link indexCoverSidecarsByBasePath}
+ * (which this does not replace: that one keys by lowercased PATH for the
+ * placeholder pass, which never has a stored title to fold against; this one
+ * keys by the folded TITLE pair a local row actually has).
+ */
+export function indexCoverFilesByArchiveKey(
+  cloudFilesMap: Map<string, CloudVolumeWithProvider[]>
+): Map<string, CloudVolumeWithProvider> {
+  const index = new Map<string, CloudVolumeWithProvider>();
+  for (const file of allListedFiles(cloudFilesMap)) {
+    if (isSeriesFilePath(file.path)) continue;
+    const match = file.path.match(COVER_EXT_REGEX);
+    if (!match) continue;
+    const key = cloudCoverArchiveKey(file.path);
+    if (!key) continue;
+    const isWebp = match[1].toLowerCase() === 'webp';
+    if (!index.has(key) || isWebp) index.set(key, file);
   }
   return index;
 }
@@ -335,6 +388,10 @@ export function generatePlaceholders(
       if (thumbnailInfo) {
         placeholder.cloudThumbnailFileId = thumbnailInfo.fileId;
         placeholder.cloudThumbnailPath = thumbnailInfo.path;
+        if (isArchiveSize(thumbnailInfo.size)) placeholder.cloudThumbnailSize = thumbnailInfo.size;
+        if (thumbnailInfo.modifiedTime) {
+          placeholder.cloudThumbnailModifiedTime = thumbnailInfo.modifiedTime;
+        }
       }
       placeholders.push(placeholder);
     }
@@ -468,19 +525,41 @@ export function indexCloudFilesByPath(
  * cloud lookup uses, so a volume renamed locally without renaming the cloud file
  * reads as "not in the cloud" here too rather than silently pointing at somebody
  * else's archive — while a mere unicode-form or casing difference still meets.
+ *
+ * `coverIndex` (optional, `indexCoverFilesByArchiveKey`) additionally attaches
+ * the SAME `cloudThumbnail*` decoration a placeholder gets when the listing
+ * has a cover sidecar for this title — closing the gap that otherwise left a
+ * metadata-only row (retained OR materialized from a series index, both
+ * `isMetadataOnly`) with no cover source at all: `generatePlaceholders`
+ * deliberately never emits a placeholder for a path that already has a local
+ * row, so without this a materialized row's card would stay blank until its
+ * SERIES is opened (`installCoversForSeries`) rather than the moment it is
+ * merely visible in the catalog grid.
  */
 export function cloudFieldsForRemovedVolume(
   cloudIndex: Map<string, CloudVolumeWithProvider>,
-  volume: VolumeMetadata
+  volume: VolumeMetadata,
+  coverIndex?: Map<string, CloudVolumeWithProvider>
 ): Partial<VolumeMetadata> | undefined {
-  const file = cloudIndex.get(archiveKey(volume.series_title, volume.volume_title));
+  const key = archiveKey(volume.series_title, volume.volume_title);
+  const file = cloudIndex.get(key);
   if (!file) return undefined;
 
-  return {
+  const fields: Partial<VolumeMetadata> = {
     cloudProvider: file.provider,
     cloudFileId: file.fileId,
     cloudModifiedTime: file.modifiedTime,
     cloudSize: file.size,
     cloudPath: file.path
   };
+
+  const cover = coverIndex?.get(key);
+  if (cover) {
+    fields.cloudThumbnailFileId = cover.fileId;
+    fields.cloudThumbnailPath = cover.path;
+    if (isArchiveSize(cover.size)) fields.cloudThumbnailSize = cover.size;
+    if (cover.modifiedTime) fields.cloudThumbnailModifiedTime = cover.modifiedTime;
+  }
+
+  return fields;
 }
