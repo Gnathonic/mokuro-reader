@@ -157,3 +157,27 @@ describe('GoogleDriveProvider.listCloudVolumes() — root config paths', () => {
     expect(nested?.path).not.toBe('catalog.json');
   });
 });
+
+describe('GoogleDriveProvider getStatus().accountScope', () => {
+  beforeEach(() => {
+    // Reset private per-account cache state — this provider is a shared
+    // singleton across the whole test file.
+    (googleDriveProvider as unknown as { readerFolderId: string | null }).readerFolderId = null;
+  });
+
+  it('is undefined when not authenticated', () => {
+    vi.mocked(tokenManager.isAuthenticated).mockReturnValue(false);
+
+    expect(googleDriveProvider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('falls back to the coarse default scope before ensureReaderFolder() has resolved', () => {
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:default');
+  });
+
+  it('is `google-drive:<readerFolderId>` once the reader folder has been resolved', async () => {
+    await googleDriveProvider.ensureReaderFolder();
+
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:reader-root');
+  });
+});

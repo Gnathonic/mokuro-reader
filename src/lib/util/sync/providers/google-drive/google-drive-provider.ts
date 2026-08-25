@@ -126,11 +126,19 @@ class GoogleDriveProvider implements SyncProvider {
       hasStoredCredentials: hasCredentials,
       needsAttention,
       statusMessage,
-      // OAuth2 implicit flow exposes no stable per-account identifier (no ID
-      // token, no userinfo call) and only one Google account can be connected
-      // at a time — so "default" is the whole account space this provider
-      // can ever occupy, not a stand-in for a real discriminator.
-      accountScope: authenticated ? 'google-drive:default' : undefined
+      // this.readerFolderId is per-account (the mokuro-reader folder Drive
+      // resolves/creates for the connected account) and non-secret, so it's a
+      // real per-account discriminator once ensureReaderFolder() has resolved
+      // it at least once. Before that first resolution (e.g. immediately
+      // after login, before any operation has called ensureReaderFolder()),
+      // there is nothing to key on yet, so this narrow window falls back to
+      // the coarse 'default' scope — which does NOT distinguish between two
+      // different Google accounts used in sequence in that window.
+      accountScope: authenticated
+        ? this.readerFolderId
+          ? `google-drive:${this.readerFolderId}`
+          : 'google-drive:default'
+        : undefined
     };
   }
 

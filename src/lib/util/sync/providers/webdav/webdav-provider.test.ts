@@ -225,6 +225,47 @@ describe('WebDAVProvider login()', () => {
   });
 });
 
+describe('WebDAVProvider getStatus().accountScope', () => {
+  it('is undefined before any connection', async () => {
+    const provider = await freshProvider();
+    expect(provider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('is `webdav:<serverUrl>|<username>` after login', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/|alice');
+  });
+
+  it('omits the username segment for a password-only (no-username) session', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+
+    await provider.login({ serverUrl: 'https://host' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/');
+  });
+
+  it('strips embedded userinfo from a credentialed URL so no password reaches the persisted scope', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({
+      serverUrl: 'https://sneaky:hunter2@host/dav',
+      username: 'alice',
+      password: 'pw'
+    });
+
+    const scope = provider.getStatus().accountScope;
+    expect(scope).not.toContain('hunter2');
+    expect(scope).not.toContain('sneaky');
+    expect(scope).toBe('webdav:https://host/dav|alice');
+  });
+});
+
 describe('WebDAVProvider session restore', () => {
   it('clears only the password and flags attention when stored credentials are rejected', async () => {
     localStorage.setItem('webdav_server_url', 'https://host');

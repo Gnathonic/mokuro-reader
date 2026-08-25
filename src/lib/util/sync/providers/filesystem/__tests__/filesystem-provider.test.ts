@@ -333,4 +333,16 @@ describe('FilesystemProvider.getStatus metadata gates', () => {
     expect(status.isReadOnly).toBe(false);
     expect(status.serverCompilesMetadata).toBe(false);
   });
+
+  it('is `filesystem:<folder name>` once a folder is connected', () => {
+    const provider = makeProvider(new FakeDirHandle('my-manga-library'));
+
+    expect(provider.getStatus().accountScope).toBe('filesystem:my-manga-library');
+  });
+
+  it('is undefined before any folder is connected', () => {
+    const status = new FilesystemProvider().getStatus();
+
+    expect(status.accountScope).toBeUndefined();
+  });
 });

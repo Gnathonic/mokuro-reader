@@ -185,6 +185,46 @@ describe('MegaProvider needs-attention', () => {
   });
 });
 
+describe('MegaProvider getStatus().accountScope', () => {
+  it('is undefined before any login/session restore', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    expect(provider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('is `mega:<email>` after a successful login', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    expect(provider.getStatus().accountScope).toBe('mega:a@b.c');
+  });
+
+  it('lowercases the email so differently-cased logins share one cache scope', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    await provider.login({ email: 'A@B.COM', password: 'secret' });
+
+    expect(provider.getStatus().accountScope).toBe('mega:a@b.com');
+  });
+
+  it('is populated after restoring a session blob, without a fresh login', async () => {
+    localStorage.setItem(
+      'mega_session',
+      JSON.stringify({ key: 'K', sid: 'SID123', options: { email: 'restored@host.dev' } })
+    );
+
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(provider.getStatus().accountScope).toBe('mega:restored@host.dev');
+  });
+});
+
 describe('MegaProvider.logout()', () => {
   it('clears session, legacy keys, and needs-attention flag', async () => {
     localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'S', options: {} }));

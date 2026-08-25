@@ -28,6 +28,26 @@ const STORAGE_KEYS = {
   PASSWORD: 'webdav_password'
 };
 
+/**
+ * Drop any embedded userinfo (`user:pass@`) from a server URL before it feeds
+ * `accountScope`, which is persisted to IndexedDB. The login form has separate
+ * username/password fields, but nothing stops a user pasting
+ * `https://user:pass@host/dav` into the URL field itself — that must never
+ * leak a password into a persisted cache key.
+ */
+export function stripUrlUserinfo(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    // Not a parseable absolute URL — fall back to stripping an
+    // authority-embedded `user:pass@` prefix by hand.
+    return url.replace(/^(\w+:\/\/)[^/@]*@/, '$1');
+  }
+}
+
 const MOKURO_FOLDER = '/mokuro-reader';
 const VOLUME_DATA_FILE = '/mokuro-reader/volume-data.json';
 const PROFILES_FILE = '/mokuro-reader/profiles.json';
@@ -141,7 +161,9 @@ export class WebDAVProvider implements SyncProvider {
       // username is optional (some servers support password-only or no auth),
       // so it's an extra discriminator on top of the required serverUrl, not
       // a requirement in its own right.
-      accountScope: serverUrl ? `webdav:${serverUrl}${username ? `|${username}` : ''}` : undefined
+      accountScope: serverUrl
+        ? `webdav:${stripUrlUserinfo(serverUrl)}${username ? `|${username}` : ''}`
+        : undefined
     };
   }
 

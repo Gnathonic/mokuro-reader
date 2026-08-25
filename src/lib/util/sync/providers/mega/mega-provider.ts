@@ -244,7 +244,9 @@ export class MegaProvider implements SyncProvider {
           : hasSession || hasLegacy
             ? 'Configured (not connected)'
             : 'Not configured',
-      accountScope: this.reconnectEmail ? `mega:${this.reconnectEmail}` : undefined
+      // Lowercased: MEGA email login is case-insensitive, so 'A@B.com' and
+      // 'a@b.com' authenticate the same account and must not split the cache.
+      accountScope: this.reconnectEmail ? `mega:${this.reconnectEmail.toLowerCase()}` : undefined
     };
   }
 
