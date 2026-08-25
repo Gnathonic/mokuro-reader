@@ -48,16 +48,39 @@ Split by _relationship_, not by data shape:
   volumes, plus **metadata-only rows for volumes with reading history** (needed by the stats
   and history pages). Sized from real data: 361 installed + ≤708 with reading activity ≈
   **700–1,070 rows**, so a full scan costs ~45 ms instead of 501 ms.
-- **`cloud_volume_cache` (new table)** — catalog knowledge acquired by browsing: the
-  enrichment for cloud volumes the user has _not_ downloaded or read. ~10,350 rows today.
+- **`cloud_covers` (new table)** — **thumbnail blobs only**, keyed `[account_scope+path]`.
+  Nothing else: `series_index` already stores every other per-volume field this feature
+  needs.
 
 The decisive property is not just that scans get cheaper: once cloud enrichment lives in its
 own table, **cover and materialize writes stop touching `volumes` at all**, so they no longer
 fire the catalog's local liveQuery. The storm's fuel is removed rather than rationed.
 
-`series_index` (cached `series.json` per series) already exists and stays as-is — it holds
-per-series volume identity and counts. The new table holds what `series_index` cannot: the
-per-volume **thumbnail blob** and its freshness stamps.
+### Why the new table is tiny (revised 2026-08-25 after review)
+
+The first draft of this spec gave the new table fifteen fields. Seven of them —
+`volume_uuid`, `volume_title`, `page_count`, `character_count`, `archive_size`,
+`cover_size`, `cover_modified` — already exist in `series_index`, inside the cached
+`series.json`'s `volumes[]`. Caching them a second time would be duplication with an extra
+invalidation path to get wrong.
+
+The only data no existing table holds is the **thumbnail blob** (plus its dimensions), the
+**account scope** that owns it, and the **access timestamp** that expires it. So the new
+table is exactly that and nothing more:
+
+```
+cloud_covers: [account_scope+path] -> { thumbnail: File, width, height, last_accessed }
+```
+
+Everything else a cloud card renders is read from `series_index`, which is already keyed by
+series, already carries `fetched_at`, and is already refreshed by the existing sync path.
+
+**Why blobs get their own table rather than living inside the `series_index` row.** A
+`series_index` row covers a whole series, so its covers would be ~12 blobs (~450 KB) per
+row — and `listSeriesIndexes()` reads that table whole during the refresh pass, which would
+reintroduce precisely the blob-carrying full scan this work exists to eliminate. A separate
+per-volume table also avoids read-modify-write: covers arrive one at a time from concurrent
+fetches, while `series_index` rows are written wholesale by the sync path.
 
 ## Decisions (user, 2026-08-25)
 
