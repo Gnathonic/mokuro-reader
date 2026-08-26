@@ -442,6 +442,77 @@ describe('countIdbOps', () => {
     // Anchor: the same zero would hold for a query that never ran.
     expect(counts['cloud_covers.openKeyCursor'] ?? 0).toBeGreaterThanOrEqual(1);
   });
+
+  // THE `get` SHAPE'S OWN PROOF. `get` is metered precisely because Dexie's
+  // `bulkGet` lowers to `getMany` — one `IDBObjectStore.get` PER KEY — so a
+  // keyed whole-table re-read stays visible as a `get` storm instead of
+  // hiding behind a single innocuous `getAll` (see the note on `VALUE_OPS`).
+  // Until now the only EXACT-byte proof of that escape hatch lived in
+  // `cover-resolver.test.ts`, a file this suite does not control: if that
+  // test were deleted or rewritten, the helper could silently lose the
+  // guarantee and nothing here would notice. Same exact-total style as the
+  // `getAll` and cursor self-tests above.
+  it('measures the blob bytes a keyed get deserializes — the bulkGet escape hatch', async () => {
+    const N = 3;
+    const covers = Array.from({ length: N }, (_, i) => cachedCover('One Piece', i));
+    await putCloudCovers(covers);
+
+    const counts = await countIdbOps(async () => {
+      for (const c of covers) {
+        await db.cloud_covers.get([SCOPE, c.path]);
+      }
+    });
+
+    expect(counts['cloud_covers.get']).toBe(N);
+    expect(counts['cloud_covers.bytes']).toBe(N * COVER_BYTES);
+  });
+
+  // THE METERING HOLE `INDEX_OPS` USED TO HAVE. Dexie 4 does not lower any
+  // query to `IDBIndex.get` today (index reads lower to a cursor or
+  // `getAll`), so this drives it directly against the raw backing
+  // `IDBDatabase` rather than through Dexie — the only way to prove the
+  // COUNTER no longer has a blind spot here, independent of what today's
+  // query planner happens to emit.
+  it('meters bytes through an index get', async () => {
+    const cover = cachedCover('One Piece', 0);
+    await putCloudCovers([cover]);
+
+    const idbdb = db.backendDB();
+    const counts = await countIdbOps(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const tx = idbdb.transaction('cloud_covers', 'readonly');
+        const req = tx.objectStore('cloud_covers').index('cached_at').get(cover.cached_at);
+        req.addEventListener('success', () => resolve());
+        req.addEventListener('error', () => reject(req.error));
+      });
+    });
+
+    expect(counts['cloud_covers.idx.get']).toBe(1);
+    expect(counts['cloud_covers.bytes']).toBe(COVER_BYTES);
+  });
+
+  // THE STRAGGLER WINDOW. `fn` resolving does not mean every request it
+  // issued has fired its `success` event — an un-awaited request is the
+  // simplest way to prove it, and fake-indexeddb schedules `success` on a
+  // genuine macrotask (`setImmediate`/`setTimeout`, never a microtask — see
+  // `idb-op-counter.ts`'s import comment), so `fn`'s own microtask turns
+  // cannot have produced it yet. Without draining, `counts` would come back
+  // from `countIdbOps` with NO `cloud_covers.bytes` key at all, and the byte
+  // attribution would land later on the very object this test already holds
+  // — exactly the mutation-after-return Finding 2 describes, and, in
+  // CONTRACT 8a's back-to-back shape, the mutation that can shrink an
+  // EARLIER measurement instead of this one.
+  it('drains a straggler request before resolving, so a late success cannot land after return', async () => {
+    const cover = cachedCover('One Piece', 0);
+    await putCloudCovers([cover]);
+
+    const counts = await countIdbOps(async () => {
+      void db.cloud_covers.get([SCOPE, cover.path]);
+    });
+
+    expect(counts['cloud_covers.get']).toBe(1);
+    expect(counts['cloud_covers.bytes']).toBe(COVER_BYTES);
+  });
 });
 
 // CONTRACT 1 — a burst of writes costs ONE full scan, not one per write.

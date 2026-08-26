@@ -17,7 +17,7 @@ const STORE_OPS = [
   'openKeyCursor',
   'getAllKeys'
 ] as const;
-const INDEX_OPS = ['getAll', 'openCursor', 'openKeyCursor', 'count', 'getAllKeys'] as const;
+const INDEX_OPS = ['getAll', 'get', 'openCursor', 'openKeyCursor', 'count', 'getAllKeys'] as const;
 
 /**
  * The ops whose RESULT is a deserialized row, and which are therefore metered
@@ -35,7 +35,12 @@ const INDEX_OPS = ['getAll', 'openCursor', 'openKeyCursor', 'count', 'getAllKeys
  * cursor: Dexie's `bulkGet` lowers to `getMany`, which issues one
  * `IDBObjectStore.get` PER KEY, so a regression that re-reads a whole table as
  * a keyed batch is a `get` storm and would be invisible to a counter that only
- * metered `getAll`/`openCursor`.
+ * metered `getAll`/`openCursor`. `IDBIndex.get` is metered for the same
+ * reason: Dexie 4 does not lower any query to it today (index reads lower to
+ * a cursor or `getAll`), so it is a latent path rather than a live one — but a
+ * value-reading op left out of `VALUE_OPS` reports 0 bytes no matter what it
+ * deserializes, and a byte meter with a latent hole in it is exactly how a
+ * future whole-table read through an index would go unmeasured.
  *
  * `openKeyCursor` and `getAllKeys` are deliberately absent: they cannot
  * deserialize a value, which is the entire reason the production code uses
@@ -127,8 +132,19 @@ if (typeof IDBDatabase !== 'undefined') installTransactionCounter();
  * a read started inside `fn` whose result lands just after `fn` resolves is
  * still counted — on purpose. Under-counting is the dangerous direction here
  * (it would make a byte bound pass vacuously); over-counting can only fail a
- * contract, never hide one. Nothing outside `fn` can attribute at all: the
- * prototypes are restored on the way out, so no later request is ever metered.
+ * contract, never hide one. To make that guarantee true rather than aspirational,
+ * `fn` resolving is NOT the end of the counted window: every request a
+ * metered op issued is tracked, and `countIdbOps` drains all of them —
+ * including any a straggler success event enqueues while draining — before it
+ * returns `counts`. Without this, an un-awaited request from THIS call could
+ * fire its `success` event after `counts` had already been handed to the
+ * caller, mutating an object the caller believes is final; worse, in a suite
+ * that runs several `countIdbOps` blocks back to back (as CONTRACT 8a does),
+ * that late mutation lands on whichever object reference is still in scope
+ * when the event fires — silently inflating an EARLIER measurement instead of
+ * this one. Nothing outside `fn` can attribute at all once draining finishes:
+ * the prototypes are restored on the way out, so no later request is ever
+ * metered.
  *
  * TRANSACTIONS are counted too: `"transactions"` is the grand total, and
  * `"tx.<stores>.<mode>"` counts the ones opened over a particular store set
@@ -153,6 +169,14 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
     counts[`${store}.bytes`] = (counts[`${store}.bytes`] ?? 0) + bytes;
   };
 
+  // Every value-reading request `meter` attaches a listener to gets a
+  // promise here, pushed SYNCHRONOUSLY when the wrapped store/index method is
+  // called — before `fn` can `await` anything — so by the time `fn()`
+  // resolves, `pending` already holds an entry for every such request `fn`
+  // issued, awaited or not. Draining this (below) before returning `counts`
+  // is what closes the straggler window described above.
+  const pending: Promise<void>[] = [];
+
   /**
    * Meter a value-reading request's result. A cursor request fires `success`
    * once per row it walks (each `continue()` re-uses the same request), so one
@@ -162,19 +186,34 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
   const meter = (request: unknown, store: string, isCursor: boolean): unknown => {
     const req = request as IDBRequest | null;
     if (!req || typeof req.addEventListener !== 'function') return request;
-    req.addEventListener('success', () => {
-      const result = req.result as unknown;
-      if (isCursor) {
-        const cursor = result as IDBCursorWithValue | null;
-        if (cursor) addBytes(store, blobBytes(cursor.value));
-      } else if (Array.isArray(result)) {
-        let total = 0;
-        for (const row of result) total += blobBytes(row);
-        addBytes(store, total);
-      } else {
-        addBytes(store, blobBytes(result));
-      }
-    });
+    pending.push(
+      new Promise<void>((resolve) => {
+        req.addEventListener('error', () => resolve(), { once: true });
+        req.addEventListener('success', () => {
+          const result = req.result as unknown;
+          if (isCursor) {
+            const cursor = result as IDBCursorWithValue | null;
+            if (!cursor) {
+              // Traversal exhausted — no further `continue()` will come.
+              resolve();
+              return;
+            }
+            addBytes(store, blobBytes(cursor.value));
+            // NOT resolved yet: a cursor's request is reused by `continue()`,
+            // so this same `success` listener fires again for the next row.
+            return;
+          }
+          if (Array.isArray(result)) {
+            let total = 0;
+            for (const row of result) total += blobBytes(row);
+            addBytes(store, total);
+          } else {
+            addBytes(store, blobBytes(result));
+          }
+          resolve();
+        });
+      })
+    );
     return request;
   };
 
@@ -212,6 +251,16 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
 
   try {
     await fn();
+    // Drain every outstanding request `fn` issued before handing `counts`
+    // back. `pending` can grow WHILE this drains — a cursor's `success`
+    // firing again via `continue()`, or another request the previous batch's
+    // resolution happened to trigger — so this re-snapshots and re-awaits
+    // until nothing new shows up, rather than a single `Promise.all` that
+    // could miss a straggler of its own.
+    while (pending.length) {
+      const batch = pending.splice(0, pending.length);
+      await Promise.all(batch);
+    }
     return counts;
   } finally {
     activeCounts = previousCounts;
