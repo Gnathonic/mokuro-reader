@@ -625,3 +625,36 @@ describe('isIndexedPlaceholder', () => {
     expect(isIndexedPlaceholder(localVolume())).toBe(false);
   });
 });
+
+describe('generatePlaceholders with a cover map', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+  ]);
+
+  it('attaches a cached cover by cloud path, without needing an index entry', () => {
+    const covers = new Map([
+      [
+        'One Piece/Volume 1.cbz',
+        {
+          account_scope: 'mega:a@b.com',
+          path: 'One Piece/Volume 1.cbz',
+          thumbnail: new File([new Uint8Array([1])], 'c.webp'),
+          width: 250,
+          height: 350,
+          last_accessed: 1000
+        }
+      ]
+    ]);
+
+    const placeholders = generatePlaceholders(cloudFiles, [], undefined, covers);
+
+    expect(placeholders[0].thumbnail).toBeInstanceOf(File);
+    expect(placeholders[0].thumbnail_width).toBe(250);
+    expect(placeholders[0].thumbnail_height).toBe(350);
+  });
+
+  it('leaves a placeholder bare when its path has no cached cover', () => {
+    const placeholders = generatePlaceholders(cloudFiles, [], undefined, new Map());
+    expect(placeholders[0].thumbnail).toBeUndefined();
+  });
+});

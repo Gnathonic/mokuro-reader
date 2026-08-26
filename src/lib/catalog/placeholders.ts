@@ -7,6 +7,8 @@ import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
 import { isArchiveSize, isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { normalizeCachePath } from '$lib/catalog/cloud-cache-key';
+import type { CloudCover } from '$lib/catalog/cloud-covers';
 
 /**
  * The identity of one archive across the sources that spell it differently: a
@@ -262,11 +264,19 @@ function createPlaceholder(
  * `indexMap` is the cached `series.json` per series (`seriesIndexMap`). It is
  * optional and purely additive: a series without an index behaves exactly as
  * before.
+ *
+ * `coverMap` is the active account's cached cover blobs (`cloudCoverMap`),
+ * keyed by normalized cloud path. Also optional and purely additive: it is
+ * independent of `indexMap` — a placeholder can carry a fetch pointer
+ * (`cloudThumbnailFileId` etc, from `thumbnailMap` below) with no cached blob
+ * yet, or a cached blob for a path whose sidecar pointer already resolved
+ * once.
  */
 export function generatePlaceholders(
   cloudFilesMap: Map<string, CloudVolumeWithProvider[]>,
   localVolumes: VolumeMetadata[],
-  indexMap?: Map<string, SeriesIndexRecord>
+  indexMap?: Map<string, SeriesIndexRecord>,
+  coverMap?: Map<string, CloudCover>
 ): VolumeMetadata[] {
   // Skip during SSR/build
   if (!browser) {
@@ -393,6 +403,16 @@ export function generatePlaceholders(
           placeholder.cloudThumbnailModifiedTime = thumbnailInfo.modifiedTime;
         }
       }
+
+      // The blob already fetched, as opposed to the sidecar pointer to one
+      // that might not be — independent of `thumbnailInfo` above.
+      const cachedCover = coverMap?.get(normalizeCachePath(cloudFile.path));
+      if (cachedCover) {
+        placeholder.thumbnail = cachedCover.thumbnail;
+        placeholder.thumbnail_width = cachedCover.width;
+        placeholder.thumbnail_height = cachedCover.height;
+      }
+
       placeholders.push(placeholder);
     }
   }

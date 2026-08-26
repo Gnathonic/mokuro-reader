@@ -16,6 +16,7 @@ const {
   cloudFiles,
   seriesMetadataMap,
   seriesIndexMap,
+  cloudCoverMap,
   routeParams,
   generatePlaceholders
 } = vi.hoisted(() => {
@@ -53,6 +54,7 @@ const {
     cloudFiles: createStore(new Map<string, unknown>()),
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
+    cloudCoverMap: createStore(new Map<string, unknown>()),
     routeParams: createStore({} as Record<string, string>),
     generatePlaceholders: vi.fn(() => [] as unknown[])
   };
@@ -83,6 +85,7 @@ vi.mock('$lib/util/download-volume-repair', () => ({
 }));
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
+vi.mock('$lib/catalog/cloud-covers-store', () => ({ cloudCoverMap }));
 vi.mock('$lib/catalog/catalog', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/catalog/catalog')>();
   return { ...actual, deriveSeriesFromVolumes: vi.fn(actual.deriveSeriesFromVolumes) };
@@ -175,6 +178,7 @@ describe('volumesWithPlaceholders', () => {
     expect(generate).toHaveBeenLastCalledWith(
       cloudListing,
       expect.any(Array),
+      expect.any(Map) as unknown as Map<string, unknown>,
       expect.any(Map) as unknown as Map<string, unknown>
     );
 
@@ -199,6 +203,45 @@ describe('volumesWithPlaceholders', () => {
 
     unsubscribe();
     cloudFiles.set(new Map());
+  });
+
+  it('passes the cover map to generatePlaceholders and recomputes only when its content changes', () => {
+    const generate = vi.mocked(generatePlaceholders);
+    generate.mockClear();
+    cloudFiles.set(cloudListing);
+    seriesIndexMap.set(new Map([['one piece', indexRecord('2026-08-17T00:00:00.000Z')]]));
+
+    const coverAt = (lastAccessed: number, blobLength = 3) => ({
+      account_scope: 'webdav:h|nathan',
+      path: 'One Piece/Volume 2.cbz',
+      thumbnail: new File([new Uint8Array(blobLength)], 'c.webp'),
+      width: 250,
+      height: 350,
+      last_accessed: lastAccessed
+    });
+    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
+
+    const unsubscribe = volumesWithPlaceholders.subscribe(() => {});
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenLastCalledWith(
+      cloudListing,
+      expect.any(Array),
+      expect.any(Map) as unknown as Map<string, unknown>,
+      expect.any(Map) as unknown as Map<string, unknown>
+    );
+
+    // A touch bumps last_accessed and re-emits a fresh Map, but the cached blob
+    // — and therefore what a placeholder would show — hasn't changed.
+    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000)]]));
+    expect(generate).toHaveBeenCalledTimes(1);
+
+    // A genuinely different blob does recompute.
+    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000, 4)]]));
+    expect(generate).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    cloudFiles.set(new Map());
+    cloudCoverMap.set(new Map());
   });
 
   it('decorates a metadata-only row with the cloud file it can be downloaded from', () => {

@@ -18,6 +18,8 @@ import { getLegacyImageOnlyVolumeUuid } from '$lib/util/download-volume-repair';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { isCatalogVisible } from '$lib/util/cloud-fields';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
+import { cloudCoverMap } from '$lib/catalog/cloud-covers-store';
+import type { CloudCover } from '$lib/catalog/cloud-covers';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
@@ -104,10 +106,27 @@ function seriesIndexSignature(map: Map<string, SeriesIndexRecord>): string {
   return parts.join('');
 }
 
+/**
+ * What the placeholder pass actually consumes from `cloudCoverMap`: which
+ * paths have a cached cover and how big the blob is. `cloudCoverMap` is also
+ * liveQuery-backed, so it re-emits a brand-new Map of brand-new row objects
+ * on ANY write to `cloud_covers` — including a `touchCloudCovers` write that
+ * only bumps `last_accessed` and changes nothing a placeholder would show.
+ * Byte length is enough to catch a genuine cover overwrite; a same-length
+ * coincidental overwrite recomputing anyway is a harmless false positive.
+ */
+function cloudCoverSignature(map: Map<string, CloudCover>): string {
+  const parts: string[] = [];
+  for (const [path, cover] of map) parts.push(`${path}\u0000${cover.thumbnail.size}`);
+  parts.sort();
+  return parts.join('');
+}
+
 let lastPlaceholderInputs: {
   volumes: unknown;
   cloudFiles: unknown;
   indexSignature: string;
+  coverSignature: string;
 } | null = null;
 let lastPlaceholders: VolumeMetadata[] = [];
 
@@ -123,22 +142,34 @@ let lastCoverIndex = new Map<string, CloudVolumeWithProvider>();
 
 // Merge local volumes with cloud placeholders
 export const volumesWithPlaceholders = derived(
-  [volumes, unifiedCloudManager.cloudFiles, seriesIndexMap],
-  ([$volumes, $cloudFiles, $seriesIndexMap]) => {
+  [volumes, unifiedCloudManager.cloudFiles, seriesIndexMap, cloudCoverMap],
+  ([$volumes, $cloudFiles, $seriesIndexMap, $cloudCoverMap]) => {
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);
 
     // Generate cloud provider placeholders
     if ($cloudFiles.size > 0) {
       const indexSignature = seriesIndexSignature($seriesIndexMap);
+      const coverSignature = cloudCoverSignature($cloudCoverMap);
       if (
         !lastPlaceholderInputs ||
         lastPlaceholderInputs.volumes !== $volumes ||
         lastPlaceholderInputs.cloudFiles !== $cloudFiles ||
-        lastPlaceholderInputs.indexSignature !== indexSignature
+        lastPlaceholderInputs.indexSignature !== indexSignature ||
+        lastPlaceholderInputs.coverSignature !== coverSignature
       ) {
-        lastPlaceholders = generatePlaceholders($cloudFiles, localVolumes, $seriesIndexMap);
-        lastPlaceholderInputs = { volumes: $volumes, cloudFiles: $cloudFiles, indexSignature };
+        lastPlaceholders = generatePlaceholders(
+          $cloudFiles,
+          localVolumes,
+          $seriesIndexMap,
+          $cloudCoverMap
+        );
+        lastPlaceholderInputs = {
+          volumes: $volumes,
+          cloudFiles: $cloudFiles,
+          indexSignature,
+          coverSignature
+        };
       }
 
       for (const placeholder of lastPlaceholders) {
