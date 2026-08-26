@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VolumeMetadata } from '$lib/types';
 
 /**
@@ -157,6 +157,32 @@ import {
 } from '$lib/catalog';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
+
+/**
+ * The gate/resolver state below is module-scoped and shared by every test in
+ * this file, so a test that throws mid-body would otherwise skip its own
+ * cleanup and poison the next one: a latched `toArrayGate.deferred`, a
+ * left-behind `volumeRecord` key, and — worst — a still-live subscription,
+ * which stops the next `subscribe()` from triggering a fresh `start()` at all.
+ * That turns one real failure into a cascade of misleading ones in unrelated
+ * tests. Registering teardown here makes cleanup unconditional.
+ */
+const pendingCleanups: Array<() => void> = [];
+const trackSubscription = (unsubscribe: () => void) => {
+  pendingCleanups.push(unsubscribe);
+  return unsubscribe;
+};
+
+afterEach(() => {
+  while (pendingCleanups.length) pendingCleanups.pop()?.();
+  vi.useRealTimers();
+  toArrayGate.deferred = false;
+  toArrayResolvers.length = 0;
+  toArrayCalls.length = 0;
+  for (const key of Object.keys(volumeRecord)) {
+    if (key !== 'v1') delete volumeRecord[key];
+  }
+});
 
 /**
  * `volumes` coalesces its liveQuery emissions on a trailing-edge timer (see
@@ -667,7 +693,7 @@ describe('volumes running/dirty reentrancy guard', () => {
     toArrayGate.deferred = true;
 
     let latest: Record<string, unknown> | undefined;
-    const unsubscribe = volumes.subscribe((v) => (latest = v as typeof latest));
+    const unsubscribe = trackSubscription(volumes.subscribe((v) => (latest = v as typeof latest)));
 
     // The mocked liveQuery fires its `next` synchronously on subscribe, so
     // the first coalesce window is already running; let it elapse to start
@@ -726,7 +752,7 @@ describe('volumes disposal guard', () => {
     toArrayGate.deferred = true;
 
     let latest: Record<string, unknown> | undefined;
-    const unsubscribeA = volumes.subscribe((v) => (latest = v as typeof latest));
+    const unsubscribeA = trackSubscription(volumes.subscribe((v) => (latest = v as typeof latest)));
 
     // Subscription A's first coalesce window elapses, starting its
     // (deferred, still-pending) read.
@@ -742,7 +768,7 @@ describe('volumes disposal guard', () => {
     // completing its OWN read before A's stale one settles.
     volumeRecord.v2 = { volume_uuid: 'v2' };
     toArrayGate.deferred = false;
-    const unsubscribeB = volumes.subscribe((v) => (latest = v as typeof latest));
+    const unsubscribeB = trackSubscription(volumes.subscribe((v) => (latest = v as typeof latest)));
     await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
     expect(toArrayCalls.length).toBe(2);
     expect(latest).toHaveProperty('v2');
