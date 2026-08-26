@@ -79,7 +79,7 @@ The current code calls `liveQuery(async () => db.volumes.toArray())` and debounc
 
 `db.volumes.count()` is the signal. It touches the whole store, so Dexie re-fires it on any mutation in the table — including updates, which a key-list query would miss — and it costs an index count rather than a row deserialization.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // in catalog-store.test.ts — the db mock must count toArray calls
@@ -115,12 +115,12 @@ it('re-reads again after a later, separate burst', async () => {
 
 Extend the file's existing `dexie` mock so `liveQuery` is driven by an `emitMutationSignal()` hook and `db.volumes.toArray` pushes to `toArrayCalls`.
 
-- [ ] **Step 2: Run it and confirm it fails**
+- [x] **Step 2: Run it and confirm it fails**
 
 Run: `npx vitest run src/lib/catalog/catalog-store.test.ts`
 Expected: FAIL — 20 `toArray` calls, not 1.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 export const volumes = readable<Record<string, VolumeMetadata> | undefined>(undefined, (set) => {
@@ -194,11 +194,11 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
 });
 ```
 
-- [ ] **Step 4: Run the tests — expect PASS**
+- [x] **Step 4: Run the tests — expect PASS**
 
 Run: `npx vitest run src/lib/catalog/catalog-store.test.ts`
 
-- [ ] **Step 5: Full suite, then commit**
+- [x] **Step 5: Full suite, then commit**
 
 ```bash
 npx vitest run && npm run check
@@ -207,7 +207,7 @@ git add src/lib/catalog/index.ts src/lib/catalog/catalog-store.test.ts
 git commit -m "perf(catalog): debounce the volumes re-query, not just its emission"
 ```
 
-- [ ] **Step 6: Benchmark**
+- [x] **Step 6: Benchmark**
 
 Controller runs the benchmark protocol above and records the result in the ledger before Task 2
 starts. This task should cut the SCAN COUNT sharply while leaving row growth untouched — if scan
@@ -231,7 +231,7 @@ The flush currently routes a cover onto **any** existing row (`if (fresh)`). Sin
 
 The rule: a blob belongs on the row only when the user has a **relationship** with the volume — it is installed, or it carries reading history (the stats and history pages read thumbnails from rows). Otherwise the cover goes to `cloud_covers` exactly as it does for a row-less volume.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 it('sends a browsed volume’s cover to cloud_covers even though a row exists', async () => {
@@ -270,12 +270,12 @@ it('still puts the cover on a row that carries reading history', async () => {
 
 Add whatever `setReadingHistory` helper the file's mocking style calls for.
 
-- [ ] **Step 2: Run it and confirm it fails**
+- [x] **Step 2: Run it and confirm it fails**
 
 Run: `npx vitest run src/lib/catalog/cover-persist.test.ts`
 Expected: FAIL — the browsed row received the blob.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In the flush's row branch, replace the bare `if (fresh)` acceptance with a relationship test. Read the reading-state map ONCE per flush (outside the loop — it is a synchronous store read, but do not repeat it per entry):
 
@@ -302,11 +302,11 @@ if (fresh && hasRelationship) {
 
 The existing transactional re-check (`needsDownload`, `mode === 'fill'` guards) stays exactly as it is inside the relationship branch.
 
-- [ ] **Step 4: Run the tests — expect PASS**
+- [x] **Step 4: Run the tests — expect PASS**
 
 Run: `npx vitest run src/lib/catalog/cover-persist.test.ts`
 
-- [ ] **Step 5: Full suite, then commit**
+- [x] **Step 5: Full suite, then commit**
 
 ```bash
 npx vitest run && npm run check
@@ -315,7 +315,7 @@ git add src/lib/catalog/cover-persist.ts src/lib/catalog/cover-persist.test.ts
 git commit -m "perf(catalog): keep cloud cover blobs off relationship-less rows"
 ```
 
-- [ ] **Step 6: Benchmark**
+- [x] **Step 6: Benchmark**
 
 Controller runs the benchmark protocol and records the result before Task 3 starts. This task
 should cut per-scan DURATION (fewer blobs to deserialize) and the thumbnail-carrying row count,
@@ -341,7 +341,7 @@ Two separate write amplifications:
 
 **(b) `cover-service.ts:327` calls `materializeSeriesVolumes` with `entries: [entry]` — one volume per resolution.** Even with (a), that is one mutation per resolved volume, which is what produced 54 writes in 12 seconds. Case-3 resolutions must be queued and flushed together, the same way `cover-persist` already coalesces its writes.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // materialize.test.ts
@@ -366,26 +366,26 @@ it('coalesces case-3 resolutions into one materialize write', async () => {
 });
 ```
 
-- [ ] **Step 2: Run them and confirm they fail**
+- [x] **Step 2: Run them and confirm they fail**
 
 Run: `npx vitest run src/lib/catalog/materialize.test.ts src/lib/catalog/cover-service.test.ts`
 Expected: FAIL — 3 puts / 0 bulkPuts, and 5 separate materialize calls.
 
-- [ ] **Step 3: Implement (a) — batch inside materialize**
+- [x] **Step 3: Implement (a) — batch inside materialize**
 
 Collect the rows that pass every guard into an array, then issue one `await db.volumes.bulkPut(rows)` before the transaction closes. Keep `owners`/`titlesTaken` bookkeeping updated per row as the loop goes, since later rows' guards depend on earlier rows' decisions.
 
-- [ ] **Step 4: Implement (b) — queue case-3 resolutions**
+- [x] **Step 4: Implement (b) — queue case-3 resolutions**
 
 In `cover-service.ts`, replace the immediate `materializeSeriesVolumes` call with an append to a per-series pending map plus a scheduled flush, mirroring `cover-persist.ts`'s existing queue+timer shape (reuse its constants/backoff if that reads cleanly; do not invent a second unrelated cadence). The flush issues ONE `materializeSeriesVolumes` per series with all queued entries, and one `scheduleSeriesFileWrite` carrying all of them as `cloudMeasuredVolumes` — that option already accumulates across coalesced calls by design.
 
 Everything the current code does per resolution must still happen: the entry still reaches `cloudMeasuredVolumes`, and a failed pull is still retryable.
 
-- [ ] **Step 5: Run the tests — expect PASS**
+- [x] **Step 5: Run the tests — expect PASS**
 
 Run: `npx vitest run src/lib/catalog/materialize.test.ts src/lib/catalog/cover-service.test.ts`
 
-- [ ] **Step 6: Full suite, then commit**
+- [x] **Step 6: Full suite, then commit**
 
 ```bash
 npx vitest run && npm run check
@@ -394,7 +394,7 @@ git add src/lib/catalog/materialize.ts src/lib/catalog/cover-service.ts src/lib/
 git commit -m "perf(catalog): batch case-3 row writes"
 ```
 
-- [ ] **Step 7: Benchmark**
+- [x] **Step 7: Benchmark**
 
 Controller runs the benchmark protocol and records the result. This task should cut the number of
 WRITES, and therefore both scan count and row-growth rate, without changing what ends up stored.
@@ -407,19 +407,19 @@ WRITES, and therefore both scan count and row-growth rate, without changing what
 
 - Modify: `docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (append the follow-up numbers)
 
-- [ ] **Step 1: Reload the catalog and instrument before convergence**
+- [x] **Step 1: Reload the catalog and instrument before convergence**
 
 Patch `IDBObjectStore.prototype.getAll` to count `volumes` full scans and record their durations, as in the measurement that produced this plan's starting numbers.
 
-- [ ] **Step 2: Measure a 20-second window**
+- [x] **Step 2: Measure a 20-second window**
 
 Expected, against the starting point above: full scans well under 145, no queue pileup (durations flat rather than climbing), and `volumes` growth per unit time sharply reduced.
 
-- [ ] **Step 3: Confirm blobs left the table**
+- [x] **Step 3: Confirm blobs left the table**
 
 Count rows carrying `thumbnail` in `volumes`. Expected: only installed volumes and rows with reading history — not the 730 measured before.
 
-- [ ] **Step 4: Record and commit**
+- [x] **Step 4: Record and commit**
 
 Append a "Follow-up measured" table to the spec with the same rows as the starting-point table so the two are directly comparable, then commit with an explicit pathspec.
 
@@ -450,7 +450,7 @@ from an ad-hoc assertion into a named contract file.
   `$lib/catalog/cover-persist`, `materializeSeriesVolumes` from `$lib/catalog/materialize`.
 - Produces: `countIdbOps(fn)` → `Promise<Record<string, number>>` keyed `"<store>.<op>"`.
 
-- [ ] **Step 1: Write the op counter helper**
+- [x] **Step 1: Write the op counter helper**
 
 It patches the prototypes for the duration of one callback and restores them in a `finally`, so
 a failing assertion cannot leak the patch into the next test.
@@ -517,7 +517,7 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
 }
 ```
 
-- [ ] **Step 2: Verify the helper actually counts, before trusting it**
+- [x] **Step 2: Verify the helper actually counts, before trusting it**
 
 A counter that silently counts nothing would make every contract below pass vacuously. Assert a
 known-nonzero baseline first.
@@ -537,7 +537,7 @@ Run: `npx vitest run src/lib/catalog/__tests__/perf-contracts.test.ts -t "counts
 Expected: PASS. If either count is 0 or undefined, the helper is broken — fix it before writing
 any contract, because the contracts are only as trustworthy as this test.
 
-- [ ] **Step 3: Write the contracts**
+- [x] **Step 3: Write the contracts**
 
 Each has a comment naming the regression it guards and the measured number behind it, so a
 future reader knows what the bound is protecting rather than treating it as an arbitrary
@@ -587,7 +587,7 @@ Fill `subscribeToVolumes`, `settle`, `makeRow`, and `makeCover` from the existin
 `src/lib/catalog/catalog-store.test.ts` rather than writing new ones — that file already solved
 the liveQuery-settling problem, and duplicating it would let the two drift.
 
-- [ ] **Step 4: Prove each contract bites (mutation test)**
+- [x] **Step 4: Prove each contract bites (mutation test)**
 
 For EACH of the three contracts, temporarily break the code it guards and confirm the test
 fails; then revert. Record in the report which mutation you used and the failure message.
@@ -596,7 +596,7 @@ false assurance. Suggested mutations: (1) remove the `running`/`dirty` guard in
 `src/lib/catalog/index.ts`; (2) replace `bulkPut` with a `for` loop of awaited `put`s;
 (3) route a cover to the row branch unconditionally in `cover-persist.ts`.
 
-- [ ] **Step 5: Full suite, then commit**
+- [x] **Step 5: Full suite, then commit**
 
 ```bash
 npx vitest run && npm run check

@@ -143,3 +143,51 @@ and `volume_ocr` both at 0 — i.e. every row is a metadata-only row minted by o
 (`series-open.ts`), not by browsing. Browsing itself now mints nothing. That path has no expiry and
 remains the one way `volumes` grows monotonically; it is an explicit spec non-goal, and these
 numbers are the baseline for deciding whether it ever needs one.
+
+## Follow-up measured (2026-08-26, scan-storm follow-up plan)
+
+Same machine, same WebDAV library — but note the library is **larger than the one the table
+above was measured against**: 1,027 series / 12,520 files. Numbers are therefore comparable
+row-to-row only where the metric is a count of operations, not a duration.
+
+|                                         | Before this plan                    | After                                    |
+| --------------------------------------- | ----------------------------------- | ---------------------------------------- |
+| Full `volumes` scans, 20-second window  | **145**, queueing to 16,560 ms each | **0**                                    |
+| Cumulative scan time in that window     | 257 s                               | 0                                        |
+| Full scans, series-open-and-return      | 12                                  | **4**                                    |
+| `volumes.put` during that cycle         | —                                   | **0** (browsing mints no rows, no blobs) |
+| `cloud_covers` cursor reads, same cycle | 2                                   | 2                                        |
+| Main-thread long tasks                  | 0 (backend-bound)                   | 0                                        |
+| IndexedDB operations while idle         | —                                   | 0                                        |
+
+Covers render correctly in the catalog, confirmed visually — the cover pipeline's cache
+identity is threaded end to end, not merely green in tests.
+
+### What these numbers do not yet show
+
+Scan **durations** are still 112/417/490/134 ms, close to the 501 ms in the table above, because
+the measured database carries work done before these fixes existed: 3,428 rows, 3,033 of them
+holding 94.2 MB of thumbnails, while `volume_files` and `volume_ocr` are both **0** — not one of
+those volumes is installed.
+
+The final review established that this is **not** clearable residue. `cover-install.ts` writes a
+thumbnail onto a metadata-only row with a raw `db.volumes.update`, bypassing `cover-persist.ts`'s
+relationship gate entirely; its callers (`series-open.ts`, `series-backfill.ts`) act on
+freshly-materialized rows with no history. Clearing local storage would therefore rebuild the
+blob-carrying table rather than reveal a clean measurement. A duration re-measurement is only
+meaningful **after** that write is routed through `installCover`.
+
+### Correction to the table above
+
+Line "Thumbnail blobs in `volumes` → **0**" is **library-conditional, not code-guaranteed**.
+`cover-install.ts` (which predates that measurement) puts blobs on metadata-only rows whenever
+cover sidecars exist; the library measured on 2026-08-25 simply had none. Read that row as "0 for
+a library without cover sidecars" until the bypass is closed.
+
+### Correction to a claim made while planning this work
+
+The plan asserted that replacing `materialize.ts`'s per-row `put` loop with `bulkPut` would cut
+the number of write transactions and therefore the number of catalog re-derives. That is wrong:
+the loop already ran inside a single `db.transaction('rw', …)`, and Dexie broadcasts
+`storagemutated` once at commit. `bulkPut` saves IndexedDB round-trips only. The scan-count win
+comes entirely from batching writes across cover-service resolutions.
