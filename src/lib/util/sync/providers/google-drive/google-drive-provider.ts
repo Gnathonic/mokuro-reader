@@ -156,9 +156,14 @@ class GoogleDriveProvider implements SyncProvider {
       // never reports a stale account's folder id as this account's scope.
       // driveFilesCache.clear() is the same reset logout's cacheManager.clearAll()
       // performs on this cache; reused directly here rather than adding a
-      // second way to clear the same state.
+      // second way to clear the same state. readerFolderPromise is cleared
+      // too: otherwise a resolution still in flight from the previous
+      // account is handed straight to the next ensureReaderFolder() caller
+      // via the mutex check below (a resolution issued right after login()
+      // routinely races this).
       this.readerFolderId = null;
       driveFilesCache.clear();
+      this.readerFolderPromise = null;
 
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();

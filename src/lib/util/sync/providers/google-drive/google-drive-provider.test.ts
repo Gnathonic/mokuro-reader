@@ -227,3 +227,73 @@ describe('GoogleDriveProvider login() account-switch scoping', () => {
     expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:account-b-folder');
   });
 });
+
+describe('GoogleDriveProvider login() releases the in-flight folder-resolution mutex', () => {
+  beforeEach(() => {
+    (googleDriveProvider as unknown as { readerFolderId: string | null }).readerFolderId = null;
+    (
+      googleDriveProvider as unknown as { readerFolderPromise: Promise<string> | null }
+    ).readerFolderPromise = null;
+  });
+
+  it('never hands a post-login caller the resolution that was still in flight for the previous account', async () => {
+    // Account A's resolution parks mid-flight: its mutex-internal recheck of
+    // driveFilesCache never resolves until we release it below.
+    let releaseStuckRecheck!: (v: string | null) => void;
+    const stuckRecheck = new Promise<string | null>((res) => {
+      releaseStuckRecheck = res;
+    });
+
+    let call = 0;
+    vi.mocked(driveFilesCache.getReaderFolderId).mockImplementation(async () => {
+      call++;
+      if (call === 1) return null; // account A: outer cache check — nothing cached yet
+      if (call === 2) return stuckRecheck; // account A: mutex-internal recheck — stuck
+      if (call === 3) return 'account-b-folder'; // account B: post-login caller's outer check
+      return null;
+    });
+
+    // Kick off account A's resolution but don't await it — it parks on the
+    // stuck recheck, leaving `readerFolderPromise` set on the instance.
+    const staleResolution = googleDriveProvider.ensureReaderFolder();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      (googleDriveProvider as unknown as { readerFolderPromise: unknown }).readerFolderPromise
+    ).not.toBeNull();
+
+    // Switch accounts via the consent-screen flow (no explicit logout first).
+    vi.mocked(tokenManager.token.subscribe).mockImplementationOnce((cb) => {
+      queueMicrotask(() => cb('NEW-ACCOUNT-TOKEN'));
+      return () => {};
+    });
+    await googleDriveProvider.login();
+
+    // login() must release the mutex, not just the id and driveFilesCache.
+    expect(
+      (googleDriveProvider as unknown as { readerFolderPromise: unknown }).readerFolderPromise
+    ).toBeNull();
+
+    // A post-login caller starts its OWN resolution instead of being handed
+    // account A's still-pending one via the `if (this.readerFolderPromise)`
+    // mutex check, and correctly resolves to account B's folder.
+    const resultB = await googleDriveProvider.ensureReaderFolder();
+    expect(resultB).toBe('account-b-folder');
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:account-b-folder');
+
+    // Account A's stale resolution is never blocking anyone at this point —
+    // it settles entirely on its own, independent of the mutex field we
+    // already reset and reused above.
+    releaseStuckRecheck('account-a-folder');
+    await expect(staleResolution).resolves.toBe('account-a-folder');
+
+    // NOT asserted here (deliberately, see task-1-report.md "Fix round 3"):
+    // that orphaned resolution's own `this.readerFolderId = recheckFolderId`
+    // write executes unconditionally when it settles, so accountScope CAN
+    // still flip back to the stale account-A value at this point. Closing
+    // that needs a generation check in ensureReaderFolder()'s mutex — out of
+    // scope for this one-line fix (same class as the parked
+    // driveFilesCache.fetchAllFiles() writer finding).
+  });
+});
