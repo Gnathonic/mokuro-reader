@@ -95,8 +95,29 @@ vi.mock('$lib/metadata/series-file-sync', () => ({
     scheduleSeriesFileWriteMock(...a)
 }));
 
+// `flushPendingCoverPersists` (cover-persist.ts) consults `activeAccountScope()`
+// to decide where a row-less cover belongs — it reads
+// `unifiedCloudManager.getActiveProvider().getStatus().accountScope`, a
+// DIFFERENT call than the `getActiveProvider()` above (same mocked function,
+// but the returned provider now also needs a `getStatus` method). Defaults to
+// one authenticated account so case-2 tests below have a scope to attribute a
+// `cloud_covers` write to; individual tests override it to exercise the
+// no-scope-drop path.
+const { putCloudCoversMock } = vi.hoisted(() => ({ putCloudCoversMock: vi.fn() }));
+vi.mock('$lib/catalog/cloud-covers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/catalog/cloud-covers')>();
+  return {
+    ...actual,
+    putCloudCovers: (...a: Parameters<typeof actual.putCloudCovers>) => {
+      putCloudCoversMock(...a);
+      return actual.putCloudCovers(...a);
+    }
+  };
+});
+
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
+import { getCloudCovers } from './cloud-covers';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
@@ -144,6 +165,10 @@ function indexedPlaceholder(uuid: string, overrides: Partial<VolumeMetadata> = {
     character_count: 50,
     page_char_counts: [],
     isPlaceholder: true,
+    // Every real placeholder carries this (see `createPlaceholder` in
+    // placeholders.ts) — it is the identity a row-less cover is cached
+    // under in `cloud_covers`.
+    cloudPath: 'One Piece/Volume 01.cbz',
     ...overrides
   } as VolumeMetadata;
 }
@@ -192,7 +217,11 @@ beforeEach(() => {
     currentProviderType: 'webdav',
     providers: { webdav: { isReadOnly: false, serverCompilesMetadata: false } }
   };
-  getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile: vi.fn() });
+  getActiveProvider.mockReturnValue({
+    type: 'webdav',
+    downloadFile: vi.fn(),
+    getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:a@b.com' })
+  });
   resolveCloudFolderTitle.mockImplementation((t: string) => t);
   getCloudVolumesBySeries.mockReturnValue([]);
   fetchCloudThumbnailMock.mockResolvedValue(coverResult());
@@ -202,6 +231,7 @@ beforeEach(() => {
 afterEach(async () => {
   _resetCoverPersistForTests();
   await db.volumes.clear();
+  await db.cloud_covers.clear();
   vi.restoreAllMocks();
 });
 
@@ -288,18 +318,23 @@ describe('decision tree case 1: a DB row already exists', () => {
 });
 
 describe('decision tree case 2: an index-adopted placeholder', () => {
-  it('materializes the row FROM THE ENTRY and installs the cover, skipping the mokuro pull entirely', async () => {
+  it('fetches and caches the cover in cloud_covers WITHOUT materializing a row — the regression fix', async () => {
+    const before = await db.volumes.count();
     const vol = indexedPlaceholder('idx-1', {
       cloudThumbnailFileId: 'c-1',
       cloudThumbnailPath: 'One Piece/v1.webp'
     });
 
     requestCover(vol);
-    const persisted = await waitForCover('idx-1');
+    await vi.waitFor(async () => {
+      await flushPendingCoverPersists();
+      const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+      expect(cached.has('One Piece/Volume 01.cbz')).toBe(true);
+    });
 
-    expect(persisted.page_count).toBe(5);
-    expect(persisted.character_count).toBe(50);
-    expect(persisted.metadata_only).toBe(true);
+    // The whole point: browsing this placeholder never minted a `volumes` row.
+    expect(await db.volumes.count()).toBe(before);
+    expect(await db.volumes.get('idx-1')).toBeUndefined();
     // The entry-present path never touches the network for the ENTRY —
     // `downloadFile`/`pullMokuroEntry` is reached only for the COVER, via
     // `fetchCloudThumbnail`.
@@ -307,15 +342,32 @@ describe('decision tree case 2: an index-adopted placeholder', () => {
     expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
   });
 
-  it('materializes even when there is no cover to fetch', async () => {
+  it('does nothing at all — no row, no cache entry — when there is no cover to fetch', async () => {
+    const before = await db.volumes.count();
     const vol = indexedPlaceholder('idx-2'); // no cloudThumbnailFileId
     requestCover(vol);
 
-    await vi.waitFor(async () => {
-      const persisted = (await db.volumes.get('idx-2')) as VolumeMetadata | undefined;
-      expect(persisted).toBeDefined();
-    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flushPendingCoverPersists();
+
     expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+    expect(await db.volumes.get('idx-2')).toBeUndefined();
+    expect(await db.volumes.count()).toBe(before);
+  });
+
+  it('installs onto the row instead, when one already exists for this uuid (e.g. materialized by a concurrent case-1/3/4 request)', async () => {
+    await db.volumes.put(row('idx-3'));
+    const vol = indexedPlaceholder('idx-3', {
+      cloudThumbnailFileId: 'c-1',
+      cloudThumbnailPath: 'One Piece/v1.webp'
+    });
+
+    requestCover(vol);
+    const persisted = await waitForCover('idx-3');
+
+    expect(persisted.thumbnail_width).toBe(210);
+    const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+    expect(cached.has('One Piece/Volume 01.cbz')).toBe(false);
   });
 });
 
@@ -494,5 +546,144 @@ describe('dedupe: one in-flight/settled request per uuid, whichever surface asks
     requestCover(vol); // settled: must not ask again
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The regression this task fixes: browsing a large cloud catalog wrote a
+ * `volumes` row per rendered card (434 → 11,354 rows measured on a
+ * ~1,000-series library), and each row write costs a full catalog re-derive.
+ * These pin the two ends of the fix — a browsed placeholder never mints a
+ * row, and a volume that actually has a local relationship (reading history)
+ * still gets one.
+ */
+describe('browsing does not mint volumes rows', () => {
+  it('an indexed placeholder is cached, not materialized', async () => {
+    const before = await db.volumes.count();
+
+    requestCover(
+      indexedPlaceholder('idx-dr-stone-3', {
+        series_title: 'Dr Stone',
+        volume_title: 'Volume 03',
+        cloudPath: 'Dr Stone/Volume 03.cbz',
+        cloudThumbnailFileId: 'c-ds-3',
+        cloudThumbnailPath: 'Dr Stone/Volume 03.webp'
+      })
+    );
+
+    await vi.waitFor(async () => {
+      await flushPendingCoverPersists();
+      const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 03.cbz']);
+      expect(cached.has('Dr Stone/Volume 03.cbz')).toBe(true);
+    });
+
+    expect(await db.volumes.count()).toBe(before);
+  });
+
+  it('a volume with reading history still gets its row', async () => {
+    // History rows are created by the download/read path, not by browsing:
+    // requesting a cover for one must fill the row, not the cover table.
+    await db.volumes.put(row('hist-1', { volume_title: 'Volume 04' }));
+
+    requestCover(
+      row('hist-1', {
+        volume_title: 'Volume 04',
+        cloudThumbnailFileId: 'c-hist-1',
+        cloudThumbnailPath: 'One Piece/Volume 04.webp'
+      })
+    );
+
+    const persisted = await waitForCover('hist-1');
+    expect(persisted.thumbnail).toBeInstanceOf(File);
+  });
+});
+
+describe('no active account scope: a row-less cover is dropped, never written unscoped', () => {
+  it('drops the cover for an indexed placeholder instead of caching it unscoped', async () => {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      downloadFile: vi.fn(),
+      getStatus: () => ({ isAuthenticated: true, accountScope: null })
+    });
+
+    const before = await db.volumes.count();
+    requestCover(
+      indexedPlaceholder('idx-noscope', {
+        series_title: 'Dr Stone',
+        volume_title: 'Volume 05',
+        cloudPath: 'Dr Stone/Volume 05.cbz',
+        cloudThumbnailFileId: 'c-ds-5',
+        cloudThumbnailPath: 'Dr Stone/Volume 05.webp'
+      })
+    );
+
+    // The fetch still happens — a missing account scope only affects WHERE
+    // the result can land, decided later inside the flush — so wait for the
+    // fetch itself rather than for any DB effect (there should be none).
+    await vi.waitFor(() => expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1));
+    await flushPendingCoverPersists();
+
+    // Dropped, not written anywhere: no row, and nothing queued for
+    // `cloud_covers` either (a real write-unscoped bug would still pass a
+    // `cached.has(...)` check keyed to the WRONG scope string, but would
+    // never show up in `putCloudCoversMock`'s payload at all — this is the
+    // stronger assertion the null-scope path needs).
+    expect(putCloudCoversMock).toHaveBeenCalledTimes(1);
+    expect(putCloudCoversMock.mock.calls[0][0]).toEqual([]);
+    expect(await db.volumes.count()).toBe(before);
+    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 05.cbz']);
+    expect(cached.size).toBe(0);
+  });
+});
+
+describe('write-storm avoidance for row-less covers: a burst still coalesces to ONE putCloudCovers call', () => {
+  it('N browsed (no-row) covers requested in one burst produce exactly one putCloudCovers call', async () => {
+    const N = 8;
+    const titles = Array.from({ length: N }, (_, i) => `Volume ${String(i + 1).padStart(2, '0')}`);
+
+    // Gate every fetch behind one shared promise so all N requests reach
+    // (and park on) `fetchCloudThumbnail` before any of them resolves —
+    // otherwise an early arrival could flush before a late one has even
+    // queued its `installCover` call, and the whole point of this test is
+    // that a real burst still costs exactly ONE write, not N.
+    let releaseGate: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    fetchCloudThumbnailMock.mockImplementation(async () => {
+      await gate;
+      return coverResult();
+    });
+
+    for (const t of titles) {
+      requestCover(
+        indexedPlaceholder(`idx-burst-${t}`, {
+          series_title: 'Dr Stone',
+          volume_title: t,
+          cloudPath: `Dr Stone/${t}.cbz`,
+          cloudThumbnailFileId: `c-${t}`,
+          cloudThumbnailPath: `Dr Stone/${t}.webp`
+        })
+      );
+    }
+
+    await vi.waitFor(() => expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(N));
+    releaseGate!();
+    // Let every unblocked continuation (each one's `installCover` call) land
+    // in the SAME pending batch before this test ever calls
+    // `flushPendingCoverPersists` — a real macrotask tick, not a microtask
+    // one, so it runs strictly after all N continuations have settled.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await flushPendingCoverPersists();
+
+    const cached = await getCloudCovers(
+      'mega:a@b.com',
+      titles.map((t) => `Dr Stone/${t}.cbz`)
+    );
+    expect(cached.size).toBe(N);
+    expect(await db.volumes.count()).toBe(0);
+    expect(putCloudCoversMock).toHaveBeenCalledTimes(1);
+    expect(putCloudCoversMock.mock.calls[0][0]).toHaveLength(N);
   });
 });

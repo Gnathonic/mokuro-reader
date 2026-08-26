@@ -30,25 +30,38 @@ import { installCover } from './cover-persist';
  * THE cover service: every surface that draws a cloud cover — the catalog
  * card, the series spine shelf, the single-volume placeholder box — calls
  * `requestCover(vol)` and nothing else. Delivery happens through the DB:
- * once a cover lands, this module writes it (and whatever row it belongs on)
- * straight into `db.volumes`, and the `volumes` liveQuery → `volumesWith-
- * Placeholders` → catalog re-derive is what every view re-renders from.
- * There is no per-component result plumbing, and no in-memory cover cache
- * outside this module's own in-flight bookkeeping — a delivered cover always
- * has a row to land on (see the decision tree below), so there is nothing
- * left to cache in memory once a request settles.
+ * once a cover lands, it is written (via `cover-persist.ts`'s `installCover`)
+ * onto whatever row it belongs to, OR — for a volume with no local
+ * relationship at all — into the account-scoped `cloud_covers` cache instead
+ * (see case 2 below and `cover-persist.ts`'s ROUTING doc). The `volumes`
+ * liveQuery → `volumesWithPlaceholders` → catalog re-derive is what every
+ * view re-renders from for a rowed volume; `cloud_covers` is read directly by
+ * the catalog decoration pass for everything else. There is no per-component
+ * result plumbing, and no in-memory cover cache outside this module's own
+ * in-flight bookkeeping.
  *
  * User ruling, twice now: "install them and their metadata if they are
  * requested for rendering for a series card" — and, when a rendered volume
  * has no metadata at all yet, "the service fetches what it needs to build
- * it." `requestCover` resolves exactly one of four cases per volume:
+ * it." That ruling covers a volume the user has actually installed or read;
+ * it does not license minting a `volumes` row for every volume merely
+ * scrolled past in a large cloud catalog (a regression measured at 434 → over
+ * 11,000 rows browsing a ~1,000-series library, see `installCover`'s ROUTING
+ * doc). `requestCover` resolves exactly one of four cases per volume:
  *
  * 1. A DB row already exists (installed, or metadata-only) → install the
  *    cover onto it directly.
  * 2. An INDEX-ADOPTED placeholder (`isIndexedPlaceholder` — a real uuid and
- *    counts already adopted from the cached `series_index`) → materialize
- *    the row from what the placeholder already knows, no network pull
- *    needed for the entry itself, then install the cover.
+ *    counts already adopted from the cached `series_index`) → fetch the
+ *    cover, if the listing has one, and hand it to `installCover` WITHOUT
+ *    materializing a row first. Browsing this placeholder never mints a
+ *    `volumes` row on its own; `installCover`'s own routing (Task 4) decides
+ *    where the cover lands — the `cloud_covers` cache when no row exists, the
+ *    row itself if one already does (e.g. a concurrent case-1/3/4 request for
+ *    the same uuid materialized it first). A row for this volume is still
+ *    created elsewhere, on demand, the moment it graduates to something with
+ *    a real local relationship — installed, read, or its series opened
+ *    (`materializeSeriesVolumes`, called directly by the series-open flow).
  * 3. A BARE placeholder whose archive HAS a `.mokuro`/`.mokuro.gz` sidecar in
  *    the listing → pull it (the SAME `pullMokuroEntry` a backfill pass uses,
  *    throttled through the SAME cross-series `acquireBackfillSlot` pool —
@@ -66,14 +79,19 @@ import { installCover } from './cover-persist';
  *    the same zero-count entry convention `series-backfill.ts` uses for this
  *    case, no pull.
  *
- * This makes the catalog grid a THIRD materialization trigger, alongside a
- * link event and a series open: a series-index-adopted or bare placeholder
- * materializes the moment its cover is actually rendered, never before —
- * on-demand, matching this app's existing on-demand philosophy rather than
- * eagerly installing an entire library's worth of metadata up front.
+ * This makes the catalog grid a SECOND materialization trigger, alongside a
+ * series open: a BARE placeholder (cases 3/4) still materializes the moment
+ * its cover is actually rendered, never before. An index-adopted placeholder
+ * (case 2) is deliberately NOT a materialization trigger any more — it is the
+ * common case for a browsed catalog (a `serverCompilesMetadata` provider or a
+ * synced `series.json` supplies it for nearly every volume), so letting it
+ * mint a row per rendered card is exactly what produced the regression above.
+ * Cases 3/4 stay row-per-render because they are inherently rate-limited by
+ * the network pull itself (`acquireBackfillSlot`'s pool), not by request
+ * volume.
  *
- * READ-ONLY PROVIDERS: pulling a sidecar/cover and materializing a row are
- * READS plus a LOCAL write — allowed on a read-only share. Only the
+ * READ-ONLY PROVIDERS: pulling a sidecar/cover and materializing a row (cases
+ * 3/4) are READS plus a LOCAL write — allowed on a read-only share. Only the
  * `series.json` PUBLISH (case 3) is gated on writability, and that gate
  * already lives inside `scheduleSeriesFileWrite` itself; this module never
  * duplicates it. A `serverCompilesMetadata` provider normally supplies case 2
@@ -166,20 +184,6 @@ function coverFetchTarget(
   };
 }
 
-/** Build the `SeriesFileVolume` an index-adopted placeholder already knows, verbatim — no pull needed. */
-function entryFromIndexedPlaceholder(vol: VolumeMetadata): SeriesFileVolume {
-  const entry: SeriesFileVolume = {
-    volume_uuid: vol.volume_uuid,
-    volume_title: vol.volume_title,
-    page_count: vol.page_count,
-    character_count: vol.character_count,
-    mokuro_version: vol.mokuro_version
-  };
-  if (vol.spine_width !== undefined) entry.spine_width = vol.spine_width;
-  if (vol.archive_size !== undefined) entry.archive_size = vol.archive_size;
-  return entry;
-}
-
 /**
  * Decision-tree cases 3/4: a BARE placeholder. Resolves (pulling a sidecar
  * only when the listing actually has one) and materializes the row, then
@@ -244,11 +248,13 @@ async function resolveBarePlaceholder(
 
 /**
  * Deliver a fetched cover for a volume that has (or now has) a row. Called
- * ONLY once resolution (cases 1/2/3/4) has already decided the row exists —
- * `mode` is `'overwrite'` exactly when `vol` ALREADY carried a thumbnail at
- * the moment `requestCover` was called (the stale-row self-heal case;
- * `isCoverFetchTarget` is what let such a volume through in the first
- * place), `'fill'` otherwise.
+ * ONLY once resolution (cases 1/3/4) has already decided the row exists —
+ * case 2 (an index-adopted placeholder) never materializes a row, so it
+ * calls `installCover` directly instead, carrying `cloudPath` for the
+ * no-row-yet routing case. `mode` is `'overwrite'` exactly when `vol`
+ * ALREADY carried a thumbnail at the moment `requestCover` was called (the
+ * stale-row self-heal case; `isCoverFetchTarget` is what let such a volume
+ * through in the first place), `'fill'` otherwise.
  */
 function deliverToRow(
   volumeUuid: string,
@@ -297,27 +303,19 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
   if (!vol.isPlaceholder) return true; // no row, not a placeholder: nothing this service can ever do
 
   if (isIndexedPlaceholder(vol)) {
-    const entry = entryFromIndexedPlaceholder(vol);
-    const changed = await materializeSeriesVolumes({
-      seriesTitle: vol.series_title,
-      entries: [entry],
-      cloudVolumeTitles: new Set([vol.volume_title])
+    // Deliberately NO materialize here — see the module doc's case 2. Fetch
+    // the cover, if the listing has one, and hand it to `installCover`
+    // exactly as it stands (no row to land on): its own routing (Task 4)
+    // caches it in `cloud_covers` when an account scope is active, or drops
+    // it, never minting a `volumes` row just because this placeholder was
+    // rendered.
+    if (!vol.cloudThumbnailFileId) return true; // no row, and genuinely no cover to fetch
+    const result = await fetchCloudThumbnail(vol);
+    if (!result) return false; // transient: worth another attempt
+    installCover({ volume_uuid: vol.volume_uuid, cloudPath: vol.cloudPath }, result, {
+      size: vol.cloudThumbnailSize,
+      modifiedTime: vol.cloudThumbnailModifiedTime
     });
-    if (changed === 0) return false; // a materialize race — cheap to retry, no network involved
-    if (!vol.cloudThumbnailFileId) return true; // row now exists; genuinely no cover to fetch
-    const result = await fetchCloudThumbnail({
-      ...vol,
-      volume_uuid: entry.volume_uuid,
-      cloudThumbnailFileId: vol.cloudThumbnailFileId,
-      cloudThumbnailPath: vol.cloudThumbnailPath
-    });
-    if (!result) return false;
-    deliverToRow(
-      entry.volume_uuid,
-      result,
-      { size: vol.cloudThumbnailSize, modifiedTime: vol.cloudThumbnailModifiedTime },
-      false
-    );
     return true;
   }
 
