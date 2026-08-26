@@ -2,6 +2,13 @@
   import { thumbnailCache, type CacheEntry } from '$lib/catalog/thumbnail-cache';
   import type { VolumeMetadata } from '$lib/types';
 
+  /**
+   * Shared identity for "this canvas was handed no covers", so a caller that has none can
+   * hand the same object every render instead of a fresh empty Map that would invalidate
+   * the draw effect on every re-render.
+   */
+  const NO_COVERS: Map<string, File> = new Map();
+
   interface Props {
     volumes: VolumeMetadata[];
     canvasWidth: number;
@@ -22,6 +29,18 @@
     border?: boolean;
     volumeOffsets?: Map<number, number>;
     highlightIndex?: number | null;
+    /**
+     * Cover blobs handed to this canvas rather than read off the row: the CLOUD covers a
+     * card resolved by path through `cover-resolver.ts`, which a cloud-only volume has no
+     * `thumbnail` field to carry (its row either doesn't exist or was never written one).
+     *
+     * Keyed by `volume_uuid` — the SAME key `thumbnailCache` decodes under — so one volume
+     * has one bitmap however its bytes arrived, and a cover that lands while the card is
+     * mounted reuses the cache instead of re-decoding.
+     *
+     * A row's own `thumbnail` always wins: the local path is untouched by this prop.
+     */
+    covers?: Map<string, File>;
   }
 
   let {
@@ -33,7 +52,8 @@
     dropShadow = true,
     border,
     volumeOffsets = new Map(),
-    highlightIndex = null
+    highlightIndex = null,
+    covers = NO_COVERS
   }: Props = $props();
 
   let showBorder = $derived(border ?? dropShadow);
@@ -132,7 +152,11 @@
 
     for (let i = 0; i < volumes.length; i++) {
       const vol = volumes[i];
-      if (!vol.thumbnail) continue;
+      // The row's own cover first — an installed volume, or one with reading history,
+      // carries its bytes here and must never depend on the cloud resolver. Only when
+      // there is none does the card's resolved cloud cover stand in.
+      const coverFile = vol.thumbnail ?? covers.get(vol.volume_uuid);
+      if (!coverFile) continue;
 
       const dims = getCanvasDimensions(vol.volume_uuid);
       if (!dims) continue;
@@ -150,7 +174,7 @@
         loadingUuids = new Set(loadingUuids);
 
         thumbnailCache
-          .get(vol.volume_uuid, vol.thumbnail, i, visibilityElement)
+          .get(vol.volume_uuid, coverFile, i, visibilityElement)
           .then(() => {
             // Trigger redraw when load completes
             drawTrigger++;
@@ -264,6 +288,11 @@
     void isVisible;
     void highlightIndex;
     void volumeOffsets;
+    // `draw()` reads this, so it belongs here: a cover landing in the map is a reason to
+    // repaint on its own. (The catalog card happens to move `stepSizes` at the same time,
+    // so removing this line does not currently change observable behavior — which is why
+    // it is declared rather than relied upon.)
+    void covers;
     void dropShadow;
     void showBorder;
 

@@ -14,8 +14,10 @@ const { fakeCache } = vi.hoisted(() => {
   return {
     fakeCache: {
       getSync: vi.fn((uuid: string) => entries.get(uuid)),
+      // `file` is recorded, not used: which bytes the canvas chose to decode for a volume
+      // is the whole question when a cover can come from the row OR from the covers map.
       get: vi.fn(
-        (uuid: string) =>
+        (uuid: string, _file?: File) =>
           new Promise((resolve) => {
             waiting.set(uuid, resolve);
           })
@@ -161,6 +163,53 @@ describe('CompositeCanvas redraws when thumbnails arrive after it mounted', () =
 
     // Without a commit subscription this canvas has no way to learn the cover landed.
     expect(drawnBitmaps).toHaveLength(1);
+  });
+
+  /**
+   * A cloud-only volume has no row, so nothing on its `VolumeMetadata` can carry a cover.
+   * Its bytes arrive through the `covers` map instead (the card resolves them by path —
+   * see `cover-resolver.ts`), and a cover landing changes NOTHING else this canvas draws
+   * with: same volumes, same geometry, same step sizes. Every other prop is deliberately
+   * handed back by identity here so the map is the only thing that moved.
+   */
+  it('paints a cover handed to it in the covers map, with no other prop changing', async () => {
+    const cloudOnly = volume('cloud', false);
+    const stableVolumes = [cloudOnly];
+    const stableOffsets = new Map<number, number>();
+    const { rerender } = render(CompositeCanvas, {
+      props: {
+        ...baseProps,
+        volumes: stableVolumes,
+        volumeOffsets: stableOffsets,
+        covers: new Map()
+      } as never
+    });
+    await settle();
+    expect(fakeCache.get).not.toHaveBeenCalled();
+
+    const coverFile = new Blob(['cloud cover']) as unknown as File;
+    await rerender({ covers: new Map([['cloud', coverFile]]) } as never);
+    await settle();
+
+    expect(fakeCache.get).toHaveBeenCalledTimes(1);
+    expect(fakeCache.get.mock.calls[0][0]).toBe('cloud');
+    expect(fakeCache.get.mock.calls[0][1]).toBe(coverFile);
+  });
+
+  it('draws the row thumbnail, never the covers map, when the row has one', async () => {
+    const installed = volume('installed', true);
+    const strayCover = new Blob(['not this one']) as unknown as File;
+    render(CompositeCanvas, {
+      props: {
+        ...baseProps,
+        volumes: [installed],
+        covers: new Map([['installed', strayCover]])
+      } as never
+    });
+    await settle();
+
+    expect(fakeCache.get).toHaveBeenCalledTimes(1);
+    expect(fakeCache.get.mock.calls[0][1]).toBe(installed.thumbnail);
   });
 
   it('stops listening for commits once it is destroyed', async () => {

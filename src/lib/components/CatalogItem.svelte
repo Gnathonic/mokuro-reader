@@ -1,9 +1,42 @@
 <script module lang="ts">
+  import { derived as derivedStore, type Readable } from 'svelte/store';
+  import { providerManager } from '$lib/util/sync';
+  import type { ResolvedCover } from '$lib/catalog/cover-resolver';
+
   // Cooldown so a wheel/right-click burst against a blocked series doesn't spam the
   // snackbar with a toast per tick — shared across every mounted card, not scoped to one
   // instance, so gesturing across several cards in quick succession still only shows one.
   const METADATA_GATE_SNACKBAR_COOLDOWN_MS = 4000;
   let lastMetadataGateSnackbarAt = 0;
+
+  /**
+   * Which account's covers this card may show, as a PRIMITIVE.
+   *
+   * `acquireCover` binds the account scope at acquire time and `refreshCovers` resolves
+   * the CURRENT one, so a handle taken under the old account is unreachable by refresh
+   * after a switch — it would sit on the previous account's blob forever. Joining the
+   * scope into the claim key below makes the switch release and re-acquire instead.
+   *
+   * Module-scoped and derived down to a string so all mounted cards share ONE subscription
+   * to `providerManager.status` — which emits a fresh object on every status message —
+   * and only re-run when the scope genuinely changes.
+   */
+  const activeAccountScopeStore: Readable<string | null> = derivedStore(
+    providerManager.status,
+    ($status) => {
+      const type = $status.currentProviderType;
+      if (!type) return null;
+      return $status.providers[type]?.accountScope ?? null;
+    }
+  );
+
+  /**
+   * Shared "nothing resolved" identities. A fresh empty Map per assignment would
+   * invalidate `thumbnailDimensions` (and so the whole canvas) on every card that has no
+   * cloud covers to resolve, every time its claim set is recomputed.
+   */
+  const NO_COVERS: Map<string, ResolvedCover> = new Map();
+  const NO_COVER_FILES: Map<string, File> = new Map();
 </script>
 
 <script lang="ts">
@@ -53,6 +86,8 @@
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import { isVolumeComplete } from '$lib/util/volume-helpers';
   import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
+  import { acquireCover, type CoverHandle } from '$lib/catalog/cover-resolver';
+  import { untrack } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -456,8 +491,9 @@
 
     return spineBadgePlacements({
       volumes: stackedVolumes,
-      // A volume with no pixels is not painted, so it has no corner to mark.
-      isMarked: (vol) => needsDownload(vol) && !!vol.thumbnail,
+      // A volume with no pixels is not painted, so it has no corner to mark — from its
+      // own row or from the resolver, the same rule CompositeCanvas draws by.
+      isMarked: (vol) => needsDownload(vol) && hasCoverPixels(vol),
       drawnSize: (vol) => getCanvasDimensions(vol.volume_uuid),
       horizontalStepPx: stepSizes.horizontal,
       verticalStepPx: stepSizes.vertical,
@@ -478,6 +514,111 @@
       : false
   );
 
+  /**
+   * THIS CARD RESOLVES ITS OWN CLOUD COVERS.
+   *
+   * Covers used to reach a card by riding the catalog derivation: one cover landing
+   * re-materialised every `cloud_covers` row, re-walked the whole listing, minted fresh
+   * placeholder objects and re-rendered every mounted card — measured at a 1,784 ms long
+   * task on a 1,027-series library, ~15x the next contributor. A card that can fetch its
+   * own cover by path is what lets that dependency be cut (see the design doc).
+   *
+   * Only for volumes with NO cover of their own. A row that carries `thumbnail` — an
+   * installed volume, or a metadata-only row whose cover was persisted — draws from it
+   * exactly as before; the resolver is the CLOUD path and nothing else.
+   */
+  let resolvedCovers = $state<Map<string, ResolvedCover>>(NO_COVERS);
+
+  /**
+   * What to claim, as (uuid, listing path) pairs.
+   *
+   * The path comes from the LISTING-derived object (`cloudPath` is decorated onto the
+   * catalog's in-memory copy and is never persisted on a stored row), which is exactly
+   * what these props are.
+   */
+  let coverClaims = $derived(
+    stackedVolumes
+      .filter(
+        (vol): vol is VolumeMetadata & { cloudPath: string } => !vol.thumbnail && !!vol.cloudPath
+      )
+      .map((vol) => ({ uuid: vol.volume_uuid, path: vol.cloudPath }))
+  );
+
+  /**
+   * The claim set folded to a PRIMITIVE, so the effect below re-runs only when what is
+   * claimed actually changes.
+   *
+   * `stackedVolumes` is a fresh array on every catalog emission and on every
+   * settings-adjacent one (a per-wheel-tick offset write included), so keying the effect
+   * on the array itself would release and re-acquire — a fresh keyed read per card — for
+   * changes that cannot alter which covers this card wants. Svelte dedupes a derived
+   * string by value, so an unchanged claim set is inert.
+   *
+   * The account scope leads it: see `activeAccountScopeStore`.
+   */
+  let coverClaimKey = $derived(
+    `${$activeAccountScopeStore ?? ''}\u0002` +
+      coverClaims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
+  );
+
+  $effect(() => {
+    // Tracked: only the folded key. The claims themselves are read untracked so a
+    // re-derived-but-identical array cannot re-run this.
+    void coverClaimKey;
+    const claims = untrack(() => coverClaims);
+    if (claims.length === 0) {
+      // The shared empty Map, not a new one: assigning the same identity is inert.
+      resolvedCovers = NO_COVERS;
+      return;
+    }
+
+    const handles: CoverHandle[] = [];
+    const unsubscribes: (() => void)[] = [];
+    // Accumulated OUTSIDE `$state` so the subscribers can update it without this effect
+    // ever reading its own output — which would make it re-run on every cover it lands.
+    const found = new Map<string, ResolvedCover>();
+    // A handle whose path already resolved emits synchronously on subscribe; publishing
+    // per emission during setup would assign N times for one mount.
+    let publishing = false;
+
+    for (const claim of claims) {
+      const handle = acquireCover(claim.path);
+      handles.push(handle);
+      unsubscribes.push(
+        handle.subscribe((cover) => {
+          if (cover) found.set(claim.uuid, cover);
+          else found.delete(claim.uuid);
+          // A cover arriving after mount reaches the card HERE — the handle emits, and
+          // `refreshCovers` (driven from the cover key set) is what makes a handle that
+          // already resolved a miss read again.
+          if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+        })
+      );
+    }
+    publishing = true;
+    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+
+    return () => {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+      // Every acquire paired with exactly one release. At 1,027 cards x ~4 volumes a
+      // leaked handle is a leaked blob and a leaked object URL.
+      for (const handle of handles) handle.release();
+    };
+  });
+
+  /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */
+  let coverFiles = $derived.by(() => {
+    if (resolvedCovers.size === 0) return NO_COVER_FILES;
+    const files = new Map<string, File>();
+    for (const [uuid, cover] of resolvedCovers) files.set(uuid, cover.file);
+    return files;
+  });
+
+  /** Does this volume have pixels to paint at all — from its row, or from the resolver? */
+  function hasCoverPixels(vol: VolumeMetadata): boolean {
+    return !!vol.thumbnail || resolvedCovers.has(vol.volume_uuid);
+  }
+
   // Base thumbnail dimensions (shared with the series editor's spine shelf)
   const BASE_WIDTH = CARD_BASE_WIDTH;
   const BASE_HEIGHT = CARD_BASE_HEIGHT;
@@ -493,19 +634,29 @@
   let thumbnailDimensions = $derived.by(() => {
     const dims = new Map<string, { width: number; height: number }>();
     for (const vol of stackedVolumes) {
-      if (!vol.thumbnail) continue;
-      if (vol.thumbnail_width && vol.thumbnail_height) {
-        dims.set(vol.volume_uuid, {
-          width: vol.thumbnail_width,
-          height: vol.thumbnail_height
-        });
-      } else {
-        // Fallback to default aspect ratio for volumes without stored dimensions
-        dims.set(vol.volume_uuid, {
-          width: BASE_WIDTH,
-          height: BASE_HEIGHT
-        });
+      if (vol.thumbnail) {
+        if (vol.thumbnail_width && vol.thumbnail_height) {
+          dims.set(vol.volume_uuid, {
+            width: vol.thumbnail_width,
+            height: vol.thumbnail_height
+          });
+        } else {
+          // Fallback to default aspect ratio for volumes without stored dimensions
+          dims.set(vol.volume_uuid, {
+            width: BASE_WIDTH,
+            height: BASE_HEIGHT
+          });
+        }
+        continue;
       }
+      // No cover on the row: the cloud cover this card resolved for itself, whose
+      // dimensions travel with the blob in `cloud_covers` rather than on a row.
+      const resolved = resolvedCovers.get(vol.volume_uuid);
+      if (!resolved) continue;
+      dims.set(vol.volume_uuid, {
+        width: resolved.width || BASE_WIDTH,
+        height: resolved.height || BASE_HEIGHT
+      });
     }
     return dims;
   });
@@ -768,6 +919,7 @@
                 {getCanvasDimensions}
                 {stepSizes}
                 dropShadow={showDropShadow}
+                covers={coverFiles}
                 {volumeOffsets}
                 highlightIndex={showVolumeIndicator ? hoveredVolumeIndex : null}
               />
