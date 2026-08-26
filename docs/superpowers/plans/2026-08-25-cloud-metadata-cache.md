@@ -385,20 +385,12 @@ export async function getCloudCovers(
   return new Map(rows.map((r) => [r.path, r]));
 }
 
-/**
- * Mark covers as used, so browsing keeps them alive and neglect expires them.
- * Modifies only the timestamp: the thumbnail blob is left in place rather than
- * rewritten, which would cost a fresh blob write per view.
- */
-export async function touchCloudCovers(
-  scope: string,
-  paths: string[],
-  nowMs: number = Date.now()
-): Promise<void> {
-  if (paths.length === 0) return;
-  const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
-  await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ cached_at: nowMs });
-}
+// NOTE (final review, 2026-08-25): an earlier draft of this plan also specified a
+// `touchCloudCovers` here, to refresh `cached_at` on read. It is deliberately NOT
+// implemented. Any read path that wrote to `cloud_covers` would re-fire
+// `cloudCoverMap`'s liveQuery, which would touch again — an unbounded feedback
+// loop (verified empirically). Expiry therefore measures from when a cover was
+// CACHED, not from last access. Do not add it back.
 ```
 
 - [ ] **Step 5: Run the test — expect PASS**
