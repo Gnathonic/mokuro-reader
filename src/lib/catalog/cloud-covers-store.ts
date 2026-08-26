@@ -2,7 +2,7 @@ import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import { cachedCoverPaths } from './cloud-covers';
-import { refreshCovers } from './cover-resolver';
+import { refreshCoverKeys } from './cover-resolver';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { isCbzFile } from '$lib/util/sync/syncable-file';
 
@@ -12,10 +12,11 @@ const EMPTY_PATHS: ReadonlySet<string> = new Set<string>();
 /**
  * KEYS, NEVER BLOBS.
  *
- * This store used to be `cloudCoverMap`: a `liveQuery` over
- * `getCloudCovers(scope, paths)` for EVERY listed `.cbz` path (~4,347 tuples
- * through `anyOf`). Dexie re-runs a liveQuery querier on every commit to the
- * table, so each cover finishing its download re-materialised every cover row
+ * This store used to be `cloudCoverMap`: a `liveQuery` over the blob-returning
+ * row read (the shape `_getCloudCoversForTests` still has, for tests) for
+ * EVERY listed `.cbz` path (~4,347 tuples through `anyOf`). Dexie re-runs a
+ * liveQuery querier on every commit to the table, so each cover finishing its
+ * download re-materialised every cover row
  * — blobs included — and handed the result to `volumesWithPlaceholders`.
  * Measured on a 1,027-series library: 3,886 MB deserialized in 59 s, 23
  * full-table re-reads, and (because that Map fed placeholder generation) a
@@ -112,21 +113,39 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * WHY THIS EXISTS AT ALL. `acquireCover` reads once and then never again on
  * its own — that is what makes "two subscribers, one read" unconditional. So a
  * card that mounts during ingest, resolves a MISS, and only then has its cover
- * finish downloading would stay blank until it remounted. `refreshCovers` is
+ * finish downloading would stay blank until it remounted. `refreshCoverKeys` is
  * the repair, and this is what drives it: the key set is exactly the signal
  * "the cover for this path is now on disk".
  *
- * SELF-LIMITING, so handing it the whole set is cheap: `refreshCovers` skips
- * every path nobody is holding (a Map lookup each) and, without `force`,
- * re-reads only handles that are still a miss. At ~4,347 paths and a handful
- * of key-set changes that is nothing, and it needs no added/removed
- * bookkeeping of its own — which matters, because the store deliberately
- * re-emits on an account switch whose key strings did not change.
+ * IT HANDS OVER THE DIFF, NOT THE SET. The published set is the whole cached
+ * library — ~4,347 keys on the reference one — and it is published again on
+ * every commit to `cloud_covers`, which during ingest means once per write
+ * batch. Handing the resolver all of it made the per-write cost O(LIBRARY):
+ * a Map lookup, a template-string key and (before `refreshCoverKeys`) a
+ * re-normalisation for every cached path in the account, to find the handful
+ * that just landed. Nothing bounded that, and the byte contract cannot see it
+ * — a keys-only cursor over 4,347 keys satisfies its anchor while
+ * deserializing nothing. It got ~11x worse for free when write batches were
+ * capped at `COVER_PERSIST_MAX_BATCH`: a reference cold start went from ~4
+ * commits to ~44, so the same walk ran ~44 times (~190,000 redundant
+ * normalisations). Two tasks of one plan, each right on its own.
  *
- * NOT `force`. A `cloud_covers` row is written once and never rewritten (see
- * `CloudCover.cached_at`), so a path already resolved by a holder cannot have
- * different bytes behind it; forcing would revoke and re-mint object URLs for
- * every held cover on every key-set change.
+ * So this keeps the last published set and passes on only the keys that are
+ * NEW — which is precisely "these covers just landed", the only thing
+ * `refreshCoverKeys` can act on. Per-write work is now O(covers in that
+ * write); `cloud-covers-store.diff.test.ts` bounds it.
+ *
+ * REMOVALS ARE NOT NEWS. A key leaving the set means its row was pruned (the
+ * 14-day TTL) or its account went away; a handle still holding that blob is
+ * showing the same picture it was, and re-reading would only replace it with a
+ * miss.
+ *
+ * THE SCOPE IS PART OF THE DIFF. Resolver entries are keyed by account scope
+ * as well as path, so after an account switch every key is new to the resolver
+ * even when the strings are identical — the store re-emits for exactly that
+ * reason. A switch therefore hands over the whole set, once, rather than an
+ * empty diff. Same for the first publish of a watch, where "new since last
+ * time" means all of it.
  *
  * WHO CALLS IT. `cover-resolver.ts`'s `acquireCover`, lazily, on the first
  * claim of the session (`ensureCoverKeyWatch`). It used to be one more
@@ -138,7 +157,24 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * Returns the unsubscriber for tests; production never calls it.
  */
 export function initCoverKeyWatch(): () => void {
+  // The scope and key set this watch last handed to the resolver. Read back
+  // from `activeAccountScope()` rather than carried on the emission: it is the
+  // same source of truth `refreshCoverKeys` itself resolves against, so the
+  // two can never disagree about which account a key belongs to.
+  let watchedScope: string | null = null;
+  let watched: ReadonlySet<string> = EMPTY_PATHS;
+
   return cachedCoverPathSet.subscribe((paths) => {
-    if (paths.size > 0) refreshCovers(paths);
+    const scope = activeAccountScope();
+    if (scope !== watchedScope) {
+      watchedScope = scope;
+      watched = paths;
+      if (paths.size > 0) refreshCoverKeys(paths);
+      return;
+    }
+    const landed: string[] = [];
+    for (const path of paths) if (!watched.has(path)) landed.push(path);
+    watched = paths;
+    if (landed.length > 0) refreshCoverKeys(landed);
   });
 }

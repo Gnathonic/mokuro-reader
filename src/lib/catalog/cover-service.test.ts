@@ -160,7 +160,7 @@ vi.mock('$lib/settings/volume-data', () => ({
 
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
-import { getCloudCovers, putCloudCovers } from './cloud-covers';
+import { _getCloudCoversForTests, putCloudCovers } from './cloud-covers';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
@@ -295,7 +295,7 @@ async function waitForCachedCover(
       await drainQueues();
       found = (await db.volumes.get(uuid)) as VolumeMetadata | undefined;
       expect(found).toBeDefined();
-      const cached = await getCloudCovers('mega:a@b.com', [archivePath]);
+      const cached = await _getCloudCoversForTests('mega:a@b.com', [archivePath]);
       expect(cached.get(archivePath)?.thumbnail).toBeInstanceOf(File);
     },
     { timeout }
@@ -424,7 +424,7 @@ describe('decision tree case 2: an index-adopted placeholder', () => {
     requestCover(vol);
     await vi.waitFor(async () => {
       await flushPendingCoverPersists();
-      const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+      const cached = await _getCloudCoversForTests('mega:a@b.com', ['One Piece/Volume 01.cbz']);
       expect(cached.has('One Piece/Volume 01.cbz')).toBe(true);
     });
 
@@ -462,7 +462,7 @@ describe('decision tree case 2: an index-adopted placeholder', () => {
     const persisted = await waitForCover('idx-3');
 
     expect(persisted.thumbnail_width).toBe(210);
-    const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+    const cached = await _getCloudCoversForTests('mega:a@b.com', ['One Piece/Volume 01.cbz']);
     expect(cached.has('One Piece/Volume 01.cbz')).toBe(false);
   });
 });
@@ -622,7 +622,7 @@ describe('concurrency: render-demand mokuro pulls share the backfill semaphore',
     await vi.waitFor(
       async () => {
         await drainQueues();
-        const cached = await getCloudCovers(
+        const cached = await _getCloudCoversForTests(
           'mega:a@b.com',
           titles.map((t) => `One Piece/${t}.cbz`)
         );
@@ -688,7 +688,7 @@ describe('browsing does not mint volumes rows', () => {
 
     await vi.waitFor(async () => {
       await flushPendingCoverPersists();
-      const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 03.cbz']);
+      const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 03.cbz']);
       expect(cached.has('Dr Stone/Volume 03.cbz')).toBe(true);
     });
 
@@ -746,7 +746,7 @@ describe('no active account scope: a row-less cover is dropped, never written un
     expect(putCloudCoversMock).toHaveBeenCalledTimes(1);
     expect(putCloudCoversMock.mock.calls[0][0]).toEqual([]);
     expect(await db.volumes.count()).toBe(before);
-    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 05.cbz']);
+    const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 05.cbz']);
     expect(cached.size).toBe(0);
   });
 });
@@ -870,7 +870,7 @@ describe('write-storm avoidance for row-less covers: a burst still coalesces to 
 
     await flushPendingCoverPersists();
 
-    const cached = await getCloudCovers(
+    const cached = await _getCloudCoversForTests(
       'mega:a@b.com',
       titles.map((t) => `Dr Stone/${t}.cbz`)
     );
@@ -926,7 +926,7 @@ describe("rule 0: a uuid owned by ANOTHER series never receives this series' cov
     // The refusal is reached BEFORE the network, so a colliding uuid costs no
     // download at all.
     expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
-    const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+    const cached = await _getCloudCoversForTests('mega:a@b.com', ['One Piece/Volume 01.cbz']);
     expect(cached.size).toBe(0);
   });
 });
@@ -966,7 +966,7 @@ describe('a placeholder with no cloudPath is never cached under a guessed key', 
 
     const written = putCloudCoversMock.mock.calls.flatMap((call) => call[0]);
     expect(written).toEqual([]);
-    const cached = await getCloudCovers('mega:a@b.com', [
+    const cached = await _getCloudCoversForTests('mega:a@b.com', [
       'One Piece/Volume 01.cbz',
       'OP Folder/Volume 01.cbz'
     ]);
@@ -1026,7 +1026,7 @@ describe('settled is scoped to the account it settled under', () => {
     await vi.waitFor(
       async () => {
         await drainQueues();
-        const cached = await getCloudCovers('mega:second@b.com', [path]);
+        const cached = await _getCloudCoversForTests('mega:second@b.com', [path]);
         expect(cached.get(path)?.thumbnail).toBeInstanceOf(File);
       },
       { timeout: 3000 }

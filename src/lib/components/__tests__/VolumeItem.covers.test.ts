@@ -150,6 +150,10 @@ import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
 import { _heldCoverCountForTests, _resetCoverResolverForTests } from '$lib/catalog/cover-resolver';
+import {
+  installIntersectionObserverStub,
+  type ObservedCoverGate
+} from '$lib/catalog/__tests__/intersection-observer-stub';
 
 const SCOPE = 'webdav:https://host/dav|nathan';
 const CLOUD_PATH = 'Dr Stone/Volume 03.cbz';
@@ -310,5 +314,73 @@ describe('VolumeItem list row resolves its own cloud cover', () => {
 
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
     expect(requestCoverMock.mock.calls[0][0]).toMatchObject({ cloudPath: CLOUD_PATH });
+  });
+});
+
+/**
+ * THE GATE, ON THE ONE COVER SURFACE THAT HAD NO HELD-SHUT TEST.
+ *
+ * Everything above renders in bare jsdom, which has no `IntersectionObserver` — and
+ * `observeNearViewport` deliberately opens the gate synchronously when there is none, so
+ * an unstubbed suite behaves exactly as it did before the gate existed. That makes
+ * "asks the cover service for a cloud volume it has no cover for" green whether or not
+ * this row ever attaches `use:gate`: delete the directive and the list row would request
+ * NOTHING, EVER, in a real browser, with nothing in the console and every test still
+ * passing. That is the silent failure `warnIfUngated` exists to catch, and this row was
+ * the last of the five cover surfaces without a case that catches it.
+ *
+ * So this describe installs the stub held SHUT and asserts the three things that
+ * together can only be true of a gate that is really wired: a gate was armed, nothing
+ * was requested before it opened, and opening it is what produced the request.
+ */
+describe('THE GATE: the list row asks for nothing until it scrolls into view', () => {
+  let observer: { gates: ObservedCoverGate[]; restore(): void };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    observer = installIntersectionObserverStub({ autoIntersect: false });
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    observer.restore();
+    warn.mockRestore();
+  });
+
+  it('arms a gate, requests nothing while it is shut, and requests on open', async () => {
+    render(VolumeItem, { props: { volume: cloudVolume(), variant: 'list' } });
+    await settle();
+
+    // Not vacuous: the row is mounted, its target list is derived, and it really did arm
+    // a gate — the gate simply has not opened. A row with no `use:gate` arms none.
+    expect(observer.gates).toHaveLength(1);
+    expect(requestCoverMock).not.toHaveBeenCalled();
+
+    // And `cover-claims`' dev warning agrees: nothing here is ungated.
+    expect(
+      warn.mock.calls.some(([first]) => String(first).includes('never attached `use:gate`'))
+    ).toBe(false);
+
+    // What a scroll does.
+    for (const gate of observer.gates) gate.emit(true);
+    await settle(1);
+
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    expect(requestCoverMock.mock.calls[0][0]).toMatchObject({ cloudPath: CLOUD_PATH });
+  });
+
+  it('paints a cached cover with the gate still shut — claiming is not gated', async () => {
+    // The distinction the gate rests on: the row DRAWS what it already holds regardless
+    // of the viewport; the gate only decides whether it goes to the network for what it
+    // is missing.
+    await putCloudCovers([cachedCover()]);
+
+    const { container } = render(VolumeItem, {
+      props: { volume: cloudVolume(), variant: 'list' }
+    });
+    await settle();
+
+    expect(requestCoverMock).not.toHaveBeenCalled();
+    expect(coverBox(container)?.getAttribute('src')).toBe('blob:cover.webp');
   });
 });

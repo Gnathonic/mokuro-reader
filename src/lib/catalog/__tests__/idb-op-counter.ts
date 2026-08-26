@@ -182,12 +182,29 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
    * once per row it walks (each `continue()` re-uses the same request), so one
    * listener accumulates the whole traversal; `getAll` fires once with an
    * array; `get` fires once with a single row.
+   *
+   * THE TRANSACTION IS THE BACKSTOP, and it is not optional. A cursor's
+   * `success` listener resolves on the NULL cursor that ends a full traversal
+   * — but a query that stops early never gets one: Dexie lowers `limit`,
+   * `until` and `first` over a filtered collection to a cursor it simply stops
+   * calling `continue()` on, so the last `success` it fires carries a live
+   * cursor and nothing further arrives. Without this backstop that promise
+   * stays pending forever and the drain below never returns, so a future
+   * contract written over a limited cursor would TIME OUT (measured: 5,000 ms,
+   * "Test timed out") instead of failing with its own assertion message.
+   * `complete`/`abort` fire strictly after every `success` the transaction will
+   * ever deliver, so resolving here can never truncate byte attribution.
    */
   const meter = (request: unknown, store: string, isCursor: boolean): unknown => {
     const req = request as IDBRequest | null;
     if (!req || typeof req.addEventListener !== 'function') return request;
     pending.push(
       new Promise<void>((resolve) => {
+        const tx = req.transaction;
+        if (tx && typeof tx.addEventListener === 'function') {
+          tx.addEventListener('complete', () => resolve(), { once: true });
+          tx.addEventListener('abort', () => resolve(), { once: true });
+        }
         req.addEventListener('error', () => resolve(), { once: true });
         req.addEventListener('success', () => {
           const result = req.result as unknown;

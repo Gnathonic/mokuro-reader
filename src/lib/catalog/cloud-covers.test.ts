@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { db } from './db';
 import {
   putCloudCovers,
-  getCloudCovers,
+  _getCloudCoversForTests,
   pruneExpiredCloudCovers,
   CLOUD_COVER_MAX_AGE_MS,
   type CloudCover
@@ -28,7 +28,7 @@ beforeEach(async () => {
 describe('cloud cover CRUD', () => {
   it('round-trips a cover under its composite key', async () => {
     await putCloudCovers([cover()]);
-    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const rows = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(rows.size).toBe(1);
     expect(rows.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
   });
@@ -38,15 +38,15 @@ describe('cloud cover CRUD', () => {
       cover({ account_scope: 'mega:a@b.com', width: 111 }),
       cover({ account_scope: 'mega:other@b.com', width: 222 })
     ]);
-    const a = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
-    const other = await getCloudCovers('mega:other@b.com', ['Dr Stone/Volume 01.cbz']);
+    const a = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const other = await _getCloudCoversForTests('mega:other@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(a.get('Dr Stone/Volume 01.cbz')?.width).toBe(111);
     expect(other.get('Dr Stone/Volume 01.cbz')?.width).toBe(222);
   });
 
   it('normalizes the path on write so a decomposed listing hits the same row', async () => {
     await putCloudCovers([cover({ path: '//Dr Stone//Volume 01.cbz' })]);
-    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const rows = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(rows.size).toBe(1);
   });
 
@@ -55,13 +55,13 @@ describe('cloud cover CRUD', () => {
       cover({ path: 'Dr Stone/Volume 01.cbz' }),
       cover({ path: 'Naruto/Volume 01.cbz', width: 999 })
     ]);
-    const rows = await getCloudCovers('mega:a@b.com', ['Naruto/Volume 01.cbz']);
+    const rows = await _getCloudCoversForTests('mega:a@b.com', ['Naruto/Volume 01.cbz']);
     expect(Array.from(rows.keys())).toEqual(['Naruto/Volume 01.cbz']);
     expect(rows.get('Naruto/Volume 01.cbz')?.width).toBe(999);
   });
 
   it('returns an empty map for an empty path list, without touching the db', async () => {
-    const rows = await getCloudCovers('mega:a@b.com', []);
+    const rows = await _getCloudCoversForTests('mega:a@b.com', []);
     expect(rows.size).toBe(0);
   });
 });
@@ -84,8 +84,8 @@ describe('cloud cover expiry', () => {
     const deleted = await pruneExpiredCloudCovers(NOW);
 
     expect(deleted).toBe(1);
-    expect((await getCloudCovers('mega:a@b.com', ['Old/Volume 01.cbz'])).size).toBe(0);
-    expect((await getCloudCovers('mega:a@b.com', ['Fresh/Volume 01.cbz'])).size).toBe(1);
+    expect((await _getCloudCoversForTests('mega:a@b.com', ['Old/Volume 01.cbz'])).size).toBe(0);
+    expect((await _getCloudCoversForTests('mega:a@b.com', ['Fresh/Volume 01.cbz'])).size).toBe(1);
   });
 
   it('keeps a cover exactly at the boundary', async () => {

@@ -14,7 +14,7 @@ import { db } from './db';
 import { putCloudCovers, type CloudCover } from './cloud-covers';
 import {
   acquireCover,
-  refreshCovers,
+  refreshCoverKeys,
   _heldCoverCountForTests,
   _resetCoverResolverForTests,
   type ResolvedCover
@@ -362,8 +362,9 @@ describe('object URL lifecycle', () => {
   });
 
   it('stops delivering to a released handle and reports it as empty', async () => {
-    await putCloudCovers([cover()]);
-
+    // Both handles resolve a MISS, so the refresh below really does re-read —
+    // a refresh of a handle that already has its cover is a no-op for reasons
+    // that have nothing to do with releasing, and would prove nothing here.
     const first = acquireCover(PATH);
     const second = acquireCover(PATH);
     const seen: (ResolvedCover | undefined)[] = [];
@@ -374,9 +375,11 @@ describe('object URL lifecycle', () => {
     first.release();
     expect(first.current).toBeUndefined();
 
-    // The entry is still alive for `second`; a refresh must not reach `first`.
-    refreshCovers([PATH], { force: true });
-    await second.ready;
+    // The entry is still alive for `second`; the cover it was waiting for
+    // lands, and the refresh that delivers it must not reach `first`.
+    await putCloudCovers([cover()]);
+    refreshCoverKeys([PATH]);
+    await expect(second.ready).resolves.toMatchObject({ width: 250 });
     expect(seen.length).toBe(afterResolve);
     second.release();
   });
@@ -413,71 +416,6 @@ describe('object URL lifecycle', () => {
     expect(resolved?.url).toBe('blob:cover-1');
     expect(created).toEqual(['blob:cover-1']);
     expect(revoked).toEqual(['blob:cover-1']);
-  });
-
-  /**
-   * A superseded value must not mint either — worse than leaking, its URL
-   * would land in `entry.url`, where the LIVE value's getter would find it and
-   * paint the cover that was just replaced.
-   */
-  it("gives a superseded value its own old URL, never the replacement's", async () => {
-    await putCloudCovers([cover()]);
-
-    const handle = acquireCover(PATH);
-    const stale = await handle.ready;
-    expect(stale?.url).toBe('blob:cover-1');
-
-    await putCloudCovers([cover({ width: 260, cached_at: 1756000009999 })]);
-    refreshCovers([PATH], { force: true });
-    const fresh = await handle.ready;
-
-    expect(stale?.url).toBe('blob:cover-1'); // revoked, but not re-minted
-    expect(fresh?.url).toBe('blob:cover-2');
-    expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
-    handle.release();
-  });
-
-  /**
-   * A forced re-read exists for a genuine overwrite. When the row comes back
-   * unchanged there is nothing to replace, and replacing anyway revokes a URL
-   * a holder may have painted straight into an `<img src>` — a dead URL that
-   * subscribing cannot repair, because from the store's point of view nothing
-   * happened.
-   */
-  it('keeps the live value and its URL when a forced re-read returns the same row', async () => {
-    await putCloudCovers([cover()]);
-
-    const handle = acquireCover(PATH);
-    const first = await handle.ready;
-    expect(first?.url).toBe('blob:cover-1');
-
-    refreshCovers([PATH], { force: true }); // nothing was rewritten
-    await expect(handle.ready).resolves.toBe(first);
-
-    expect(revoked).toEqual([]);
-    expect(created).toEqual(['blob:cover-1']);
-    expect(handle.current).toBe(first);
-
-    handle.release();
-    expect(revoked).toEqual(['blob:cover-1']);
-  });
-
-  it('revokes a superseded URL when a forced refresh replaces the cover', async () => {
-    await putCloudCovers([cover()]);
-
-    const handle = acquireCover(PATH);
-    await handle.ready;
-    expect(handle.current?.url).toBe('blob:cover-1');
-
-    await putCloudCovers([cover({ width: 260 })]);
-    refreshCovers([PATH], { force: true });
-    await expect(handle.ready).resolves.toMatchObject({ width: 260 });
-
-    expect(revoked).toEqual(['blob:cover-1']);
-    expect(handle.current?.url).toBe('blob:cover-2');
-
-    handle.release();
-    expect(revoked).toEqual(['blob:cover-1', 'blob:cover-2']);
   });
 });
 
@@ -537,28 +475,27 @@ describe('dropped-entry guards', () => {
   });
 
   it('does not evict the live entry when a stale one under the same key is dropped', async () => {
-    await putCloudCovers([cover()]);
-
     const stale = acquireCover(PATH);
     await stale.ready;
     _resetCoverResolverForTests(); // what `stale` holds is no longer the entry at its key
 
     const live = acquireCover(PATH); // a fresh entry claims that key
-    await expect(live.ready).resolves.toMatchObject({ width: 250 });
+    await expect(live.ready).resolves.toBeUndefined();
     expect(_heldCoverCountForTests()).toBe(1);
 
     stale.release(); // the last holder of the DEAD entry lets go
 
     expect(_heldCoverCountForTests()).toBe(1);
-    // and the live handle is still reachable by path, which is the whole point
-    await putCloudCovers([cover({ width: 260 })]);
-    refreshCovers([PATH], { force: true });
-    await expect(live.ready).resolves.toMatchObject({ width: 260 });
+    // and the live handle is still reachable by path, which is the whole point:
+    // its cover lands, and the refresh has to find IT rather than the corpse.
+    await putCloudCovers([cover()]);
+    refreshCoverKeys([PATH]);
+    await expect(live.ready).resolves.toMatchObject({ width: 250 });
     live.release();
   });
 });
 
-describe('refreshCovers', () => {
+describe('refreshCoverKeys', () => {
   it('picks up a cover that landed after a held handle already missed', async () => {
     const handle = acquireCover(PATH);
     const seen: (ResolvedCover | undefined)[] = [];
@@ -566,7 +503,7 @@ describe('refreshCovers', () => {
     await expect(handle.ready).resolves.toBeUndefined();
 
     await putCloudCovers([cover()]);
-    refreshCovers([PATH]);
+    refreshCoverKeys([PATH]);
     await expect(handle.ready).resolves.toMatchObject({ width: 250 });
 
     expect(seen.at(-1)).toMatchObject({ width: 250 });
@@ -581,7 +518,7 @@ describe('refreshCovers', () => {
     await Promise.all([hit.ready, miss.ready]);
 
     const counts = await countIdbOps(async () => {
-      refreshCovers(['Hit/Volume 01.cbz', 'Miss/Volume 01.cbz', 'Nobody/Holds This.cbz', '']);
+      refreshCoverKeys(['Hit/Volume 01.cbz', 'Miss/Volume 01.cbz', 'Nobody/Holds This.cbz', '']);
       await Promise.all([hit.ready, miss.ready]);
     });
 
@@ -611,7 +548,7 @@ describe('refreshCovers', () => {
       const awaited = handle.ready; // the caller is already waiting on this one
 
       await putCloudCovers([cover()]); // the cover commits...
-      refreshCovers([PATH]); // ...and the liveQuery announces it, mid-read
+      refreshCoverKeys([PATH]); // ...and the liveQuery announces it, mid-read
 
       read.land(); // the pre-write snapshot finally comes back: a miss
       await expect(awaited).resolves.toMatchObject({ width: 250 });
@@ -630,9 +567,9 @@ describe('refreshCovers', () => {
     try {
       const handle = acquireCover(PATH);
       await putCloudCovers([cover()]);
-      refreshCovers([PATH]);
-      refreshCovers([PATH]);
-      refreshCovers([PATH], { force: true });
+      refreshCoverKeys([PATH]);
+      refreshCoverKeys([PATH]);
+      refreshCoverKeys([PATH]);
 
       read.land();
       await expect(handle.ready).resolves.toMatchObject({ width: 250 });
@@ -644,13 +581,16 @@ describe('refreshCovers', () => {
   });
 
   it('does nothing when no account is connected', async () => {
-    await putCloudCovers([cover()]);
+    // A handle that resolved a MISS with its cover now on disk: with a scope
+    // this refresh re-reads (the test above), so the empty op ledger below is
+    // the disconnect doing the work and not the self-limiting rule.
     const handle = acquireCover(PATH);
-    await handle.ready;
+    await expect(handle.ready).resolves.toBeUndefined();
+    await putCloudCovers([cover()]);
 
     getActiveProvider.mockReturnValue(null);
     const counts = await countIdbOps(async () => {
-      refreshCovers([PATH], { force: true });
+      refreshCoverKeys([PATH]);
       await Promise.resolve();
     });
 

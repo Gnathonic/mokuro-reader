@@ -156,7 +156,11 @@ vi.mock('$lib/settings/volume-data', () => ({ volumes: readingHistory }));
 import { db } from '$lib/catalog/db';
 import { volumes, volumesWithPlaceholders, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
-import { cachedCoverPaths, getCloudCovers, putCloudCovers } from '$lib/catalog/cloud-covers';
+import {
+  cachedCoverPaths,
+  _getCloudCoversForTests,
+  putCloudCovers
+} from '$lib/catalog/cloud-covers';
 import { cachedCoverPathSet } from '$lib/catalog/cloud-covers-store';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
@@ -413,11 +417,11 @@ describe('countIdbOps', () => {
     expect(scanned['cloud_covers.bytes']).toBe(N * COVER_BYTES);
 
     // The CURSOR shape, which is the one the pre-fix cover store used: one
-    // request, one `success` per row walked. `getCloudCovers`'s `anyOf` takes
+    // request, one `success` per row walked. The row read's `anyOf` takes
     // Dexie's value-reading cursor branch — the exact query that deserialized
     // ~437 MB per re-read on the reference library.
     const cursored = await countIdbOps(async () => {
-      await getCloudCovers(SCOPE, paths);
+      await _getCloudCoversForTests(SCOPE, paths);
     });
     expect(cursored['cloud_covers.openCursor'] ?? 0).toBeGreaterThanOrEqual(1);
     expect(cursored['cloud_covers.bytes']).toBe(N * COVER_BYTES);
@@ -976,7 +980,7 @@ describe('CONTRACT 7: a cached cover is never re-downloaded', () => {
 // TWO SIZES, NOT ONE BOUND. A single "under X MB" threshold is a number a
 // later change can quietly raise. Measuring the SAME event at two clearly
 // different library sizes and asserting the cost is the same makes it a
-// scaling claim: the pre-fix store (`getCloudCovers` over every listed path)
+// scaling claim: the pre-fix store (a blob-returning row read over every listed path)
 // fails it by construction, because its cost per insert IS the table.
 describe('CONTRACT 8: one cover insert is O(1) in library size', () => {
   const SERIES = 'Dr Stone';

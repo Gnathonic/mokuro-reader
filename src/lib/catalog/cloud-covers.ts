@@ -29,16 +29,37 @@ export interface CloudCover {
   /**
    * Epoch ms when this cover was fetched and written. Drives expiry only —
    * see `pruneExpiredCloudCovers`. Written once, at flush
-   * (`cover-persist.ts`), and never refreshed afterward: the placeholder a
-   * cached cover belongs to already carries its `thumbnail`, so
-   * `isCoverFetchTarget` never asks for it again, and there is no other read
-   * path that touches this row. So `CLOUD_COVER_MAX_AGE_MS` is "14 days after
-   * caching", not "14 days since last viewed" — there is deliberately no
-   * `touchCloudCovers`; see that constant's doc comment for why one was
-   * removed rather than wired up. Staleness of the cover ITSELF is decided
-   * elsewhere, by comparing `series_index`'s `cover_size`/`cover_modified`
-   * for this volume against the current listing; nothing stored on this row
-   * participates in that comparison.
+   * (`cover-persist.ts`), and never refreshed afterward.
+   *
+   * NOT BECAUSE NOTHING READS THE ROW. That used to be the reason, and it is
+   * no longer true in either half: a cached cover's blob was stamped onto its
+   * placeholder, so `isCoverFetchTarget` saw a `thumbnail` and never asked
+   * again, and nothing else looked at the row at all. That decoration is gone
+   * — it is what turned one cover landing into a whole-catalog re-derive — and
+   * this row is now read constantly. `isCachedCoverPath` (`cover-service.ts`)
+   * exists precisely because the fetch gate lost its accidental suppressor,
+   * and `cover-resolver.ts` reads the row on EVERY claim.
+   *
+   * IT IS NOT REFRESHED BECAUSE TOUCHING WOULD FEED BACK. A write to
+   * `cloud_covers` from the read path re-runs `cachedCoverPathSet`'s
+   * liveQuery, which drives `refreshCoverKeys`, which re-reads held handles —
+   * which would touch again. And every commit here is a `storagemutated`
+   * broadcast, the cost `COVER_PERSIST_MAX_BATCH` exists to bound; a touch per
+   * claim would put an unbounded stream of them behind ordinary scrolling. So
+   * there is deliberately no `touchCloudCovers` — see
+   * `CLOUD_COVER_MAX_AGE_MS`.
+   *
+   * THE PRICE, STATED PLAINLY: `CLOUD_COVER_MAX_AGE_MS` is "14 days after
+   * caching", not "14 days since last viewed", so a cover the user looks at
+   * every day is still discarded on schedule. What that costs is one re-fetch
+   * the next time something asks for it — `isCachedCoverPath` answers false
+   * once the row is gone, and the fetch pipeline caches it again exactly as it
+   * did the first time. A cache miss, not a defect.
+   *
+   * Staleness of the cover ITSELF is decided elsewhere, by comparing
+   * `series_index`'s `cover_size`/`cover_modified` for this volume against the
+   * current listing; nothing stored on this row participates in that
+   * comparison.
    */
   cached_at: number;
 }
@@ -50,13 +71,23 @@ export async function putCloudCovers(covers: CloudCover[]): Promise<void> {
 }
 
 /**
- * The requested paths' cached covers for one account, via the primary key —
- * an indexed point read per path, never a table scan. Callers already know
- * which paths are on screen (from the listing joined with `series_index`), so
- * this never needs to discover paths itself, and an empty request short-
- * circuits before touching the db.
+ * TEST-ONLY. The requested paths' cached ROWS, blobs included, for one
+ * account.
+ *
+ * Named for what it is so nobody mistakes it for a supported read path: it is
+ * the shape this whole design removed. Production reads a cover ONE path at a
+ * time through `cover-resolver.ts` (a single keyed `get` for the one surface
+ * that draws it), and asks "is it cached?" through {@link cachedCoverPaths},
+ * which never deserializes a blob at all. A production caller that wanted a
+ * SET of rows would be re-materialising the table — `cloudCoverMap` did
+ * exactly that on every commit, at 3,886 MB and a 1,784 ms long task on the
+ * reference library.
+ *
+ * What it is for: asserting what a write actually left in the table. Indexed
+ * point read per path, never a table scan; an empty request short-circuits
+ * before touching the db.
  */
-export async function getCloudCovers(
+export async function _getCloudCoversForTests(
   scope: string,
   paths: string[]
 ): Promise<Map<string, CloudCover>> {
@@ -72,7 +103,7 @@ export async function getCloudCovers(
  * PRIMARY KEYS ONLY, never the rows: this is a presence check, and
  * deserializing the blobs it is checking for would reintroduce exactly the
  * cost that splitting this table out of `volumes` exists to remove. Same
- * indexed point-read-per-path shape as {@link getCloudCovers}, and the
+ * indexed point-read-per-path shape as {@link _getCloudCoversForTests}, and the
  * returned paths are normalized, so callers must compare through
  * `normalizeCachePath`.
  */
@@ -87,12 +118,13 @@ export async function cachedCoverPaths(scope: string, paths: string[]): Promise<
 }
 
 /**
- * Covers untouched for this long are discarded. Age only — no size quota, and
+ * Covers cached this long ago are discarded. Age only — no size quota, and
  * measured from when the cover was CACHED, not last viewed: see
  * `CloudCover.cached_at`'s doc comment for why there is no "last access" to
  * measure from (a `touchCloudCovers` that wrote to `cloud_covers` from the
- * read path would re-fire `cloudCoverMap`'s liveQuery, which would touch
- * again — an unbounded write/read feedback loop).
+ * read path would re-fire `cachedCoverPathSet`'s liveQuery, which drives
+ * `refreshCoverKeys`, which re-reads held handles — which would touch again: an
+ * unbounded write/read feedback loop).
  */
 export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 

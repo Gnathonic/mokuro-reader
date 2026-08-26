@@ -4,8 +4,8 @@ import 'fake-indexeddb/auto';
 /**
  * THE STORE THAT MUST NOT READ BLOBS.
  *
- * `cloudCoverMap` used to be a `liveQuery` over `getCloudCovers(scope, paths)`
- * for every listed `.cbz` path, so every commit to `cloud_covers`
+ * `cloudCoverMap` used to be a `liveQuery` over a blob-returning row read (the
+ * shape `_getCloudCoversForTests` keeps for tests) for every listed `.cbz` path, so every commit to `cloud_covers`
  * re-materialised every cover row INCLUDING the blob — 3,886 MB deserialized
  * in a 59-second cold start on a 1,027-series library — and handed the result
  * to `volumesWithPlaceholders`, which is what turned a cover landing into a
@@ -19,7 +19,7 @@ import 'fake-indexeddb/auto';
  *    assertion cannot pass by simply not running.
  * 2. Its identity moves only when the KEY SET moves. A blob rewritten under an
  *    existing key emits nothing.
- * 3. It drives `refreshCovers`, which is the ONLY way a card that resolved a
+ * 3. It drives `refreshCoverKeys`, which is the ONLY way a card that resolved a
  *    miss mid-ingest ever sees its cover without remounting.
  *
  * A real Dexie over `fake-indexeddb` on purpose: a mocked liveQuery would pin
@@ -144,7 +144,7 @@ describe('cachedCoverPathSet reads keys, never blobs', () => {
     });
 
     // Not one value-reading op reached the blob table. `openCursor` is the one
-    // the old `getCloudCovers`-backed store used, and it is what deserialized
+    // the old blob-returning store used, and it is what deserialized
     // 437 MB per re-read on the real library.
     expect(counts['cloud_covers.openCursor'] ?? 0).toBe(0);
     expect(counts['cloud_covers.getAll'] ?? 0).toBe(0);
@@ -267,7 +267,7 @@ describe('initCoverKeyWatch drives the resolver', () => {
     await putCloudCovers([cover(1)]);
     await settle();
 
-    // `refreshCovers` is self-limiting: an unheld path is a Map miss and
+    // `refreshCoverKeys` is self-limiting: an unheld path is a Map miss and
     // issues no read, so handing it the whole key set stays cheap at catalog
     // scale.
     expect(_heldCoverCountForTests()).toBe(0);
@@ -279,7 +279,7 @@ describe('initCoverKeyWatch drives the resolver', () => {
  *
  * `initCoverKeyWatch` is the only production subscriber to `cachedCoverPathSet`, so it
  * is both what keeps the keys-only liveQuery alive AND the only thing that ever calls
- * `refreshCovers`. While it was one `init*` line among many in `+layout.svelte`, deleting
+ * `refreshCoverKeys`. While it was one `init*` line among many in `+layout.svelte`, deleting
  * that line silently stopped every late-arriving cover from reaching a mounted card —
  * and left the whole suite green, because every test above starts the watch itself.
  *

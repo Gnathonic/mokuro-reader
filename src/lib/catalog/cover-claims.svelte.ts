@@ -40,7 +40,7 @@ const NO_VOLUMES: VolumeMetadata[] = [];
 /**
  * ONE subscription to the account scope for every surface in the app.
  *
- * `acquireCover` binds the scope at acquire time and `refreshCovers` resolves
+ * `acquireCover` binds the scope at acquire time and `refreshCoverKeys` resolves
  * the CURRENT one, so a handle taken under the old account is unreachable by
  * refresh after a switch — every claim key therefore leads with the scope, so
  * a switch releases and re-acquires. `fromStore` shares one store subscription
@@ -192,7 +192,7 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
         if (cover) found.set(claim.uuid, cover);
         else found.delete(claim.uuid);
         // A cover arriving after mount reaches the surface HERE — the handle emits, and
-        // `refreshCovers` (driven from the cover key set) is what makes a handle that
+        // `refreshCoverKeys` (driven from the cover key set) is what makes a handle that
         // already resolved a miss read again.
         if (publishing) covers = found.size > 0 ? new Map(found) : NO_COVERS;
       });

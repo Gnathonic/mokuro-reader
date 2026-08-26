@@ -73,7 +73,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import { getCloudCovers } from './cloud-covers';
+import { _getCloudCoversForTests } from './cloud-covers';
 import { _resetCoverPersistForTests } from './cover-persist';
 import { installCoversForSeries } from './cover-install';
 
@@ -154,7 +154,7 @@ describe('installCoversForSeries', () => {
     // writes no cloud fields), which is exactly why the path has to come from
     // the listing rather than from the row.
     expect(row?.cloudPath).toBeUndefined();
-    const cached = await getCloudCovers('webdav:a@b.com', ['Dr Stone/Volume 1.cbz']);
+    const cached = await _getCloudCoversForTests('webdav:a@b.com', ['Dr Stone/Volume 1.cbz']);
     expect(cached.get('Dr Stone/Volume 1.cbz')).toMatchObject({ width: 210, height: 297 });
 
     // Decorated with the listing's cloud fields, which are NEVER stored on the row.
@@ -357,7 +357,7 @@ describe('installCoversForSeries', () => {
 
     expect(await pass).toBe(2);
     expect(await joiner).toBe(2);
-    const cached = await getCloudCovers('webdav:a@b.com', ['Dr Stone/Volume 2.cbz']);
+    const cached = await _getCloudCoversForTests('webdav:a@b.com', ['Dr Stone/Volume 2.cbz']);
     expect(cached.get('Dr Stone/Volume 2.cbz')).toMatchObject({ width: 210, height: 297 });
   });
 

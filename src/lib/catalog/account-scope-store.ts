@@ -4,7 +4,7 @@ import { providerManager } from '$lib/util/sync';
 /**
  * Which account's covers a surface may show, as a PRIMITIVE.
  *
- * `acquireCover` binds the account scope at acquire time and `refreshCovers`
+ * `acquireCover` binds the account scope at acquire time and `refreshCoverKeys`
  * resolves the CURRENT one, so a handle taken under the old account is
  * unreachable by refresh after a switch — it would sit on the previous
  * account's blob forever. Every cover-resolving surface therefore joins this

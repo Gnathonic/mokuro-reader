@@ -142,7 +142,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
 import {
-  refreshCovers,
+  refreshCoverKeys,
   _heldCoverCountForTests,
   _resetCoverResolverForTests
 } from '$lib/catalog/cover-resolver';
@@ -526,7 +526,7 @@ describe('a claim-set change on a card that is already showing its covers', () =
 });
 
 describe('a cover that lands after the card mounted', () => {
-  it('reaches the mounted card through refreshCovers, with no re-render of its own', async () => {
+  it('reaches the mounted card through refreshCoverKeys, with no re-render of its own', async () => {
     // Mounted with nothing cached: the card resolves a MISS and shows the download boxes.
     render(CatalogItem, { props: { volumes: [cloudVolume()] } });
     await settle();
@@ -535,7 +535,7 @@ describe('a cover that lands after the card mounted', () => {
     // The download finishes and writes the blob (`cover-persist.ts`), then the cover key
     // set tells the resolver which paths just gained one.
     await putCloudCovers([cachedCover()]);
-    refreshCovers([CLOUD_PATH]);
+    refreshCoverKeys([CLOUD_PATH]);
     await settle();
 
     const covers = lastCanvasProps().covers as Map<string, File>;
@@ -566,7 +566,7 @@ describe('a cover that lands after the card mounted', () => {
         thumbnail: new File([new Uint8Array(5)], 'v2.webp', { type: 'image/webp' })
       })
     ]);
-    refreshCovers(['Dr Stone/Volume 02.cbz']);
+    refreshCoverKeys(['Dr Stone/Volume 02.cbz']);
     await settle();
 
     expect(fakeCache.get.mock.calls.map((call) => call[0])).toContain('cloud-uuid-2');

@@ -69,7 +69,7 @@ export interface CoverHandle extends Readable<ResolvedCover | undefined> {
   readonly current: ResolvedCover | undefined;
   /**
    * Settles when the CURRENT keyed read finishes — hit or miss, never
-   * rejecting. Re-read as a getter after {@link refreshCovers}: a refresh of
+   * rejecting. Re-read as a getter after {@link refreshCoverKeys}: a refresh of
    * an already-settled handle installs a NEW promise. A refresh that lands
    * while a read is still in flight instead keeps THIS promise pending until
    * the re-read settles, so a caller already awaiting it is never handed the
@@ -91,13 +91,12 @@ interface CoverEntry {
   settled: boolean;
   reading: boolean;
   /**
-   * A {@link refreshCovers} that arrived while a read was in flight, to be
-   * honoured by {@link settle} — `'force'` re-reads unconditionally, `'miss'`
-   * only if the finished read is still a miss. See `refreshCovers`.
+   * A {@link refreshCoverKeys} that arrived while a read was in flight, to be
+   * honoured by {@link settle} — but only if the finished read is still a
+   * miss, which is the same rule a refresh applies to a settled entry. See
+   * `refreshCoverKeys`.
    */
-  pendingRefresh: 'miss' | 'force' | null;
-  /** Identity of the ROW behind {@link value}; see {@link coverSignature}. */
-  signature: string | null;
+  pendingRefresh: boolean;
   /** Non-null only once someone has read `ResolvedCover.url`. */
   url: string | null;
   ready: Promise<ResolvedCover | undefined>;
@@ -125,42 +124,15 @@ const RESOLVED_MISS: Promise<ResolvedCover | undefined> = Promise.resolve(undefi
  *
  * `IDBObjectStore.get` on the composite primary key — ONE row, one round
  * trip, cost independent of how many covers the table holds. Deliberately not
- * `getCloudCovers(scope, [path])`: that one is shaped for a path SET and goes
- * through `where(...).anyOf(...)`, which is fine but makes "this is a point
- * read" something you have to reason about rather than see. The op-count
- * contract in the test file asserts the shape directly (`cloud_covers.get`
- * exactly 1; no `getAll`, no cursor, no index read), and a scan reintroduced
- * here fails it.
+ * a `where(...).anyOf(...)` over a one-element path set. That is the shape the
+ * old blob-returning read had — `_getCloudCoversForTests` still keeps it, for
+ * tests — and it works, but it makes "this is a point read" something you have
+ * to reason about rather than see. The op-count contract in the test file
+ * asserts the shape directly (`cloud_covers.get` exactly 1; no `getAll`, no
+ * cursor, no index read), and a scan reintroduced here fails it.
  */
 async function readCover(scope: string, path: string): Promise<CloudCover | undefined> {
   return db.cloud_covers.get([scope, path]);
-}
-
-/**
- * Which stored row a resolved value came from, as a comparable string.
- *
- * Used to answer "is this re-read the cover we are already showing?", which
- * cannot be answered by object identity: IndexedDB structured-CLONES on every
- * read, so two reads of one unchanged row hand back two different `File`
- * objects (verified against fake-indexeddb, and it is what the spec requires
- * of a real one) — an identity check would be permanently false and the
- * replacement it is meant to skip would always happen. These are exactly the
- * fields that survive the clone, and `cached_at` is the decisive one: it is
- * stamped once per WRITE and never refreshed (see `cloud-covers.ts`), so an
- * overwrite — the self-heal case a forced refresh exists for — always changes
- * it, while a re-read of untouched bytes never does.
- */
-function coverSignature(row: CloudCover): string {
-  const file = row.thumbnail;
-  return [
-    row.cached_at,
-    row.width,
-    row.height,
-    file.size,
-    file.type,
-    file.name,
-    file.lastModified
-  ].join('\u0000');
 }
 
 function makeResolved(entry: CoverEntry, row: CloudCover): ResolvedCover {
@@ -170,13 +142,11 @@ function makeResolved(entry: CoverEntry, row: CloudCover): ResolvedCover {
    * one after it stops being the entry's live value.
    *
    * A holder can outlive the value it holds — an async decode continuation, a
-   * stale reactive read — and both `dropEntry` and a replacing `settle` leave
-   * `entry.url` null. A getter that minted whenever it found null would then
-   * create a FRESH object URL against an entry no longer in `entries`, which
-   * nothing can ever revoke (one per churned card, at 1,027 cards); on the
-   * replacement path it would do something worse still — park its own bytes'
-   * URL in `entry.url`, where the LIVE value's getter would find it and paint
-   * the superseded cover.
+   * stale reactive read — and `dropEntry` blanks `entry.value` and `entry.url`
+   * the moment the last holder releases. A getter that minted whenever it
+   * found null would then create a FRESH object URL against an entry no longer
+   * in `entries`, which nothing can ever revoke: one permanent leak per
+   * churned card, at 1,027 cards.
    */
   let minted = '';
   const resolved: ResolvedCover = {
@@ -184,7 +154,7 @@ function makeResolved(entry: CoverEntry, row: CloudCover): ResolvedCover {
     width: row.width,
     height: row.height,
     get url(): string {
-      // Not the entry's live value any more (released, or superseded): give
+      // Not the entry's live value any more (its holders all released): give
       // back what was already given, and mint nothing.
       if (entry.value !== resolved) return minted;
       if (entry.url === null) entry.url = URL.createObjectURL(file);
@@ -227,41 +197,36 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   // Cleared HERE and not in a trailing `.finally`, so "the read is over" and
   // "`ready` has resolved" are the same instant. A `.finally` runs a microtask
   // LATER than the `ready` continuation it competes with, which left a
-  // `refreshCovers` issued straight after an `await handle.ready` looking at
+  // `refreshCoverKeys` issued straight after an `await handle.ready` looking at
   // `reading === true` and silently skipping its re-read.
   entry.reading = false;
   entry.settled = true;
+  // A FILL, NEVER A REPLACEMENT. A read can only ever settle onto an entry
+  // that has no value: `acquireCover` and `startRead` both bail on a settled
+  // entry, and `refreshCoverKeys` re-reads only a handle that is still a miss —
+  // so `entry.value` is `undefined` on arrival here, and with it `entry.url`
+  // (one is minted only for a LIVE value). That is what makes this three
+  // lines instead of a row-identity comparison, an object-URL revoke and a
+  // replacement branch: those existed for a forced re-read that no production
+  // path ever issued (see {@link refreshCoverKeys}), and a `cloud_covers` row is
+  // written once and never rewritten (see `cloud-covers.ts`). Anything that
+  // makes an overwrite reachable has to bring all three back with it.
   const next = row ? makeResolved(entry, row) : undefined;
-  const signature = row ? coverSignature(row) : null;
-  // A forced re-read that came back with the SAME row must leave the live
-  // value (and its object URL) alone: replacing it revokes a URL a holder may
-  // have painted imperatively into an `<img src>`, which subscribing cannot
-  // repair because nothing about the cover actually changed.
-  const sameCover =
-    next !== undefined && entry.value !== undefined && entry.signature === signature;
-  const changed = !sameCover && !(next === undefined && entry.value === undefined);
-  if (changed) {
-    // An overwrite (a self-heal cover replacing an earlier one) points the old
-    // URL at bytes nobody will show again.
-    revokeEntryUrl(entry);
-    entry.value = next;
-    entry.signature = signature;
-  }
+  if (next !== undefined) entry.value = next;
 
   // A refresh that arrived DURING this read is not answered by this row. The
   // read's readonly snapshot can pre-date the write that prompted the refresh
   // — which is precisely the ingest sequence: card mounts, read is issued,
-  // cover commits, the keys-only liveQuery calls `refreshCovers`. Honouring it
+  // cover commits, the keys-only liveQuery calls `refreshCoverKeys`. Honouring it
   // here (rather than letting `startRead`'s `reading` bail swallow it) is what
   // keeps that card from settling on the pre-write miss and staying blank
   // until it remounts. `ready` is deliberately left UNRESOLVED across the
   // re-read, so a caller already awaiting it gets the answer that includes the
   // write instead of the snapshot that missed it.
   const pending = entry.pendingRefresh;
-  entry.pendingRefresh = null;
-  if (pending === 'force' || (pending === 'miss' && entry.value === undefined)) {
+  entry.pendingRefresh = false;
+  if (pending && entry.value === undefined) {
     entry.settled = false;
-    if (changed) emit(entry);
     startRead(entry);
     return;
   }
@@ -269,13 +234,13 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   const resolveReady = entry.resolveReady;
   entry.resolveReady = null;
   resolveReady?.(entry.value);
-  if (changed) emit(entry);
+  if (next !== undefined) emit(entry);
 }
 
 function startRead(entry: CoverEntry): void {
   // Bailing on `reading` is safe only because a refresh that finds a read in
   // flight parks itself on `entry.pendingRefresh` instead of calling here
-  // (see `refreshCovers`) — dropping it silently is what left cards blank.
+  // (see `refreshCoverKeys`) — dropping it silently is what left cards blank.
   if (entry.reading || entry.settled) return;
   entry.reading = true;
   if (entry.resolveReady === null) {
@@ -300,13 +265,12 @@ function startRead(entry: CoverEntry): void {
 function dropEntry(entry: CoverEntry): void {
   // Not `entries.delete(entry.key)` unconditionally: this entry may already
   // have been replaced under its key (dropped mid-read, then re-acquired), and
-  // evicting the LIVE entry would strand its holders — `refreshCovers` would
+  // evicting the LIVE entry would strand its holders — `refreshCoverKeys` would
   // no longer find them, so their covers would never arrive.
   if (entries.get(entry.key) === entry) entries.delete(entry.key);
   entry.subscribers.clear();
   entry.value = undefined;
-  entry.signature = null;
-  entry.pendingRefresh = null;
+  entry.pendingRefresh = false;
   entry.settled = false;
   revokeEntryUrl(entry);
   const resolveReady = entry.resolveReady;
@@ -370,7 +334,7 @@ function makeHandle(entry: CoverEntry): CoverHandle {
 let coverKeyWatchStarted = false;
 
 /**
- * Start the thing that drives {@link refreshCovers}, at most once, ON THE
+ * Start the thing that drives {@link refreshCoverKeys}, at most once, ON THE
  * CLAIM PATH.
  *
  * `initCoverKeyWatch` (in `cloud-covers-store.ts`) is the ONLY production
@@ -388,7 +352,7 @@ let coverKeyWatchStarted = false;
  * never draws a cloud cover never subscribes to the cloud listing at all.
  *
  * DYNAMIC IMPORT, deliberately. `cloud-covers-store.ts` imports
- * `refreshCovers` from this module; a static import back would close that
+ * `refreshCoverKeys` from this module; a static import back would close that
  * into a cycle. Deferring it keeps the module graph one-way (store →
  * resolver) and keeps the listing subscription off the critical path of the
  * first claim. A failure to start is logged and never thrown: a card that
@@ -442,8 +406,7 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
       value: undefined,
       settled: false,
       reading: false,
-      pendingRefresh: null,
-      signature: null,
+      pendingRefresh: false,
       url: null,
       ready: RESOLVED_MISS,
       resolveReady: null,
@@ -457,56 +420,75 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
 }
 
 /**
- * Re-read the covers for `paths` that someone is currently holding.
+ * Re-read the covers for the held handles at `keys`.
  *
- * TASK 2/3 MUST WIRE THIS. A handle is read once and then never again on its
- * own — that is what makes "two subscribers, one read" unconditional, but it
- * also means a card that resolved a MISS before its cover finished
- * downloading would stay blank until it remounted. Drive this from the
- * keys-only cover key set (the liveQuery that replaces `cloudCoverMap`): when
- * a path appears in it, refresh that path.
+ * A handle is read once and then never again on its own — that is what makes
+ * "two subscribers, one read" unconditional, but it also means a card that
+ * resolved a MISS before its cover finished downloading would stay blank until
+ * it remounted. This is the repair, and `initCoverKeyWatch`
+ * (`cloud-covers-store.ts`) is what drives it off the keys-only cover key set:
+ * a path APPEARING in that set is the signal that its cover is now on disk.
  *
- * Self-limiting by default: only handles that are still a miss are re-read,
- * so handing this the whole key set costs a Map lookup per path and issues a
- * read only for the cards actually waiting on one. Paths nobody holds are
- * skipped entirely.
+ * KEYS, ALREADY NORMALIZED — not raw listing paths. Every producer of a cover
+ * key folds it on the way in (`putCloudCovers` when writing, `cachedCoverPaths`
+ * when reading them back) and `acquireCover` folds at the door, so a path is
+ * normalized exactly once, and it is not here. Re-folding was an NFC normalise,
+ * a split, a filter and a join PER KEY PER COVER WRITE — invisible to the byte
+ * contract, since a keys-only cursor deserializes nothing — over a set that was
+ * the whole library. A caller holding a raw provider path must run it through
+ * `normalizeCachePath` itself.
  *
- * `force` re-reads even a resolved handle, for a genuine overwrite (a
- * self-heal cover replacing stale bytes); the superseded object URL is
- * revoked when the new value lands — but only if the row that lands really is
- * a different one (see {@link coverSignature}), so a forced re-read of
- * unchanged bytes leaves the live URL intact.
+ * Self-limiting: only handles that are still a miss are re-read, and keys
+ * nobody holds are skipped. That bounds the READS, not the walk — the caller
+ * is responsible for not handing this the whole library on every cover write,
+ * which is why `initCoverKeyWatch` passes only the keys that just landed.
  *
- * A path whose read is still IN FLIGHT is refreshed too, after that read
+ * NO `force`, DELIBERATELY. There was one, for the self-heal case: a cover
+ * whose bytes change under a path that does not. Nothing could ever call it. A
+ * `cloud_covers` row is written once and never rewritten, because the only
+ * writer (`cover-persist.ts`) is fed by `resolveAndDeliver`, which settles a
+ * path already present in the table WITHOUT fetching it (`isCachedCoverPath`),
+ * and because the self-heal branch structurally cannot reach this table at all
+ * — `isCoverFetchTarget` only calls a row stale when it HAS a `thumbnail`, and
+ * a cover for a volume with a `volumes` row lands on that row, never in
+ * `cloud_covers` (see `cover-persist.ts`'s ROUTING). The 14-day TTL prune only
+ * DELETES rows; a held handle still showing a pruned row's blob is showing the
+ * same picture, and a forced re-read there would blank the card rather than
+ * heal it. So a re-read of a resolved handle had nothing new to find, and paid
+ * for the possibility with a row-identity comparison and a revoke-on-replace
+ * branch in `settle`. Reinstating it means reinstating those: replacing a live
+ * value revokes an object URL a holder may already have painted into an
+ * `<img src>`, which subscribing cannot repair.
+ *
+ * A key whose read is still IN FLIGHT is refreshed too, after that read
  * settles: the in-flight read may have snapshotted the store before the write
  * being announced here, and dropping the refresh in that window is what would
  * leave a card blank for the rest of its mount.
  */
-export function refreshCovers(paths: Iterable<string>, options: { force?: boolean } = {}): void {
+export function refreshCoverKeys(keys: Iterable<string>): void {
   const scope = activeAccountScope();
   if (!scope) return;
-  for (const raw of paths) {
-    const normalized = raw ? normalizeCachePath(raw) : '';
-    if (!normalized) continue;
-    const entry = entries.get(`${scope}\u0000${normalized}`);
-    if (!entry) continue;
-    if (!options.force && entry.value !== undefined) continue;
-    if (entry.reading) {
-      // The read in flight CANNOT be trusted to answer this refresh: its
-      // readonly snapshot may have been taken before the write that prompted
-      // it, and `startRead` bails on `reading`, so nothing would be issued and
-      // the card would settle on the pre-write miss and stay blank until it
-      // remounted. Record the intent instead; `settle` re-enters `startRead`
-      // once this read lands. A plain refresh cannot downgrade a pending
-      // `force`.
-      if (options.force || entry.pendingRefresh === null) {
-        entry.pendingRefresh = options.force ? 'force' : 'miss';
-      }
-      continue;
-    }
-    entry.settled = false;
-    startRead(entry);
+  for (const key of keys) if (key) refreshOne(scope, key);
+}
+
+/** One already-normalized path, for whoever is holding it. */
+function refreshOne(scope: string, path: string): void {
+  const entry = entries.get(`${scope}\u0000${path}`);
+  // Nobody holds it, or the holder already has its cover: there is nothing a
+  // re-read could tell them (see `refreshCoverKeys` on why `force` is gone).
+  if (!entry || entry.value !== undefined) return;
+  if (entry.reading) {
+    // The read in flight CANNOT be trusted to answer this refresh: its
+    // readonly snapshot may have been taken before the write that prompted
+    // it, and `startRead` bails on `reading`, so nothing would be issued and
+    // the card would settle on the pre-write miss and stay blank until it
+    // remounted. Record the intent instead; `settle` re-enters `startRead`
+    // once this read lands.
+    entry.pendingRefresh = true;
+    return;
   }
+  entry.settled = false;
+  startRead(entry);
 }
 
 /** Test hook: drop every entry (revoking any live object URL) as if all holders released. */

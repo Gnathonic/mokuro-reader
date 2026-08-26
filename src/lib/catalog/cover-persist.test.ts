@@ -79,7 +79,7 @@ import {
   flushPendingCoverPersists,
   installCover
 } from './cover-persist';
-import { getCloudCovers } from './cloud-covers';
+import { _getCloudCoversForTests } from './cloud-covers';
 import { countIdbOps } from './__tests__/idb-op-counter';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
@@ -485,7 +485,7 @@ describe('bounded write batches: a burst gets MORE, SMALLER transactions — nev
     expect(await db.cloud_covers.count()).toBe(TOTAL - OVERFLOW);
 
     const survived = async (i: number) =>
-      (await getCloudCovers('mega:a@b.com', [`Ov/${i}.cbz`])).size === 1;
+      (await _getCloudCoversForTests('mega:a@b.com', [`Ov/${i}.cbz`])).size === 1;
 
     // The batch already snapshotted before the queue ever filled is safe.
     expect(await survived(0)).toBe(true);
@@ -520,7 +520,7 @@ describe('cover installs route by relationship', () => {
     await flushPendingCoverPersists();
 
     expect(await db.volumes.count()).toBe(before);
-    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
@@ -587,7 +587,9 @@ describe('cover installs route by relationship', () => {
     const row = await db.volumes.get('finished-1');
     expect(row?.thumbnail).toBeInstanceOf(File);
     // …and it did NOT fall through to the catalog-knowledge cache.
-    expect((await getCloudCovers('mega:a@b.com', ['One Piece/Volume 1.cbz'])).size).toBe(0);
+    expect((await _getCloudCoversForTests('mega:a@b.com', ['One Piece/Volume 1.cbz'])).size).toBe(
+      0
+    );
   });
 
   it('sends a browsed volume’s cover to cloud_covers even though a row exists', async () => {
@@ -608,7 +610,7 @@ describe('cover installs route by relationship', () => {
     const row = (await db.volumes.get('browsed-1')) as VolumeMetadata | undefined;
     expect(row?.thumbnail).toBeUndefined();
 
-    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
