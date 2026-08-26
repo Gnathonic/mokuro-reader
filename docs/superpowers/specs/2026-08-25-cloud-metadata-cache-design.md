@@ -163,19 +163,30 @@ row-to-row only where the metric is a count of operations, not a duration.
 Covers render correctly in the catalog, confirmed visually — the cover pipeline's cache
 identity is threaded end to end, not merely green in tests.
 
-### What these numbers do not yet show
+### Clean-rebuild measurement (2026-08-26, local store cleared)
 
-Scan **durations** are still 112/417/490/134 ms, close to the 501 ms in the table above, because
-the measured database carries work done before these fixes existed: 3,428 rows, 3,033 of them
-holding 94.2 MB of thumbnails, while `volume_files` and `volume_ocr` are both **0** — not one of
-those volumes is installed.
+The durations above were measured against a database still carrying pre-fix state (3,428 rows,
+3,033 of them holding 94.2 MB of thumbnails, with `volume_files` and `volume_ocr` both 0 — not one
+of those volumes installed). After closing the `cover-install.ts` bypass that was still creating
+that state, the IndexedDB store was deleted and the library rebuilt from the same WebDAV account.
 
-The final review established that this is **not** clearable residue. `cover-install.ts` writes a
-thumbnail onto a metadata-only row with a raw `db.volumes.update`, bypassing `cover-persist.ts`'s
-relationship gate entirely; its callers (`series-open.ts`, `series-backfill.ts`) act on
-freshly-materialized rows with no history. Clearing local storage would therefore rebuild the
-blob-carrying table rather than reveal a clean measurement. A duration re-measurement is only
-meaningful **after** that write is routed through `installCover`.
+|                                | Original             | Clean rebuild           |
+| ------------------------------ | -------------------- | ----------------------- |
+| Full `volumes` scans           | 145 in a 20 s window | **11 in a 63 s window** |
+| Worst single scan              | 16,560 ms            | **6 ms**                |
+| Cumulative scan time           | 257 s                | **12 ms**               |
+| Rows carrying a thumbnail blob | 3,033                | **0**                   |
+| Thumbnail bytes in `volumes`   | 94.2 MB              | **0 MB**                |
+| `volumes` rows                 | 11,354               | 14                      |
+| `cloud_covers` rows            | —                    | 14                      |
+
+Blobs land in `cloud_covers` and nowhere else, so a full scan costs single-digit milliseconds
+rather than half a second. Schema confirmed at Dexie verno 20.
+
+Scope of the claim: this is 63 seconds of browsing, so only 14 volumes had been touched. Row count
+grows as more series are opened — `series-open.ts` still mints a row per opened series, an
+explicit spec non-goal. What the rebuild establishes is the structural property, not a steady-state
+row count: **no browsing path puts a blob on a row any more**, which is what made scans expensive.
 
 ### Correction to the table above
 
