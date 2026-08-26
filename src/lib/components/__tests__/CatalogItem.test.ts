@@ -1098,6 +1098,96 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
     }
   });
 
+  it('marks an ALL-PLACEHOLDER series finished when every volume of it is', () => {
+    // The reported bug. Read history is keyed by uuid in localStorage and needs no
+    // catalog row, so a series that exists only in the cloud is exactly as finishable as
+    // a downloaded one. The card required a local row, which made "finished" false by
+    // construction here — the series sorted to the bottom of the smart catalog (that
+    // predicate counted every volume) and went green only once opening it minted rows.
+    updateProgress('p-1', 10, 0, true);
+    updateProgress('p-2', 10, 0, true);
+    try {
+      const { container } = render(CatalogItem, {
+        props: {
+          volumes: [cloudCover({ volume_uuid: 'p-1' }), cloudCover({ volume_uuid: 'p-2' })],
+          providerName: 'Drive'
+        }
+      });
+
+      expect(identity(container)).toEqual({
+        dimmed: true,
+        mutedTitle: false,
+        greenTitle: true,
+        chip: '2 volumes in Drive',
+        cloudMarks: 1,
+        badges: 0
+      });
+    } finally {
+      updateProgress('p-1', 0, 0, false);
+      updateProgress('p-2', 0, 0, false);
+    }
+  });
+
+  it('marks a BARE placeholder series finished on the stored flag alone', () => {
+    // A listing knows the volume exists and nothing else: page_count 0. The device that
+    // actually read it synced `completed` against the same uuid, and that flag is the only
+    // evidence there is — `isVolumeComplete` can only ever answer "no" without a length.
+    updateProgress('p-1', 180, 0, true);
+    try {
+      const { container } = render(CatalogItem, {
+        props: {
+          volumes: [cloudCover({ volume_uuid: 'p-1', page_count: 0 })],
+          providerName: 'Drive'
+        }
+      });
+
+      expect(identity(container).greenTitle).toBe(true);
+    } finally {
+      updateProgress('p-1', 0, 0, false);
+    }
+  });
+
+  it('marks a placeholder series the user marked finished, with no progress at all', () => {
+    // "Reading history" is broader than page turns: no pages, no recorded time, no turns —
+    // marked as finished still counts.
+    updateProgress('p-1', 0, 0, true);
+    try {
+      const { container } = render(CatalogItem, {
+        props: {
+          volumes: [cloudCover({ volume_uuid: 'p-1', page_count: 0 })],
+          providerName: 'Drive'
+        }
+      });
+
+      expect(identity(container).greenTitle).toBe(true);
+    } finally {
+      updateProgress('p-1', 0, 0, false);
+    }
+  });
+
+  it('leaves an all-placeholder series unmarked while one volume is still unread', () => {
+    updateProgress('p-1', 10, 0, true);
+    try {
+      const { container } = render(CatalogItem, {
+        props: {
+          volumes: [cloudCover({ volume_uuid: 'p-1' }), cloudCover({ volume_uuid: 'p-2' })],
+          providerName: 'Drive'
+        }
+      });
+
+      expect(identity(container)).toEqual({
+        dimmed: true,
+        mutedTitle: true,
+        greenTitle: false,
+        chip: '2 volumes in Drive',
+        cloudMarks: 1,
+        badges: 0
+      });
+    } finally {
+      updateProgress('p-1', 0, 0, false);
+    }
+  });
+
   it('keeps the series editor shortcut and the link working on a removed series', async () => {
     const { container } = render(CatalogItem, {
       props: { volumes: [cover({ metadata_only: true })] }
@@ -1417,6 +1507,84 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
     } finally {
       updateProgress('v-1', 0, 0, false);
       updateProgress('c-3', 0, 0, false);
+    }
+  });
+
+  it('hides the finished volumes of an ALL-ABSENT series when "hide read" is on', async () => {
+    // "Hide completed volumes" was a local-only setting: the selector's hide-read branch
+    // lived inside `if (localVolumes.length > 0)`, and the card zeroed both `localVolumes`
+    // and `unreadVolumes` for a series with nothing on the device — so the cloud path had
+    // no unread set to work from and stacked the finished volumes like any other.
+    updateProgress('v-1', 10, 0, true);
+    updateProgress('v-3', 10, 0, true);
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            painted({ volume_uuid: 'v-1', volume_title: 'Vol 1', metadata_only: true }),
+            painted({ volume_uuid: 'v-2', volume_title: 'Vol 2', metadata_only: true }),
+            painted({ volume_uuid: 'v-3', volume_title: 'Vol 3', metadata_only: true }),
+            painted({ volume_uuid: 'v-4', volume_title: 'Vol 4', metadata_only: true })
+          ]
+        }
+      });
+      await tick();
+
+      expect(drawnUuids()).toEqual(['v-2', 'v-4']);
+    } finally {
+      updateProgress('v-1', 0, 0, false);
+      updateProgress('v-3', 0, 0, false);
+    }
+  });
+
+  it('hides the finished volumes of a CLOUD-ONLY series too', async () => {
+    // Same series, no rows at all: progress reaches a placeholder through the volume uuid
+    // its listing carries.
+    const cloudPainted = (overrides: Partial<VolumeMetadata> = {}) =>
+      placeholderVolume({
+        series_title: 'One Piece',
+        thumbnail_width: 250,
+        thumbnail_height: 360,
+        thumbnail: new File([], 'cover.jpg', { type: 'image/jpeg' }),
+        ...overrides
+      });
+
+    updateProgress('c-1', 10, 0, true);
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            cloudPainted({ volume_uuid: 'c-1', volume_title: 'Vol 1' }),
+            cloudPainted({ volume_uuid: 'c-2', volume_title: 'Vol 2' })
+          ]
+        }
+      });
+      await tick();
+
+      expect(drawnUuids()).toEqual(['c-2']);
+    } finally {
+      updateProgress('c-1', 0, 0, false);
+    }
+  });
+
+  it('keeps showing a finished all-absent series rather than emptying its card', async () => {
+    updateProgress('v-1', 10, 0, true);
+    updateProgress('v-2', 10, 0, true);
+    try {
+      render(CatalogItem, {
+        props: {
+          volumes: [
+            painted({ volume_uuid: 'v-1', volume_title: 'Vol 1', metadata_only: true }),
+            painted({ volume_uuid: 'v-2', volume_title: 'Vol 2', metadata_only: true })
+          ]
+        }
+      });
+      await tick();
+
+      expect(drawnUuids()).toEqual(['v-1', 'v-2']);
+    } finally {
+      updateProgress('v-1', 0, 0, false);
+      updateProgress('v-2', 0, 0, false);
     }
   });
 

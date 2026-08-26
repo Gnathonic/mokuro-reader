@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
   import { ListgroupItem, Spinner } from 'flowbite-svelte';
-  import { progress } from '$lib/settings';
+  // The READING RECORD store (page + `completed` per uuid), aliased because this
+  // component's own `volumes` prop is the series' catalog rows.
+  import { volumes as readStates } from '$lib/settings';
   import { volumes as catalogVolumes } from '$lib/catalog';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { downloadQueue } from '$lib/util/download-queue';
@@ -11,7 +13,7 @@
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
-  import { isVolumeComplete } from '$lib/util/volume-helpers';
+  import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
@@ -29,20 +31,23 @@
 
   let localVolumes = $derived(sortedVolumes.filter((v) => !v.isPlaceholder));
 
-  // The app's one completion rule, over the raw page (see isVolumeComplete): an inline
-  // copy here used to call a never-opened one- or two-page volume finished, so a row could
-  // claim a series was read that the grid card in the same catalog said was not.
+  // The app's one volume-completion rule (see isVolumeFinished): an inline copy here used
+  // to call a never-opened one- or two-page volume finished, so a row could claim a series
+  // was read that the grid card in the same catalog said was not. Only picks which cover
+  // and title this row shows.
   let firstUnreadVolume = $derived(
-    localVolumes.find((v) => !isVolumeComplete($progress?.[v.volume_uuid] ?? 0, v.page_count))
+    localVolumes.find((v) => !isVolumeFinished(v, $readStates?.[v.volume_uuid]))
   );
 
   let firstVolume = $derived(sortedVolumes[0]);
 
   let volume = $derived(firstUnreadVolume ?? firstVolume);
   let liveVolume = $derived(volume ? ($catalogVolumes?.[volume.volume_uuid] ?? volume) : undefined);
-  // A series with no rows on this device is not a series you finished — it has no
-  // progress at all. Mirrors the grid card's rule.
-  let isComplete = $derived(localVolumes.length > 0 && !firstUnreadVolume);
+  // The app's ONE series-completion rule, over the WHOLE series — the same call the grid
+  // card and the smart sort make. Requiring a local row here made "finished" false by
+  // construction for a cloud-only series: read history is keyed by uuid in localStorage
+  // and outlives (or precedes) any row.
+  let isComplete = $derived(isSeriesFinished(sortedVolumes, $readStates));
   // Not one page of this series is on the device — cloud-only placeholders, rows whose
   // files were removed, or both (see $lib/catalog/volume-state).
   let seriesNeedsDownload = $derived(

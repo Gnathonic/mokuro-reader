@@ -273,8 +273,9 @@ export interface CardStackSelectionInput<T> {
  * Which volumes the card actually stacks. Local volumes win outright; a cloud-only series
  * falls back to placeholders, capped so a huge series cannot thrash the thumbnail cache.
  *
- * "Hide read" only applies while something is still unread — a finished series keeps
- * showing its covers rather than emptying the card.
+ * "Hide read" applies on BOTH paths — it is a rule about volumes, not about where their
+ * pages live — and only while something is still unread: a finished series keeps showing
+ * its covers rather than emptying the card.
  */
 /**
  * The two halves of a partly-downloaded series, back in volume order. Sorting the merged
@@ -313,7 +314,21 @@ export function selectCardStackVolumes<T>({
     return stackCount === 0 ? stack : stack.slice(0, stackCount);
   }
 
-  if (compactCloud) return placeholders.slice(0, 1);
+  // NOTHING IS HERE — the cloud path. "Hide read" applies just the same: it is a setting
+  // about volumes, not about where their pages live. It used to live inside the local
+  // branch alone, so a cloud-only or fully-removed series stacked its finished volumes
+  // whatever the setting said (and, before `isSeriesFinished`, none of them could even be
+  // counted as finished).
+  //
+  // The unread set is INTERSECTED with the placeholders rather than stacked directly the
+  // way the local branch does, so the cap below still measures the cloud half and only the
+  // cloud half — and so a caller that hands over the whole series' unread volumes (which
+  // is what the type asks for) cannot smuggle a local one into a cloud stack.
+  const unread = new Set(unreadVolumes);
+  const visible =
+    hideRead && unread.size > 0 ? placeholders.filter((vol) => unread.has(vol)) : placeholders;
+
+  if (compactCloud) return visible.slice(0, 1);
   const limit = stackCount === 0 ? maxCloudStack : Math.min(stackCount, maxCloudStack);
-  return placeholders.slice(0, limit);
+  return visible.slice(0, limit);
 }

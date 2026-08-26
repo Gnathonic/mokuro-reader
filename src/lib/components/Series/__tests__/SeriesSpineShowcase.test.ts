@@ -10,7 +10,7 @@ const {
   emitSeriesMetadata,
   seriesMetadataMap,
   catalogSettings,
-  progressStore,
+  readStates,
   compositeCanvasProps,
   providerStatus
 } = vi.hoisted(() => {
@@ -48,8 +48,9 @@ const {
       }
     },
     catalogSettings: createStore<Record<string, unknown> | undefined>({ horizontalStep: 11 }),
-    // Read progress drives the card's "hide read volumes" subset, which the shelf mirrors.
-    progressStore: createStore<Record<string, number>>({}),
+    // The reading record drives the card's "hide read volumes" subset, which the shelf
+    // mirrors — page AND the stored `completed` flag (see `isVolumeFinished`).
+    readStates: createStore<Record<string, { progress?: number; completed?: boolean }>>({}),
     // Props CompositeCanvas was last mounted with — real drawing is a canvas no-op in
     // jsdom, so this is the only way to see what the showcase actually asked it to draw.
     compositeCanvasProps: [] as Record<string, unknown>[],
@@ -67,7 +68,7 @@ const {
 vi.mock('$lib/metadata/store', () => ({ updateSeriesMetadata, seriesMetadataMap }));
 vi.mock('$lib/settings/settings', () => ({ catalogSettings }));
 // Mocked so the real module (Dexie-backed volume data) stays out of the graph.
-vi.mock('$lib/settings/volume-data', () => ({ progress: progressStore }));
+vi.mock('$lib/settings/volume-data', () => ({ volumes: readStates }));
 // Cover fetching/delivery is `cover-service.ts`'s job now (decision tree,
 // dedupe, retry and persistence are covered end to end in
 // `cover-service.test.ts`/`cover-service.retry.test.ts` against a real
@@ -270,7 +271,7 @@ describe('SeriesSpineShowcase', () => {
     updateSeriesMetadata.mockClear();
     requestCoverMock.mockClear();
     catalogSettings.set({ horizontalStep: 11 });
-    progressStore.set({});
+    readStates.set({});
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
     providerStatus.set({ providers: {}, currentProviderType: null });
@@ -730,7 +731,7 @@ describe('SeriesSpineShowcase', () => {
     // Volume 1 is finished, so the CARD hides it (hideReadVolumes defaults on). The shelf
     // is a placement editor: it still draws it — but the uniform height is measured over
     // the card's stack, so the volumes the two share stay the same size in both.
-    progressStore.set({ 'uuid-0': 9 });
+    readStates.set({ 'uuid-0': { progress: 9 } });
     renderShowcase(vols);
     await tick();
 
@@ -1124,7 +1125,7 @@ describe('SeriesSpineShowcase per-series metadata edit gating', () => {
       IntersectionObserverStub;
     updateSeriesMetadata.mockClear();
     catalogSettings.set({ horizontalStep: 11 });
-    progressStore.set({});
+    readStates.set({});
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
     providerStatus.set({ providers: {}, currentProviderType: null });

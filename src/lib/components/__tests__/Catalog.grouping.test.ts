@@ -102,6 +102,23 @@ function series(title: string, volumes: VolumeMetadata[]) {
   };
 }
 
+/**
+ * Title text AND whether it carries the finished marker, read off the same rendered rows.
+ * The two halves of the bug live here together: the ORDER comes from the smart sort's
+ * completion predicate, the green from the row's own — and they used to be different code.
+ */
+function markedTitlesIn(
+  container: HTMLElement,
+  testId: string
+): { title: string; green: boolean }[] {
+  const region = container.querySelector(`[data-testid="${testId}"]`);
+  if (!region) return [];
+  return [...region.querySelectorAll('p.font-semibold')].map((el) => ({
+    title: el.textContent?.trim() ?? '',
+    green: el.className.includes('text-green-400')
+  }));
+}
+
 function titlesIn(container: HTMLElement, testId: string): string[] {
   const region = container.querySelector(`[data-testid="${testId}"]`);
   if (!region) return [];
@@ -282,5 +299,134 @@ describe('Catalog smart-sorts an all-absent series by its read state', () => {
     const { container } = render(Catalog);
     expect(titlesIn(container, 'catalog-library')).toEqual([]);
     expect(titlesIn(container, 'catalog-cloud')).toEqual(['Unread', 'Read']);
+  });
+});
+
+/**
+ * BUG: the catalog had TWO completion predicates that disagreed.
+ *
+ * The smart sort read the stored `completed` flag over every volume of the series; the
+ * card and the list row recomputed completion from the raw page over the LOCAL volumes
+ * only, and required at least one of them to exist. So a finished cloud series sorted to
+ * the bottom without ever turning green, and a volume read to the end whose flag had been
+ * clobbered by a page-only `updateProgress` turned green without sorting to the bottom.
+ *
+ * Both now call `isSeriesFinished`. These tests read the ORDER (the sort's answer) and the
+ * GREEN (the row's answer) off the same rendered rows, so the two cannot drift apart
+ * again without one of them failing.
+ */
+describe('Catalog sorts and colours a series by the SAME completion rule', () => {
+  afterEach(() => {
+    cleanup();
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'ASC' });
+    readingVolumes.set({});
+  });
+
+  function smartCatalogOfEveryShape() {
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'SMART' });
+    readingVolumes.set({
+      // Read to the last page, flag and all.
+      'local-done': {
+        completed: true,
+        progress: 10,
+        lastProgressUpdate: '2026-08-05T00:00:00.000Z'
+      },
+      // Read to the last page, but the flag says otherwise: `updateProgress(volume, page)`
+      // defaults its 4th argument, so a page-only caller stores `completed: false`.
+      'local-stale': {
+        completed: false,
+        progress: 10,
+        lastProgressUpdate: '2026-08-04T00:00:00.000Z'
+      },
+      'local-reading': {
+        completed: false,
+        progress: 4,
+        lastProgressUpdate: '2026-08-20T00:00:00.000Z'
+      },
+      'mixed-local': {
+        completed: true,
+        progress: 10,
+        lastProgressUpdate: '2026-08-03T00:00:00.000Z'
+      },
+      // The cloud half of the mixed series: marked finished elsewhere, no pages here.
+      'mixed-cloud': { completed: true, progress: 0 },
+      'cloud-done-1': {
+        completed: true,
+        progress: 10,
+        lastProgressUpdate: '2026-08-01T00:00:00.000Z'
+      },
+      'cloud-done-2': {
+        completed: true,
+        progress: 10,
+        lastProgressUpdate: '2026-08-01T00:00:00.000Z'
+      },
+      // A BARE placeholder: the listing knows nothing but that it exists (page_count 0),
+      // and the flag synced from the device that read it is the only evidence there is.
+      'bare-cloud': { completed: true, progress: 0 },
+      'cloud-reading': {
+        completed: false,
+        progress: 4,
+        lastProgressUpdate: '2026-08-19T00:00:00.000Z'
+      }
+    });
+    catalogStore.set([
+      series('Local Done', [volume('Local Done', { volume_uuid: 'local-done' })]),
+      series('Local Stale Flag', [volume('Local Stale Flag', { volume_uuid: 'local-stale' })]),
+      series('Local Reading', [volume('Local Reading', { volume_uuid: 'local-reading' })]),
+      series('Mixed Done', [
+        volume('Mixed Done', { volume_uuid: 'mixed-local' }),
+        volume('Mixed Done', { volume_uuid: 'mixed-cloud', isPlaceholder: true, page_count: 0 })
+      ]),
+      series('Cloud Done', [
+        volume('Cloud Done', { volume_uuid: 'cloud-done-1', isPlaceholder: true }),
+        volume('Cloud Done', { volume_uuid: 'cloud-done-2', isPlaceholder: true })
+      ]),
+      series('Bare Cloud Done', [
+        volume('Bare Cloud Done', { volume_uuid: 'bare-cloud', isPlaceholder: true, page_count: 0 })
+      ]),
+      series('Cloud Reading', [
+        volume('Cloud Reading', { volume_uuid: 'cloud-reading', isPlaceholder: true })
+      ])
+    ]);
+  }
+
+  it('agrees for every shape of series, all local through all placeholder', async () => {
+    smartCatalogOfEveryShape();
+    const { container } = render(Catalog);
+    await tick();
+
+    // Library: the unread series first, then the finished ones most-recently-read first.
+    // "Local Stale Flag" is one of the finished ones — it was read to the last page, and
+    // the derivation outranks the flag that says otherwise.
+    expect(markedTitlesIn(container, 'catalog-library')).toEqual([
+      { title: 'Local Reading', green: false },
+      { title: 'Local Done', green: true },
+      { title: 'Local Stale Flag', green: true },
+      { title: 'Mixed Done', green: true }
+    ]);
+
+    // Cloud: same rule, no rows anywhere in it. "Bare Cloud Done" has no page turn to date
+    // it by, so it lands after the finished series that does.
+    expect(markedTitlesIn(container, 'catalog-cloud')).toEqual([
+      { title: 'Cloud Reading', green: false },
+      { title: 'Cloud Done', green: true },
+      { title: 'Bare Cloud Done', green: true }
+    ]);
+  });
+
+  it('puts every green series after every ungreen one, in both sections', async () => {
+    // The invariant behind the two lists above, stated on its own: whatever the rule
+    // decides, the sort and the colour decide it together.
+    smartCatalogOfEveryShape();
+    const { container } = render(Catalog);
+    await tick();
+
+    for (const testId of ['catalog-library', 'catalog-cloud']) {
+      const rows = markedTitlesIn(container, testId);
+      expect(rows.length).toBeGreaterThan(1);
+      const firstGreen = rows.findIndex((row) => row.green);
+      expect(firstGreen).toBeGreaterThan(-1);
+      expect(rows.slice(firstGreen).every((row) => row.green)).toBe(true);
+    }
   });
 });

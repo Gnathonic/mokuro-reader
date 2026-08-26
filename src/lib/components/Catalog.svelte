@@ -19,6 +19,7 @@
   import { queueSeriesVolumes } from '$lib/util/download-queue';
   import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { isSeriesFinished } from '$lib/util/volume-helpers';
   import { showSnackbar } from '$lib/util';
   import type { ProviderType } from '$lib/util/sync/provider-interface';
 
@@ -185,12 +186,15 @@
           });
         } else {
           // SMART sorting
-          // Check if series are completed
+          // Check if series are completed — through the app's ONE series-completion rule,
+          // the same call the cards colour themselves by (`$lib/util/volume-helpers`).
+          // This used to read the stored `completed` flag alone, which the card did not,
+          // so a finished series could sort to the bottom and never turn green.
           const aVolumes = a.volumes.map((vol) => vol.volume_uuid);
           const bVolumes = b.volumes.map((vol) => vol.volume_uuid);
 
-          const aCompleted = aVolumes.every((volId) => volumesSnapshot[volId]?.completed);
-          const bCompleted = bVolumes.every((volId) => volumesSnapshot[volId]?.completed);
+          const aCompleted = isSeriesFinished(a.volumes, volumesSnapshot);
+          const bCompleted = isSeriesFinished(b.volumes, volumesSnapshot);
 
           // If completion status differs, completed series go to the end
           if (aCompleted !== bCompleted) {

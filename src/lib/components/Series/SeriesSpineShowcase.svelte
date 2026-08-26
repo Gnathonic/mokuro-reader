@@ -50,7 +50,8 @@
   import { Button, ButtonGroup, Range } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { catalogSettings } from '$lib/settings/settings';
-  import { progress } from '$lib/settings/volume-data';
+  // The reading-record store (page + `completed` per uuid); `volumes` here is the prop.
+  import { volumes as readStates } from '$lib/settings/volume-data';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { seriesIndexMap } from '$lib/metadata/series-index';
   import { normalizeSeriesKey } from '$lib/metadata/series-key';
@@ -89,7 +90,7 @@
   import CompositeCanvas from '../CompositeCanvas.svelte';
   import DownloadBadge from '../DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
-  import { isVolumeComplete } from '$lib/util/volume-helpers';
+  import { isVolumeFinished } from '$lib/util/volume-helpers';
 
   let { seriesTitle, volumes }: { seriesTitle: string; volumes: VolumeMetadata[] } = $props();
 
@@ -135,7 +136,7 @@
   // Unread across the WHOLE series, both absent kinds included — the card hides read
   // volumes by the same rule (see CatalogItem), and this subset only exists to agree with it.
   let unreadVolumes = $derived(
-    sortedVolumes.filter((v) => !isVolumeComplete($progress?.[v.volume_uuid] ?? 0, v.page_count))
+    sortedVolumes.filter((v) => !isVolumeFinished(v, $readStates?.[v.volume_uuid]))
   );
 
   /**
@@ -160,7 +161,9 @@
   let cardVolumes = $derived(
     selectCardStackVolumes({
       localVolumes: showcaseNeedsDownload ? [] : localVolumes,
-      unreadVolumes: showcaseNeedsDownload ? [] : unreadVolumes,
+      // Handed over on BOTH paths, exactly as the card does: "hide read" applies to a
+      // series that is entirely absent too.
+      unreadVolumes,
       placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       // The shelf IS spine mode: all of the subset, one row, no vertical step.

@@ -15,7 +15,9 @@
 
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
-  import { progress, catalogSettings } from '$lib/settings';
+  // `volumes` is the READING RECORD store (page + `completed` per uuid), aliased because
+  // this component's own `volumes` prop is the series' catalog rows.
+  import { volumes as readStates, catalogSettings } from '$lib/settings';
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
@@ -58,7 +60,7 @@
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import { isVolumeComplete } from '$lib/util/volume-helpers';
+  import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
@@ -75,24 +77,27 @@
 
   // Split into local vs cloud placeholders
   let localVolumes = $derived(seriesVolumes.filter((v) => !v.isPlaceholder));
-  let hasLocalVolumes = $derived(localVolumes.length > 0);
 
-  /** Not read through, by the app's one completion rule (raw progress, no display default). */
+  /** Not read through, by the app's one volume-completion rule. */
   function isUnread(vol: VolumeMetadata): boolean {
-    return !isVolumeComplete($progress?.[vol.volume_uuid] ?? 0, vol.page_count);
+    return !isVolumeFinished(vol, $readStates?.[vol.volume_uuid]);
   }
 
-  // Unread among the volumes that are HERE — what decides the card's "series finished"
-  // marker, which only a series with rows can claim.
+  // Unread among the volumes that are HERE — only for picking which cover faces out.
   let unreadLocalVolumes = $derived(localVolumes.filter(isUnread));
 
   // Display volume: first unread, or first local, or first placeholder
   let volume = $derived(unreadLocalVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
 
-  // UI state flag. Completion is the ONE thing a series with rows can say that a cloud-only
-  // one cannot: it has read history. Everything else about an absent series' card is the
-  // cloud treatment (see `seriesNeedsDownload` below).
-  let isComplete = $derived(unreadLocalVolumes.length === 0 && hasLocalVolumes);
+  // UI state flag — the app's ONE series-completion rule, over the WHOLE series.
+  //
+  // This used to be `unreadLocalVolumes.length === 0 && hasLocalVolumes`, on the theory
+  // that read history is something only a series with rows can have. It is not: history is
+  // keyed by uuid in localStorage and needs no row, so requiring one made "finished" false
+  // by construction for a cloud-only series — which then sorted to the bottom of the smart
+  // catalog (that predicate counted every volume) while staying uncoloured here, and went
+  // green only once opening it materialised rows.
+  let isComplete = $derived(isSeriesFinished(seriesVolumes, $readStates));
 
   // Not one page of this series is on the device: cloud-only placeholders, rows whose
   // files were removed, or a mix of the two. `needsDownload` covers both absent states —
@@ -121,8 +126,10 @@
   // props, already filtered above) are exactly what the stack draws.
   //
   // Unread across the WHOLE series — what "hide read" hides. Spans both absent states: a
-  // finished cloud volume hides like any other.
-  let unreadVolumes = $derived([...localVolumes, ...cloudStackVolumes].filter(isUnread));
+  // finished cloud volume hides like any other. Filtered off `seriesVolumes` rather than
+  // off `localVolumes + cloudStackVolumes`, which double-counts every metadata-only row of
+  // a series that is entirely absent (`cloudStackVolumes` is then the whole series).
+  let unreadVolumes = $derived(seriesVolumes.filter(isUnread));
 
   // Check if cloud series should use compact layout
   let useCompactForCloud = $derived(
@@ -137,10 +144,15 @@
   // its volumes are real rows: `localVolumes` is what the selector reads as "there is
   // something to read here", and a removed series has to stack, cap and collapse exactly
   // like a cloud one — same treatment, only the covers arrive sooner.
+  //
+  // `unreadVolumes` is handed over WHICHEVER path is taken. Zeroing it alongside
+  // `localVolumes` is what made "hide completed volumes" a local-only setting: the cloud
+  // path had no unread set to work from, so a cloud series stacked its finished volumes
+  // like any other. The set is computed either way; it was only ever thrown away.
   let stackedVolumes = $derived(
     selectCardStackVolumes({
       localVolumes: seriesNeedsDownload ? [] : localVolumes,
-      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
+      unreadVolumes,
       placeholders: cloudStackVolumes,
       hideRead: $catalogSettings?.hideReadVolumes ?? true,
       stackCount: $catalogSettings?.stackCount ?? 3,
@@ -509,7 +521,7 @@
     targets: () =>
       selectCardStackVolumes({
         localVolumes: seriesNeedsDownload ? [] : localVolumes,
-        unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
+        unreadVolumes,
         placeholders: cloudStackVolumes,
         hideRead: $catalogSettings?.hideReadVolumes ?? true,
         stackCount: $catalogSettings?.stackCount ?? 3,

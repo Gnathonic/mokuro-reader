@@ -679,6 +679,79 @@ describe('selectCardStackVolumes', () => {
     ).toHaveLength(MAX_CLOUD_STACK);
   });
 
+  it('hides the finished volumes of a CLOUD-ONLY series', () => {
+    // "Hide read" used to live inside the local branch alone, so a series with nothing on
+    // the device stacked its finished volumes whatever the setting said.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: ['cloud-1', 'cloud-3'],
+        placeholders: ['cloud-0', 'cloud-1', 'cloud-2', 'cloud-3'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['cloud-1', 'cloud-3']);
+  });
+
+  it('shows every cloud volume again once the setting is off', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: ['cloud-1', 'cloud-3'],
+        placeholders: ['cloud-0', 'cloud-1', 'cloud-2', 'cloud-3'],
+        hideRead: false,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['cloud-0', 'cloud-1', 'cloud-2', 'cloud-3']);
+  });
+
+  it('keeps showing a FINISHED cloud series rather than emptying its card', () => {
+    // Same rule the local branch has always had: hide-read empties nothing.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: [],
+        placeholders: ['cloud-0', 'cloud-1'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['cloud-0', 'cloud-1']);
+  });
+
+  it('caps the cloud stack AFTER hiding the read volumes, not before', () => {
+    // The cap exists to bound how many covers get fetched. Applying it to the unfiltered
+    // list would leave a long series showing fewer than `MAX_CLOUD_STACK` unread spines.
+    const finished = placeholders.slice(0, 30);
+    const unread = placeholders.slice(30);
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: unread,
+        placeholders,
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(unread);
+    expect(finished).toHaveLength(30);
+  });
+
+  it('draws the first UNREAD cover for a compact cloud series', () => {
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: ['cloud-2', 'cloud-3'],
+        placeholders,
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: true
+      })
+    ).toEqual(['cloud-2']);
+  });
+
   it('draws a single cover for a compact cloud series', () => {
     expect(
       selectCardStackVolumes({
