@@ -4,7 +4,12 @@ vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
-    token: { subscribe: (cb: (v: string) => void) => (cb('TOKEN'), () => {}) },
+    requestNewToken: vi.fn(),
+    // Kept as a controllable vi.fn() (not a plain arrow) so a test can defer
+    // the callback (mockImplementationOnce) to simulate the real async OAuth
+    // round-trip without other subscribe() call sites (which invoke the
+    // returned unsubscribe immediately) breaking.
+    token: { subscribe: vi.fn((cb: (v: string) => void) => (cb('TOKEN'), () => {})) },
     needsAttention: { subscribe: (cb: (v: boolean) => void) => (cb(false), () => {}) }
   }
 }));
@@ -20,7 +25,8 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
     getDriveFilesBySeries: vi.fn(() => []),
-    removeById: vi.fn()
+    removeById: vi.fn(),
+    clear: vi.fn()
   }
 }));
 vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
@@ -38,6 +44,7 @@ vi.mock('../../core/cloud-provider-core-registry', () => ({
 import { googleDriveProvider } from './google-drive-provider';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -179,5 +186,44 @@ describe('GoogleDriveProvider getStatus().accountScope', () => {
     await googleDriveProvider.ensureReaderFolder();
 
     expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:reader-root');
+  });
+});
+
+describe('GoogleDriveProvider login() account-switch scoping', () => {
+  beforeEach(() => {
+    // Reset private per-account cache state — this provider is a shared
+    // singleton across the whole test file.
+    (googleDriveProvider as unknown as { readerFolderId: string | null }).readerFolderId = null;
+  });
+
+  it("never reports a previous account's folder id as the new account's scope after a fresh login()", async () => {
+    // Account A resolves and caches its reader folder.
+    vi.mocked(driveFilesCache.getReaderFolderId).mockResolvedValueOnce('account-a-folder');
+    await googleDriveProvider.ensureReaderFolder();
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:account-a-folder');
+
+    // Simulate the consent-screen OAuth flow switching to a DIFFERENT Google
+    // account without an explicit logout first. Defer the token callback
+    // (a real OAuth round-trip is asynchronous) rather than firing it
+    // synchronously from inside subscribe().
+    vi.mocked(tokenManager.token.subscribe).mockImplementationOnce((cb) => {
+      queueMicrotask(() => cb('NEW-ACCOUNT-TOKEN'));
+      return () => {};
+    });
+
+    await googleDriveProvider.login();
+
+    // login() must clear the old account's cached folder id via the same
+    // mechanism logout's cacheManager.clearAll() uses on this cache.
+    expect(driveFilesCache.clear).toHaveBeenCalled();
+    const scopeRightAfterLogin = googleDriveProvider.getStatus().accountScope;
+    expect(scopeRightAfterLogin).not.toBe('google-drive:account-a-folder');
+    expect(scopeRightAfterLogin).toBe('google-drive:default');
+
+    // Account B's first folder resolution scopes the cache to ITS folder —
+    // never account A's stale id.
+    vi.mocked(driveFilesCache.getReaderFolderId).mockResolvedValueOnce('account-b-folder');
+    await googleDriveProvider.ensureReaderFolder();
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:account-b-folder');
   });
 });

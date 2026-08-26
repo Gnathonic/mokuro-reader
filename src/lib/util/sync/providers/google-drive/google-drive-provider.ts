@@ -148,6 +148,18 @@ class GoogleDriveProvider implements SyncProvider {
         throw new Error('Google Drive auth only works in browser');
       }
 
+      // The consent-screen OAuth flow below lets the user pick a DIFFERENT
+      // Google account without an explicit logout first. Drop any previous
+      // account's cached reader-folder id up front — on both this instance
+      // and driveFilesCache — so a fresh authorization always re-resolves
+      // the folder for whichever account just authorized, and getStatus()
+      // never reports a stale account's folder id as this account's scope.
+      // driveFilesCache.clear() is the same reset logout's cacheManager.clearAll()
+      // performs on this cache; reused directly here rather than adding a
+      // second way to clear the same state.
+      this.readerFolderId = null;
+      driveFilesCache.clear();
+
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();
 
