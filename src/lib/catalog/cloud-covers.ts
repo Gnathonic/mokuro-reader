@@ -28,8 +28,16 @@ export interface CloudCover {
   height: number;
   /**
    * Epoch ms when this cover was fetched and written. Drives expiry only —
-   * see `pruneExpiredCloudCovers`. Written once, at flush
-   * (`cover-persist.ts`), and never refreshed afterward.
+   * see `pruneExpiredCloudCovers`. Normally set once, at flush
+   * (`cover-persist.ts`), and never TOUCHED afterward just because something
+   * read the row — see below for why. It is not write-ONCE, though: a
+   * `metadata_only` row's stale cover self-heals back through this same
+   * table (`putCloudCovers` is a `bulkPut`; see `cover-resolver.ts`'s `NO
+   * force` paragraph for when that fires), which is a genuine second write
+   * with a fresh `cached_at`, at the same `[account_scope+path]` key. That
+   * overwrite changes no KEY, so nothing downstream that watches the key set
+   * for arrivals (`cachedCoverPathSet`'s liveQuery) ever notices it — it is
+   * invisible to that diff, not forbidden from happening.
    *
    * NOT BECAUSE NOTHING READS THE ROW. That used to be the reason, and it is
    * no longer true in either half: a cached cover's blob was stamped onto its

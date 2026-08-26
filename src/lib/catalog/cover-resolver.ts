@@ -444,19 +444,28 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
  * which is why `initCoverKeyWatch` passes only the keys that just landed.
  *
  * NO `force`, DELIBERATELY. There was one, for the self-heal case: a cover
- * whose bytes change under a path that does not. Nothing could ever call it. A
- * `cloud_covers` row is written once and never rewritten, because the only
- * writer (`cover-persist.ts`) is fed by `resolveAndDeliver`, which settles a
- * path already present in the table WITHOUT fetching it (`isCachedCoverPath`),
- * and because the self-heal branch structurally cannot reach this table at all
- * — `isCoverFetchTarget` only calls a row stale when it HAS a `thumbnail`, and
- * a cover for a volume with a `volumes` row lands on that row, never in
- * `cloud_covers` (see `cover-persist.ts`'s ROUTING). The 14-day TTL prune only
- * DELETES rows; a held handle still showing a pruned row's blob is showing the
- * same picture, and a forced re-read there would blank the card rather than
- * heal it. So a re-read of a resolved handle had nothing new to find, and paid
- * for the possibility with a row-identity comparison and a revoke-on-replace
- * branch in `settle`. Reinstating it means reinstating those: replacing a live
+ * whose bytes change under a path that does not. Nothing could ever call it —
+ * NOT because a `cloud_covers` row can never be rewritten. It can:
+ * `putCloudCovers` is a `bulkPut`, and `cover-persist.ts`'s ROUTING sends a
+ * self-healed cover for a `volumes` row with NO relationship (a
+ * `metadata_only` row — a thumbnail, but nothing installed and no reading
+ * activity) right back through this same table, overwriting the row at the
+ * same key. What's actually true is narrower: that overwrite changes no KEY,
+ * and the only thing that would ever call `refreshCoverKeys` with `force` is
+ * a key-set diff watching for paths that just LANDED (`initCoverKeyWatch`,
+ * off `cachedCoverPathSet`'s liveQuery). A same-key overwrite is invisible to
+ * that diff — it emits nothing either way — so nothing ever observes the
+ * self-heal to go call the forced re-read in the first place. A held handle
+ * just keeps showing the picture it already resolved until it next remounts
+ * and reads the row fresh: stale until then, never blank, never lost. Do NOT
+ * reinstate `force` to "fix" that staleness — the gap is upstream, in what
+ * announces a write, not in what a forced read would do with one it never
+ * gets told about. The 14-day TTL prune only DELETES rows; a held handle
+ * still showing a pruned row's blob is showing the same picture, and a
+ * forced re-read there would blank the card rather than heal it. So a
+ * re-read of a resolved handle had nothing new to find, and paid for the
+ * possibility with a row-identity comparison and a revoke-on-replace branch
+ * in `settle`. Reinstating it means reinstating those: replacing a live
  * value revokes an object URL a holder may already have painted into an
  * `<img src>`, which subscribing cannot repair.
  *

@@ -223,6 +223,60 @@ export async function patchProgressHolesAndEnrich(options?: { limit?: number }):
 }
 
 /**
+ * Run `patchProgressHolesAndEnrich` now, and — if the listing was not loaded
+ * yet at that moment — exactly once more when it arrives.
+ *
+ * THE RACE THIS CLOSES. `patchProgressHoles` bails with ZERO work done,
+ * including the local, network-free phase (`materializeHistoryRows`) that
+ * needs no cloud round trip and is the one that actually closes a gap like
+ * "726 volumes with history, 36 tracked" — whenever `listingIsLoaded()` is
+ * false. Both callers (`CatalogView`, `ReadingSpeedView`) run the sweep from
+ * `onMount`, which on a cold app start can fire before `initializeProviders()`
+ * `fetchAllCloudVolumes()` has resolved. A mount that loses that race used to
+ * get nothing for the rest of that visit — the exact symptom reported: a
+ * stats page opened straight after launch, before the listing was in, showed
+ * untracked history forever.
+ *
+ * `unifiedCloudManager.cloudFiles` is used as the "the listing just arrived"
+ * signal rather than a bespoke one, matching how `SeriesView` already treats
+ * that store's transition-to-non-empty as "cache is now loaded". It is not a
+ * perfect proxy — an account with a genuinely empty cloud never re-triggers —
+ * but `patchProgressHoles`'s own internal `listingIsLoaded()` check is the
+ * actual authority in that case too, and a truly empty listing has nothing
+ * for either phase to resolve regardless.
+ *
+ * AT MOST ONE RETRY. `cloudFiles` re-emits on every fetch, dedup pass and
+ * cache mutation for the rest of the app's life — reacting to all of them
+ * would re-sweep on every unrelated cache change. The `retried` flag caps it
+ * at one. The delivery `.subscribe()` makes SYNCHRONOUSLY the moment this
+ * subscribes (Svelte stores replay their current value to a new subscriber)
+ * is treated as a snapshot, not a trigger: if the listing was already loaded
+ * at mount, the unconditional call above already covered it, and firing the
+ * retry on that same initial value would double the sweep on every ordinary
+ * visit instead of only the cold-start one this exists for.
+ *
+ * NO LEAK. Returns the store's unsubscribe function; callers MUST invoke it
+ * on unmount (e.g. from `onMount`'s cleanup return) or the subscription — and
+ * the closure it holds — outlives the component.
+ */
+export function patchProgressHolesWhenListingReady(): () => void {
+  void patchProgressHolesAndEnrich();
+
+  let sawInitialSnapshot = false;
+  let retried = false;
+  return unifiedCloudManager.cloudFiles.subscribe((files) => {
+    if (!sawInitialSnapshot) {
+      // The replay-on-subscribe delivery: not a change, so not a trigger.
+      sawInitialSnapshot = true;
+      return;
+    }
+    if (retried || files.size === 0) return;
+    retried = true;
+    void patchProgressHolesAndEnrich();
+  });
+}
+
+/**
  * Guarded PER PASS, not around the sequence: a failing enrichment must not take
  * the sweep down with it, and a failure in the first pass must not cost the
  * second — that one is the whole reason this function exists.

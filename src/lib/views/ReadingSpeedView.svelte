@@ -16,7 +16,7 @@
     isOrphanedVolumeData
   } from '$lib/settings/volume-data';
   import { volumes as catalogStore } from '$lib/catalog';
-  import { patchProgressHolesAndEnrich } from '$lib/metadata/hole-patch';
+  import { patchProgressHolesWhenListingReady } from '$lib/metadata/hole-patch';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     Badge,
@@ -713,13 +713,18 @@
     // reading record. Enriching BEFORE the sweep and firing the sweep off
     // un-awaited (which is what this used to do) therefore left the bucket, and
     // the trash button on it, holding every volume the sweep had just resolved
-    // for the whole visit. `patchProgressHolesAndEnrich` is that ordering.
+    // for the whole visit. `patchProgressHolesAndEnrich` is that ordering, and
+    // `patchProgressHolesWhenListingReady` (see hole-patch.ts) is what re-runs
+    // it once more if THIS mount fired before the cloud listing was in —
+    // otherwise a cold start straight into this page can sweep zero volumes
+    // for the whole visit, which was the user-reported bug.
     //
     // The promise itself is not awaited here: it never rejects and must never
     // hold up the page. What matters is the order INSIDE it.
-    void patchProgressHolesAndEnrich();
+    const unsubscribeListing = patchProgressHolesWhenListingReady();
 
     return () => {
+      unsubscribeListing();
       if (chart) {
         chart.destroy();
       }

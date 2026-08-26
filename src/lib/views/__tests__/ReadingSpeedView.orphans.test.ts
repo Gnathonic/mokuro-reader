@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, screen, within } from '@testing-library/svelte';
-import { get } from 'svelte/store';
+import { get, readable } from 'svelte/store';
 
 /**
  * THE `[Missing Series Info]` ROW AND ITS TRASH BUTTON.
@@ -77,7 +77,14 @@ vi.mock('$lib/metadata/history-rows', () => ({
 vi.mock('$lib/metadata/series-index', () => ({ listSeriesIndexes: async () => [] }));
 vi.mock('$lib/metadata/series-open', () => ({ openSeries: vi.fn(async () => {}) }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { getActiveProvider: () => ({ type: 'google-drive' }) }
+  unifiedCloudManager: {
+    getActiveProvider: () => ({ type: 'google-drive' }),
+    // Already loaded, matching `cacheManager.isLoaded()` below being `true`
+    // from the start: `patchProgressHolesWhenListingReady` subscribes to
+    // this, and its own "already loaded at mount" fast path is what this
+    // suite exercises — a real retry is `hole-patch.test.ts`'s job.
+    cloudFiles: readable(new Map([['Dr Stone', [{}]]]))
+  }
 }));
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => true }) }
