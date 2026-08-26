@@ -24,23 +24,13 @@ import { isCbzFile } from '$lib/util/sync/syncable-file';
  * code uses to identify an archive, rather than handing every listed path to
  * `anyOf` and letting Dexie discard the misses (measured ~3x more keys than
  * can ever match at catalog scale).
- *
- * The path set is also rebuilt only when the listing reference itself
- * changes: `unifiedCloudManager.cloudFiles` only emits a new Map when the
- * underlying provider listing actually changed (see `cache-manager.ts`), so
- * a reference check here is a cheap, reliable way to skip redoing the
- * normalize-and-filter pass for an unrelated re-render.
  */
 export const cloudCoverMap: Readable<Map<string, CloudCover>> = readable(
   new Map<string, CloudCover>(),
   (set) => {
     let inner: { unsubscribe: () => void } | null = null;
-    let lastListing: Map<string, CloudVolumeWithProvider[]> | null = null;
 
     const outer = unifiedCloudManager.cloudFiles.subscribe((listing) => {
-      if (listing === lastListing) return;
-      lastListing = listing;
-
       inner?.unsubscribe();
       inner = null;
 

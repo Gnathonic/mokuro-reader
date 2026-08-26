@@ -4,7 +4,7 @@
 
 **Goal:** Move cloud-volume enrichment out of the `volumes` table into an expiring, account-scoped cache so the local library stays small and cloud browsing stops triggering full-table scan storms.
 
-**Architecture:** A new `cloud_covers` Dexie table keyed by `[account_scope+path]` holds just the thumbnail blob (plus its dimensions) for cloud volumes the user has neither installed nor read, and a `last_accessed` stamp that drives its own expiry — nothing else, because `series_index` already caches every other per-volume field (identity, counts, and the cover sidecar's own `cover_size`/`cover_modified` stamps). `volumes` keeps only installed volumes and metadata-only rows that carry reading history. The catalog renders a cloud series by joining three sources: the listing (which files exist), `series_index` (identity/counts), and `cloud_covers` (the blob) — so cover writes never touch `volumes` and never fire its liveQuery. The remaining hot full-table scans are narrowed to indexed per-series queries, and the catalog's liveQuery is coalesced.
+**Architecture:** A new `cloud_covers` Dexie table keyed by `[account_scope+path]` holds just the thumbnail blob (plus its dimensions) for cloud volumes the user has neither installed nor read, and a `cached_at` stamp that drives its own expiry — nothing else, because `series_index` already caches every other per-volume field (identity, counts, and the cover sidecar's own `cover_size`/`cover_modified` stamps). `volumes` keeps only installed volumes and metadata-only rows that carry reading history. The catalog renders a cloud series by joining three sources: the listing (which files exist), `series_index` (identity/counts), and `cloud_covers` (the blob) — so cover writes never touch `volumes` and never fire its liveQuery. The remaining hot full-table scans are narrowed to indexed per-series queries, and the catalog's liveQuery is coalesced.
 
 **Tech Stack:** SvelteKit 5 (runes), Dexie 4 / IndexedDB, Vitest + @testing-library/svelte.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **No migration code.** The feature never shipped; no user database contains `metadata_only` rows. The schema change is purely additive (a new table). Never write upgrade logic that moves, rewrites, or deletes existing rows.
-- **Expiry is age-only: 14 days since last access.** No size quotas, no LRU byte budgets.
+- **Expiry is age-only: 14 days after the cover was cached.** No size quotas, no LRU byte budgets. There is deliberately no access-refresh — see decision 3 in the spec.
 - **Cache key is `[account_scope+path]`, the primary key of the `cloud_covers` table.** Cloud UUIDs are unavailable. `account_scope` must never contain a secret (no passwords, no tokens).
 - **The cover table stores blobs and nothing else — every other per-volume field comes from `series_index`.** Never duplicate a field that table already holds. A cover is considered stale by comparing `series_index`'s `cover_size`/`cover_modified` for that volume against the current listing, never by anything stored in `cloud_covers` itself.
 - **`volumes` holds only:** installed volumes, and metadata-only rows for volumes with reading history.
@@ -194,7 +194,7 @@ git commit -m "feat(catalog): account-scoped cloud cache keys"
 **Interfaces:**
 
 - Consumes: `cloudCacheKey`, `normalizeCachePath`, `activeAccountScope` (Task 1)
-- Produces: `interface CloudCover`, `putCloudCovers(covers: CloudCover[]): Promise<void>`, `getCloudCovers(scope: string, paths: string[]): Promise<Map<string, CloudCover>>`, `touchCloudCovers(scope: string, paths: string[], nowMs?: number): Promise<void>`
+- Produces: `interface CloudCover`, `putCloudCovers(covers: CloudCover[]): Promise<void>`, `getCloudCovers(scope: string, paths: string[]): Promise<Map<string, CloudCover>>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -203,7 +203,7 @@ git commit -m "feat(catalog): account-scoped cloud cache keys"
 import { describe, it, expect, beforeEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { db } from './db';
-import { putCloudCovers, getCloudCovers, touchCloudCovers, type CloudCover } from './cloud-covers';
+import { putCloudCovers, getCloudCovers, type CloudCover } from './cloud-covers';
 
 function cover(over: Partial<CloudCover> = {}): CloudCover {
   return {
@@ -212,7 +212,7 @@ function cover(over: Partial<CloudCover> = {}): CloudCover {
     thumbnail: new File([new Uint8Array([1, 2, 3])], 'c.webp', { type: 'image/webp' }),
     width: 250,
     height: 350,
-    last_accessed: 1756000000000,
+    cached_at: 1756000000000,
     ...over
   };
 }
@@ -244,14 +244,6 @@ describe('cloud cover CRUD', () => {
     await putCloudCovers([cover({ path: '//Dr Stone//Volume 01.cbz' })]);
     const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(rows.size).toBe(1);
-  });
-
-  it('touch updates last_accessed without rewriting the blob', async () => {
-    await putCloudCovers([cover({ last_accessed: 1000 })]);
-    await touchCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz'], 9999);
-    const rows = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
-    expect(rows.get('Dr Stone/Volume 01.cbz')?.last_accessed).toBe(9999);
-    expect(rows.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
 
   it('reads only the requested paths, keyed by normalized path — never the rest of the table', async () => {
@@ -323,7 +315,7 @@ this.version(2).stores({
   series_metadata: 'series_key',
   series_index: 'series_key',
   catalog_index: 'series_key',
-  cloud_covers: '[account_scope+path], last_accessed'
+  cloud_covers: '[account_scope+path], cached_at'
 });
 ```
 
@@ -367,7 +359,7 @@ export interface CloudCover {
    * `cover_size`/`cover_modified` for this volume against the current
    * listing; nothing stored on this row participates in that comparison.
    */
-  last_accessed: number;
+  cached_at: number;
 }
 
 /** Write covers, normalizing paths so every caller lands on the same key. */
@@ -405,7 +397,7 @@ export async function touchCloudCovers(
 ): Promise<void> {
   if (paths.length === 0) return;
   const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
-  await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ last_accessed: nowMs });
+  await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ cached_at: nowMs });
 }
 ```
 
@@ -450,8 +442,8 @@ describe('cloud cover expiry', () => {
 
   it('deletes covers untouched for longer than the max age', async () => {
     await putCloudCovers([
-      cover({ path: 'Old/Volume 01.cbz', last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS - 1 }),
-      cover({ path: 'Fresh/Volume 01.cbz', last_accessed: NOW - 1000 })
+      cover({ path: 'Old/Volume 01.cbz', cached_at: NOW - CLOUD_COVER_MAX_AGE_MS - 1 }),
+      cover({ path: 'Fresh/Volume 01.cbz', cached_at: NOW - 1000 })
     ]);
 
     const deleted = await pruneExpiredCloudCovers(NOW);
@@ -462,15 +454,15 @@ describe('cloud cover expiry', () => {
   });
 
   it('keeps a cover exactly at the boundary', async () => {
-    await putCloudCovers([cover({ last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS })]);
+    await putCloudCovers([cover({ cached_at: NOW - CLOUD_COVER_MAX_AGE_MS })]);
     expect(await pruneExpiredCloudCovers(NOW)).toBe(0);
   });
 
   it('prunes across every account, not just the connected one', async () => {
     const stale = NOW - CLOUD_COVER_MAX_AGE_MS - 1;
     await putCloudCovers([
-      cover({ account_scope: 'mega:a@b.com', last_accessed: stale }),
-      cover({ account_scope: 'webdav:h|nathan', last_accessed: stale })
+      cover({ account_scope: 'mega:a@b.com', cached_at: stale }),
+      cover({ account_scope: 'webdav:h|nathan', cached_at: stale })
     ]);
     expect(await pruneExpiredCloudCovers(NOW)).toBe(2);
   });
@@ -494,14 +486,14 @@ export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
  * Drop covers nobody has looked at in `CLOUD_COVER_MAX_AGE_MS`. Returns how
  * many were deleted.
  *
- * Deletes through the `last_accessed` index rather than scanning: this table
+ * Deletes through the `cached_at` index rather than scanning: this table
  * carries blobs, and a full scan here would reintroduce exactly the cost this
  * split exists to remove. Account-agnostic on purpose — an account the user
  * stopped using should age out, not linger because it is disconnected.
  */
 export async function pruneExpiredCloudCovers(nowMs: number = Date.now()): Promise<number> {
   const cutoff = nowMs - CLOUD_COVER_MAX_AGE_MS;
-  return db.cloud_covers.where('last_accessed').below(cutoff).delete();
+  return db.cloud_covers.where('cached_at').below(cutoff).delete();
 }
 ```
 
@@ -643,7 +635,7 @@ await db.transaction('rw', db.volumes, async () => {
         thumbnail: pending.thumbnail,
         width: pending.width,
         height: pending.height,
-        last_accessed: Date.now()
+        cached_at: Date.now()
       });
     }
   }
@@ -793,7 +785,7 @@ describe('generatePlaceholders with a cover map', () => {
           thumbnail: new File([new Uint8Array([1])], 'c.webp'),
           width: 250,
           height: 350,
-          last_accessed: 1000
+          cached_at: 1000
         }
       ]
     ]);
@@ -828,7 +820,7 @@ it('passes the cover map to generatePlaceholders and recomputes only when its co
     thumbnail: new File([new Uint8Array(blobLength)], 'c.webp'),
     width: 250,
     height: 350,
-    last_accessed: lastAccessed
+    cached_at: lastAccessed
   });
   cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
 
@@ -841,7 +833,7 @@ it('passes the cover map to generatePlaceholders and recomputes only when its co
     expect.any(Map) as unknown as Map<string, unknown>
   );
 
-  // A touch bumps last_accessed and re-emits a fresh Map, but the cached blob
+  // A touch bumps cached_at and re-emits a fresh Map, but the cached blob
   // — and therefore what a placeholder would show — hasn't changed.
   cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000)]]));
   expect(generate).toHaveBeenCalledTimes(1);
@@ -921,7 +913,7 @@ export const cloudCoverMap: Readable<Map<string, CloudCover>> = readable(
 
 Give `generatePlaceholders` a fourth, optional parameter `coverMap?: Map<string, CloudCover>`. Where it currently reads `thumbnailMap.get(basePath)` to decorate a placeholder with `cloudThumbnailFileId`/`cloudThumbnailPath`/etc (the pointer to where a cover CAN be fetched from), also look up `coverMap?.get(normalizeCachePath(cloudFile.path))` and, when present, set `placeholder.thumbnail`, `placeholder.thumbnail_width`, `placeholder.thumbnail_height` from it — the blob ALREADY fetched, as opposed to the sidecar pointer to one that might not be. The two are independent: a placeholder can carry a fetch pointer with no cached blob yet (first render), or — after Task 4 — a cached blob for a path whose sidecar pointer already resolved once.
 
-In `catalog/index.ts`, add `cloudCoverMap` as the fourth member of the `derived([...])` input array. Because it is liveQuery-backed like `seriesIndexMap`, it re-emits a brand-new `Map` of brand-new row objects on every write to `cloud_covers` — including a `touchCloudCovers` write that changes nothing a placeholder would show. Give it the same treatment `seriesIndexSignature` already gives `seriesIndexMap`: a content signature (path + blob byte length is enough — a cover overwrite is the only case that should force a recompute, and a same-length coincidental overwrite recomputing anyway is a harmless false positive) compared against the previous signature, alongside the existing `volumes`/`cloudFiles` reference checks and `indexSignature` check, before calling `generatePlaceholders` again.
+In `catalog/index.ts`, add `cloudCoverMap` as the fourth member of the `derived([...])` input array. Because it is liveQuery-backed like `seriesIndexMap`, it re-emits a brand-new `Map` of brand-new row objects on every write to `cloud_covers`. Give it the same treatment `seriesIndexSignature` already gives `seriesIndexMap`: a content signature (path + blob byte length is enough — a cover overwrite is the only case that should force a recompute, and a same-length coincidental overwrite recomputing anyway is a harmless false positive) compared against the previous signature, alongside the existing `volumes`/`cloudFiles` reference checks and `indexSignature` check, before calling `generatePlaceholders` again.
 
 - [ ] **Step 5: Run the tests — expect PASS**
 
