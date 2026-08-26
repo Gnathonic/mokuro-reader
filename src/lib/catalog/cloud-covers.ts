@@ -67,6 +67,26 @@ export async function getCloudCovers(
 }
 
 /**
+ * Which of the requested paths this account already has a cached cover for.
+ *
+ * PRIMARY KEYS ONLY, never the rows: this is a presence check, and
+ * deserializing the blobs it is checking for would reintroduce exactly the
+ * cost that splitting this table out of `volumes` exists to remove. Same
+ * indexed point-read-per-path shape as {@link getCloudCovers}, and the
+ * returned paths are normalized, so callers must compare through
+ * `normalizeCachePath`.
+ */
+export async function cachedCoverPaths(scope: string, paths: string[]): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
+  const found = (await db.cloud_covers
+    .where('[account_scope+path]')
+    .anyOf(keys)
+    .primaryKeys()) as unknown as Array<[string, string]>;
+  return new Set(found.map(([, path]) => path));
+}
+
+/**
  * Covers untouched for this long are discarded. Age only — no size quota, and
  * measured from when the cover was CACHED, not last viewed: see
  * `CloudCover.cached_at`'s doc comment for why there is no "last access" to

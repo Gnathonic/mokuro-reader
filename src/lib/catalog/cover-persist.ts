@@ -24,10 +24,9 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * rendering for a series card." Two things happen once a cover fetch lands
  * on a real row (`installCover`):
  *
- * 1. The thumbnail is written through the SAME transactional guard
- *    `cover-install.ts`'s `runCoverInstall` uses: re-read the row inside the
- *    write transaction and re-test `needsDownload(...)` against THAT read,
- *    not the snapshot the caller started from — a download finishing
+ * 1. The thumbnail is written behind a transactional guard — re-read the row
+ *    inside the write transaction and re-test `needsDownload(...)` against
+ *    THAT read, not the snapshot the caller started from — a download finishing
  *    mid-fetch installs the volume with a thumbnail measured from its own
  *    pages, and this must never clobber that. `mode: 'fill'` (the default)
  *    additionally never touches a row that already has ANY thumbnail — the

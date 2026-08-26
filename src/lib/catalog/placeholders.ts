@@ -132,8 +132,8 @@ export interface CoverSidecarInfo {
  * lookup here uses. `.webp` wins over `.jpg`/`.jpeg` for the same volume.
  *
  * The universal cover source: placeholders read it to decorate a cloud-only
- * volume, and `cover-install.ts` reads it to inline a cover onto a materialized
- * row. One definition, so the two can never disagree about which file is a
+ * volume, and `cover-install.ts` reads it to source a materialized row's cover.
+ * One definition, so the two can never disagree about which file is a
  * volume's cover. Carries the listing's own `size`/`modifiedTime` alongside the
  * identity — the decision-time stamp a cover-persist path needs to record, not
  * just the `fileId`/`path` a download needs.

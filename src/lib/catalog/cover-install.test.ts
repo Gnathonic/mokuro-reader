@@ -16,19 +16,52 @@ const defaultListing = [
     provider: 'webdav',
     fileId: 'cover-1',
     path: 'Dr Stone/Volume 1.webp',
-    modifiedTime: '',
+    modifiedTime: '2026-01-02T00:00:00.000Z',
     size: 1
   },
   { provider: 'webdav', fileId: 'cbz-1', path: 'Dr Stone/Volume 1.cbz', modifiedTime: '', size: 1 }
 ];
 const getAllCloudVolumes = vi.fn(() => defaultListing);
-const getActiveProvider = vi.fn(() => ({ type: 'webdav' }));
+const getActiveProvider = vi.fn(() => ({
+  type: 'webdav',
+  // `cover-persist.ts`'s routing reads the account scope off the provider to
+  // decide which account's `cloud_covers` bucket an unrowed cover belongs to;
+  // without one it drops the cover rather than blending accounts.
+  getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:a@b.com' })
+}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     getAllCloudVolumes: () => getAllCloudVolumes(),
     getActiveProvider: () => getActiveProvider()
   }
 }));
+
+// The Worker-backed decode cache is orthogonal to what this file asserts.
+vi.mock('$lib/catalog/thumbnail-cache', () => ({
+  thumbnailCache: { invalidate: vi.fn() }
+}));
+
+// `cover-persist.ts`'s relationship gate reads the reading-state store.
+// Hand-rolled (same pattern as `cover-persist.test.ts`) so a test can say
+// exactly which volumes this device has actually read, without localStorage.
+const history = vi.hoisted(() => {
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: Record<string, unknown>) => void>();
+  return {
+    store: {
+      subscribe(fn: (v: Record<string, unknown>) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      }
+    },
+    set(next: Record<string, unknown>) {
+      value = next;
+      subs.forEach((fn) => fn(value));
+    }
+  };
+});
+vi.mock('$lib/settings/volume-data', () => ({ volumes: history.store }));
 
 const fetchCloudThumbnail = vi.fn(async (_volume: unknown) => ({
   file: new File(['img'], 'Volume 1.webp', { type: 'image/webp' }),
@@ -40,14 +73,23 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
+import { getCloudCovers } from './cloud-covers';
+import { _resetCoverPersistForTests } from './cover-persist';
 import { installCoversForSeries } from './cover-install';
+
+const activeProvider = {
+  type: 'webdav',
+  getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:a@b.com' })
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetCoverPersistForTests();
+  history.set({});
   // `clearAllMocks` clears call history, not implementations: re-pin the
   // per-test defaults so a `mockReturnValue` in one test cannot leak into the next.
   getAllCloudVolumes.mockReturnValue(defaultListing);
-  getActiveProvider.mockReturnValue({ type: 'webdav' });
+  getActiveProvider.mockReturnValue(activeProvider);
   fetchCloudThumbnail.mockImplementation(async () => ({
     file: new File(['img'], 'Volume 1.webp', { type: 'image/webp' }),
     width: 210,
@@ -68,7 +110,9 @@ function deferFetch() {
 }
 
 afterEach(async () => {
+  _resetCoverPersistForTests(); // cancel a pending timer before it can fire against a cleared table
   await db.volumes.clear();
+  await db.cloud_covers.clear();
 });
 
 async function addRow(overrides: Record<string, unknown> = {}) {
@@ -87,8 +131,48 @@ async function addRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('installCoversForSeries', () => {
-  it('inlines the cover sidecar on a metadata-only row', async () => {
+  it("caches a relationship-less row's cover instead of writing it onto the row", async () => {
+    // A row a mere series OPEN materialized: nothing installed, nothing read.
+    // Blobs on rows like this are exactly what grew `volumes` to 11,354 rows /
+    // 417MB and made every catalog scan expensive, so the cover belongs in
+    // `cloud_covers` — and this module must NOT bypass that routing with a raw
+    // `db.volumes.update` of its own.
     await addRow();
+    const update = vi.spyOn(db.volumes, 'update');
+
+    expect(await installCoversForSeries('Dr Stone')).toBe(1);
+
+    expect(update).not.toHaveBeenCalled();
+    update.mockRestore();
+
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.thumbnail).toBeUndefined();
+
+    // Keyed by the ARCHIVE path from the LISTING — the identity
+    // `catalog/index.ts` reads a cached cover back under. The stored row
+    // carries no `cloudPath` of its own (see `addRow`: `materializeSeriesVolumes`
+    // writes no cloud fields), which is exactly why the path has to come from
+    // the listing rather than from the row.
+    expect(row?.cloudPath).toBeUndefined();
+    const cached = await getCloudCovers('webdav:a@b.com', ['Dr Stone/Volume 1.cbz']);
+    expect(cached.get('Dr Stone/Volume 1.cbz')).toMatchObject({ width: 210, height: 297 });
+
+    // Decorated with the listing's cloud fields, which are NEVER stored on the row.
+    expect(fetchCloudThumbnail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudProvider: 'webdav',
+        cloudThumbnailFileId: 'cover-1',
+        cloudThumbnailPath: 'Dr Stone/Volume 1.webp'
+      })
+    );
+    expect(row?.cloudThumbnailFileId).toBeUndefined();
+  });
+
+  it('inlines the cover sidecar on a metadata-only row the device has READ', async () => {
+    await addRow();
+    // Reading activity is a relationship: the stats and history pages read
+    // thumbnails from rows, so this one's cover does belong on the row.
+    history.set({ 'uuid-1': { progress: 3 } });
     // The cover and its dimensions are one write: a row must never be left
     // claiming a size for a picture it does not have. Asserted on the update
     // itself because fake-indexeddb under jsdom cannot structured-clone a File
@@ -100,7 +184,11 @@ describe('installCoversForSeries', () => {
     expect(update).toHaveBeenCalledWith('uuid-1', {
       thumbnail: expect.any(File),
       thumbnail_width: 210,
-      thumbnail_height: 297
+      thumbnail_height: 297,
+      // Stamped from the listing record the fetch was made against, so a later
+      // pass can decide staleness from the row alone.
+      cover_size: 1,
+      cover_modified: Math.floor(Date.parse('2026-01-02T00:00:00.000Z') / 1000)
     });
     update.mockRestore();
 
@@ -108,16 +196,7 @@ describe('installCoversForSeries', () => {
     expect(row?.thumbnail).toBeDefined();
     expect(row?.thumbnail_width).toBe(210);
     expect(row?.thumbnail_height).toBe(297);
-
-    // Decorated with the listing's cloud fields, which are NEVER stored on the row.
-    expect(fetchCloudThumbnail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cloudProvider: 'webdav',
-        cloudThumbnailFileId: 'cover-1',
-        cloudThumbnailPath: 'Dr Stone/Volume 1.webp'
-      })
-    );
-    expect(row?.cloudThumbnailFileId).toBeUndefined();
+    expect(await db.cloud_covers.count()).toBe(0);
   });
 
   it('skips rows that already have a cover', async () => {
@@ -247,6 +326,20 @@ describe('installCoversForSeries', () => {
         path: 'Dr Stone/Volume 2.webp',
         modifiedTime: '',
         size: 1
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Dr Stone/Volume 1.cbz',
+        modifiedTime: '',
+        size: 1
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cbz-2',
+        path: 'Dr Stone/Volume 2.cbz',
+        modifiedTime: '',
+        size: 1
       }
     ]);
     await addRow();
@@ -264,15 +357,30 @@ describe('installCoversForSeries', () => {
 
     expect(await pass).toBe(2);
     expect(await joiner).toBe(2);
-    expect(await db.volumes.get('uuid-2')).toMatchObject({ thumbnail_width: 210 });
+    const cached = await getCloudCovers('webdav:a@b.com', ['Dr Stone/Volume 2.cbz']);
+    expect(cached.get('Dr Stone/Volume 2.cbz')).toMatchObject({ width: 210, height: 297 });
   });
 
   it('runs again once the previous pass has settled', async () => {
     await addRow();
     expect(await installCoversForSeries('Dr Stone')).toBe(1);
     await addRow(); // back to a coverless row
+    await db.cloud_covers.clear(); // ...and its cached cover aged out (see below)
 
     expect(await installCoversForSeries('Dr Stone')).toBe(1);
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2);
+  });
+
+  it('never re-downloads a cover this account already has cached', async () => {
+    // A relationship-less row NEVER carries its cover on the row, so
+    // `!row.thumbnail` is no longer an "already done" test: without consulting
+    // `cloud_covers`, every series open and every backfill sweep would
+    // re-download every cover it already holds.
+    await addRow();
+    expect(await installCoversForSeries('Dr Stone')).toBe(1);
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+
+    expect(await installCoversForSeries('Dr Stone')).toBe(0);
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
   });
 });

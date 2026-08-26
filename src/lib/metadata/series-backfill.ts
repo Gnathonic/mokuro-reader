@@ -352,9 +352,9 @@ function excludeInstalledCandidates(
  * above is that old by the time the network answers, so the actual write
  * routes through `cover-persist.ts`'s shared queue (`installCover`, `mode:
  * 'overwrite'` — this row already HAS a thumbnail, which is the entire
- * premise of "stale"), the same re-read-and-re-test-inside-the-transaction
- * guard `cover-install.ts`'s `runCoverInstall` and `cover-service.ts` both
- * use. Flushed immediately (not left to the debounce) since this runs inside
+ * premise of "stale"), whose flush re-reads and re-tests the row inside its
+ * own write transaction — the same guard every other cover path relies on.
+ * Flushed immediately (not left to the debounce) since this runs inside
  * an already-async backfill pass, not a UI burst — see `flushPendingCoverPersists`.
  *
  * Also RESTAMPS the row from `cover` — the same listing record the fetch was
@@ -368,11 +368,11 @@ function excludeInstalledCandidates(
  * rather than an optional nicety. A row this device has no RELATIONSHIP with
  * (nothing installed, nothing read) cannot carry a blob at all under
  * `cover-persist.ts`'s routing rule, and such a row is the ordinary outcome of
- * merely OPENING a cloud series (`cover-install.ts` fills a metadata-only
- * row's thumbnail with no relationship gate of its own). Handing `installCover`
- * a bare uuid gives that cover no `cloud_covers` identity either, so the fetch
- * is made and then silently DROPPED — the exact "stale cover never refreshes"
- * dead end this argument exists to close.
+ * merely OPENING a cloud series (`materializeSeriesVolumes` mints it, and
+ * `cover-install.ts` routes its cover into `cloud_covers` rather than onto it).
+ * Handing `installCover` a bare uuid gives that cover no `cloud_covers`
+ * identity either, so the fetch is made and then silently DROPPED — the exact
+ * "stale cover never refreshes" dead end this argument exists to close.
  */
 async function refreshStaleCover(
   providerType: SyncProvider['type'],

@@ -1019,9 +1019,9 @@ describe('row-level cover staleness (persistent catalog-card covers, design poin
 
   it("routes a relationship-less row's refreshed cover to the cover cache, keyed by the ARCHIVE path", async () => {
     metadataOnlyRowV2({ cover_size: 100, cover_modified: 1 }); // stale vs the listing's 900 @ 2026-07-01
-    // A metadata-only row WITH a thumbnail but NO relationship is the ordinary
-    // outcome of merely OPENING a cloud series: `cover-install.ts` fills such
-    // a row's thumbnail with no reading-history gate of its own. (History
+    // A metadata-only row WITH a thumbnail but NO relationship is what older
+    // builds left behind everywhere: `cover-install.ts` used to fill such a
+    // row's thumbnail with no reading-history gate of its own. (History
     // being cleared afterwards gets to the same place.) The helper above adds
     // the relationship every other test here wants; drop it back off.
     readingHistory.set({});

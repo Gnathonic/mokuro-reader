@@ -56,6 +56,7 @@ vi.mock('$lib/catalog/db', async () => {
 
 const {
   cloudFiles,
+  cloudListing,
   seriesMetadataMap,
   seriesIndexMap,
   cloudCoverMap,
@@ -85,6 +86,9 @@ const {
 
   return {
     cloudFiles: createStore(new Map<string, unknown>()),
+    // The flat listing `cover-install.ts` reads (`getAllCloudVolumes`), held in
+    // a mutable box so a test can install one without re-mocking the manager.
+    cloudListing: { files: [] as Array<Record<string, unknown>> },
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
     cloudCoverMap: createStore(new Map<string, unknown>()),
@@ -109,11 +113,14 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
       getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:perf-contracts' })
     }),
     resolveCloudFolderTitle: (title: string) => title,
-    getCloudVolumesBySeries: () => [] as unknown[]
+    getCloudVolumesBySeries: () => [] as unknown[],
+    getAllCloudVolumes: () => cloudListing.files
   }
 }));
 // Never reached on CONTRACT 4's image-only path; stubbed so the real module's
-// download plumbing stays out of this file's graph.
+// download plumbing stays out of this file's graph. CONTRACT 5 drives it
+// directly (`mockResolvedValue`) to hand `cover-install.ts` a cover without a
+// network.
 vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: vi.fn(async () => null),
   getCachedCloudThumbnail: vi.fn(() => undefined)
@@ -144,6 +151,8 @@ vi.mock('$lib/settings/volume-data', () => ({ volumes: readingHistory }));
 
 import { db } from '$lib/catalog/db';
 import { volumes, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
+import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
+import { installCoversForSeries } from '$lib/catalog/cover-install';
 import {
   _resetCoverPersistForTests,
   flushPendingCoverPersists,
@@ -239,6 +248,7 @@ beforeEach(() => {
   _resetCoverServiceForTests();
   scheduleSeriesFileWriteMock.mockClear();
   readingHistory.set({});
+  cloudListing.files = [];
 });
 
 afterEach(async () => {
@@ -489,4 +499,68 @@ describe('CONTRACT 4: case-3 row writes batch into one transaction', () => {
     // ...and if that one transaction really did mint every row in the burst.
     expect(await db.volumes.count()).toBe(N);
   }, 15000);
+});
+
+// CONTRACT 5 — OPENING a cloud series never writes a cover blob onto a
+// `volumes` row either.
+//
+// CONTRACT 3 above proves `cover-persist.ts`'s ROUTER, and nothing more: it
+// drives `installCover` directly, so a cover path that bypasses that router
+// with a raw `db.volumes.update` of its own is invisible to it. One did.
+// `cover-install.ts` — the series-open cover pass, reached from
+// `series-open.ts` and from `series-backfill.ts`'s sweep — selected rows by
+// `needsDownload(row) && !row.thumbnail`, i.e. DELIBERATELY targeting rows
+// that are not installed, without ever consulting reading activity, and wrote
+// the blob straight onto them. Measured on the live database while that write
+// was in place: 3,428 `volumes` rows, 3,033 of them carrying 94.2MB of
+// thumbnails, with `volume_files` and `volume_ocr` both empty — not one of
+// those volumes was installed. So this contract drives the WHOLE pass, and
+// asserts on the same currency CONTRACT 3 does: not one `put` reaches
+// `volumes`.
+describe('CONTRACT 5: the series-open cover pass stays off relationship-less rows', () => {
+  it('writes no volumes rows when a browsed series installs its covers', async () => {
+    const N = 10;
+    // Rows a series open materialized, plus the listing that open was made
+    // against: a cover sidecar and its archive per volume. No reading history
+    // and nothing installed — the "minted by browsing" case again, this time
+    // reached through the real pass instead of a direct `installCover`.
+    for (let i = 0; i < N; i++) {
+      await db.volumes.put(makeRow(`browsed-${i}`, { volume_title: `Volume ${i}` }));
+      cloudListing.files.push(
+        {
+          provider: 'webdav',
+          fileId: `cover-${i}`,
+          path: `One Piece/Volume ${i}.webp`,
+          size: 1,
+          modifiedTime: '2026-01-01T00:00:00.000Z'
+        },
+        {
+          provider: 'webdav',
+          fileId: `cbz-${i}`,
+          path: `One Piece/Volume ${i}.cbz`,
+          size: 2,
+          modifiedTime: '2026-01-01T00:00:00.000Z'
+        }
+      );
+    }
+    readingHistory.set({});
+    vi.mocked(fetchCloudThumbnail).mockResolvedValue(makeCover());
+    const before = await db.volumes.count();
+
+    let installed = 0;
+    const counts = await countIdbOps(async () => {
+      installed = await installCoversForSeries('One Piece');
+      await flushPendingCoverPersists();
+    });
+
+    // Not one write reached the `volumes` table.
+    expect(counts['volumes.put'] ?? 0).toBe(0);
+    expect(await db.volumes.count()).toBe(before);
+    expect((await db.volumes.get('browsed-0'))?.thumbnail).toBeUndefined();
+
+    // Anchor: the pass really did run and really did move every cover — the
+    // assertion above would pass vacuously if it had simply found nothing.
+    expect(installed).toBe(N);
+    expect(await db.cloud_covers.count()).toBe(N);
+  });
 });
