@@ -39,6 +39,17 @@
  * wherever the flick STOPS are requested the moment it stops, which is the
  * behaviour a reader actually experiences.
  *
+ * THE LEAD IS NOT UNIVERSAL, because `rootMargin` inflates only the ROOT — here
+ * the implicit viewport. The intersection is then clipped by every scrolling
+ * ancestor in between, and those clip rects are applied UNMARGINED. So a surface
+ * that scrolls inside a nested container rather than with the document — the
+ * spine shelf inside the series editor dialog's scrolling body, say — gets zero
+ * prefetch lead from this constant and pops its covers in on entry instead of
+ * ahead of it. Not starvation: entering the container still fires the gate, and
+ * `cover-service.ts`'s ledgers mean the request is issued once. It is the
+ * document-scrolled catalog — the surface this constant was measured on and the
+ * one with 1,027 cards below the fold — that gets the full screenful of lead.
+ *
  * Exported because the test stub matches on it: a stub that reported every
  * observer visible would also switch on `CompositeCanvas`'s canvas painting in
  * jsdom, which those suites deliberately keep off.

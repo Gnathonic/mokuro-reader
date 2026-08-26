@@ -84,7 +84,8 @@ export interface CoverClaims {
   /**
    * Svelte action: put it on the surface's root element (`use:gate`) to arm
    * the viewport gate. A surface that passes {@link CoverClaimsOptions.targets}
-   * and forgets this asks for nothing, ever.
+   * and forgets this asks for nothing, ever — in a real browser only, which is
+   * why forgetting it warns in dev (see `warnIfUngated`).
    */
   gate(node: Element): { destroy(): void };
 }
@@ -247,7 +248,11 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
     for (const vol of fetchTargets) requestCover(vol);
   });
 
+  /** Set by {@link gate}. See {@link warnIfUngated} for why this is worth tracking. */
+  let gateAttached = false;
+
   function gate(node: Element): { destroy(): void } {
+    gateAttached = true;
     // Already open: nothing left to watch for. This also covers a surface whose
     // observed element is swapped for another (`PlaceholderThumbnail` trades its
     // placeholder boxes for an `<img>` the moment a cover lands).
@@ -256,6 +261,52 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
       nearViewport = true;
     });
     return { destroy: stop };
+  }
+
+  if (import.meta.env.DEV) warnIfUngated();
+
+  /**
+   * THE ONE MISTAKE THIS MODULE CANNOT CATCH BY SHAPE: a surface passes
+   * {@link CoverClaimsOptions.targets} and forgets `use:gate`.
+   *
+   * It fails SILENTLY and asymmetrically. In jsdom with no observer stubbed,
+   * `observeNearViewport` opens the gate synchronously (see `cover-viewport.ts`),
+   * so the new surface's own tests pass; in a browser the gate never opens, the
+   * surface requests NOTHING EVER, and the user gets a permanently blank cover
+   * with no error, no failed request, and nothing in the console. There is no
+   * type that prevents it — `use:gate` is markup, and a required argument would
+   * only move the same silent omission to a forgotten `bind:this`, which fails
+   * exactly as quietly. So the fix is to make the surface say so out loud, in
+   * dev, the moment it has something to ask for and no way to ask.
+   *
+   * Deliberately NOT the request effect above: that effect reads `nearViewport`
+   * FIRST and bails, so an off-screen surface whose target list churns re-runs
+   * nothing. Reading `fetchTargets` there to check would take a dependency on
+   * exactly the churn it is written to ignore. This is a separate effect that
+   * only exists in dev.
+   *
+   * NO DEFERRAL NEEDED. `use:` compiles to a BLOCK effect (`action()` in
+   * `svelte/internal/client`), and block effects run in the render phase ahead of
+   * every `$effect` — so by the time this one runs, a surface that has `use:gate`
+   * anywhere in its markup has already set `gateAttached`. The
+   * "a surface WITH `use:gate` never warns" test is what holds that down; a
+   * microtask hop here made no test move, so there is none.
+   */
+  function warnIfUngated(): void {
+    if (!options.targets) return; // a paint-only surface has nothing to gate
+    let warned = false;
+    $effect(() => {
+      if (warned || gateAttached) return;
+      // Nothing to ask for yet is not a defect: `VolumeItem`'s grid variant supplies
+      // `targets` that resolve to nothing and correctly renders no gate node at all.
+      if (fetchTargets.length === 0) return;
+      warned = true;
+      console.warn(
+        '[cover-claims] A surface passed `targets` but never attached `use:gate`, ' +
+          'so its viewport gate can never open and it will request no covers at all. ' +
+          'Put `use:gate` on the element the surface renders (see cover-claims.svelte.ts).'
+      );
+    });
   }
 
   return {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
 
 /**
  * WHERE A CATALOG CARD'S COVER COMES FROM.
@@ -67,10 +68,17 @@ vi.mock('$lib/util/download-queue', () => ({
   }
 }));
 // Fetching a cover that is NOT cached is `cover-service.ts`'s job and has its own suites;
-// this file is about a cover that is already cached.
+// this file is about a cover that is already cached — so `isCoverFetchTarget` answers no
+// by default and nothing here asks for anything. THE GATE describe at the bottom flips it
+// on, which is the only place the ask path is in play.
+const { requestCoverMock, isCoverFetchTargetMock } = vi.hoisted(() => ({
+  requestCoverMock: vi.fn(),
+  isCoverFetchTargetMock: vi.fn(() => false)
+}));
 vi.mock('$lib/catalog/cover-service', () => ({
-  requestCover: vi.fn(),
-  isCoverFetchTarget: () => false
+  requestCover: (...args: Parameters<typeof requestCoverMock>) => requestCoverMock(...args),
+  isCoverFetchTarget: (...args: unknown[]) =>
+    (isCoverFetchTargetMock as unknown as (...a: unknown[]) => boolean)(...args)
 }));
 vi.mock('$lib/metadata/store', () => ({
   updateSeriesMetadata: vi.fn(),
@@ -196,23 +204,8 @@ function installedVolume(over: Partial<VolumeMetadata> = {}): VolumeMetadata {
   } as VolumeMetadata;
 }
 
-/** jsdom has neither; report the canvas as on screen and let it "paint". */
-function installBrowserStubs(): void {
-  class IO {
-    private cb: (entries: unknown[]) => void;
-    constructor(cb: (entries: unknown[]) => void) {
-      this.cb = cb;
-    }
-    observe() {
-      this.cb([{ isIntersecting: true }]);
-    }
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
-  (globalThis as unknown as Record<string, unknown>).IntersectionObserver = IO;
+/** jsdom has no 2D context; hand the canvas one so it will "paint". */
+function installCanvasContext(): void {
   (HTMLCanvasElement.prototype as unknown as Record<string, unknown>).getContext = () => ({
     clearRect: () => {},
     save: () => {},
@@ -221,6 +214,17 @@ function installBrowserStubs(): void {
     drawImage: () => {}
   });
 }
+
+/**
+ * The one `IntersectionObserver` stand-in, shared with every other cover suite.
+ *
+ * This file used to hand-roll its own always-intersecting class, which reported BOTH
+ * kinds of observer visible: the canvas one (which this file wants — it stubs a context
+ * above and asserts on what reached it) and the cover GATE (which it never meant to open
+ * and never asserted about). The shared stub separates those: `canvasVisible: true` is
+ * this file's real requirement, and the gate is left to be driven on purpose.
+ */
+let observer: ReturnType<typeof installIntersectionObserverStub>;
 
 /** Let the effects, the resolver's keyed read and the rAF-scheduled draw all land. */
 async function settle(rounds = 6): Promise<void> {
@@ -251,9 +255,12 @@ beforeEach(async () => {
   fakeCache.get.mockClear();
   fakeCache.getSync.mockClear();
   createdObjectUrls = 0;
+  requestCoverMock.mockClear();
+  isCoverFetchTargetMock.mockReturnValue(false);
   globalThis.URL.createObjectURL = vi.fn(() => `blob:cover-${++createdObjectUrls}`) as never;
   globalThis.URL.revokeObjectURL = vi.fn() as never;
-  installBrowserStubs();
+  installCanvasContext();
+  observer = installIntersectionObserverStub({ canvasVisible: true });
   _resetCoverResolverForTests();
   await db.cloud_covers.clear();
   useAccount(SCOPE);
@@ -261,6 +268,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  observer.restore();
   _resetCoverResolverForTests();
   globalThis.URL.createObjectURL = originalCreate;
   globalThis.URL.revokeObjectURL = originalRevoke;
@@ -586,5 +594,62 @@ describe('switching cloud accounts', () => {
     // old handle is released and a new keyed read runs under the new one.
     expect((lastCanvasProps().covers as Map<string, File>).get('cloud-uuid-1')?.size).toBe(7);
     expect(_heldCoverCountForTests()).toBe(1);
+  });
+});
+
+/**
+ * THE GATE, ON THE SUITE MOST LIKELY TO BE BELIEVED ABOUT COVERS.
+ *
+ * Everything above is about a cover that is ALREADY cached, which the viewport gate has
+ * no say over — a card claims and paints what it draws whether or not it is on screen.
+ * That made this file's hand-rolled always-intersecting observer look harmless, and it
+ * was not: it reported the gate open too, so the one cover suite anyone would read to
+ * learn how covers reach a card was the one place the gate was not in play at all.
+ *
+ * So this describe drives it by hand. The measured defect it stands for: 1,027 cards x
+ * ~4 stacked volumes = ~4,347 cover requests on mount, 134 MB in a 12.2-second burst,
+ * for a screenful of maybe six cards.
+ */
+describe('THE GATE: a card below the fold asks for nothing until it scrolls into view', () => {
+  beforeEach(() => {
+    // Re-installed held SHUT. The canvas still has to answer visible — this file stubs a
+    // 2D context and asserts on what reached it — so only the gate axis changes.
+    observer.restore();
+    observer = installIntersectionObserverStub({ canvasVisible: true, autoIntersect: false });
+    // WHICH volumes are eligible is `cover-service.ts`'s predicate, pinned in
+    // `CatalogItem.test.ts`. Every drawn volume is eligible here so that the gate is the
+    // only thing left deciding whether anything is asked for.
+    isCoverFetchTargetMock.mockReturnValue(true);
+  });
+
+  it('holds every request until the card comes within a screenful, then asks', async () => {
+    await putCloudCovers([cachedCover()]);
+
+    render(CatalogItem, { props: { volumes: [cloudVolume()] } });
+    await settle();
+
+    // Not vacuous: the card is fully mounted, its target list is fully derived, and it
+    // really did arm a gate — the gate simply has not opened.
+    expect(observer.gates).toHaveLength(1);
+    expect(requestCoverMock).not.toHaveBeenCalled();
+
+    // What a scroll does.
+    for (const gate of observer.gates) gate.emit(true);
+    await settle(1);
+
+    expect(requestCoverMock.mock.calls.map(([vol]) => vol.volume_uuid)).toEqual(['cloud-uuid-1']);
+  });
+
+  it('still paints a cached cover while the gate is shut — claiming is not gated', async () => {
+    // The distinction the gate rests on, and the reason the tests above were able to
+    // pass with it silently open: a card DRAWS what it holds regardless of the viewport;
+    // the gate only decides whether it goes to the network for what it is missing.
+    await putCloudCovers([cachedCover()]);
+
+    render(CatalogItem, { props: { volumes: [cloudVolume()] } });
+    await settle();
+
+    expect(requestCoverMock).not.toHaveBeenCalled();
+    expect((lastCanvasProps().covers as Map<string, File>).get('cloud-uuid-1')?.size).toBe(3);
   });
 });
