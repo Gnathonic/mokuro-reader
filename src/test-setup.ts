@@ -1,5 +1,21 @@
 // Vitest setup file for global test configuration
 import { beforeEach, vi } from 'vitest';
+// @ts-expect-error - no @types/node in this browser-focused project; Node provides this
+// module (and the Blob/File it exports) at runtime regardless.
+import { Blob as NodeBlob, File as NodeFile } from 'node:buffer';
+
+// Use Node's native Blob/File instead of jsdom's for jsdom environment
+// jsdom's Blob/File aren't recognized by the platform's structuredClone
+// algorithm (jsdom/jsdom#3363), which fake-indexeddb relies on internally to
+// store values. A `File` written to a fake-indexeddb-backed Dexie table comes
+// back as a plain `{}` on the very next read — silently, since most call
+// sites never assert `instanceof File` on a round-tripped value. Node's own
+// Blob/File implementation round-trips through structuredClone correctly, and
+// already implements arrayBuffer()/text(), so it's a strict upgrade over
+// jsdom's here. Must run before any module (e.g. `fake-indexeddb/auto`) reads
+// `globalThis.File`/`Blob`, so this stays first in this file.
+globalThis.Blob = NodeBlob as unknown as typeof Blob;
+globalThis.File = NodeFile as unknown as typeof File;
 
 // Polyfill Blob.arrayBuffer() for jsdom environment
 // jsdom's Blob doesn't implement arrayBuffer() method which is needed by @zip.js/zip.js

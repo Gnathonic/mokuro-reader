@@ -2,6 +2,7 @@ import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
+import type { CloudCover } from './cloud-covers';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
@@ -16,46 +17,44 @@ export class CatalogDexieV3 extends Dexie {
   series_metadata!: Table<SeriesMetadata>;
   series_index!: Table<SeriesIndexRecord>;
   catalog_index!: Table<CatalogIndexRecord>;
+  cloud_covers!: Table<CloudCover>;
 
   constructor(dbName: string = 'mokuro_v3') {
     super(dbName);
 
-    // v3 schema: 3 tables (thumbnails are inlined in volumes)
+    // v1: the shipped schema — three tables, thumbnails inlined in volumes.
+    // This is the only version any released build has written, so it must stay
+    // exactly as-is for every existing user database to upgrade from.
     this.version(1).stores({
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid'
     });
 
-    // v3.2: per-series metadata (AniList link, titles, tag, tracking). Keyed by
-    // normalizeSeriesKey(series_title). Additive — no data migration.
+    // v2: everything the series-metadata work adds, in one step.
+    //
+    // Collapsed deliberately: `series_metadata`, `series_index` and
+    // `catalog_index` were separate versions during development but never
+    // shipped, so no database exists at those intermediate versions and the
+    // steps between them are fiction. A released client upgrades 1 -> 2 once
+    // and gets all four new tables.
+    //
+    // `cloud_covers` holds ONLY the thumbnail blob (+ dimensions) for a cloud
+    // volume the user has neither installed nor read, keyed by account + path
+    // because providers expose no uuid for a file the client has not opened, and
+    // the same path under a different account is a different file. Everything
+    // else a cloud card needs — title, counts, the cover sidecar's own
+    // size/modified stamps — already lives in the cached `series_index` row for
+    // that series, so this table carries no other field and needs no secondary
+    // index: a read is always "these exact paths for this account."
     this.version(2).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid',
-      series_metadata: 'series_key'
-    });
-
-    // v3.3: cached per-series series.json sidecar (facts + unauthoritative volume
-    // index), keyed the same as series_metadata. Additive — no data migration.
-    this.version(3).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid',
-      series_metadata: 'series_key',
-      series_index: 'series_key'
-    });
-
-    // v3.4: cached root catalog.json entries (name/mapping/search data per
-    // series, plus the cloud file stamp they were fetched at). Keyed the same as
-    // series_metadata/series_index. Additive — no data migration.
-    this.version(4).stores({
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid',
       series_metadata: 'series_key',
       series_index: 'series_key',
-      catalog_index: 'series_key'
+      catalog_index: 'series_key',
+      cloud_covers: '[account_scope+path], last_accessed'
     });
   }
 
