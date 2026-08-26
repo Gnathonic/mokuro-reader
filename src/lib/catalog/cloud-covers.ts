@@ -48,13 +48,18 @@ export interface CloudCover {
    * exists precisely because the fetch gate lost its accidental suppressor,
    * and `cover-resolver.ts` reads the row on EVERY claim.
    *
-   * IT IS NOT REFRESHED BECAUSE TOUCHING WOULD FEED BACK. A write to
-   * `cloud_covers` from the read path re-runs `cachedCoverPathSet`'s
-   * liveQuery, which drives `refreshCoverKeys`, which re-reads held handles —
-   * which would touch again. And every commit here is a `storagemutated`
-   * broadcast, the cost `COVER_PERSIST_MAX_BATCH` exists to bound; a touch per
-   * claim would put an unbounded stream of them behind ordinary scrolling. So
-   * there is deliberately no `touchCloudCovers` — see
+   * IT IS NOT REFRESHED, AND THE REASON IS NOT A FEEDBACK LOOP. An earlier
+   * version of this comment claimed a touch would re-fire
+   * `cachedCoverPathSet`, drive `refreshCoverKeys`, re-read held handles and
+   * touch again. That loop does not exist: a touch changes only `cached_at`,
+   * the KEY set is unchanged, and the store dedupes on the key set before
+   * publishing — so nothing is published and nothing re-reads.
+   *
+   * The real cost is per-touch, not runaway. Every commit re-runs that
+   * liveQuery's querier (a keys-only scan of the whole table) and broadcasts
+   * `storagemutated` — the cost `COVER_PERSIST_MAX_BATCH` exists to bound. A
+   * touch per claim would put one of each behind ordinary scrolling, which is
+   * reason enough. So there is deliberately no `touchCloudCovers` — see
    * `CLOUD_COVER_MAX_AGE_MS`.
    *
    * THE PRICE, STATED PLAINLY: `CLOUD_COVER_MAX_AGE_MS` is "14 days after
@@ -129,10 +134,9 @@ export async function cachedCoverPaths(scope: string, paths: string[]): Promise<
  * Covers cached this long ago are discarded. Age only — no size quota, and
  * measured from when the cover was CACHED, not last viewed: see
  * `CloudCover.cached_at`'s doc comment for why there is no "last access" to
- * measure from (a `touchCloudCovers` that wrote to `cloud_covers` from the
- * read path would re-fire `cachedCoverPathSet`'s liveQuery, which drives
- * `refreshCoverKeys`, which re-reads held handles — which would touch again: an
- * unbounded write/read feedback loop).
+ * measure from. Not a feedback loop — the store dedupes on the key set, and a
+ * touch changes no key — but a keys-only rescan plus a `storagemutated`
+ * broadcast per claim, behind ordinary scrolling.
  */
 export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
