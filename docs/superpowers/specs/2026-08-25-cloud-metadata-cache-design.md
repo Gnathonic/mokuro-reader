@@ -121,3 +121,25 @@ fetches, while `series_index` rows are written wholesale by the sync path.
 
 Wiping local storage during development discards the developer's installed volumes as well.
 The user has accepted this; the library is re-downloadable from the cloud.
+
+## Measured after (2026-08-25, same machine, real library rebuilt from a cleared store)
+
+|                                           | Before                                               | After                                                         |
+| ----------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- |
+| `volumes` rows                            | 11,354                                               | **690**                                                       |
+| Thumbnail blobs in `volumes`              | 417 MB                                               | **0** — moved to `cloud_covers`                               |
+| `cloud_covers`                            | —                                                    | 1,240 rows / 34.1 MB                                          |
+| Full `volumes` scan                       | **501 ms**                                           | **8–10 ms** (~62× faster)                                     |
+| Full-table scans during activity          | **74 in a 10-second window**, queueing to 7.9 s each | **0 while idle; 12 for a whole series-open-and-return cycle** |
+| `cloud_covers` cursor reads in that cycle | —                                                    | 2                                                             |
+| Main-thread long tasks                    | 0 (backend-bound)                                    | 0                                                             |
+
+Schema confirmed at Dexie verno 20 (`version(2)`), all seven tables present, and a `cloud_covers`
+row carries exactly `{account_scope, path, thumbnail, width, height, cached_at}` — the six intended
+fields and nothing else.
+
+Note on the residual the final review flagged: `volumes` sat at 681-690 rows with `volume_files`
+and `volume_ocr` both at 0 — i.e. every row is a metadata-only row minted by opening a series
+(`series-open.ts`), not by browsing. Browsing itself now mints nothing. That path has no expiry and
+remains the one way `volumes` grows monotonically; it is an explicit spec non-goal, and these
+numbers are the baseline for deciding whether it ever needs one.
