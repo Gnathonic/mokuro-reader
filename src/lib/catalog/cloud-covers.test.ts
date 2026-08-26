@@ -79,7 +79,9 @@ describe('cloud cover expiry', () => {
   const NOW = 1_800_000_000_000;
 
   it('is 14 days', () => {
-    expect(CLOUD_COVER_MAX_AGE_MS).toBe(14 * 24 * 60 * 60 * 1000);
+    // Pinned literal, not the same expression the constant is written as: an
+    // identical expression on both sides cannot catch an edit that changes both.
+    expect(CLOUD_COVER_MAX_AGE_MS).toBe(1_209_600_000);
   });
 
   it('deletes covers untouched for longer than the max age', async () => {
