@@ -1,18 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Catalog from '$lib/components/Catalog.svelte';
-  import { enrichAllOrphanedVolumes } from '$lib/settings/volume-data';
-  import { patchProgressHoles } from '$lib/metadata/hole-patch';
+  import { patchProgressHolesAndEnrich } from '$lib/metadata/hole-patch';
 
   onMount(() => {
-    // Enrich orphaned volumes when catalog loads
-    // This happens after users upload volumes
-    enrichAllOrphanedVolumes();
-    // …and pull any series the synced progress references but this device has
-    // never seen, so the stats views never dangle. Session-scoped memory inside
-    // patchProgressHoles means repeated mounts don't re-pull a series that's
-    // genuinely absent from the cloud.
-    void patchProgressHoles();
+    // Enrich orphaned volumes, pull any series the synced progress references
+    // but this device has never seen, then enrich AGAIN so the rows the sweep
+    // just minted are reflected in this visit rather than the next one. The
+    // second pass is what stops a resolved volume still reading as orphaned
+    // for the rest of the session. Session-scoped memory inside the sweep means
+    // repeated mounts don't re-pull a series genuinely absent from the cloud.
+    void patchProgressHolesAndEnrich();
   });
 </script>
 
