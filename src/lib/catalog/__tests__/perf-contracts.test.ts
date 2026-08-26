@@ -22,21 +22,27 @@ import type { CloudThumbnailResult } from '$lib/catalog/cloud-thumbnails';
  * magnitude failure mode (1 → 145), not a fix that legitimately shifts a
  * count by one.
  *
- * TWO THINGS THIS TECHNIQUE CANNOT SEE, both worth knowing before adding a
- * contract here:
+ * THREE UNITS, AND WHY EACH CONTRACT PICKS THE ONE IT DOES. `countIdbOps`
+ * reports round trips (`"<store>.<op>"`), index reads (`"<store>.idx.<op>"`)
+ * and transactions (`"tx.<stores>.<mode>"`). They are not interchangeable:
  *
- * 1. TRANSACTIONS. `countIdbOps` counts object-store and index operations, so
- *    it measures round trips. "One burst, one transaction" — the property
- *    behind the batched case-3 row writes, and the reason the catalog gets
- *    ONE `storagemutated` signal for a whole batch — is invisible to it, and
- *    is pinned instead by the call-count spies in `cover-service.test.ts` and
- *    the liveQuery-emission counts in `cover-persist.test.ts`.
- * 2. WORK DEXIE SERVES FROM ITS OWN CACHE. Dexie 4 answers a re-running
- *    liveQuery querier out of an in-memory cache: measured here, 22 querier
- *    executions produced only ~4 IndexedDB `getAll` round trips. A cached
- *    answer still costs the full row set — thumbnail blobs included — being
- *    handed to whatever consumes it, so where the expensive thing is the CALL
- *    rather than the round trip, count the call (see CONTRACT 1).
+ * 1. WRITE TRANSACTIONS are the catalog's real currency — Dexie broadcasts
+ *    `storagemutated` once per readwrite commit, so on `volumes` a write
+ *    transaction is a change signal is a full re-derive. Round-trip counts
+ *    are blind to it: N rows written in ONE transaction and N rows written in
+ *    N transactions issue exactly the same N `put`s. CONTRACT 4 is built on
+ *    this, and the MODE qualifier is load-bearing — the per-volume keyed
+ *    reads would otherwise swamp the bound.
+ * 2. ROUND TRIPS are the right unit when the regression is "read the whole
+ *    table instead of the one row" (CONTRACT 2) or "write when you should not
+ *    have written at all" (CONTRACT 3).
+ * 3. NEITHER can see work Dexie serves from its own cache. Dexie 4 answers a
+ *    re-running liveQuery querier out of an in-memory cache: measured here,
+ *    22 querier executions produced only ~4 IndexedDB `getAll` round trips. A
+ *    cached answer still costs the full row set — thumbnail blobs included —
+ *    being handed to whatever consumes it, so where the expensive thing is
+ *    the CALL rather than the round trip, count the call (CONTRACT 1 spies on
+ *    `db.volumes.toArray` for exactly that reason).
  */
 
 // A real Dexie under its own database name — `countIdbOps` can only count
@@ -54,7 +60,8 @@ const {
   seriesIndexMap,
   cloudCoverMap,
   routeParams,
-  readingHistory
+  readingHistory,
+  scheduleSeriesFileWriteMock
 } = vi.hoisted(() => {
   // vi.mock factories are hoisted above imports, so the stores they close
   // over are hand-rolled here rather than built with svelte/store's
@@ -82,20 +89,42 @@ const {
     seriesIndexMap: createStore(new Map<string, unknown>()),
     cloudCoverMap: createStore(new Map<string, unknown>()),
     routeParams: createStore({} as Record<string, string>),
-    readingHistory: createStore({} as Record<string, unknown>)
+    readingHistory: createStore({} as Record<string, unknown>),
+    scheduleSeriesFileWriteMock: vi.fn()
   };
 });
 
 // One authenticated account, so a row-less cover has a scope to be attributed
 // to in `cloud_covers` (`cover-persist.ts`'s ROUTING rule drops an unscoped
-// one). `cloudFiles` is the same listing store `$lib/catalog/index.ts` joins.
+// one). `cloudFiles` is the same listing store `$lib/catalog/index.ts` joins;
+// the folder/listing lookups are what `cover-service.ts`'s case-3 resolution
+// reads. An EMPTY `getCloudVolumesBySeries` selects the image-only branch of
+// that resolution — no `.mokuro` sidecar to pull, no cover sidecar to fetch —
+// so CONTRACT 4 exercises the batch queue itself with no network in the way.
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     cloudFiles,
     getActiveProvider: () => ({
+      type: 'webdav',
       getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:perf-contracts' })
-    })
+    }),
+    resolveCloudFolderTitle: (title: string) => title,
+    getCloudVolumesBySeries: () => [] as unknown[]
   }
+}));
+// Never reached on CONTRACT 4's image-only path; stubbed so the real module's
+// download plumbing stays out of this file's graph.
+vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+  fetchCloudThumbnail: vi.fn(async () => null),
+  getCachedCloudThumbnail: vi.fn(() => undefined)
+}));
+// Doubles as CONTRACT 4's "the batch has landed" signal: `materializeBatch`
+// calls this once per cloud folder, after its materialize has committed. It
+// touches no IndexedDB, which is what lets CONTRACT 4 wait for the real
+// 750ms batch window from INSIDE its counted block without polluting the
+// transaction counts it is asserting on.
+vi.mock('$lib/metadata/series-file-sync', () => ({
+  scheduleSeriesFileWrite: (...a: unknown[]) => scheduleSeriesFileWriteMock(...a)
 }));
 vi.mock('$lib/util/hash-router', () => ({ routeParams }));
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
@@ -120,6 +149,11 @@ import {
   flushPendingCoverPersists,
   installCover
 } from '$lib/catalog/cover-persist';
+import {
+  _resetCoverServiceForTests,
+  MATERIALIZE_BATCH_MAX_ENTRIES,
+  requestCover
+} from '$lib/catalog/cover-service';
 import { countIdbOps } from './idb-op-counter';
 
 /**
@@ -166,6 +200,32 @@ function makeRow(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeM
   } as VolumeMetadata;
 }
 
+/**
+ * A BARE cloud placeholder — no row, no series-index entry, `'unknown'`
+ * version and zero counts — which is what sends `cover-service.ts` down its
+ * case-3/4 resolution path. `cloudPath` tracks the volume title the way a
+ * real placeholder's does.
+ */
+function barePlaceholder(index: number): VolumeMetadata {
+  const volumeTitle = `Volume ${index}`;
+  return {
+    volume_uuid: `ph-${index}`,
+    series_uuid: 's1',
+    series_title: 'Dr Stone',
+    volume_title: volumeTitle,
+    mokuro_version: 'unknown',
+    page_count: 0,
+    character_count: 0,
+    page_char_counts: [],
+    isPlaceholder: true,
+    cloudProvider: 'webdav',
+    cloudFileId: `archive-${index}`,
+    cloudPath: `Dr Stone/${volumeTitle}.cbz`,
+    cloudSize: 12345,
+    cloudModifiedTime: '2026-01-01T00:00:00.000Z'
+  } as VolumeMetadata;
+}
+
 function makeCover(): CloudThumbnailResult {
   return {
     file: new File([new Uint8Array([1])], 'c.webp', { type: 'image/webp' }),
@@ -176,6 +236,8 @@ function makeCover(): CloudThumbnailResult {
 
 beforeEach(() => {
   _resetCoverPersistForTests();
+  _resetCoverServiceForTests();
+  scheduleSeriesFileWriteMock.mockClear();
   readingHistory.set({});
 });
 
@@ -183,6 +245,7 @@ afterEach(async () => {
   while (pendingCleanups.length) pendingCleanups.pop()?.();
   vi.restoreAllMocks(); // CONTRACT 1 spies on db.volumes.toArray
   _resetCoverPersistForTests(); // cancel a pending timer before it can fire against a cleared table
+  _resetCoverServiceForTests();
   await db.volumes.clear();
   await db.cloud_covers.clear();
   readingHistory.set({});
@@ -196,12 +259,22 @@ afterEach(async () => {
  */
 describe('countIdbOps', () => {
   it('counts the operations it wraps', async () => {
+    // Open the database FIRST: opening it is itself several transactions
+    // (Dexie's schema check spans every store), and counting those would make
+    // the exact transaction assertions below depend on test order.
+    await db.volumes.count();
+
     const counts = await countIdbOps(async () => {
       await db.volumes.toArray();
       await db.volumes.get('nope');
     });
+
     expect(counts['volumes.getAll']).toBe(1);
     expect(counts['volumes.get']).toBe(1);
+    // Transactions are counted too — the number CONTRACT 4 leans on. Dexie
+    // wraps each of the two reads above in its own auto-transaction.
+    expect(counts['transactions']).toBe(2);
+    expect(counts['tx.volumes.readonly']).toBe(2);
   });
 
   it('restores the patched prototypes even when the callback throws', async () => {
@@ -217,6 +290,17 @@ describe('countIdbOps', () => {
 
     expect(IDBObjectStore.prototype.getAll).toBe(originalGetAll);
     expect(IDBIndex.prototype.getAll).toBe(originalIndexGetAll);
+
+    // The transaction wrapper is permanent by design (Dexie binds
+    // `idbdb.transaction` at open time — see the helper), so identity is the
+    // wrong thing to assert for it. What has to hold instead is that it
+    // stopped ATTRIBUTING: work done between counted blocks must not leak
+    // into the next block's counts.
+    await db.volumes.toArray();
+    const after = await countIdbOps(async () => {
+      await db.volumes.get('nope');
+    });
+    expect(after['transactions']).toBe(1);
   });
 });
 
@@ -291,9 +375,8 @@ describe('CONTRACT 1: catalog scan coalescing', () => {
 // transaction, and Dexie broadcasts `storagemutated` once at commit, so the
 // signal/scan win came from batching the burst, not from the write SHAPE
 // inside it. `bulkPut` (materialize.ts) saves IDB round trips but issues the
-// same one `put` per row, so it is invisible to these counts; the
-// one-transaction-per-burst property is pinned by emission counts in
-// `cover-persist.test.ts` instead.
+// same one `put` per row, so it is invisible to a round-trip count. The
+// one-transaction-per-burst property is CONTRACT 4's job below.
 describe('CONTRACT 2: cover persistence', () => {
   it('persists a batch of covers without a per-cover full scan', async () => {
     const N = 30;
@@ -355,4 +438,55 @@ describe('CONTRACT 3: cloud covers stay off relationship-less rows', () => {
     // The blobs went to the cache table instead — nothing was dropped.
     expect(await db.cloud_covers.count()).toBe(N);
   });
+});
+
+// CONTRACT 4 — a burst of case-3 resolutions commits as ONE write
+// transaction, not one per volume.
+//
+// THE number this whole plan is really about. Dexie broadcasts
+// `storagemutated` once per readwrite COMMIT, so on the `volumes` table a
+// write transaction is a change signal is a full catalog re-derive — a
+// placeholder scan, display-title resolution, a re-sort and the on-screen
+// canvas redraws behind it. Before Task 3, `cover-service.ts` called
+// `materializeSeriesVolumes` once per resolved volume, so a browsed screenful
+// of cloud-only cards paid one of those per CARD; on the 12,520-file library
+// that is what grew `volumes` from 434 to 11,354 rows while the main thread
+// stayed busy back to back. Resolution is still inherently per volume (each
+// pulls its own sidecar through the backfill semaphore) — the WRITE is not:
+// `queueMaterialization` collects a burst and issues one materialize per
+// series.
+//
+// This is the property the other three contracts structurally cannot see.
+// Round-trip counts are blind to it: N rows written in one transaction and N
+// rows written in N transactions issue exactly the same N `put`s. Only the
+// transaction count separates them, and only when it is qualified by MODE —
+// the reads (one keyed `db.volumes.get` per volume, in `resolveAndDeliver`)
+// are per volume by design and would otherwise swamp the bound.
+describe('CONTRACT 4: case-3 row writes batch into one transaction', () => {
+  it('commits a burst of resolutions in a bounded number of write transactions', async () => {
+    const N = 20;
+    // Deliberately UNDER the queue's size threshold, so the quiet-period
+    // window is what closes this batch. A burst above the threshold would
+    // legitimately split into more than one, and this bound would be wrong.
+    expect(N).toBeLessThan(MATERIALIZE_BATCH_MAX_ENTRIES);
+
+    const counts = await countIdbOps(async () => {
+      for (let i = 0; i < N; i++) requestCover(barePlaceholder(i));
+
+      // Wait out the REAL batch window rather than draining it by hand, so
+      // the cadence itself is under test. `scheduleSeriesFileWrite` is fired
+      // once per cloud folder at the END of a batch and touches no
+      // IndexedDB, which is what makes it safe to poll from inside the
+      // counted block.
+      await vi.waitFor(() => expect(scheduleSeriesFileWriteMock).toHaveBeenCalled(), {
+        timeout: 8000
+      });
+    });
+
+    expect(counts['tx.volumes.readwrite'] ?? 0).toBeLessThanOrEqual(3);
+    // Anchor: the bound is only meaningful if a write happened at all...
+    expect(counts['tx.volumes.readwrite'] ?? 0).toBeGreaterThanOrEqual(1);
+    // ...and if that one transaction really did mint every row in the burst.
+    expect(await db.volumes.count()).toBe(N);
+  }, 15000);
 });
