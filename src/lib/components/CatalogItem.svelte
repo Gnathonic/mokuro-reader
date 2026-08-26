@@ -1,34 +1,14 @@
 <script module lang="ts">
-  import { derived as derivedStore, type Readable } from 'svelte/store';
-  import { providerManager } from '$lib/util/sync';
   import type { ResolvedCover } from '$lib/catalog/cover-resolver';
+  // Shared by every cover-resolving surface, so all of them ride one
+  // subscription to `providerManager.status` — see the module's own doc.
+  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
 
   // Cooldown so a wheel/right-click burst against a blocked series doesn't spam the
   // snackbar with a toast per tick — shared across every mounted card, not scoped to one
   // instance, so gesturing across several cards in quick succession still only shows one.
   const METADATA_GATE_SNACKBAR_COOLDOWN_MS = 4000;
   let lastMetadataGateSnackbarAt = 0;
-
-  /**
-   * Which account's covers this card may show, as a PRIMITIVE.
-   *
-   * `acquireCover` binds the account scope at acquire time and `refreshCovers` resolves
-   * the CURRENT one, so a handle taken under the old account is unreachable by refresh
-   * after a switch — it would sit on the previous account's blob forever. Joining the
-   * scope into the claim key below makes the switch release and re-acquire instead.
-   *
-   * Module-scoped and derived down to a string so all mounted cards share ONE subscription
-   * to `providerManager.status` — which emits a fresh object on every status message —
-   * and only re-run when the scope genuinely changes.
-   */
-  const activeAccountScopeStore: Readable<string | null> = derivedStore(
-    providerManager.status,
-    ($status) => {
-      const type = $status.currentProviderType;
-      if (!type) return null;
-      return $status.providers[type]?.accountScope ?? null;
-    }
-  );
 
   /**
    * Shared "nothing resolved" identities. A fresh empty Map per assignment would

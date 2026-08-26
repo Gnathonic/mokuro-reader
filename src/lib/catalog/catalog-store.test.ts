@@ -16,7 +16,6 @@ const {
   cloudFiles,
   seriesMetadataMap,
   seriesIndexMap,
-  cloudCoverMap,
   routeParams,
   generatePlaceholders,
   liveQueryState,
@@ -78,7 +77,6 @@ const {
     cloudFiles: createStore(new Map<string, unknown>()),
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
-    cloudCoverMap: createStore(new Map<string, unknown>()),
     routeParams: createStore({} as Record<string, string>),
     generatePlaceholders: vi.fn(() => [] as unknown[]),
     liveQueryState,
@@ -143,7 +141,6 @@ vi.mock('$lib/util/download-volume-repair', () => ({
 }));
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
-vi.mock('$lib/catalog/cloud-covers-store', () => ({ cloudCoverMap }));
 vi.mock('$lib/catalog/catalog', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/catalog/catalog')>();
   return { ...actual, deriveSeriesFromVolumes: vi.fn(actual.deriveSeriesFromVolumes) };
@@ -342,7 +339,6 @@ describe('volumesWithPlaceholders', () => {
     expect(generate).toHaveBeenLastCalledWith(
       cloudListing,
       expect.any(Array),
-      expect.any(Map) as unknown as Map<string, unknown>,
       expect.any(Map) as unknown as Map<string, unknown>
     );
     generate.mockClear();
@@ -368,46 +364,6 @@ describe('volumesWithPlaceholders', () => {
 
     unsubscribe();
     cloudFiles.set(new Map());
-  });
-
-  it('passes the cover map to generatePlaceholders and recomputes only when its content changes', async () => {
-    const generate = vi.mocked(generatePlaceholders);
-    generate.mockClear();
-    cloudFiles.set(cloudListing);
-    seriesIndexMap.set(new Map([['one piece', indexRecord('2026-08-17T00:00:00.000Z')]]));
-
-    const coverAt = (cachedAt: number, blobLength = 3) => ({
-      account_scope: 'webdav:h|nathan',
-      path: 'One Piece/Volume 2.cbz',
-      thumbnail: new File([new Uint8Array(blobLength)], 'c.webp'),
-      width: 250,
-      height: 350,
-      cached_at: cachedAt
-    });
-    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
-
-    const unsubscribe = await subscribeSettled(volumesWithPlaceholders, () => {});
-    expect(generate).toHaveBeenLastCalledWith(
-      cloudListing,
-      expect.any(Array),
-      expect.any(Map) as unknown as Map<string, unknown>,
-      expect.any(Map) as unknown as Map<string, unknown>
-    );
-    generate.mockClear();
-
-    // A rewrite (e.g. a re-fetch after the TTL sweep expired the old row)
-    // stamps a fresh cached_at and re-emits a fresh Map, but the cached blob
-    // — and therefore what a placeholder would show — hasn't changed.
-    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000)]]));
-    expect(generate).toHaveBeenCalledTimes(0);
-
-    // A genuinely different blob does recompute.
-    cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000, 4)]]));
-    expect(generate).toHaveBeenCalledTimes(1);
-
-    unsubscribe();
-    cloudFiles.set(new Map());
-    cloudCoverMap.set(new Map());
   });
 
   it('decorates a metadata-only row with the cloud file it can be downloaded from', async () => {
@@ -447,19 +403,19 @@ describe('volumesWithPlaceholders', () => {
   });
 
   /**
-   * Regression for the final whole-plan review's Finding 3: opening a series
-   * materializes bare metadata-only rows (`series-open.ts`) with no
-   * thumbnail of their own. Before this fix, such a row's card went blank
-   * and `cover-install.ts`/`cover-service.ts` re-fetched over the network a
-   * blob already sitting in `cloud_covers` from an earlier browse. The join
-   * below is what makes that unnecessary: the decorated copy carries the
-   * cached blob directly, so the card never blanks, AND — because
-   * `isCoverFetchTarget` (`cover-service.test.ts`) only re-fetches when
-   * `vol.thumbnail` is falsy or the row's OWN `cover_size`/`cover_modified`
-   * stamps say the sidecar moved on — a just-materialized row (which has
-   * neither stamp) is correctly read as "not stale", so no fetch follows.
+   * THE COVER JOIN IS GONE, AND MUST STAY GONE.
+   *
+   * This derivation used to look a metadata-only row's cached cover up in
+   * `cloudCoverMap` and stamp the blob onto the catalog's copy. That was one of
+   * the two doors a cover blob had into catalog derivation, and the reason a
+   * single cover landing re-derived the whole library and re-rendered 1,027
+   * cards. The row's copy now carries only the DOWNLOAD affordance (`cloudPath`
+   * and the sidecar pointer); the bytes are resolved per card by path
+   * (`cover-resolver.ts`), and `cover-service.ts` consults `cloud_covers` by
+   * key before fetching so dropping the decoration cannot turn into a
+   * re-download.
    */
-  it('decorates a metadata-only row with its cached cover, without a network fetch', async () => {
+  it('leaves a metadata-only row bare, carrying only the key its cover resolves by', async () => {
     volumeRecord.v2 = {
       volume_uuid: 'v2',
       series_uuid: 's1',
@@ -475,42 +431,26 @@ describe('volumesWithPlaceholders', () => {
     };
     cloudFiles.set(new Map(cloudListing));
 
-    const cachedThumbnail = new File([new Uint8Array([1, 2, 3])], 'c.webp');
-    cloudCoverMap.set(
-      new Map([
-        [
-          'One Piece/Volume 2.cbz',
-          {
-            account_scope: 'webdav:h|nathan',
-            path: 'One Piece/Volume 2.cbz',
-            thumbnail: cachedThumbnail,
-            width: 250,
-            height: 350,
-            cached_at: 1000
-          }
-        ]
-      ])
-    );
-
     let latest: Record<string, VolumeMetadata> = {};
     const unsubscribe = await subscribeSettled(
       volumesWithPlaceholders,
       (value) => (latest = value ?? {})
     );
 
-    expect(latest.v2.thumbnail).toBe(cachedThumbnail);
-    expect(latest.v2.thumbnail_width).toBe(250);
-    expect(latest.v2.thumbnail_height).toBe(350);
-    // Same cover-sidecar pointer fields as before — the cache join is
-    // additive, not a replacement for the download affordance.
+    // No blob, and no blob-shaped fields either.
+    expect(latest.v2.thumbnail).toBeUndefined();
+    expect(latest.v2.thumbnail_width).toBeUndefined();
+    expect(latest.v2.thumbnail_height).toBeUndefined();
+    // What a card actually needs to resolve its own cover: the listing path,
+    // which `cover-resolver.ts` keys `cloud_covers` by. Decorated onto the
+    // copy, never persisted on the stored row.
+    expect(latest.v2.cloudPath).toBe('One Piece/Volume 2.cbz');
     expect(latest.v2.cloudFileId).toBe('f1');
-    // The stored row is never decorated — the cache join belongs to the copy.
-    expect(volumeRecord.v2).not.toHaveProperty('thumbnail');
+    expect(volumeRecord.v2).not.toHaveProperty('cloudPath');
 
     unsubscribe();
     delete volumeRecord.v2;
     cloudFiles.set(new Map());
-    cloudCoverMap.set(new Map());
   });
 });
 

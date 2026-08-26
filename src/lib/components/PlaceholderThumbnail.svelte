@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
+  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
+  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -36,11 +39,66 @@
   let stepV = $derived(stackCount > 1 ? Math.min(40, 35 / (stackCount - 1)) : 0);
 
   // Cloud thumbnail state — an object URL over `volume.thumbnail`, kept in sync with it.
-  // Delivery of a fetched cover is the DB write itself (`cover-service.ts`): once a cover
-  // lands, the catalog re-derives and this component's OWN `volume` prop arrives with
-  // `thumbnail` already on it, from the parent. This effect only manages the object URL's
-  // lifecycle (create/revoke), never the fetch.
+  // This effect only manages the object URL's lifecycle (create/revoke), never the fetch.
+  //
+  // A ROW's cover only. A cloud volume with no row of its own — a placeholder, or a
+  // metadata-only row a series open materialized — has its cover in `cloud_covers`, and
+  // that one is resolved by path below.
   let cloudThumbnailUrl: string | null = $state(null);
+
+  /**
+   * THIS BOX RESOLVES ITS OWN CLOUD COVER.
+   *
+   * Cloud covers used to arrive on the `volume` prop: `generatePlaceholders` stamped the
+   * cached blob onto every placeholder it minted, and the catalog decorated a
+   * metadata-only row's copy the same way. That is exactly what made one cover landing
+   * re-derive the whole library and re-render every mounted card (a measured 1,784 ms
+   * long task on a 1,027-series library), so covers were cut out of the derivation. This
+   * is the replacement for the surfaces that box draws: one keyed `cloud_covers` read for
+   * the one volume on screen.
+   *
+   * The path comes from the LISTING-derived object — `cloudPath` is decorated onto the
+   * catalog's in-memory copy and is NEVER persisted on a stored row, so it is only ever
+   * present on the props handed down from the catalog, which is what these are.
+   */
+  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
+
+  /**
+   * What to claim, folded to a PRIMITIVE so the effect below re-runs only when the claim
+   * itself changes — not on every re-render that hands this component an equal-but-new
+   * `volume` object. The account scope leads it: `acquireCover` binds the scope at
+   * acquire time, so a switch has to release and re-acquire.
+   */
+  let coverClaimKey = $derived(
+    !volume || volume.thumbnail || !volume.cloudPath
+      ? ''
+      : `${$activeAccountScopeStore ?? ''}\u0000${volume.cloudPath}`
+  );
+
+  $effect(() => {
+    const key = coverClaimKey;
+    if (!key) {
+      resolvedCover = undefined;
+      return;
+    }
+    // Read untracked: the key above is the only dependency, so a re-derived but
+    // identical `volume` cannot release and re-acquire.
+    const path = untrack(() => volume?.cloudPath);
+    const handle: CoverHandle = acquireCover(path);
+    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
+    return () => {
+      unsubscribe();
+      // Every acquire paired with exactly one release, or the blob and its object URL
+      // leak for the lifetime of the tab.
+      handle.release();
+    };
+  });
+
+  /** The resolved cover's object URL, minted lazily and revoked by the resolver. */
+  let resolvedCoverUrl = $derived(resolvedCover?.url ?? null);
+
+  /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
+  let displayUrl = $derived(cloudThumbnailUrl ?? resolvedCoverUrl);
 
   // A CATALOG-WIDE re-derive (any row anywhere committing) hands every mounted card a
   // BRAND NEW `volume` object, even for a row whose own cover has not changed — Dexie
@@ -96,11 +154,11 @@
   });
 </script>
 
-{#if cloudThumbnailUrl}
+{#if displayUrl}
   <!-- Cloud thumbnail loaded: render like VolumeItem's local thumbnail -->
   <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
     <img
-      src={cloudThumbnailUrl}
+      src={displayUrl}
       alt={volume?.volume_title || ''}
       style="max-width: 250px; max-height: 350px; width: auto; height: auto;"
       class="border border-gray-300 bg-gray-100 dark:border-gray-900 dark:bg-black"

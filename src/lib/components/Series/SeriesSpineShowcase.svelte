@@ -1,4 +1,17 @@
 <!-- src/lib/components/Series/SeriesSpineShowcase.svelte -->
+<script module lang="ts">
+  import type { ResolvedCover } from '$lib/catalog/cover-resolver';
+
+  /**
+   * Shared "nothing resolved" identities, module-scoped for the same reason
+   * `CatalogItem.svelte` keeps its own: a fresh empty Map per assignment would invalidate
+   * the geometry (and so the whole strip) every time the claim set is recomputed for a
+   * shelf that has no cloud covers at all.
+   */
+  const NO_COVERS: Map<string, ResolvedCover> = new Map();
+  const NO_COVER_FILES: Map<string, File> = new Map();
+</script>
+
 <script lang="ts">
   /**
    * The whole series as a shelf of spines, with the controls for the offsets that shape it.
@@ -37,6 +50,7 @@
    *    set of neighbours here than on the card, and shared volumes can sit at different
    *    absolute positions.
    */
+  import { untrack } from 'svelte';
   import { Button, ButtonGroup, Range } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { catalogSettings } from '$lib/settings/settings';
@@ -50,6 +64,8 @@
   } from '$lib/util/sync/metadata-permissions';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
+  import { acquireCover, type CoverHandle } from '$lib/catalog/cover-resolver';
+  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -201,17 +217,110 @@
   });
 
   /**
+   * THIS SHELF RESOLVES ITS OWN CLOUD COVERS.
+   *
+   * A cloud volume's cover used to arrive on the `volumes` prop, because
+   * `generatePlaceholders` stamped the cached blob onto every placeholder and the catalog
+   * decorated a metadata-only row's copy the same way. Cutting covers out of the
+   * derivation (a measured 1,784 ms long task per cover landing on a 1,027-series
+   * library) removes that route, so the shelf claims what it draws — the same
+   * `cover-resolver.ts` keyed read the catalog card uses, one `cloud_covers.get` per
+   * path however many spines share it.
+   *
+   * A row that HAS a `thumbnail` always wins; the resolver is the cloud path only. The
+   * path comes from the LISTING-derived prop (`cloudPath` is decorated onto the catalog's
+   * in-memory copy and is never persisted on a stored row).
+   */
+  let resolvedCovers = $state<Map<string, ResolvedCover>>(NO_COVERS);
+
+  //
+  // Claimed over the SAME two lists `coverTargets` covers: the spines this strip DRAWS
+  // plus the ones it MEASURES (a partly-downloaded series can push the card's stack past
+  // the 60-spine window), because `uniformHeight` is an average over the measured set and
+  // a volume with no dimensions would skew it.
+  let coverClaims = $derived.by(() => {
+    const seen = new Set<string>();
+    const claims: Array<{ uuid: string; path: string }> = [];
+    for (const vol of [...showcaseVolumes, ...cardVolumes]) {
+      if (seen.has(vol.volume_uuid) || vol.thumbnail || !vol.cloudPath) continue;
+      seen.add(vol.volume_uuid);
+      claims.push({ uuid: vol.volume_uuid, path: vol.cloudPath });
+    }
+    return claims;
+  });
+
+  /**
+   * The claim set folded to a PRIMITIVE, so the effect re-runs only when what is claimed
+   * changes — `showcaseVolumes` is a fresh array on every catalog emission and on every
+   * settings-adjacent one. The account scope leads it: `acquireCover` binds the scope at
+   * acquire time, so a switch must release and re-acquire.
+   */
+  let coverClaimKey = $derived(
+    `${$activeAccountScopeStore ?? ''}\u0002` +
+      coverClaims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
+  );
+
+  $effect(() => {
+    void coverClaimKey;
+    const claims = untrack(() => coverClaims);
+    if (claims.length === 0) {
+      resolvedCovers = NO_COVERS;
+      return;
+    }
+
+    const handles: CoverHandle[] = [];
+    const unsubscribes: (() => void)[] = [];
+    // Accumulated OUTSIDE `$state` so a landing cover cannot make this effect read its
+    // own output and re-run (release + re-acquire per cover).
+    const found = new Map<string, ResolvedCover>();
+    let publishing = false;
+
+    for (const claim of claims) {
+      const handle = acquireCover(claim.path);
+      handles.push(handle);
+      unsubscribes.push(
+        handle.subscribe((cover) => {
+          if (cover) found.set(claim.uuid, cover);
+          else found.delete(claim.uuid);
+          if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+        })
+      );
+    }
+    publishing = true;
+    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+
+    return () => {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+      for (const handle of handles) handle.release();
+    };
+  });
+
+  /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */
+  let coverFiles = $derived.by(() => {
+    if (resolvedCovers.size === 0) return NO_COVER_FILES;
+    const files = new Map<string, File>();
+    for (const [uuid, cover] of resolvedCovers) files.set(uuid, cover.file);
+    return files;
+  });
+
+  /**
    * The card's dimension rule: stored size, else the base box once there are pixels.
    *
    * Pixels first, exactly as on the card: stored dimensions on a volume with no cover to
-   * draw would size a spine that CompositeCanvas paints nothing into.
+   * draw would size a spine that CompositeCanvas paints nothing into. A cloud volume's
+   * pixels — and its dimensions, which travel with the blob in `cloud_covers` rather than
+   * on a row — come from the resolver above.
    */
   function dimensionsOf(vol: VolumeMetadata): Dimensions | undefined {
-    if (!vol.thumbnail) return undefined;
-    const width = vol.thumbnail_width;
-    const height = vol.thumbnail_height;
-    if (width && height) return { width, height };
-    return { width: BASE_WIDTH, height: BASE_HEIGHT };
+    if (vol.thumbnail) {
+      const width = vol.thumbnail_width;
+      const height = vol.thumbnail_height;
+      if (width && height) return { width, height };
+      return { width: BASE_WIDTH, height: BASE_HEIGHT };
+    }
+    const resolved = resolvedCovers.get(vol.volume_uuid);
+    if (!resolved) return undefined;
+    return { width: resolved.width || BASE_WIDTH, height: resolved.height || BASE_HEIGHT };
   }
 
   let thumbnailDimensions = $derived.by(() => {
@@ -443,7 +552,8 @@
       volumes: showcaseVolumes,
       // CompositeCanvas paints nothing for a volume without pixels, so a mark there would
       // float over blank strip. It appears with the cover, which is when it means something.
-      isMarked: (vol) => needsDownload(vol) && !!vol.thumbnail,
+      isMarked: (vol) =>
+        needsDownload(vol) && (!!vol.thumbnail || resolvedCovers.has(vol.volume_uuid)),
       drawnSize: (vol) => getCanvasDimensions(vol.volume_uuid),
       horizontalStepPx,
       verticalStepPx: stepSizes.vertical,
@@ -696,6 +806,7 @@
     <div class="relative" style="width: {canvasWidth}px; height: {spineHeight}px;">
       <CompositeCanvas
         volumes={showcaseVolumes}
+        covers={coverFiles}
         {canvasWidth}
         canvasHeight={spineHeight}
         {getCanvasDimensions}

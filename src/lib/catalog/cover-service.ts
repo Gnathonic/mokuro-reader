@@ -14,6 +14,8 @@ import {
   type SeriesFileVolume
 } from '$lib/metadata/series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache-key';
+import { cachedCoverPaths } from '$lib/catalog/cloud-covers';
 import {
   acquireBackfillSlot,
   buildImageOnlyEntry,
@@ -164,7 +166,11 @@ const inFlight = new Map<string, Promise<void>>();
  *   no thumbnail is a target only when the catalog decoration pipeline
  *   (`placeholders.ts`'s `cloudFieldsForRemovedVolume`) already found it a
  *   cover sidecar — there is no discovery path for an already-materialized
- *   row here, only for a placeholder.
+ *   row here, only for a placeholder. Deliberately NOT gated on the cover
+ *   cache: this is a synchronous predicate every surface calls per render,
+ *   and the cache is only knowable by a read. `resolveAndDeliver` makes that
+ *   read instead (`isCachedCoverPath`), so a cover already on disk costs one
+ *   keyed presence check and no network.
  * - HAS a thumbnail: never a target for a placeholder (nothing to compare —
  *   a placeholder carries no persisted `cover_size`/`cover_modified`). For a
  *   real row, a target ONLY when its own recorded cover stamp mismatches the
@@ -508,6 +514,51 @@ function deliverToRow(
 }
 
 /**
+ * Is this path's cover ALREADY in the account's `cloud_covers` cache?
+ *
+ * THE RE-DOWNLOAD GUARD. Until covers were cut out of catalog derivation, a
+ * cached cover suppressed its own re-fetch by accident: `generatePlaceholders`
+ * stamped the cached blob onto the placeholder, so `isCoverFetchTarget` saw a
+ * `thumbnail` and said no. With that decoration gone, every cloud volume reads
+ * as a fetch target on a cold page load — the `settled` ledger is
+ * session-scoped — and a library of ~4,347 covers would re-download the lot
+ * from the network on every reload, trading the freeze for a network storm.
+ *
+ * KEYS ONLY, and asked at REQUEST time rather than read off the keys-only
+ * store. Same primitive `cover-install.ts` filters its own candidates with
+ * (`withoutCachedCovers`), so the two paths cannot disagree about what counts
+ * as already-cached. The store was the obvious alternative and is the wrong
+ * tool here: it fills asynchronously behind the cloud listing, while cards
+ * call `requestCover` the moment that same listing renders them — a gate read
+ * off it would be empty for the first screenful and let exactly the storm it
+ * exists to stop through. This costs one keyed presence read per requested
+ * volume, no blobs, independent of table size.
+ *
+ * NOT A STALENESS CHECK, and it must never become one: it is consulted only
+ * where the alternative is a FILL (`!vol.thumbnail`). The self-heal branch —
+ * a persisted row whose own `cover_size`/`cover_modified` mismatch the
+ * listing's current sidecar stamp — carries a `thumbnail` and never reaches
+ * here, so an overwrite still fetches. (Nor can the two collide: a row with a
+ * thumbnail has its covers routed onto the row itself, never into
+ * `cloud_covers` — see `cover-persist.ts`'s ROUTING doc.)
+ */
+async function isCachedCoverPath(cloudPath: string | undefined): Promise<boolean> {
+  if (!cloudPath) return false;
+  try {
+    const scope = activeAccountScope();
+    if (!scope) return false;
+    const normalized = normalizeCachePath(cloudPath);
+    const cached = await cachedCoverPaths(scope, [normalized]);
+    return cached.has(normalized);
+  } catch (error) {
+    // A cache we cannot read is not a reason to refuse a cover; fetching is
+    // the safe answer, exactly as `withoutCachedCovers` decides it.
+    console.debug('[cover-service] could not consult the cover cache:', error);
+    return false;
+  }
+}
+
+/**
  * Resolve and deliver `vol`'s cover, whichever decision-tree case applies.
  * Returns whether a cover was actually DELIVERED (or positively confirmed to
  * not exist, from data already in hand) — `true` — versus an attempt that
@@ -522,6 +573,14 @@ function deliverToRow(
  * away and back" regression this return value exists to prevent.
  */
 async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
+  // Already on disk for this account: the surface drawing this volume resolves
+  // it by path (`cover-resolver.ts`) and there is nothing to fetch. Settled, so
+  // the uuid is never asked again this session. Checked BEFORE the case split
+  // on purpose — it is also what keeps a cached cover from materializing a row
+  // for a bare placeholder (cases 3/4), which is exactly what the removed
+  // placeholder decoration used to prevent.
+  if (!vol.thumbnail && (await isCachedCoverPath(vol.cloudPath))) return true;
+
   const existingRow = (await db.volumes.get(vol.volume_uuid)) as VolumeMetadata | undefined;
 
   if (existingRow) {

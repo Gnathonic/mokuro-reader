@@ -26,6 +26,7 @@
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
   import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
+  import { initCoverKeyWatch } from '$lib/catalog/cloud-covers-store';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -109,6 +110,12 @@
 
     // Debounced root catalog.json writes for backends that don't compile it
     initCatalogFileSync();
+
+    // Keys-only watch over `cloud_covers`: tells `cover-resolver.ts` that a
+    // path a card is holding has acquired a cover, so a card that resolved a
+    // miss mid-ingest fills in instead of staying blank until it remounts.
+    // Deliberately NOT a catalog input any more — see `cloud-covers-store.ts`.
+    initCoverKeyWatch();
 
     // Initialize service worker update detection
     initSwUpdateDetection();

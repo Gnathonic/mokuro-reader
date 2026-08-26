@@ -59,7 +59,6 @@ const {
   cloudListing,
   seriesMetadataMap,
   seriesIndexMap,
-  cloudCoverMap,
   routeParams,
   readingHistory,
   scheduleSeriesFileWriteMock
@@ -91,7 +90,6 @@ const {
     cloudListing: { files: [] as Array<Record<string, unknown>> },
     seriesMetadataMap: createStore(new Map<string, unknown>()),
     seriesIndexMap: createStore(new Map<string, unknown>()),
-    cloudCoverMap: createStore(new Map<string, unknown>()),
     routeParams: createStore({} as Record<string, string>),
     readingHistory: createStore({} as Record<string, unknown>),
     scheduleSeriesFileWriteMock: vi.fn()
@@ -133,10 +131,16 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 vi.mock('$lib/metadata/series-file-sync', () => ({
   scheduleSeriesFileWrite: (...a: unknown[]) => scheduleSeriesFileWriteMock(...a)
 }));
+// Only the cloud scan is spied on; every other export (the cloud-field
+// lookup, `isIndexedPlaceholder`, the sidecar indexers) stays real, because
+// CONTRACT 4's resolution path runs through them.
+vi.mock('$lib/catalog/placeholders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/catalog/placeholders')>();
+  return { ...actual, generatePlaceholders: vi.fn(actual.generatePlaceholders) };
+});
 vi.mock('$lib/util/hash-router', () => ({ routeParams }));
 vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
 vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
-vi.mock('$lib/catalog/cloud-covers-store', () => ({ cloudCoverMap }));
 vi.mock('$lib/util/download-volume-repair', () => ({
   getLegacyImageOnlyVolumeUuid: () => undefined
 }));
@@ -150,7 +154,9 @@ vi.mock('$lib/catalog/thumbnail-cache', () => ({
 vi.mock('$lib/settings/volume-data', () => ({ volumes: readingHistory }));
 
 import { db } from '$lib/catalog/db';
-import { volumes, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
+import { volumes, volumesWithPlaceholders, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
+import { generatePlaceholders } from '$lib/catalog/placeholders';
+import { putCloudCovers } from '$lib/catalog/cloud-covers';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
 import {
@@ -232,6 +238,39 @@ function barePlaceholder(index: number): VolumeMetadata {
     cloudPath: `Dr Stone/${volumeTitle}.cbz`,
     cloudSize: 12345,
     cloudModifiedTime: '2026-01-01T00:00:00.000Z'
+  } as VolumeMetadata;
+}
+
+/**
+ * An INDEX-ADOPTED placeholder with a cover sidecar pointer — `cover-service.ts`'s case
+ * 2, the common shape for a browsed catalog (a compiled index or a synced `series.json`
+ * supplies it for nearly every volume). Deliberately the fixture CONTRACT 7 uses: case 2
+ * goes STRAIGHT to `fetchCloudThumbnail`, so "did the network get touched" is a real
+ * question there. A bare placeholder would answer it vacuously — with no listing behind
+ * it, case 4 returns before ever reaching the network.
+ */
+function indexedPlaceholder(index: number): VolumeMetadata {
+  const volumeTitle = `Volume ${index}`;
+  return {
+    volume_uuid: `idx-ph-${index}`,
+    series_uuid: 's1',
+    series_title: 'Dr Stone',
+    volume_title: volumeTitle,
+    mokuro_version: '0.2.1',
+    page_count: 180,
+    character_count: 5000,
+    page_char_counts: [],
+    isPlaceholder: true,
+    indexed: true,
+    cloudProvider: 'webdav',
+    cloudFileId: `archive-${index}`,
+    cloudPath: `Dr Stone/${volumeTitle}.cbz`,
+    cloudSize: 12345,
+    cloudModifiedTime: '2026-01-01T00:00:00.000Z',
+    cloudThumbnailFileId: `cover-${index}`,
+    cloudThumbnailPath: `Dr Stone/${volumeTitle}.webp`,
+    cloudThumbnailSize: 4096,
+    cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
   } as VolumeMetadata;
 }
 
@@ -562,5 +601,190 @@ describe('CONTRACT 5: the series-open cover pass stays off relationship-less row
     // assertion above would pass vacuously if it had simply found nothing.
     expect(installed).toBe(N);
     expect(await db.cloud_covers.count()).toBe(N);
+  });
+});
+
+// CONTRACT 6 — a cover landing regenerates no placeholders.
+//
+// THE 1,784 ms. `cloudCoverMap` was an input to `volumesWithPlaceholders`, so
+// every commit to `cloud_covers` re-ran the placeholder scan over all 12,520
+// listed files, minted ~4,347 FRESH placeholder objects and handed new props
+// to all 1,027 mounted `CatalogItem`s — for a change that cannot alter
+// grouping, order, or which volumes exist. The `cloudCoverSignature` guard
+// could not help: during ingest every emission genuinely differs, so it paid
+// its O(N) build plus O(N log N) sort and recomputed anyway. Freezing exactly
+// this re-derive, with identical write and read volume, dropped the worst
+// long task to 122 ms — which is why the fix is decoupling rather than
+// batching.
+//
+// Deliberately a CALL count, not an op count (unit 3 in this file's header):
+// the cost is `generatePlaceholders` running and everything downstream
+// re-rendering, whether or not IndexedDB was touched to trigger it.
+//
+// The real `cloud-covers-store` is NOT mocked in this file, so a regression
+// that re-joins it to the catalog derivation is reachable from here: it starts
+// its liveQuery as soon as something subscribes to a store that depends on it.
+describe('CONTRACT 6: cover ingest is decoupled from catalog derivation', () => {
+  it('does not re-run the placeholder scan when a cover lands', async () => {
+    const scan = vi.mocked(generatePlaceholders);
+    await db.volumes.put(makeRow('local-1', { volume_title: 'Volume 0' }));
+    cloudFiles.set(
+      new Map<string, unknown>([
+        [
+          'One Piece',
+          Array.from({ length: 5 }, (_, i) => ({
+            provider: 'webdav',
+            fileId: `cbz-${i}`,
+            path: `One Piece/Volume ${i}.cbz`,
+            size: 2,
+            modifiedTime: '2026-01-01T00:00:00.000Z'
+          }))
+        ]
+      ])
+    );
+
+    const stop = trackSubscription(volumesWithPlaceholders.subscribe(() => {}));
+    await settle();
+    // Anchor: the scan really is wired up and really did run, so the zero
+    // below is a decoupling result rather than a store that never started.
+    expect(scan.mock.calls.length).toBeGreaterThanOrEqual(1);
+    scan.mockClear();
+
+    // Four covers commit, exactly as they do during ingest.
+    for (let i = 0; i < 4; i++) {
+      await putCloudCovers([
+        {
+          account_scope: 'webdav:perf-contracts',
+          path: `One Piece/Volume ${i}.cbz`,
+          thumbnail: new File([new Uint8Array(2048)], `v${i}.webp`, { type: 'image/webp' }),
+          width: 250,
+          height: 350,
+          cached_at: 1000 + i
+        }
+      ]);
+      await settle(40);
+    }
+    await settle();
+
+    expect(scan.mock.calls.length).toBe(0);
+    stop();
+  });
+});
+
+// CONTRACT 7 — a cold page load never re-downloads a cover already cached.
+//
+// The guard that used to do this was an ACCIDENT of the decoration CONTRACT 6
+// removes: `generatePlaceholders` stamped the cached blob onto the placeholder,
+// so `isCoverFetchTarget` saw a `thumbnail` and declined. With covers out of
+// the derivation, every cloud volume reads as a fetch target on a cold load —
+// `cover-service.ts`'s `settled` ledger is session-scoped — so a ~4,347-cover
+// library would pull the lot over the network on every reload. That would have
+// traded the freeze for a network storm.
+//
+// The replacement is a keyed presence read against `cloud_covers`
+// (`isCachedCoverPath`), the same primitive `cover-install.ts` filters its own
+// candidates with. This contract is what stops it being removed again.
+describe('CONTRACT 7: a cached cover is never re-downloaded', () => {
+  it('fetches over the network when nothing is cached for the path', async () => {
+    // ANCHOR for the two contracts below: with an empty cache this placeholder DOES go
+    // to the network, so "not called" there is a result of the cache gate rather than of
+    // a fixture that could never have fetched in the first place.
+    const fetchMock = vi.mocked(fetchCloudThumbnail);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(makeCover());
+
+    requestCover(indexedPlaceholder(1));
+    await settle(400);
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('fetches nothing for a placeholder whose cover is already in the cache', async () => {
+    const fetchMock = vi.mocked(fetchCloudThumbnail);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(makeCover());
+
+    const placeholder = indexedPlaceholder(0);
+    await putCloudCovers([
+      {
+        account_scope: 'webdav:perf-contracts',
+        path: placeholder.cloudPath as string,
+        thumbnail: new File([new Uint8Array(2048)], 'cached.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350,
+        cached_at: 1000
+      }
+    ]);
+
+    requestCover(placeholder);
+    await settle(400);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('materializes no row for a BARE placeholder whose cover is already cached', async () => {
+    // The other half of what the removed placeholder decoration used to do: a cached
+    // cover made `isCoverFetchTarget` decline, so cases 3/4 never ran and no row was
+    // minted. Waited out past the real materialize batch window (750ms), because that
+    // batch is where the row would appear.
+    const fetchMock = vi.mocked(fetchCloudThumbnail);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(makeCover());
+
+    const placeholder = barePlaceholder(0);
+    await putCloudCovers([
+      {
+        account_scope: 'webdav:perf-contracts',
+        path: placeholder.cloudPath as string,
+        thumbnail: new File([new Uint8Array(2048)], 'cached.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350,
+        cached_at: 1000
+      }
+    ]);
+
+    requestCover(placeholder);
+    await settle(1600);
+
+    expect(await db.volumes.count()).toBe(0);
+  });
+
+  it('still fetches when the row it belongs to has a stale cover of its own', async () => {
+    // THE SELF-HEAL BRANCH, which the gate above must not suppress. A real row
+    // carrying a thumbnail whose recorded stamp disagrees with the listing's
+    // current sidecar stamp has to re-fetch — and it is reached even with a
+    // `cloud_covers` row sitting under the same path.
+    const fetchMock = vi.mocked(fetchCloudThumbnail);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(makeCover());
+
+    const stale = makeRow('stale-1', {
+      volume_title: 'Volume 7',
+      thumbnail: new File([new Uint8Array([9])], 'old.webp', { type: 'image/webp' }),
+      cover_size: 111,
+      cover_modified: 1000,
+      cloudProvider: 'webdav',
+      cloudPath: 'One Piece/Volume 7.cbz',
+      cloudThumbnailFileId: 'cover-7',
+      cloudThumbnailPath: 'One Piece/Volume 7.webp',
+      cloudThumbnailSize: 222,
+      cloudThumbnailModifiedTime: '2026-06-01T00:00:00.000Z'
+    });
+    await db.volumes.put(stale);
+    await putCloudCovers([
+      {
+        account_scope: 'webdav:perf-contracts',
+        path: 'One Piece/Volume 7.cbz',
+        thumbnail: new File([new Uint8Array(2048)], 'cached.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350,
+        cached_at: 1000
+      }
+    ]);
+
+    requestCover(stale);
+    await settle(400);
+
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

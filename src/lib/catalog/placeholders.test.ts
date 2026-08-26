@@ -626,35 +626,34 @@ describe('isIndexedPlaceholder', () => {
   });
 });
 
-describe('generatePlaceholders with a cover map', () => {
+/**
+ * COVER BYTES MUST NOT COME BACK.
+ *
+ * `generatePlaceholders` used to take the account's cached-cover Map and stamp
+ * `thumbnail`/`thumbnail_width`/`thumbnail_height` onto every placeholder that
+ * had one. That is what made a single cover landing regenerate ~4,347
+ * placeholder objects and re-render 1,027 mounted cards (a measured 1,784 ms
+ * long task). A placeholder now carries only the sidecar POINTER; the bytes
+ * are resolved per card by path (`cover-resolver.ts`).
+ */
+describe('generatePlaceholders carries cover pointers, never cover bytes', () => {
   const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
-    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/Volume 1.webp')]]
   ]);
 
-  it('attaches a cached cover by cloud path, without needing an index entry', () => {
-    const covers = new Map([
-      [
-        'One Piece/Volume 1.cbz',
-        {
-          account_scope: 'mega:a@b.com',
-          path: 'One Piece/Volume 1.cbz',
-          thumbnail: new File([new Uint8Array([1])], 'c.webp'),
-          width: 250,
-          height: 350,
-          cached_at: 1000
-        }
-      ]
-    ]);
+  it('decorates the cover sidecar pointer and no blob', () => {
+    const [placeholder] = generatePlaceholders(cloudFiles, []);
 
-    const placeholders = generatePlaceholders(cloudFiles, [], undefined, covers);
-
-    expect(placeholders[0].thumbnail).toBeInstanceOf(File);
-    expect(placeholders[0].thumbnail_width).toBe(250);
-    expect(placeholders[0].thumbnail_height).toBe(350);
+    expect(placeholder.cloudThumbnailPath).toBe('One Piece/Volume 1.webp');
+    expect(placeholder.cloudThumbnailFileId).toBe('One Piece/Volume 1.webp');
+    expect(placeholder.thumbnail).toBeUndefined();
+    expect(placeholder.thumbnail_width).toBeUndefined();
+    expect(placeholder.thumbnail_height).toBeUndefined();
   });
 
-  it('leaves a placeholder bare when its path has no cached cover', () => {
-    const placeholders = generatePlaceholders(cloudFiles, [], undefined, new Map());
-    expect(placeholders[0].thumbnail).toBeUndefined();
+  it('takes no cover argument at all', () => {
+    // The signature is the contract: there is no fourth parameter to hand a
+    // cover Map to, so nothing about `cloud_covers` can reach this pass.
+    expect(generatePlaceholders.length).toBe(3);
   });
 });

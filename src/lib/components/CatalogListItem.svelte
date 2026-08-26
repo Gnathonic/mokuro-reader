@@ -12,7 +12,9 @@
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { isVolumeComplete } from '$lib/util/volume-helpers';
-  import { onDestroy } from 'svelte';
+  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
+  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
+  import { onDestroy, untrack } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -93,6 +95,48 @@
     }
   });
 
+  /**
+   * THIS ROW RESOLVES ITS OWN CLOUD COVER.
+   *
+   * A cloud-only volume's cover used to arrive on the props: `generatePlaceholders`
+   * stamped the cached blob onto every placeholder, and the catalog decorated a
+   * metadata-only row's copy the same way. That is what made one cover landing re-derive
+   * the whole library and re-render every mounted card (a measured 1,784 ms long task on
+   * a 1,027-series library), so covers were cut out of the derivation. This row now does
+   * what the grid card does: one keyed `cloud_covers` read for the volume it draws.
+   *
+   * `liveVolume` — the stored row when there is one — always wins if it carries a
+   * `thumbnail`; the resolver is the CLOUD path and nothing else. The claim path comes
+   * from the LISTING-derived prop (`cloudPath` is decorated onto the catalog's in-memory
+   * copy and never persisted), and the account scope leads the key because
+   * `acquireCover` binds the scope at acquire time.
+   */
+  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
+
+  let coverClaimKey = $derived(
+    !liveVolume || liveVolume.thumbnail || !liveVolume.cloudPath
+      ? ''
+      : `${$activeAccountScopeStore ?? ''}\u0000${liveVolume.cloudPath}`
+  );
+
+  $effect(() => {
+    const key = coverClaimKey;
+    if (!key) {
+      resolvedCover = undefined;
+      return;
+    }
+    const path = untrack(() => liveVolume?.cloudPath);
+    const handle: CoverHandle = acquireCover(path);
+    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
+    return () => {
+      unsubscribe();
+      handle.release();
+    };
+  });
+
+  /** Row cover first, resolver cover second. */
+  let displayUrl = $derived(thumbnailUrl ?? resolvedCover?.url);
+
   // Use series title for navigation so grouping and routing align with user-visible identity.
   let navId = $derived(volume?.series_title || '');
 
@@ -162,9 +206,9 @@
               <div class="flex h-[70px] w-[50px] items-center justify-center">
                 <Spinner size="12" color="blue" />
               </div>
-            {:else if thumbnailUrl}
+            {:else if displayUrl}
               <img
-                src={thumbnailUrl}
+                src={displayUrl}
                 alt="img"
                 class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
               />

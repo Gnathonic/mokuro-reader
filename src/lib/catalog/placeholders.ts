@@ -7,8 +7,6 @@ import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
 import { isArchiveSize, isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { normalizeCachePath } from '$lib/catalog/cloud-cache-key';
-import type { CloudCover } from '$lib/catalog/cloud-covers';
 
 /**
  * The identity of one archive across the sources that spell it differently: a
@@ -265,18 +263,21 @@ function createPlaceholder(
  * optional and purely additive: a series without an index behaves exactly as
  * before.
  *
- * `coverMap` is the active account's cached cover blobs (`cloudCoverMap`),
- * keyed by normalized cloud path. Also optional and purely additive: it is
- * independent of `indexMap` — a placeholder can carry a fetch pointer
- * (`cloudThumbnailFileId` etc, from `thumbnailMap` below) with no cached blob
- * yet, or a cached blob for a path whose sidecar pointer already resolved
- * once.
+ * NO COVER BLOBS. A placeholder carries the sidecar POINTER to its cover
+ * (`cloudThumbnailFileId`/`Path`/`Size`/`ModifiedTime`, from `thumbnailMap`
+ * below) and never the cover itself. This used to take a `coverMap` of the
+ * account's cached blobs and stamp `thumbnail` onto every placeholder that had
+ * one — which made a single cover landing regenerate the whole placeholder
+ * set, hand ~4,347 fresh objects to 1,027 mounted cards and repaint every one
+ * of them (measured: a 1,784 ms main-thread long task, ~15x the next
+ * contributor). Cover BYTES now reach a card through `cover-resolver.ts`'s
+ * keyed per-path read instead, which costs one `cloud_covers.get` for the one
+ * card that wants it. Nothing about a cover may re-enter this function.
  */
 export function generatePlaceholders(
   cloudFilesMap: Map<string, CloudVolumeWithProvider[]>,
   localVolumes: VolumeMetadata[],
-  indexMap?: Map<string, SeriesIndexRecord>,
-  coverMap?: Map<string, CloudCover>
+  indexMap?: Map<string, SeriesIndexRecord>
 ): VolumeMetadata[] {
   // Skip during SSR/build
   if (!browser) {
@@ -402,15 +403,6 @@ export function generatePlaceholders(
         if (thumbnailInfo.modifiedTime) {
           placeholder.cloudThumbnailModifiedTime = thumbnailInfo.modifiedTime;
         }
-      }
-
-      // The blob already fetched, as opposed to the sidecar pointer to one
-      // that might not be — independent of `thumbnailInfo` above.
-      const cachedCover = coverMap?.get(normalizeCachePath(cloudFile.path));
-      if (cachedCover) {
-        placeholder.thumbnail = cachedCover.thumbnail;
-        placeholder.thumbnail_width = cachedCover.width;
-        placeholder.thumbnail_height = cachedCover.height;
       }
 
       placeholders.push(placeholder);

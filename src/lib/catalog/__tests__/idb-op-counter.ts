@@ -6,9 +6,16 @@ const STORE_OPS = [
   'delete',
   'count',
   'openCursor',
+  // The KEYS-ONLY cursor, counted alongside `openCursor` so the two can be
+  // told apart. A query that reads keys never deserializes a row, so on a
+  // blob-carrying store (`cloud_covers`) the difference between these two ops
+  // is the difference between ~0 and hundreds of megabytes — see
+  // `cloud-covers-store.test.ts`, which asserts the value-reading ops are zero
+  // and anchors on this one being non-zero.
+  'openKeyCursor',
   'getAllKeys'
 ] as const;
-const INDEX_OPS = ['getAll', 'openCursor', 'count', 'getAllKeys'] as const;
+const INDEX_OPS = ['getAll', 'openCursor', 'openKeyCursor', 'count', 'getAllKeys'] as const;
 
 /**
  * The counter the permanent `IDBDatabase.transaction` wrapper below reports
