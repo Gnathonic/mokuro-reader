@@ -11,11 +11,56 @@ const STORE_OPS = [
   // blob-carrying store (`cloud_covers`) the difference between these two ops
   // is the difference between ~0 and hundreds of megabytes — see
   // `cloud-covers-store.test.ts`, which asserts the value-reading ops are zero
-  // and anchors on this one being non-zero.
+  // and anchors on this one being non-zero. Keeping BOTH cursor ops here is
+  // what lets `"<store>.bytes"` below be checked against the op that produced
+  // it: a keys-only read must show a cursor op AND zero bytes.
   'openKeyCursor',
   'getAllKeys'
 ] as const;
 const INDEX_OPS = ['getAll', 'openCursor', 'openKeyCursor', 'count', 'getAllKeys'] as const;
+
+/**
+ * The ops whose RESULT is a deserialized row, and which are therefore metered
+ * in BYTES as well as counted.
+ *
+ * WHY BYTES AT ALL. Counts are blind to the defect this suite now guards: the
+ * measured cover-ingest regression was 23 `cloud_covers` reads in 59 s — an
+ * utterly unremarkable COUNT — that between them deserialized 3,886 MB of
+ * blobs (~437 MB per read) and produced main-thread long tasks up to 1,784 ms.
+ * The unit that separates the healthy shape from the pathological one is bytes
+ * per operation, so it is measured directly rather than inferred from which op
+ * was used.
+ *
+ * `get` IS METERED, deliberately, even though the defect arrived through a
+ * cursor: Dexie's `bulkGet` lowers to `getMany`, which issues one
+ * `IDBObjectStore.get` PER KEY, so a regression that re-reads a whole table as
+ * a keyed batch is a `get` storm and would be invisible to a counter that only
+ * metered `getAll`/`openCursor`.
+ *
+ * `openKeyCursor` and `getAllKeys` are deliberately absent: they cannot
+ * deserialize a value, which is the entire reason the production code uses
+ * them.
+ */
+const VALUE_OPS: ReadonlySet<string> = new Set(['get', 'getAll', 'openCursor']);
+
+/**
+ * Blob bytes carried by one deserialized row.
+ *
+ * SHALLOW, and own enumerable properties only: the rows this suite measures
+ * carry their payload in a single top-level `File` field (`thumbnail` on both
+ * `volumes` and `cloud_covers`), and a deep walk would cost more than the
+ * queries being measured. `instanceof Blob` rather than a `thumbnail` name
+ * check so a row that grows a second blob field is measured rather than
+ * silently under-reported.
+ */
+function blobBytes(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let total = 0;
+  for (const field of Object.values(value as Record<string, unknown>)) {
+    if (field instanceof Blob) total += field.size;
+  }
+  return total;
+}
 
 /**
  * The counter the permanent `IDBDatabase.transaction` wrapper below reports
@@ -69,6 +114,22 @@ if (typeof IDBDatabase !== 'undefined') installTransactionCounter();
  * Counts IndexedDB operations issued while `fn` runs, keyed `"<store>.<op>"`
  * (index reads are keyed `"<store>.idx.<op>"`).
  *
+ * BYTES are measured too: `"<store>.bytes"` is the total blob payload
+ * DESERIALIZED out of that store while `fn` ran, summed over every value-
+ * reading op ({@link VALUE_OPS}) and over every row a cursor walked. This is
+ * the unit that separates 23 cheap reads from 23 reads costing 437 MB each,
+ * which no count can express — see {@link VALUE_OPS}. Writes are not metered:
+ * a `put` serializes, it does not deserialize, and the cost this suite bounds
+ * is the read side. A store that deserialized nothing has NO `"<store>.bytes"`
+ * key rather than a zero one, so read it as `counts['x.bytes'] ?? 0`.
+ *
+ * Byte attribution happens when a request SUCCEEDS, not when it is issued, so
+ * a read started inside `fn` whose result lands just after `fn` resolves is
+ * still counted — on purpose. Under-counting is the dangerous direction here
+ * (it would make a byte bound pass vacuously); over-counting can only fail a
+ * contract, never hide one. Nothing outside `fn` can attribute at all: the
+ * prototypes are restored on the way out, so no later request is ever metered.
+ *
  * TRANSACTIONS are counted too: `"transactions"` is the grand total, and
  * `"tx.<stores>.<mode>"` counts the ones opened over a particular store set
  * (sorted and `+`-joined) in a particular mode — e.g. `"tx.volumes.readwrite"`.
@@ -87,6 +148,35 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
   const bump = (key: string) => {
     counts[key] = (counts[key] ?? 0) + 1;
   };
+  const addBytes = (store: string, bytes: number) => {
+    if (bytes <= 0) return;
+    counts[`${store}.bytes`] = (counts[`${store}.bytes`] ?? 0) + bytes;
+  };
+
+  /**
+   * Meter a value-reading request's result. A cursor request fires `success`
+   * once per row it walks (each `continue()` re-uses the same request), so one
+   * listener accumulates the whole traversal; `getAll` fires once with an
+   * array; `get` fires once with a single row.
+   */
+  const meter = (request: unknown, store: string, isCursor: boolean): unknown => {
+    const req = request as IDBRequest | null;
+    if (!req || typeof req.addEventListener !== 'function') return request;
+    req.addEventListener('success', () => {
+      const result = req.result as unknown;
+      if (isCursor) {
+        const cursor = result as IDBCursorWithValue | null;
+        if (cursor) addBytes(store, blobBytes(cursor.value));
+      } else if (Array.isArray(result)) {
+        let total = 0;
+        for (const row of result) total += blobBytes(row);
+        addBytes(store, total);
+      } else {
+        addBytes(store, blobBytes(result));
+      }
+    });
+    return request;
+  };
 
   const storeProto = IDBObjectStore.prototype as unknown as Record<string, unknown>;
   const indexProto = IDBIndex.prototype as unknown as Record<string, unknown>;
@@ -98,7 +188,8 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
     saved.push([storeProto, op, orig]);
     storeProto[op] = function (this: IDBObjectStore, ...a: unknown[]) {
       bump(`${this.name}.${op}`);
-      return orig.apply(this, a);
+      const request = orig.apply(this, a);
+      return VALUE_OPS.has(op) ? meter(request, this.name, op === 'openCursor') : request;
     };
   }
   for (const op of INDEX_OPS) {
@@ -106,8 +197,10 @@ export async function countIdbOps(fn: () => Promise<void>): Promise<Record<strin
     if (!orig) continue;
     saved.push([indexProto, `idx.${op}`, orig]);
     indexProto[op] = function (this: IDBIndex, ...a: unknown[]) {
-      bump(`${this.objectStore.name}.idx.${op}`);
-      return orig.apply(this, a);
+      const store = this.objectStore.name;
+      bump(`${store}.idx.${op}`);
+      const request = orig.apply(this, a);
+      return VALUE_OPS.has(op) ? meter(request, store, op === 'openCursor') : request;
     };
   }
 

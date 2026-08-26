@@ -156,7 +156,8 @@ vi.mock('$lib/settings/volume-data', () => ({ volumes: readingHistory }));
 import { db } from '$lib/catalog/db';
 import { volumes, volumesWithPlaceholders, VOLUMES_EMISSION_COALESCE_MS } from '$lib/catalog';
 import { generatePlaceholders } from '$lib/catalog/placeholders';
-import { putCloudCovers } from '$lib/catalog/cloud-covers';
+import { cachedCoverPaths, getCloudCovers, putCloudCovers } from '$lib/catalog/cloud-covers';
+import { cachedCoverPathSet } from '$lib/catalog/cloud-covers-store';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
 import {
@@ -282,6 +283,44 @@ function makeCover(): CloudThumbnailResult {
   };
 }
 
+/** The scope the mocked provider reports, i.e. the one every cached cover here is keyed under. */
+const SCOPE = 'webdav:perf-contracts';
+
+/**
+ * Blob size of one cached cover fixture. Big enough that a full-table read is
+ * unmistakable against the O(1) budget, small enough that a hundred of them
+ * cost nothing to write — the real library's mean is ~31.6KB.
+ */
+const COVER_BYTES = 8192;
+
+/** A `cloud_covers` row for the archive at `<series>/Volume <index>.cbz`. */
+function cachedCover(series: string, index: number, bytes = COVER_BYTES) {
+  return {
+    account_scope: SCOPE,
+    path: `${series}/Volume ${index}.cbz`,
+    thumbnail: new File([new Uint8Array(bytes)], `v${index}.webp`, { type: 'image/webp' }),
+    width: 250,
+    height: 350,
+    cached_at: 1000 + index
+  };
+}
+
+/** A cloud listing of `count` archives under one series, in the shape `cloudFiles` carries. */
+function archiveListing(series: string, count: number): Map<string, unknown> {
+  return new Map<string, unknown>([
+    [
+      series,
+      Array.from({ length: count }, (_, i) => ({
+        provider: 'webdav',
+        fileId: `cbz-${i}`,
+        path: `${series}/Volume ${i}.cbz`,
+        size: 2,
+        modifiedTime: '2026-01-01T00:00:00.000Z'
+      }))
+    ]
+  ]);
+}
+
 beforeEach(() => {
   _resetCoverPersistForTests();
   _resetCoverServiceForTests();
@@ -351,6 +390,58 @@ describe('countIdbOps', () => {
     });
     expect(after['transactions']).toBe(1);
   });
+
+  // THE BYTE COUNTER'S OWN FLOOR, and the reason it is asserted as an exact
+  // total rather than "greater than zero": every byte contract below reads as
+  // rigorous while being satisfied by a counter that measures nothing, and
+  // this helper has already shipped two counters that silently counted zero
+  // (a helper that never ran, and a transaction wrapper installed after Dexie
+  // had captured `idbdb.transaction`). Exact equality also catches the
+  // opposite failure — a cursor listener attributing the same row twice —
+  // which would inflate every bound instead of collapsing it.
+  it('measures the blob bytes a value-reading query deserializes', async () => {
+    const N = 3;
+    const covers = Array.from({ length: N }, (_, i) => cachedCover('One Piece', i));
+    await putCloudCovers(covers);
+    const paths = covers.map((c) => c.path);
+
+    // The `getAll` shape: one request, one array of rows.
+    const scanned = await countIdbOps(async () => {
+      await db.cloud_covers.toArray();
+    });
+    expect(scanned['cloud_covers.getAll']).toBe(1);
+    expect(scanned['cloud_covers.bytes']).toBe(N * COVER_BYTES);
+
+    // The CURSOR shape, which is the one the pre-fix cover store used: one
+    // request, one `success` per row walked. `getCloudCovers`'s `anyOf` takes
+    // Dexie's value-reading cursor branch — the exact query that deserialized
+    // ~437 MB per re-read on the reference library.
+    const cursored = await countIdbOps(async () => {
+      await getCloudCovers(SCOPE, paths);
+    });
+    expect(cursored['cloud_covers.openCursor'] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(cursored['cloud_covers.bytes']).toBe(N * COVER_BYTES);
+  });
+
+  it('reports no bytes for a keys-only read, and proves that read happened', async () => {
+    const N = 3;
+    const covers = Array.from({ length: N }, (_, i) => cachedCover('One Piece', i));
+    await putCloudCovers(covers);
+
+    const counts = await countIdbOps(async () => {
+      await cachedCoverPaths(
+        SCOPE,
+        covers.map((c) => c.path)
+      );
+    });
+
+    // Zero bytes is the CLAIM about `primaryKeys()`, and the previous test is
+    // what makes it a claim about the query rather than about the counter: the
+    // identical fixture, read for values, reports N * COVER_BYTES.
+    expect(counts['cloud_covers.bytes'] ?? 0).toBe(0);
+    // Anchor: the same zero would hold for a query that never ran.
+    expect(counts['cloud_covers.openKeyCursor'] ?? 0).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // CONTRACT 1 — a burst of writes costs ONE full scan, not one per write.
@@ -415,10 +506,19 @@ describe('CONTRACT 1: catalog scan coalescing', () => {
 // The row blobs are what make a `volumes` scan expensive in the first place
 // (thumbnails deserialize with every row), so the one thing the cover queue
 // must never do is read the whole table to find the rows it is about to
-// write. `flushPendingCoverPersists` re-reads each row INSIDE its write
-// transaction — deliberately, so a download that finished mid-fetch cannot
-// have its page-measured thumbnail clobbered — and that re-read has to stay a
-// keyed `get` per entry.
+// write. `flushPendingCoverPersists` re-reads the batch's rows INSIDE its
+// write transaction — deliberately, so a download that finished mid-fetch
+// cannot have its page-measured thumbnail clobbered — and that re-read has to
+// stay KEYED.
+//
+// It is now one `bulkGet` for the whole batch rather than the sequential
+// `db.volumes.get()` per entry it started as. This count cannot see that
+// change, and must not be read as if it could: Dexie's `bulkGet` lowers to
+// `getMany`, which issues one `IDBObjectStore.get` PER KEY — measured at 2N
+// `volumes.get` for both shapes — so the round-trip bound below is identical
+// either way. What it does bound is the thing that actually matters here:
+// reads scale with the BATCH, never with the table, and no `getAll` is issued
+// at all.
 //
 // NOTE on what this does NOT measure: the whole burst is already ONE Dexie
 // transaction, and Dexie broadcasts `storagemutated` once at commit, so the
@@ -787,4 +887,135 @@ describe('CONTRACT 7: a cached cover is never re-downloaded', () => {
 
     expect(fetchMock).toHaveBeenCalled();
   });
+});
+
+// CONTRACT 8 — inserting ONE cover costs O(1), in BYTES and in re-derives,
+// whatever the library already holds.
+//
+// WHY THIS EXISTS AT ALL, given CONTRACTS 6 and 7 already stand: every other
+// contract in this file bounds a COUNT, and a count could not have caught the
+// defect this plan fixed. The measurement on the 12,520-file library was 23
+// `cloud_covers` reads in 59 s — unremarkable as a number — and those 23 reads
+// deserialized 3,886 MB of blobs (~437 MB each) while the main thread stalled
+// for up to 1,784 ms. The defect was BYTES PER OPERATION, and a suite that only
+// counts operations is structurally blind to it. So this contract measures
+// bytes (`"<store>.bytes"`, see `idb-op-counter.ts`) and asserts they do not
+// scale.
+//
+// TWO SIZES, NOT ONE BOUND. A single "under X MB" threshold is a number a
+// later change can quietly raise. Measuring the SAME event at two clearly
+// different library sizes and asserting the cost is the same makes it a
+// scaling claim: the pre-fix store (`getCloudCovers` over every listed path)
+// fails it by construction, because its cost per insert IS the table.
+describe('CONTRACT 8: one cover insert is O(1) in library size', () => {
+  const SERIES = 'Dr Stone';
+  const SMALL_N = 20;
+  const LARGE_N = 80;
+
+  /**
+   * Seed `n` cached covers, subscribe the live cover key set the way the app
+   * does, then count what inserting ONE more cover costs. Everything before
+   * the insert is deliberately outside the counted block: the setup is not the
+   * measurement.
+   */
+  async function measureCoverInsert(n: number): Promise<Record<string, number>> {
+    await putCloudCovers(Array.from({ length: n }, (_, i) => cachedCover(SERIES, i)));
+    // n + 1 archives listed, so the cover inserted below is a path the
+    // subscription is actually watching — a listing of n would make the
+    // insert invisible and the byte count zero for the wrong reason.
+    cloudFiles.set(archiveListing(SERIES, n + 1));
+
+    let latest: ReadonlySet<string> = new Set();
+    const stop = cachedCoverPathSet.subscribe((paths) => (latest = paths));
+    try {
+      // Throws if the subscription never resolves the seeded keys, which is
+      // what stops the whole measurement from being taken against a store
+      // that never ran.
+      await vi.waitFor(() => expect(latest.size).toBe(n), { timeout: 5000 });
+
+      return await countIdbOps(async () => {
+        await putCloudCovers([cachedCover(SERIES, n)]);
+        await vi.waitFor(() => expect(latest.size).toBe(n + 1), { timeout: 5000 });
+      });
+    } finally {
+      stop();
+      cloudFiles.set(new Map());
+      await db.cloud_covers.clear();
+    }
+  }
+
+  it('deserializes bytes that do not scale with the number of cached covers', async () => {
+    const small = await measureCoverInsert(SMALL_N);
+    const large = await measureCoverInsert(LARGE_N);
+
+    // ANCHOR, before the bytes mean anything: the subscription really did read
+    // IndexedDB at both sizes — zero bytes is also what a subscription that
+    // never woke up reports, and what one served entirely out of Dexie's
+    // in-memory cache would report (this file's header, unit 3: a cached answer
+    // still costs its consumer the whole row set, but deserializes nothing
+    // through IndexedDB, so bytes would read as "not measured" rather than "not
+    // paid"). Deliberately SHAPE-INDEPENDENT — a read transaction, not a
+    // particular cursor op — so that a regression to a value-reading query is
+    // reported by the byte assertions below rather than tripping over an
+    // anchor that describes the fix instead of the property.
+    expect(small['tx.cloud_covers.readonly'] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(large['tx.cloud_covers.readonly'] ?? 0).toBeGreaterThanOrEqual(1);
+
+    const smallBytes = small['cloud_covers.bytes'] ?? 0;
+    const largeBytes = large['cloud_covers.bytes'] ?? 0;
+
+    // THE SCALING CONTRACT. A 4x larger cover cache may cost at most one more
+    // cover's worth of deserialization — the slack an implementation that read
+    // back the row it just wrote would need, and nothing beyond it. The
+    // pre-fix store re-materialised every row per insert, so this difference
+    // was (LARGE_N - SMALL_N) covers; on the real library it was 437 MB.
+    expect(largeBytes - smallBytes).toBeLessThanOrEqual(COVER_BYTES);
+    // And the absolute budget, which catches a regression that reads a fixed
+    // fat slice (constant, so invariant, but still wasteful). The shipped
+    // shape reads zero bytes; one cover is the same slack as above.
+    expect(largeBytes).toBeLessThanOrEqual(COVER_BYTES);
+
+    // Last, the SHAPE that makes those zeroes structural rather than lucky:
+    // `primaryKeys()` over an `anyOf` takes Dexie's keys-only branch. Asserted
+    // after the bytes so it reads as corroboration, not as the contract.
+    expect(small['cloud_covers.openKeyCursor'] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(large['cloud_covers.openKeyCursor'] ?? 0).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
+  it('regenerates no placeholders when a cover lands, at library scale', async () => {
+    // CONTRACT 6 pins this decoupling with four covers, a five-file listing and
+    // nothing subscribed to the cover store. This is the same property under the
+    // conditions that produced the 1,784 ms task: a cover cache the size of a real
+    // one, and the live key-set subscription (`initCoverKeyWatch`'s store, which
+    // production keeps running for the app's lifetime) active while the cover
+    // lands. If cover ingest ever re-acquires a path into the catalog derivation,
+    // this is the shape it comes back in.
+    const scan = vi.mocked(generatePlaceholders);
+    await db.volumes.put(makeRow('local-1', { volume_title: 'Volume 0' }));
+    await putCloudCovers(Array.from({ length: LARGE_N }, (_, i) => cachedCover(SERIES, i)));
+    cloudFiles.set(archiveListing(SERIES, LARGE_N + 1));
+    pendingCleanups.push(() => cloudFiles.set(new Map()));
+
+    let latest: ReadonlySet<string> = new Set();
+    trackSubscription(cachedCoverPathSet.subscribe((paths) => (latest = paths)));
+    trackSubscription(volumesWithPlaceholders.subscribe(() => {}));
+    await vi.waitFor(() => expect(latest.size).toBe(LARGE_N), { timeout: 5000 });
+    await settle();
+
+    // Anchor: the placeholder scan really is wired up and really did run for
+    // this listing, so the zero below is a decoupling result rather than a
+    // derived that was never subscribed or a listing that produced nothing.
+    expect(scan.mock.calls.length).toBeGreaterThanOrEqual(1);
+    scan.mockClear();
+
+    // The measured event. Waited out by the KEY SET rather than by a fixed
+    // sleep, so the assertion cannot pass by being checked before the insert
+    // was observed — then a further three coalesce windows, which is the
+    // channel a re-derive would arrive through (`VOLUMES_EMISSION_COALESCE_MS`).
+    await putCloudCovers([cachedCover(SERIES, LARGE_N)]);
+    await vi.waitFor(() => expect(latest.size).toBe(LARGE_N + 1), { timeout: 5000 });
+    await settle();
+
+    expect(scan.mock.calls.length).toBe(0);
+  }, 20000);
 });

@@ -262,8 +262,9 @@ describe('shared reads', () => {
  * Op counts alone cannot see that: a whole-table `toArray()` is a single
  * `getAll`, which counts as 1 the same as a point read does. So this asserts
  * the read's SHAPE (`.get` on the primary key; no `getAll`, no cursor, no
- * index read — the ops whose cost is proportional to what they walk) AND that
- * the shape is identical at two table sizes two orders of magnitude apart.
+ * index read — the ops whose cost is proportional to what they walk), the
+ * BYTES it deserialized, and that both are identical at two table sizes two
+ * orders of magnitude apart.
  */
 describe('keyed read contract', () => {
   it('resolves one cover with a point read whose ops do not scale with the table', async () => {
@@ -287,8 +288,12 @@ describe('keyed read contract', () => {
       })
     );
 
-    // One point read on the composite primary key, and nothing else.
-    expect(large).toEqual({ 'cloud_covers.get': 1 });
+    // One point read on the composite primary key, and nothing else — and,
+    // now that `countIdbOps` meters bytes, exactly ONE cover's blob
+    // deserialized with it (`manyCovers` writes 64-byte thumbnails). That
+    // second number is the unit the defect was measured in, so the exact
+    // shape asserts it rather than filtering it out.
+    expect(large).toEqual({ 'cloud_covers.get': 1, 'cloud_covers.bytes': 64 });
     // None of the ops that walk rows: any of these is a scan wearing a
     // constant op count.
     expect(large['cloud_covers.getAll'] ?? 0).toBe(0);
