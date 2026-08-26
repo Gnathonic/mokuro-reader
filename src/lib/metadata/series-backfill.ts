@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
+import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
 import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
 import { flushPendingCoverPersists, installCover } from '$lib/catalog/cover-persist';
@@ -55,12 +56,13 @@ import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
  * was written to prevent (see `write-slot.ts`):
  *
  * - {@link acquireBackfillSlot} bounds how many series' worth of EXPENSIVE
- *   work (the `db.volumes.toArray()` scan, the sidecar pulls, the write) run
- *   at once — module-local to this file, since it is specifically the
- *   backfill's own fan-out that needs bounding. A CONVERGED series never
- *   touches this budget at all: the cheap listing-only candidate check runs
- *   first and returns immediately when there is nothing to do, so a sweep
- *   over N already-converged folders costs N cache reads, not N queued slots.
+ *   work (the indexed `volumesForFoldedSeriesTitle` read, the sidecar pulls,
+ *   the write) run at once — module-local to this file, since it is
+ *   specifically the backfill's own fan-out that needs bounding. A
+ *   CONVERGED series never touches this budget at all: the cheap
+ *   listing-only candidate check runs first and returns immediately when
+ *   there is nothing to do, so a sweep over N already-converged folders
+ *   costs N cache reads, not N queued slots.
  * - The final publish additionally acquires `write-slot.ts`'s shared
  *   `acquireWriteSlot`, the SAME pool the debounced fact-edit writer uses —
  *   so a burst of backfill-triggered writes and a burst of ordinary
@@ -447,12 +449,15 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
   // from costing anything beyond the listing it already had in hand.
   if (candidates.length === 0) return;
 
-  // ---- EXPENSIVE phase: table scan, pulls, write — capped at
+  // ---- EXPENSIVE phase: indexed row read, pulls, write — capped at
   // BACKFILL_PASS_CONCURRENCY across every series in flight. ----
   await acquireBackfillSlot();
   try {
     const localKey = normalizeVolumeTitleKey(folderTitle);
-    const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
+    // Indexed, not a table scan: `volumesForFoldedSeriesTitle` answers off
+    // `series_title`'s index, so a series with no local rows costs one
+    // index-only read instead of the whole table.
+    const allVolumes = await volumesForFoldedSeriesTitle(folderTitle, normalizeVolumeTitleKey);
     const installedTitleKeys = new Set(
       allVolumes
         .filter((v) => normalizeVolumeTitleKey(v.series_title) === localKey && isVolumeInstalled(v))

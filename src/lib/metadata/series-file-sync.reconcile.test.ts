@@ -73,9 +73,27 @@ const { volumeRows, dbScans, metaRows } = vi.hoisted(() => ({
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
+      // `locallyKnownSeriesKeys` (one full read per pass — the assertion
+      // below on `dbScans.count`) still calls this bare method.
       toArray: async () => {
         dbScans.count += 1;
         return [...volumeRows];
+      },
+      // `hasBackedUpVolume`'s indexed per-series lookup
+      // (`volumesForFoldedSeriesTitle`), fired when a scheduled write's
+      // debounce elapses. Deliberately NOT counted by `dbScans` — the whole
+      // point of narrowing it is that it no longer costs a table scan.
+      where(index: string) {
+        return {
+          anyOf: (values: unknown[]) => ({
+            toArray: async () => volumeRows.filter((r) => values.includes(r[index]))
+          })
+        };
+      },
+      orderBy(index: string) {
+        return {
+          uniqueKeys: async () => [...new Set(volumeRows.map((r) => r[index]))]
+        };
       }
     },
     series_metadata: {

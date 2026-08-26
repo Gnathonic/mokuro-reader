@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
+import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import type { VolumeMetadata } from '$lib/types';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -139,7 +140,11 @@ function hasWritableProvider(): boolean {
  * folds before scheduling: the folder would be scheduled, dropped here, and
  * scheduled again on the very next listing — forever, at one volumes scan each.
  *
- * The listing is read first so a folder with no archive costs no table scan.
+ * The listing is read first so a folder with no archive costs no table read at
+ * all. When it does have one, `volumesForFoldedSeriesTitle` answers off the
+ * `series_title` index rather than a full scan — an index-only read for a
+ * series with no local rows (the common case: a cloud-only series during a
+ * reconcile pass), an indexed one when it does.
  */
 async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
   const cloudKeys = new Set(
@@ -148,7 +153,7 @@ async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
   if (cloudKeys.size === 0) return false;
 
   const key = normalizeVolumeTitleKey(seriesTitle);
-  const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
+  const volumes = await volumesForFoldedSeriesTitle(seriesTitle, normalizeVolumeTitleKey);
   return volumes.some((volume) => {
     if (volume.isPlaceholder) return false;
     if (normalizeVolumeTitleKey(volume.series_title) !== key) return false;
@@ -535,6 +540,17 @@ function walkListing(files: ListedFile[]): {
  * Folded with `normalizeVolumeTitleKey` rather than `normalizeSeriesKey`: the
  * folder name comes off a filesystem and can arrive decomposed (NFD) while the
  * local row stays composed, and the two spell the same series.
+ *
+ * Deliberately still a full `toArray()`, unlike `hasBackedUpVolume`'s
+ * per-series lookup: `isPlaceholder` isn't part of the `series_title` index,
+ * so an index-only read cannot tell a placeholder-only series from a
+ * genuinely-known one (see the "cloud placeholders" case this excludes,
+ * covered by `series-file-sync.reconcile.test.ts`) — narrowing this to an
+ * indexed read would require a compound index, out of scope here. This is
+ * also the ONE of the four sites that was never actually "per series": the
+ * call site below reads it once per whole reconcile pass, not once per
+ * candidate folder, so it already has the same cost shape as the twelve
+ * other full-table-scan sites this task deliberately leaves alone.
  */
 async function locallyKnownSeriesKeys(): Promise<Set<string>> {
   const volumes = (await db.volumes.toArray()) as VolumeMetadata[];

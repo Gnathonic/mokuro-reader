@@ -83,14 +83,38 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 // installed volumes, and `store.ts` writes the series_metadata rows whose fact
 // changes drive the listener. Deliberately NOT fake-indexeddb: it schedules its
 // transactions on setImmediate, which vitest's fake timers freeze.
-const { volumeRows, metaRows } = vi.hoisted(() => ({
+const { volumeRows, metaRows, volumesToArraySpy } = vi.hoisted(() => ({
   volumeRows: [] as Record<string, unknown>[],
-  metaRows: new Map<string, Record<string, unknown>>()
+  metaRows: new Map<string, Record<string, unknown>>(),
+  // Its own `vi.fn()`, not an inline arrow: a full-table-scan regression test
+  // needs to assert it was never reached, distinct from the indexed
+  // `where(...)`/`orderBy(...)` reads below.
+  volumesToArraySpy: vi.fn(async () => [] as Record<string, unknown>[])
 }));
 
 vi.mock('$lib/catalog/db', () => ({
   db: {
-    volumes: { toArray: async () => [...volumeRows] },
+    volumes: {
+      toArray: (...args: Parameters<typeof volumesToArraySpy>) => volumesToArraySpy(...args),
+      // Minimal stand-ins for the two indexed reads
+      // `volumesForFoldedSeriesTitle` performs — never the full-table scan
+      // `toArray` above would be.
+      where(index: string) {
+        return {
+          equals: (value: unknown) => ({
+            toArray: async () => volumeRows.filter((r) => r[index] === value)
+          }),
+          anyOf: (values: unknown[]) => ({
+            toArray: async () => volumeRows.filter((r) => values.includes(r[index]))
+          })
+        };
+      },
+      orderBy(index: string) {
+        return {
+          uniqueKeys: async () => [...new Set(volumeRows.map((r) => r[index]))]
+        };
+      }
+    },
     series_metadata: {
       get: async (key: string) => metaRows.get(key),
       put: async (rec: { series_key: string }) => {
@@ -572,6 +596,37 @@ describe('series-file-sync', () => {
     // Handed on with the caller's spelling: the manager resolves the folder (and
     // writes under the listing's path) itself.
     expect(writeSeriesFile).toHaveBeenCalledWith(composedSeries);
+  });
+
+  it('asks about one series without scanning the whole table', async () => {
+    // A series with a local row matching the schedule exactly: the ordinary
+    // case. `hasBackedUpVolume` must answer entirely off the `series_title`
+    // index — never the bare `db.volumes.toArray()` a full-table scan is.
+    backUp('One Piece', 'Volume 1');
+    addVolume('One Piece', 'Volume 1');
+
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(volumesToArraySpy).not.toHaveBeenCalled();
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('answers "nothing here" for a cloud-only series with zero local rows, without scanning the whole table', async () => {
+    // The overwhelmingly common case during a reconcile pass over a large
+    // cloud library: a series this device has never imported or linked. The
+    // table already holds an unrelated series's rows (`One Piece`, from
+    // `beforeEach`) — proving the lookup costs no full scan even though the
+    // table is non-empty, not just when it is empty outright.
+    backUp('Cloud Only Series', 'Volume 1');
+    // Deliberately no addVolume('Cloud Only Series', ...) — no local row
+    // anywhere in the table for this series.
+
+    scheduleSeriesFileWrite('Cloud Only Series');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(volumesToArraySpy).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalledWith('Cloud Only Series');
   });
 
   it('swallows a write failure — a background index write never breaks an edit', async () => {

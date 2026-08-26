@@ -110,6 +110,27 @@ vi.mock('$lib/catalog/db', () => ({
       update: async (uuid: string, patch: Record<string, unknown>) => {
         const row = volumeRows.find((v) => v.volume_uuid === uuid);
         if (row) Object.assign(row, patch);
+      },
+      // `volumesForFoldedSeriesTitle`'s two indexed reads. `uniqueKeys` is
+      // routed through the SAME `volumesToArray` spy the scan-count and
+      // concurrency assertions below key off — an index-only read replaces
+      // the full scan, but it is still the one call gated behind
+      // `acquireBackfillSlot`, so the existing instrumentation keeps working
+      // unchanged.
+      where(index: string) {
+        return {
+          anyOf: (values: unknown[]) => ({
+            toArray: async () => volumeRows.filter((r) => values.includes(r[index]))
+          })
+        };
+      },
+      orderBy(index: string) {
+        return {
+          uniqueKeys: async () => {
+            const rows = await volumesToArray();
+            return [...new Set(rows.map((r) => r[index]))];
+          }
+        };
       }
     },
     // Real Dexie serializes overlapping `rw` transactions; this fire-through
