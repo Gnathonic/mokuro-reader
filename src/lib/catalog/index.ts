@@ -296,8 +296,9 @@ export const volumesWithPlaceholders = derived(
           // their own. If the user already browsed this volume, its cover
           // blob is sitting in `cloud_covers` — apply it to the catalog
           // copy so the card doesn't blank out and re-download something
-          // already on disk (`cover-install.ts`/`cover-service.ts` only
-          // check `vol.thumbnail`, not `cloud_covers`, before fetching).
+          // already on disk. `cover-install.ts` now pre-filters its own
+          // candidates against the cache (`withoutCachedCovers`), but
+          // `cover-service.ts` still checks only `vol.thumbnail`.
           // Same discipline as the fields above: decorate the copy, never
           // the stored row.
           let coverFields: Partial<VolumeMetadata> | undefined;
