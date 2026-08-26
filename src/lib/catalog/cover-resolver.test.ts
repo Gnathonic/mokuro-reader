@@ -78,6 +78,40 @@ afterEach(() => {
   globalThis.URL.revokeObjectURL = originalRevoke;
 });
 
+/** Let queued microtasks AND the fake-indexeddb round trip they wait on run. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Hold the next keyed read open until the returned `land` is called.
+ *
+ * The read that a card issues at mount takes its readonly snapshot THEN, and
+ * a cover can commit between that snapshot and the read coming back. Nothing
+ * about a real IndexedDB read is controllable enough to sit in that window on
+ * purpose, so the first read is gated here and answered with the miss the
+ * pre-write snapshot would have produced; every later read hits the database
+ * for real.
+ */
+function gateFirstRead(): { land: () => void; reads: () => number; restore: () => void } {
+  const realGet = db.cloud_covers.get.bind(db.cloud_covers);
+  let land!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    land = resolve;
+  });
+  let reads = 0;
+  const spy = vi.spyOn(db.cloud_covers, 'get').mockImplementation((async (
+    key: [string, string]
+  ) => {
+    reads += 1;
+    if (reads > 1) return realGet(key);
+    await gate;
+    return undefined;
+  }) as unknown as typeof db.cloud_covers.get);
+  return { land, reads: () => reads, restore: () => spy.mockRestore() };
+}
+
 /** Only the counts for the table under test — other stores are noise here. */
 function coverOps(counts: Record<string, number>): Record<string, number> {
   return Object.fromEntries(
@@ -342,6 +376,87 @@ describe('object URL lifecycle', () => {
     second.release();
   });
 
+  /**
+   * A holder can outlive the value it holds: an async decode continuation, a
+   * reactive read that runs one frame late. Reading `.url` then must NOT mint
+   * a fresh object URL — the entry is gone from `entries`, so nothing would
+   * ever revoke it, and at 1,027 churning cards that is one permanent leak per
+   * card.
+   */
+  it('mints nothing for a value whose URL is first read after its holder released', async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    const resolved = await handle.ready;
+    handle.release();
+
+    expect(resolved?.url).toBe('');
+    expect(created).toEqual([]);
+    expect(_heldCoverCountForTests()).toBe(0);
+  });
+
+  it('gives a released holder back the URL it already had, and no second one', async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    const resolved = await handle.ready;
+    expect(resolved?.url).toBe('blob:cover-1');
+
+    handle.release();
+    expect(revoked).toEqual(['blob:cover-1']);
+
+    expect(resolved?.url).toBe('blob:cover-1');
+    expect(created).toEqual(['blob:cover-1']);
+    expect(revoked).toEqual(['blob:cover-1']);
+  });
+
+  /**
+   * A superseded value must not mint either — worse than leaking, its URL
+   * would land in `entry.url`, where the LIVE value's getter would find it and
+   * paint the cover that was just replaced.
+   */
+  it("gives a superseded value its own old URL, never the replacement's", async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    const stale = await handle.ready;
+    expect(stale?.url).toBe('blob:cover-1');
+
+    await putCloudCovers([cover({ width: 260, cached_at: 1756000009999 })]);
+    refreshCovers([PATH], { force: true });
+    const fresh = await handle.ready;
+
+    expect(stale?.url).toBe('blob:cover-1'); // revoked, but not re-minted
+    expect(fresh?.url).toBe('blob:cover-2');
+    expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
+    handle.release();
+  });
+
+  /**
+   * A forced re-read exists for a genuine overwrite. When the row comes back
+   * unchanged there is nothing to replace, and replacing anyway revokes a URL
+   * a holder may have painted straight into an `<img src>` — a dead URL that
+   * subscribing cannot repair, because from the store's point of view nothing
+   * happened.
+   */
+  it('keeps the live value and its URL when a forced re-read returns the same row', async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    const first = await handle.ready;
+    expect(first?.url).toBe('blob:cover-1');
+
+    refreshCovers([PATH], { force: true }); // nothing was rewritten
+    await expect(handle.ready).resolves.toBe(first);
+
+    expect(revoked).toEqual([]);
+    expect(created).toEqual(['blob:cover-1']);
+    expect(handle.current).toBe(first);
+
+    handle.release();
+    expect(revoked).toEqual(['blob:cover-1']);
+  });
+
   it('revokes a superseded URL when a forced refresh replaces the cover', async () => {
     await putCloudCovers([cover()]);
 
@@ -358,6 +473,83 @@ describe('object URL lifecycle', () => {
 
     handle.release();
     expect(revoked).toEqual(['blob:cover-1', 'blob:cover-2']);
+  });
+});
+
+describe('subscriber fan-out', () => {
+  /**
+   * A subscriber is free to release from inside its own callback (a card that
+   * unmounts the moment its cover arrives). That release runs mid-broadcast
+   * and clears the subscriber set, so a broadcast that walked the set itself
+   * would deliver to that subscriber and silently skip every one after it.
+   */
+  it('finishes the broadcast when a subscriber releases from inside its callback', async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    const delivered: string[] = [];
+    handle.subscribe((v) => {
+      if (!v) return;
+      delivered.push('first');
+      handle.release();
+    });
+    handle.subscribe((v) => {
+      if (v) delivered.push('second');
+    });
+    handle.subscribe((v) => {
+      if (v) delivered.push('third');
+    });
+
+    await handle.ready;
+
+    expect(delivered).toEqual(['first', 'second', 'third']);
+    expect(_heldCoverCountForTests()).toBe(0);
+  });
+});
+
+/**
+ * An entry that has been dropped is DEAD, and a read issued before the drop
+ * can still land afterwards. Neither the landing read nor the dead entry's own
+ * bookkeeping may touch whatever has since claimed its key.
+ */
+describe('dropped-entry guards', () => {
+  it('does not resurrect an entry whose read landed after it was dropped', async () => {
+    await putCloudCovers([cover()]);
+
+    const handle = acquireCover(PATH);
+    // Every holder lets go while the read is in flight. (The reset hook is the
+    // same drop path as the last `release()`, but leaves a handle behind to
+    // observe the dead entry through — a released handle reports `undefined`
+    // on its own account and would hide the resurrection.)
+    _resetCoverResolverForTests();
+    expect(_heldCoverCountForTests()).toBe(0);
+
+    await flush(); // the read lands on the entry nobody holds any more
+
+    expect(handle.current).toBeUndefined();
+    expect(created).toEqual([]);
+    expect(_heldCoverCountForTests()).toBe(0);
+  });
+
+  it('does not evict the live entry when a stale one under the same key is dropped', async () => {
+    await putCloudCovers([cover()]);
+
+    const stale = acquireCover(PATH);
+    await stale.ready;
+    _resetCoverResolverForTests(); // what `stale` holds is no longer the entry at its key
+
+    const live = acquireCover(PATH); // a fresh entry claims that key
+    await expect(live.ready).resolves.toMatchObject({ width: 250 });
+    expect(_heldCoverCountForTests()).toBe(1);
+
+    stale.release(); // the last holder of the DEAD entry lets go
+
+    expect(_heldCoverCountForTests()).toBe(1);
+    // and the live handle is still reachable by path, which is the whole point
+    await putCloudCovers([cover({ width: 260 })]);
+    refreshCovers([PATH], { force: true });
+    await expect(live.ready).resolves.toMatchObject({ width: 260 });
+    live.release();
   });
 });
 
@@ -393,6 +585,57 @@ describe('refreshCovers', () => {
     expect(counts['cloud_covers.get']).toBe(1);
     hit.release();
     miss.release();
+  });
+
+  /**
+   * THE INGEST SEQUENCE, and the reason this whole module exists.
+   *
+   * A card mounts and issues its read; the cover commits; the keys-only
+   * liveQuery announces the path; and only THEN does the read — whose
+   * readonly snapshot pre-dates the commit — come back a miss. Nothing else
+   * will ever announce that path again, so a refresh dropped in this window
+   * leaves the card blank for the rest of its mount. During bulk ingest that
+   * window is open on hundreds of cards at once.
+   */
+  it('honours a refresh that lands while the first read is still in flight', async () => {
+    const read = gateFirstRead();
+    try {
+      const handle = acquireCover(PATH);
+      const seen: (ResolvedCover | undefined)[] = [];
+      handle.subscribe((v) => seen.push(v));
+      const awaited = handle.ready; // the caller is already waiting on this one
+
+      await putCloudCovers([cover()]); // the cover commits...
+      refreshCovers([PATH]); // ...and the liveQuery announces it, mid-read
+
+      read.land(); // the pre-write snapshot finally comes back: a miss
+      await expect(awaited).resolves.toMatchObject({ width: 250 });
+
+      expect(handle.current).toMatchObject({ width: 250 });
+      expect(seen.at(-1)).toMatchObject({ width: 250 });
+      expect(read.reads()).toBe(2); // the miss, then the refresh's re-read
+      handle.release();
+    } finally {
+      read.restore();
+    }
+  });
+
+  it('re-reads once for a burst of refreshes that all land during one read', async () => {
+    const read = gateFirstRead();
+    try {
+      const handle = acquireCover(PATH);
+      await putCloudCovers([cover()]);
+      refreshCovers([PATH]);
+      refreshCovers([PATH]);
+      refreshCovers([PATH], { force: true });
+
+      read.land();
+      await expect(handle.ready).resolves.toMatchObject({ width: 250 });
+      expect(read.reads()).toBe(2);
+      handle.release();
+    } finally {
+      read.restore();
+    }
   });
 
   it('does nothing when no account is connected', async () => {

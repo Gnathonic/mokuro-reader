@@ -69,8 +69,11 @@ export interface CoverHandle extends Readable<ResolvedCover | undefined> {
   readonly current: ResolvedCover | undefined;
   /**
    * Settles when the CURRENT keyed read finishes — hit or miss, never
-   * rejecting. Re-read as a getter after {@link refreshCovers}: a refresh
-   * installs a new promise.
+   * rejecting. Re-read as a getter after {@link refreshCovers}: a refresh of
+   * an already-settled handle installs a NEW promise. A refresh that lands
+   * while a read is still in flight instead keeps THIS promise pending until
+   * the re-read settles, so a caller already awaiting it is never handed the
+   * pre-write snapshot that the refresh exists to correct.
    */
   readonly ready: Promise<ResolvedCover | undefined>;
   /** Idempotent. The last release drops the entry and revokes its object URL. */
@@ -87,6 +90,14 @@ interface CoverEntry {
   /** A read has completed (hit or miss); do not read again without a refresh. */
   settled: boolean;
   reading: boolean;
+  /**
+   * A {@link refreshCovers} that arrived while a read was in flight, to be
+   * honoured by {@link settle} — `'force'` re-reads unconditionally, `'miss'`
+   * only if the finished read is still a miss. See `refreshCovers`.
+   */
+  pendingRefresh: 'miss' | 'force' | null;
+  /** Identity of the ROW behind {@link value}; see {@link coverSignature}. */
+  signature: string | null;
   /** Non-null only once someone has read `ResolvedCover.url`. */
   url: string | null;
   ready: Promise<ResolvedCover | undefined>;
@@ -125,17 +136,63 @@ async function readCover(scope: string, path: string): Promise<CloudCover | unde
   return db.cloud_covers.get([scope, path]);
 }
 
+/**
+ * Which stored row a resolved value came from, as a comparable string.
+ *
+ * Used to answer "is this re-read the cover we are already showing?", which
+ * cannot be answered by object identity: IndexedDB structured-CLONES on every
+ * read, so two reads of one unchanged row hand back two different `File`
+ * objects (verified against fake-indexeddb, and it is what the spec requires
+ * of a real one) — an identity check would be permanently false and the
+ * replacement it is meant to skip would always happen. These are exactly the
+ * fields that survive the clone, and `cached_at` is the decisive one: it is
+ * stamped once per WRITE and never refreshed (see `cloud-covers.ts`), so an
+ * overwrite — the self-heal case a forced refresh exists for — always changes
+ * it, while a re-read of untouched bytes never does.
+ */
+function coverSignature(row: CloudCover): string {
+  const file = row.thumbnail;
+  return [
+    row.cached_at,
+    row.width,
+    row.height,
+    file.size,
+    file.type,
+    file.name,
+    file.lastModified
+  ].join('\u0000');
+}
+
 function makeResolved(entry: CoverEntry, row: CloudCover): ResolvedCover {
   const file = row.thumbnail;
-  return {
+  /**
+   * The URL this value has already handed out, so it can hand out the same
+   * one after it stops being the entry's live value.
+   *
+   * A holder can outlive the value it holds — an async decode continuation, a
+   * stale reactive read — and both `dropEntry` and a replacing `settle` leave
+   * `entry.url` null. A getter that minted whenever it found null would then
+   * create a FRESH object URL against an entry no longer in `entries`, which
+   * nothing can ever revoke (one per churned card, at 1,027 cards); on the
+   * replacement path it would do something worse still — park its own bytes'
+   * URL in `entry.url`, where the LIVE value's getter would find it and paint
+   * the superseded cover.
+   */
+  let minted = '';
+  const resolved: ResolvedCover = {
     file,
     width: row.width,
     height: row.height,
     get url(): string {
+      // Not the entry's live value any more (released, or superseded): give
+      // back what was already given, and mint nothing.
+      if (entry.value !== resolved) return minted;
       if (entry.url === null) entry.url = URL.createObjectURL(file);
-      return entry.url;
+      minted = entry.url;
+      return minted;
     }
   };
+  return resolved;
 }
 
 /**
@@ -157,7 +214,13 @@ function revokeEntryUrl(entry: CoverEntry): void {
 }
 
 function emit(entry: CoverEntry): void {
-  for (const run of entry.subscribers) run(entry.value);
+  // Over a COPY, and of one captured value: a subscriber may release
+  // synchronously from inside its own callback, and that release can run
+  // `dropEntry`, which clears this set and blanks `entry.value` mid-broadcast.
+  // Iterating the set itself would silently skip every subscriber after that
+  // one — the cover would reach the first card and no other.
+  const value = entry.value;
+  for (const run of [...entry.subscribers]) run(value);
 }
 
 function settle(entry: CoverEntry, row: CloudCover | undefined): void {
@@ -169,13 +232,40 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   entry.reading = false;
   entry.settled = true;
   const next = row ? makeResolved(entry, row) : undefined;
-  const changed = !(next === undefined && entry.value === undefined);
+  const signature = row ? coverSignature(row) : null;
+  // A forced re-read that came back with the SAME row must leave the live
+  // value (and its object URL) alone: replacing it revokes a URL a holder may
+  // have painted imperatively into an `<img src>`, which subscribing cannot
+  // repair because nothing about the cover actually changed.
+  const sameCover =
+    next !== undefined && entry.value !== undefined && entry.signature === signature;
+  const changed = !sameCover && !(next === undefined && entry.value === undefined);
   if (changed) {
     // An overwrite (a self-heal cover replacing an earlier one) points the old
     // URL at bytes nobody will show again.
     revokeEntryUrl(entry);
     entry.value = next;
+    entry.signature = signature;
   }
+
+  // A refresh that arrived DURING this read is not answered by this row. The
+  // read's readonly snapshot can pre-date the write that prompted the refresh
+  // — which is precisely the ingest sequence: card mounts, read is issued,
+  // cover commits, the keys-only liveQuery calls `refreshCovers`. Honouring it
+  // here (rather than letting `startRead`'s `reading` bail swallow it) is what
+  // keeps that card from settling on the pre-write miss and staying blank
+  // until it remounts. `ready` is deliberately left UNRESOLVED across the
+  // re-read, so a caller already awaiting it gets the answer that includes the
+  // write instead of the snapshot that missed it.
+  const pending = entry.pendingRefresh;
+  entry.pendingRefresh = null;
+  if (pending === 'force' || (pending === 'miss' && entry.value === undefined)) {
+    entry.settled = false;
+    if (changed) emit(entry);
+    startRead(entry);
+    return;
+  }
+
   const resolveReady = entry.resolveReady;
   entry.resolveReady = null;
   resolveReady?.(entry.value);
@@ -183,6 +273,9 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
 }
 
 function startRead(entry: CoverEntry): void {
+  // Bailing on `reading` is safe only because a refresh that finds a read in
+  // flight parks itself on `entry.pendingRefresh` instead of calling here
+  // (see `refreshCovers`) — dropping it silently is what left cards blank.
   if (entry.reading || entry.settled) return;
   entry.reading = true;
   if (entry.resolveReady === null) {
@@ -205,9 +298,15 @@ function startRead(entry: CoverEntry): void {
 }
 
 function dropEntry(entry: CoverEntry): void {
+  // Not `entries.delete(entry.key)` unconditionally: this entry may already
+  // have been replaced under its key (dropped mid-read, then re-acquired), and
+  // evicting the LIVE entry would strand its holders — `refreshCovers` would
+  // no longer find them, so their covers would never arrive.
   if (entries.get(entry.key) === entry) entries.delete(entry.key);
   entry.subscribers.clear();
   entry.value = undefined;
+  entry.signature = null;
+  entry.pendingRefresh = null;
   entry.settled = false;
   revokeEntryUrl(entry);
   const resolveReady = entry.resolveReady;
@@ -299,6 +398,8 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
       value: undefined,
       settled: false,
       reading: false,
+      pendingRefresh: null,
+      signature: null,
       url: null,
       ready: RESOLVED_MISS,
       resolveReady: null,
@@ -328,7 +429,14 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
  *
  * `force` re-reads even a resolved handle, for a genuine overwrite (a
  * self-heal cover replacing stale bytes); the superseded object URL is
- * revoked when the new value lands.
+ * revoked when the new value lands — but only if the row that lands really is
+ * a different one (see {@link coverSignature}), so a forced re-read of
+ * unchanged bytes leaves the live URL intact.
+ *
+ * A path whose read is still IN FLIGHT is refreshed too, after that read
+ * settles: the in-flight read may have snapshotted the store before the write
+ * being announced here, and dropping the refresh in that window is what would
+ * leave a card blank for the rest of its mount.
  */
 export function refreshCovers(paths: Iterable<string>, options: { force?: boolean } = {}): void {
   const scope = activeAccountScope();
@@ -339,6 +447,19 @@ export function refreshCovers(paths: Iterable<string>, options: { force?: boolea
     const entry = entries.get(`${scope}\u0000${normalized}`);
     if (!entry) continue;
     if (!options.force && entry.value !== undefined) continue;
+    if (entry.reading) {
+      // The read in flight CANNOT be trusted to answer this refresh: its
+      // readonly snapshot may have been taken before the write that prompted
+      // it, and `startRead` bails on `reading`, so nothing would be issued and
+      // the card would settle on the pre-write miss and stay blank until it
+      // remounted. Record the intent instead; `settle` re-enters `startRead`
+      // once this read lands. A plain refresh cannot downgrade a pending
+      // `force`.
+      if (options.force || entry.pendingRefresh === null) {
+        entry.pendingRefresh = options.force ? 'force' : 'miss';
+      }
+      continue;
+    }
     entry.settled = false;
     startRead(entry);
   }
