@@ -324,9 +324,14 @@ export function selectCardStackVolumes<T>({
   // way the local branch does, so the cap below still measures the cloud half and only the
   // cloud half — and so a caller that hands over the whole series' unread volumes (which
   // is what the type asks for) cannot smuggle a local one into a cloud stack.
+  //
+  // The empty-card guard checks the FILTERED result, not the input `unreadVolumes` set: a
+  // caller whose unread set is disjoint from `placeholders` (nothing in the intersection)
+  // must still fall back to every placeholder rather than render a blank card. Guarding on
+  // `unread.size > 0` alone would filter to `[]` in that case and show nothing.
   const unread = new Set(unreadVolumes);
-  const visible =
-    hideRead && unread.size > 0 ? placeholders.filter((vol) => unread.has(vol)) : placeholders;
+  const filtered = placeholders.filter((vol) => unread.has(vol));
+  const visible = hideRead && filtered.length > 0 ? filtered : placeholders;
 
   if (compactCloud) return visible.slice(0, 1);
   const limit = stackCount === 0 ? maxCloudStack : Math.min(stackCount, maxCloudStack);

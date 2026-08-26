@@ -512,22 +512,13 @@
    * exactly as before; the resolver is the CLOUD path and nothing else.
    */
   const coverClaims = createCoverClaims({
-    // Claimed: everything the stack DRAWS. Asked for: only the slice it will actually
-    // paint, and only once this card is near the viewport. Slicing the ask list
-    // independently is what left a 42-volume series with one local volume showing spines
-    // 1-25 and 42: the rest were in the stack with no cover ever requested, and
-    // CompositeCanvas paints nothing for a volume without pixels.
+    // Claimed and asked-for are the SAME set here: everything `stackedVolumes` draws, and
+    // only once this card is near the viewport. They used to be sliced independently,
+    // which is what left a 42-volume series with one local volume showing spines 1-25 and
+    // 42: the rest were in the stack with no cover ever requested, and CompositeCanvas
+    // paints nothing for a volume without pixels.
     claims: () => stackedVolumes,
-    targets: () =>
-      selectCardStackVolumes({
-        localVolumes: seriesNeedsDownload ? [] : localVolumes,
-        unreadVolumes,
-        placeholders: cloudStackVolumes,
-        hideRead: $catalogSettings?.hideReadVolumes ?? true,
-        stackCount: $catalogSettings?.stackCount ?? 3,
-        compactCloud: useCompactForCloud,
-        compare: sortVolumes
-      })
+    targets: () => stackedVolumes
   });
   const { gate } = coverClaims;
 

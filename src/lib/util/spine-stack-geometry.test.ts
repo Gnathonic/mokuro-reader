@@ -724,7 +724,6 @@ describe('selectCardStackVolumes', () => {
   it('caps the cloud stack AFTER hiding the read volumes, not before', () => {
     // The cap exists to bound how many covers get fetched. Applying it to the unfiltered
     // list would leave a long series showing fewer than `MAX_CLOUD_STACK` unread spines.
-    const finished = placeholders.slice(0, 30);
     const unread = placeholders.slice(30);
     expect(
       selectCardStackVolumes({
@@ -736,7 +735,43 @@ describe('selectCardStackVolumes', () => {
         compactCloud: false
       })
     ).toEqual(unread);
-    expect(finished).toHaveLength(30);
+  });
+
+  it('caps the FILTERED unread set, not the raw placeholder list, when it exceeds the limit', () => {
+    // `placeholders` has 40 volumes; here 30 of them are unread — more than
+    // `MAX_CLOUD_STACK` (25) on its own. If the cap were applied to the raw placeholder
+    // list before filtering (`placeholders.slice(0, limit)` then intersected with the
+    // unread set) this would show far fewer than `MAX_CLOUD_STACK` spines, because the
+    // first 10 placeholders are already read.
+    const unread = placeholders.slice(10);
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: unread,
+        placeholders,
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(unread.slice(0, MAX_CLOUD_STACK));
+  });
+
+  it('falls back to every placeholder when the unread set has no overlap with them', () => {
+    // A caller can hand over an unread set disjoint from `placeholders` — e.g. one whose
+    // overlap already lives among `localVolumes`, or one that clones volumes between the
+    // two arguments. The empty-card guard has to check the FILTERED result, not just
+    // whether `unreadVolumes` is non-empty, or this renders a blank card instead of
+    // falling back to every placeholder.
+    expect(
+      selectCardStackVolumes({
+        localVolumes: [],
+        unreadVolumes: ['not-a-placeholder'],
+        placeholders: ['cloud-0', 'cloud-1'],
+        hideRead: true,
+        stackCount: 0,
+        compactCloud: false
+      })
+    ).toEqual(['cloud-0', 'cloud-1']);
   });
 
   it('draws the first UNREAD cover for a compact cloud series', () => {
