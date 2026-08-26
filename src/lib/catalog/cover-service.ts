@@ -24,7 +24,7 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { fetchCloudThumbnail, type CloudThumbnailResult } from './cloud-thumbnails';
-import { installCover } from './cover-persist';
+import { COVER_PERSIST_BASE_DELAY_MS, installCover } from './cover-persist';
 
 /**
  * THE cover service: every surface that draws a cloud cover — the catalog
@@ -49,8 +49,11 @@ import { installCover } from './cover-persist';
  * 11,000 rows browsing a ~1,000-series library, see `installCover`'s ROUTING
  * doc). `requestCover` resolves exactly one of four cases per volume:
  *
- * 1. A DB row already exists (installed, or metadata-only) → install the
- *    cover onto it directly.
+ * 1. A DB row already exists (installed, or metadata-only) → hand the cover
+ *    to `installCover` for that row, WITH the listing's cloud path: a
+ *    metadata-only row minted by browsing or by a series open has no
+ *    relationship yet, so its blob belongs in `cloud_covers` and needs that
+ *    path as its key (`installCover`'s ROUTING doc decides which).
  * 2. An INDEX-ADOPTED placeholder (`isIndexedPlaceholder` — a real uuid and
  *    counts already adopted from the cached `series_index`) → fetch the
  *    cover, if the listing has one, and hand it to `installCover` WITHOUT
@@ -66,8 +69,10 @@ import { installCover } from './cover-persist';
  *    the listing → pull it (the SAME `pullMokuroEntry` a backfill pass uses,
  *    throttled through the SAME cross-series `acquireBackfillSlot` pool —
  *    render-demand browsing must not stampede a provider any more than a
- *    reconcile sweep may), materialize the row under the mokuro's REAL uuid,
- *    install the cover, and hand the FULLY-STAMPED entry to the per-series
+ *    reconcile sweep may), materialize the row under the mokuro's REAL uuid
+ *    (batched: see `queueMaterialization` — resolution is per volume, the
+ *    WRITE is per burst), install the cover, and hand the FULLY-STAMPED entry
+ *    to the per-series
  *    debounced `series.json` writer via `ScheduleOptions.cloudMeasuredVolumes`
  *    — the SAME mechanism `series-backfill.ts`'s own direct publish uses, so
  *    the entry's `mokuro_size`/`mokuro_modified`/cover stamps survive into
@@ -86,9 +91,10 @@ import { installCover } from './cover-persist';
  * common case for a browsed catalog (a `serverCompilesMetadata` provider or a
  * synced `series.json` supplies it for nearly every volume), so letting it
  * mint a row per rendered card is exactly what produced the regression above.
- * Cases 3/4 stay row-per-render because they are inherently rate-limited by
+ * Cases 3/4 stay a per-render ROW because they are inherently rate-limited by
  * the network pull itself (`acquireBackfillSlot`'s pool), not by request
- * volume.
+ * volume — but they are no longer a per-render WRITE: their rows are batched
+ * (`queueMaterialization`), so a burst of them costs one mutation.
  *
  * READ-ONLY PROVIDERS: pulling a sidecar/cover and materializing a row (cases
  * 3/4) are READS plus a LOCAL write — allowed on a read-only share. Only the
@@ -116,6 +122,31 @@ import { installCover } from './cover-persist';
  */
 const RETRY_DELAYS_MS = [2000, 8000];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * How long a case-3/4 batch collects before it materializes. The SAME
+ * interactive cadence `cover-persist.ts` debounces its own row writes on
+ * (deliberately not a second, unrelated one): both queues exist for the same
+ * reason — every mutation of `volumes` re-derives the whole catalog — so a
+ * burst of resolutions landing in one window should cost one re-derive, not
+ * one per volume.
+ *
+ * The window is armed by the FIRST entry and never re-armed while it is open
+ * (same shape as `cover-persist.ts`'s `armTimer`), so latency is bounded by
+ * the window itself rather than by when arrivals happen to stop — a browsing
+ * user's row still appears within one cadence of its cover resolving.
+ */
+const MATERIALIZE_BATCH_WINDOW_MS = COVER_PERSIST_BASE_DELAY_MS;
+
+/**
+ * Hard ceiling on how many resolutions one batch may hold before it flushes
+ * early, whatever the window says. The queue holds a whole `SeriesFileVolume`
+ * per entry and a promise per waiter; on a very large library (10,000+ cloud
+ * files) a window that only ever closes on a timer is an unbounded buffer by
+ * construction. Reaching this cap simply means the batch flushes now and the
+ * next one starts collecting — nothing is dropped.
+ */
+export const MATERIALIZE_BATCH_MAX_ENTRIES = 25;
 
 /** uuid → settled (produced a result, whichever path delivered it). Never asked again this session. */
 const settled = new Set<string>();
@@ -192,10 +223,15 @@ function coverFetchTarget(
  * malformed sidecar, a disconnected provider, or rule 0/2 in
  * `materializeSeriesVolumes` blocking it — logged at debug, never thrown.
  */
-async function resolveBarePlaceholder(
-  vol: VolumeMetadata
-): Promise<
-  { entry: SeriesFileVolume; folderTitle: string; cover?: CloudFileMetadata } | undefined
+async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
+  | {
+      entry: SeriesFileVolume;
+      folderTitle: string;
+      /** The archive's own cloud path — the identity a row-less cover is cached under. */
+      archivePath: string;
+      cover?: CloudFileMetadata;
+    }
+  | undefined
 > {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return undefined;
@@ -243,26 +279,186 @@ async function resolveBarePlaceholder(
     if (coverStamp.cover_modified !== undefined) entry.cover_modified = coverStamp.cover_modified;
   }
 
-  return { entry: orderVolumeEntryFields(entry), folderTitle, cover: sidecars?.cover };
+  return {
+    entry: orderVolumeEntryFields(entry),
+    folderTitle,
+    archivePath: archiveFile.path,
+    cover: sidecars?.cover
+  };
+}
+
+/** One resolved case-3/4 volume waiting for the next batched materialize. */
+interface QueuedMaterialization {
+  entry: SeriesFileVolume;
+  /** The listing title this entry was resolved from — the gate `materializeSeriesVolumes` checks. */
+  volumeTitle: string;
+  /** The cloud FOLDER this series lives in, for the `series.json` write. */
+  folderTitle: string;
+  /** Settled with whether a row for this entry's uuid exists once the batch has landed. */
+  resolve: (materialized: boolean) => void;
+}
+
+/** series_title → the resolutions waiting to be materialized under it. */
+const pendingMaterializations = new Map<string, QueuedMaterialization[]>();
+let pendingMaterializationCount = 0;
+let materializeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Hand a resolved case-3/4 entry to the next batch instead of materializing
+ * it on its own, and wait for that batch to land.
+ *
+ * Resolution is inherently one-volume-at-a-time (each one pulls its own
+ * sidecar through the backfill semaphore), but materialization is not:
+ * calling `materializeSeriesVolumes` per resolved volume costs one `volumes`
+ * mutation — and therefore one full catalog re-derive — per rendered card,
+ * which is exactly the write storm this queue exists to remove. Batching
+ * changes nothing about WHAT is stored: every entry still carries its own
+ * listing title into the same per-row guards, in arrival order.
+ *
+ * Resolves `true` when a row for this entry's uuid exists after the batch —
+ * the same question the un-batched `changed === 0` check was asking, only
+ * answered per entry rather than per call (a batch's total says nothing about
+ * whether THIS entry made it). `false` means the caller should treat this
+ * attempt as having produced nothing and let the retry schedule have another
+ * go, exactly as before.
+ */
+function queueMaterialization(
+  seriesTitle: string,
+  queued: Omit<QueuedMaterialization, 'resolve'>
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const bucket = pendingMaterializations.get(seriesTitle);
+    if (bucket) bucket.push({ ...queued, resolve });
+    else pendingMaterializations.set(seriesTitle, [{ ...queued, resolve }]);
+    pendingMaterializationCount += 1;
+
+    if (pendingMaterializationCount >= MATERIALIZE_BATCH_MAX_ENTRIES) {
+      void flushPendingMaterializations();
+      return;
+    }
+    if (!materializeTimer) {
+      materializeTimer = setTimeout(
+        () => void flushPendingMaterializations(),
+        MATERIALIZE_BATCH_WINDOW_MS
+      );
+    }
+  });
+}
+
+/**
+ * Materialize every queued batch — one `materializeSeriesVolumes` call per
+ * series, one `scheduleSeriesFileWrite` per cloud folder carrying all of that
+ * folder's entries as `cloudMeasuredVolumes` (that option accumulates across
+ * coalesced calls by design, so one call with N entries and N calls with one
+ * entry each publish the same file; the difference is only how many times the
+ * writer is asked).
+ *
+ * Exported for the same reason `flushPendingCoverPersists` is: a test — or a
+ * caller that needs the rows to exist before proceeding — can drain
+ * deterministically instead of waiting out the window.
+ */
+export async function flushPendingMaterializations(): Promise<void> {
+  if (materializeTimer) {
+    clearTimeout(materializeTimer);
+    materializeTimer = null;
+  }
+  const batches = [...pendingMaterializations.entries()];
+  pendingMaterializations.clear();
+  pendingMaterializationCount = 0;
+  if (batches.length === 0) return;
+
+  await Promise.all(batches.map(([seriesTitle, queued]) => materializeBatch(seriesTitle, queued)));
+}
+
+/** One series' batch: materialize it, settle its waiters, publish its entries. */
+async function materializeBatch(
+  seriesTitle: string,
+  queued: QueuedMaterialization[]
+): Promise<void> {
+  const entries = queued.map((q) => q.entry);
+  try {
+    await materializeSeriesVolumes({
+      seriesTitle,
+      entries,
+      // The union of the titles each entry was resolved from — every entry's
+      // own listing title is in it, so the per-entry gate answers exactly
+      // what it answered when each was materialized alone.
+      cloudVolumeTitles: new Set(queued.map((q) => q.volumeTitle))
+    });
+
+    // Which entries actually ended up with a row, in one indexed read for the
+    // whole batch. Rule 0/2 can legitimately block an entry, and a concurrent
+    // resolution can have materialized it already — both are per-entry facts
+    // the batch's own return count cannot express.
+    const rows = await db.volumes.bulkGet(entries.map((e) => e.volume_uuid));
+    queued.forEach((q, i) => q.resolve(!!rows[i]));
+  } catch (error) {
+    console.debug(`[cover-service] could not materialize a batch for '${seriesTitle}':`, error);
+    // Nothing landed and nothing was published: leave every waiter to the
+    // retry schedule, exactly as a throw from the un-batched call did.
+    queued.forEach((q) => q.resolve(false));
+    return;
+  }
+
+  // Best-effort convergence: the debounced writer's own gates (writable
+  // provider, not server-compiled, listing) apply at fire time, not here.
+  // The entries themselves are threaded through as `cloudMeasuredVolumes` —
+  // without them the eventual publish would fall back to `buildSeriesFile`'s
+  // installed-row fill path and land PERMANENTLY STAMPLESS (mokuro/cover
+  // stamps all dropped), which under the stampless-never-stale inversion can
+  // then never be re-verified by staleness detection again (see
+  // `ScheduleOptions.cloudMeasuredVolumes`'s own doc in `series-file-sync.ts`).
+  const byFolder = new Map<string, SeriesFileVolume[]>();
+  for (const q of queued) {
+    const forFolder = byFolder.get(q.folderTitle);
+    if (forFolder) forFolder.push(q.entry);
+    else byFolder.set(q.folderTitle, [q.entry]);
+  }
+  try {
+    for (const [folderTitle, folderEntries] of byFolder) {
+      scheduleSeriesFileWrite(folderTitle, { cloudMeasuredVolumes: folderEntries });
+    }
+  } catch (error) {
+    // Best-effort, and never the caller's problem: the waiters are already
+    // settled, and this runs detached from `requestCover`'s own try/catch.
+    console.debug(`[cover-service] could not schedule a series.json write:`, error);
+  }
 }
 
 /**
  * Deliver a fetched cover for a volume that has (or now has) a row. Called
- * ONLY once resolution (cases 1/3/4) has already decided the row exists —
- * case 2 (an index-adopted placeholder) never materializes a row, so it
- * calls `installCover` directly instead, carrying `cloudPath` for the
- * no-row-yet routing case. `mode` is `'overwrite'` exactly when `vol`
- * ALREADY carried a thumbnail at the moment `requestCover` was called (the
- * stale-row self-heal case; `isCoverFetchTarget` is what let such a volume
- * through in the first place), `'fill'` otherwise.
+ * once resolution (cases 1/3/4) has decided a row exists; case 2 (an
+ * index-adopted placeholder) never materializes a row and calls
+ * `installCover` directly instead.
+ *
+ * A row EXISTING is not the same as the cover belonging ON it:
+ * `cover-persist.ts` puts a blob on a row only for a volume this device has a
+ * RELATIONSHIP with (installed, or read), and routes everything else —
+ * including the metadata-only rows browsing itself mints, cases 3/4 here and
+ * `series-open.ts` — to the `cloud_covers` cache, keyed by cloud path. So
+ * `cachePath` is threaded through at EVERY call site, not just the row-less
+ * ones: without it a browsed volume's cover has no cache identity and is
+ * dropped at flush time, leaving the card permanently blank. `undefined` is
+ * only for a caller that genuinely has no cloud path in hand.
+ *
+ * `mode` is `'overwrite'` exactly when `vol` ALREADY carried a thumbnail at
+ * the moment `requestCover` was called (the stale-row self-heal case;
+ * `isCoverFetchTarget` is what let such a volume through in the first place),
+ * `'fill'` otherwise.
  */
 function deliverToRow(
   volumeUuid: string,
+  cachePath: string | undefined,
   result: CloudThumbnailResult,
   stamp: { size?: number; modifiedTime?: string },
   hadThumbnailAlready: boolean
 ): void {
-  installCover(volumeUuid, result, stamp, hadThumbnailAlready ? 'overwrite' : 'fill');
+  installCover(
+    { volume_uuid: volumeUuid, cloudPath: cachePath },
+    result,
+    stamp,
+    hadThumbnailAlready ? 'overwrite' : 'fill'
+  );
 }
 
 /**
@@ -293,6 +489,11 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
     if (!result) return false; // transient: worth another attempt
     deliverToRow(
       vol.volume_uuid,
+      // The catalog decorates a metadata-only row's copy with the listing's
+      // `cloudPath` (see `cloudFieldsForRemovedVolume`), which is the cache
+      // identity such a row's cover needs when it has no relationship yet;
+      // an installed row carries none and needs none.
+      vol.cloudPath ?? existingRow.cloudPath,
       result,
       { size: vol.cloudThumbnailSize, modifiedTime: vol.cloudThumbnailModifiedTime },
       !!vol.thumbnail
@@ -323,22 +524,16 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
   const resolved = await resolveBarePlaceholder(vol);
   if (!resolved) return false; // the pull (if any) may have failed transiently — worth retrying
 
-  const { entry, folderTitle, cover } = resolved;
-  const changed = await materializeSeriesVolumes({
-    seriesTitle: vol.series_title,
-    entries: [entry],
-    cloudVolumeTitles: new Set([vol.volume_title])
+  const { entry, folderTitle, archivePath, cover } = resolved;
+  // Queued, not written on its own: the batch this joins issues ONE
+  // materialize (and one `series.json` schedule) for every case-3/4 volume
+  // that resolves alongside it, instead of one mutation per rendered card.
+  const materialized = await queueMaterialization(vol.series_title, {
+    entry,
+    volumeTitle: vol.volume_title,
+    folderTitle
   });
-  // Best-effort convergence: the debounced writer's own gates (writable
-  // provider, not server-compiled, listing) apply at fire time, not here.
-  // The entry itself is threaded through as `cloudMeasuredVolumes` — without
-  // it the eventual publish would fall back to `buildSeriesFile`'s installed-
-  // row fill path and land PERMANENTLY STAMPLESS (mokuro/cover stamps all
-  // dropped), which under the stampless-never-stale inversion can then never
-  // be re-verified by staleness detection again (see `ScheduleOptions.
-  // cloudMeasuredVolumes`'s own doc in `series-file-sync.ts`).
-  scheduleSeriesFileWrite(folderTitle, { cloudMeasuredVolumes: [entry] });
-  if (changed === 0) return false;
+  if (!materialized) return false;
   if (!cover) return true; // no cover sidecar anywhere in the listing: genuinely nothing to fetch
 
   const result = await fetchCloudThumbnail(
@@ -353,6 +548,11 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
   if (!result) return false;
   deliverToRow(
     entry.volume_uuid,
+    // The row this just minted exists purely because the volume was browsed:
+    // no relationship, so its cover belongs in `cloud_covers` under the
+    // ARCHIVE's path — the same key the catalog looks a metadata-only row's
+    // cached cover up by.
+    archivePath,
     result,
     { size: cover.size, modifiedTime: cover.modifiedTime },
     false
@@ -405,8 +605,15 @@ export function requestCover(vol: VolumeMetadata): void {
 
 export { flushPendingCoverPersists } from './cover-persist';
 
-/** Test hook: forget every dedupe ledger. */
+/** Test hook: forget every dedupe ledger and drop the materialize queue. */
 export function _resetCoverServiceForTests(): void {
   settled.clear();
   inFlight.clear();
+  if (materializeTimer) clearTimeout(materializeTimer);
+  materializeTimer = null;
+  for (const queued of pendingMaterializations.values()) {
+    for (const q of queued) q.resolve(false);
+  }
+  pendingMaterializations.clear();
+  pendingMaterializationCount = 0;
 }

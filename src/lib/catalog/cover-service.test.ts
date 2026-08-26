@@ -115,6 +115,22 @@ vi.mock('$lib/catalog/cloud-covers', async (importOriginal) => {
   };
 });
 
+// Case-3/4 materialization is BATCHED (`cover-service.ts`'s
+// `queueMaterialization`): the real implementation still runs — these tests
+// inspect the rows it writes — but every call is counted, so a burst that
+// costs one `volumes` mutation can be told apart from one that costs N.
+const { materializeMock } = vi.hoisted(() => ({ materializeMock: vi.fn() }));
+vi.mock('$lib/catalog/materialize', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/catalog/materialize')>();
+  return {
+    ...actual,
+    materializeSeriesVolumes: (...a: Parameters<typeof actual.materializeSeriesVolumes>) => {
+      materializeMock(...a);
+      return actual.materializeSeriesVolumes(...a);
+    }
+  };
+});
+
 // `cover-persist.ts`'s flush now consults the reading-state store
 // (`$lib/settings/volume-data`) to tell a genuine relationship apart from a
 // row minted purely by browsing. Hand-rolled (same pattern as
@@ -148,7 +164,9 @@ import { getCloudCovers } from './cloud-covers';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
+  flushPendingMaterializations,
   isCoverFetchTarget,
+  MATERIALIZE_BATCH_MAX_ENTRIES,
   requestCover
 } from './cover-service';
 
@@ -208,13 +226,19 @@ function indexedPlaceholder(uuid: string, overrides: Partial<VolumeMetadata> = {
   } as VolumeMetadata;
 }
 
-/** A bare placeholder: derived uuid, zero counts, no series-index entry anywhere. */
+/**
+ * A bare placeholder: derived uuid, zero counts, no series-index entry
+ * anywhere. `cloudPath` tracks `volume_title` (the way a real placeholder's
+ * does — it is derived from the archive the listing showed), so a test that
+ * overrides the title still names a distinct archive.
+ */
 function barePlaceholder(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+  const volumeTitle = overrides.volume_title ?? 'Volume 01';
   return {
     volume_uuid: uuid,
     series_uuid: 's',
     series_title: 'One Piece',
-    volume_title: 'Volume 01',
+    volume_title: volumeTitle,
     mokuro_version: 'unknown',
     page_count: 0,
     character_count: 0,
@@ -222,21 +246,57 @@ function barePlaceholder(uuid: string, overrides: Partial<VolumeMetadata> = {}):
     isPlaceholder: true,
     cloudProvider: 'webdav',
     cloudFileId: 'archive-1',
-    cloudPath: 'One Piece/Volume 01.cbz',
+    cloudPath: `One Piece/${volumeTitle}.cbz`,
     cloudSize: 12345,
     cloudModifiedTime: '2026-01-01T00:00:00.000Z',
     ...overrides
   } as VolumeMetadata;
 }
 
-/** Poll: keep flushing the persist queue until `uuid` has a thumbnail, or time out. */
+/** Drain both debounced queues the resolution path goes through, in order. */
+async function drainQueues(): Promise<void> {
+  await flushPendingMaterializations();
+  await flushPendingCoverPersists();
+}
+
+/** Poll: keep draining until `uuid` has a thumbnail ON ITS ROW, or time out. */
 async function waitForCover(uuid: string, timeout = 2000): Promise<VolumeMetadata> {
   let found: VolumeMetadata | undefined;
   await vi.waitFor(
     async () => {
-      await flushPendingCoverPersists();
+      await drainQueues();
       found = (await db.volumes.get(uuid)) as VolumeMetadata | undefined;
       expect(found?.thumbnail).toBeDefined();
+    },
+    { timeout }
+  );
+  return found!;
+}
+
+/**
+ * Poll: keep draining until the row for `uuid` exists AND its cover has been
+ * cached under `archivePath`.
+ *
+ * The two-places-a-cover-can-land split is `cover-persist.ts`'s ROUTING rule,
+ * not this file's: a row minted purely by browsing (cases 3/4 — nothing
+ * installed, nothing read) has no relationship, so its blob belongs in
+ * `cloud_covers` keyed by the archive path, and the catalog paints the card
+ * from there (see `catalog/index.ts`'s metadata-only cover decoration). The
+ * ROW still has to exist and carry the materialized metadata.
+ */
+async function waitForCachedCover(
+  uuid: string,
+  archivePath: string,
+  timeout = 2000
+): Promise<VolumeMetadata> {
+  let found: VolumeMetadata | undefined;
+  await vi.waitFor(
+    async () => {
+      await drainQueues();
+      found = (await db.volumes.get(uuid)) as VolumeMetadata | undefined;
+      expect(found).toBeDefined();
+      const cached = await getCloudCovers('mega:a@b.com', [archivePath]);
+      expect(cached.get(archivePath)?.thumbnail).toBeInstanceOf(File);
     },
     { timeout }
   );
@@ -407,20 +467,15 @@ describe('decision tree case 2: an index-adopted placeholder', () => {
   });
 });
 
-// KNOWN GAP, skipped pending a follow-up task (plan: 2026-08-26-scan-storm-followup,
-// T3 = materialize.ts + cover-service.ts): `cover-persist.ts`'s Task 2 relationship
-// gate now requires an installed row or reading history before a cover blob lands on
-// a row; anything else routes to `cloud_covers` — but ONLY when the caller threads a
-// `cloudPath` through `installCover`. Cases 3/4 materialize a row purely from
-// browsing (no relationship) and then call `deliverToRow`, which still calls
-// `installCover` with a BARE uuid (see `cover-service.ts`) — no `cloudPath`, so the
-// cover is silently DROPPED rather than cached, and these four tests now hang/fail
-// waiting for a thumbnail that never lands. Fix belongs in `cover-service.ts`
-// (thread `vol.cloudPath`/the entry's cloud path through `deliverToRow` for the
-// case-3/4 call site), which is that follow-up task's file, not this one's — see
-// `.superpowers/sdd/2026-08-26-scan-storm-followup/task-2-report.md`.
+// A case-3/4 row is minted purely by browsing — nothing installed, nothing read —
+// so `cover-persist.ts`'s relationship gate routes its cover to the `cloud_covers`
+// cache (keyed by the ARCHIVE's cloud path), never onto the row itself; the catalog
+// paints such a card from there (see `catalog/index.ts`'s metadata-only cover
+// decoration). What the ROW must carry is unchanged: the materialized metadata,
+// under the mokuro's real uuid. These tests therefore wait on
+// `waitForCachedCover`, and pin BOTH halves.
 describe('decision tree case 3: a bare placeholder with a sidecar', () => {
-  it.skip('pulls the mokuro sidecar (through the backfill semaphore), materializes under the REAL uuid, installs the cover, and schedules the series.json write', async () => {
+  it('pulls the mokuro sidecar (through the backfill semaphore), materializes under the REAL uuid, caches the cover, and schedules the series.json write', async () => {
     getCloudVolumesBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 01.mokuro', 500),
       cloudFile('One Piece/Volume 01.webp', 900)
@@ -436,10 +491,14 @@ describe('decision tree case 3: a bare placeholder with a sidecar', () => {
     const derivedUuid = 'derived-bare-uuid';
     requestCover(barePlaceholder(derivedUuid));
 
-    const persisted = await waitForCover('real-mokuro-uuid');
+    const persisted = await waitForCachedCover('real-mokuro-uuid', 'One Piece/Volume 01.cbz');
     expect(persisted.page_count).toBe(12);
     expect(persisted.character_count).toBe(300);
     expect(persisted.archive_size).toBe(12345);
+    // Cached, not carried: a browsed row never takes the blob (that is what
+    // makes a full `volumes` scan expensive), it only points at the archive
+    // path the blob is cached under.
+    expect(persisted.thumbnail).toBeUndefined();
 
     // The uuid handoff: no row was ever created under the placeholder's own
     // derived uuid — only under the mokuro's real one. A duplicate card would
@@ -476,7 +535,7 @@ describe('decision tree case 3: a bare placeholder with a sidecar', () => {
 });
 
 describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image-only)', () => {
-  it.skip('uses the image-only zero-count convention, never calls pullMokuroEntry, and still installs a cover if the listing has one', async () => {
+  it('uses the image-only zero-count convention, never calls pullMokuroEntry, and still caches a cover if the listing has one', async () => {
     getCloudVolumesBySeries.mockReturnValue([cloudFile('One Piece/Volume 02.webp', 900)]);
 
     requestCover(barePlaceholder('bare-2', { volume_title: 'Volume 02' }));
@@ -486,7 +545,7 @@ describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image
     const { generateDeterministicUUID } = await import('$lib/util/series-extraction');
     const expectedUuid = generateDeterministicUUID('One Piece/Volume 02');
 
-    const persisted = await waitForCover(expectedUuid);
+    const persisted = await waitForCachedCover(expectedUuid, 'One Piece/Volume 02.cbz');
     expect(persisted.page_count).toBe(0);
     expect(persisted.character_count).toBe(0);
     expect(pullMokuroEntryMock).not.toHaveBeenCalled();
@@ -499,16 +558,20 @@ describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image
 });
 
 describe('read-only providers: local materialization is never skipped, only the publish gate applies', () => {
-  it.skip('still resolves/materializes/installs a cover for a bare placeholder, and still hands the entry to the (separately-gated) writer', async () => {
+  it('still resolves/materializes/caches a cover for a bare placeholder, and still hands the entry to the (separately-gated) writer', async () => {
     status.providers.webdav!.isReadOnly = true;
-    getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile: vi.fn() });
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      downloadFile: vi.fn(),
+      getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:a@b.com' })
+    });
     getCloudVolumesBySeries.mockReturnValue([cloudFile('One Piece/Volume 03.webp', 900)]);
 
     requestCover(barePlaceholder('bare-3', { volume_title: 'Volume 03' }));
 
     const { generateDeterministicUUID } = await import('$lib/util/series-extraction');
     const expectedUuid = generateDeterministicUUID('One Piece/Volume 03');
-    const persisted = await waitForCover(expectedUuid);
+    const persisted = await waitForCachedCover(expectedUuid, 'One Piece/Volume 03.cbz');
 
     expect(persisted.page_count).toBe(0);
     // cover-service.ts never gates on read-only itself (no such check exists
@@ -527,7 +590,7 @@ describe('read-only providers: local materialization is never skipped, only the 
 });
 
 describe('concurrency: render-demand mokuro pulls share the backfill semaphore', () => {
-  it.skip('never runs more than the backfill pool width of pullMokuroEntry calls at once, across a burst of requests', async () => {
+  it('never runs more than the backfill pool width of pullMokuroEntry calls at once, across a burst of requests', async () => {
     const titles = Array.from({ length: 6 }, (_, i) => `Volume 0${i + 1}`);
     getCloudVolumesBySeries.mockReturnValue(
       titles.flatMap((t) => [
@@ -558,10 +621,14 @@ describe('concurrency: render-demand mokuro pulls share the backfill semaphore',
 
     await vi.waitFor(
       async () => {
-        await flushPendingCoverPersists();
+        await drainQueues();
+        const cached = await getCloudCovers(
+          'mega:a@b.com',
+          titles.map((t) => `One Piece/${t}.cbz`)
+        );
         for (const t of titles) {
-          const r = (await db.volumes.get(`real-${t}`)) as VolumeMetadata | undefined;
-          expect(r?.thumbnail).toBeDefined();
+          expect(await db.volumes.get(`real-${t}`)).toBeDefined();
+          expect(cached.get(`One Piece/${t}.cbz`)?.thumbnail).toBeInstanceOf(File);
         }
       },
       { timeout: 5000 }
@@ -681,6 +748,84 @@ describe('no active account scope: a row-less cover is dropped, never written un
     expect(await db.volumes.count()).toBe(before);
     const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 05.cbz']);
     expect(cached.size).toBe(0);
+  });
+});
+
+/**
+ * The OTHER half of the same regression: even with browsing no longer minting
+ * a row per rendered card, a bare placeholder (cases 3/4) still materializes
+ * one — and doing that one volume at a time cost one `volumes` mutation, and
+ * therefore one whole-catalog re-derive, per resolved cover.
+ */
+describe('write-storm avoidance for case-3 materialization: a burst is ONE volumes write', () => {
+  const bareSeries = (titles: string[]) => {
+    getCloudVolumesBySeries.mockReturnValue(
+      titles.flatMap((t) => [
+        cloudFile(`One Piece/${t}.mokuro`, 500),
+        cloudFile(`One Piece/${t}.webp`, 900)
+      ])
+    );
+    pullMokuroEntryMock.mockImplementation(async (_provider: unknown, archiveStem: string) => ({
+      volume_uuid: `real-${archiveStem}`,
+      volume_title: archiveStem,
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    }));
+    for (const t of titles) requestCover(barePlaceholder(`bare-${t}`, { volume_title: t }));
+  };
+
+  it('N resolutions in one window produce exactly one materializeSeriesVolumes call, carrying all N entries', async () => {
+    const N = 5;
+    const titles = Array.from({ length: N }, (_, i) => `Volume ${String(i + 1).padStart(2, '0')}`);
+    bareSeries(titles);
+
+    // The window is a real timer: let it close on its own rather than forcing
+    // a drain, so this pins the production cadence and not just the test hook.
+    // Waited on the LAST thing a batch does (its publish), so the batch is
+    // fully landed — rows included — by the time the counts are read.
+    await vi.waitFor(() => expect(scheduleSeriesFileWriteMock).toHaveBeenCalledTimes(1), {
+      timeout: 4000
+    });
+
+    expect(materializeMock).toHaveBeenCalledTimes(1);
+    expect(materializeMock.mock.calls[0][0].seriesTitle).toBe('One Piece');
+    expect(materializeMock.mock.calls[0][0].entries).toHaveLength(N);
+    // One publish for the whole burst too — `cloudMeasuredVolumes` accumulates
+    // across coalesced calls, so N entries in one call and N calls of one
+    // entry publish the same file; only the call count differs.
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][0]).toBe('One Piece');
+    expect(scheduleSeriesFileWriteMock.mock.calls[0][1].cloudMeasuredVolumes).toHaveLength(N);
+    // ...and every row still landed, exactly as the per-volume calls left them.
+    for (const t of titles) {
+      expect(await db.volumes.get(`real-${t}`)).toMatchObject({
+        volume_title: t,
+        page_count: 1,
+        metadata_only: true
+      });
+    }
+  });
+
+  it('flushes early at the queue cap instead of buffering a whole library', async () => {
+    // A window that only ever closes on a timer is an unbounded buffer on a
+    // library with thousands of cloud files; the cap is what bounds it.
+    const N = MATERIALIZE_BATCH_MAX_ENTRIES + 5;
+    const titles = Array.from({ length: N }, (_, i) => `Volume ${String(i + 1).padStart(3, '0')}`);
+    bareSeries(titles);
+
+    await vi.waitFor(() => expect(materializeMock.mock.calls.length).toBeGreaterThanOrEqual(1), {
+      timeout: 4000
+    });
+    expect(materializeMock.mock.calls[0][0].entries).toHaveLength(MATERIALIZE_BATCH_MAX_ENTRIES);
+
+    // Nothing is dropped by flushing early — the rest ride the next batch.
+    await vi.waitFor(
+      async () => {
+        await drainQueues();
+        expect(await db.volumes.count()).toBe(N);
+      },
+      { timeout: 4000 }
+    );
   });
 });
 

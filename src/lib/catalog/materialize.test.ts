@@ -17,6 +17,7 @@ import { db } from '$lib/catalog/db';
 import { materializeSeriesVolumes } from './materialize';
 
 afterEach(async () => {
+  vi.restoreAllMocks(); // the write-shape test spies on db.volumes.put/bulkPut
   await db.volumes.clear();
   await db.volume_ocr.clear();
   await db.volume_files.clear();
@@ -283,6 +284,63 @@ describe('materializeSeriesVolumes', () => {
       })
     ).toBe(0);
     expect(await db.volumes.get('ghost')).toBeUndefined();
+  });
+
+  it('writes a whole series in ONE bulk write, not one put per volume', async () => {
+    // Each mutation of `volumes` re-derives the whole catalog downstream, so
+    // a series' worth of new rows must cost one write, not one per volume.
+    const put = vi.spyOn(db.volumes, 'put');
+    const bulkPut = vi.spyOn(db.volumes, 'bulkPut');
+
+    const changed = await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [
+        entry({ volume_uuid: 'uuid-1', volume_title: 'Volume 1' }),
+        entry({ volume_uuid: 'uuid-2', volume_title: 'Volume 2' }),
+        entry({ volume_uuid: 'uuid-3', volume_title: 'Volume 3' })
+      ],
+      cloudVolumeTitles: new Set(['Volume 1', 'Volume 2', 'Volume 3'])
+    });
+
+    expect(changed).toBe(3);
+    expect(put).not.toHaveBeenCalled();
+    expect(bulkPut).toHaveBeenCalledTimes(1);
+    expect(bulkPut.mock.calls[0][0]).toHaveLength(3);
+
+    // ...and the batch stored exactly what the per-row puts stored.
+    expect(await db.volumes.count()).toBe(3);
+    expect(await db.volumes.get('uuid-2')).toMatchObject({
+      series_title: 'Dr Stone',
+      volume_title: 'Volume 2',
+      page_count: 200,
+      character_count: 5000,
+      metadata_only: true
+    });
+  });
+
+  it('applies a later entry filling a row an earlier entry in the SAME batch created', async () => {
+    // Two archives sharing one mokuro uuid: the fill used to run as an
+    // `update` against a row the previous `put` had already written. Batched,
+    // that row is still only queued — the fill has to reach the queued row
+    // itself or it would vanish when the bulk write lands.
+    const changed = await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [
+        entry({
+          volume_uuid: 'dupe',
+          volume_title: 'Volume 1',
+          page_count: 0,
+          spine_width: undefined
+        }),
+        entry({ volume_uuid: 'dupe', volume_title: 'Volume 1', page_count: 200, spine_width: 12 })
+      ],
+      cloudVolumeTitles: CLOUD
+    });
+
+    expect(changed).toBe(2); // one create, one fill
+    const row = await db.volumes.get('dupe');
+    expect(row?.page_count).toBe(200);
+    expect(row?.spine_width).toBe(12);
   });
 
   it('does nothing at all when the listing is empty (unfetched, not empty cloud)', async () => {

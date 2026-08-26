@@ -129,7 +129,11 @@ import {
   flushSeriesFileWrites
 } from '$lib/metadata/series-file-sync';
 import { _resetCoverPersistForTests } from './cover-persist';
-import { _resetCoverServiceForTests, requestCover } from './cover-service';
+import {
+  _resetCoverServiceForTests,
+  flushPendingMaterializations,
+  requestCover
+} from './cover-service';
 
 function coverResult(name = 'cover.webp'): CloudThumbnailResult {
   return { file: new File(['img'], name, { type: 'image/webp' }), width: 210, height: 297 };
@@ -206,9 +210,12 @@ describe('case-3 publish threading, end to end through the REAL series-file-sync
 
     requestCover(barePlaceholder('derived-bare-uuid'));
 
-    // Let the row materialize and the write get scheduled (both happen
-    // inside `requestCover`'s async chain before it returns control here).
+    // Let the row materialize and the write get scheduled. Materialization
+    // is BATCHED (`cover-service.ts`'s `queueMaterialization`), so drain that
+    // queue rather than waiting out its window — the drain resolves only once
+    // the batch has both written its rows and scheduled its publish.
     await vi.waitFor(async () => {
+      await flushPendingMaterializations();
       expect(await db.volumes.get('real-mokuro-uuid')).toBeDefined();
     });
 
@@ -253,6 +260,7 @@ describe('case-3 publish threading, end to end through the REAL series-file-sync
     requestCover(barePlaceholder('derived-2', { volume_title: 'Volume 02' }));
 
     await vi.waitFor(async () => {
+      await flushPendingMaterializations();
       expect(await db.volumes.get('real-Volume 01')).toBeDefined();
       expect(await db.volumes.get('real-Volume 02')).toBeDefined();
     });

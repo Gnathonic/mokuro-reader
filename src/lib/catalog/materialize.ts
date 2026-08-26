@@ -52,6 +52,12 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  * means the listing is unavailable as often as it means the folder is empty, so
  * nothing is materialized.
  *
+ * Every row it CREATES is written as one `bulkPut` at the end of its
+ * transaction rather than a `put` per entry: the guards above are per-row and
+ * stay per-row, but the writes are not, because each mutation of `volumes`
+ * costs a full catalog re-derive downstream. Callers with more than one entry
+ * in hand should therefore hand them over in ONE call rather than looping.
+ *
  * Returns how many rows were created or filled.
  */
 export async function materializeSeriesVolumes(args: {
@@ -91,6 +97,16 @@ export async function materializeSeriesVolumes(args: {
     );
     const seriesUuid = siblings[0]?.series_uuid ?? generateDeterministicUUID(seriesTitle);
 
+    // Every NEW row this call decides to write, collected and issued as ONE
+    // `bulkPut` below rather than a `put` per row. Purely a write-shape
+    // change: the guards below still run per entry, in order, and the rows
+    // that reach the array are byte-for-byte the ones the per-row puts wrote.
+    // The saving is the round trip — Dexie issues the same one put per item,
+    // but inside this single transaction instead of paying for each
+    // separately, and the whole batch lands as one mutation the catalog's
+    // `volumes` liveQuery sees.
+    const created: VolumeMetadata[] = [];
+    const createdUuids = new Set<string>();
     let changed = 0;
     for (const entry of entries) {
       const titleKey = normalizeVolumeTitleKey(entry.volume_title);
@@ -123,7 +139,16 @@ export async function materializeSeriesVolumes(args: {
           patch.archive_size = entry.archive_size;
         }
         if (Object.keys(patch).length === 0) continue;
-        await db.volumes.update(entry.volume_uuid, patch);
+        if (createdUuids.has(entry.volume_uuid)) {
+          // A row THIS call queued (two entries naming the same uuid — two
+          // archives sharing one mokuro). It is not in the table yet, so an
+          // `update` would be a silent no-op and the fill would be lost when
+          // the bulk write lands; patch the queued row itself instead, which
+          // is exactly what a `put`-then-`update` pair used to leave behind.
+          Object.assign(existing, patch);
+        } else {
+          await db.volumes.update(entry.volume_uuid, patch);
+        }
         changed += 1;
         continue;
       }
@@ -146,11 +171,17 @@ export async function materializeSeriesVolumes(args: {
       if (entry.spine_width !== undefined) row.spine_width = entry.spine_width;
       if (entry.archive_size !== undefined) row.archive_size = entry.archive_size;
 
-      await db.volumes.put(row);
+      // Queued, not written yet — but recorded in BOTH ledgers immediately,
+      // because a later entry's rule 0/2 guards must see this decision
+      // exactly as they would have seen the row a `put` had just written.
+      created.push(row);
+      createdUuids.add(row.volume_uuid);
       owners.set(row.volume_uuid, row);
       titlesTaken.set(titleKey, row);
       changed += 1;
     }
+
+    if (created.length > 0) await db.volumes.bulkPut(created);
     return changed;
   });
 }
