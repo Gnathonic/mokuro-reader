@@ -179,7 +179,13 @@ beforeEach(() => {
     currentProviderType: 'webdav',
     providers: { webdav: { isReadOnly: false, serverCompilesMetadata: false } }
   };
-  getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile: vi.fn() });
+  // `getStatus` because `requestCover` keys its dedupe ledger by ACCOUNT SCOPE (see
+  // `cover-service.ts`'s `ledgerKey`), which every real provider answers.
+  getActiveProvider.mockReturnValue({
+    type: 'webdav',
+    downloadFile: vi.fn(),
+    getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:publish-test' })
+  });
   resolveCloudFolderTitle.mockImplementation((t: string) => t);
   cloudVolumeTitlesFor.mockReturnValue(new Set(['Volume 01']));
   fetchAllCloudVolumes.mockResolvedValue(undefined);

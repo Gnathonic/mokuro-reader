@@ -273,3 +273,33 @@ describe('initCoverKeyWatch drives the resolver', () => {
     expect(_heldCoverCountForTests()).toBe(0);
   });
 });
+
+/**
+ * THE DRIVER MUST NOT BE ORPHANABLE.
+ *
+ * `initCoverKeyWatch` is the only production subscriber to `cachedCoverPathSet`, so it
+ * is both what keeps the keys-only liveQuery alive AND the only thing that ever calls
+ * `refreshCovers`. While it was one `init*` line among many in `+layout.svelte`, deleting
+ * that line silently stopped every late-arriving cover from reaching a mounted card —
+ * and left the whole suite green, because every test above starts the watch itself.
+ *
+ * So this one deliberately NEVER calls it. `acquireCover` is the only thing here that
+ * touches the watch, which is the wiring under test: claiming a cover is what starts it.
+ */
+describe('the cover key watch starts itself on the first claim', () => {
+  it('fills a handle that resolved a miss, with nobody having called initCoverKeyWatch', async () => {
+    cloudFiles.set(listing(2));
+
+    // The ingest sequence, minus the layout hook: a card mounts and resolves BEFORE the
+    // cover exists. Nothing else in this test subscribes to the key set.
+    const handle = acquireCover(archivePath(0));
+    track(() => handle.release());
+    await handle.ready;
+    expect(handle.current).toBeUndefined();
+
+    await putCloudCovers([cover(0)]);
+
+    await vi.waitFor(() => expect(handle.current?.width).toBe(250), { timeout: 3000 });
+    expect(handle.current?.file.size).toBe(1024);
+  });
+});

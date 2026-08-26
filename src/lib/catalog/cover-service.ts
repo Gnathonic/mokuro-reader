@@ -113,7 +113,8 @@ import { COVER_PERSIST_BASE_DELAY_MS, installCover } from './cover-persist';
  * request rather than starting a second one. This is now the ONE ledger for
  * every surface — previously each component kept its own, which is exactly
  * how the same volume could be asked for three times by three different
- * views of it.
+ * views of it. Both halves are keyed by ACCOUNT SCOPE as well as uuid — see
+ * {@link ledgerKey}.
  */
 
 /**
@@ -150,10 +151,31 @@ const MATERIALIZE_BATCH_WINDOW_MS = COVER_PERSIST_BASE_DELAY_MS;
  */
 export const MATERIALIZE_BATCH_MAX_ENTRIES = 25;
 
-/** uuid → settled (produced a result, whichever path delivered it). Never asked again this session. */
+/** Settled ledger keys (see {@link ledgerKey}): produced a result, whichever path delivered it. */
 const settled = new Set<string>();
-/** uuid → the request currently running for it. */
+/** Ledger key → the request currently running for it. */
 const inFlight = new Map<string, Promise<void>>();
+
+/**
+ * How both dedupe ledgers are keyed: ACCOUNT SCOPE, then uuid.
+ *
+ * A uuid alone is not enough. A placeholder's uuid is a deterministic
+ * function of its path (see `placeholders.ts`), so the same volume browsed
+ * under two accounts is the same uuid — and "settled" now includes the
+ * `isCachedCoverPath` fast path, which is a fact about ONE account's
+ * `cloud_covers` bucket. Keyed by uuid alone, a cache hit under account A
+ * would permanently refuse to fetch that volume's cover under account B, for
+ * the rest of the session. Scoping the ledger is also what lets a mid-session
+ * cache prune be repaired by a re-request rather than only by a reload:
+ * whatever settled belongs to the scope it settled under, and nothing else.
+ *
+ * `null` (nothing connected) gets its own bucket rather than borrowing
+ * another account's, for the same reason `activeAccountScope` refuses to
+ * invent a fallback.
+ */
+function ledgerKey(uuid: string): string {
+  return `${activeAccountScope() ?? ''}\u0000${uuid}`;
+}
 
 /**
  * Should `vol` be asked for a cover right now? Shared by every surface's own
@@ -679,7 +701,12 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
  */
 export function requestCover(vol: VolumeMetadata): void {
   const uuid = vol.volume_uuid;
-  if (!uuid || settled.has(uuid) || inFlight.has(uuid)) return;
+  if (!uuid) return;
+  // Bound to the account the request is being made FOR, once: the same
+  // request must not settle under one scope and be looked up under another
+  // if the user switches accounts while it is in flight.
+  const key = ledgerKey(uuid);
+  if (settled.has(key) || inFlight.has(key)) return;
   if (!isCoverFetchTarget(vol)) return;
 
   const run = (async () => {
@@ -687,7 +714,7 @@ export function requestCover(vol: VolumeMetadata): void {
       try {
         const delivered = await resolveAndDeliver(vol);
         if (delivered) {
-          settled.add(uuid);
+          settled.add(key);
           return;
         }
         // Produced nothing, but nothing THREW either — a saturated provider
@@ -709,9 +736,9 @@ export function requestCover(vol: VolumeMetadata): void {
     }
   })();
 
-  inFlight.set(uuid, run);
+  inFlight.set(key, run);
   void run.finally(() => {
-    if (inFlight.get(uuid) === run) inFlight.delete(uuid);
+    if (inFlight.get(key) === run) inFlight.delete(key);
   });
 }
 

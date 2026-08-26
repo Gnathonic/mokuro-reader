@@ -61,11 +61,14 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
+  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
+  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { get } from 'svelte/store';
 
   interface Props {
@@ -304,6 +307,70 @@
     if (thumbnailUrl) {
       URL.revokeObjectURL(thumbnailUrl);
     }
+  });
+
+  /**
+   * THE LIST ROW RESOLVES ITS OWN CLOUD COVER.
+   *
+   * The GRID variant has always drawn its cloud cover through `PlaceholderThumbnail`,
+   * which resolves one; the list row painted `liveVolume.thumbnail` and nothing else. It
+   * got away with that only while `generatePlaceholders` stamped the cached blob onto
+   * every placeholder and the catalog decorated a metadata-only row's copy the same way
+   * — the decoration that made one cover landing re-derive the whole library (a measured
+   * 1,784 ms long task on a 1,027-series library) and was therefore removed. Without
+   * this, every cloud volume on a series page in list layout shows the grey "Cover" box
+   * FOREVER: `resolveAndDeliver`'s cache-hit gate means a cover already in
+   * `cloud_covers` is never fetched onto the row either, so nothing would ever fill it.
+   *
+   * The claim path falls back to the PROP, and must: `liveVolume` is the stored row
+   * whenever there is one, and a stored row never carries `cloudPath` (no writer of
+   * those rows persists a cloud field) — only the catalog's listing-derived copy does,
+   * which is what this component is handed.
+   *
+   * LIST ONLY. The grid variant's empty case already renders `PlaceholderThumbnail`,
+   * which claims the very same path; claiming here too would just take a second
+   * reference on the same entry for every grid card on screen.
+   */
+  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
+
+  let coverPath = $derived(liveVolume?.cloudPath ?? volume.cloudPath);
+
+  /**
+   * Folded to a PRIMITIVE so the effect below re-runs only when the claim itself
+   * changes, not on every re-derive that hands this row an equal-but-new object. The
+   * account scope leads it because `acquireCover` binds the scope at acquire time.
+   */
+  let coverClaimKey = $derived(
+    variant !== 'list' || !liveVolume || liveVolume.thumbnail || !coverPath
+      ? ''
+      : `${$activeAccountScopeStore ?? ''}\u0000${coverPath}`
+  );
+
+  $effect(() => {
+    const key = coverClaimKey;
+    if (!key) {
+      resolvedCover = undefined;
+      return;
+    }
+    const path = untrack(() => coverPath);
+    const handle: CoverHandle = acquireCover(path);
+    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
+    return () => {
+      unsubscribe();
+      // Every acquire paired with exactly one release, or the blob and its object URL
+      // leak for the lifetime of the tab.
+      handle.release();
+    };
+  });
+
+  /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
+  let displayUrl = $derived(thumbnailUrl ?? resolvedCover?.url);
+
+  // Ask for the cover, exactly as the grid variant does through `PlaceholderThumbnail`
+  // (same gate: only a volume whose pages are not here). `requestCover` is idempotent and
+  // fire-and-forget, so a redundant call on a re-run is free.
+  $effect(() => {
+    if (variant === 'list' && isNotInstalled && isCoverFetchTarget(volume)) requestCover(volume);
   });
 
   // Some insert/update paths can miss live notifications for blob fields.
@@ -692,9 +759,9 @@
       <ListgroupItem onclick={onOpenClicked} class="py-4">
         <!-- Wrapper exists only to anchor the badge; the cover keeps its own box. -->
         <div class="relative flex-shrink-0" style="margin-right:10px;">
-          {#if thumbnailUrl}
+          {#if displayUrl}
             <img
-              src={thumbnailUrl}
+              src={displayUrl}
               alt="img"
               class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
             />

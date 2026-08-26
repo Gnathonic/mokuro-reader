@@ -160,7 +160,7 @@ vi.mock('$lib/settings/volume-data', () => ({
 
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
-import { getCloudCovers } from './cloud-covers';
+import { getCloudCovers, putCloudCovers } from './cloud-covers';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
@@ -971,5 +971,66 @@ describe('a placeholder with no cloudPath is never cached under a guessed key', 
       'OP Folder/Volume 01.cbz'
     ]);
     expect(cached.size).toBe(0);
+  });
+});
+
+/**
+ * THE DEDUPE LEDGER IS PER ACCOUNT.
+ *
+ * A placeholder's uuid is a deterministic function of its path, so the same volume
+ * browsed under two accounts is the SAME uuid — while "settled" now includes the
+ * `isCachedCoverPath` fast path, which is a fact about one account's `cloud_covers`
+ * bucket and nothing else. Keyed by uuid alone, a cache hit under the first account
+ * silently refused to ever fetch that cover under the second one, for the rest of the
+ * session.
+ */
+describe('settled is scoped to the account it settled under', () => {
+  it('asks again under a second account for a uuid a cache HIT settled under the first', async () => {
+    const path = 'One Piece/Volume 09.cbz';
+    const placeholder = indexedPlaceholder('idx-scoped-9', {
+      volume_title: 'Volume 09',
+      cloudPath: path,
+      cloudThumbnailFileId: 'c-9',
+      cloudThumbnailPath: 'One Piece/Volume 09.webp'
+    });
+
+    // Already cached under the FIRST account (`beforeEach`'s scope).
+    await putCloudCovers([
+      {
+        account_scope: 'mega:a@b.com',
+        path,
+        thumbnail: new File([new Uint8Array(64)], 'cached.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350,
+        cached_at: 1000
+      }
+    ]);
+
+    requestCover(placeholder);
+    // The cache hit settles the uuid without a network call — and past the 750ms
+    // materialize/persist window, so this is the settled state and not a snapshot taken
+    // before the batch that would have carried a fetch.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await drainQueues();
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+
+    // Same volume, same uuid, DIFFERENT account: this one has never seen the cover.
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      downloadFile: vi.fn(),
+      getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:second@b.com' })
+    });
+
+    requestCover(placeholder);
+
+    await vi.waitFor(
+      async () => {
+        await drainQueues();
+        const cached = await getCloudCovers('mega:second@b.com', [path]);
+        expect(cached.get(path)?.thumbnail).toBeInstanceOf(File);
+      },
+      { timeout: 3000 }
+    );
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
   });
 });

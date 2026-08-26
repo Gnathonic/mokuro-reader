@@ -366,6 +366,46 @@ function makeHandle(entry: CoverEntry): CoverHandle {
   };
 }
 
+/** Has the keys-only cover watch been started for this session yet? */
+let coverKeyWatchStarted = false;
+
+/**
+ * Start the thing that drives {@link refreshCovers}, at most once, ON THE
+ * CLAIM PATH.
+ *
+ * `initCoverKeyWatch` (in `cloud-covers-store.ts`) is the ONLY production
+ * subscriber to the keys-only cover key set, so it is also what keeps that
+ * liveQuery alive — and it is what tells a handle that resolved a MISS
+ * mid-ingest that its cover has landed. It used to be called from
+ * `+layout.svelte`, one `init*` among many: deleting that single line would
+ * have left every late-arriving cover silently unable to reach a mounted
+ * card, with every test still green, because the store's own tests call
+ * `initCoverKeyWatch` themselves. A driver that can be orphaned by an
+ * unrelated edit to an unrelated file is not wired; it is coincidence.
+ *
+ * Starting it HERE makes the wiring structural: the only way to hold a cover
+ * is to acquire one, and acquiring one starts the watch. Lazy, so an app that
+ * never draws a cloud cover never subscribes to the cloud listing at all.
+ *
+ * DYNAMIC IMPORT, deliberately. `cloud-covers-store.ts` imports
+ * `refreshCovers` from this module; a static import back would close that
+ * into a cycle. Deferring it keeps the module graph one-way (store →
+ * resolver) and keeps the listing subscription off the critical path of the
+ * first claim. A failure to start is logged and never thrown: a card that
+ * cannot get live refreshes still paints whatever its own read found.
+ */
+function ensureCoverKeyWatch(): void {
+  if (coverKeyWatchStarted) return;
+  coverKeyWatchStarted = true;
+  void import('./cloud-covers-store')
+    .then(({ initCoverKeyWatch }) => {
+      initCoverKeyWatch();
+    })
+    .catch((error) => {
+      console.debug('[cover-resolver] could not start the cover key watch:', error);
+    });
+}
+
 /**
  * Claim the cached cover for one cloud path, reading it by key.
  *
@@ -383,6 +423,10 @@ function makeHandle(entry: CoverEntry): CoverHandle {
  * Pair every call with exactly one {@link CoverHandle.release}.
  */
 export function acquireCover(path: string | null | undefined): CoverHandle {
+  // Before the guards below: a claim made while nothing is connected yet is
+  // still this session's first sign that someone wants covers, and the watch
+  // has to be running by the time one lands.
+  ensureCoverKeyWatch();
   const scope = activeAccountScope();
   const normalized = path ? normalizeCachePath(path) : '';
   if (!scope || !normalized) return detachedHandle();

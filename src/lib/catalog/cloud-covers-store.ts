@@ -128,7 +128,13 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * different bytes behind it; forcing would revoke and re-mint object URLs for
  * every held cover on every key-set change.
  *
- * Called once from `+layout.svelte`, alongside the app's other `init*` hooks.
+ * WHO CALLS IT. `cover-resolver.ts`'s `acquireCover`, lazily, on the first
+ * claim of the session (`ensureCoverKeyWatch`). It used to be one more
+ * `init*` line in `+layout.svelte`, which made it deletable by an edit to a
+ * file that says nothing about covers — with every test still green, because
+ * the tests below call it themselves. Hanging it off the claim path makes it
+ * structural instead: the only way to hold a cover is to acquire one.
+ *
  * Returns the unsubscriber for tests; production never calls it.
  */
 export function initCoverKeyWatch(): () => void {

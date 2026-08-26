@@ -106,17 +106,28 @@
    * what the grid card does: one keyed `cloud_covers` read for the volume it draws.
    *
    * `liveVolume` — the stored row when there is one — always wins if it carries a
-   * `thumbnail`; the resolver is the CLOUD path and nothing else. The claim path comes
-   * from the LISTING-derived prop (`cloudPath` is decorated onto the catalog's in-memory
-   * copy and never persisted), and the account scope leads the key because
-   * `acquireCover` binds the scope at acquire time.
+   * `thumbnail`; the resolver is the CLOUD path and nothing else.
+   *
+   * THE PATH FALLS BACK TO THE PROP, and must. `liveVolume` is
+   * `$catalogVolumes[uuid] ?? volume`, and `$catalogVolumes` is the RAW `volumes` store
+   * — a STORED row, which never carries `cloudPath` (`materializeSeriesVolumes`, the
+   * only writer that mints those rows, writes no cloud fields at all; `catalog-store`'s
+   * own test pins it). So the moment a series is opened and its rows materialize, this
+   * row's `liveVolume` stops carrying a path while the catalog's LISTING-derived prop
+   * still does — and that metadata-only row is exactly the case the deleted placeholder
+   * decoration used to paint. Reading only `liveVolume.cloudPath` blanked it for good.
+   *
+   * The account scope leads the key because `acquireCover` binds the scope at acquire
+   * time.
    */
   let resolvedCover = $state<ResolvedCover | undefined>(undefined);
 
+  let coverPath = $derived(liveVolume?.cloudPath ?? volume?.cloudPath);
+
   let coverClaimKey = $derived(
-    !liveVolume || liveVolume.thumbnail || !liveVolume.cloudPath
+    !liveVolume || liveVolume.thumbnail || !coverPath
       ? ''
-      : `${$activeAccountScopeStore ?? ''}\u0000${liveVolume.cloudPath}`
+      : `${$activeAccountScopeStore ?? ''}\u0000${coverPath}`
   );
 
   $effect(() => {
@@ -125,7 +136,7 @@
       resolvedCover = undefined;
       return;
     }
-    const path = untrack(() => liveVolume?.cloudPath);
+    const path = untrack(() => coverPath);
     const handle: CoverHandle = acquireCover(path);
     const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
     return () => {

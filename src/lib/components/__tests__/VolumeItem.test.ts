@@ -70,6 +70,9 @@ vi.mock('$lib/util/hash-router', () => ({
 }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
+    // Nothing connected: a VolumeItem list row asks `activeAccountScope()` before it
+    // claims a cover, and with no provider the claim is skipped entirely.
+    getActiveProvider: () => null,
     cloudFiles: emptyStore(new Map()),
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,

@@ -104,7 +104,9 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     cloudFiles: emptyStore(new Map()),
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
-    getActiveProvider: () => ({ name: 'Drive' }),
+    // `getStatus` because a VolumeItem list row now claims its own cloud cover, and
+    // `activeAccountScope()` asks the active provider for its scope.
+    getActiveProvider: () => ({ name: 'Drive', getStatus: () => ({ accountScope: null }) }),
     getAllCloudVolumes: () => [],
     getCloudVolumesBySeries: () => [],
     existsInCloud: () => false,

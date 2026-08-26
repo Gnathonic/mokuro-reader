@@ -6,8 +6,8 @@ import { tick } from 'svelte';
 /**
  * THE TWO `<img>` SURFACES THAT DRAW A CLOUD COVER.
  *
- * `PlaceholderThumbnail` (the series view's grid/list box, via `PlaceholderVolumeItem`
- * and `VolumeItem`) and `CatalogListItem` (the catalog's list mode) both used to get a
+ * `PlaceholderThumbnail` (the series view's grid box, via `PlaceholderVolumeItem` and
+ * `VolumeItem`) and `CatalogListItem` (the catalog's list mode) both used to get a
  * cloud volume's cover for free, on their props: `generatePlaceholders` stamped the
  * account's cached blob onto every placeholder, and the catalog decorated a
  * metadata-only row's copy the same way. That decoration is what made ONE cover landing
@@ -18,12 +18,25 @@ import { tick } from 'svelte';
  * These are `<img>` surfaces, not canvases, so they read `ResolvedCover.url` — the lazily
  * minted, refcounted object URL `cover-resolver.ts` revokes on last release. The catalog
  * GRID card is canvas-drawn and deliberately never touches `.url`; that one is pinned in
- * `CatalogItem.covers.test.ts`.
+ * `CatalogItem.covers.test.ts`. The THIRD `<img>` surface, `VolumeItem`'s list row (the
+ * series page in list layout), needs the whole app stubbed under it and is pinned in
+ * `VolumeItem.covers.test.ts`.
  */
 
 const { getActiveProvider } = vi.hoisted(() => ({ getActiveProvider: vi.fn() }));
+// `cloudFiles` is here because the FIRST `acquireCover` of a session starts the keys-only
+// cover key watch (`cover-resolver.ts`'s `ensureCoverKeyWatch`), which subscribes to this
+// listing. An empty one means the watch starts, finds nothing to query, and stays inert.
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
-  unifiedCloudManager: { getActiveProvider }
+  unifiedCloudManager: {
+    getActiveProvider,
+    cloudFiles: {
+      subscribe: (fn: (value: Map<string, unknown>) => void) => {
+        fn(new Map());
+        return () => {};
+      }
+    }
+  }
 }));
 
 const { providerStatus, publishAccountScope } = vi.hoisted(() => {
@@ -69,15 +82,27 @@ vi.mock('$lib/util/download-queue', () => ({
   }
 }));
 // `CatalogListItem` joins the raw `volumes` store to prefer the STORED row when one
-// exists. An empty store is the cloud-only case: the prop is all there is.
-vi.mock('$lib/catalog', () => ({
-  volumes: {
-    subscribe: (fn: (v: Record<string, unknown>) => void) => {
-      fn({});
-      return () => {};
+// exists. An EMPTY store is only the cloud-only case (the prop is all there is); the
+// case that matters just as much is a store that HAS the row — see the metadata-only
+// test below — so this one is publishable rather than a frozen `{}`.
+const { catalogVolumes, publishCatalogVolumes } = vi.hoisted(() => {
+  const subscribers = new Set<(value: Record<string, unknown>) => void>();
+  let value: Record<string, unknown> = {};
+  return {
+    catalogVolumes: {
+      subscribe(fn: (value: Record<string, unknown>) => void) {
+        subscribers.add(fn);
+        fn(value);
+        return () => subscribers.delete(fn);
+      }
+    },
+    publishCatalogVolumes(next: Record<string, unknown>) {
+      value = next;
+      for (const fn of subscribers) fn(value);
     }
-  }
-}));
+  };
+});
+vi.mock('$lib/catalog', () => ({ volumes: catalogVolumes }));
 
 import PlaceholderThumbnail from '../PlaceholderThumbnail.svelte';
 import CatalogListItem from '../CatalogListItem.svelte';
@@ -144,8 +169,11 @@ async function settle(rounds = 4): Promise<void> {
 beforeEach(async () => {
   created = [];
   revoked = [];
-  globalThis.URL.createObjectURL = vi.fn(() => {
-    const url = `blob:resolved-${created.length + 1}`;
+  globalThis.URL.createObjectURL = vi.fn((blob: Blob) => {
+    // NAMED after the blob, not counted: `blob:resolved-1` is what BOTH branches of the
+    // "prefers the row's own thumbnail" test below produce, so a counter cannot tell the
+    // row's cover apart from the resolver's and that assertion was vacuous.
+    const url = `blob:${(blob as File).name}`;
     created.push(url);
     return url;
   }) as never;
@@ -154,6 +182,7 @@ beforeEach(async () => {
   }) as never;
   _resetCoverResolverForTests();
   await db.cloud_covers.clear();
+  publishCatalogVolumes({});
   useAccount(SCOPE);
 });
 
@@ -171,7 +200,7 @@ describe('PlaceholderThumbnail resolves its own cloud cover', () => {
     const { container } = render(PlaceholderThumbnail, { props: { volume: cloudVolume() } });
     await settle();
 
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:resolved-1');
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover.webp');
     expect(container.textContent).not.toContain('No thumbnail');
   });
 
@@ -192,7 +221,8 @@ describe('PlaceholderThumbnail resolves its own cloud cover', () => {
     });
     await settle();
 
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:resolved-1');
+    // The ROW's blob, by name — not the cached `cover.webp` sitting under the same path.
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:row.jpg');
     // Nothing was claimed: the row cover won outright, so the resolver never ran.
     expect(_heldCoverCountForTests()).toBe(0);
   });
@@ -208,7 +238,7 @@ describe('PlaceholderThumbnail resolves its own cloud cover', () => {
     await settle(1);
     expect(_heldCoverCountForTests()).toBe(0);
     // The resolver owns the object URL and gives it up with the last holder.
-    expect(revoked).toEqual(['blob:resolved-1']);
+    expect(revoked).toEqual(['blob:cover.webp']);
   });
 });
 
@@ -219,7 +249,35 @@ describe('CatalogListItem resolves its own cloud cover', () => {
     const { container } = render(CatalogListItem, { props: { volumes: [cloudVolume()] } });
     await settle();
 
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:resolved-1');
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover.webp');
+  });
+
+  /**
+   * THE CASE THE STORE'S OWN SHAPE HIDES.
+   *
+   * `liveVolume` is `$catalogVolumes[uuid] ?? volume`, and `$catalogVolumes` is the RAW
+   * `volumes` store: a STORED row, which never carries `cloudPath` (no writer of those
+   * rows persists a cloud field). So the moment a series is opened and its rows
+   * materialize, a claim key read off `liveVolume` alone goes blank — permanently, for
+   * exactly the metadata-only row the deleted placeholder decoration used to paint, and
+   * with `resolveAndDeliver`'s cache-hit gate guaranteeing the row itself never gets
+   * filled either. The other tests here mock the store as `{}`, which is the cloud-only
+   * case and cannot see it.
+   */
+  it('paints a cached cover for a materialized metadata-only row', async () => {
+    await putCloudCovers([cachedCover()]);
+
+    const listed = cloudVolume({ isPlaceholder: false });
+    // What `materializeSeriesVolumes` actually leaves in the store: the same uuid, no
+    // thumbnail (its cover is in `cloud_covers`), and NO `cloudPath`.
+    publishCatalogVolumes({
+      [listed.volume_uuid]: { ...listed, cloudPath: undefined }
+    });
+
+    const { container } = render(CatalogListItem, { props: { volumes: [listed] } });
+    await settle();
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover.webp');
   });
 
   it('falls back to the download glyph with nothing cached', async () => {
