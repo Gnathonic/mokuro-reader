@@ -59,47 +59,96 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * `cover-service.ts`'s job (decision-tree cases 1-4), done BEFORE a cover
  * ever reaches this queue.
  *
- * WRITE-STORM AVOIDANCE, AND WHY THE CADENCE IS ADAPTIVE:
- * every `db.volumes.update` fires the `volumes` liveQuery →
- * `volumesWithPlaceholders` → the whole catalog re-derives (a placeholder
- * matcher scan, display-title resolution, a re-sort, on-screen canvas
- * redraws). At catalog scale (thousands of rows) that re-derive is not free —
- * field evidence on a 3,001-row / 1,788-cloud-file library showed a
- * sustained ~1,300-cover convergence backlog (draining at the backfill
- * semaphore's 2-wide cap) producing a coalesced write roughly every 750ms,
- * each one costing a multi-second re-derive, keeping the main thread busy
- * back-to-back for the whole convergence window.
+ * WRITE-STORM AVOIDANCE, AND WHY BATCHES ARE CAPPED RATHER THAN WIDENED:
+ * every `db.volumes.update` fires the `volumes` liveQuery and every
+ * `cloud_covers` commit fires that table's, so a burst of arrivals has to be
+ * coalesced — `COVER_PERSIST_BASE_DELAY_MS` (750ms) is the debounce that does
+ * it, and a single interactive wave (a screenful of cards resolving covers,
+ * nothing following it) still costs exactly ONE flush.
  *
- * The FIX is not to write less often for a normal interactive trickle (a
- * screenful of cards resolving covers) — `COVER_PERSIST_BASE_DELAY_MS` (750ms)
- * still governs that, and a single wave that has nothing queued behind it by
- * the time it flushes costs exactly one flush, same as before. It is to
- * detect SUSTAINED back-to-back arrival and widen the window while it lasts:
- * every time a new batch starts collecting (`armTimer`) less than
- * `COVER_PERSIST_BASE_DELAY_MS` after the PREVIOUS flush finished, that is
- * evidence the queue is refilling faster than the interactive cadence can
- * drain it — double the delay (capped at `COVER_PERSIST_MAX_DELAY_MS`). The
- * moment a new batch starts collecting only after a genuine idle gap (>=
- * `COVER_PERSIST_BASE_DELAY_MS` since the last flush), the cadence resets to
- * base — nothing is ever "eventually" in the sense of "maybe never": the
- * backoff only ever changes WHEN a batch flushes, never WHETHER it does, so
- * every queued cover still lands (the one exception, unchanged from before
- * this round: an app close before any pending flush fires, same as any other
- * debounced write in this codebase).
+ * What this deliberately does NOT do any more is widen that window under
+ * pressure. An earlier round made the delay DOUBLE (750ms → 8,000ms) whenever
+ * a batch started collecting within 750ms of the last flush, on the theory
+ * that fewer flushes meant fewer catalog re-derives. Measured on a
+ * 12,520-file / 1,027-series library that made batches GROW as the burst
+ * intensified — roughly 270 / 535 / 1,070 / 2,140 covers, the last of them
+ * ~66MB of `File` objects in a SINGLE IndexedDB transaction — which is the
+ * opposite of what a loaded main thread needs. (The re-derive that motivated
+ * the widening is gone by a different route: `volumesWithPlaceholders` no
+ * longer takes cover data as an input at all, so a cover landing cannot
+ * regenerate placeholders — see the catalog-cover-ingest design.)
  *
- * This deliberately does NOT delay what a card visibly paints — delivery to
- * the SCREEN is this same DB write (there is no separate immediate-paint
- * path; see `cover-service.ts`), so widening the flush window during a
- * genuine backlog does mean freshly-fetched covers can take up to
- * `COVER_PERSIST_MAX_DELAY_MS` to appear on screen during that backlog,
- * trading a bounded amount of "covers still popping in" for the sustained
- * main-thread jank the un-throttled 750ms cadence was causing at this scale.
+ * So the cadence is now FIXED and the BATCH is bounded:
+ *
+ * - a batch never carries more than `COVER_PERSIST_MAX_BATCH` covers, and the
+ *   moment the queue reaches that many it flushes immediately instead of
+ *   waiting out the debounce. Batches therefore get SMALLER under pressure
+ *   (more, bounded transactions) rather than larger;
+ * - at most ONE flush transaction is in flight at a time. A cap reached while
+ *   a flush is running does not open a second concurrent write transaction —
+ *   the running drain picks the next batch up as soon as it commits, so a
+ *   sustained burst drains back-to-back at bounded size;
+ * - the queue itself is bounded by `COVER_PERSIST_MAX_PENDING`. See that
+ *   constant for what happens when it is exceeded.
+ *
+ * The debounce only ever changes WHEN a batch flushes, never WHETHER it does:
+ * every queued cover still lands, with two documented exceptions — an app
+ * close before a pending flush fires (same as any other debounced write in
+ * this codebase) and a queue overflow (below).
  */
 
-/** Interactive cadence: long enough to catch a burst (a first-boot catalog resolving many covers at once), short enough that "persistent" does not read as "eventually". */
+/** Interactive cadence: long enough to catch a burst (a first-boot catalog resolving many covers at once), short enough that "persistent" does not read as "eventually". Fixed — it never grows (see the module doc comment). */
 export const COVER_PERSIST_BASE_DELAY_MS = 750;
-/** Ceiling the adaptive cadence backs off to under sustained back-to-back arrival (a large convergence backlog). */
-export const COVER_PERSIST_MAX_DELAY_MS = 8000;
+
+/**
+ * Hard ceiling on how many covers ONE flush transaction may carry; reaching
+ * it flushes immediately rather than waiting out the debounce.
+ *
+ * THE TRADEOFF, at the measured mean cover size of ~31.6KB (134MB / 4,347
+ * covers on the reference library): this bounds a single transaction at
+ * ~3.2MB, against ~66MB for the worst batch the old growing-delay backoff
+ * produced — a ~20x reduction in peak transaction size. It buys that with
+ * transaction COUNT: the same 4,347-cover cold start commits ~44 times
+ * instead of ~4, i.e. ~3.6 commits/second across the measured 12.2s burst.
+ * That is the right side of the trade now that a `cloud_covers` commit no
+ * longer re-derives the catalog (the design's decoupling), because what a
+ * commit still costs — the structured clone of the batch, the transaction
+ * itself, and one liveQuery re-run — is roughly linear in batch size, while
+ * the main-thread stall a commit can cause is not: one 66MB clone is a
+ * multi-frame freeze that no amount of "fewer commits" makes up for.
+ *
+ * Also chosen to stay comfortably above the size of an ordinary interactive
+ * wave (a screenful of cards is tens of covers, not hundreds), so the cap
+ * never splits a batch the debounce was already going to coalesce.
+ */
+export const COVER_PERSIST_MAX_BATCH = 100;
+
+/**
+ * Hard ceiling on the QUEUE — how many fetched covers may sit un-flushed at
+ * once. Roughly 10 batches, i.e. ~32MB of `File` objects retained at the
+ * measured mean cover size.
+ *
+ * OVERFLOW POLICY, stated explicitly because the queue used to be an
+ * unbounded `Map`: when a new cover arrives at a full queue, the OLDEST
+ * queued cover is DROPPED to make room. Rationale:
+ *
+ * - the queue can only exceed one batch while a flush is in flight (a cap
+ *   reached with nothing in flight flushes on the spot), so overflow means
+ *   arrivals are outrunning IndexedDB for ~10 consecutive transactions.
+ *   Without a bound the queue would retain every fetched blob until the
+ *   backlog cleared — 134MB on the reference library's cold start;
+ * - the newest arrivals are kept because cover requests are viewport-gated
+ *   (`CatalogItem`'s `IntersectionObserver`), so the newest request is the
+ *   one most likely to be for a card the user is looking at NOW;
+ * - a dropped cover is not lost user data. It is a cache fill: the card shows
+ *   its placeholder, and the cover is re-fetched the next time that series is
+ *   in view in a fresh session (`cover-service.ts`'s `settled` bookkeeping is
+ *   in-memory only, so it does not outlive a reload).
+ *
+ * Deliberately set high enough that no measured workload reaches it — this is
+ * a safety valve against a pathological runaway, not part of the normal path.
+ */
+export const COVER_PERSIST_MAX_PENDING = COVER_PERSIST_MAX_BATCH * 10;
 
 interface PendingCoverPersist {
   result: CloudThumbnailResult;
@@ -117,37 +166,78 @@ interface PendingCoverPersist {
   cachePath?: string;
 }
 
-/** volume_uuid → the most recent fetch result queued for it. */
+/**
+ * volume_uuid → the most recent fetch result queued for it. Insertion-ordered
+ * (a `Map` is), which is what makes both "take the oldest `MAX_BATCH`" and
+ * "evict the oldest on overflow" a plain iteration from the front. Re-queuing
+ * an already-pending uuid replaces its value WITHOUT moving it, so a cover
+ * that has been waiting keeps its place in line.
+ */
 const pending = new Map<string, PendingCoverPersist>();
 let timer: ReturnType<typeof setTimeout> | null = null;
-/** The cadence the NEXT armed timer will use — grows/resets in `armTimer`. */
-let currentDelayMs = COVER_PERSIST_BASE_DELAY_MS;
-/** When the most recent flush finished, or `null` before the first one ever runs. */
-let lastFlushCompletedAt: number | null = null;
-
 /**
- * Arm the next flush if none is already pending, choosing its delay from
- * whether this new batch started collecting "immediately" after the last
- * flush finished (see the module doc comment above for the full rationale).
+ * The drain currently running, or `null`. Non-null means a write transaction
+ * is (or is about to be) open, and no second one may be started.
  */
+let inFlight: Promise<void> | null = null;
+/**
+ * Bumped by `_resetCoverPersistForTests` so a drain that is still awaiting
+ * IndexedDB when a test tears down stops instead of picking up the NEXT
+ * test's queue and flushing it against a cleared table.
+ */
+let generation = 0;
+/** How many covers this overflow episode has dropped; reset once the queue drains. */
+let overflowDropped = 0;
+
+/** Arm the fixed-delay debounce if nothing is already pending. */
 function armTimer(): void {
   if (timer) return; // Already coalescing a batch; this entry rides along with it.
-
-  const now = Date.now();
-  if (lastFlushCompletedAt !== null && now - lastFlushCompletedAt < COVER_PERSIST_BASE_DELAY_MS) {
-    currentDelayMs = Math.min(currentDelayMs * 2, COVER_PERSIST_MAX_DELAY_MS);
-  } else {
-    currentDelayMs = COVER_PERSIST_BASE_DELAY_MS;
-  }
-  timer = setTimeout(() => void runScheduledFlush(), currentDelayMs);
+  timer = setTimeout(() => {
+    timer = null;
+    drainSoon();
+  }, COVER_PERSIST_BASE_DELAY_MS);
 }
 
-/** The timer's own callback: flush, record when it finished, and re-arm if the queue refilled while it ran. */
-async function runScheduledFlush(): Promise<void> {
-  timer = null;
-  await flushPendingCoverPersists();
-  lastFlushCompletedAt = Date.now();
-  if (pending.size > 0) armTimer();
+/**
+ * Start (or join) a drain, then put whatever is still queued back on the
+ * debounce. Fire-and-forget: nothing in the arming path ever awaits a write.
+ */
+function drainSoon(): void {
+  const rearm = () => {
+    if (pending.size > 0) armTimer();
+  };
+  void runDrain(false).then(rearm, rearm);
+}
+
+/**
+ * The ONE place a flush transaction is started, so at most one is ever open.
+ *
+ * `untilEmpty` distinguishes the two callers. The scheduled/cap-triggered
+ * path (`false`) keeps flushing only while the queue is still at or above the
+ * cap — a trickle left behind it goes back on the debounce rather than paying
+ * a transaction per cover. A forced drain (`true`, `flushPendingCoverPersists`)
+ * keeps going until the queue is empty, because its caller is waiting to know
+ * the writes have landed.
+ */
+function runDrain(untilEmpty: boolean): Promise<void> {
+  if (inFlight) return inFlight;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  const gen = generation;
+  const run = (async () => {
+    try {
+      do {
+        if (gen !== generation) return;
+        await flushOneBatch();
+      } while (untilEmpty ? pending.size > 0 : pending.size >= COVER_PERSIST_MAX_BATCH);
+    } finally {
+      if (gen === generation) inFlight = null;
+    }
+  })();
+  inFlight = run;
+  return run;
 }
 
 /**
@@ -158,7 +248,7 @@ async function runScheduledFlush(): Promise<void> {
  * `cloud_covers` entry needs if this cover turns out to have no row to land
  * on at flush time. Whichever shape it is, the fields it carries are
  * captured HERE, synchronously, while the caller's own snapshot is still in
- * hand — never re-read at flush time (see `flushPendingCoverPersists`).
+ * hand — never re-read at flush time (see `flushOneBatch`).
  *
  * `stamp` is the decision-time listing snapshot the fetch was made against
  * (bytes + ISO mtime of the cover sidecar) — never re-derived from a fresher
@@ -176,29 +266,70 @@ export function installCover(
   const coverSize = isArchiveSize(stamp.size) ? stamp.size : undefined;
   const coverModified = isoToEpochSeconds(stamp.modifiedTime);
   pending.set(volumeUuid, { result, coverSize, coverModified, mode, cachePath });
-  armTimer();
+
+  while (pending.size > COVER_PERSIST_MAX_PENDING) evictOldest();
+
+  // At the cap, flush NOW rather than waiting out the debounce — this is what
+  // makes batches shrink under pressure instead of growing. When a flush is
+  // already running this is a no-op: its own loop takes the next batch.
+  if (pending.size >= COVER_PERSIST_MAX_BATCH) drainSoon();
+  else armTimer();
+}
+
+/** Drop the oldest queued cover to keep the queue under `COVER_PERSIST_MAX_PENDING` (see that constant for why the oldest). */
+function evictOldest(): void {
+  const oldest = pending.keys().next().value;
+  if (oldest === undefined) return;
+  pending.delete(oldest);
+  overflowDropped += 1;
+  if (overflowDropped === 1) {
+    console.debug(
+      `[cover-persist] cover queue is full (${COVER_PERSIST_MAX_PENDING} waiting); dropping the oldest queued covers — they will be re-fetched on a later visit`
+    );
+  }
 }
 
 /**
- * Flush every queued cover as ONE transaction. Exported (not just internal
- * to the scheduled flush) so a test — or a caller that wants the writes to
- * have landed before proceeding (`series-backfill.ts`'s `refreshStaleCover`)
- * — can flush deterministically instead of advancing timers. A direct call
- * like this is a forced, immediate drain: it does not participate in the
- * adaptive cadence bookkeeping (`lastFlushCompletedAt` is only updated by
- * the scheduled path), since it represents "flush right now regardless of
- * cadence", not a natural cycle of the debounce.
+ * Flush every queued cover, in `COVER_PERSIST_MAX_BATCH`-sized transactions,
+ * until nothing is left. Exported (not just internal to the scheduled flush)
+ * so a test — or a caller that wants the writes to have landed before
+ * proceeding (`series-backfill.ts`'s `refreshStaleCover`) — can flush
+ * deterministically instead of advancing timers. A direct call like this is a
+ * forced, immediate drain: it cancels the debounce and ignores the cap's
+ * "wait for the next tick" behaviour, but it still respects the ONE
+ * transaction at a time rule, joining a flush that is already running rather
+ * than racing it.
  */
 export async function flushPendingCoverPersists(): Promise<void> {
-  if (timer) {
-    clearTimeout(timer);
-    timer = null;
+  // Loop rather than a single call because joining an in-flight drain only
+  // guarantees THAT drain's entries landed; anything queued behind it still
+  // needs draining before this can promise the queue is empty.
+  for (;;) {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (!inFlight && pending.size === 0) return;
+    await runDrain(true);
   }
-  const entries = [...pending.entries()];
-  pending.clear();
+}
+
+/**
+ * Write ONE bounded batch — the oldest `COVER_PERSIST_MAX_BATCH` queued
+ * covers — as a single `volumes` transaction plus (at most) one
+ * `cloud_covers` write.
+ */
+async function flushOneBatch(): Promise<void> {
+  const entries: Array<[string, PendingCoverPersist]> = [];
+  for (const entry of pending) {
+    entries.push(entry);
+    if (entries.length >= COVER_PERSIST_MAX_BATCH) break;
+  }
+  for (const [volumeUuid] of entries) pending.delete(volumeUuid);
+  if (pending.size === 0) overflowDropped = 0;
   if (entries.length === 0) return;
 
-  // Read once per flush, not per entry: this is a single decision about
+  // Read once per batch, not per entry: this is a single decision about
   // which account's cache a whole burst attributes to, not a per-cover one.
   // Resolved defensively and OUTSIDE the main try below on purpose: a
   // provider that fails to report its scope must never block the ROW writes
@@ -212,7 +343,7 @@ export async function flushPendingCoverPersists(): Promise<void> {
   const forCoverTable: CloudCover[] = [];
 
   // Which volumes the user actually has a relationship with, read ONCE for
-  // the whole flush — a synchronous, localStorage-backed store read, not a
+  // the whole batch — a synchronous, localStorage-backed store read, not a
   // per-entry cost. A cover belongs on the row only for those: installed
   // volumes, and metadata-only rows kept for their reading history (the
   // stats and history pages read thumbnails from rows). A row minted purely
@@ -223,8 +354,26 @@ export async function flushPendingCoverPersists(): Promise<void> {
 
   try {
     await db.transaction('rw', db.volumes, async () => {
-      for (const [volumeUuid, { result, coverSize, coverModified, mode, cachePath }] of entries) {
-        const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
+      // ONE keyed bulk read for the whole batch, not a sequential
+      // `db.volumes.get()` per entry. It is still INSIDE the transaction, and
+      // still by primary key — both are load-bearing. Inside, because the
+      // re-check below has to see the table as of this write transaction: a
+      // download that finished mid-fetch must be visible here so its
+      // page-measured thumbnail is never clobbered by a stale cloud guess.
+      // By key, because a `volumes` scan deserializes every row's thumbnail
+      // blob (see `perf-contracts.test.ts` CONTRACT 2).
+      //
+      // Hoisting the reads out of the per-entry loop cannot change any
+      // decision: `pending` is keyed by uuid, so no two entries in a batch
+      // read the same row, and nothing this loop writes is read by a later
+      // entry in the same batch.
+      const rows = (await db.volumes.bulkGet(entries.map(([volumeUuid]) => volumeUuid))) as Array<
+        VolumeMetadata | undefined
+      >;
+
+      for (let i = 0; i < entries.length; i++) {
+        const [volumeUuid, { result, coverSize, coverModified, mode, cachePath }] = entries[i];
+        const fresh = rows[i];
 
         const hasRelationship =
           !!fresh && (isVolumeInstalled(fresh) || hasReadingActivity(readingHistory[volumeUuid]));
@@ -272,7 +421,7 @@ export async function flushPendingCoverPersists(): Promise<void> {
     });
 
     // Outside the `volumes` transaction, and coalesced to ONE call for the
-    // whole burst: preserves the "one burst, one write per table" property
+    // whole batch: preserves the "one batch, one write per table" property
     // this module's write-storm-avoidance design depends on.
     await putCloudCovers(forCoverTable);
   } catch (error) {
@@ -316,11 +465,14 @@ function hasReadingActivity(entry: ReadingHistoryEntry | undefined): boolean {
   );
 }
 
-/** Test hook: drop anything queued and forget the pending timer/cadence state, without flushing. */
+/** Test hook: drop anything queued and forget the pending timer/drain state, without flushing. */
 export function _resetCoverPersistForTests(): void {
   if (timer) clearTimeout(timer);
   timer = null;
   pending.clear();
-  currentDelayMs = COVER_PERSIST_BASE_DELAY_MS;
-  lastFlushCompletedAt = null;
+  // A drain may still be awaiting IndexedDB. Bumping the generation makes it
+  // stop at its next loop check instead of flushing the next test's queue.
+  generation += 1;
+  inFlight = null;
+  overflowDropped = 0;
 }

@@ -116,6 +116,10 @@ vi.mock('$lib/catalog/db', () => ({
     volumes: {
       toArray: (...a: Parameters<typeof volumesToArray>) => volumesToArray(...a),
       get: async (uuid: string) => volumeRows.find((v) => v.volume_uuid === uuid),
+      // `cover-persist.ts`'s flush re-reads its whole batch with ONE keyed
+      // bulk read rather than a `get` per entry.
+      bulkGet: async (uuids: string[]) =>
+        uuids.map((uuid) => volumeRows.find((v) => v.volume_uuid === uuid)),
       update: async (uuid: string, patch: Record<string, unknown>) => {
         const row = volumeRows.find((v) => v.volume_uuid === uuid);
         if (row) Object.assign(row, patch);

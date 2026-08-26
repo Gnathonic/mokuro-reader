@@ -74,10 +74,13 @@ import type { VolumeMetadata } from '$lib/types';
 import {
   _resetCoverPersistForTests,
   COVER_PERSIST_BASE_DELAY_MS,
+  COVER_PERSIST_MAX_BATCH,
+  COVER_PERSIST_MAX_PENDING,
   flushPendingCoverPersists,
   installCover
 } from './cover-persist';
 import { getCloudCovers } from './cloud-covers';
+import { countIdbOps } from './__tests__/idb-op-counter';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /** Gives the volume an entry with real reading activity — a "relationship". */
@@ -363,6 +366,138 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     expect(result).toBeUndefined();
     await flushPendingCoverPersists(); // drain the timer this call armed
   });
+});
+
+describe('bounded write batches: a burst gets MORE, SMALLER transactions — never one enormous one', () => {
+  /** Seed `n` relationship-carrying rows in one write, so the burst below is the only thing under measurement. */
+  async function seedRelationshipRows(prefix: string, n: number) {
+    const rows: VolumeMetadata[] = [];
+    const history: Record<string, unknown> = {};
+    for (let i = 0; i < n; i++) {
+      rows.push(metadataOnlyRow({ volume_uuid: `${prefix}-${i}`, volume_title: `Volume ${i}` }));
+      history[`${prefix}-${i}`] = { progress: 1 };
+    }
+    await db.volumes.bulkPut(rows);
+    setReadingHistory(history);
+  }
+
+  it('splits a burst larger than the cap into batches no larger than the cap', async () => {
+    // The defect this replaces: the flush delay DOUBLED (750ms → 8,000ms)
+    // whenever a batch started collecting right after the last one flushed,
+    // so on the reference library the four flushes of a cold start carried
+    // ~270 / 535 / 1,070 / 2,140 covers — the last ~66MB in ONE transaction.
+    const N = COVER_PERSIST_MAX_BATCH * 2 + 50;
+    await seedRelationshipRows('burst', N);
+
+    // Each flush re-reads its whole batch with ONE `bulkGet`, so the key
+    // counts handed to it ARE the batch sizes — the most direct measurement
+    // of "how many covers went into one transaction" available from outside.
+    const bulkGet = vi.spyOn(db.volumes, 'bulkGet');
+
+    const counts = await countIdbOps(async () => {
+      for (let i = 0; i < N; i++) installCover(`burst-${i}`, coverResult(`burst-${i}.webp`));
+      await flushPendingCoverPersists();
+    });
+
+    const batchSizes = bulkGet.mock.calls.map((call) => (call[0] as string[]).length);
+    bulkGet.mockRestore();
+
+    // THE contract: no transaction ever carries more than the cap.
+    expect(Math.max(...batchSizes)).toBeLessThanOrEqual(COVER_PERSIST_MAX_BATCH);
+    // Anchor: it really did split, rather than the burst quietly vanishing.
+    expect(batchSizes.length).toBe(Math.ceil(N / COVER_PERSIST_MAX_BATCH));
+    // Nothing was dropped to achieve it.
+    expect(batchSizes.reduce((a, b) => a + b, 0)).toBe(N);
+    // One batch, one write transaction — and Dexie broadcasts
+    // `storagemutated` once per readwrite COMMIT, so this is also the number
+    // of change signals the burst costs.
+    expect(counts['tx.volumes.readwrite'] ?? 0).toBe(batchSizes.length);
+
+    // Anchor: every cover in the burst actually landed on its row, so the
+    // bounds above describe the real write path and not a no-op.
+    expect(await db.volumes.where('series_title').equals('One Piece').count()).toBe(N);
+    for (const i of [0, COVER_PERSIST_MAX_BATCH, N - 1]) {
+      expect(((await db.volumes.get(`burst-${i}`)) as VolumeMetadata).thumbnail_width).toBe(210);
+    }
+  }, 30000);
+
+  it('re-checks a whole batch with ONE bulk read, not one serialized round trip per cover', async () => {
+    // The other half of the defect: the flush opened its `rw` transaction and
+    // then did `await db.volumes.get(uuid)` PER ENTRY — ~2,140 serialized
+    // IndexedDB round trips against a table holding ~14 rows.
+    //
+    // NOTE on what an op count cannot see here, and why this asserts on the
+    // Dexie call shape instead: Dexie's `bulkGet` lowers to `core.getMany`,
+    // which issues one `IDBObjectStore.get` request PER KEY (verified in
+    // dexie 4.2.1's `dbcore-indexeddb` `getMany`) — it just issues them all
+    // before awaiting any of them. So `countIdbOps` reports the SAME
+    // `volumes.get` total either way: measured at N = 40, it is 80 for both
+    // shapes (40 for this re-check, plus the read Dexie's own `Table.update`
+    // does per row). The difference is round TRIPS, not requests, and the
+    // only honest external witness to it is that the flush makes one keyed
+    // read call for the batch rather than N.
+    const N = COVER_PERSIST_MAX_BATCH - 60; // one batch, so "one read" is unambiguous
+    await seedRelationshipRows('bulk', N);
+
+    const get = vi.spyOn(db.volumes, 'get');
+    const bulkGet = vi.spyOn(db.volumes, 'bulkGet');
+
+    for (let i = 0; i < N; i++) installCover(`bulk-${i}`, coverResult(`bulk-${i}.webp`));
+    await flushPendingCoverPersists();
+
+    expect(bulkGet).toHaveBeenCalledTimes(1);
+    expect(bulkGet.mock.calls[0][0]).toEqual(
+      Array.from({ length: N }, (_, i) => `bulk-${i}`) // the whole batch, in queue order
+    );
+    expect(get).not.toHaveBeenCalled();
+    // Restored BEFORE the anchor below, so the anchor's own read cannot be
+    // mistaken for the flush's.
+    get.mockRestore();
+    bulkGet.mockRestore();
+
+    // Anchor: the re-check really ran against these rows and really wrote —
+    // a burst that routed everything to `cloud_covers` would satisfy
+    // "no per-entry get" vacuously.
+    expect(((await db.volumes.get('bulk-0')) as VolumeMetadata).thumbnail_width).toBe(210);
+    expect(((await db.volumes.get(`bulk-${N - 1}`)) as VolumeMetadata).thumbnail_width).toBe(210);
+  }, 30000);
+
+  it('bounds the QUEUE too: past COVER_PERSIST_MAX_PENDING the OLDEST waiting covers are dropped', async () => {
+    // With one flush transaction in flight at a time, a queue can still grow
+    // while that flush runs. Left unbounded it would retain every fetched
+    // blob until the backlog cleared (134MB on the reference library). The
+    // policy is stated on `COVER_PERSIST_MAX_PENDING`: keep the newest (they
+    // are the viewport-gated requests), drop the oldest.
+    //
+    // No `volumes` rows are seeded on purpose: every cover here carries a
+    // cloudPath and no row, so it routes to `cloud_covers`, and which
+    // *paths* survive is a direct readout of what the queue kept.
+    const FIRST_BATCH = COVER_PERSIST_MAX_BATCH; // taken the instant the cap is first reached
+    const OVERFLOW = 50;
+    const TOTAL = FIRST_BATCH + COVER_PERSIST_MAX_PENDING + OVERFLOW;
+
+    for (let i = 0; i < TOTAL; i++) {
+      installCover({ volume_uuid: `ov-${i}`, cloudPath: `Ov/${i}.cbz` } as never, coverResult());
+    }
+    await flushPendingCoverPersists();
+
+    // Exactly the covers the queue had room for, and not one more.
+    expect(await db.cloud_covers.count()).toBe(TOTAL - OVERFLOW);
+
+    const survived = async (i: number) =>
+      (await getCloudCovers('mega:a@b.com', [`Ov/${i}.cbz`])).size === 1;
+
+    // The batch already snapshotted before the queue ever filled is safe.
+    expect(await survived(0)).toBe(true);
+    expect(await survived(FIRST_BATCH - 1)).toBe(true);
+    // The OLDEST still-waiting covers are the ones evicted.
+    expect(await survived(FIRST_BATCH)).toBe(false);
+    expect(await survived(FIRST_BATCH + OVERFLOW - 1)).toBe(false);
+    // Everything newer than the evicted window survives, including the very
+    // last arrival — the one most likely to be for a card on screen.
+    expect(await survived(FIRST_BATCH + OVERFLOW)).toBe(true);
+    expect(await survived(TOTAL - 1)).toBe(true);
+  }, 30000);
 });
 
 describe('cover installs route by relationship', () => {

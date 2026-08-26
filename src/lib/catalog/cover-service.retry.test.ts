@@ -58,6 +58,10 @@ vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
       get: async (uuid: string) => volumeRows.find((v) => v.volume_uuid === uuid),
+      // `cover-persist.ts`'s flush re-reads its whole batch with ONE keyed
+      // bulk read rather than a `get` per entry.
+      bulkGet: async (uuids: string[]) =>
+        uuids.map((uuid) => volumeRows.find((v) => v.volume_uuid === uuid)),
       put: async (row: VolumeMetadata) => {
         volumeRows.push(row);
       },
