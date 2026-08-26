@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { db } from './db';
-import { putCloudCovers, getCloudCovers, touchCloudCovers, type CloudCover } from './cloud-covers';
+import {
+  putCloudCovers,
+  getCloudCovers,
+  touchCloudCovers,
+  pruneExpiredCloudCovers,
+  CLOUD_COVER_MAX_AGE_MS,
+  type CloudCover
+} from './cloud-covers';
 
 function cover(over: Partial<CloudCover> = {}): CloudCover {
   return {
@@ -65,5 +72,40 @@ describe('cloud cover CRUD', () => {
   it('returns an empty map for an empty path list, without touching the db', async () => {
     const rows = await getCloudCovers('mega:a@b.com', []);
     expect(rows.size).toBe(0);
+  });
+});
+
+describe('cloud cover expiry', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('is 14 days', () => {
+    expect(CLOUD_COVER_MAX_AGE_MS).toBe(14 * 24 * 60 * 60 * 1000);
+  });
+
+  it('deletes covers untouched for longer than the max age', async () => {
+    await putCloudCovers([
+      cover({ path: 'Old/Volume 01.cbz', last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS - 1 }),
+      cover({ path: 'Fresh/Volume 01.cbz', last_accessed: NOW - 1000 })
+    ]);
+
+    const deleted = await pruneExpiredCloudCovers(NOW);
+
+    expect(deleted).toBe(1);
+    expect((await getCloudCovers('mega:a@b.com', ['Old/Volume 01.cbz'])).size).toBe(0);
+    expect((await getCloudCovers('mega:a@b.com', ['Fresh/Volume 01.cbz'])).size).toBe(1);
+  });
+
+  it('keeps a cover exactly at the boundary', async () => {
+    await putCloudCovers([cover({ last_accessed: NOW - CLOUD_COVER_MAX_AGE_MS })]);
+    expect(await pruneExpiredCloudCovers(NOW)).toBe(0);
+  });
+
+  it('prunes across every account, not just the connected one', async () => {
+    const stale = NOW - CLOUD_COVER_MAX_AGE_MS - 1;
+    await putCloudCovers([
+      cover({ account_scope: 'mega:a@b.com', last_accessed: stale }),
+      cover({ account_scope: 'webdav:h|nathan', last_accessed: stale })
+    ]);
+    expect(await pruneExpiredCloudCovers(NOW)).toBe(2);
   });
 });

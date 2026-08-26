@@ -88,6 +88,11 @@
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
 
+    // Prune expired cloud cover cache, fire-and-forget
+    void import('$lib/catalog/cloud-covers')
+      .then((m) => m.pruneExpiredCloudCovers())
+      .catch((error) => console.debug('[cloud-covers] prune skipped:', error));
+
     // Fire and forget - don't block app initialization
     initializeProviders().catch((error) => {
       console.error('Failed to initialize providers:', error);

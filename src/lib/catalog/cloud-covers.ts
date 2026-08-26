@@ -72,3 +72,20 @@ export async function touchCloudCovers(
   const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
   await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ last_accessed: nowMs });
 }
+
+/** Covers untouched for this long are discarded. Age only — no size quota. */
+export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Drop covers nobody has looked at in `CLOUD_COVER_MAX_AGE_MS`. Returns how
+ * many were deleted.
+ *
+ * Deletes through the `last_accessed` index rather than scanning: this table
+ * carries blobs, and a full scan here would reintroduce exactly the cost this
+ * split exists to remove. Account-agnostic on purpose — an account the user
+ * stopped using should age out, not linger because it is disconnected.
+ */
+export async function pruneExpiredCloudCovers(nowMs: number = Date.now()): Promise<number> {
+  const cutoff = nowMs - CLOUD_COVER_MAX_AGE_MS;
+  return db.cloud_covers.where('last_accessed').below(cutoff).delete();
+}
