@@ -117,9 +117,9 @@ import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
  * `volumes` coalesces its liveQuery emissions on a trailing-edge timer (see
  * `VOLUMES_EMISSION_COALESCE_MS` in `$lib/catalog`), so subscribing to it — or to
  * anything that joins it, like `volumesWithPlaceholders` and `catalog` — always
- * computes once synchronously against the readable's `{}` initial value before
- * the real data lands. Tests below only care about the settled state, so they
- * subscribe through this helper, which arms fake timers, lets the coalesce
+ * computes once synchronously against the readable's `undefined` initial value
+ * before the real data lands. Tests below only care about the settled state, so
+ * they subscribe through this helper, which arms fake timers, lets the coalesce
  * window elapse, and restores real timers before returning.
  */
 function subscribeSettled<T>(
@@ -132,6 +132,55 @@ function subscribeSettled<T>(
   vi.useRealTimers();
   return unsubscribe;
 }
+
+/**
+ * Before `volumes` delivers its first coalesced emission, `catalog` must
+ * expose its loading sentinel (`null`) rather than falling through to an
+ * empty catalog — `Catalog.svelte` and `SeriesView.svelte` both branch on
+ * `$catalog === null` to render a spinner instead of "Your catalog is
+ * currently empty." / "Series not found.". Before this fix, `volumes` and
+ * `volumesWithPlaceholders` both defaulted to `{}`, so that branch was dead
+ * code: every fresh mount (app boot, and every navigation, since the router
+ * tears down and rebuilds this subscription chain per route) rendered the
+ * empty-library message for the length of one coalesce window.
+ *
+ * This is a store-level assertion rather than a component render test: the
+ * existing component test for `Catalog.svelte` (`Catalog.grouping.test.ts`)
+ * mocks `$lib/catalog` directly, bypassing this store chain entirely, so it
+ * can't exercise the bug or the fix — `Catalog.svelte`'s own `{#if $catalog
+ * === null}` branch was already correct, only the store chain feeding it was
+ * dead. Proving this meaningfully at the component level would mean
+ * duplicating this file's real-module mocking (the mocked `dexie` liveQuery,
+ * cloud/series-index/cover stores) inside a full component render harness,
+ * which is disproportionate for what is fundamentally a store-wiring fix.
+ *
+ * Must run before any other test in this file subscribes to `catalog`,
+ * `volumesWithPlaceholders`, or `volumes`: Svelte stores retain their last
+ * delivered value across a full unsubscribe/resubscribe cycle, so once any
+ * test lets a real emission flow through once, every later subscribe in this
+ * file sees that retained value immediately instead of the genuine
+ * "nothing has loaded yet" `undefined`/`null` state.
+ */
+describe('volumes loading state (must run first in this file — see comment above)', () => {
+  it('reports catalog as null until volumes settles, then resolves to the real data', async () => {
+    vi.useFakeTimers();
+
+    let latest: unknown = 'not yet emitted';
+    const unsubscribe = catalog.subscribe((value) => (latest = value));
+
+    // Before the first coalesced `volumes` emission lands, `catalog` must be
+    // the loading sentinel, not an empty array.
+    expect(latest).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+
+    expect(latest).not.toBeNull();
+    expect((latest as Array<{ title: string }>)[0].title).toBe('One Piece');
+
+    unsubscribe();
+    vi.useRealTimers();
+  });
+});
 
 describe('catalog store recomputes', () => {
   it('rebuilds only when the title language actually changes', () => {
@@ -301,7 +350,10 @@ describe('volumesWithPlaceholders', () => {
     cloudFiles.set(new Map(cloudListing));
 
     let latest: Record<string, VolumeMetadata> = {};
-    const unsubscribe = subscribeSettled(volumesWithPlaceholders, (value) => (latest = value));
+    const unsubscribe = subscribeSettled(
+      volumesWithPlaceholders,
+      (value) => (latest = value ?? {})
+    );
 
     expect(latest.v2.cloudFileId).toBe('f1');
     expect(latest.v2.cloudProvider).toBe('webdav');

@@ -248,8 +248,8 @@
 
   // Derived stores
   const volumeSpeedData = derived([volumes, catalogStore], ([$volumes, $catalogStore]) => {
-    // Handle loading state (null means still loading from IndexedDB)
-    if ($catalogStore === null) return [];
+    // Handle loading state (undefined until the first coalesced emission from IndexedDB)
+    if ($catalogStore === undefined) return [];
     const catalog = Object.values($catalogStore);
     return processVolumeSpeedData($volumes, catalog);
   });

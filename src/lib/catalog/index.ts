@@ -82,16 +82,23 @@ async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData
  */
 export const VOLUMES_EMISSION_COALESCE_MS = 150;
 
-// Single source of truth from the database
-export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
+// Single source of truth from the database. `undefined` until the first
+// coalesced emission lands — never `{}` — so a genuinely-loading catalog is
+// distinguishable from a genuinely-empty one; see `volumesWithPlaceholders`
+// and `catalog`'s loading guards below, which both depend on this.
+export const volumes = readable<Record<string, VolumeMetadata> | undefined>(undefined, (set) => {
   let newest: Record<string, VolumeMetadata> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const flush = () => {
     timer = null;
     if (newest) {
-      set(newest);
+      // Null out before calling `set` so a reentrant emission arriving
+      // synchronously from within a subscriber's reaction to this `set` isn't
+      // silently dropped (it would re-arm its own timer instead of vanishing).
+      const value = newest;
       newest = null;
+      set(value);
     }
   };
 
@@ -176,6 +183,16 @@ let lastCoverIndex = new Map<string, CloudVolumeWithProvider>();
 export const volumesWithPlaceholders = derived(
   [volumes, unifiedCloudManager.cloudFiles, seriesIndexMap, cloudCoverMap],
   ([$volumes, $cloudFiles, $seriesIndexMap, $cloudCoverMap]) => {
+    // `volumes` is `undefined` until its first coalesced emission lands.
+    // Propagate that instead of treating it as `{}`, so `catalog`'s loading
+    // guard below can actually fire — otherwise every fresh mount (app boot,
+    // and every navigation, since the router tears down and rebuilds this
+    // subscription chain per route) would render as a genuinely empty
+    // library for the length of one coalesce window.
+    if ($volumes === undefined) {
+      return undefined;
+    }
+
     const combined = { ...$volumes };
     const localVolumes = Object.values($volumes);
 
@@ -234,7 +251,7 @@ export const volumesWithPlaceholders = derived(
 
     return combined;
   },
-  {} as Record<string, VolumeMetadata>
+  undefined as Record<string, VolumeMetadata> | undefined
 );
 
 // Each derived store needs to be passed as an array if using multiple inputs.
