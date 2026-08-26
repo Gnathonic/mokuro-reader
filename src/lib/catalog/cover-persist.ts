@@ -8,6 +8,7 @@ import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
 import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
 import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
 import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
+import { hasReadingActivity, type ReadingHistoryEntry } from '$lib/settings/reading-activity';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -427,42 +428,6 @@ async function flushOneBatch(): Promise<void> {
   } catch (error) {
     console.debug('[cover-persist] could not persist a batch of catalog covers:', error);
   }
-}
-
-/**
- * Loosely-typed on purpose: the reading-state store's entries are
- * `VolumeData` instances in production, but this only needs to read a
- * handful of fields, structurally, so a test's hand-rolled mock doesn't have
- * to construct a real instance.
- */
-interface ReadingHistoryEntry {
-  progress?: number;
-  chars?: number;
-  completed?: boolean;
-  timeReadInMinutes?: number;
-  recentPageTurns?: unknown[];
-  sessions?: unknown[];
-  archivedReads?: unknown[];
-}
-
-/**
- * Does this reading-state entry represent actual reading activity, not just
- * the settings key every volume gets the moment it is imported
- * (`initializeVolume`)? `archivedReads` counts too: "restart series" zeroes
- * `progress`/`chars`/`completed` while archiving the prior pass as the
- * record that reading happened.
- */
-function hasReadingActivity(entry: ReadingHistoryEntry | undefined): boolean {
-  if (!entry) return false;
-  return (
-    (entry.progress ?? 0) > 0 ||
-    (entry.chars ?? 0) > 0 ||
-    !!entry.completed ||
-    (entry.timeReadInMinutes ?? 0) > 0 ||
-    (entry.recentPageTurns?.length ?? 0) > 0 ||
-    (entry.sessions?.length ?? 0) > 0 ||
-    (entry.archivedReads?.length ?? 0) > 0
-  );
 }
 
 /** Test hook: drop anything queued and forget the pending timer/drain state, without flushing. */

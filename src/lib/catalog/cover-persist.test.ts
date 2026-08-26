@@ -558,6 +558,38 @@ describe('cover installs route by relationship', () => {
     expect(row?.thumbnail).toBeInstanceOf(File);
   });
 
+  it('counts "marked as finished" alone as a relationship, exactly as the row sweep does', async () => {
+    // Both this gate and `materializeHistoryRows` ask the SAME question —
+    // "has the user actually read this?" — through the SAME imported
+    // predicate (`$lib/settings/reading-activity`). They must not drift: a
+    // volume that earns a row there and is called inert here is a row that
+    // never gets a cover. The user's rule is that being marked finished
+    // counts on its own, with no page turns and no recorded time.
+    await db.volumes.put(metadataOnlyRow({ volume_uuid: 'finished-1' }) as never);
+    setReadingHistory({
+      'finished-1': {
+        completed: true,
+        progress: 0,
+        chars: 0,
+        timeReadInMinutes: 0,
+        recentPageTurns: [],
+        sessions: [],
+        archivedReads: []
+      }
+    });
+
+    installCover(
+      { volume_uuid: 'finished-1', cloudPath: 'One Piece/Volume 1.cbz' } as never,
+      coverResult()
+    );
+    await flushPendingCoverPersists();
+
+    const row = await db.volumes.get('finished-1');
+    expect(row?.thumbnail).toBeInstanceOf(File);
+    // …and it did NOT fall through to the catalog-knowledge cache.
+    expect((await getCloudCovers('mega:a@b.com', ['One Piece/Volume 1.cbz'])).size).toBe(0);
+  });
+
   it('sends a browsed volume’s cover to cloud_covers even though a row exists', async () => {
     // A row minted by case-3 placeholder resolution: metadata-only, no
     // install, no reading history — pure catalog knowledge, not a

@@ -16,6 +16,7 @@
     enrichAllOrphanedVolumes
   } from '$lib/settings/volume-data';
   import { volumes as catalogStore } from '$lib/catalog';
+  import { patchProgressHoles } from '$lib/metadata/hole-patch';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     Badge,
@@ -689,6 +690,15 @@
     // Proactively enrich ALL orphaned volumes when page loads
     // This ensures even volumes that don't pass speed filters get enriched
     enrichAllOrphanedVolumes();
+
+    // `enrichAllOrphanedVolumes` can only copy metadata off rows this device
+    // already has; a volume read on another machine has none, which is what
+    // puts it in the `[Missing Series Info]` bucket this page then offers for
+    // deletion. This mints the missing rows from data already on the device
+    // (see `materializeHistoryRows`) so the next visit — or the next store
+    // emission — resolves them properly. Fire-and-forget: it never rejects and
+    // must never hold up the page.
+    void patchProgressHoles();
 
     return () => {
       if (chart) {

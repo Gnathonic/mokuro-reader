@@ -5,12 +5,20 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { listSeriesIndexes } from './series-index';
 import { openSeries } from './series-open';
+import { materializeHistoryRows } from './history-rows';
 import { normalizeSeriesKey } from './series-key';
 
 /**
  * Series pulled per run. Each pull is a `series.json` download, so a device
  * whose progress file references a hundred long-gone series must not turn a
  * catalog open into a hundred requests — the rest are patched on the next run.
+ *
+ * This caps the NETWORK phase only, and that phase is now the rare one: a
+ * series whose `series.json` is already cached is served by
+ * `materializeHistoryRows` with no request at all, and the listing-wide index
+ * refresh (`series-index-sync.ts`) caches one for every folder in the account.
+ * What is left here is the window before that refresh has caught up — where
+ * five downloads per run is exactly the right budget.
  */
 export const MAX_HOLE_PATCHES_PER_RUN = 5;
 
@@ -23,6 +31,12 @@ export const MAX_HOLE_PATCHES_PER_RUN = 5;
  * fresh page load, matching the "session-scoped" contract; a series that was
  * only deferred by the run cap is never added here, so it is still picked up
  * next run.
+ *
+ * It can no longer hide a hole for a whole session, which it used to be able
+ * to: a series memoized here before its `series.json` had been cached is still
+ * picked up by `materializeHistoryRows`, which consults nothing in this set —
+ * it reads the index cache, so it heals the moment the background refresh
+ * lands the file.
  */
 const attemptedThisSession = new Set<string>();
 
@@ -48,17 +62,29 @@ function listingIsLoaded(): boolean {
 }
 
 /**
- * Patch the holes synced progress leaves behind.
+ * Patch the holes synced progress leaves behind, in two phases.
  *
  * `catalog.json` carries names only, so a device that has read a volume on
  * another machine can hold progress for a series it has no rows and no cached
  * index for — the stats views would show a dangling entry with no title, no
- * counts and no cover. Each such series gets its `series.json` pulled and its
- * volumes materialized (`openSeries`), which is exactly the state the series
- * would have been in had the user opened it.
+ * counts and no cover.
  *
- * Cheap in the normal case: one pass over the progress records, one over the
- * local rows, one over the cached indexes, and zero network when nothing dangles.
+ * PHASE 1 — `materializeHistoryRows`, local and unmetered. Every volume with
+ * genuine reading activity that has no row gets one, resolved by `volume_uuid`
+ * against the already-cached `series.json` indexes. Zero network, one write
+ * transaction for the whole sweep, and no dependence on the progress record
+ * carrying a `series_title` — see that function for why that last part is the
+ * whole point.
+ *
+ * PHASE 2 — the network fallback, capped. A series that phase 1 could not
+ * serve because this device has NO cached index for it gets its `series.json`
+ * pulled and its volumes materialized (`openSeries`), which is exactly the
+ * state the series would have been in had the user opened it. Phase 1 runs
+ * first so the rows it creates take those series out of phase 2's reckoning.
+ *
+ * Cheap in the normal case: one pass over the progress records, one INDEX-KEY
+ * read of the local rows (never a full scan — `volumes` rows carry thumbnail
+ * blobs), one over the cached indexes, and zero network when nothing dangles.
  * Tombstones (`deletedOn`) are skipped — the user deleted those on purpose.
  *
  * Returns the series titles actually ATTEMPTED (via `openSeries`) while a
@@ -87,10 +113,22 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     // runs once the listing has loaded. See `listingIsLoaded`.
     if (!listingIsLoaded()) return pulled;
 
+    // Phase 1. Local, network-free, and NOT capped at five: it is the phase
+    // that actually closes the gap the user reported (726 volumes with
+    // history, 36 of them tracked), and it can only act on data already on
+    // the device. Awaited before phase 2 plans anything so the rows it writes
+    // are visible to the "does this series already have a row" check below.
+    await materializeHistoryRows();
+
     const progress = get(progressStore);
     const wanted = new Map<string, string>();
     for (const record of Object.values(progress ?? {})) {
       if (!record || record.deletedOn) continue;
+      // Phase 2 pulls a `series.json` BY NAME, so a record with no
+      // `series_title` gives it nothing to ask for and is skipped here — but
+      // it is no longer lost: phase 1 identifies exactly those records by
+      // `volume_uuid` against the cached indexes, which is where the legacy
+      // entries this used to strand permanently are now served.
       const title = record.series_title;
       if (typeof title !== 'string') continue;
       const key = normalizeSeriesKey(title);
@@ -99,8 +137,16 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     }
     if (wanted.size === 0) return pulled;
 
-    for (const row of await db.volumes.toArray()) {
-      wanted.delete(normalizeSeriesKey(row.series_title));
+    // The DISTINCT series titles the local rows carry, read off the
+    // `series_title` INDEX rather than by scanning the table: this question is
+    // about keys, and a `db.volumes.toArray()` would deserialize every
+    // installed volume's thumbnail blob to answer it (measured: one
+    // `openKeyCursor` and 0 bytes, versus one `getAll` and the whole table's
+    // blob payload). Rows with no `series_title` are simply absent from the
+    // index, which is also what the old scan wanted — it would have thrown on
+    // them.
+    for (const title of await db.volumes.orderBy('series_title').uniqueKeys()) {
+      if (typeof title === 'string') wanted.delete(normalizeSeriesKey(title));
     }
     for (const index of await listSeriesIndexes()) {
       wanted.delete(index.series_key);
