@@ -20,7 +20,8 @@ const {
   routeParams,
   generatePlaceholders,
   liveQueryState,
-  emitLiveQuery
+  emitMutationSignal,
+  toArrayCalls
 } = vi.hoisted(() => {
   // vi.mock factories are hoisted above imports, so the stores they close over are
   // hand-rolled here rather than built with svelte/store's `writable`.
@@ -52,8 +53,11 @@ const {
   };
 
   // Holds the `next` callback the mocked liveQuery's current subscriber registered,
-  // so a test can push additional emissions through it via `emitLiveQuery`.
+  // so a test can drive it as an explicit change signal via `emitMutationSignal`
+  // — `volumes` now uses `liveQuery(() => db.volumes.count())` purely as a cheap
+  // trigger, so the mock ignores the querier entirely and never needs to run it.
   const liveQueryState: { next: ((v: unknown) => void) | null } = { next: null };
+  const toArrayCalls: unknown[] = [];
 
   return {
     volumeRecord: { v1: volume } as Record<string, unknown>,
@@ -64,17 +68,34 @@ const {
     routeParams: createStore({} as Record<string, string>),
     generatePlaceholders: vi.fn(() => [] as unknown[]),
     liveQueryState,
-    emitLiveQuery: (v: unknown) => liveQueryState.next?.(v)
+    emitMutationSignal: () => liveQueryState.next?.(undefined),
+    toArrayCalls
   };
 });
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
-// The `volumes` readable wraps liveQuery; emit a fixed record once instead of touching IndexedDB.
+// `volumes` reads through `db.volumes.toArray()` directly (not through
+// liveQuery — see the `dexie` mock below), so it needs a real implementation
+// here; `toArrayCalls` records every call so tests can assert the scan itself
+// was coalesced, not just the downstream emission.
+vi.mock('$lib/catalog/db', () => ({
+  db: {
+    volumes: {
+      toArray: () => {
+        toArrayCalls.push(1);
+        return Promise.resolve(Object.values(volumeRecord));
+      }
+    }
+  }
+}));
+// The `volumes` readable subscribes to `liveQuery(() => db.volumes.count())` purely
+// as a change signal — the mock ignores the querier function entirely and instead
+// exposes the registered `next` callback via `emitMutationSignal`, mirroring Dexie
+// re-firing the live query on any table write.
 vi.mock('dexie', () => ({
   liveQuery: () => ({
     subscribe: ({ next }: { next: (v: unknown) => void }) => {
       liveQueryState.next = next;
-      next(volumeRecord);
+      next(undefined);
       return {
         unsubscribe() {
           liveQueryState.next = null;
@@ -121,14 +142,20 @@ import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
  * before the real data lands. Tests below only care about the settled state, so
  * they subscribe through this helper, which arms fake timers, lets the coalesce
  * window elapse, and restores real timers before returning.
+ *
+ * `volumes`'s quiet-period read (`runQuery`) is a genuine `async` function —
+ * it awaits `db.volumes.toArray()` — so flushing the timer alone isn't enough;
+ * the microtask the `await` yields to also has to run before the settled value
+ * has actually landed. `advanceTimersByTimeAsync` yields between timer firings
+ * for exactly that, so this helper must be awaited by its callers.
  */
-function subscribeSettled<T>(
+async function subscribeSettled<T>(
   store: { subscribe: (fn: (v: T) => void) => () => void },
   fn: (v: T) => void
 ) {
   vi.useFakeTimers();
   const unsubscribe = store.subscribe(fn);
-  vi.advanceTimersByTime(VOLUMES_EMISSION_COALESCE_MS);
+  await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
   vi.useRealTimers();
   return unsubscribe;
 }
@@ -183,12 +210,12 @@ describe('volumes loading state (must run first in this file — see comment abo
 });
 
 describe('catalog store recomputes', () => {
-  it('rebuilds only when the title language actually changes', () => {
+  it('rebuilds only when the title language actually changes', async () => {
     const derive = vi.mocked(deriveSeriesFromVolumes);
     derive.mockClear();
 
     let latest: ReturnType<typeof deriveSeriesFromVolumes> | null = null;
-    const unsubscribe = subscribeSettled(catalog, (value) => (latest = value));
+    const unsubscribe = await subscribeSettled(catalog, (value) => (latest = value));
 
     expect(derive).toHaveBeenCalled();
     expect((latest as unknown as Array<{ title: string }>)[0].title).toBe('One Piece');
@@ -254,13 +281,13 @@ describe('volumesWithPlaceholders', () => {
     };
   }
 
-  it('passes the index to generatePlaceholders and recomputes only on real changes', () => {
+  it('passes the index to generatePlaceholders and recomputes only on real changes', async () => {
     const generate = vi.mocked(generatePlaceholders);
     generate.mockClear();
     cloudFiles.set(cloudListing);
     seriesIndexMap.set(new Map([['one piece', indexRecord('2026-08-17T00:00:00.000Z')]]));
 
-    const unsubscribe = subscribeSettled(volumesWithPlaceholders, () => {});
+    const unsubscribe = await subscribeSettled(volumesWithPlaceholders, () => {});
 
     expect(generate).toHaveBeenLastCalledWith(
       cloudListing,
@@ -293,7 +320,7 @@ describe('volumesWithPlaceholders', () => {
     cloudFiles.set(new Map());
   });
 
-  it('passes the cover map to generatePlaceholders and recomputes only when its content changes', () => {
+  it('passes the cover map to generatePlaceholders and recomputes only when its content changes', async () => {
     const generate = vi.mocked(generatePlaceholders);
     generate.mockClear();
     cloudFiles.set(cloudListing);
@@ -309,7 +336,7 @@ describe('volumesWithPlaceholders', () => {
     });
     cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
 
-    const unsubscribe = subscribeSettled(volumesWithPlaceholders, () => {});
+    const unsubscribe = await subscribeSettled(volumesWithPlaceholders, () => {});
     expect(generate).toHaveBeenLastCalledWith(
       cloudListing,
       expect.any(Array),
@@ -333,7 +360,7 @@ describe('volumesWithPlaceholders', () => {
     cloudCoverMap.set(new Map());
   });
 
-  it('decorates a metadata-only row with the cloud file it can be downloaded from', () => {
+  it('decorates a metadata-only row with the cloud file it can be downloaded from', async () => {
     // The row shadows its own placeholder (generatePlaceholders skips a path
     // that has a local row), so without this join there would be no fileId to
     // download it with.
@@ -351,7 +378,7 @@ describe('volumesWithPlaceholders', () => {
     cloudFiles.set(new Map(cloudListing));
 
     let latest: Record<string, VolumeMetadata> = {};
-    const unsubscribe = subscribeSettled(
+    const unsubscribe = await subscribeSettled(
       volumesWithPlaceholders,
       (value) => (latest = value ?? {})
     );
@@ -382,7 +409,7 @@ describe('volumesWithPlaceholders', () => {
    * stamps say the sidecar moved on — a just-materialized row (which has
    * neither stamp) is correctly read as "not stale", so no fetch follows.
    */
-  it('decorates a metadata-only row with its cached cover, without a network fetch', () => {
+  it('decorates a metadata-only row with its cached cover, without a network fetch', async () => {
     volumeRecord.v2 = {
       volume_uuid: 'v2',
       series_uuid: 's1',
@@ -416,7 +443,7 @@ describe('volumesWithPlaceholders', () => {
     );
 
     let latest: Record<string, VolumeMetadata> = {};
-    const unsubscribe = subscribeSettled(
+    const unsubscribe = await subscribeSettled(
       volumesWithPlaceholders,
       (value) => (latest = value ?? {})
     );
@@ -445,7 +472,7 @@ describe('volumesWithPlaceholders', () => {
  * is exactly the ghost-entry problem the placeholder pass already solved once.
  */
 describe('catalog visibility', () => {
-  it('hides a metadata-only row the active listing cannot deliver', () => {
+  it('hides a metadata-only row the active listing cannot deliver', async () => {
     // One Piece v2 is backed by the listing; Ghost Series exists only as a
     // retained row — its cloud copy was deleted (or lives on another provider).
     volumeRecord.v2 = {
@@ -488,7 +515,7 @@ describe('catalog visibility', () => {
     );
 
     let latest: Array<{ title: string; volumes: VolumeMetadata[] }> = [];
-    const unsubscribe = subscribeSettled(
+    const unsubscribe = await subscribeSettled(
       catalog,
       (value) => (latest = value as unknown as typeof latest)
     );
@@ -506,7 +533,7 @@ describe('catalog visibility', () => {
     cloudFiles.set(new Map());
   });
 
-  it('hides metadata-only rows entirely when no listing is loaded', () => {
+  it('hides metadata-only rows entirely when no listing is loaded', async () => {
     volumeRecord.g1 = {
       volume_uuid: 'g1',
       series_uuid: 's9',
@@ -521,7 +548,7 @@ describe('catalog visibility', () => {
     cloudFiles.set(new Map());
 
     let latest: Array<{ title: string }> = [];
-    const unsubscribe = subscribeSettled(
+    const unsubscribe = await subscribeSettled(
       catalog,
       (value) => (latest = value as unknown as typeof latest)
     );
@@ -534,19 +561,32 @@ describe('catalog visibility', () => {
 });
 
 /**
- * A burst of writes must cost ONE recompute, not one per write. `volumes`
- * coalesces its liveQuery emissions on a trailing-edge timer: the first
- * emission of a burst arms it, every later one replaces the pending payload,
- * and subscribers see only the burst's final state — once.
+ * A burst of writes must cost ONE recompute, not one per write — and, more
+ * specifically, ONE `db.volumes.toArray()` scan, not one per write.
+ *
+ * `volumes` used to wrap the scan directly inside `liveQuery`, then debounce
+ * only the downstream emission — Dexie re-executes a liveQuery querier on
+ * EVERY mutation, so the expensive scan had already happened by the time the
+ * debounce ran; only the recompute it fed was collapsed. Measured on a large
+ * library: 145 full-table scans in 20 seconds, queueing behind each other
+ * until the worst case took 16.5 seconds. The fix inverts it: `liveQuery`
+ * wraps a cheap `count()` used only as a change signal (see the `dexie` mock
+ * above — it ignores the querier entirely and exposes the signal as
+ * `emitMutationSignal`), and the scan itself (`db.volumes.toArray`, counted
+ * via `toArrayCalls` in the `db` mock above) runs at most once per quiet
+ * period. A test that only counts subscriber emissions (the first test below)
+ * would also have passed on the broken code, since the old version already
+ * coalesced emissions without coalescing the scan behind them — the
+ * `toArrayCalls` assertions are what actually prove the fix.
  */
 describe('volumes emissions coalesce', () => {
-  it('collapses a burst of writes into one recompute', async () => {
+  it('collapses a burst of writes into one subscriber emission', async () => {
     vi.useFakeTimers();
     let emissions = 0;
     const unsub = volumes.subscribe(() => emissions++);
     emissions = 0;
 
-    for (let i = 0; i < 20; i++) emitLiveQuery({ ['v' + i]: {} });
+    for (let i = 0; i < 20; i++) emitMutationSignal();
     await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS * 2);
 
     expect(emissions).toBe(1);
@@ -554,15 +594,32 @@ describe('volumes emissions coalesce', () => {
     vi.useRealTimers();
   });
 
-  it('still delivers the latest value after the quiet period', async () => {
+  it('runs ONE toArray for a burst of writes, not one per write', async () => {
     vi.useFakeTimers();
-    let latest: unknown = null;
-    const unsub = volumes.subscribe((v) => (latest = v));
-    emitLiveQuery({ first: {} });
-    emitLiveQuery({ second: {} });
+    toArrayCalls.length = 0;
+    const unsubscribe = volumes.subscribe(() => {});
+
+    // 20 mutations inside one quiet period
+    for (let i = 0; i < 20; i++) emitMutationSignal();
     await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS * 2);
-    expect(Object.keys(latest as object)).toEqual(['second']);
-    unsub();
+
+    expect(toArrayCalls.length).toBe(1);
+    unsubscribe();
+    vi.useRealTimers();
+  });
+
+  it('re-reads again after a later, separate burst', async () => {
+    vi.useFakeTimers();
+    toArrayCalls.length = 0;
+    const unsubscribe = volumes.subscribe(() => {});
+
+    emitMutationSignal();
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS * 2);
+    emitMutationSignal();
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS * 2);
+
+    expect(toArrayCalls.length).toBe(2);
+    unsubscribe();
     vi.useRealTimers();
   });
 });

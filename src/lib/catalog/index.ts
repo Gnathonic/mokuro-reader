@@ -88,39 +88,66 @@ export const VOLUMES_EMISSION_COALESCE_MS = 150;
 // distinguishable from a genuinely-empty one; see `volumesWithPlaceholders`
 // and `catalog`'s loading guards below, which both depend on this.
 export const volumes = readable<Record<string, VolumeMetadata> | undefined>(undefined, (set) => {
-  let newest: Record<string, VolumeMetadata> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  let dirty = false;
 
-  const flush = () => {
-    timer = null;
-    if (newest) {
-      // Null out before calling `set` so a reentrant emission arriving
-      // synchronously from within a subscriber's reaction to this `set` isn't
-      // silently dropped (it would re-arm its own timer instead of vanishing).
-      const value = newest;
-      newest = null;
-      set(value);
+  /**
+   * The expensive read, run at most once per quiet period.
+   *
+   * `liveQuery` re-executes its querier on EVERY mutation, so putting
+   * `db.volumes.toArray()` inside one means a burst of writes costs a full
+   * scan each — measured at 145 scans in 20 seconds on a large library, with
+   * later scans queueing behind earlier ones until they reported 16 seconds.
+   * The querier below is therefore only a CHANGE SIGNAL; this is the read.
+   */
+  const runQuery = async () => {
+    if (running) {
+      // A mutation landed while we were reading: the result we are about to
+      // deliver is already stale, so schedule one more pass rather than
+      // dropping it.
+      dirty = true;
+      return;
+    }
+    running = true;
+    try {
+      const rows = await db.volumes.toArray();
+      set(
+        rows.reduce(
+          (acc, vol) => {
+            acc[vol.volume_uuid] = vol;
+            return acc;
+          },
+          {} as Record<string, VolumeMetadata>
+        )
+      );
+    } catch (err) {
+      console.error(err);
+    } finally {
+      running = false;
+      if (dirty) {
+        dirty = false;
+        schedule();
+      }
     }
   };
 
-  const subscription = liveQuery(async () => {
-    const volumesArray = await db.volumes.toArray();
+  const schedule = () => {
+    if (!timer)
+      timer = setTimeout(() => {
+        timer = null;
+        void runQuery();
+      }, VOLUMES_EMISSION_COALESCE_MS);
+  };
 
-    return volumesArray.reduce(
-      (acc, vol) => {
-        acc[vol.volume_uuid] = vol;
-        return acc;
-      },
-      {} as Record<string, VolumeMetadata>
-    );
-  }).subscribe({
-    next: (value) => {
-      newest = value;
-      // Trailing edge only: the first write of a burst arms the timer and every
-      // later one replaces the payload, so subscribers see the burst's final
-      // state exactly once.
-      if (!timer) timer = setTimeout(flush, VOLUMES_EMISSION_COALESCE_MS);
-    },
+  /**
+   * `count()` touches the whole store, so Dexie re-fires it on any mutation
+   * in the table — including an update, which a key-list query would miss —
+   * and it costs an index count rather than deserializing every row and its
+   * thumbnail blob.
+   */
+  const subscription = liveQuery(() => db.volumes.count()).subscribe({
+    next: schedule,
     error: (err) => console.error(err)
   });
 
