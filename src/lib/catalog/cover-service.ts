@@ -13,7 +13,7 @@ import {
   orderVolumeEntryFields,
   type SeriesFileVolume
 } from '$lib/metadata/series-file';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
   acquireBackfillSlot,
   buildImageOnlyEntry,
@@ -227,8 +227,16 @@ async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
   | {
       entry: SeriesFileVolume;
       folderTitle: string;
-      /** The archive's own cloud path — the identity a row-less cover is cached under. */
-      archivePath: string;
+      /**
+       * The archive's own cloud path, straight from the listing — the identity
+       * a row-less (or relationship-less) cover is cached under. `undefined`
+       * when the placeholder carries none, which is NOT a licence to
+       * synthesize one: `catalog/index.ts` only ever reads a cached cover back
+       * under the LISTING's path, so a `<series>/<volume>.cbz` guess would
+       * write the blob where nothing reads it while `requestCover` marks the
+       * uuid `settled` — a permanently coverless card. No path, no cache entry.
+       */
+      archivePath: string | undefined;
       cover?: CloudFileMetadata;
     }
   | undefined
@@ -245,7 +253,10 @@ async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
   const archiveFile: CloudFileMetadata = {
     provider: vol.cloudProvider ?? provider.type,
     fileId: vol.cloudFileId ?? '',
-    path: vol.cloudPath ?? `${vol.series_title}/${vol.volume_title}.cbz`,
+    // Deliberately NOT synthesized when absent — see `archivePath` above.
+    // `buildImageOnlyEntry` reads only `size` from this record, so an empty
+    // path costs nothing here and cannot leak into a cache key.
+    path: vol.cloudPath ?? '',
     size: vol.cloudSize ?? 0,
     modifiedTime: vol.cloudModifiedTime ?? ''
   };
@@ -282,10 +293,27 @@ async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
   return {
     entry: orderVolumeEntryFields(entry),
     folderTitle,
-    archivePath: archiveFile.path,
+    archivePath: vol.cloudPath,
     cover: sidecars?.cover
   };
 }
+
+/**
+ * What a batch decided about ONE of its entries.
+ *
+ * - `'materialized'` — a row for this uuid exists AND belongs to this series:
+ *   the cover can be delivered to it.
+ * - `'foreign'` — a row exists at this uuid but belongs to a DIFFERENT series
+ *   (`materializeSeriesVolumes`'s rule 0: `volume_uuid` is the whole table's
+ *   primary key and is title-independent, so a mokuro re-OCR'd elsewhere can
+ *   legitimately hand two series the same uuid). Nothing was written and
+ *   nothing ever will be — delivering the cover here would paint THIS series'
+ *   art onto that other series' row, which for a history-bearing row is a
+ *   visibly wrong cover on something the user cares about.
+ * - `'blocked'` — no row at this uuid: rule 2 refused it, a concurrent write
+ *   raced, or the batch threw. Might well succeed on a later attempt.
+ */
+type MaterializeOutcome = 'materialized' | 'foreign' | 'blocked';
 
 /** One resolved case-3/4 volume waiting for the next batched materialize. */
 interface QueuedMaterialization {
@@ -294,8 +322,8 @@ interface QueuedMaterialization {
   volumeTitle: string;
   /** The cloud FOLDER this series lives in, for the `series.json` write. */
   folderTitle: string;
-  /** Settled with whether a row for this entry's uuid exists once the batch has landed. */
-  resolve: (materialized: boolean) => void;
+  /** Settled with what the batch decided about this entry's uuid once it has landed. */
+  resolve: (outcome: MaterializeOutcome) => void;
 }
 
 /** series_title → the resolutions waiting to be materialized under it. */
@@ -315,18 +343,18 @@ let materializeTimer: ReturnType<typeof setTimeout> | null = null;
  * changes nothing about WHAT is stored: every entry still carries its own
  * listing title into the same per-row guards, in arrival order.
  *
- * Resolves `true` when a row for this entry's uuid exists after the batch —
- * the same question the un-batched `changed === 0` check was asking, only
- * answered per entry rather than per call (a batch's total says nothing about
- * whether THIS entry made it). `false` means the caller should treat this
- * attempt as having produced nothing and let the retry schedule have another
- * go, exactly as before.
+ * Resolves with what the batch decided about THIS entry (a batch's total says
+ * nothing about whether any one entry made it) — see {@link MaterializeOutcome}.
+ * Row-EXISTS alone is deliberately not the answer: rule 0 leaves a foreign
+ * series' row standing at this uuid, which looks identical to a successful
+ * materialization from a `bulkGet` and is the one case a cover must never be
+ * delivered for.
  */
 function queueMaterialization(
   seriesTitle: string,
   queued: Omit<QueuedMaterialization, 'resolve'>
-): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+): Promise<MaterializeOutcome> {
+  return new Promise<MaterializeOutcome>((resolve) => {
     const bucket = pendingMaterializations.get(seriesTitle);
     if (bucket) bucket.push({ ...queued, resolve });
     else pendingMaterializations.set(seriesTitle, [{ ...queued, resolve }]);
@@ -386,17 +414,35 @@ async function materializeBatch(
       cloudVolumeTitles: new Set(queued.map((q) => q.volumeTitle))
     });
 
-    // Which entries actually ended up with a row, in one indexed read for the
-    // whole batch. Rule 0/2 can legitimately block an entry, and a concurrent
-    // resolution can have materialized it already — both are per-entry facts
-    // the batch's own return count cannot express.
-    const rows = await db.volumes.bulkGet(entries.map((e) => e.volume_uuid));
-    queued.forEach((q, i) => q.resolve(!!rows[i]));
+    // Which entries actually ended up with a row OF THIS SERIES, in one
+    // indexed read for the whole batch. Rule 0/2 can legitimately block an
+    // entry, and a concurrent resolution can have materialized it already —
+    // both are per-entry facts the batch's own return count cannot express.
+    // The series check is not decoration: rule 0 SKIPS an entry whose uuid is
+    // already owned by another series' row and leaves that row in place, so a
+    // bare "a row exists" test reads that refusal as a success and would hand
+    // the foreign row this series' cover.
+    const seriesKey = normalizeSeriesKey(seriesTitle);
+    const rows = (await db.volumes.bulkGet(entries.map((e) => e.volume_uuid))) as (
+      | VolumeMetadata
+      | undefined
+    )[];
+    queued.forEach((q, i) => {
+      const existing = rows[i];
+      if (!existing) return q.resolve('blocked');
+      // An unusable series key means `materializeSeriesVolumes` bailed before
+      // writing anything, so whatever stands at this uuid is not ours either —
+      // but it is a degenerate input, not a permanent verdict about the uuid.
+      if (!seriesKey) return q.resolve('blocked');
+      q.resolve(
+        normalizeSeriesKey(existing.series_title) === seriesKey ? 'materialized' : 'foreign'
+      );
+    });
   } catch (error) {
     console.debug(`[cover-service] could not materialize a batch for '${seriesTitle}':`, error);
     // Nothing landed and nothing was published: leave every waiter to the
     // retry schedule, exactly as a throw from the un-batched call did.
-    queued.forEach((q) => q.resolve(false));
+    queued.forEach((q) => q.resolve('blocked'));
     return;
   }
 
@@ -528,12 +574,19 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
   // Queued, not written on its own: the batch this joins issues ONE
   // materialize (and one `series.json` schedule) for every case-3/4 volume
   // that resolves alongside it, instead of one mutation per rendered card.
-  const materialized = await queueMaterialization(vol.series_title, {
+  const outcome = await queueMaterialization(vol.series_title, {
     entry,
     volumeTitle: vol.volume_title,
     folderTitle
   });
-  if (!materialized) return false;
+  // Rule 0 refused: this uuid belongs to ANOTHER series' row. Fetching and
+  // delivering would paint this series' cover onto that row (worst case, a
+  // history-bearing one the user actually reads from). Settled rather than
+  // retried — the uuid collision is a fact about the data, not a transient
+  // failure, and re-pulling the same sidecar twice more to reach the same
+  // verdict is pure waste.
+  if (outcome === 'foreign') return true;
+  if (outcome !== 'materialized') return false;
   if (!cover) return true; // no cover sidecar anywhere in the listing: genuinely nothing to fetch
 
   const result = await fetchCloudThumbnail(
@@ -612,7 +665,7 @@ export function _resetCoverServiceForTests(): void {
   if (materializeTimer) clearTimeout(materializeTimer);
   materializeTimer = null;
   for (const queued of pendingMaterializations.values()) {
-    for (const q of queued) q.resolve(false);
+    for (const q of queued) q.resolve('blocked');
   }
   pendingMaterializations.clear();
   pendingMaterializationCount = 0;

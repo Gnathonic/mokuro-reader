@@ -880,3 +880,96 @@ describe('write-storm avoidance for row-less covers: a burst still coalesces to 
     expect(putCloudCoversMock.mock.calls[0][0]).toHaveLength(N);
   });
 });
+
+/**
+ * `volume_uuid` is the whole `volumes` table's primary key and is
+ * title-independent, so a mokuro re-OCR'd elsewhere can hand two DIFFERENT
+ * series the same uuid. `materializeSeriesVolumes`'s rule 0 refuses to write
+ * such an entry and leaves the other series' row standing — which is
+ * indistinguishable from a successful materialization if the batch only asks
+ * "does a row exist at this uuid?". Delivering the cover on that answer paints
+ * this series' art onto that row.
+ */
+describe("rule 0: a uuid owned by ANOTHER series never receives this series' cover", () => {
+  it('leaves a foreign history-bearing row untouched instead of covering it', async () => {
+    // A row the user actually reads from, in a different series, already
+    // sitting on the uuid the One Piece sidecar is about to claim.
+    await db.volumes.put(row('dup-uuid', { series_title: 'Dr Stone', volume_title: 'Volume 07' }));
+
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.mokuro', 500),
+      cloudFile('One Piece/Volume 01.webp', 900)
+    ]);
+    pullMokuroEntryMock.mockResolvedValue({
+      volume_uuid: 'dup-uuid',
+      volume_title: 'Volume 01',
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    });
+
+    requestCover(barePlaceholder('bare-dup', { volume_title: 'Volume 01' }));
+
+    await vi.waitFor(async () => {
+      await drainQueues();
+      expect(materializeMock).toHaveBeenCalled();
+    });
+    // Two further full drains: had the cover been delivered, its fetch and the
+    // write it queues would both have landed inside these.
+    await drainQueues();
+    await drainQueues();
+
+    const foreign = (await db.volumes.get('dup-uuid')) as VolumeMetadata;
+    expect(foreign.series_title).toBe('Dr Stone');
+    expect(foreign.volume_title).toBe('Volume 07');
+    expect(foreign.thumbnail).toBeUndefined();
+    // The refusal is reached BEFORE the network, so a colliding uuid costs no
+    // download at all.
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+    const cached = await getCloudCovers('mega:a@b.com', ['One Piece/Volume 01.cbz']);
+    expect(cached.size).toBe(0);
+  });
+});
+
+/**
+ * `cloud_covers` is keyed by the LISTING's own archive path — the only key
+ * `catalog/index.ts` ever reads a cached cover back under. A synthesized
+ * `<series_title>/<volume_title>.cbz` fallback is not that key whenever the
+ * cloud folder is not spelled like the series, so writing under it would bury
+ * the blob where nothing looks while `requestCover` marks the uuid `settled`.
+ */
+describe('a placeholder with no cloudPath is never cached under a guessed key', () => {
+  it('skips the cloud_covers write rather than inventing an archive path', async () => {
+    resolveCloudFolderTitle.mockReturnValue('OP Folder');
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('OP Folder/Volume 01.mokuro', 500),
+      cloudFile('OP Folder/Volume 01.webp', 900)
+    ]);
+    pullMokuroEntryMock.mockResolvedValue({
+      volume_uuid: 'real-nopath',
+      volume_title: 'Volume 01',
+      page_count: 1,
+      character_count: 1,
+      mokuro_version: '0.4.11'
+    });
+
+    // An older placeholder, minted before archive paths were recorded.
+    requestCover(barePlaceholder('bare-nopath', { cloudPath: undefined }));
+
+    await vi.waitFor(async () => {
+      await drainQueues();
+      // The row still materializes; only the CACHE write is skipped.
+      expect(await db.volumes.get('real-nopath')).toBeDefined();
+      // A flush ran and had something queued to route (the fetch did happen).
+      expect(putCloudCoversMock).toHaveBeenCalled();
+    });
+
+    const written = putCloudCoversMock.mock.calls.flatMap((call) => call[0]);
+    expect(written).toEqual([]);
+    const cached = await getCloudCovers('mega:a@b.com', [
+      'One Piece/Volume 01.cbz',
+      'OP Folder/Volume 01.cbz'
+    ]);
+    expect(cached.size).toBe(0);
+  });
+});

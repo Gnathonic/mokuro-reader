@@ -197,6 +197,17 @@ export async function pullMokuroEntry(
   };
 }
 
+/**
+ * One row whose cover must be refetched, and the ARCHIVE it belongs to. The
+ * archive path — not the cover sidecar's — is the cache identity a row-less
+ * (or relationship-less) cover is stored under; see `refreshStaleCover`.
+ */
+interface CoverRefresh {
+  volumeUuid: string;
+  cover: CloudFileMetadata;
+  archivePath: string | undefined;
+}
+
 /** One archive this pass decided needs (re)building, and why. */
 interface BackfillTask {
   archiveStem: string;
@@ -351,11 +362,23 @@ function excludeInstalledCandidates(
  * `cover-service.ts`'s catalog-card path. This is what lets a FUTURE pass
  * (here, or a row-level check elsewhere) decide staleness from the row alone
  * without guessing, whichever path most recently touched it.
+ *
+ * `archivePath` is the ARCHIVE's own cloud path from the listing this refresh
+ * was planned against — the volume's CACHE IDENTITY, and a required argument
+ * rather than an optional nicety. A row this device has no RELATIONSHIP with
+ * (nothing installed, nothing read) cannot carry a blob at all under
+ * `cover-persist.ts`'s routing rule, and such a row is the ordinary outcome of
+ * merely OPENING a cloud series (`cover-install.ts` fills a metadata-only
+ * row's thumbnail with no relationship gate of its own). Handing `installCover`
+ * a bare uuid gives that cover no `cloud_covers` identity either, so the fetch
+ * is made and then silently DROPPED — the exact "stale cover never refreshes"
+ * dead end this argument exists to close.
  */
 async function refreshStaleCover(
   providerType: SyncProvider['type'],
   volumeUuid: string,
-  cover: CloudFileMetadata
+  cover: CloudFileMetadata,
+  archivePath: string | undefined
 ): Promise<void> {
   const row = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
   if (!row || !needsDownload(row)) return;
@@ -369,7 +392,10 @@ async function refreshStaleCover(
   if (!result) return;
 
   installCover(
-    volumeUuid,
+    // The listing's archive path wins over anything decorated onto the stored
+    // row: it is the same key `catalog/index.ts` reads a cached cover back
+    // under (`cloudFieldsForRemovedVolume` → `normalizeCachePath(cloudPath)`).
+    { volume_uuid: volumeUuid, cloudPath: archivePath ?? row.cloudPath },
     result,
     { size: cover.size, modifiedTime: cover.modifiedTime },
     'overwrite'
@@ -401,14 +427,24 @@ async function refreshStaleCover(
 function findStaleRowCovers(
   allVolumes: VolumeMetadata[],
   localKey: string,
-  sidecarGroups: Map<string, SeriesSidecarFiles>
-): Array<{ volumeUuid: string; cover: CloudFileMetadata }> {
-  const stale: Array<{ volumeUuid: string; cover: CloudFileMetadata }> = [];
+  sidecarGroups: Map<string, SeriesSidecarFiles>,
+  archives: CloudFileMetadata[]
+): CoverRefresh[] {
+  // The archive each row's cover would be cached under, folded by the same
+  // volume-title key everything else in this pass joins on.
+  const archiveByTitleKey = new Map<string, CloudFileMetadata>();
+  for (const archiveFile of archives) {
+    const key = normalizeVolumeTitleKey(archiveStemOf(archiveFile.path));
+    if (key && !archiveByTitleKey.has(key)) archiveByTitleKey.set(key, archiveFile);
+  }
+
+  const stale: CoverRefresh[] = [];
   for (const row of allVolumes) {
     if (normalizeVolumeTitleKey(row.series_title) !== localKey) continue;
     if (!needsDownload(row) || !row.thumbnail) continue;
 
-    const sidecars = sidecarGroups.get(normalizeVolumeTitleKey(row.volume_title));
+    const titleKey = normalizeVolumeTitleKey(row.volume_title);
+    const sidecars = sidecarGroups.get(titleKey);
     if (!sidecars?.cover) continue;
 
     const stamp = stampFromSidecarFiles(sidecars);
@@ -416,7 +452,13 @@ function findStaleRowCovers(
       { size: row.cover_size, modified: row.cover_modified },
       { size: stamp.cover_size, modified: stamp.cover_modified }
     );
-    if (isStale) stale.push({ volumeUuid: row.volume_uuid, cover: sidecars.cover });
+    if (isStale) {
+      stale.push({
+        volumeUuid: row.volume_uuid,
+        cover: sidecars.cover,
+        archivePath: archiveByTitleKey.get(titleKey)?.path
+      });
+    }
   }
   return stale;
 }
@@ -467,7 +509,7 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
     const tasks = excludeInstalledCandidates(candidates, installedTitleKeys);
     // Row-level cover staleness piggybacks on this scan (see
     // `findStaleRowCovers`'s own doc for why it is not a trigger on its own).
-    const coverRefreshes = findStaleRowCovers(allVolumes, localKey, sidecarGroups);
+    const coverRefreshes = findStaleRowCovers(allVolumes, localKey, sidecarGroups, archives);
 
     const builtEntries: SeriesFileVolume[] = [];
     if (tasks.length > 0) {
@@ -480,7 +522,11 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
             if (!entry) continue;
             builtEntries.push(entry);
             if (task.needsCoverRefetch && task.sidecars?.cover) {
-              coverRefreshes.push({ volumeUuid: entry.volume_uuid, cover: task.sidecars.cover });
+              coverRefreshes.push({
+                volumeUuid: entry.volume_uuid,
+                cover: task.sidecars.cover,
+                archivePath: task.archiveFile.path
+              });
             }
           } catch (error) {
             // A malformed/unreadable sidecar costs this ONE volume, never the
@@ -536,11 +582,11 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
     // pick up a changed cover sidecar. Deduped by uuid: an entry-driven and a
     // row-driven refresh can legitimately name the same volume.
     const refreshedUuids = new Set<string>();
-    for (const { volumeUuid, cover } of coverRefreshes) {
+    for (const { volumeUuid, cover, archivePath } of coverRefreshes) {
       if (refreshedUuids.has(volumeUuid)) continue;
       refreshedUuids.add(volumeUuid);
       try {
-        await refreshStaleCover(provider.type, volumeUuid, cover);
+        await refreshStaleCover(provider.type, volumeUuid, cover, archivePath);
       } catch (error) {
         console.debug(`[series-backfill] could not refresh cover for '${volumeUuid}':`, error);
       }

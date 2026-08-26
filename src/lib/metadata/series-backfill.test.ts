@@ -93,6 +93,15 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
   fetchCloudThumbnail: (...a: Parameters<typeof fetchCloudThumbnail>) => fetchCloudThumbnail(...a)
 }));
 
+// `cover-persist.ts`'s flush routes a cover with no ROW RELATIONSHIP to the
+// `cloud_covers` table instead of the row. Captured rather than executed —
+// the `db` stand-in below only models `volumes` — so a refresh's routing and
+// its CACHE KEY are both directly assertable.
+const putCloudCoversMock = vi.hoisted(() => vi.fn());
+vi.mock('$lib/catalog/cloud-covers', () => ({
+  putCloudCovers: (...a: unknown[]) => putCloudCoversMock(...a)
+}));
+
 // `toArray` is its own `vi.fn()` (not an inline arrow) so a concurrency test
 // can override it with a deferred/instrumented implementation per call,
 // and so "was it called at all" is directly assertable — the mechanism
@@ -256,7 +265,14 @@ beforeEach(() => {
   };
   volumeRows.length = 0;
   readingHistory.set({});
-  getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile });
+  // `getStatus` is what `activeAccountScope()` reads (a DIFFERENT call than
+  // the `getActiveProvider()` the backfill itself makes) to decide which
+  // account's `cloud_covers` bucket a row-less cover may be attributed to.
+  getActiveProvider.mockReturnValue({
+    type: 'webdav',
+    downloadFile,
+    getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:test-account' })
+  });
   resolveCloudFolderTitle.mockImplementation((t: string) => t);
   cloudVolumeTitlesFor.mockReturnValue(new Set(['Volume 01']));
   writeSeriesFile.mockResolvedValue('written');
@@ -999,6 +1015,41 @@ describe('row-level cover staleness (persistent catalog-card covers, design poin
     expect(row.thumbnail_width).toBe(20); // restamped with the new cover
     expect(row.cover_size).toBe(900);
     expect(row.cover_modified).toBe(Math.floor(Date.parse('2026-07-01T00:00:00.000Z') / 1000));
+  });
+
+  it("routes a relationship-less row's refreshed cover to the cover cache, keyed by the ARCHIVE path", async () => {
+    metadataOnlyRowV2({ cover_size: 100, cover_modified: 1 }); // stale vs the listing's 900 @ 2026-07-01
+    // A metadata-only row WITH a thumbnail but NO relationship is the ordinary
+    // outcome of merely OPENING a cloud series: `cover-install.ts` fills such
+    // a row's thumbnail with no reading-history gate of its own. (History
+    // being cleared afterwards gets to the same place.) The helper above adds
+    // the relationship every other test here wants; drop it back off.
+    readingHistory.set({});
+    fetchCloudThumbnail.mockResolvedValue({
+      file: new File([''], 'v2.webp'),
+      width: 20,
+      height: 20
+    });
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+    // No relationship, so the blob may not sit on the row — that is
+    // `cover-persist.ts`'s routing rule, and it is why the row keeps its old
+    // thumbnail here.
+    const row = volumeRows.find((v) => v.volume_uuid === 'v2')!;
+    expect(row.thumbnail).toBe('OLD-THUMBNAIL');
+    // ...which makes the CACHE the only place this fetch can land. Keyed by
+    // the ARCHIVE's own cloud path, the one key `catalog/index.ts` reads a
+    // cached cover back under. Handing `installCover` a bare uuid instead
+    // gives the cover no cache identity at all and the flush drops it, so the
+    // stale cover could never refresh.
+    const cached = putCloudCoversMock.mock.calls.flatMap((call) => call[0] as unknown[]);
+    expect(cached).toHaveLength(1);
+    expect(cached[0]).toMatchObject({
+      account_scope: 'webdav:test-account',
+      path: 'One Piece/Volume 02.cbz'
+    });
   });
 
   it('a stampless row thumbnail is untouched, even though the listing has a cover sidecar', async () => {
