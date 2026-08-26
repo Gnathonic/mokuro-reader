@@ -4,6 +4,8 @@ import { needsDownload } from '$lib/catalog/volume-state';
 import { isArchiveSize } from '$lib/metadata/series-file';
 import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
+import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
+import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -44,10 +46,17 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  *    thumbnail installed by older code, or measured from the volume's own
  *    pages, is left alone forever rather than being "healed" by a pull.
  *
- * By the time `installCover` is called the ROW ALREADY EXISTS — resolving or
- * materializing it (decision-tree cases 1-4) is `cover-service.ts`'s job,
- * done BEFORE it ever reaches this queue. This module only fills or
- * overwrites an existing row's cover; it never creates one.
+ * ROUTING: a cover for a volume with a `volumes` row (installed, or
+ * metadata-only because it carries reading history) lands on that row exactly
+ * as described above. A cover for a volume with NO row — pure catalog
+ * knowledge, nothing the user has installed or read — is catalog knowledge
+ * only, and lands in `cloud_covers` instead (Task 2's blob-only cache table),
+ * keyed by the ACTIVE account's scope so two accounts never blend covers.
+ * When no account is active the flush has nowhere safe to attribute an
+ * unrowed cover to, so it is simply dropped — never written unscoped. Either
+ * way this module never creates a `volumes` row itself; that is still
+ * `cover-service.ts`'s job (decision-tree cases 1-4), done BEFORE a cover
+ * ever reaches this queue.
  *
  * WRITE-STORM AVOIDANCE, AND WHY THE CADENCE IS ADAPTIVE:
  * every `db.volumes.update` fires the `volumes` liveQuery →
@@ -96,6 +105,15 @@ interface PendingCoverPersist {
   coverSize?: number;
   coverModified?: number;
   mode: 'fill' | 'overwrite';
+  /**
+   * The cloud path this cover was fetched for, captured at SCHEDULE time
+   * (whatever `installCover`'s caller had in hand) — the only identity a
+   * `cloud_covers` entry needs beyond the blob itself. `undefined` when the
+   * caller had no cloud path (or passed a bare uuid), which means this
+   * entry has no cover-table identity: if it turns out there is no row to
+   * land on either, the flush simply drops it.
+   */
+  cachePath?: string;
 }
 
 /** volume_uuid → the most recent fetch result queued for it. */
@@ -132,7 +150,14 @@ async function runScheduledFlush(): Promise<void> {
 }
 
 /**
- * Queue a fetched cover for background persistence onto an EXISTING row.
+ * Queue a fetched cover for background persistence. `volume` is either a
+ * bare uuid (an existing caller that knows a row exists, and never has a
+ * cloud path to attribute an unrowed cover to) or a volume-shaped object
+ * carrying `volume_uuid` and — when known — `cloudPath`, the identity a
+ * `cloud_covers` entry needs if this cover turns out to have no row to land
+ * on at flush time. Whichever shape it is, the fields it carries are
+ * captured HERE, synchronously, while the caller's own snapshot is still in
+ * hand — never re-read at flush time (see `flushPendingCoverPersists`).
  *
  * `stamp` is the decision-time listing snapshot the fetch was made against
  * (bytes + ISO mtime of the cover sidecar) — never re-derived from a fresher
@@ -140,14 +165,16 @@ async function runScheduledFlush(): Promise<void> {
  * that were fetched (see `cloud-sidecar-stamps.ts`'s snapshot-discipline).
  */
 export function installCover(
-  volumeUuid: string,
+  volume: string | (Pick<VolumeMetadata, 'volume_uuid'> & { cloudPath?: string }),
   result: CloudThumbnailResult,
   stamp: { size?: number; modifiedTime?: string } = {},
   mode: 'fill' | 'overwrite' = 'fill'
 ): void {
+  const volumeUuid = typeof volume === 'string' ? volume : volume.volume_uuid;
+  const cachePath = typeof volume === 'string' ? undefined : volume.cloudPath;
   const coverSize = isArchiveSize(stamp.size) ? stamp.size : undefined;
   const coverModified = isoToEpochSeconds(stamp.modifiedTime);
-  pending.set(volumeUuid, { result, coverSize, coverModified, mode });
+  pending.set(volumeUuid, { result, coverSize, coverModified, mode, cachePath });
   armTimer();
 }
 
@@ -170,24 +197,68 @@ export async function flushPendingCoverPersists(): Promise<void> {
   pending.clear();
   if (entries.length === 0) return;
 
+  // Read once per flush, not per entry: this is a single decision about
+  // which account's cache a whole burst attributes to, not a per-cover one.
+  // Resolved defensively and OUTSIDE the main try below on purpose: a
+  // provider that fails to report its scope must never block the ROW writes
+  // this flush also carries — it can only cost the (optional) cache write.
+  let scope: string | null = null;
+  try {
+    scope = activeAccountScope();
+  } catch (error) {
+    console.debug('[cover-persist] could not resolve the active account scope:', error);
+  }
+  const forCoverTable: CloudCover[] = [];
+
   try {
     await db.transaction('rw', db.volumes, async () => {
-      for (const [volumeUuid, { result, coverSize, coverModified, mode }] of entries) {
+      for (const [volumeUuid, { result, coverSize, coverModified, mode, cachePath }] of entries) {
         const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
-        if (!fresh || !needsDownload(fresh)) continue;
-        if (mode === 'fill' && fresh.thumbnail) continue;
 
-        const patch: Partial<VolumeMetadata> = {
-          thumbnail: result.file,
-          thumbnail_width: result.width,
-          thumbnail_height: result.height
-        };
-        if (coverSize !== undefined) patch.cover_size = coverSize;
-        if (coverModified !== undefined) patch.cover_modified = coverModified;
-        await db.volumes.update(volumeUuid, patch);
-        if (mode === 'overwrite') thumbnailCache.invalidate(volumeUuid);
+        // A row exists only for volumes this device owns or has read; that
+        // is the one case a cover belongs on the row itself. Re-reading and
+        // re-testing `needsDownload` INSIDE the transaction (rather than
+        // trusting the caller's snapshot) is what keeps a download that
+        // finished mid-flight from having its own page-measured thumbnail
+        // clobbered by a stale cloud guess.
+        if (fresh) {
+          if (!needsDownload(fresh)) continue;
+          if (mode === 'fill' && fresh.thumbnail) continue;
+
+          const patch: Partial<VolumeMetadata> = {
+            thumbnail: result.file,
+            thumbnail_width: result.width,
+            thumbnail_height: result.height
+          };
+          if (coverSize !== undefined) patch.cover_size = coverSize;
+          if (coverModified !== undefined) patch.cover_modified = coverModified;
+          await db.volumes.update(volumeUuid, patch);
+          if (mode === 'overwrite') thumbnailCache.invalidate(volumeUuid);
+          continue;
+        }
+
+        // No row: catalog knowledge, not a relationship. It belongs in
+        // `cloud_covers`, and only when we can attribute it to an account —
+        // an unscoped write would blend accounts. No cachePath means the
+        // caller never had a cloud path to attribute this to either
+        // (a bare-uuid call): nothing to do, drop it.
+        if (scope && cachePath) {
+          forCoverTable.push({
+            account_scope: scope,
+            path: cachePath,
+            thumbnail: result.file,
+            width: result.width,
+            height: result.height,
+            last_accessed: Date.now()
+          });
+        }
       }
     });
+
+    // Outside the `volumes` transaction, and coalesced to ONE call for the
+    // whole burst: preserves the "one burst, one write per table" property
+    // this module's write-storm-avoidance design depends on.
+    await putCloudCovers(forCoverTable);
   } catch (error) {
     console.debug('[cover-persist] could not persist a batch of catalog covers:', error);
   }

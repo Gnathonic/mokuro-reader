@@ -21,6 +21,20 @@ vi.mock('$lib/catalog/thumbnail-cache', () => ({
   }
 }));
 
+// `flushPendingCoverPersists` now consults `activeAccountScope()` (routing a
+// cover with no row to `cloud_covers`), which reads the active provider off
+// this module. Stubbed to one authenticated account so the routing tests
+// below have a scope to attribute a cache write to, without pulling in the
+// real module's heavy dependency graph (Dexie, compress-volume, every
+// provider implementation).
+vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+  unifiedCloudManager: {
+    getActiveProvider: () => ({
+      getStatus: () => ({ isAuthenticated: true, accountScope: 'mega:a@b.com' })
+    })
+  }
+}));
+
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -29,6 +43,7 @@ import {
   flushPendingCoverPersists,
   installCover
 } from './cover-persist';
+import { getCloudCovers } from './cloud-covers';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 function metadataOnlyRow(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -66,6 +81,7 @@ beforeEach(() => {
 afterEach(async () => {
   _resetCoverPersistForTests(); // cancel any pending timer before it can fire against a cleared table
   await db.volumes.clear();
+  await db.cloud_covers.clear();
 });
 
 describe('installCover', () => {
@@ -296,5 +312,63 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     const result = installCover('v-1', coverResult());
     expect(result).toBeUndefined();
     await flushPendingCoverPersists(); // drain the timer this call armed
+  });
+});
+
+describe('cover installs route by relationship', () => {
+  it('writes a cloud volume’s cover to cloud_covers, never to volumes', async () => {
+    const before = await db.volumes.count();
+    installCover(
+      {
+        volume_uuid: 'cloud-1',
+        series_title: 'Dr Stone',
+        volume_title: 'Volume 01',
+        isPlaceholder: true,
+        cloudPath: 'Dr Stone/Volume 01.cbz'
+      } as never,
+      {
+        file: new File([new Uint8Array([1])], 'c.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350
+      }
+    );
+    await flushPendingCoverPersists();
+
+    expect(await db.volumes.count()).toBe(before);
+    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
+  });
+
+  it('still writes onto a metadata-only row that has reading history', async () => {
+    await db.volumes.put({
+      volume_uuid: 'read-1',
+      series_uuid: 's',
+      series_title: 'Dr Stone',
+      volume_title: 'Volume 02',
+      mokuro_version: '0.4.11',
+      page_count: 180,
+      character_count: 1,
+      page_char_counts: [],
+      metadata_only: true
+    } as never);
+
+    installCover(
+      {
+        volume_uuid: 'read-1',
+        series_title: 'Dr Stone',
+        volume_title: 'Volume 02',
+        metadata_only: true
+      } as never,
+      {
+        file: new File([new Uint8Array([2])], 'c.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350
+      }
+    );
+    await flushPendingCoverPersists();
+
+    const row = await db.volumes.get('read-1');
+    expect(row?.thumbnail).toBeInstanceOf(File);
   });
 });
