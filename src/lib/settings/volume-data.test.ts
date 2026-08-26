@@ -2,11 +2,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
 vi.mock('$app/environment', () => ({ browser: true }));
+const catalogRows = new Map<string, Record<string, unknown>>();
+const bulkGet = vi.fn(async (uuids: string[]) => uuids.map((uuid) => catalogRows.get(uuid)));
+const toArray = vi.fn(async () => {
+  // The whole-table read this module used to do. Left in the double ON PURPOSE
+  // and made loud: `enrichAllOrphanedVolumes` reads only the orphans' rows now,
+  // and a silent fallback here would let a regression back to a full scan —
+  // every installed volume's thumbnail blob deserialized — pass unnoticed.
+  throw new Error('volumes.toArray(): the whole table must not be scanned here');
+});
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
       get: vi.fn().mockResolvedValue(undefined),
-      toArray: vi.fn().mockResolvedValue([])
+      bulkGet: (uuids: string[]) => bulkGet(uuids),
+      toArray: () => toArray()
     }
   }
 }));
@@ -15,11 +25,14 @@ import {
   VolumeData,
   archiveAndResetVolumes,
   clearVolumes,
+  enrichAllOrphanedVolumes,
+  isOrphanedVolumeData,
   parseVolumesFromJson,
   registerCompletionListener,
   totalStats,
   updateProgress,
-  volumes
+  volumes,
+  volumesWithTrash
 } from './volume-data';
 
 describe('VolumeData.archivedReads', () => {
@@ -138,5 +151,103 @@ describe('parseVolumesFromJson', () => {
     );
 
     expect(Object.keys(parsed)).toEqual(['vol-1']);
+  });
+});
+
+describe('isOrphanedVolumeData', () => {
+  it('does not call a fully-populated record titled "Volume 3" an orphan', () => {
+    // This predicate used to end in `volume_title.startsWith('Volume ')`. The
+    // clause was aimed at `processVolumeSpeedData`'s display placeholder
+    // (`Volume <8 hex>...`), which is never written to a reading record — what
+    // it actually matched was "Volume 1", "Volume 3" and every other perfectly
+    // ordinary mokuro volume title. Such a record was an orphan FOREVER, no
+    // matter how complete it was, and on the stats page that meant it was
+    // offered for deletion.
+    expect(
+      isOrphanedVolumeData(
+        new VolumeData({
+          series_uuid: 'series-real',
+          series_title: 'Real Series',
+          volume_title: 'Volume 3'
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('still catches every record that genuinely has nothing to join on', () => {
+    // The negative control: dropping one clause must not have hollowed the
+    // predicate out.
+    const orphans = [
+      new VolumeData({ series_title: 'Real Series', volume_title: 'Volume 3' }), // no uuid
+      new VolumeData({
+        series_uuid: 'missing-series-info',
+        series_title: 'Real Series',
+        volume_title: 'Volume 3'
+      }),
+      new VolumeData({ series_uuid: 'series-real', volume_title: 'Volume 3' }), // no series title
+      new VolumeData({
+        series_uuid: 'series-real',
+        series_title: '[Missing Series Info]',
+        volume_title: 'Volume 3'
+      }),
+      new VolumeData({ series_uuid: 'series-real', series_title: 'Real Series' }) // no volume title
+    ];
+    for (const orphan of orphans) expect(isOrphanedVolumeData(orphan)).toBe(true);
+  });
+});
+
+describe('enrichAllOrphanedVolumes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    catalogRows.clear();
+    clearVolumes();
+  });
+
+  it('resolves an orphan the moment a row for it exists — which is what the sweep creates', () => {
+    volumesWithTrash.set({ 'uuid-swept': new VolumeData({ completed: true, chars: 5000 }) });
+    expect(isOrphanedVolumeData(get(volumes)['uuid-swept'])).toBe(true);
+
+    // The row `materializeHistoryRows` mints, mid-visit.
+    catalogRows.set('uuid-swept', {
+      volume_uuid: 'uuid-swept',
+      series_uuid: 'series-swept',
+      series_title: 'Swept Series',
+      volume_title: 'Swept Series v01'
+    });
+
+    return enrichAllOrphanedVolumes().then(() => {
+      const after = get(volumes)['uuid-swept'];
+      expect(after.series_title).toBe('Swept Series');
+      expect(after.volume_title).toBe('Swept Series v01');
+      expect(isOrphanedVolumeData(after)).toBe(false);
+      // Progress is carried over, not reset.
+      expect(after.chars).toBe(5000);
+      expect(after.completed).toBe(true);
+    });
+  });
+
+  it("reads only the orphans' rows, and touches IndexedDB not at all when there are none", async () => {
+    volumesWithTrash.set({
+      'uuid-orphan': new VolumeData({ completed: true, chars: 1 }),
+      'uuid-fine': new VolumeData({
+        series_uuid: 'series-real',
+        series_title: 'Real Series',
+        volume_title: 'Volume 3',
+        completed: true,
+        chars: 1
+      })
+    });
+
+    await enrichAllOrphanedVolumes();
+    // Not the whole table, and not the healthy record's row either.
+    expect(bulkGet).toHaveBeenCalledWith(['uuid-orphan']);
+
+    // Nothing orphaned left (the row lookup found nothing, but the healthy
+    // record was never a candidate) — so a second pass, which now runs after
+    // every sweep, costs no read at all.
+    bulkGet.mockClear();
+    volumesWithTrash.set({ 'uuid-fine': get(volumes)['uuid-fine'] });
+    await enrichAllOrphanedVolumes();
+    expect(bulkGet).not.toHaveBeenCalled();
   });
 });

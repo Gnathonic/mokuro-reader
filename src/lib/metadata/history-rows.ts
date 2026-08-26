@@ -47,6 +47,36 @@ type ProgressRecord = ReadingHistoryEntry & {
 };
 
 /**
+ * Uuids a run PLANNED and still failed to give a row.
+ *
+ * WHY THIS EXISTS. Both caps are spent at PLAN time, but a planned uuid is not
+ * a written row: `materializeSeriesVolumes` skips an entry whose uuid belongs
+ * to another series (rule 0) or whose title a local row already owns (rule 2),
+ * and a whole batch is dropped before the transaction when
+ * `cloudVolumeTitlesFor` reports an empty listing for its series — the state of
+ * every index cached from a provider that is no longer the connected one, which
+ * `runRefresh` deliberately never cleans. Iteration order over the progress
+ * store is stable, so without this set those uuids are re-planned in the same
+ * order on every run, spend the same slots, and everything behind them is
+ * starved FOREVER: 200 such series is all it takes to make the series cap
+ * unreachable for a series that WOULD materialize.
+ *
+ * SESSION-SCOPED, cleared only by a page load, matching the same contract
+ * `hole-patch.ts` uses for its own attempt memory. The trade-off is deliberate:
+ * a uuid that only becomes materializable later in the SAME session (a provider
+ * switch bringing a different listing) waits for the next load rather than
+ * re-entering the plan on every sweep. A uuid that gains a row by any other
+ * route is not affected at all — step 2 drops it before this set is ever
+ * consulted.
+ */
+const unmaterializableThisSession = new Set<string>();
+
+/** Test-only: clears the session memory so cases don't leak into each other. */
+export function resetHistoryRowsSessionForTests(): void {
+  unmaterializableThisSession.clear();
+}
+
+/**
  * Give every volume the user has actually read a `volumes` row.
  *
  * WHY THIS EXISTS. Synced progress is keyed by `volume_uuid` and travels
@@ -81,10 +111,24 @@ type ProgressRecord = ReadingHistoryEntry & {
  * therefore not needed at all; it survives only as a tie-breaker for the rare
  * uuid two series both claim (a re-OCR, or the same archive uploaded twice).
  *
+ * THE LIMIT OF THAT. It is the CACHED INDEX that makes a legacy entry
+ * reachable, not the uuid on its own — so an entry with no `series_title` whose
+ * series has no cached `series.json` is served by neither this sweep (nothing
+ * lists its uuid) nor `patchProgressHoles`' network phase (which pulls by name
+ * and has no name to pull). That is not a regression — such an entry was
+ * unreachable before too — but "legacy entries are now reachable" is true only
+ * once the index refresh has cached a `series.json` for that series' folder,
+ * which for an account still connected happens on its own and for a series long
+ * gone from the cloud never does.
+ *
  * WORST-CASE WORK. One `getAllKeys` on `volumes` (primary keys only — no row,
- * and above all no thumbnail blob, is deserialized), one `series_index` read,
- * one in-memory pass over its entries, and — only when there is something to
- * write — ONE `volumes` readwrite transaction for the whole sweep. The
+ * and above all no thumbnail blob, is deserialized), one `series_index` read
+ * (SHARED with `patchProgressHoles`' second phase when it supplies
+ * `readIndexes`, so a full sweep reads `series_index` once, not twice), one
+ * in-memory pass over its entries, and — only when there is something to
+ * write — ONE `volumes` readwrite transaction for the whole sweep, inside which
+ * a second keys-only read (bounded by what the run planned, not by the table)
+ * settles which planned uuids actually got a row. The
  * per-series `materializeSeriesVolumes` calls nest inside it, which Dexie
  * collapses into a single commit, so N series cost ONE `storagemutated`
  * broadcast and therefore ONE catalog re-derive rather than N. Zero network:
@@ -98,9 +142,17 @@ type ProgressRecord = ReadingHistoryEntry & {
 export async function materializeHistoryRows(options?: {
   limit?: number;
   seriesLimit?: number;
+  /**
+   * How to read the cached `series.json` indexes. Defaults to
+   * `listSeriesIndexes`; `patchProgressHoles` passes a lazy, memoized reader so
+   * its two phases share ONE `series_index` read instead of issuing one each,
+   * while a run that bails before either phase asks still issues none.
+   */
+  readIndexes?: () => Promise<SeriesIndexRecord[]>;
 }): Promise<number> {
   const limit = options?.limit ?? MAX_HISTORY_ROWS_PER_RUN;
   const seriesLimit = options?.seriesLimit ?? MAX_HISTORY_SERIES_PER_RUN;
+  const readIndexes = options?.readIndexes ?? listSeriesIndexes;
 
   try {
     // 1. Which volumes has the user actually read? ONE shared predicate,
@@ -110,6 +162,10 @@ export async function materializeHistoryRows(options?: {
     for (const [uuid, record] of Object.entries(progress ?? {})) {
       if (!uuid || !record || record.deletedOn) continue;
       if (!hasReadingActivity(record)) continue;
+      // Already proved unplannable this session — see
+      // `unmaterializableThisSession`. Dropped here, before anything is read,
+      // so it costs neither a cap slot nor a lookup.
+      if (unmaterializableThisSession.has(uuid)) continue;
       wanted.set(uuid, typeof record.series_title === 'string' ? record.series_title : undefined);
     }
     if (wanted.size === 0) return 0;
@@ -128,7 +184,7 @@ export async function materializeHistoryRows(options?: {
     // 3. Resolve uuid → the cached index that lists it. Built over the WANTED
     //    uuids only, so the map holds hundreds of keys on a library whose
     //    indexes hold tens of thousands of entries.
-    const indexes = await listSeriesIndexes();
+    const indexes = await readIndexes();
     if (indexes.length === 0) return 0;
 
     const candidates = new Map<string, SeriesIndexRecord[]>();
@@ -145,9 +201,13 @@ export async function materializeHistoryRows(options?: {
 
     // 4. Group the wanted uuids by the series that will materialize them.
     const plan = new Map<string, { record: SeriesIndexRecord; uuids: Set<string> }>();
-    let planned = 0;
+    // Every uuid that SPENT a slot. Both caps are charged here, at plan time,
+    // but a plan entry is not a row — so whatever is still row-less when this
+    // run ends is remembered as unmaterializable and never charged again. See
+    // `unmaterializableThisSession`.
+    const plannedUuids = new Set<string>();
     for (const [uuid, storedTitle] of wanted) {
-      if (planned >= limit) break;
+      if (plannedUuids.size >= limit) break;
       const record = pickSeriesFor(candidates.get(uuid), storedTitle);
       if (!record) continue;
       let slot = plan.get(record.series_key);
@@ -161,9 +221,9 @@ export async function materializeHistoryRows(options?: {
         plan.set(record.series_key, slot);
       }
       slot.uuids.add(uuid);
-      planned += 1;
+      plannedUuids.add(uuid);
     }
-    if (planned === 0) return 0;
+    if (plannedUuids.size === 0) return 0;
 
     // 5. Turn the plan into materialization batches, dropping the ones that
     //    would be no-ops, so a sweep with nothing to write never opens a
@@ -188,7 +248,14 @@ export async function materializeHistoryRows(options?: {
       if (cloudVolumeTitles.size === 0) continue;
       batches.push({ seriesTitle: record.series_title, entries, cloudVolumeTitles });
     }
-    if (batches.length === 0) return 0;
+    if (batches.length === 0) {
+      // Not one planned series has a listing to check against, so nothing this
+      // run planned can ever be written from what is on the device. Recording
+      // it here is what stops those uuids re-spending both caps on every
+      // subsequent sweep and starving the series behind them.
+      for (const uuid of plannedUuids) unmaterializableThisSession.add(uuid);
+      return 0;
+    }
 
     // 6. ONE transaction for the whole sweep. `materializeSeriesVolumes` opens
     //    its own `rw` transaction over `volumes`; opened inside this one,
@@ -199,6 +266,27 @@ export async function materializeHistoryRows(options?: {
     return await db.transaction('rw', db.volumes, async () => {
       let changed = 0;
       for (const batch of batches) changed += await materializeSeriesVolumes(batch);
+
+      // Which planned uuids came out of this with a row? Step 2 established
+      // that NONE of them had one going in, so "has a row now" is exactly "this
+      // sweep wrote it". The rest were dropped by the listing gate above or by
+      // `materializeSeriesVolumes`' own rules 0/2 (uuid owned by another
+      // series; volume title already owned by a local row) and would be planned
+      // again, identically, forever. KEYS ONLY, and bounded by what this run
+      // planned rather than by the table: the question is about keys, and a
+      // value read here would deserialize the thumbnail of every installed row
+      // a rule-0 collision named.
+      const resolved = new Set(
+        (
+          await db.volumes
+            .where(':id')
+            .anyOf([...plannedUuids].sort())
+            .primaryKeys()
+        ).map(String)
+      );
+      for (const uuid of plannedUuids) {
+        if (!resolved.has(uuid)) unmaterializableThisSession.add(uuid);
+      }
       return changed;
     });
   } catch (error) {

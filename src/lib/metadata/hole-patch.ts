@@ -1,9 +1,9 @@
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
-import { volumes as progressStore } from '$lib/settings';
+import { volumes as progressStore, enrichAllOrphanedVolumes } from '$lib/settings';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { cacheManager } from '$lib/util/sync/cache-manager';
-import { listSeriesIndexes } from './series-index';
+import { listSeriesIndexes, type SeriesIndexRecord } from './series-index';
 import { openSeries } from './series-open';
 import { materializeHistoryRows } from './history-rows';
 import { normalizeSeriesKey } from './series-key';
@@ -76,6 +76,14 @@ function listingIsLoaded(): boolean {
  * carrying a `series_title` — see that function for why that last part is the
  * whole point.
  *
+ * WHAT NEITHER PHASE REACHES. An entry with no `series_title` AND no cached
+ * `series.json` for its series falls between them: phase 1 cannot find its
+ * uuid in any index, and phase 2 skips it outright below because it has no name
+ * to pull by. So "legacy entries are now reachable" holds only once the
+ * listing-wide index refresh has cached an index for that series — which for a
+ * connected account arrives on its own, and for a series long gone from the
+ * cloud never does.
+ *
  * PHASE 2 — the network fallback, capped. A series that phase 1 could not
  * serve because this device has NO cached index for it gets its `series.json`
  * pulled and its volumes materialized (`openSeries`), which is exactly the
@@ -96,6 +104,17 @@ function listingIsLoaded(): boolean {
 export async function patchProgressHoles(options?: { limit?: number }): Promise<string[]> {
   const limit = options?.limit ?? MAX_HOLE_PATCHES_PER_RUN;
   const pulled: string[] = [];
+
+  // ONE `series_index` read for the whole run, shared by both phases — they
+  // each used to issue their own, which on the runs that matter (the ones with
+  // work to do) was two `series_index.getAll` for one unchanging answer: phase
+  // 1 writes only to `volumes`, so the index list it read cannot have gone
+  // stale by the time phase 2 wants it. LAZY, not fetched up front: a run that
+  // bails before either phase asks — no provider, no listing, or every
+  // dangling title already attempted this session — must still issue no read
+  // at all, and this caller re-runs on every mount.
+  let indexesOnce: Promise<SeriesIndexRecord[]> | null = null;
+  const readIndexes = () => (indexesOnce ??= listSeriesIndexes());
 
   try {
     // `openSeries` no-ops with zero I/O both when no provider is connected
@@ -118,7 +137,7 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     // history, 36 of them tracked), and it can only act on data already on
     // the device. Awaited before phase 2 plans anything so the rows it writes
     // are visible to the "does this series already have a row" check below.
-    await materializeHistoryRows();
+    await materializeHistoryRows({ readIndexes });
 
     const progress = get(progressStore);
     const wanted = new Map<string, string>();
@@ -148,7 +167,7 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     for (const title of await db.volumes.orderBy('series_title').uniqueKeys()) {
       if (typeof title === 'string') wanted.delete(normalizeSeriesKey(title));
     }
-    for (const index of await listSeriesIndexes()) {
+    for (const index of await readIndexes()) {
       wanted.delete(index.series_key);
     }
     if (wanted.size === 0) return pulled;
@@ -171,4 +190,47 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     console.debug('[hole-patch] pass failed:', error);
   }
   return pulled;
+}
+
+/**
+ * Patch the holes AND fold the result back into the reading records.
+ *
+ * THE BUG THIS EXISTS TO PREVENT. `patchProgressHoles` mints `volumes` rows;
+ * `enrichAllOrphanedVolumes` is what copies a row's series/volume titles ONTO
+ * the reading record, and only the record drives what the stats views show —
+ * including `ReadingSpeedView`'s `[Missing Series Info]` bucket and the trash
+ * button on it. Running the enrichment first and firing the sweep off
+ * un-awaited (which is what both callers used to do) means the rows the sweep
+ * writes reach nothing for the rest of the visit: the bucket keeps every
+ * volume the sweep just resolved, and the destructive control keeps offering
+ * them. The second enrichment closes exactly that window.
+ *
+ * The FIRST enrichment is kept because it is the fast path — it needs only rows
+ * already on the device, and the page should not wait on a cloud listing to
+ * show titles it can resolve immediately. It is also nearly free when there is
+ * nothing to do: `enrichAllOrphanedVolumes` reads IndexedDB only when the store
+ * actually holds an orphan, and then only those rows.
+ *
+ * Best-effort, like everything else here: never rejects.
+ */
+export async function patchProgressHolesAndEnrich(options?: { limit?: number }): Promise<string[]> {
+  await enrichQuietly();
+  const pulled = await patchProgressHoles(options);
+  // Awaited AFTER the sweep, not alongside it: this is the pass that sees the
+  // rows the sweep just wrote.
+  await enrichQuietly();
+  return pulled;
+}
+
+/**
+ * Guarded PER PASS, not around the sequence: a failing enrichment must not take
+ * the sweep down with it, and a failure in the first pass must not cost the
+ * second — that one is the whole reason this function exists.
+ */
+async function enrichQuietly(): Promise<void> {
+  try {
+    await enrichAllOrphanedVolumes();
+  } catch (error) {
+    console.debug('[hole-patch] enrichment failed:', error);
+  }
 }

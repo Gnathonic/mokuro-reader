@@ -65,6 +65,7 @@ import { db } from '$lib/catalog/db';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import {
   materializeHistoryRows,
+  resetHistoryRowsSessionForTests,
   MAX_HISTORY_ROWS_PER_RUN,
   MAX_HISTORY_SERIES_PER_RUN
 } from './history-rows';
@@ -110,6 +111,7 @@ async function seedSeries(seriesTitle: string, volumes: SeriesFileVolume[]): Pro
 beforeEach(async () => {
   listing = new Map();
   progressStore.set({});
+  resetHistoryRowsSessionForTests();
   await db.volumes.clear();
   await db.series_index.clear();
 });
@@ -254,6 +256,68 @@ describe('materializeHistoryRows', () => {
     await expect(materializeHistoryRows()).resolves.toBe(1);
     const row = (await db.volumes.get('uuid-dup')) as VolumeMetadata;
     expect(row.series_title).toBe('Zzz Other');
+  });
+
+  describe('when a planned uuid cannot become a row', () => {
+    it('does not let a series with no cloud listing starve a materializable one behind it', async () => {
+      // The concrete case: an index cached while a DIFFERENT provider was
+      // connected. `runRefresh` deliberately never cleans those, so the record
+      // is in `series_index` forever while `cloudVolumeTitlesFor` reports an
+      // empty folder for it forever — its batch is dropped every single run.
+      await seedSeries('Aaa Stale', [indexVolume('uuid-stale', 'Aaa Stale v01')]);
+      listing.delete('Aaa Stale');
+      await seedSeries('Bbb Live', [indexVolume('uuid-live', 'Bbb Live v01')]);
+
+      // Iteration order over the progress store is stable and puts the dead
+      // series first, which is the whole mechanism: with one series slot per
+      // run, it took that slot on every run and 'Bbb Live' never got one.
+      progressStore.set({
+        'uuid-stale': { completed: true },
+        'uuid-live': { completed: true }
+      });
+
+      await expect(materializeHistoryRows({ seriesLimit: 1 })).resolves.toBe(0);
+      expect(await db.volumes.get('uuid-live')).toBeUndefined();
+
+      await expect(materializeHistoryRows({ seriesLimit: 1 })).resolves.toBe(1);
+      expect(await db.volumes.get('uuid-live')).toBeDefined();
+      // And the dead one is still dead — this is a scheduling fix, not a
+      // licence to write a row the listing gate refused.
+      expect(await db.volumes.get('uuid-stale')).toBeUndefined();
+    });
+
+    it('does not let a uuid `materializeSeriesVolumes` skips starve a writable one behind it', async () => {
+      // Rule 2: a local row already owns 'Dr Stone v01' under a different uuid
+      // (a re-OCR elsewhere, or a path-derived placeholder). The index entry is
+      // skipped every run — it survives the listing gate, so this is the OTHER
+      // half of the problem: the row cap is spent, not the series cap.
+      await seedSeries('Dr Stone', [
+        indexVolume('uuid-shadowed', 'Dr Stone v01'),
+        indexVolume('uuid-writable', 'Dr Stone v02')
+      ]);
+      await db.volumes.put({
+        volume_uuid: 'other-uuid-same-title',
+        series_uuid: 'dr-stone',
+        series_title: 'Dr Stone',
+        volume_title: 'Dr Stone v01',
+        mokuro_version: '0.2.1',
+        page_count: 180,
+        character_count: 12_000,
+        page_char_counts: [],
+        metadata_only: true
+      } as VolumeMetadata);
+
+      progressStore.set({
+        'uuid-shadowed': { completed: true },
+        'uuid-writable': { completed: true }
+      });
+
+      await expect(materializeHistoryRows({ limit: 1 })).resolves.toBe(0);
+      expect(await db.volumes.get('uuid-writable')).toBeUndefined();
+
+      await expect(materializeHistoryRows({ limit: 1 })).resolves.toBe(1);
+      expect(await db.volumes.get('uuid-writable')).toBeDefined();
+    });
   });
 
   describe('on a large library', () => {

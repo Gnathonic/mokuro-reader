@@ -1,7 +1,8 @@
 import { browser } from '$app/environment';
-import { derived, writable, readable } from 'svelte/store';
+import { derived, get, writable, readable } from 'svelte/store';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { SERIES_SECTION_KEY } from './series-data';
 
@@ -308,15 +309,65 @@ export function updateVolumeSeriesTitle(volumeUuid: string, newSeriesTitle: stri
 }
 
 /**
+ * Is this reading record missing the metadata every stats surface joins on?
+ *
+ * ONE definition, exported, because two copies of it drifted into being: this
+ * module used it to decide what to enrich, and `ReadingSpeedView` used its own
+ * transcription of it to decide what to OFFER FOR DELETION. A predicate that
+ * gates a destructive action must not be a copy of the one that gates the
+ * repair — the two have to agree by construction.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Both copies used to end in
+ * `volume_title.startsWith('Volume ')`. The intent was to catch
+ * `processVolumeSpeedData`'s display placeholder (`Volume <8 hex chars>...`),
+ * but that placeholder is never written back to a reading record — it exists
+ * only inside the `VolumeSpeedData` row it is rendered from. What the clause
+ * actually matched was real data: "Volume 1", "Volume 3" and friends are
+ * ordinary mokuro volume titles, so any record carrying one was reported as an
+ * orphan forever, even with a perfect, fully-populated row behind it — and on
+ * this page that meant it was offered up for deletion.
+ */
+export function isOrphanedVolumeData(
+  volumeData: Pick<VolumeData, 'series_uuid' | 'series_title' | 'volume_title'> | undefined | null
+): boolean {
+  if (!volumeData) return false;
+  return (
+    !volumeData.series_uuid ||
+    volumeData.series_uuid === 'missing-series-info' ||
+    !volumeData.series_title ||
+    volumeData.series_title === '[Missing Series Info]' ||
+    !volumeData.volume_title
+  );
+}
+
+/**
  * Enriches ALL orphaned volumes (those lacking metadata) from the catalog
  * This is more aggressive than lazy enrichment and runs proactively
+ *
+ * READS ONLY THE ORPHANS' ROWS. This used to `toArray()` the whole `volumes`
+ * table to build a lookup for the handful of ids it cares about, deserializing
+ * every installed volume's thumbnail blob on the way (the exact shape of the
+ * 437 MB-per-read cover regression). It is keyed by `volume_uuid`, so a
+ * `bulkGet` of the orphan ids answers the same question, and a store with no
+ * orphans in it touches IndexedDB not at all — which is what makes it cheap
+ * enough to run again after `materializeHistoryRows` has minted new rows.
  */
 export async function enrichAllOrphanedVolumes() {
   if (!browser) return;
 
   try {
-    const catalog = await db.volumes.toArray();
-    const catalogMap = new Map(catalog.map((v) => [v.volume_uuid, v]));
+    const snapshot = get(_volumesInternal);
+    const orphanIds = Object.keys(snapshot).filter(
+      (id) => !snapshot[id].deletedOn && isOrphanedVolumeData(snapshot[id])
+    );
+    if (orphanIds.length === 0) return;
+
+    const rows = await db.volumes.bulkGet(orphanIds);
+    const catalogMap = new Map<string, VolumeMetadata>();
+    rows.forEach((row) => {
+      if (row) catalogMap.set(row.volume_uuid, row);
+    });
+    if (catalogMap.size === 0) return;
 
     _volumesInternal.update((prev) => {
       const updated = { ...prev };
@@ -325,27 +376,17 @@ export async function enrichAllOrphanedVolumes() {
       Object.entries(prev).forEach(([volumeId, volumeData]) => {
         // Skip deleted volumes (tombstones)
         if (volumeData.deletedOn) return;
+        if (!isOrphanedVolumeData(volumeData)) return;
 
-        // Check if volume lacks metadata
-        const needsEnrichment =
-          !volumeData.series_uuid ||
-          volumeData.series_uuid === 'missing-series-info' ||
-          !volumeData.series_title ||
-          volumeData.series_title === '[Missing Series Info]' ||
-          !volumeData.volume_title ||
-          volumeData.volume_title.startsWith('Volume ');
-
-        if (needsEnrichment) {
-          const catalogInfo = catalogMap.get(volumeId);
-          if (catalogInfo) {
-            updated[volumeId] = new VolumeData({
-              ...volumeData,
-              series_uuid: catalogInfo.series_uuid,
-              series_title: catalogInfo.series_title,
-              volume_title: catalogInfo.volume_title
-            });
-            enrichedCount++;
-          }
+        const catalogInfo = catalogMap.get(volumeId);
+        if (catalogInfo) {
+          updated[volumeId] = new VolumeData({
+            ...volumeData,
+            series_uuid: catalogInfo.series_uuid,
+            series_title: catalogInfo.series_title,
+            volume_title: catalogInfo.volume_title
+          });
+          enrichedCount++;
         }
       });
 

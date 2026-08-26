@@ -2,10 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readable } from 'svelte/store';
 
 let progress: Record<string, { series_title?: string; deletedOn?: string }> = {};
+/**
+ * The pass that copies a `volumes` row onto the READING RECORD. Doubled here so
+ * this suite can watch WHEN it runs relative to the sweep — which is the whole
+ * of `patchProgressHolesAndEnrich`'s contract — and, more to the point, what
+ * the local rows look like by the time it does.
+ */
+const enrichAllOrphanedVolumes = vi.fn(async () => {});
 vi.mock('$lib/settings', () => ({
   get volumes() {
     return readable(progress);
-  }
+  },
+  enrichAllOrphanedVolumes: () => enrichAllOrphanedVolumes()
 }));
 
 let localRows: Array<{ volume_uuid: string; series_title: string }> = [];
@@ -25,8 +33,9 @@ vi.mock('$lib/catalog/db', () => ({
 }));
 
 let indexes: Array<{ series_key: string }> = [];
+const listSeriesIndexes = vi.fn(async () => indexes);
 vi.mock('$lib/metadata/series-index', () => ({
-  listSeriesIndexes: async () => indexes
+  listSeriesIndexes: () => listSeriesIndexes()
 }));
 
 const openSeries = vi.fn(async (_title: string) => {});
@@ -35,9 +44,10 @@ vi.mock('$lib/metadata/series-open', () => ({ openSeries: (t: string) => openSer
 // Phase 1 has its own suite (`history-rows.test.ts`); here it is stubbed so
 // these cases stay about phase 2's planning, EXCEPT where a case asserts the
 // hand-off between the two.
-const materializeHistoryRows = vi.fn(async () => 0);
+type SweepOptions = { readIndexes?: () => Promise<unknown[]> };
+const materializeHistoryRows = vi.fn(async (_options?: SweepOptions) => 0);
 vi.mock('$lib/metadata/history-rows', () => ({
-  materializeHistoryRows: () => materializeHistoryRows()
+  materializeHistoryRows: (options?: SweepOptions) => materializeHistoryRows(options)
 }));
 
 // Connected + loaded by default so the existing behavioural tests don't need
@@ -53,7 +63,11 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => cacheLoaded }) }
 }));
 
-import { patchProgressHoles, resetHolePatchSessionForTests } from './hole-patch';
+import {
+  patchProgressHoles,
+  patchProgressHolesAndEnrich,
+  resetHolePatchSessionForTests
+} from './hole-patch';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -63,6 +77,7 @@ beforeEach(() => {
   activeProvider = { type: 'google-drive' };
   cacheLoaded = true;
   materializeHistoryRows.mockImplementation(async () => 0);
+  enrichAllOrphanedVolumes.mockImplementation(async () => {});
   resetHolePatchSessionForTests();
 });
 
@@ -239,15 +254,107 @@ describe('patchProgressHoles', () => {
       expect(materializeHistoryRows).not.toHaveBeenCalled();
     });
 
-    it('survives a local sweep that throws and still runs the network phase', async () => {
+    it('contains a local sweep that throws to that run — aborting phase 2, never the next run', async () => {
+      // NAMED FOR WHAT IT CHECKS. A sweep rejection propagates to the run's own
+      // try/catch, so phase 2 is abandoned for THAT run — `openSeries` is not
+      // called, which is the assertion below. What survives is the session: the
+      // title was never memoized as attempted, so the very next run pulls it.
       progress = { 'uuid-1': { series_title: 'Dr Stone' } };
       materializeHistoryRows.mockRejectedValueOnce(new Error('idb exploded'));
 
       await expect(patchProgressHoles()).resolves.toEqual([]);
       expect(openSeries).not.toHaveBeenCalled();
 
-      // The throw is contained to that run; the next one proceeds normally.
       await expect(patchProgressHoles()).resolves.toEqual(['Dr Stone']);
+      expect(openSeries).toHaveBeenCalledWith('Dr Stone');
+    });
+  });
+
+  it('reads the cached series indexes ONCE for the whole run, not once per phase', async () => {
+    // Both phases want the same list and neither can invalidate it — phase 1
+    // writes only to `volumes`. They used to issue a `series_index.getAll`
+    // each. The double forwards the reader the production code injects, so a
+    // regression to a private `listSeriesIndexes()` call in either phase shows
+    // up here as two.
+    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
+    materializeHistoryRows.mockImplementation(async (options?: SweepOptions) => {
+      // Throwing rather than shrugging: if production stops passing the shared
+      // reader, `options?.readIndexes?.()` would quietly read nothing and the
+      // count below would still be 1 — the assertion satisfied by both
+      // branches. The throw makes that case fail the `pulled` assertion.
+      if (!options?.readIndexes) throw new Error('phase 1 was not given the shared index reader');
+      await options.readIndexes();
+      return 0;
+    });
+
+    await expect(patchProgressHoles()).resolves.toEqual(['Dr Stone']);
+    // Both phases really did ask (the run reached phase 2's index check —
+    // otherwise "one read" would be true of a run that only ever had one
+    // asker).
+    expect(materializeHistoryRows).toHaveBeenCalledTimes(1);
+    expect(openSeries).toHaveBeenCalledWith('Dr Stone');
+    expect(listSeriesIndexes).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads nothing at all on a re-run whose titles are all already memoized', async () => {
+    // Why the shared reader is LAZY rather than fetched once up front: a run
+    // that bails before either phase wants the indexes must still issue no
+    // `series_index` read, and this page's caller re-runs on every mount.
+    progress = { 'uuid-1': { series_title: 'Ghost Series' } };
+    await expect(patchProgressHoles()).resolves.toEqual(['Ghost Series']);
+    expect(listSeriesIndexes).toHaveBeenCalledTimes(1);
+
+    listSeriesIndexes.mockClear();
+    await expect(patchProgressHoles()).resolves.toEqual([]);
+    expect(listSeriesIndexes).not.toHaveBeenCalled();
+  });
+
+  describe('patchProgressHolesAndEnrich', () => {
+    it('runs the enrichment AGAIN after the sweep, where it can see the rows the sweep wrote', async () => {
+      // The bug this exists to prevent: `ReadingSpeedView` enriched first and
+      // fired the sweep off un-awaited, so the rows the sweep minted reached
+      // the reading records — and therefore the `[Missing Series Info]` bucket
+      // and its trash button — for no part of that visit.
+      const order: string[] = [];
+      const rowsSeen: string[][] = [];
+      progress = { 'uuid-1': { series_title: 'Dr Stone' } };
+
+      enrichAllOrphanedVolumes.mockImplementation(async () => {
+        order.push('enrich');
+        rowsSeen.push(localRows.map((row) => row.volume_uuid));
+      });
+      materializeHistoryRows.mockImplementation(async () => {
+        order.push('sweep');
+        localRows = [{ volume_uuid: 'uuid-1', series_title: 'Dr Stone' }];
+        return 1;
+      });
+
+      await patchProgressHolesAndEnrich();
+
+      expect(order).toEqual(['enrich', 'sweep', 'enrich']);
+      // Not just "twice" — the SECOND pass must observe the sweep's write.
+      expect(rowsSeen[0]).toEqual([]);
+      expect(rowsSeen[1]).toEqual(['uuid-1']);
+    });
+
+    it('keeps sweeping when the FIRST enrichment throws, and still enriches after', async () => {
+      // Guarded per pass, not around the sequence: the second pass is the one
+      // that closes the window, so a failure in the first must not cost it.
+      progress = { 'uuid-1': { series_title: 'Dr Stone' } };
+      enrichAllOrphanedVolumes.mockRejectedValueOnce(new Error('idb exploded'));
+
+      await expect(patchProgressHolesAndEnrich()).resolves.toEqual(['Dr Stone']);
+      expect(materializeHistoryRows).toHaveBeenCalledTimes(1);
+      expect(enrichAllOrphanedVolumes).toHaveBeenCalledTimes(2);
+    });
+
+    it('never rejects when the SECOND enrichment throws, and still returns what was pulled', async () => {
+      progress = { 'uuid-1': { series_title: 'Dr Stone' } };
+      enrichAllOrphanedVolumes
+        .mockImplementationOnce(async () => {})
+        .mockRejectedValueOnce(new Error('idb exploded'));
+
+      await expect(patchProgressHolesAndEnrich()).resolves.toEqual(['Dr Stone']);
     });
   });
 
