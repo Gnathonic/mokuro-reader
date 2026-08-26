@@ -53,12 +53,19 @@ beforeAll(async () => {
 
   // Same name and schema `compress-volume`'s own worker-side handle opens.
   db = new Dexie('mokuro_v3');
-  db.version(3).stores({
+  db.version(1).stores({
+    volumes: 'volume_uuid, series_uuid, series_title',
+    volume_ocr: 'volume_uuid',
+    volume_files: 'volume_uuid'
+  });
+  db.version(2).stores({
     volumes: 'volume_uuid, series_uuid, series_title',
     volume_ocr: 'volume_uuid',
     volume_files: 'volume_uuid',
     series_metadata: 'series_key',
-    series_index: 'series_key'
+    series_index: 'series_key',
+    catalog_index: 'series_key',
+    cloud_covers: '[account_scope+path], last_accessed'
   });
   await db.open();
 });

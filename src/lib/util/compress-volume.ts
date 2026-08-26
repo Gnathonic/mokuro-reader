@@ -155,25 +155,34 @@ let workerDb: Dexie | null = null;
 function getDatabase(): Dexie {
   if (!workerDb) {
     workerDb = new Dexie('mokuro_v3');
+    // Must mirror CatalogDexieV3's schema (src/lib/catalog/db-v3.ts) exactly —
+    // same version numbers, same store definitions. This is a SEPARATE Dexie
+    // connection to the same on-disk `mokuro_v3` database, opened from a Web
+    // Worker; nothing enforces the two schemas staying in sync mechanically
+    // (see compress-volume.db-mirror.test.ts for the regression test that
+    // would catch a drift). Two ways this breaks if they diverge:
+    //   - declaring an older version than what's on disk throws VersionError
+    //     on open (loud).
+    //   - declaring a newer version than what's on disk, but with a smaller
+    //     store set, makes Dexie treat the missing stores as "added since",
+    //     wiping any existing rows in them (silent data loss — confirmed by
+    //     reproduction while fixing this in Task 2 fix-round-1: a worker
+    //     mirror stuck on an old table list emptied `catalog_index` and
+    //     `cloud_covers` the moment it opened after the main schema).
+    // Whoever changes db-v3.ts's schema must update this block in lockstep.
     workerDb.version(1).stores({
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid'
     });
-    // Must mirror CatalogDexieV3's schema: a worker that declared an older
-    // version than the one on disk would fail to open the database.
     workerDb.version(2).stores({
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid',
-      series_metadata: 'series_key'
-    });
-    workerDb.version(3).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid',
       series_metadata: 'series_key',
-      series_index: 'series_key'
+      series_index: 'series_key',
+      catalog_index: 'series_key',
+      cloud_covers: '[account_scope+path], last_accessed'
     });
   }
   return workerDb;
