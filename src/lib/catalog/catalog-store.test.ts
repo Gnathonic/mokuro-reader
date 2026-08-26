@@ -21,7 +21,10 @@ const {
   generatePlaceholders,
   liveQueryState,
   emitMutationSignal,
-  toArrayCalls
+  toArrayCalls,
+  toArrayGate,
+  toArrayResolvers,
+  resolveNextToArray
 } = vi.hoisted(() => {
   // vi.mock factories are hoisted above imports, so the stores they close over are
   // hand-rolled here rather than built with svelte/store's `writable`.
@@ -59,6 +62,17 @@ const {
   const liveQueryState: { next: ((v: unknown) => void) | null } = { next: null };
   const toArrayCalls: unknown[] = [];
 
+  // Lets a test hold a `toArray()` call open instead of letting it settle in
+  // the same microtask, so the `running`/`dirty` reentrancy guard in
+  // `runQuery` (index.ts) — and the disposal race it guards against — actually
+  // have a window to be exercised in. The snapshot is captured at CALL time
+  // (mirroring a real Dexie read), then handed to the matching queued resolver
+  // via `resolveNextToArray`, so a later mutation to `volumeRecord` can't
+  // retroactively change what an already-in-flight read delivers.
+  const toArrayGate = { deferred: false };
+  const toArrayResolvers: Array<() => void> = [];
+  const resolveNextToArray = () => toArrayResolvers.shift()?.();
+
   return {
     volumeRecord: { v1: volume } as Record<string, unknown>,
     cloudFiles: createStore(new Map<string, unknown>()),
@@ -69,20 +83,30 @@ const {
     generatePlaceholders: vi.fn(() => [] as unknown[]),
     liveQueryState,
     emitMutationSignal: () => liveQueryState.next?.(undefined),
-    toArrayCalls
+    toArrayCalls,
+    toArrayGate,
+    toArrayResolvers,
+    resolveNextToArray
   };
 });
 
 // `volumes` reads through `db.volumes.toArray()` directly (not through
 // liveQuery — see the `dexie` mock below), so it needs a real implementation
 // here; `toArrayCalls` records every call so tests can assert the scan itself
-// was coalesced, not just the downstream emission.
+// was coalesced, not just the downstream emission. When `toArrayGate.deferred`
+// is set, the call parks its resolution in `toArrayResolvers` instead of
+// settling immediately, so a test can hold a read open across a coalesce window
+// and settle it later via `resolveNextToArray`.
 vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
       toArray: () => {
         toArrayCalls.push(1);
-        return Promise.resolve(Object.values(volumeRecord));
+        const snapshot = Object.values(volumeRecord);
+        if (!toArrayGate.deferred) return Promise.resolve(snapshot);
+        return new Promise((resolve) => {
+          toArrayResolvers.push(() => resolve(snapshot));
+        });
       }
     }
   }
@@ -621,5 +645,118 @@ describe('volumes emissions coalesce', () => {
     expect(toArrayCalls.length).toBe(2);
     unsubscribe();
     vi.useRealTimers();
+  });
+});
+
+/**
+ * The two tests above never actually exercise the `running`/`dirty`
+ * reentrancy guard in `runQuery`: their mocked `toArray()` settles inside a
+ * single microtask, so it always resolves before a second timer could fire
+ * while `running` was still true. Deleting the guard entirely would leave
+ * both of those tests green — `schedule()`'s own `if (!timer)` dedup already
+ * explains their assertions on its own. This test uses `toArrayGate` to hold
+ * a read open across a full coalesce window so the guard's `running` branch
+ * is actually reached, and restores a property the guard exists for in the
+ * first place: the value ultimately delivered reflects the LAST write of a
+ * burst, not whichever read happened to be in flight when the burst started.
+ */
+describe('volumes running/dirty reentrancy guard', () => {
+  it('does not drop a mutation that lands while a read is in flight', async () => {
+    vi.useFakeTimers();
+    toArrayCalls.length = 0;
+    toArrayGate.deferred = true;
+
+    let latest: Record<string, unknown> | undefined;
+    const unsubscribe = volumes.subscribe((v) => (latest = v as typeof latest));
+
+    // The mocked liveQuery fires its `next` synchronously on subscribe, so
+    // the first coalesce window is already running; let it elapse to start
+    // the first (deferred, still-pending) read.
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+    expect(toArrayCalls.length).toBe(1);
+
+    // A later write lands, and a FULL coalesce window elapses, while that
+    // first read is still pending. This is the only way to reach the
+    // `running` branch: `runQuery` has to be re-entered while `running` is
+    // still true from the call above.
+    volumeRecord.v2 = { volume_uuid: 'v2' };
+    emitMutationSignal();
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS * 2);
+
+    // The guard must have folded that re-entry into `dirty` rather than
+    // starting a second, concurrent scan.
+    expect(toArrayCalls.length).toBe(1);
+
+    // Only now does the first, now-stale read settle — with the snapshot it
+    // captured before `v2` existed.
+    resolveNextToArray();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // `dirty` must trigger exactly one more read...
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+    expect(toArrayCalls.length).toBe(2);
+    resolveNextToArray();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // ...and the value ultimately delivered is the LATER write, not the
+    // snapshot the first, in-flight read captured.
+    expect(latest).toHaveProperty('v2');
+
+    unsubscribe();
+    vi.useRealTimers();
+    toArrayGate.deferred = false;
+    delete volumeRecord.v2;
+  });
+});
+
+/**
+ * `runQuery` has no way to abort a `toArray()` read that is already in
+ * flight when its subscription is torn down (the hash router does this on
+ * every navigation): the teardown closure can only clear a pending timer and
+ * unsubscribe the count signal. Before the `disposed` flag, that stale read
+ * would still call the shared `set` when it eventually settled — even after
+ * a brand-new subscription had already delivered current data — silently
+ * clobbering it back to the old snapshot. This test reproduces that
+ * sequence directly against the exported `volumes` store.
+ */
+describe('volumes disposal guard', () => {
+  it('does not let a stale read from a torn-down subscription clobber a fresher one', async () => {
+    vi.useFakeTimers();
+    toArrayCalls.length = 0;
+    toArrayGate.deferred = true;
+
+    let latest: Record<string, unknown> | undefined;
+    const unsubscribeA = volumes.subscribe((v) => (latest = v as typeof latest));
+
+    // Subscription A's first coalesce window elapses, starting its
+    // (deferred, still-pending) read.
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+    expect(toArrayCalls.length).toBe(1);
+
+    // The hash router tears A down mid-read. This can only clear a pending
+    // timer and unsubscribe the count signal — it cannot cancel the read
+    // already in flight.
+    unsubscribeA();
+
+    // A fresher volume shows up, and a brand-new subscription (B) starts,
+    // completing its OWN read before A's stale one settles.
+    volumeRecord.v2 = { volume_uuid: 'v2' };
+    toArrayGate.deferred = false;
+    const unsubscribeB = volumes.subscribe((v) => (latest = v as typeof latest));
+    await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+    expect(toArrayCalls.length).toBe(2);
+    expect(latest).toHaveProperty('v2');
+
+    // A's stale read finally resolves, with the snapshot it captured before
+    // `v2` existed and before A was torn down.
+    resolveNextToArray();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The disposed subscription's stale result must not clobber B's current one.
+    expect(latest).toHaveProperty('v2');
+
+    unsubscribeB();
+    vi.useRealTimers();
+    delete volumeRecord.v2;
   });
 });

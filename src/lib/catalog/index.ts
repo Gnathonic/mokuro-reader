@@ -91,6 +91,7 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = false;
   let dirty = false;
+  let disposed = false;
 
   /**
    * The expensive read, run at most once per quiet period.
@@ -112,6 +113,17 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
     running = true;
     try {
       const rows = await db.volumes.toArray();
+      // `set` is the SAME function across every start/stop generation of this
+      // readable — `readable`'s start callback re-runs on each 0→1 subscriber
+      // transition (e.g. the hash router swapping views), but it never gets a
+      // fresh `set`. Tearing down a subscription can only clear a PENDING
+      // timer and unsubscribe the count signal below; it cannot abort a read
+      // that is already awaiting `toArray()`. Without this check, a stale
+      // read from a torn-down subscription can resolve after a fresher
+      // subscription has already delivered current data and silently
+      // clobber it — e.g. a just-imported volume vanishing from the catalog
+      // until some unrelated write happens to trigger another scan.
+      if (disposed) return;
       set(
         rows.reduce(
           (acc, vol) => {
@@ -125,7 +137,9 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
       console.error(err);
     } finally {
       running = false;
-      if (dirty) {
+      // A disposed store must not resurrect itself by scheduling more work —
+      // see the `disposed` check above `set` for why the flag exists at all.
+      if (dirty && !disposed) {
         dirty = false;
         schedule();
       }
@@ -152,6 +166,7 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   });
 
   return () => {
+    disposed = true;
     if (timer) clearTimeout(timer);
     subscription.unsubscribe();
   };
