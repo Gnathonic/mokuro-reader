@@ -54,7 +54,7 @@ export class CatalogDexieV3 extends Dexie {
       series_metadata: 'series_key',
       series_index: 'series_key',
       catalog_index: 'series_key',
-      cloud_covers: '[account_scope+path], last_accessed'
+      cloud_covers: '[account_scope+path], cached_at'
     });
   }
 

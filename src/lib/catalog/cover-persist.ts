@@ -249,7 +249,7 @@ export async function flushPendingCoverPersists(): Promise<void> {
             thumbnail: result.file,
             width: result.width,
             height: result.height,
-            last_accessed: Date.now()
+            cached_at: Date.now()
           });
         }
       }

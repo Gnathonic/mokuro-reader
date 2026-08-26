@@ -15,11 +15,6 @@ export function normalizeCachePath(path: string): string {
     .join('/');
 }
 
-/** The cache's composite primary key: which account, which file. */
-export function cloudCacheKey(scope: string, path: string): [string, string] {
-  return [scope, normalizeCachePath(path)];
-}
-
 /**
  * Which account's cache the app should read and write right now, or null when
  * nothing is connected. Null means "do not touch the cache" — never a fallback

@@ -20,6 +20,7 @@ import { isCatalogVisible } from '$lib/util/cloud-fields';
 import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-index';
 import { cloudCoverMap } from '$lib/catalog/cloud-covers-store';
 import type { CloudCover } from '$lib/catalog/cloud-covers';
+import { normalizeCachePath } from '$lib/catalog/cloud-cache-key';
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
@@ -148,11 +149,13 @@ function seriesIndexSignature(map: Map<string, SeriesIndexRecord>): string {
 /**
  * What the placeholder pass actually consumes from `cloudCoverMap`: which
  * paths have a cached cover and how big the blob is. `cloudCoverMap` is also
- * liveQuery-backed, so it re-emits a brand-new Map of brand-new row objects
- * on ANY write to `cloud_covers` — including a `touchCloudCovers` write that
- * only bumps `last_accessed` and changes nothing a placeholder would show.
- * Byte length is enough to catch a genuine cover overwrite; a same-length
- * coincidental overwrite recomputing anyway is a harmless false positive.
+ * liveQuery-backed, so it re-emits a brand-new Map of brand-new row objects on
+ * ANY write to `cloud_covers` — a fresh cover landing for a path this pass
+ * doesn't care about would otherwise still force a recompute. Byte length is
+ * enough to catch a genuine cover overwrite; a same-length coincidental
+ * overwrite recomputing anyway is a harmless false positive. (There is no
+ * `cached_at` churn to ignore here: nothing ever rewrites that field after
+ * the initial write — see `cloud-covers.ts`'s `CloudCover.cached_at`.)
  */
 function cloudCoverSignature(map: Map<string, CloudCover>): string {
   const parts: string[] = [];
@@ -244,7 +247,30 @@ export const volumesWithPlaceholders = derived(
         for (const vol of localVolumes) {
           if (!isMetadataOnly(vol)) continue;
           const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol, lastCoverIndex);
-          if (cloudFields) combined[vol.volume_uuid] = { ...vol, ...cloudFields };
+          if (!cloudFields) continue;
+
+          // Opening a series materializes bare metadata-only rows for the
+          // whole series (`series-open.ts`), which have no thumbnail of
+          // their own. If the user already browsed this volume, its cover
+          // blob is sitting in `cloud_covers` — apply it to the catalog
+          // copy so the card doesn't blank out and re-download something
+          // already on disk (`cover-install.ts`/`cover-service.ts` only
+          // check `vol.thumbnail`, not `cloud_covers`, before fetching).
+          // Same discipline as the fields above: decorate the copy, never
+          // the stored row.
+          let coverFields: Partial<VolumeMetadata> | undefined;
+          if (!vol.thumbnail && cloudFields.cloudPath) {
+            const cachedCover = $cloudCoverMap.get(normalizeCachePath(cloudFields.cloudPath));
+            if (cachedCover) {
+              coverFields = {
+                thumbnail: cachedCover.thumbnail,
+                thumbnail_width: cachedCover.width,
+                thumbnail_height: cachedCover.height
+              };
+            }
+          }
+
+          combined[vol.volume_uuid] = { ...vol, ...cloudFields, ...coverFields };
         }
       }
     }

@@ -65,11 +65,11 @@ The first draft of this spec gave the new table fifteen fields. Seven of them â€
 invalidation path to get wrong.
 
 The only data no existing table holds is the **thumbnail blob** (plus its dimensions), the
-**account scope** that owns it, and the **access timestamp** that expires it. So the new
+**account scope** that owns it, and the **cache timestamp** that expires it. So the new
 table is exactly that and nothing more:
 
 ```
-cloud_covers: [account_scope+path] -> { thumbnail: File, width, height, last_accessed }
+cloud_covers: [account_scope+path] -> { thumbnail: File, width, height, cached_at }
 ```
 
 Everything else a cloud card renders is read from `series_index`, which is already keyed by
@@ -101,8 +101,11 @@ fetches, while `series_index` rows are written wholesale by the sync path.
 2. **Composite key: account scope + path.** Cloud volume UUIDs are not available from
    providers, so the key is the file's **path**, scoped by **provider + account**, so that
    switching accounts or providers cannot cross-contaminate the cache.
-3. **Expiry: age-based only.** Entries expire **14 days** after last access. No size quotas,
-   no LRU byte budgets, nothing to juggle.
+3. **Expiry: age-based only.** Entries expire **14 days after the cover was cached** (not
+   "since last access" â€” the final whole-plan review found no read path can safely touch this
+   without an unbounded write/read feedback loop through `cloudCoverMap`'s liveQuery, so there
+   is deliberately no access-refresh; see `cloud-covers.ts`'s `CloudCover.cached_at`). No size
+   quotas, no LRU byte budgets, nothing to juggle.
 4. **Local table keeps history rows.** A metadata-only row stays in `volumes` when the volume
    has reading history, because stats and history pages reference it. Everything else is cache.
 5. **Emission coalescing is in scope**, alongside narrowing the direct scanners.

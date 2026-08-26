@@ -5,7 +5,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { getActiveProvider }
 }));
 
-import { cloudCacheKey, activeAccountScope, normalizeCachePath } from './cloud-cache-key';
+import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 
 describe('normalizeCachePath', () => {
   it('folds leading slashes and duplicate separators', () => {
@@ -20,12 +20,6 @@ describe('normalizeCachePath', () => {
 
   it('preserves case — cloud paths are case-sensitive', () => {
     expect(normalizeCachePath('Dr Stone/VOLUME 01.cbz')).toBe('Dr Stone/VOLUME 01.cbz');
-  });
-});
-
-describe('cloudCacheKey', () => {
-  it('is a [scope, path] tuple with the path normalized', () => {
-    expect(cloudCacheKey('mega:a@b.com', '//X/Y.cbz')).toEqual(['mega:a@b.com', 'X/Y.cbz']);
   });
 });
 

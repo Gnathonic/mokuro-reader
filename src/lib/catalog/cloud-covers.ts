@@ -27,12 +27,20 @@ export interface CloudCover {
   width: number;
   height: number;
   /**
-   * Epoch ms. Drives expiry only — see `pruneExpiredCloudCovers`. Staleness
-   * of the cover ITSELF is decided elsewhere, by comparing `series_index`'s
-   * `cover_size`/`cover_modified` for this volume against the current
-   * listing; nothing stored on this row participates in that comparison.
+   * Epoch ms when this cover was fetched and written. Drives expiry only —
+   * see `pruneExpiredCloudCovers`. Written once, at flush
+   * (`cover-persist.ts`), and never refreshed afterward: the placeholder a
+   * cached cover belongs to already carries its `thumbnail`, so
+   * `isCoverFetchTarget` never asks for it again, and there is no other read
+   * path that touches this row. So `CLOUD_COVER_MAX_AGE_MS` is "14 days after
+   * caching", not "14 days since last viewed" — there is deliberately no
+   * `touchCloudCovers`; see that constant's doc comment for why one was
+   * removed rather than wired up. Staleness of the cover ITSELF is decided
+   * elsewhere, by comparing `series_index`'s `cover_size`/`cover_modified`
+   * for this volume against the current listing; nothing stored on this row
+   * participates in that comparison.
    */
-  last_accessed: number;
+  cached_at: number;
 }
 
 /** Write covers, normalizing paths so every caller lands on the same key. */
@@ -59,33 +67,25 @@ export async function getCloudCovers(
 }
 
 /**
- * Mark covers as used, so browsing keeps them alive and neglect expires them.
- * Modifies only the timestamp: the thumbnail blob is left in place rather than
- * rewritten, which would cost a fresh blob write per view.
+ * Covers untouched for this long are discarded. Age only — no size quota, and
+ * measured from when the cover was CACHED, not last viewed: see
+ * `CloudCover.cached_at`'s doc comment for why there is no "last access" to
+ * measure from (a `touchCloudCovers` that wrote to `cloud_covers` from the
+ * read path would re-fire `cloudCoverMap`'s liveQuery, which would touch
+ * again — an unbounded write/read feedback loop).
  */
-export async function touchCloudCovers(
-  scope: string,
-  paths: string[],
-  nowMs: number = Date.now()
-): Promise<void> {
-  if (paths.length === 0) return;
-  const keys = paths.map((p) => [scope, normalizeCachePath(p)] as [string, string]);
-  await db.cloud_covers.where('[account_scope+path]').anyOf(keys).modify({ last_accessed: nowMs });
-}
-
-/** Covers untouched for this long are discarded. Age only — no size quota. */
 export const CLOUD_COVER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
- * Drop covers nobody has looked at in `CLOUD_COVER_MAX_AGE_MS`. Returns how
- * many were deleted.
+ * Drop covers cached more than `CLOUD_COVER_MAX_AGE_MS` ago. Returns how many
+ * were deleted.
  *
- * Deletes through the `last_accessed` index rather than scanning: this table
+ * Deletes through the `cached_at` index rather than scanning: this table
  * carries blobs, and a full scan here would reintroduce exactly the cost this
  * split exists to remove. Account-agnostic on purpose — an account the user
  * stopped using should age out, not linger because it is disconnected.
  */
 export async function pruneExpiredCloudCovers(nowMs: number = Date.now()): Promise<number> {
   const cutoff = nowMs - CLOUD_COVER_MAX_AGE_MS;
-  return db.cloud_covers.where('last_accessed').below(cutoff).delete();
+  return db.cloud_covers.where('cached_at').below(cutoff).delete();
 }

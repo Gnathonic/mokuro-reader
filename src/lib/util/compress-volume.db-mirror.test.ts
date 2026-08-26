@@ -47,7 +47,7 @@ describe('compress-volume worker DB mirror', () => {
       thumbnail: new File([new Uint8Array([1, 2, 3])], 'c.webp', { type: 'image/webp' }),
       width: 1,
       height: 1,
-      last_accessed: 1
+      cached_at: 1
     });
     main.close();
 

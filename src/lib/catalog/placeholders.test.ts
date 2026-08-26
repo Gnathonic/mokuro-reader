@@ -641,7 +641,7 @@ describe('generatePlaceholders with a cover map', () => {
           thumbnail: new File([new Uint8Array([1])], 'c.webp'),
           width: 250,
           height: 350,
-          last_accessed: 1000
+          cached_at: 1000
         }
       ]
     ]);

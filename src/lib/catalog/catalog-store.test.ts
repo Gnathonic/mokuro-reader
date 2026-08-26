@@ -299,13 +299,13 @@ describe('volumesWithPlaceholders', () => {
     cloudFiles.set(cloudListing);
     seriesIndexMap.set(new Map([['one piece', indexRecord('2026-08-17T00:00:00.000Z')]]));
 
-    const coverAt = (lastAccessed: number, blobLength = 3) => ({
+    const coverAt = (cachedAt: number, blobLength = 3) => ({
       account_scope: 'webdav:h|nathan',
       path: 'One Piece/Volume 2.cbz',
       thumbnail: new File([new Uint8Array(blobLength)], 'c.webp'),
       width: 250,
       height: 350,
-      last_accessed: lastAccessed
+      cached_at: cachedAt
     });
     cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(1000)]]));
 
@@ -318,7 +318,8 @@ describe('volumesWithPlaceholders', () => {
     );
     generate.mockClear();
 
-    // A touch bumps last_accessed and re-emits a fresh Map, but the cached blob
+    // A rewrite (e.g. a re-fetch after the TTL sweep expired the old row)
+    // stamps a fresh cached_at and re-emits a fresh Map, but the cached blob
     // — and therefore what a placeholder would show — hasn't changed.
     cloudCoverMap.set(new Map([['One Piece/Volume 2.cbz', coverAt(2000)]]));
     expect(generate).toHaveBeenCalledTimes(0);
@@ -366,6 +367,73 @@ describe('volumesWithPlaceholders', () => {
     unsubscribe();
     delete volumeRecord.v2;
     cloudFiles.set(new Map());
+  });
+
+  /**
+   * Regression for the final whole-plan review's Finding 3: opening a series
+   * materializes bare metadata-only rows (`series-open.ts`) with no
+   * thumbnail of their own. Before this fix, such a row's card went blank
+   * and `cover-install.ts`/`cover-service.ts` re-fetched over the network a
+   * blob already sitting in `cloud_covers` from an earlier browse. The join
+   * below is what makes that unnecessary: the decorated copy carries the
+   * cached blob directly, so the card never blanks, AND — because
+   * `isCoverFetchTarget` (`cover-service.test.ts`) only re-fetches when
+   * `vol.thumbnail` is falsy or the row's OWN `cover_size`/`cover_modified`
+   * stamps say the sidecar moved on — a just-materialized row (which has
+   * neither stamp) is correctly read as "not stale", so no fetch follows.
+   */
+  it('decorates a metadata-only row with its cached cover, without a network fetch', () => {
+    volumeRecord.v2 = {
+      volume_uuid: 'v2',
+      series_uuid: 's1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 2',
+      mokuro_version: '0.4.11',
+      page_count: 10,
+      character_count: 100,
+      page_char_counts: [],
+      metadata_only: true
+      // No thumbnail, no cover_size/cover_modified — exactly what
+      // `materializeSeriesVolumes` produces for a bare row.
+    };
+    cloudFiles.set(new Map(cloudListing));
+
+    const cachedThumbnail = new File([new Uint8Array([1, 2, 3])], 'c.webp');
+    cloudCoverMap.set(
+      new Map([
+        [
+          'One Piece/Volume 2.cbz',
+          {
+            account_scope: 'webdav:h|nathan',
+            path: 'One Piece/Volume 2.cbz',
+            thumbnail: cachedThumbnail,
+            width: 250,
+            height: 350,
+            cached_at: 1000
+          }
+        ]
+      ])
+    );
+
+    let latest: Record<string, VolumeMetadata> = {};
+    const unsubscribe = subscribeSettled(
+      volumesWithPlaceholders,
+      (value) => (latest = value ?? {})
+    );
+
+    expect(latest.v2.thumbnail).toBe(cachedThumbnail);
+    expect(latest.v2.thumbnail_width).toBe(250);
+    expect(latest.v2.thumbnail_height).toBe(350);
+    // Same cover-sidecar pointer fields as before — the cache join is
+    // additive, not a replacement for the download affordance.
+    expect(latest.v2.cloudFileId).toBe('f1');
+    // The stored row is never decorated — the cache join belongs to the copy.
+    expect(volumeRecord.v2).not.toHaveProperty('thumbnail');
+
+    unsubscribe();
+    delete volumeRecord.v2;
+    cloudFiles.set(new Map());
+    cloudCoverMap.set(new Map());
   });
 });
 

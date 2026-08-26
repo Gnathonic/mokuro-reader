@@ -942,7 +942,9 @@ git commit -m "feat(catalog): render cloud covers from cloud_covers, keyed by pa
 
 Four call sites answer per-series questions with a whole-table scan, and they are the ones that fire repeatedly during convergence. `volumes` already indexes `series_title`, so each becomes an indexed range read.
 
-The other twelve `db.volumes.toArray()` sites (`series-merge.ts`, `series-rename.ts`, `volume-editor.ts`, `volume-sidecars.ts`, `UploadView.svelte`, `hole-patch.ts`, `progress-tracker.ts`, `volume-data.ts`, `unified-cloud-manager.ts:1311`) are deliberately left alone: each runs once per explicit user action (a rename, an import, a sync) rather than per write, and after Task 5 they scan a table of hundreds rather than tens of thousands. Narrowing them would add risk for no measurable gain.
+The other eleven `db.volumes.toArray()` sites (`series-merge.ts`, `series-rename.ts`, `volume-editor.ts`, `volume-sidecars.ts`, `UploadView.svelte`, `hole-patch.ts`, `progress-tracker.ts`, `volume-data.ts`) are deliberately left alone: each runs once per explicit user action (a rename, an import, a sync) rather than per write, and after Task 5 they scan a table of hundreds rather than tens of thousands. Narrowing them would add risk for no measurable gain.
+
+`unified-cloud-manager.ts:1311` is also left alone, but not for that reason — **correction from the final whole-plan review's Finding 4**: this one is not "per explicit user action". `writeSeriesFile` is called from `series-file-sync.ts`'s debounced `performWrite`, scheduled once per series by `cover-service.ts` and `series-open.ts`, so a reconcile/convergence pass over the whole catalog runs it once per series (~1,032 full scans at the measured library scale), 2-wide via `write-slot.ts`. It is still left alone because, after Task 5, the table it scans is ~10x smaller than before and it never fires the `volumes` liveQuery — it is a candidate for `volumesForFoldedSeriesTitle` in a future pass, not a regression this plan introduced.
 
 **Files:**
 

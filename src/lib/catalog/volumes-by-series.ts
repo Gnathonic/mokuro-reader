@@ -21,18 +21,29 @@ import type { VolumeMetadata } from '$lib/types';
  * local rows at all — the overwhelmingly common case during a reconcile pass
  * over a large cloud library — costs one index-only read and returns `[]`
  * before a single row is ever touched.
+ *
+ * Both reads run inside ONE `db.transaction('r', ...)` rather than as two
+ * independent awaits: a sibling row minted (by a concurrent
+ * `materializeSeriesVolumes`) under a literal spelling not yet in the index,
+ * landing between the `uniqueKeys()` read and the `anyOf()` read, would
+ * otherwise be missed by this call permanently — for
+ * `stranded-rows.ts`'s `dropStrandedMetadataOnlyRow`, that means the
+ * duplicate "Not on this device" card this function exists to prevent. A
+ * single read transaction gives both queries the same consistent snapshot.
  */
 export async function volumesForFoldedSeriesTitle(
   seriesTitle: string,
   fold: (title: string) => string
 ): Promise<VolumeMetadata[]> {
   const key = fold(seriesTitle);
-  const literalTitles = (await db.volumes.orderBy('series_title').uniqueKeys()) as string[];
-  const matchingLiterals = literalTitles.filter((title) => fold(title) === key);
-  if (matchingLiterals.length === 0) return [];
+  return db.transaction('r', db.volumes, async () => {
+    const literalTitles = (await db.volumes.orderBy('series_title').uniqueKeys()) as string[];
+    const matchingLiterals = literalTitles.filter((title) => fold(title) === key);
+    if (matchingLiterals.length === 0) return [];
 
-  return (await db.volumes
-    .where('series_title')
-    .anyOf(matchingLiterals)
-    .toArray()) as VolumeMetadata[];
+    return (await db.volumes
+      .where('series_title')
+      .anyOf(matchingLiterals)
+      .toArray()) as VolumeMetadata[];
+  });
 }
