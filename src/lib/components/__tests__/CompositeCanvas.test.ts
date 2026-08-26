@@ -53,6 +53,7 @@ const { fakeCache } = vi.hoisted(() => {
 vi.mock('$lib/catalog/thumbnail-cache', () => ({ thumbnailCache: fakeCache }));
 
 import CompositeCanvas from '../CompositeCanvas.svelte';
+import CompositeCanvasCoversHost from './fixtures/CompositeCanvasCoversHost.svelte';
 import type { VolumeMetadata } from '$lib/types';
 
 let drawnBitmaps: unknown[] = [];
@@ -210,6 +211,41 @@ describe('CompositeCanvas redraws when thumbnails arrive after it mounted', () =
 
     expect(fakeCache.get).toHaveBeenCalledTimes(1);
     expect(fakeCache.get.mock.calls[0][1]).toBe(installed.thumbnail);
+  });
+
+  /**
+   * The same case as above, driven so that `covers` is genuinely the ONLY thing that
+   * moves. `rerender` cannot do that — it replaces the props object wholesale, so the
+   * draw effect re-runs on any prop and the test above would pass with the effect not
+   * tracking `covers` at all. The host below holds every other prop still, and the bitmap
+   * is already in the cache, so the redraw needs no load and no `drawTrigger`: a painted
+   * bitmap here can only mean the effect tracked the covers map itself.
+   */
+  it('redraws on a covers change alone, with nothing else moving', async () => {
+    // Already decoded by someone else (another card on the same volume, a cover install),
+    // so the canvas has a synchronous cache hit waiting the moment it is given the bytes.
+    fakeCache.commitExternally('cloud');
+
+    let setCovers!: (next: Map<string, File>) => void;
+    render(CompositeCanvasCoversHost, {
+      props: {
+        ...baseProps,
+        volumes: [volume('cloud', false)],
+        control: (fn: (next: Map<string, File>) => void) => {
+          setCovers = fn;
+        }
+      } as never
+    });
+    await settle();
+
+    // No cover: nothing to paint, and nothing asked of the cache.
+    expect(drawnBitmaps).toHaveLength(0);
+    expect(fakeCache.get).not.toHaveBeenCalled();
+
+    setCovers(new Map([['cloud', new Blob(['cloud cover']) as unknown as File]]));
+    await settle();
+
+    expect(drawnBitmaps).toHaveLength(1);
   });
 
   it('stops listening for commits once it is destroyed', async () => {

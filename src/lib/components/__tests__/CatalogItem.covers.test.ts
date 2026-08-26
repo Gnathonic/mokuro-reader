@@ -421,6 +421,102 @@ describe('claims are released', () => {
   });
 });
 
+/**
+ * WHAT A CLAIM-SET CHANGE MUST NOT COST.
+ *
+ * The claim set is recomputed for things that have nothing to do with a cover: a stack
+ * count or hide-read setting change, a series gaining or losing a volume, the series
+ * index arriving and re-keying uuids, an account switch. Svelte runs the previous run's
+ * TEARDOWN BEFORE the new run, so a card that released first would drop the only claim on
+ * every path it is still showing (`dropEntry`), re-acquire into an empty entry, and
+ * publish an empty cover map for however long the fresh async read takes — every card in
+ * a cloud library swapping its painted stack for "Click to download" boxes at once, and
+ * ~4,000 redundant keyed reads behind it.
+ */
+describe('a claim-set change on a card that is already showing its covers', () => {
+  it('neither blanks the card nor re-reads a cover it already resolved', async () => {
+    await putCloudCovers([
+      cachedCover(),
+      cachedCover({
+        path: 'Dr Stone/Volume 02.cbz',
+        thumbnail: new File([new Uint8Array(5)], 'v2.webp', { type: 'image/webp' })
+      })
+    ]);
+
+    const { rerender, container } = render(CatalogItem, {
+      props: { volumes: [cloudVolume()] }
+    });
+    await settle();
+    // Painting: one canvas mounted, holding the cached cover.
+    expect(compositeCanvasProps).toHaveLength(1);
+    expect((lastCanvasProps().covers as Map<string, File>).get('cloud-uuid-1')?.size).toBe(3);
+
+    // Every keyed read from HERE on, by path — a path already resolved must not be read
+    // a second time just because the claim set moved.
+    const realGet = db.cloud_covers.get.bind(db.cloud_covers);
+    const readPaths: string[] = [];
+    const get = vi.spyOn(db.cloud_covers, 'get').mockImplementation((async (
+      key: [string, string]
+    ) => {
+      readPaths.push(key[1]);
+      return realGet(key);
+    }) as never);
+
+    try {
+      // The series gains a volume: same account, same first path, new claim set.
+      await rerender({
+        volumes: [
+          cloudVolume(),
+          cloudVolume({
+            volume_uuid: 'cloud-uuid-2',
+            volume_title: 'Volume 02',
+            cloudPath: 'Dr Stone/Volume 02.cbz'
+          })
+        ]
+      });
+
+      // The frame the flash would happen in: the effect has re-run, and nothing async has
+      // had a chance to land yet. The canvas must still be the one that was already up —
+      // a remount here IS the card having dropped to the download boxes and come back.
+      expect(container.textContent).not.toContain('Click to download');
+      expect(compositeCanvasProps).toHaveLength(1);
+
+      await settle();
+
+      expect(container.textContent).not.toContain('Click to download');
+      expect(compositeCanvasProps).toHaveLength(1);
+      expect((lastCanvasProps().covers as Map<string, File>).get('cloud-uuid-1')?.size).toBe(3);
+      expect((lastCanvasProps().covers as Map<string, File>).get('cloud-uuid-2')?.size).toBe(5);
+      // Only the volume that JOINED needed a read.
+      expect(readPaths).toEqual(['Dr Stone/Volume 02.cbz']);
+      // Two paths claimed, each exactly once.
+      expect(_heldCoverCountForTests()).toBe(2);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it('still blanks rather than showing the previous account cover on a switch', async () => {
+    // The one claim-set change where keeping what is resolved would be WRONG: the scope
+    // is part of the claim key, so a switch acquires under the new account and finds
+    // nothing until its own read lands.
+    await putCloudCovers([
+      cachedCover({ thumbnail: new File([new Uint8Array(3)], 'a.webp', { type: 'image/webp' }) })
+    ]);
+
+    const { container } = render(CatalogItem, { props: { volumes: [cloudVolume()] } });
+    await settle();
+    expect(compositeCanvasProps).toHaveLength(1);
+
+    useAccount(OTHER_SCOPE);
+    await tick();
+
+    // No cover under the new account: the honest state is the download boxes, never the
+    // other account's artwork.
+    expect(container.textContent).toContain('Click to download');
+  });
+});
+
 describe('a cover that lands after the card mounted', () => {
   it('reaches the mounted card through refreshCovers, with no re-render of its own', async () => {
     // Mounted with nothing cached: the card resolves a MISS and shows the download boxes.

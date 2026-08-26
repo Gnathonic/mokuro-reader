@@ -87,7 +87,7 @@
   import { isVolumeComplete } from '$lib/util/volume-helpers';
   import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
   import { acquireCover, type CoverHandle } from '$lib/catalog/cover-resolver';
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -561,19 +561,55 @@
       coverClaims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
   );
 
+  /** One claim this card is currently holding, with the subscription that feeds it. */
+  interface HeldCoverClaim {
+    handle: CoverHandle;
+    unsubscribe: () => void;
+  }
+
+  /**
+   * The claims held RIGHT NOW.
+   *
+   * A plain `let`, deliberately not `$state`: the effect below both reads and writes it,
+   * and a reactive read of its own output would re-run it forever.
+   */
+  let heldCoverClaims: HeldCoverClaim[] = [];
+
+  function releaseCoverClaims(held: HeldCoverClaim[]): void {
+    for (const claim of held) {
+      claim.unsubscribe();
+      // Every acquire paired with exactly one release. At 1,027 cards x ~4 volumes a
+      // leaked handle is a leaked blob and a leaked object URL.
+      claim.handle.release();
+    }
+  }
+
   $effect(() => {
     // Tracked: only the folded key. The claims themselves are read untracked so a
     // re-derived-but-identical array cannot re-run this.
     void coverClaimKey;
     const claims = untrack(() => coverClaims);
-    if (claims.length === 0) {
-      // The shared empty Map, not a new one: assigning the same identity is inert.
-      resolvedCovers = NO_COVERS;
-      return;
-    }
 
-    const handles: CoverHandle[] = [];
-    const unsubscribes: (() => void)[] = [];
+    /**
+     * ACQUIRE THE NEW SET BEFORE RELEASING THE OLD ONE, which is why the release does not
+     * live in this effect's teardown: Svelte runs the previous run's teardown FIRST, so
+     * releasing there would drop the resolver entry for every path this card is still
+     * showing (being its only holder) the instant the claim set is recomputed — for a
+     * stack-count or hide-read change, a volume joining the series, the series index
+     * re-keying uuids. The re-acquire would then find an empty entry and issue a fresh
+     * async keyed read, so the card would publish an EMPTY cover map, lose its
+     * `thumbnailDimensions`, and swap its painted stack for the "Click to download" boxes
+     * until the read landed — every card in a cloud library at once, plus a redundant
+     * read per cover.
+     *
+     * Acquiring first means the entry never reaches zero refs: the second `acquireCover`
+     * joins the live entry, `startRead` bails on `settled`, and `subscribe` emits the
+     * resolved cover SYNCHRONOUSLY, so `found` is already populated by the time this
+     * publishes. An account switch still blanks correctly, and must: the scope is part of
+     * the resolver's key, so the new acquire lands on a different entry with no value.
+     */
+    const previous = heldCoverClaims;
+    const held: HeldCoverClaim[] = [];
     // Accumulated OUTSIDE `$state` so the subscribers can update it without this effect
     // ever reading its own output — which would make it re-run on every cover it lands.
     const found = new Map<string, ResolvedCover>();
@@ -583,27 +619,32 @@
 
     for (const claim of claims) {
       const handle = acquireCover(claim.path);
-      handles.push(handle);
-      unsubscribes.push(
-        handle.subscribe((cover) => {
-          if (cover) found.set(claim.uuid, cover);
-          else found.delete(claim.uuid);
-          // A cover arriving after mount reaches the card HERE — the handle emits, and
-          // `refreshCovers` (driven from the cover key set) is what makes a handle that
-          // already resolved a miss read again.
-          if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
-        })
-      );
+      const unsubscribe = handle.subscribe((cover) => {
+        if (cover) found.set(claim.uuid, cover);
+        else found.delete(claim.uuid);
+        // A cover arriving after mount reaches the card HERE — the handle emits, and
+        // `refreshCovers` (driven from the cover key set) is what makes a handle that
+        // already resolved a miss read again.
+        if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+      });
+      held.push({ handle, unsubscribe });
     }
-    publishing = true;
-    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+    // Published before the release, so an unmount racing it can never find a set this
+    // card has already let go of — and so the old claims are unreachable from here on.
+    heldCoverClaims = held;
+    releaseCoverClaims(previous);
 
-    return () => {
-      for (const unsubscribe of unsubscribes) unsubscribe();
-      // Every acquire paired with exactly one release. At 1,027 cards x ~4 volumes a
-      // leaked handle is a leaked blob and a leaked object URL.
-      for (const handle of handles) handle.release();
-    };
+    publishing = true;
+    // The shared empty Map when there is nothing, not a new one: assigning the same
+    // identity is inert, so a card with no cloud covers never invalidates the canvas.
+    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+  });
+
+  // The effect above owns no teardown, so THIS is the only thing that frees the last set
+  // of claims. `onDestroy` runs on unmount whether or not the effect ever re-ran.
+  onDestroy(() => {
+    releaseCoverClaims(heldCoverClaims);
+    heldCoverClaims = [];
   });
 
   /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */

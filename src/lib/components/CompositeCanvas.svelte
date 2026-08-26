@@ -288,10 +288,11 @@
     void isVisible;
     void highlightIndex;
     void volumeOffsets;
-    // `draw()` reads this, so it belongs here: a cover landing in the map is a reason to
-    // repaint on its own. (The catalog card happens to move `stepSizes` at the same time,
-    // so removing this line does not currently change observable behavior — which is why
-    // it is declared rather than relied upon.)
+    // `draw()` reads this, but inside a `requestAnimationFrame` callback where nothing is
+    // tracked, so THIS is the only tracked read of the covers map — remove it and a cover
+    // landing can no longer repaint on its own. Pinned by "redraws on a covers change
+    // alone" in `CompositeCanvas.test.ts`, which drives `covers` through a host component
+    // so it is genuinely the only prop that moves.
     void covers;
     void dropShadow;
     void showBorder;
