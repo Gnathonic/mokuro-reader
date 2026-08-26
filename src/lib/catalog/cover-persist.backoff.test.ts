@@ -44,6 +44,34 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
+// `cover-persist.ts`'s flush now consults the reading-state store
+// (`$lib/settings/volume-data`) to tell a genuine relationship apart from a
+// row minted purely by browsing. Hand-rolled (same pattern as
+// `cover-persist.test.ts`) so `row()` below can mark itself as a
+// relationship without touching real localStorage — this file's own concern
+// is the flush CADENCE, not routing, so every row here should land as it did
+// before this gate existed.
+const readingHistory = vi.hoisted(() => {
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: Record<string, unknown>) => void>();
+  return {
+    store: {
+      subscribe(fn: (v: Record<string, unknown>) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      }
+    },
+    set(next: Record<string, unknown>) {
+      value = next;
+      subs.forEach((fn) => fn(value));
+    }
+  };
+});
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: readingHistory.store
+}));
+
 import { db } from '$lib/catalog/db';
 import {
   _resetCoverPersistForTests,
@@ -53,7 +81,13 @@ import {
 } from './cover-persist';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
+// This file pushes MANY rows per test (write-storm waves) — accumulate
+// rather than clobber, since `row()` is called once per uuid.
+let historyEntries: Record<string, unknown> = {};
+
 function row(uuid: string): VolumeMetadata {
+  historyEntries = { ...historyEntries, [uuid]: { progress: 1 } };
+  readingHistory.set(historyEntries);
   return {
     volume_uuid: uuid,
     series_uuid: 's',
@@ -75,6 +109,8 @@ beforeEach(() => {
   _resetCoverPersistForTests();
   transactionSpy.mockClear();
   volumeRows.length = 0;
+  historyEntries = {};
+  readingHistory.set({});
 });
 
 afterEach(() => {

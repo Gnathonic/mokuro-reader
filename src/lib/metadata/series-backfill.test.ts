@@ -141,6 +141,32 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
+// `cover-persist.ts`'s flush now consults the reading-state store
+// (`$lib/settings/volume-data`) to tell a genuine "kept for its history"
+// metadata-only row apart from one minted purely by browsing. Hand-rolled
+// (same pattern as `cover-persist.test.ts`) so this file can mark specific
+// uuids as having a relationship without touching real localStorage.
+const readingHistory = vi.hoisted(() => {
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: Record<string, unknown>) => void>();
+  return {
+    store: {
+      subscribe(fn: (v: Record<string, unknown>) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      }
+    },
+    set(next: Record<string, unknown>) {
+      value = next;
+      subs.forEach((fn) => fn(value));
+    }
+  };
+});
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: readingHistory.store
+}));
+
 // A PARTIAL mock: the real semaphore logic keeps running (so the tests below
 // exercise the actual cap, not a stub), but wrapped in `vi.fn()` so calls can
 // be counted/ordered — proof leg (c) of the write-slot fix needs (publishes
@@ -229,6 +255,7 @@ beforeEach(() => {
     providers: { webdav: { isReadOnly: false, serverCompilesMetadata: false } }
   };
   volumeRows.length = 0;
+  readingHistory.set({});
   getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile });
   resolveCloudFolderTitle.mockImplementation((t: string) => t);
   cloudVolumeTitlesFor.mockReturnValue(new Set(['Volume 01']));
@@ -928,6 +955,11 @@ describe('row-level cover staleness (persistent catalog-card covers, design poin
   }
 
   function metadataOnlyRowV2(overrides: Record<string, unknown> = {}) {
+    // This row already carries a thumbnail from a prior session — the only
+    // legitimate way that happens is a real relationship (installed at some
+    // point, or read), never pure browsing. Reflect that so `cover-persist.ts`'s
+    // relationship gate doesn't route this refresh to `cloud_covers` instead.
+    readingHistory.set({ v2: { progress: 1 } });
     volumeRows.push({
       volume_uuid: 'v2',
       series_title: 'One Piece',

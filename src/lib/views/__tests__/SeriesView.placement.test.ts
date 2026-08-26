@@ -50,7 +50,13 @@ vi.mock('$lib/catalog', () => ({
   volumes: emptyStore<Record<string, unknown>>({})
 }));
 vi.mock('$lib/settings/settings', () => ({
-  preferredTitleLanguage: emptyStore('imported')
+  preferredTitleLanguage: emptyStore('imported'),
+  // `cover-persist.ts` now imports `volumes` directly from
+  // `$lib/settings/volume-data` (bypassing the `$lib/settings` barrel mock
+  // below), and that module's own top-level `totalStats` derived store reads
+  // `settings` from THIS module — so the binding must exist here too, even
+  // though nothing in this suite exercises it.
+  settings: emptyStore({ inactivityTimeoutMinutes: 5 })
 }));
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),

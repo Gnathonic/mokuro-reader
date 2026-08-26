@@ -35,6 +35,40 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
+// The flush now consults the reading-state store (`$lib/settings/volume-data`)
+// to decide whether an existing row is a real relationship or just catalog
+// knowledge minted by browsing. Hand-rolled rather than the real module (same
+// pattern as reread.test.ts / progress-tracker.test.ts) so this file can set
+// exactly which volumes have "read" an entry without touching localStorage.
+const h = vi.hoisted(() => {
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: Record<string, unknown>) => void>();
+  function notify() {
+    subs.forEach((fn) => fn(value));
+  }
+  return {
+    readingHistoryStore: {
+      subscribe(fn: (v: Record<string, unknown>) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      }
+    },
+    patchReadingHistory(partial: Record<string, unknown>) {
+      value = { ...value, ...partial };
+      notify();
+    },
+    resetReadingHistory() {
+      value = {};
+      notify();
+    }
+  };
+});
+
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: h.readingHistoryStore
+}));
+
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -45,6 +79,11 @@ import {
 } from './cover-persist';
 import { getCloudCovers } from './cloud-covers';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
+
+/** Gives the volume an entry with real reading activity — a "relationship". */
+function setReadingHistory(entries: Record<string, unknown>) {
+  h.patchReadingHistory(entries);
+}
 
 function metadataOnlyRow(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
   return {
@@ -69,19 +108,30 @@ function coverResult(name = 'cover.webp'): CloudThumbnailResult {
   };
 }
 
+// Most of this file's tests exercise the row-write mechanics (dedup guards,
+// stamp fields, write coalescing) rather than relationship routing itself —
+// so a row minted through this helper is given a reading-history entry by
+// default, standing in for "a metadata-only row kept for its history", which
+// is the real-world reason such a row exists (see `volume-state.ts`). The
+// no-relationship routing tests below deliberately bypass this helper and
+// `db.volumes.put` a bare metadata-only row instead.
 async function addRow(overrides: Partial<VolumeMetadata> = {}) {
-  await db.volumes.put(metadataOnlyRow(overrides));
+  const row = metadataOnlyRow(overrides);
+  await db.volumes.put(row);
+  setReadingHistory({ [row.volume_uuid]: { progress: 1 } });
 }
 
 beforeEach(() => {
   _resetCoverPersistForTests();
   thumbnailCacheInvalidate.mockClear();
+  h.resetReadingHistory();
 });
 
 afterEach(async () => {
   _resetCoverPersistForTests(); // cancel any pending timer before it can fire against a cleared table
   await db.volumes.clear();
   await db.cloud_covers.clear();
+  h.resetReadingHistory();
 });
 
 describe('installCover', () => {
@@ -352,6 +402,7 @@ describe('cover installs route by relationship', () => {
       page_char_counts: [],
       metadata_only: true
     } as never);
+    setReadingHistory({ 'read-1': { progress: 12, completed: false } });
 
     installCover(
       {
@@ -370,5 +421,28 @@ describe('cover installs route by relationship', () => {
 
     const row = await db.volumes.get('read-1');
     expect(row?.thumbnail).toBeInstanceOf(File);
+  });
+
+  it('sends a browsed volume’s cover to cloud_covers even though a row exists', async () => {
+    // A row minted by case-3 placeholder resolution: metadata-only, no
+    // install, no reading history — pure catalog knowledge, not a
+    // relationship. `addRow()` is deliberately NOT used here: it stands in
+    // for a relationship by seeding reading history, which is exactly what
+    // this test must NOT have.
+    await db.volumes.put(metadataOnlyRow({ volume_uuid: 'browsed-1' }) as never);
+
+    installCover({ volume_uuid: 'browsed-1', cloudPath: 'Dr Stone/Volume 01.cbz' } as never, {
+      file: new File([new Uint8Array([1])], 'c.webp', { type: 'image/webp' }),
+      width: 250,
+      height: 350
+    });
+    await flushPendingCoverPersists();
+
+    const row = (await db.volumes.get('browsed-1')) as VolumeMetadata | undefined;
+    expect(row?.thumbnail).toBeUndefined();
+
+    const cached = await getCloudCovers('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
+    expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
   });
 });

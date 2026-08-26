@@ -1,11 +1,13 @@
+import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { needsDownload } from '$lib/catalog/volume-state';
+import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
 import { isArchiveSize } from '$lib/metadata/series-file';
 import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
 import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
 import { putCloudCovers, type CloudCover } from '$lib/catalog/cloud-covers';
+import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
 import type { CloudThumbnailResult } from './cloud-thumbnails';
 
 /**
@@ -210,18 +212,31 @@ export async function flushPendingCoverPersists(): Promise<void> {
   }
   const forCoverTable: CloudCover[] = [];
 
+  // Which volumes the user actually has a relationship with, read ONCE for
+  // the whole flush — a synchronous, localStorage-backed store read, not a
+  // per-entry cost. A cover belongs on the row only for those: installed
+  // volumes, and metadata-only rows kept for their reading history (the
+  // stats and history pages read thumbnails from rows). A row minted purely
+  // by browsing — case-3 placeholder resolution — is catalog knowledge, and
+  // its blob belongs in `cloud_covers`, because blobs on rows are what make
+  // a full `volumes` scan expensive.
+  const readingHistory = get(readingHistoryStore) as Record<string, ReadingHistoryEntry>;
+
   try {
     await db.transaction('rw', db.volumes, async () => {
       for (const [volumeUuid, { result, coverSize, coverModified, mode, cachePath }] of entries) {
         const fresh = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
 
-        // A row exists only for volumes this device owns or has read; that
-        // is the one case a cover belongs on the row itself. Re-reading and
+        const hasRelationship =
+          !!fresh && (isVolumeInstalled(fresh) || hasReadingActivity(readingHistory[volumeUuid]));
+
+        // A row exists AND the device has a relationship with it — that is
+        // the one case a cover belongs on the row itself. Re-reading and
         // re-testing `needsDownload` INSIDE the transaction (rather than
         // trusting the caller's snapshot) is what keeps a download that
         // finished mid-flight from having its own page-measured thumbnail
         // clobbered by a stale cloud guess.
-        if (fresh) {
+        if (hasRelationship && fresh) {
           if (!needsDownload(fresh)) continue;
           if (mode === 'fill' && fresh.thumbnail) continue;
 
@@ -237,7 +252,9 @@ export async function flushPendingCoverPersists(): Promise<void> {
           continue;
         }
 
-        // No row: catalog knowledge, not a relationship. It belongs in
+        // No relationship: either no row at all (pure catalog knowledge), or
+        // a row minted purely by browsing (case-3 placeholder resolution)
+        // with nothing installed and nothing read. Either way it belongs in
         // `cloud_covers`, and only when we can attribute it to an account —
         // an unscoped write would blend accounts. No cachePath means the
         // caller never had a cloud path to attribute this to either
@@ -262,6 +279,42 @@ export async function flushPendingCoverPersists(): Promise<void> {
   } catch (error) {
     console.debug('[cover-persist] could not persist a batch of catalog covers:', error);
   }
+}
+
+/**
+ * Loosely-typed on purpose: the reading-state store's entries are
+ * `VolumeData` instances in production, but this only needs to read a
+ * handful of fields, structurally, so a test's hand-rolled mock doesn't have
+ * to construct a real instance.
+ */
+interface ReadingHistoryEntry {
+  progress?: number;
+  chars?: number;
+  completed?: boolean;
+  timeReadInMinutes?: number;
+  recentPageTurns?: unknown[];
+  sessions?: unknown[];
+  archivedReads?: unknown[];
+}
+
+/**
+ * Does this reading-state entry represent actual reading activity, not just
+ * the settings key every volume gets the moment it is imported
+ * (`initializeVolume`)? `archivedReads` counts too: "restart series" zeroes
+ * `progress`/`chars`/`completed` while archiving the prior pass as the
+ * record that reading happened.
+ */
+function hasReadingActivity(entry: ReadingHistoryEntry | undefined): boolean {
+  if (!entry) return false;
+  return (
+    (entry.progress ?? 0) > 0 ||
+    (entry.chars ?? 0) > 0 ||
+    !!entry.completed ||
+    (entry.timeReadInMinutes ?? 0) > 0 ||
+    (entry.recentPageTurns?.length ?? 0) > 0 ||
+    (entry.sessions?.length ?? 0) > 0 ||
+    (entry.archivedReads?.length ?? 0) > 0
+  );
 }
 
 /** Test hook: drop anything queued and forget the pending timer/cadence state, without flushing. */

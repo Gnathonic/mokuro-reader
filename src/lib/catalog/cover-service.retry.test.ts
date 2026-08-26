@@ -70,6 +70,32 @@ vi.mock('$lib/catalog/db', () => ({
   }
 }));
 
+// `cover-persist.ts`'s flush now consults the reading-state store
+// (`$lib/settings/volume-data`) to tell a genuine relationship apart from a
+// row minted purely by browsing. Hand-rolled (same pattern as
+// `cover-persist.test.ts`) so `row()` below can mark itself as a
+// relationship without touching real localStorage.
+const readingHistory = vi.hoisted(() => {
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: Record<string, unknown>) => void>();
+  return {
+    store: {
+      subscribe(fn: (v: Record<string, unknown>) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      }
+    },
+    set(next: Record<string, unknown>) {
+      value = next;
+      subs.forEach((fn) => fn(value));
+    }
+  };
+});
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: readingHistory.store
+}));
+
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
 import {
@@ -82,7 +108,9 @@ function coverResult(name = 'cover.webp'): CloudThumbnailResult {
   return { file: new File(['img'], name, { type: 'image/webp' }), width: 210, height: 297 };
 }
 
+/** A row this device has a RELATIONSHIP with — see the mock above. */
 function row(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+  readingHistory.set({ [uuid]: { progress: 1 } });
   return {
     volume_uuid: uuid,
     series_uuid: 's',
@@ -103,6 +131,7 @@ beforeEach(() => {
   _resetCoverServiceForTests();
   _resetCoverPersistForTests();
   volumeRows.length = 0;
+  readingHistory.set({});
 });
 
 afterEach(() => {
