@@ -70,8 +70,31 @@ async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData
   };
 }
 
+/**
+ * A burst of writes must cost ONE recompute, not one per write.
+ *
+ * Every emission re-derives placeholders, display titles and the sort for the
+ * whole library, so an uncoalesced burst pays that repeatedly for a view nobody
+ * saw — measured at 74 full recomputes in ten seconds during cover convergence.
+ * Trailing-edge on purpose: subscribers get the final state of the burst, and
+ * the delay is imperceptible for catalog updates while being long enough to
+ * absorb a batch write.
+ */
+export const VOLUMES_EMISSION_COALESCE_MS = 150;
+
 // Single source of truth from the database
 export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
+  let newest: Record<string, VolumeMetadata> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flush = () => {
+    timer = null;
+    if (newest) {
+      set(newest);
+      newest = null;
+    }
+  };
+
   const subscription = liveQuery(async () => {
     const volumesArray = await db.volumes.toArray();
 
@@ -83,11 +106,20 @@ export const volumes = readable<Record<string, VolumeMetadata>>({}, (set) => {
       {} as Record<string, VolumeMetadata>
     );
   }).subscribe({
-    next: (value) => set(value),
+    next: (value) => {
+      newest = value;
+      // Trailing edge only: the first write of a burst arms the timer and every
+      // later one replaces the payload, so subscribers see the burst's final
+      // state exactly once.
+      if (!timer) timer = setTimeout(flush, VOLUMES_EMISSION_COALESCE_MS);
+    },
     error: (err) => console.error(err)
   });
 
-  return () => subscription.unsubscribe();
+  return () => {
+    if (timer) clearTimeout(timer);
+    subscription.unsubscribe();
+  };
 });
 
 /**
