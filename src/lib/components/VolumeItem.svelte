@@ -61,14 +61,12 @@
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
-  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
-  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
-  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
 
   interface Props {
@@ -331,47 +329,22 @@
    * which claims the very same path; claiming here too would just take a second
    * reference on the same entry for every grid card on screen.
    */
-  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
-
   let coverPath = $derived(liveVolume?.cloudPath ?? volume.cloudPath);
 
-  /**
-   * Folded to a PRIMITIVE so the effect below re-runs only when the claim itself
-   * changes, not on every re-derive that hands this row an equal-but-new object. The
-   * account scope leads it because `acquireCover` binds the scope at acquire time.
-   */
-  let coverClaimKey = $derived(
-    variant !== 'list' || !liveVolume || liveVolume.thumbnail || !coverPath
-      ? ''
-      : `${$activeAccountScopeStore ?? ''}\u0000${coverPath}`
-  );
-
-  $effect(() => {
-    const key = coverClaimKey;
-    if (!key) {
-      resolvedCover = undefined;
-      return;
-    }
-    const path = untrack(() => coverPath);
-    const handle: CoverHandle = acquireCover(path);
-    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
-    return () => {
-      unsubscribe();
-      // Every acquire paired with exactly one release, or the blob and its object URL
-      // leak for the lifetime of the tab.
-      handle.release();
-    };
+  // Claimed and asked for only in the LIST variant — the grid variant's empty case
+  // renders `PlaceholderThumbnail`, which claims the very same path and asks for the very
+  // same volume, so doing it here too would take a second reference on one entry for
+  // every grid card on screen. Asked for on the same gate the grid one uses: only a
+  // volume whose pages are not here.
+  const coverClaims = createCoverClaims({
+    claims: () =>
+      variant === 'list' && liveVolume ? [{ ...liveVolume, cloudPath: coverPath }] : [],
+    targets: () => (variant === 'list' && isNotInstalled ? [volume] : [])
   });
+  const { gate } = coverClaims;
 
   /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
-  let displayUrl = $derived(thumbnailUrl ?? resolvedCover?.url);
-
-  // Ask for the cover, exactly as the grid variant does through `PlaceholderThumbnail`
-  // (same gate: only a volume whose pages are not here). `requestCover` is idempotent and
-  // fire-and-forget, so a redundant call on a re-run is free.
-  $effect(() => {
-    if (variant === 'list' && isNotInstalled && isCoverFetchTarget(volume)) requestCover(volume);
-  });
+  let displayUrl = $derived(thumbnailUrl ?? coverClaims.cover?.url);
 
   // Some insert/update paths can miss live notifications for blob fields.
   // While thumbnail is missing, poll this row until it appears. Not for a
@@ -752,6 +725,7 @@
   {#if variant === 'list'}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
+      use:gate
       class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
       onmouseenter={() => (isHovered = true)}
       onmouseleave={() => (isHovered = false)}

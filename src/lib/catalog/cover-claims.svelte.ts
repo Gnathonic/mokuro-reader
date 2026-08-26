@@ -1,0 +1,271 @@
+import { onDestroy, untrack } from 'svelte';
+import { fromStore } from 'svelte/store';
+import type { VolumeMetadata } from '$lib/types';
+import { acquireCover, type CoverHandle, type ResolvedCover } from './cover-resolver';
+import { activeAccountScopeStore } from './account-scope-store';
+import { isCoverFetchTarget, requestCover } from './cover-service';
+import { observeNearViewport } from './cover-viewport';
+
+/**
+ * THE ONE COVER EFFECT. Every surface that draws a cloud cover — the catalog
+ * grid card, the catalog list row, the series spine shelf, the volume row, the
+ * placeholder box — runs the same three-part rule, and runs it HERE:
+ *
+ * 1. CLAIM what it draws. A volume with no `thumbnail` of its own and a
+ *    listing `cloudPath` has its cover in `cloud_covers`; `cover-resolver.ts`
+ *    turns that path into one keyed read and a refcounted handle.
+ * 2. ASK for what is missing, but only once the surface is near the viewport
+ *    (`cover-viewport.ts`). This is the gate that turns ~4,347 requests on a
+ *    1,027-series library into the ~74 a screenful actually needs.
+ * 3. RELEASE every handle exactly once, in the order below.
+ *
+ * It lived in five near-identical copies before this — three single-claim
+ * (`PlaceholderThumbnail`, `CatalogListItem`, `VolumeItem`) and two
+ * multi-claim (`CatalogItem`, `SeriesSpineShowcase`) — and they had already
+ * drifted: only `CatalogItem` had the acquire-then-release ordering below, so
+ * the spine shelf still carried the blank-for-a-frame bug that ordering exists
+ * to fix. Five copies of one rule is how that happens.
+ *
+ * WHAT STAYS AT THE CALL SITE: which volumes a surface draws and which it may
+ * ask for. Those genuinely differ (a card claims its whole stack but asks only
+ * for the slice the stack will draw; a list row's claim path falls back from
+ * the stored row to the listing prop), so they are the two getters this takes.
+ * Everything downstream of them is here.
+ */
+
+/** Shared empty result, so a surface with no cloud covers never invalidates a canvas. */
+const NO_COVERS: Map<string, ResolvedCover> = new Map();
+const NO_VOLUMES: VolumeMetadata[] = [];
+
+/**
+ * ONE subscription to the account scope for every surface in the app.
+ *
+ * `acquireCover` binds the scope at acquire time and `refreshCovers` resolves
+ * the CURRENT one, so a handle taken under the old account is unreachable by
+ * refresh after a switch — every claim key therefore leads with the scope, so
+ * a switch releases and re-acquires. `fromStore` shares one store subscription
+ * across every reader instead of the per-component `$activeAccountScopeStore`
+ * each of the five copies used to take.
+ */
+const accountScope = fromStore(activeAccountScopeStore);
+
+export interface CoverClaimsOptions {
+  /**
+   * The volumes this surface DRAWS. Each one with no `thumbnail` and a listing
+   * `cloudPath` becomes a claim; the rest are ignored, and duplicates by
+   * `volume_uuid` are collapsed so two spines of the same volume take one
+   * reference, not two.
+   *
+   * THE PATH MUST COME FROM THE LISTING. `cloudPath` is decorated onto the
+   * catalog's in-memory copy of a row and is NEVER persisted, so a surface
+   * that re-reads its row from Dexie must fall back to the prop it was handed
+   * (see `VolumeItem`/`CatalogListItem`, where that fallback is load-bearing:
+   * without it a metadata-only row blanks the moment its series is opened).
+   */
+  claims: () => VolumeMetadata[];
+  /**
+   * The volumes this surface may ASK for, before filtering. Kept separate from
+   * {@link claims} because they are not the same list — a catalog card claims
+   * every volume in its stack but asks only for the slice the stack will draw.
+   * Filtered here by `isCoverFetchTarget` (the shared no-thumbnail-yet /
+   * stale-stamp rule) and deduped by uuid.
+   *
+   * Omit it for a surface that only PAINTS already-cached covers and never
+   * fetches — the catalog list row, today.
+   */
+  targets?: () => VolumeMetadata[];
+}
+
+export interface CoverClaims {
+  /** Resolved covers by `volume_uuid`. The same empty Map identity whenever there are none. */
+  readonly covers: Map<string, ResolvedCover>;
+  /** The first claim's cover — the convenience for a surface that draws exactly one. */
+  readonly cover: ResolvedCover | undefined;
+  /**
+   * Svelte action: put it on the surface's root element (`use:gate`) to arm
+   * the viewport gate. A surface that passes {@link CoverClaimsOptions.targets}
+   * and forgets this asks for nothing, ever.
+   */
+  gate(node: Element): { destroy(): void };
+}
+
+/** One claim this surface is holding, with the subscription that feeds it. */
+interface HeldCoverClaim {
+  handle: CoverHandle;
+  unsubscribe: () => void;
+}
+
+function releaseAll(held: HeldCoverClaim[]): void {
+  for (const claim of held) {
+    claim.unsubscribe();
+    // Every acquire paired with exactly one release. At 1,027 cards x ~4 volumes a
+    // leaked handle is a leaked blob AND a leaked object URL, for the tab's lifetime.
+    claim.handle.release();
+  }
+}
+
+/**
+ * Wire a surface's covers up. Call it once, during component initialisation —
+ * it installs the surface's `$effect`s and its `onDestroy`.
+ */
+export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
+  /** (uuid, listing path) pairs, deduped — the claim rule, in one place. */
+  const claims = $derived.by(() => {
+    const seen = new Set<string>();
+    const pairs: Array<{ uuid: string; path: string }> = [];
+    for (const vol of options.claims()) {
+      if (vol.thumbnail || !vol.cloudPath || seen.has(vol.volume_uuid)) continue;
+      seen.add(vol.volume_uuid);
+      pairs.push({ uuid: vol.volume_uuid, path: vol.cloudPath });
+    }
+    return pairs;
+  });
+
+  /**
+   * The claim set folded to a PRIMITIVE, so the effect below re-runs only when
+   * what is claimed actually changes.
+   *
+   * Every one of these lists is a fresh array on every catalog emission and on
+   * every settings-adjacent one (a per-wheel-tick spine offset write included),
+   * so keying the effect on the array itself would release and re-acquire — a
+   * fresh keyed read per surface — for changes that cannot alter which covers
+   * it wants. Svelte dedupes a derived string by value, so an unchanged claim
+   * set is inert. The account scope leads it: see {@link accountScope}.
+   */
+  const claimKey = $derived(
+    `${accountScope.current ?? ''}\u0002` +
+      claims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
+  );
+
+  let covers = $state<Map<string, ResolvedCover>>(NO_COVERS);
+
+  /**
+   * The claims held RIGHT NOW.
+   *
+   * A plain `let`, deliberately not `$state`: the effect below both reads and
+   * writes it, and a reactive read of its own output would re-run it forever.
+   */
+  let held: HeldCoverClaim[] = [];
+
+  $effect(() => {
+    // Tracked: only the folded key. The claims themselves are read untracked so a
+    // re-derived-but-identical list cannot re-run this.
+    void claimKey;
+    const current = untrack(() => claims);
+
+    /**
+     * ACQUIRE THE NEW SET BEFORE RELEASING THE OLD ONE, which is why the release does
+     * not live in this effect's teardown: Svelte runs the previous run's teardown
+     * FIRST, so releasing there would drop the resolver entry for every path this
+     * surface is still showing (being its only holder) the instant the claim set is
+     * recomputed — for a stack-count or hide-read change, a volume joining the series,
+     * the series index re-keying uuids. The re-acquire would then find an empty entry
+     * and issue a fresh async keyed read, so the surface would publish an EMPTY cover
+     * map, lose its `thumbnailDimensions`, and swap its painted stack for the "Click to
+     * download" boxes until the read landed — every card in a cloud library at once,
+     * plus a redundant read per cover.
+     *
+     * Acquiring first means the entry never reaches zero refs: the second
+     * `acquireCover` joins the live entry, `startRead` bails on `settled`, and
+     * `subscribe` emits the resolved cover SYNCHRONOUSLY, so `found` is already
+     * populated by the time this publishes. An account switch still blanks correctly,
+     * and must: the scope is part of the resolver's key, so the new acquire lands on a
+     * different entry with no value.
+     *
+     * THIS ORDERING IS LOAD-BEARING. It is the whole reason the release lives in
+     * `onDestroy` below rather than in a teardown here; a refactor that "tidies" it
+     * back into the teardown reintroduces the blank frame.
+     */
+    const previous = held;
+    const next: HeldCoverClaim[] = [];
+    // Accumulated OUTSIDE `$state` so the subscribers can update it without this effect
+    // ever reading its own output — which would make it re-run on every cover it lands.
+    const found = new Map<string, ResolvedCover>();
+    // A handle whose path already resolved emits synchronously on subscribe; publishing
+    // per emission during setup would assign N times for one mount.
+    let publishing = false;
+
+    for (const claim of current) {
+      const handle = acquireCover(claim.path);
+      const unsubscribe = handle.subscribe((cover) => {
+        if (cover) found.set(claim.uuid, cover);
+        else found.delete(claim.uuid);
+        // A cover arriving after mount reaches the surface HERE — the handle emits, and
+        // `refreshCovers` (driven from the cover key set) is what makes a handle that
+        // already resolved a miss read again.
+        if (publishing) covers = found.size > 0 ? new Map(found) : NO_COVERS;
+      });
+      next.push({ handle, unsubscribe });
+    }
+    // Published before the release, so an unmount racing it can never find a set this
+    // surface has already let go of — and so the old claims are unreachable from here on.
+    held = next;
+    releaseAll(previous);
+
+    publishing = true;
+    // The shared empty Map when there is nothing, not a new one: assigning the same
+    // identity is inert, so a surface with no cloud covers never invalidates its canvas.
+    covers = found.size > 0 ? new Map(found) : NO_COVERS;
+  });
+
+  // The effect above owns no teardown, so THIS is the only thing that frees the last set
+  // of claims. `onDestroy` runs on unmount whether or not the effect ever re-ran.
+  onDestroy(() => {
+    releaseAll(held);
+    held = [];
+  });
+
+  /**
+   * Has this surface come within a screenful of the viewport? Starts closed
+   * and latches open; see `cover-viewport.ts` for why it never closes again.
+   */
+  let nearViewport = $state(false);
+
+  /** The volumes actually worth asking for: the shared rule, deduped. */
+  const fetchTargets = $derived.by(() => {
+    const source = options.targets?.() ?? NO_VOLUMES;
+    if (source.length === 0) return NO_VOLUMES;
+    const seen = new Set<string>();
+    const targets: VolumeMetadata[] = [];
+    for (const vol of source) {
+      if (seen.has(vol.volume_uuid) || !isCoverFetchTarget(vol)) continue;
+      seen.add(vol.volume_uuid);
+      targets.push(vol);
+    }
+    return targets;
+  });
+
+  // Ask for every target's cover, once this surface is worth fetching for.
+  //
+  // `requestCover` is idempotent and fire-and-forget — the service's own dedupe
+  // (in-flight + settled ledgers, keyed by account scope + uuid) makes a redundant call
+  // free, so there is no per-surface ledger to maintain. The gate is read FIRST and the
+  // targets only after it opens: an off-screen surface whose target list churns costs
+  // nothing, and the list it finally asks for is the one current when it came into view.
+  $effect(() => {
+    if (!nearViewport) return;
+    for (const vol of fetchTargets) requestCover(vol);
+  });
+
+  function gate(node: Element): { destroy(): void } {
+    // Already open: nothing left to watch for. This also covers a surface whose
+    // observed element is swapped for another (`PlaceholderThumbnail` trades its
+    // placeholder boxes for an `<img>` the moment a cover lands).
+    if (untrack(() => nearViewport)) return { destroy() {} };
+    const stop = observeNearViewport(node, () => {
+      nearViewport = true;
+    });
+    return { destroy: stop };
+  }
+
+  return {
+    get covers() {
+      return covers;
+    },
+    get cover() {
+      const first = claims[0];
+      return first ? covers.get(first.uuid) : undefined;
+    },
+    gate
+  };
+}

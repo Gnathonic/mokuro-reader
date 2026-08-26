@@ -1,9 +1,4 @@
 <script module lang="ts">
-  import type { ResolvedCover } from '$lib/catalog/cover-resolver';
-  // Shared by every cover-resolving surface, so all of them ride one
-  // subscription to `providerManager.status` — see the module's own doc.
-  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
-
   // Cooldown so a wheel/right-click burst against a blocked series doesn't spam the
   // snackbar with a toast per tick — shared across every mounted card, not scoped to one
   // instance, so gesturing across several cards in quick succession still only shows one.
@@ -11,11 +6,10 @@
   let lastMetadataGateSnackbarAt = 0;
 
   /**
-   * Shared "nothing resolved" identities. A fresh empty Map per assignment would
+   * Shared "nothing resolved" identity. A fresh empty Map per assignment would
    * invalidate `thumbnailDimensions` (and so the whole canvas) on every card that has no
    * cloud covers to resolve, every time its claim set is recomputed.
    */
-  const NO_COVERS: Map<string, ResolvedCover> = new Map();
   const NO_COVER_FILES: Map<string, File> = new Map();
 </script>
 
@@ -65,9 +59,7 @@
   import { needsDownload } from '$lib/catalog/volume-state';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
   import { isVolumeComplete } from '$lib/util/volume-helpers';
-  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
-  import { acquireCover, type CoverHandle } from '$lib/catalog/cover-resolver';
-  import { onDestroy, untrack } from 'svelte';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -507,125 +499,27 @@
    * installed volume, or a metadata-only row whose cover was persisted — draws from it
    * exactly as before; the resolver is the CLOUD path and nothing else.
    */
-  let resolvedCovers = $state<Map<string, ResolvedCover>>(NO_COVERS);
-
-  /**
-   * What to claim, as (uuid, listing path) pairs.
-   *
-   * The path comes from the LISTING-derived object (`cloudPath` is decorated onto the
-   * catalog's in-memory copy and is never persisted on a stored row), which is exactly
-   * what these props are.
-   */
-  let coverClaims = $derived(
-    stackedVolumes
-      .filter(
-        (vol): vol is VolumeMetadata & { cloudPath: string } => !vol.thumbnail && !!vol.cloudPath
-      )
-      .map((vol) => ({ uuid: vol.volume_uuid, path: vol.cloudPath }))
-  );
-
-  /**
-   * The claim set folded to a PRIMITIVE, so the effect below re-runs only when what is
-   * claimed actually changes.
-   *
-   * `stackedVolumes` is a fresh array on every catalog emission and on every
-   * settings-adjacent one (a per-wheel-tick offset write included), so keying the effect
-   * on the array itself would release and re-acquire — a fresh keyed read per card — for
-   * changes that cannot alter which covers this card wants. Svelte dedupes a derived
-   * string by value, so an unchanged claim set is inert.
-   *
-   * The account scope leads it: see `activeAccountScopeStore`.
-   */
-  let coverClaimKey = $derived(
-    `${$activeAccountScopeStore ?? ''}\u0002` +
-      coverClaims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
-  );
-
-  /** One claim this card is currently holding, with the subscription that feeds it. */
-  interface HeldCoverClaim {
-    handle: CoverHandle;
-    unsubscribe: () => void;
-  }
-
-  /**
-   * The claims held RIGHT NOW.
-   *
-   * A plain `let`, deliberately not `$state`: the effect below both reads and writes it,
-   * and a reactive read of its own output would re-run it forever.
-   */
-  let heldCoverClaims: HeldCoverClaim[] = [];
-
-  function releaseCoverClaims(held: HeldCoverClaim[]): void {
-    for (const claim of held) {
-      claim.unsubscribe();
-      // Every acquire paired with exactly one release. At 1,027 cards x ~4 volumes a
-      // leaked handle is a leaked blob and a leaked object URL.
-      claim.handle.release();
-    }
-  }
-
-  $effect(() => {
-    // Tracked: only the folded key. The claims themselves are read untracked so a
-    // re-derived-but-identical array cannot re-run this.
-    void coverClaimKey;
-    const claims = untrack(() => coverClaims);
-
-    /**
-     * ACQUIRE THE NEW SET BEFORE RELEASING THE OLD ONE, which is why the release does not
-     * live in this effect's teardown: Svelte runs the previous run's teardown FIRST, so
-     * releasing there would drop the resolver entry for every path this card is still
-     * showing (being its only holder) the instant the claim set is recomputed — for a
-     * stack-count or hide-read change, a volume joining the series, the series index
-     * re-keying uuids. The re-acquire would then find an empty entry and issue a fresh
-     * async keyed read, so the card would publish an EMPTY cover map, lose its
-     * `thumbnailDimensions`, and swap its painted stack for the "Click to download" boxes
-     * until the read landed — every card in a cloud library at once, plus a redundant
-     * read per cover.
-     *
-     * Acquiring first means the entry never reaches zero refs: the second `acquireCover`
-     * joins the live entry, `startRead` bails on `settled`, and `subscribe` emits the
-     * resolved cover SYNCHRONOUSLY, so `found` is already populated by the time this
-     * publishes. An account switch still blanks correctly, and must: the scope is part of
-     * the resolver's key, so the new acquire lands on a different entry with no value.
-     */
-    const previous = heldCoverClaims;
-    const held: HeldCoverClaim[] = [];
-    // Accumulated OUTSIDE `$state` so the subscribers can update it without this effect
-    // ever reading its own output — which would make it re-run on every cover it lands.
-    const found = new Map<string, ResolvedCover>();
-    // A handle whose path already resolved emits synchronously on subscribe; publishing
-    // per emission during setup would assign N times for one mount.
-    let publishing = false;
-
-    for (const claim of claims) {
-      const handle = acquireCover(claim.path);
-      const unsubscribe = handle.subscribe((cover) => {
-        if (cover) found.set(claim.uuid, cover);
-        else found.delete(claim.uuid);
-        // A cover arriving after mount reaches the card HERE — the handle emits, and
-        // `refreshCovers` (driven from the cover key set) is what makes a handle that
-        // already resolved a miss read again.
-        if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
-      });
-      held.push({ handle, unsubscribe });
-    }
-    // Published before the release, so an unmount racing it can never find a set this
-    // card has already let go of — and so the old claims are unreachable from here on.
-    heldCoverClaims = held;
-    releaseCoverClaims(previous);
-
-    publishing = true;
-    // The shared empty Map when there is nothing, not a new one: assigning the same
-    // identity is inert, so a card with no cloud covers never invalidates the canvas.
-    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
+  const coverClaims = createCoverClaims({
+    // Claimed: everything the stack DRAWS. Asked for: only the slice it will actually
+    // paint, and only once this card is near the viewport. Slicing the ask list
+    // independently is what left a 42-volume series with one local volume showing spines
+    // 1-25 and 42: the rest were in the stack with no cover ever requested, and
+    // CompositeCanvas paints nothing for a volume without pixels.
+    claims: () => stackedVolumes,
+    targets: () =>
+      selectCardStackVolumes({
+        localVolumes: seriesNeedsDownload ? [] : localVolumes,
+        unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
+        placeholders: cloudStackVolumes,
+        hideRead: $catalogSettings?.hideReadVolumes ?? true,
+        stackCount: $catalogSettings?.stackCount ?? 3,
+        compactCloud: useCompactForCloud,
+        compare: sortVolumes
+      })
   });
+  const { gate } = coverClaims;
 
-  // The effect above owns no teardown, so THIS is the only thing that frees the last set
-  // of claims. `onDestroy` runs on unmount whether or not the effect ever re-ran.
-  onDestroy(() => {
-    releaseCoverClaims(heldCoverClaims);
-    heldCoverClaims = [];
-  });
+  let resolvedCovers = $derived(coverClaims.covers);
 
   /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */
   let coverFiles = $derived.by(() => {
@@ -833,38 +727,6 @@
     };
   });
 
-  /**
-   * The covers to ASK FOR: exactly the cloud-only volumes THE STACK WILL DRAW, filtered to
-   * `isCoverFetchTarget` — no thumbnail yet (a placeholder, or a decorated row), or a
-   * PERSISTED row whose own cover stamp is stale against the current listing (the
-   * self-heal case; see `cover-service.ts`). Delivery is the DB write itself
-   * (`cover-service.ts`'s `requestCover`) — there is nothing to commit here, and nothing
-   * enriched to re-run this effect: once a cover lands, `db.volumes.update(...)` is what
-   * eventually brings a fresh `volumes` prop back down from the parent.
-   *
-   * Slicing this list to the cloud cap independently is what left a 42-volume series with
-   * one local volume showing spines 1-25 and 42: the rest were in the stack with no cover
-   * ever requested, and CompositeCanvas paints nothing for a volume without pixels.
-   */
-  let cloudCoverTargets = $derived(
-    selectCardStackVolumes({
-      localVolumes: seriesNeedsDownload ? [] : localVolumes,
-      unreadVolumes: seriesNeedsDownload ? [] : unreadVolumes,
-      placeholders: cloudStackVolumes,
-      hideRead: $catalogSettings?.hideReadVolumes ?? true,
-      stackCount: $catalogSettings?.stackCount ?? 3,
-      compactCloud: useCompactForCloud,
-      compare: sortVolumes
-    }).filter(isCoverFetchTarget)
-  );
-
-  // Ask for every target's cover. `requestCover` is idempotent and fire-and-forget — the
-  // service's own dedupe (in-flight + settled ledgers) makes a redundant call on every
-  // re-run of this effect free, so there is no per-card ledger to maintain any more.
-  $effect(() => {
-    for (const vol of cloudCoverTargets) requestCover(vol);
-  });
-
   // Use series title for navigation so grouping and routing align with user-visible identity.
   let navId = $derived(volume?.series_title || '');
 
@@ -906,6 +768,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       bind:this={outerEl}
+      use:gate
       class:text-green-400={isComplete}
       class:opacity-70={seriesNeedsDownload}
       class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"

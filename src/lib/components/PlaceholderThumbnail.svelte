@@ -1,11 +1,8 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
-  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
-  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -61,41 +58,14 @@
    * catalog's in-memory copy and is NEVER persisted on a stored row, so it is only ever
    * present on the props handed down from the catalog, which is what these are.
    */
-  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
-
-  /**
-   * What to claim, folded to a PRIMITIVE so the effect below re-runs only when the claim
-   * itself changes — not on every re-render that hands this component an equal-but-new
-   * `volume` object. The account scope leads it: `acquireCover` binds the scope at
-   * acquire time, so a switch has to release and re-acquire.
-   */
-  let coverClaimKey = $derived(
-    !volume || volume.thumbnail || !volume.cloudPath
-      ? ''
-      : `${$activeAccountScopeStore ?? ''}\u0000${volume.cloudPath}`
-  );
-
-  $effect(() => {
-    const key = coverClaimKey;
-    if (!key) {
-      resolvedCover = undefined;
-      return;
-    }
-    // Read untracked: the key above is the only dependency, so a re-derived but
-    // identical `volume` cannot release and re-acquire.
-    const path = untrack(() => volume?.cloudPath);
-    const handle: CoverHandle = acquireCover(path);
-    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
-    return () => {
-      unsubscribe();
-      // Every acquire paired with exactly one release, or the blob and its object URL
-      // leak for the lifetime of the tab.
-      handle.release();
-    };
+  const coverClaims = createCoverClaims({
+    claims: () => (volume ? [volume] : []),
+    targets: () => (volume ? [volume] : [])
   });
+  const { gate } = coverClaims;
 
   /** The resolved cover's object URL, minted lazily and revoked by the resolver. */
-  let resolvedCoverUrl = $derived(resolvedCover?.url ?? null);
+  let resolvedCoverUrl = $derived(coverClaims.cover?.url ?? null);
 
   /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
   let displayUrl = $derived(cloudThumbnailUrl ?? resolvedCoverUrl);
@@ -145,18 +115,15 @@
   $effect(() => {
     return () => releaseActiveThumbnailUrl();
   });
-
-  // Ask for the cover once, whatever this box currently shows. `requestCover` is
-  // idempotent and fire-and-forget — the service's own dedupe makes a redundant call on
-  // every re-run of this effect free.
-  $effect(() => {
-    if (volume && isCoverFetchTarget(volume)) requestCover(volume);
-  });
 </script>
 
 {#if displayUrl}
   <!-- Cloud thumbnail loaded: render like VolumeItem's local thumbnail -->
-  <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
+  <!-- use:gate on BOTH branches: this box swaps its root element the moment a cover
+       lands, and the gate has to survive that swap (it latches, so the second attach is
+       a no-op). Still armed here because a row that already HAS a cover can be a
+       self-heal target — a stale stamp against the listing's current one. -->
+  <div use:gate class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
     <img
       src={displayUrl}
       alt={volume?.volume_title || ''}
@@ -176,6 +143,7 @@
 {:else}
   <!-- Placeholder boxes (thumbnail loading or unavailable) -->
   <div
+    use:gate
     class="relative overflow-hidden sm:h-[350px] sm:w-[250px]"
     class:sm:h-[385px]={stackCount > 1}
     class:sm:w-[325px]={stackCount > 1}

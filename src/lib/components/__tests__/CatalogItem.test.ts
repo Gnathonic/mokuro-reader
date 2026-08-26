@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  installIntersectionObserverStub,
+  IntersectionObserverStub
+} from '$lib/catalog/__tests__/intersection-observer-stub';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 
 // vi.hoisted: the vi.mock factories below run before this module's own imports, so the
@@ -270,14 +274,6 @@ describe('CatalogItem spine offsets persist to the series metadata', () => {
   // CompositeCanvas renders once the volumes have thumbnail dimensions; it only draws
   // when its IntersectionObserver reports visibility, so a no-op observer keeps jsdom
   // out of canvas painting while still binding the container the hit test needs.
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function withThumbnail(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -480,14 +476,6 @@ describe('CatalogItem spine-offset gestures respect the per-series metadata edit
   // Same fixture shape as "CatalogItem spine offsets persist to the series metadata" —
   // duplicated locally (not shared) so this describe's isolation doesn't depend on that
   // one's ordering.
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function withThumbnail(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -676,14 +664,6 @@ describe('CatalogItem spine-offset gestures respect the per-series metadata edit
 });
 
 describe('CatalogItem spine offset resync is stable', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function record(overrides: Partial<SeriesMetadata> = {}): Record<string, unknown> {
@@ -826,14 +806,6 @@ describe('CatalogItem spine offset resync is stable', () => {
 describe('CatalogItem marks a series whose volumes are all absent', () => {
   // The badge rides on the drawn cover stack, which needs thumbnail dimensions and a
   // (no-op) IntersectionObserver for CompositeCanvas — same setup as the offset suites.
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   function cover(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -1009,14 +981,6 @@ describe('CatalogItem hover + Delete raises the series removal dialog', () => {
 });
 
 describe('CatalogItem gives an all-absent series the placeholder identity', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   const cover = (overrides: Partial<VolumeMetadata> = {}) =>
@@ -1196,14 +1160,6 @@ describe('CatalogItem gives an all-absent series the placeholder identity', () =
 });
 
 describe('CatalogItem marks the absent volumes inside a mostly-local stack', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   /** A volume the card's canvas actually paints: real dimensions AND pixels. */
@@ -1339,14 +1295,6 @@ describe('CatalogItem marks the absent volumes inside a mostly-local stack', () 
 });
 
 describe('CatalogItem stacks the volumes of a series that is only partly here', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   const painted = (overrides: Partial<VolumeMetadata> = {}) =>
@@ -1490,15 +1438,19 @@ describe('CatalogItem stacks the volumes of a series that is only partly here', 
  * thumbnail), and NEVER asking for one a row already carries.
  */
 describe('CatalogItem requests covers for exactly the volumes that need one', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
+  /**
+   * Held SHUT, and opened by hand per test. The card asks for nothing until it is near
+   * the viewport (`cover-claims.svelte.ts` + `cover-viewport.ts`), so an auto-opening
+   * stub would make every assertion below a statement about the stub rather than about
+   * the card, and every `not.toHaveBeenCalled()` in it vacuous.
+   */
+  let observer: ReturnType<typeof installIntersectionObserverStub>;
+
+  /** What a scroll does: bring every observed card into the prefetch band. */
+  async function scrollCardsIntoView(): Promise<void> {
+    for (const gate of observer.gates) gate.emit(true);
+    await tick();
   }
-  const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   const cloudOnly = (overrides: Partial<VolumeMetadata> = {}) =>
     placeholderVolume({
@@ -1517,15 +1469,42 @@ describe('CatalogItem requests covers for exactly the volumes that need one', ()
     });
 
   beforeEach(() => {
-    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
-      IntersectionObserverStub;
+    observer = installIntersectionObserverStub({ autoIntersect: false });
     emitSeriesMetadata(new Map());
     compositeCanvasProps.length = 0;
   });
 
   afterEach(() => {
     cleanup();
-    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = originalIO;
+    observer.restore();
+  });
+
+  it('THE GATE: a card thousands of pixels below the fold asks for nothing', async () => {
+    // The measured defect: 1,027 cards x ~4 stacked volumes = ~4,347 cover requests on
+    // mount, 134 MB in a 12.2-second burst, for a screenful of maybe six cards. The card
+    // is fully mounted and its target list is fully derived here; only the viewport gate
+    // is holding the requests back.
+    render(CatalogItem, {
+      props: {
+        volumes: [
+          cloudOnly({ volume_uuid: 'c-far-1', volume_title: 'Vol 1' }),
+          cloudOnly({ volume_uuid: 'c-far-2', volume_title: 'Vol 2' })
+        ]
+      }
+    });
+    await tick();
+    await tick();
+
+    expect(requestCoverMock).not.toHaveBeenCalled();
+    // Not vacuous: the card really did arm a gate, it simply has not opened.
+    expect(observer.gates).toHaveLength(1);
+
+    await scrollCardsIntoView();
+
+    expect(requestCoverMock.mock.calls.map(([vol]) => vol.volume_uuid)).toEqual([
+      'c-far-1',
+      'c-far-2'
+    ]);
   });
 
   it('requests a cover for a metadata-only row with no thumbnail yet', async () => {
@@ -1535,6 +1514,7 @@ describe('CatalogItem requests covers for exactly the volumes that need one', ()
       }
     });
     await tick();
+    await scrollCardsIntoView();
 
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
     const [vol] = requestCoverMock.mock.calls[0];
@@ -1552,6 +1532,7 @@ describe('CatalogItem requests covers for exactly the volumes that need one', ()
       }
     });
     await tick();
+    await scrollCardsIntoView();
 
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
     expect(requestCoverMock.mock.calls[0][0].isPlaceholder).toBe(true);
@@ -1572,8 +1553,11 @@ describe('CatalogItem requests covers for exactly the volumes that need one', ()
 
     render(CatalogItem, { props: { volumes: [alreadyPersisted] } });
     await tick();
-    await tick();
+    await scrollCardsIntoView();
 
+    // Non-vacuous even though the gate is what usually keeps a card quiet: this card was
+    // scrolled all the way into view and still asked for nothing.
+    expect(observer.gates).toHaveLength(1);
     expect(requestCoverMock).not.toHaveBeenCalled();
   });
 });
@@ -1584,14 +1568,6 @@ describe('CatalogItem requests covers for exactly the volumes that need one', ()
  * cover sidecar downloaded, a request that failed the first time.
  */
 describe('CatalogItem draws the covers that arrive after it mounted', () => {
-  class IntersectionObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  }
   const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
   const bare = (overrides: Partial<VolumeMetadata> = {}) =>

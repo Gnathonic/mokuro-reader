@@ -14,6 +14,7 @@ vi.mock('$lib/catalog/cover-service', () => ({ requestCover, isCoverFetchTarget 
 
 import { tick } from 'svelte';
 import PlaceholderThumbnail from '../PlaceholderThumbnail.svelte';
+import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(uuid: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -155,5 +156,76 @@ describe('PlaceholderThumbnail cover lifetime', () => {
     expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
     expect(revoked).toEqual(['blob:cover-1']);
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-2');
+  });
+});
+
+/**
+ * THE VIEWPORT GATE.
+ *
+ * The catalog renders every series card at once — 1,027 of them and a 161,961 px page on
+ * the measured library — and each one asked for the covers of the ~4 volumes its stack
+ * draws the moment it mounted: ~4,347 cover requests, 134 MB, a 12.2-second burst, for a
+ * screenful of maybe six cards. Every cover-drawing surface now shares one gate
+ * (`cover-claims.svelte.ts` + `cover-viewport.ts`): nothing is asked for until the
+ * surface comes within a screenful of the viewport.
+ *
+ * jsdom has no `IntersectionObserver`, and the gate deliberately opens when there is
+ * none, so these tests install one and assert that it was actually observed — an
+ * unstubbed run would pass every one of them vacuously.
+ */
+describe('PlaceholderThumbnail asks for a cover only once it is near the viewport', () => {
+  let observer: ReturnType<typeof installIntersectionObserverStub>;
+
+  beforeEach(() => {
+    requestCover.mockClear();
+    isCoverFetchTarget.mockReturnValue(true);
+    observer = installIntersectionObserverStub({ autoIntersect: false });
+  });
+
+  afterEach(() => {
+    cleanup();
+    observer.restore();
+  });
+
+  it('asks for nothing while it is still below the fold', async () => {
+    render(PlaceholderThumbnail, { props: { volume: volume('far-1') } });
+    await tick();
+    await tick();
+
+    expect(requestCover).not.toHaveBeenCalled();
+    // Not vacuous: the box really did arm the gate, it just has not opened.
+    expect(observer.gates).toHaveLength(1);
+  });
+
+  it('asks as soon as it comes within the prefetch margin', async () => {
+    render(PlaceholderThumbnail, { props: { volume: volume('near-1') } });
+    await tick();
+    expect(requestCover).not.toHaveBeenCalled();
+
+    observer.gates[0].emit(true); // scrolled into the band
+    await tick();
+
+    expect(requestCover).toHaveBeenCalledTimes(1);
+    expect(requestCover).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'near-1' }));
+  });
+
+  it('does not ask again when it leaves the viewport and comes back', async () => {
+    // The gate LATCHES: a card scrolled past and returned to has already been asked for,
+    // and `cover-service.ts`'s settled ledger (keyed by account scope + uuid) would refuse
+    // a second fetch anyway — see its own suite. Re-arming here would put a fresh request
+    // storm one scroll-up away from the user.
+    render(PlaceholderThumbnail, { props: { volume: volume('return-1') } });
+    await tick();
+
+    observer.gates[0].emit(true);
+    await tick();
+    expect(requestCover).toHaveBeenCalledTimes(1);
+
+    observer.gates[0].emit(false); // scrolled away
+    await tick();
+    observer.gates[0].emit(true); // and back
+    await tick();
+
+    expect(requestCover).toHaveBeenCalledTimes(1);
   });
 });

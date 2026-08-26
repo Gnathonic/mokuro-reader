@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { IntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -124,14 +125,6 @@ import {
 // (where layout is all zeroes).
 const HIT_VOLUME_1_X = 260;
 
-class IntersectionObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-}
 const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
 /**

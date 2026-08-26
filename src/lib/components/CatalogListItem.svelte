@@ -12,9 +12,8 @@
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { isVolumeComplete } from '$lib/util/volume-helpers';
-  import { acquireCover, type CoverHandle, type ResolvedCover } from '$lib/catalog/cover-resolver';
-  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
-  import { onDestroy, untrack } from 'svelte';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { onDestroy } from 'svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -117,36 +116,20 @@
    * still does — and that metadata-only row is exactly the case the deleted placeholder
    * decoration used to paint. Reading only `liveVolume.cloudPath` blanked it for good.
    *
-   * The account scope leads the key because `acquireCover` binds the scope at acquire
-   * time.
+   * The claim/release/paint machinery itself lives in `cover-claims.svelte.ts`, shared
+   * with every other cover-drawing surface.
    */
-  let resolvedCover = $state<ResolvedCover | undefined>(undefined);
-
   let coverPath = $derived(liveVolume?.cloudPath ?? volume?.cloudPath);
 
-  let coverClaimKey = $derived(
-    !liveVolume || liveVolume.thumbnail || !coverPath
-      ? ''
-      : `${$activeAccountScopeStore ?? ''}\u0000${coverPath}`
-  );
-
-  $effect(() => {
-    const key = coverClaimKey;
-    if (!key) {
-      resolvedCover = undefined;
-      return;
-    }
-    const path = untrack(() => coverPath);
-    const handle: CoverHandle = acquireCover(path);
-    const unsubscribe = handle.subscribe((cover) => (resolvedCover = cover));
-    return () => {
-      unsubscribe();
-      handle.release();
-    };
+  // No `targets`: this row has never ASKED for a cover, it only paints one already in
+  // `cloud_covers`. Left as it was — making the list layout a fetch trigger is a
+  // behaviour change, not a refactor.
+  const coverClaims = createCoverClaims({
+    claims: () => (liveVolume ? [{ ...liveVolume, cloudPath: coverPath }] : [])
   });
 
   /** Row cover first, resolver cover second. */
-  let displayUrl = $derived(thumbnailUrl ?? resolvedCover?.url);
+  let displayUrl = $derived(thumbnailUrl ?? coverClaims.cover?.url);
 
   // Use series title for navigation so grouping and routing align with user-visible identity.
   let navId = $derived(volume?.series_title || '');

@@ -1,14 +1,11 @@
 <!-- src/lib/components/Series/SeriesSpineShowcase.svelte -->
 <script module lang="ts">
-  import type { ResolvedCover } from '$lib/catalog/cover-resolver';
-
   /**
-   * Shared "nothing resolved" identities, module-scoped for the same reason
+   * Shared "nothing resolved" identity, module-scoped for the same reason
    * `CatalogItem.svelte` keeps its own: a fresh empty Map per assignment would invalidate
    * the geometry (and so the whole strip) every time the claim set is recomputed for a
    * shelf that has no cloud covers at all.
    */
-  const NO_COVERS: Map<string, ResolvedCover> = new Map();
   const NO_COVER_FILES: Map<string, File> = new Map();
 </script>
 
@@ -50,7 +47,6 @@
    *    set of neighbours here than on the card, and shared volumes can sit at different
    *    absolute positions.
    */
-  import { untrack } from 'svelte';
   import { Button, ButtonGroup, Range } from 'flowbite-svelte';
   import type { VolumeMetadata } from '$lib/types';
   import { catalogSettings } from '$lib/settings/settings';
@@ -63,9 +59,7 @@
     canEditSeriesMetadata
   } from '$lib/util/sync/metadata-permissions';
   import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import { isCoverFetchTarget, requestCover } from '$lib/catalog/cover-service';
-  import { acquireCover, type CoverHandle } from '$lib/catalog/cover-resolver';
-  import { activeAccountScopeStore } from '$lib/catalog/account-scope-store';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -191,32 +185,6 @@
   let showcaseVolumes = $derived(displayedVolumes);
 
   /**
-   * Every volume this shelf needs a cover for: the ones it DRAWS (`displayedVolumes`, its
-   * 60-spine memory cap) plus the ones it MEASURES (`cardVolumes`, the card's own stack,
-   * which a partly-downloaded series can push past that window). Measuring is cheap —
-   * one image each, and the uniform height is an average over all of them — while drawing
-   * is what the cap exists for, so the two lists are allowed to differ. Filtered to
-   * `isCoverFetchTarget` — see `cover-service.ts` for the shared rule (no thumbnail yet, or
-   * a persisted row whose own stamp is stale against the listing).
-   */
-  let coverTargets = $derived.by(() => {
-    const seen = new Set<string>();
-    const targets: VolumeMetadata[] = [];
-    for (const vol of [...displayedVolumes, ...cardVolumes]) {
-      if (seen.has(vol.volume_uuid) || !isCoverFetchTarget(vol)) continue;
-      seen.add(vol.volume_uuid);
-      targets.push(vol);
-    }
-    return targets;
-  });
-
-  // Ask for every target's cover. `requestCover` is idempotent and fire-and-forget — the
-  // service's own dedupe makes a redundant call on every re-run of this effect free.
-  $effect(() => {
-    for (const vol of coverTargets) requestCover(vol);
-  });
-
-  /**
    * THIS SHELF RESOLVES ITS OWN CLOUD COVERS.
    *
    * A cloud volume's cover used to arrive on the `volumes` prop, because
@@ -230,70 +198,21 @@
    * A row that HAS a `thumbnail` always wins; the resolver is the cloud path only. The
    * path comes from the LISTING-derived prop (`cloudPath` is decorated onto the catalog's
    * in-memory copy and is never persisted on a stored row).
+   *
+   * Both lists are the spines this strip DRAWS (`showcaseVolumes`, its 60-spine memory
+   * cap) plus the ones it MEASURES (`cardVolumes`, the card's own stack, which a
+   * partly-downloaded series can push past that window). Measuring is cheap — one image
+   * each, and `uniformHeight` is an average over all of them — while drawing is what the
+   * cap exists for, so the two are allowed to differ; a measured volume with no
+   * dimensions would skew the average.
    */
-  let resolvedCovers = $state<Map<string, ResolvedCover>>(NO_COVERS);
-
-  //
-  // Claimed over the SAME two lists `coverTargets` covers: the spines this strip DRAWS
-  // plus the ones it MEASURES (a partly-downloaded series can push the card's stack past
-  // the 60-spine window), because `uniformHeight` is an average over the measured set and
-  // a volume with no dimensions would skew it.
-  let coverClaims = $derived.by(() => {
-    const seen = new Set<string>();
-    const claims: Array<{ uuid: string; path: string }> = [];
-    for (const vol of [...showcaseVolumes, ...cardVolumes]) {
-      if (seen.has(vol.volume_uuid) || vol.thumbnail || !vol.cloudPath) continue;
-      seen.add(vol.volume_uuid);
-      claims.push({ uuid: vol.volume_uuid, path: vol.cloudPath });
-    }
-    return claims;
+  const coverClaims = createCoverClaims({
+    claims: () => [...showcaseVolumes, ...cardVolumes],
+    targets: () => [...displayedVolumes, ...cardVolumes]
   });
+  const { gate } = coverClaims;
 
-  /**
-   * The claim set folded to a PRIMITIVE, so the effect re-runs only when what is claimed
-   * changes — `showcaseVolumes` is a fresh array on every catalog emission and on every
-   * settings-adjacent one. The account scope leads it: `acquireCover` binds the scope at
-   * acquire time, so a switch must release and re-acquire.
-   */
-  let coverClaimKey = $derived(
-    `${$activeAccountScopeStore ?? ''}\u0002` +
-      coverClaims.map((claim) => `${claim.uuid}\u0000${claim.path}`).join('\u0001')
-  );
-
-  $effect(() => {
-    void coverClaimKey;
-    const claims = untrack(() => coverClaims);
-    if (claims.length === 0) {
-      resolvedCovers = NO_COVERS;
-      return;
-    }
-
-    const handles: CoverHandle[] = [];
-    const unsubscribes: (() => void)[] = [];
-    // Accumulated OUTSIDE `$state` so a landing cover cannot make this effect read its
-    // own output and re-run (release + re-acquire per cover).
-    const found = new Map<string, ResolvedCover>();
-    let publishing = false;
-
-    for (const claim of claims) {
-      const handle = acquireCover(claim.path);
-      handles.push(handle);
-      unsubscribes.push(
-        handle.subscribe((cover) => {
-          if (cover) found.set(claim.uuid, cover);
-          else found.delete(claim.uuid);
-          if (publishing) resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
-        })
-      );
-    }
-    publishing = true;
-    resolvedCovers = found.size > 0 ? new Map(found) : NO_COVERS;
-
-    return () => {
-      for (const unsubscribe of unsubscribes) unsubscribe();
-      for (const handle of handles) handle.release();
-    };
-  });
+  let resolvedCovers = $derived(coverClaims.covers);
 
   /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */
   let coverFiles = $derived.by(() => {
@@ -719,7 +638,7 @@
   });
 </script>
 
-<div class="flex flex-col gap-2">
+<div use:gate class="flex flex-col gap-2">
   <!-- relative z-10: the night-mode filter on <dialog> creates a stacking context, and the
        scrollable strip below would otherwise swallow clicks meant for these controls. -->
   <div class="relative z-10 flex flex-wrap items-center gap-3">

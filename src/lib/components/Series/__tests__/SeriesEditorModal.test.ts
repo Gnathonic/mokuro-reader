@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
@@ -192,14 +193,6 @@ async function openFor(title: string) {
 }
 
 /** CompositeCanvas (inside the spine showcase) observes visibility; jsdom has no IO. */
-class IntersectionObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-}
 const originalIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 
 describe('SeriesEditorModal', () => {
