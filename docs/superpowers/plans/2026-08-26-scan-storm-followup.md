@@ -422,3 +422,188 @@ Count rows carrying `thumbnail` in `volumes`. Expected: only installed volumes a
 - [ ] **Step 4: Record and commit**
 
 Append a "Follow-up measured" table to the spec with the same rows as the starting-point table so the two are directly comparable, then commit with an explicit pathspec.
+
+---
+
+### Task 5: Lock the wins in with operation-count regression tests
+
+Every fix in this plan and its predecessor is an **operation-count** property: "one scan per
+burst, not 145", "one bulkPut, not 137 puts", "zero row writes when merely browsing". None of
+those survive a refactor unless a test asserts them, and none are visible to an ordinary
+correctness test — the code returns the right answer either way, just far too slowly. The
+manual browser benchmarks in this plan cannot run in CI: they need a 12,520-file WebDAV account.
+
+So the regression net is a Vitest suite that counts IndexedDB operations against
+`fake-indexeddb` and asserts bounds. This is the same technique that already caught the
+Task 1 defect (`catalog-store.test.ts` proved the debounce sat on the wrong side), promoted
+from an ad-hoc assertion into a named contract file.
+
+**Files:**
+
+- Create: `src/lib/catalog/__tests__/perf-contracts.test.ts`
+- Create: `src/lib/catalog/__tests__/idb-op-counter.ts` (shared helper)
+
+**Interfaces:**
+
+- Consumes: `db` from `$lib/catalog/db`, `volumes`/`volumesWithPlaceholders` from
+  `$lib/catalog/index`, `queueCoverPersist`/`flushCoverPersist` from
+  `$lib/catalog/cover-persist`, `materializeSeriesVolumes` from `$lib/catalog/materialize`.
+- Produces: `countIdbOps(fn)` → `Promise<Record<string, number>>` keyed `"<store>.<op>"`.
+
+- [ ] **Step 1: Write the op counter helper**
+
+It patches the prototypes for the duration of one callback and restores them in a `finally`, so
+a failing assertion cannot leak the patch into the next test.
+
+```ts
+// src/lib/catalog/__tests__/idb-op-counter.ts
+const STORE_OPS = [
+  'getAll',
+  'get',
+  'put',
+  'add',
+  'delete',
+  'count',
+  'openCursor',
+  'getAllKeys'
+] as const;
+const INDEX_OPS = ['getAll', 'openCursor', 'count', 'getAllKeys'] as const;
+
+/**
+ * Counts IndexedDB operations issued while `fn` runs, keyed `"<store>.<op>"`
+ * (index reads are keyed `"<store>.idx.<op>"`).
+ *
+ * These counts are the assertion surface for our performance contracts: the
+ * behaviours this suite guards are all "how many times", never "what result",
+ * so an ordinary correctness test cannot see a regression in them.
+ */
+export async function countIdbOps(fn: () => Promise<void>): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  const bump = (key: string) => {
+    counts[key] = (counts[key] ?? 0) + 1;
+  };
+
+  const storeProto = IDBObjectStore.prototype as unknown as Record<string, unknown>;
+  const indexProto = IDBIndex.prototype as unknown as Record<string, unknown>;
+  const saved: Array<[Record<string, unknown>, string, unknown]> = [];
+
+  for (const op of STORE_OPS) {
+    const orig = storeProto[op] as ((...a: unknown[]) => unknown) | undefined;
+    if (!orig) continue;
+    saved.push([storeProto, op, orig]);
+    storeProto[op] = function (this: IDBObjectStore, ...a: unknown[]) {
+      bump(`${this.name}.${op}`);
+      return orig.apply(this, a);
+    };
+  }
+  for (const op of INDEX_OPS) {
+    const orig = indexProto[op] as ((...a: unknown[]) => unknown) | undefined;
+    if (!orig) continue;
+    saved.push([indexProto, `idx.${op}`, orig]);
+    indexProto[op] = function (this: IDBIndex, ...a: unknown[]) {
+      bump(`${this.objectStore.name}.idx.${op}`);
+      return orig.apply(this, a);
+    };
+  }
+
+  try {
+    await fn();
+    return counts;
+  } finally {
+    for (const [proto, key, orig] of saved) {
+      proto[key.startsWith('idx.') ? key.slice(4) : key] = orig;
+    }
+  }
+}
+```
+
+- [ ] **Step 2: Verify the helper actually counts, before trusting it**
+
+A counter that silently counts nothing would make every contract below pass vacuously. Assert a
+known-nonzero baseline first.
+
+```ts
+it('counts the operations it wraps', async () => {
+  const counts = await countIdbOps(async () => {
+    await db.volumes.toArray();
+    await db.volumes.get('nope');
+  });
+  expect(counts['volumes.getAll']).toBe(1);
+  expect(counts['volumes.get']).toBe(1);
+});
+```
+
+Run: `npx vitest run src/lib/catalog/__tests__/perf-contracts.test.ts -t "counts the operations"`
+Expected: PASS. If either count is 0 or undefined, the helper is broken — fix it before writing
+any contract, because the contracts are only as trustworthy as this test.
+
+- [ ] **Step 3: Write the contracts**
+
+Each has a comment naming the regression it guards and the measured number behind it, so a
+future reader knows what the bound is protecting rather than treating it as an arbitrary
+constant. Bounds are deliberately loose — they catch order-of-magnitude regressions (the real
+failure mode: 1 → 145), not a fix that legitimately shifts a count by one.
+
+```ts
+// CONTRACT 1 — a burst of writes triggers ONE full scan, not one per write.
+// Regression guarded: the catalog liveQuery re-ran db.volumes.toArray() on every
+// mutation. Measured against a real 12,520-file library: 145 scans in a 20s window,
+// individual durations queueing to 16,560ms. Task 1 of the scan-storm plan took it to 0.
+it('coalesces a burst of writes into a single full scan', async () => {
+  const counts = await countIdbOps(async () => {
+    const stop = subscribeToVolumes();
+    await settle();
+    for (let i = 0; i < 20; i++) await db.volumes.put(makeRow(`v${i}`));
+    await settle();
+    stop();
+  });
+  expect(counts['volumes.getAll'] ?? 0).toBeLessThanOrEqual(3);
+});
+
+// CONTRACT 2 — cover persistence writes cached covers in bulk, not one transaction each.
+// Regression guarded: 137 covers must arrive as one bulkPut (Dexie issues N underlying
+// puts inside ONE transaction), never as 137 separate transactions.
+it('persists a batch of covers without a per-cover full scan', async () => {
+  const counts = await countIdbOps(async () => {
+    for (let i = 0; i < 30; i++) queueCoverPersist(makeCover(`/s/v${i}.cbz`));
+    await flushCoverPersist();
+  });
+  expect(counts['volumes.getAll'] ?? 0).toBe(0);
+});
+
+// CONTRACT 3 — browsing cloud-only series mints no `volumes` rows.
+// Regression guarded: render-demand materialization grew the table from 434 to 11,354
+// rows carrying 417MB of blobs. Cloud enrichment belongs in cloud_covers.
+it('writes no volumes rows when only cloud covers are cached', async () => {
+  const before = await db.volumes.count();
+  for (let i = 0; i < 10; i++) queueCoverPersist(makeCover(`/cloud/v${i}.cbz`));
+  await flushCoverPersist();
+  expect(await db.volumes.count()).toBe(before);
+  expect(await db.cloud_covers.count()).toBe(10);
+});
+```
+
+Fill `subscribeToVolumes`, `settle`, `makeRow`, and `makeCover` from the existing helpers in
+`src/lib/catalog/catalog-store.test.ts` rather than writing new ones — that file already solved
+the liveQuery-settling problem, and duplicating it would let the two drift.
+
+- [ ] **Step 4: Prove each contract bites (mutation test)**
+
+For EACH of the three contracts, temporarily break the code it guards and confirm the test
+fails; then revert. Record in the report which mutation you used and the failure message.
+A contract that still passes when its guarded code is broken is worse than no test — it is a
+false assurance. Suggested mutations: (1) remove the `running`/`dirty` guard in
+`src/lib/catalog/index.ts`; (2) replace `bulkPut` with a `for` loop of awaited `put`s;
+(3) route a cover to the row branch unconditionally in `cover-persist.ts`.
+
+- [ ] **Step 5: Full suite, then commit**
+
+```bash
+npx vitest run && npm run check
+npx prettier --write src/lib/catalog/__tests__/perf-contracts.test.ts src/lib/catalog/__tests__/idb-op-counter.ts
+git add src/lib/catalog/__tests__/perf-contracts.test.ts src/lib/catalog/__tests__/idb-op-counter.ts
+git commit -m "test(catalog): operation-count contracts guarding the scan-storm fixes"
+```
+
+**Note on ordering:** this task runs LAST, after Tasks 2 and 3, so the contracts encode the
+final intended behaviour rather than an intermediate state.
