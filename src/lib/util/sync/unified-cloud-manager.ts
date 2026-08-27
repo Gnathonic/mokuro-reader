@@ -39,7 +39,8 @@ import {
 } from '$lib/metadata/catalog-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
-  getAllSeriesMetadata,
+  getSeriesMetadataByFoldedTitle,
+  getSeriesMetadataByFoldedTitles,
   getSeriesMetadataForTitle,
   upsertFromSeriesFile
 } from '$lib/metadata/store';
@@ -1069,10 +1070,12 @@ class UnifiedCloudManager {
    *
    * The exact key first — `series_metadata` is keyed by `normalizeSeriesKey`, so
    * that already absorbs case and whitespace and is the answer for every
-   * ordinary call. Only when it misses does this fall back to a folded scan of
-   * the (small) table, because the one difference the key cannot absorb is the
-   * unicode form: a folder that came back decomposed from the filesystem, or a
-   * record written from a decomposed title.
+   * ordinary call, at one primary-key `get`. Only when it misses does this fall
+   * back to the folded lookup, because the one difference the key cannot absorb
+   * is the unicode form: a folder that came back decomposed from the filesystem,
+   * or a record written from a decomposed title. That fallback is an index read
+   * on `folded_key`, not the whole-table scan it used to be — this runs once per
+   * downloaded series.
    *
    * Without the fallback `writeSeriesFile` publishes an index full of volumes
    * (its rows filter DOES fold) and empty of facts — a file that unlinks the
@@ -1083,12 +1086,8 @@ class UnifiedCloudManager {
     const exact = await getSeriesMetadataForTitle(seriesTitle);
     if (exact) return exact;
 
-    const key = normalizeVolumeTitleKey(seriesTitle);
-    if (!key) return undefined;
-    const all = await getAllSeriesMetadata();
     let best: SeriesMetadata | undefined;
-    for (const meta of Object.values(all)) {
-      if (normalizeVolumeTitleKey(meta.series_title) !== key) continue;
+    for (const meta of await getSeriesMetadataByFoldedTitle(seriesTitle)) {
       best = pickSeriesMetadata(best, meta);
     }
     return best;
@@ -1510,9 +1509,13 @@ class UnifiedCloudManager {
     // records are keyed off the composed local title. A byte-wise lookup misses
     // and the series is published as a factless epoch entry — its links dropped
     // for every device that reads the catalog.
-    const metaByKey = await getAllSeriesMetadata();
+    // Read through the `folded_key` index for exactly the folders being
+    // published, not the whole table: a library with series the cloud does not
+    // hold never deserializes their records at all. `folded_key` is the stored
+    // fold of `series_title`, so re-folding the row here would only be a chance
+    // to disagree with the index that found it.
     const metaByFoldedKey = new Map(
-      Object.values(metaByKey).map((meta) => [normalizeVolumeTitleKey(meta.series_title), meta])
+      (await getSeriesMetadataByFoldedTitles(cloudTitles)).map((meta) => [meta.folded_key, meta])
     );
     const entries = [...cloudTitles].map((title) =>
       catalogEntryFromMeta(title, metaByFoldedKey.get(normalizeVolumeTitleKey(title)))

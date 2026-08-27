@@ -146,7 +146,7 @@ describe('the shared mokuro_v3 schema', () => {
         'catalog_index: id []',
         'cloud_covers: [account_scope+path] [cached_at]',
         'series_index: series_key []',
-        'series_metadata: series_key []',
+        'series_metadata: series_key [folded_key]',
         'volume_files: volume_uuid []',
         'volume_ocr: volume_uuid []',
         'volumes: volume_uuid [series_title, series_uuid]'

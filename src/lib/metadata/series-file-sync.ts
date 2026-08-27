@@ -12,7 +12,8 @@ import { hasSeriesFacts, isSeriesFilePath, type SeriesFileVolume } from './serie
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { backfillNewlyLinkedSeries, backfillSeriesEntries } from './series-backfill';
 import {
-  getAllSeriesMetadata,
+  getSeriesMetadataByFoldedTitle,
+  getSeriesMetadataByFoldedTitles,
   registerFactsChangeListener,
   registerIndexChangeListener
 } from './store';
@@ -170,20 +171,22 @@ async function hasBackedUpVolume(seriesTitle: string): Promise<boolean> {
  * folder is never CREATED for facts: a local-only series that was never backed
  * up has no cloud seat for them yet, and a factless series has nothing to say.
  *
- * Matched by folded title against the whole metadata table, never by keyed
- * lookup: `seriesTitle` may be the listing's own (possibly NFD) spelling when
- * the reconcile pass scheduled the write, while the record was keyed off the
- * composed local title. A byte-wise `get` would miss, the write would drop, and
- * the reconcile pass would schedule it again on every listing — the loop
- * `locallyKnownSeriesKeys` exists to prevent, so both use the same fold.
+ * Matched by FOLDED title, never by primary key: `seriesTitle` may be the
+ * listing's own (possibly NFD) spelling when the reconcile pass scheduled the
+ * write, while the record was keyed off the composed local title. A byte-wise
+ * `get` would miss, the write would drop, and the reconcile pass would schedule
+ * it again on every listing — the loop `locallyKnownSeriesKeys` exists to
+ * prevent, so both use the same fold.
+ *
+ * That fold is now an INDEX read (`folded_key`) rather than a scan of the whole
+ * metadata table. This is the hottest of the sites that scanned: it runs once
+ * per series being published, so on a library-wide reconcile it was one full
+ * table read per series. The listing is checked first, so a series the cloud
+ * does not hold costs no table read at all.
  */
 async function hasPublishableFacts(seriesTitle: string): Promise<boolean> {
   if (unifiedCloudManager.cloudVolumeTitlesFor(seriesTitle).size === 0) return false;
-  const key = normalizeVolumeTitleKey(seriesTitle);
-  const metas = await getAllSeriesMetadata();
-  return Object.values(metas).some(
-    (meta) => normalizeVolumeTitleKey(meta.series_title) === key && hasSeriesFacts(meta)
-  );
+  return (await getSeriesMetadataByFoldedTitle(seriesTitle)).some(hasSeriesFacts);
 }
 
 /**
@@ -517,8 +520,12 @@ function walkListing(files: ListedFile[]): {
 }
 
 /**
- * The series this device could actually publish an index for: at least one
- * NON-PLACEHOLDER row filed under that title.
+ * Which of `candidates` this device could actually publish an index for: the
+ * ones with at least one NON-PLACEHOLDER row filed under that title.
+ *
+ * Answers only about the candidate folders — the caller asks nothing else — so
+ * the metadata half is an index read over exactly those folds rather than the
+ * whole table. Returned as a set of FOLDED keys, which is what the caller has.
  *
  * Deliberately the same test `hasBackedUpVolume` applies downstream, no
  * stricter — metadata-only rows count. A library whose files were removed from
@@ -541,27 +548,32 @@ function walkListing(files: ListedFile[]): {
  * folder name comes off a filesystem and can arrive decomposed (NFD) while the
  * local row stays composed, and the two spell the same series.
  *
- * Deliberately still a full `toArray()`, unlike `hasBackedUpVolume`'s
- * per-series lookup: `isPlaceholder` isn't part of the `series_title` index,
- * so an index-only read cannot tell a placeholder-only series from a
- * genuinely-known one (see the "cloud placeholders" case this excludes,
- * covered by `series-file-sync.reconcile.test.ts`) — narrowing this to an
- * indexed read would require a compound index, out of scope here. This is
- * also the ONE of the four sites that was never actually "per series": the
- * call site below reads it once per whole reconcile pass, not once per
- * candidate folder, so it already has the same cost shape as the twelve
- * other full-table-scan sites this task deliberately leaves alone.
+ * The VOLUMES half is deliberately still a full `toArray()`, unlike
+ * `hasBackedUpVolume`'s per-series lookup: `isPlaceholder` isn't part of the
+ * `series_title` index, so an index-only read cannot tell a placeholder-only
+ * series from a genuinely-known one (see the "cloud placeholders" case this
+ * excludes, covered by `series-file-sync.reconcile.test.ts`) — narrowing it
+ * would require a compound index, out of scope here. It is also the ONE of
+ * these sites that was never actually "per series": the call site below reads
+ * it once per whole reconcile pass, not once per candidate folder, so it
+ * already has the same cost shape as the twelve other full-table-scan sites
+ * this task deliberately leaves alone.
+ *
+ * The METADATA half has no such excuse — the fold IS the index — so it reads
+ * `folded_key` for the candidate folders only. Candidates are the folders with
+ * an archive and no sidecar, which in the steady state is a handful; the
+ * worst case (a first reconcile where every folder is a candidate) is the whole
+ * table, which is what the scan cost unconditionally.
  */
-async function locallyKnownSeriesKeys(): Promise<Set<string>> {
+async function locallyKnownSeriesKeys(candidates: readonly string[]): Promise<Set<string>> {
   const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
   const keys = new Set<string>();
   for (const volume of volumes) {
     if (volume.isPlaceholder) continue;
     keys.add(normalizeVolumeTitleKey(volume.series_title));
   }
-  const metas = await getAllSeriesMetadata();
-  for (const meta of Object.values(metas)) {
-    if (hasSeriesFacts(meta)) keys.add(normalizeVolumeTitleKey(meta.series_title));
+  for (const meta of await getSeriesMetadataByFoldedTitles(candidates)) {
+    if (hasSeriesFacts(meta)) keys.add(meta.folded_key);
   }
   return keys;
 }
@@ -596,7 +608,7 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
   let scheduled = 0;
   if (candidates.length > 0) {
     // ONE scan for the whole pass, and only when something might be scheduled.
-    const localKeys = await locallyKnownSeriesKeys();
+    const localKeys = await locallyKnownSeriesKeys(candidates);
     for (const title of candidates) {
       if (!localKeys.has(normalizeVolumeTitleKey(title))) continue;
       scheduleSeriesFileWrite(title);

@@ -2,9 +2,14 @@ import { db } from '$lib/catalog/db';
 import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { ID_KEYS } from './sanitize';
-import { normalizeSeriesKey } from './series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { hasSeriesFacts, seriesFactsStamp, type SeriesFile } from './series-file';
-import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
+import {
+  createEmptySeriesMetadata,
+  toStoredSeriesMetadata,
+  type SeriesMetadata,
+  type StoredSeriesMetadata
+} from './types';
 
 export type SeriesMetadataPatch = Partial<
   Omit<SeriesMetadata, 'series_key' | 'series_title' | 'updated_at'>
@@ -182,6 +187,48 @@ export async function getSeriesMetadataForTitle(
 }
 
 /**
+ * Every record whose title FOLDS to `seriesTitle`'s fold — the lookup a caller
+ * holding a cloud folder name needs, answered off the `folded_key` index.
+ *
+ * The primary key absorbs case and whitespace but not unicode FORM, so a folder
+ * that came back decomposed (NFD) from a filesystem does not `get` the record
+ * written from the composed local title. Before this index every such site read
+ * the WHOLE table and folded each row in JS; the hottest of them
+ * (`hasPublishableFacts`) did it once per series published.
+ *
+ * Returns an ARRAY, not one record: two records CAN fold alike ("café" stored
+ * NFC beside "café" stored NFD are two primary keys, one fold), and which of
+ * them wins is the caller's question — `resolveSeriesMetadata` picks by link and
+ * recency, `hasPublishableFacts` only asks whether ANY of them has facts.
+ */
+export async function getSeriesMetadataByFoldedTitle(
+  seriesTitle: string
+): Promise<StoredSeriesMetadata[]> {
+  const key = normalizeVolumeTitleKey(seriesTitle);
+  if (!key) return [];
+  return db.series_metadata.where('folded_key').equals(key).toArray();
+}
+
+/**
+ * {@link getSeriesMetadataByFoldedTitle} for MANY titles at once: one index walk
+ * covering every fold in `seriesTitles`, rather than one query each or — as
+ * before — the whole table.
+ *
+ * Dexie lowers `anyOf` to a single cursor that SEEKS from key to key, so the
+ * cost tracks the number of matching rows, not the size of the table: a library
+ * of 1,000 series publishing a catalog for 20 cloud folders deserializes 20
+ * records. The upper bound (every record matches) is what the full scan cost
+ * unconditionally.
+ */
+export async function getSeriesMetadataByFoldedTitles(
+  seriesTitles: Iterable<string>
+): Promise<StoredSeriesMetadata[]> {
+  const keys = [...new Set([...seriesTitles].map(normalizeVolumeTitleKey))].filter(Boolean);
+  if (keys.length === 0) return [];
+  return db.series_metadata.where('folded_key').anyOf(keys).toArray();
+}
+
+/**
  * Upsert: merges `patch` into the existing record (or a fresh one) and stamps
  * updated_at.
  *
@@ -214,16 +261,18 @@ export async function updateSeriesMetadata(
     const resolved = typeof patch === 'function' ? patch(existing) : patch;
     factsChanged = changesFacts(existing, resolved);
     indexChanged = changesIndex(existing, resolved);
-    const written = stripUndefined<SeriesMetadata>({
-      ...existing,
-      ...resolved,
-      series_key: key,
-      series_title: seriesTitle,
-      updated_at,
-      // A fact edit — including an unlink, which empties the facts deliberately —
-      // is the only thing that may move this clock.
-      facts_updated_at: factsChanged ? updated_at : stored ? factsStamp(stored) : undefined
-    });
+    const written = toStoredSeriesMetadata(
+      stripUndefined<SeriesMetadata>({
+        ...existing,
+        ...resolved,
+        series_key: key,
+        series_title: seriesTitle,
+        updated_at,
+        // A fact edit — including an unlink, which empties the facts deliberately —
+        // is the only thing that may move this clock.
+        facts_updated_at: factsChanged ? updated_at : stored ? factsStamp(stored) : undefined
+      })
+    );
     await db.series_metadata.put(written);
     return written;
   });
@@ -308,7 +357,7 @@ export async function upsertFromSeriesFile(
     const existing = await db.series_metadata.get(key);
     const next = mergeSeriesFileInto(seriesTitle, file, existing);
     if (!next) return false;
-    await db.series_metadata.put(next);
+    await db.series_metadata.put(toStoredSeriesMetadata(next));
     return true;
   });
 }
@@ -463,7 +512,7 @@ export async function upsertManyFromSeriesFiles(
       }
     }
 
-    const rows = [...pending.values()];
+    const rows = [...pending.values()].map(toStoredSeriesMetadata);
     if (rows.length === 0) return 0;
 
     try {
@@ -499,7 +548,7 @@ export async function moveSeriesMetadataKey(oldTitle: string, newTitle: string):
     if (!oldRec) return;
 
     if (oldKey === newKey) {
-      await db.series_metadata.put({ ...oldRec, series_title: newTitle });
+      await db.series_metadata.put(toStoredSeriesMetadata({ ...oldRec, series_title: newTitle }));
       return;
     }
 
@@ -508,11 +557,25 @@ export async function moveSeriesMetadataKey(oldTitle: string, newTitle: string):
       newRec && newRec.updated_at > oldRec.updated_at
         ? newRec
         : { ...oldRec, series_key: newKey, series_title: newTitle };
-    await db.series_metadata.put(winner);
+    await db.series_metadata.put(toStoredSeriesMetadata(winner));
     await db.series_metadata.delete(oldKey);
   });
 }
 
+/**
+ * The whole table, keyed by primary key.
+ *
+ * THE LAST WHOLE-TABLE READ, and deliberately so. The four sites that used to
+ * scan here all wanted a lookup by folded title and are now index reads
+ * ({@link getSeriesMetadataByFoldedTitle}). The one remaining caller —
+ * `syncAllSeriesNow`, the "sync all linked series now" button — wants a
+ * different question entirely ("which records carry an AniList id"), and it is
+ * not worth a second index: it fires once per click, on the way into N
+ * SEQUENTIAL network round trips with a deliberate rate-limit sleep between
+ * them, so the scan is invisible next to what follows it. The rows are small and
+ * blob-free, and a sparse index over the nested `external_ids.anilist` key path
+ * would have to be maintained on every write of every record to save it.
+ */
 export async function getAllSeriesMetadata(): Promise<Record<string, SeriesMetadata>> {
   const rows = await db.series_metadata.toArray();
   return Object.fromEntries(rows.map((r) => [r.series_key, r]));
@@ -521,7 +584,7 @@ export async function getAllSeriesMetadata(): Promise<Record<string, SeriesMetad
 export async function replaceAllSeriesMetadata(
   records: Record<string, SeriesMetadata>
 ): Promise<void> {
-  await db.series_metadata.bulkPut(Object.values(records));
+  await db.series_metadata.bulkPut(Object.values(records).map(toStoredSeriesMetadata));
 }
 
 /** Reactive view of the whole table, keyed by series_key. Empty Map before first emission. */

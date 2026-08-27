@@ -14,7 +14,7 @@ vi.mock('$lib/catalog/db', async () => {
 
 import { db } from '$lib/catalog/db';
 import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
+import { createEmptySeriesMetadata, toStoredSeriesMetadata } from '$lib/metadata/types';
 import type { VolumeMetadata } from '$lib/types';
 
 const volume: VolumeMetadata = {
@@ -42,11 +42,13 @@ beforeEach(async () => {
     volume_uuid: 'volume-uuid',
     pages: [{ version: '0.2.1', img_path: '1.jpg', img_width: 100, img_height: 140, blocks: [] }]
   });
-  await db.series_metadata.put({
-    ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
-    external_ids: { anilist: 30013 },
-    facts_updated_at: '2026-08-16T00:00:00.000Z'
-  });
+  await db.series_metadata.put(
+    toStoredSeriesMetadata({
+      ...createEmptySeriesMetadata('One Piece', '2026-08-16T00:00:00.000Z'),
+      external_ids: { anilist: 30013 },
+      facts_updated_at: '2026-08-16T00:00:00.000Z'
+    })
+  );
 });
 
 describe('buildSeriesFileForExport', () => {

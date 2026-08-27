@@ -83,13 +83,17 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 // installed volumes, and `store.ts` writes the series_metadata rows whose fact
 // changes drive the listener. Deliberately NOT fake-indexeddb: it schedules its
 // transactions on setImmediate, which vitest's fake timers freeze.
-const { volumeRows, metaRows, volumesToArraySpy } = vi.hoisted(() => ({
+const { volumeRows, metaRows, volumesToArraySpy, metaToArraySpy } = vi.hoisted(() => ({
   volumeRows: [] as Record<string, unknown>[],
   metaRows: new Map<string, Record<string, unknown>>(),
   // Its own `vi.fn()`, not an inline arrow: a full-table-scan regression test
   // needs to assert it was never reached, distinct from the indexed
   // `where(...)`/`orderBy(...)` reads below.
-  volumesToArraySpy: vi.fn(async () => [] as Record<string, unknown>[])
+  volumesToArraySpy: vi.fn(async () => [] as Record<string, unknown>[]),
+  // The same distinction for `series_metadata`: `hasPublishableFacts` now
+  // answers off the `folded_key` index, so a whole-table read here is a
+  // regression rather than the normal path.
+  metaToArraySpy: vi.fn(async () => [] as Record<string, unknown>[])
 }));
 
 vi.mock('$lib/catalog/db', () => ({
@@ -120,7 +124,25 @@ vi.mock('$lib/catalog/db', () => ({
       put: async (rec: { series_key: string }) => {
         metaRows.set(rec.series_key, rec);
       },
-      toArray: async () => [...metaRows.values()]
+      // The `folded_key` index, matched against whatever `store.ts` actually
+      // WROTE onto the row — never re-derived here. A double that folded the
+      // row itself would answer correctly even if production stopped stamping
+      // the key, which is the one regression this index can suffer.
+      where(index: string) {
+        const rows = () => [...metaRows.values()];
+        return {
+          equals: (value: unknown) => ({
+            toArray: async () => rows().filter((r) => r[index] === value)
+          }),
+          anyOf: (values: unknown[]) => ({
+            toArray: async () => rows().filter((r) => values.includes(r[index]))
+          })
+        };
+      },
+      toArray: async (...args: Parameters<typeof metaToArraySpy>) => {
+        await metaToArraySpy(...args);
+        return [...metaRows.values()];
+      }
     },
     transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
@@ -627,6 +649,36 @@ describe('series-file-sync', () => {
 
     expect(volumesToArraySpy).not.toHaveBeenCalled();
     expect(writeSeriesFile).not.toHaveBeenCalledWith('Cloud Only Series');
+  });
+
+  it('asks whether a series has publishable facts without scanning the metadata table', async () => {
+    // The facts-only publish path: a series the user LINKED but never
+    // downloaded, so `hasBackedUpVolume` is false and the answer rests entirely
+    // on `hasPublishableFacts`. That gate runs once per series being published,
+    // and used to read the whole `series_metadata` table to do it.
+    //
+    // The fold is load-bearing here, not incidental: the cloud folder is
+    // decomposed while the record is written from the composed title, so only
+    // the `folded_key` index can match them. A byte-wise `get` would miss and
+    // the write would be dropped — which is why this asserts the write HAPPENED
+    // as well as asserting how it was reached.
+    const composedSeries = 'ポケモン';
+    const folder = composedSeries.normalize('NFD');
+    cloudPaths.length = 0;
+    volumeRows.length = 0;
+    backUp(folder, 'Volume 1'.normalize('NFD'));
+    // A second, unrelated record in the table: the bound has to hold because
+    // the read is keyed, not because there was only ever one row to find.
+    await updateSeriesMetadata('Naruto', { external_ids: { anilist: 20 } });
+    await updateSeriesMetadata(composedSeries, { external_ids: { anilist: 30013 } });
+    vi.clearAllMocks();
+    writeSeriesFile.mockResolvedValue('written');
+
+    scheduleSeriesFileWrite(composedSeries);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith(composedSeries);
+    expect(metaToArraySpy).not.toHaveBeenCalled();
   });
 
   it('swallows a write failure — a background index write never breaks an edit', async () => {

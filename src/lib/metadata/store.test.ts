@@ -4,13 +4,15 @@ import 'fake-indexeddb/auto';
 vi.mock('$lib/catalog/db', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('series-metadata-store-test');
-  db.version(1).stores({ series_metadata: 'series_key' });
+  db.version(1).stores({ series_metadata: 'series_key, folded_key' });
   return { db };
 });
 
 import { db } from '$lib/catalog/db';
 import {
   getSeriesMetadata,
+  getSeriesMetadataByFoldedTitle,
+  getSeriesMetadataByFoldedTitles,
   getSeriesMetadataForTitle,
   updateSeriesMetadata,
   unlinkSeries,
@@ -26,6 +28,7 @@ import { updateSeriesReadingState } from '$lib/settings/series-data';
 import { toSeriesMetadataPatch } from './providers/anilist';
 import { FACTLESS_UPDATED_AT, type SeriesFile } from './series-file';
 import { createEmptySeriesMetadata } from './types';
+import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 
 /** A minimal series.json carrying only the facts the store reads. */
 function seriesFile(facts: Omit<SeriesFile, 'version' | 'series_title' | 'volumes'>): SeriesFile {
@@ -869,5 +872,153 @@ describe('upsertManyFromSeriesFiles', () => {
   it('writes nothing at all for an empty batch', async () => {
     expect(await upsertManyFromSeriesFiles([])).toBe(0);
     expect(await (db as any).table('series_metadata').count()).toBe(0);
+  });
+});
+
+/**
+ * `folded_key` — the secondary index that turned four whole-table scans into
+ * index reads.
+ *
+ * THE UNIT IS OPERATIONS, NOT BYTES. `countIdbOps` meters both, but these rows
+ * are ids, titles, synonyms and stamps — no blobs — so their byte meter reads
+ * zero either way and could never tell a scan from a keyed read. The op names
+ * can: Dexie lowers a full `toArray()` to `IDBObjectStore.getAll`
+ * (`series_metadata.getAll`), `.where(...).equals(...)` to `IDBIndex.getAll`
+ * (`series_metadata.idx.getAll`) and `.where(...).anyOf(...)` to an
+ * `IDBIndex.openCursor` walk. A regression to `getAllSeriesMetadata()` shows up
+ * as exactly one `series_metadata.getAll`, which is what these bound at zero.
+ */
+describe('folded_key lookups', () => {
+  // The same name in the two unicode forms a round trip through a filesystem
+  // moves between. Byte-different, so they are two DIFFERENT primary keys —
+  // which is the entire reason a second key exists.
+  const NFC_TITLE = 'Pok\u00e9mon'; // e-acute as ONE code point
+  const NFD_TITLE = 'Poke\u0301mon'; // e + a combining acute
+
+  beforeEach(async () => {
+    await (db as any).table('series_metadata').clear();
+  });
+
+  it('finds a record written under an NFD title when asked with the NFC one', async () => {
+    await updateSeriesMetadata(NFD_TITLE, { external_ids: { anilist: 30013 } });
+
+    // THE FIXTURE REACHES THE CODE UNDER TEST. If the primary key could answer
+    // this, the index would be dead weight and every assertion below vacuous.
+    expect(await getSeriesMetadataForTitle(NFC_TITLE)).toBeUndefined();
+
+    const counts = await countIdbOps(async () => {
+      const found = await getSeriesMetadataByFoldedTitle(NFC_TITLE);
+      expect(found.map((r) => r.series_title)).toEqual([NFD_TITLE]);
+    });
+
+    expect(counts['series_metadata.getAll'] ?? 0).toBe(0);
+    // Anchor: it really went through the index rather than answering from
+    // nowhere. Without this, a lookup that returned [] would satisfy the bound.
+    expect(counts['series_metadata.idx.getAll'] ?? 0).toBe(1);
+  });
+
+  it('answers a many-title lookup through the index, reading only the asked-for folds', async () => {
+    for (const title of ['One Piece', 'Naruto', 'Bleach', 'Akira', NFD_TITLE]) {
+      await updateSeriesMetadata(title, { tag: '[x]' });
+    }
+
+    const counts = await countIdbOps(async () => {
+      const found = await getSeriesMetadataByFoldedTitles(['naruto', NFC_TITLE]);
+      expect(found.map((r) => r.series_title).sort()).toEqual(['Naruto', NFD_TITLE]);
+    });
+
+    expect(counts['series_metadata.getAll'] ?? 0).toBe(0);
+    expect(counts['series_metadata.idx.openCursor'] ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * EVERY WRITER, because a row that reaches the table without the derived key
+   * is not "slightly wrong" — it is invisible to all four keyed call sites, and
+   * silently so. Each case writes under the DECOMPOSED title and then looks the
+   * row up by the COMPOSED one, so only the stamped key can find it.
+   *
+   * The primary-key assertion is not decoration: a writer that quietly wrote
+   * nothing would otherwise be indistinguishable from one that wrote a row the
+   * index cannot see.
+   */
+  const writers: Array<[string, () => Promise<void>]> = [
+    [
+      'updateSeriesMetadata',
+      async () => void (await updateSeriesMetadata(NFD_TITLE, { tag: '[a]' }))
+    ],
+    [
+      'unlinkSeries',
+      async () => {
+        await updateSeriesMetadata(NFD_TITLE, { external_ids: { anilist: 1 } });
+        await unlinkSeries(NFD_TITLE);
+      }
+    ],
+    [
+      'upsertFromSeriesFile',
+      async () => {
+        await upsertFromSeriesFile(
+          NFD_TITLE,
+          seriesFile({
+            external_ids: { anilist: 7 },
+            titles: {},
+            synonyms: [],
+            updated_at: '2026-08-20T00:00:00.000Z'
+          })
+        );
+      }
+    ],
+    [
+      'upsertManyFromSeriesFiles',
+      async () => {
+        await upsertManyFromSeriesFiles([
+          {
+            seriesTitle: NFD_TITLE,
+            file: seriesFile({
+              external_ids: { anilist: 8 },
+              titles: {},
+              synonyms: [],
+              updated_at: '2026-08-20T00:00:00.000Z'
+            })
+          }
+        ]);
+      }
+    ],
+    [
+      'replaceAllSeriesMetadata',
+      async () => {
+        const record = createEmptySeriesMetadata(NFD_TITLE, '2026-08-20T00:00:00.000Z');
+        await replaceAllSeriesMetadata({ [record.series_key]: record });
+      }
+    ],
+    [
+      'moveSeriesMetadataKey',
+      async () => {
+        await updateSeriesMetadata('Pocket Monsters', { tag: '[a]' });
+        await moveSeriesMetadataKey('Pocket Monsters', NFD_TITLE);
+      }
+    ]
+  ];
+
+  it.each(writers)('%s stamps folded_key, so the row is findable by fold', async (_name, write) => {
+    await write();
+
+    // The row is really there under its own primary key...
+    expect(await getSeriesMetadataForTitle(NFD_TITLE)).toBeDefined();
+    // ...and the index can see it.
+    const found = await getSeriesMetadataByFoldedTitle(NFC_TITLE);
+    expect(found).toHaveLength(1);
+    expect(found[0].series_title).toBe(NFD_TITLE);
+  });
+
+  it('re-derives folded_key on a rename instead of carrying the old one', async () => {
+    await updateSeriesMetadata(NFD_TITLE, { tag: '[a]' });
+    await moveSeriesMetadataKey(NFD_TITLE, 'Pocket Monsters');
+
+    expect((await getSeriesMetadataByFoldedTitle('Pocket Monsters'))[0]?.series_title).toBe(
+      'Pocket Monsters'
+    );
+    // The renamed row must not still be indexed under the name it no longer
+    // has: a carried-through `folded_key` leaves it answering for both.
+    expect(await getSeriesMetadataByFoldedTitle(NFC_TITLE)).toEqual([]);
   });
 });

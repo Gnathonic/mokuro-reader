@@ -1,4 +1,4 @@
-import { normalizeSeriesKey } from './series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 
 export type DisplayTitleLanguage = 'imported' | 'native' | 'romaji' | 'english';
 export type TrackingUnit = 'volumes' | 'chapters';
@@ -108,6 +108,44 @@ export interface SeriesMetadata {
 export interface SeriesTotals {
   volumes?: number;
   chapters?: number;
+}
+
+/**
+ * A `SeriesMetadata` as it is actually STORED: the record plus the secondary
+ * key IndexedDB indexes it under.
+ *
+ * WHY A SECOND KEY AT ALL. The primary key is `normalizeSeriesKey`, which folds
+ * case and whitespace but not unicode FORM — and half the lookups in the app
+ * arrive holding a name that came off a filesystem, so they must match on
+ * `normalizeVolumeTitleKey` (the same fold plus NFC) instead. Every one of those
+ * sites used to answer by reading the WHOLE table and folding each row in JS;
+ * with this key they are `.where('folded_key').equals(k)` index reads. The one
+ * that hurt most ran per series published (`hasPublishableFacts`).
+ *
+ * WHY IT IS A SEPARATE TYPE rather than a field on `SeriesMetadata`. A derived
+ * key that some writer forgets is worse than no key: the row is simply absent
+ * from every keyed read, silently. Making it a distinct type means Dexie's table
+ * is `Table<StoredSeriesMetadata>`, so `put`/`bulkPut` will not TYPE-CHECK
+ * against a plain `SeriesMetadata` — the compiler is the thing that stops a new
+ * writer forgetting, and {@link toStoredSeriesMetadata} is the only way past it.
+ * Readers keep using `SeriesMetadata`, which this widens, so nothing downstream
+ * has to know the key exists.
+ */
+export interface StoredSeriesMetadata extends SeriesMetadata {
+  /** `normalizeVolumeTitleKey(series_title)`. Derived — never set by hand. */
+  folded_key: string;
+}
+
+/**
+ * Stamp the derived secondary key onto a record on its way into the table. THE
+ * one place `folded_key` is computed; see {@link StoredSeriesMetadata}.
+ *
+ * Always recomputed from `series_title`, never carried through: a rename writes
+ * a new title onto an existing row, and a carried-over key would index the row
+ * under the name it no longer has.
+ */
+export function toStoredSeriesMetadata(record: SeriesMetadata): StoredSeriesMetadata {
+  return { ...record, folded_key: normalizeVolumeTitleKey(record.series_title) };
 }
 
 export function createEmptySeriesMetadata(

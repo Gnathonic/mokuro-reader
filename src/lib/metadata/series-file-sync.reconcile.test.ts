@@ -65,7 +65,11 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 const scheduleCatalogFileWrite = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
 
-const { volumeRows, dbScans, metaRows } = vi.hoisted(() => ({
+const { volumeRows, dbScans, metaRows, metaToArraySpy } = vi.hoisted(() => ({
+  // A whole-table read of `series_metadata`. Its own spy so a regression back
+  // to one can be asserted against directly — the keyed reads go through
+  // `where('folded_key')` below and never touch it.
+  metaToArraySpy: vi.fn(async () => [] as Record<string, unknown>[]),
   volumeRows: [] as Record<string, unknown>[],
   dbScans: { count: 0 },
   metaRows: new Map<string, Record<string, unknown>>()
@@ -101,7 +105,25 @@ vi.mock('$lib/catalog/db', () => ({
       put: async (rec: { series_key: string }) => {
         metaRows.set(rec.series_key, rec);
       },
-      toArray: async () => [...metaRows.values()]
+      // The `folded_key` index, matched against whatever `store.ts` actually
+      // WROTE onto the row — never re-derived here. A double that folded the
+      // row itself would answer correctly even if production stopped stamping
+      // the key, which is the one regression this index can suffer.
+      where(index: string) {
+        const rows = () => [...metaRows.values()];
+        return {
+          equals: (value: unknown) => ({
+            toArray: async () => rows().filter((r) => r[index] === value)
+          }),
+          anyOf: (values: unknown[]) => ({
+            toArray: async () => rows().filter((r) => values.includes(r[index]))
+          })
+        };
+      },
+      toArray: async (...args: Parameters<typeof metaToArraySpy>) => {
+        await metaToArraySpy(...args);
+        return [...metaRows.values()];
+      }
     },
     transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
   }
@@ -115,6 +137,18 @@ import {
   reconcileMissingMetadataFiles,
   SERIES_FILE_WRITE_DEBOUNCE_MS
 } from './series-file-sync';
+import { toStoredSeriesMetadata, type SeriesMetadata } from './types';
+
+/**
+ * Seed one `series_metadata` row the way `store.ts` would have written it —
+ * through the real `toStoredSeriesMetadata`, so it carries the `folded_key` the
+ * indexed reads match on. A hand-built row without it is not a row production
+ * can produce, and would make an indexed lookup look broken.
+ */
+function addMeta(record: SeriesMetadata): void {
+  const stored = toStoredSeriesMetadata(record);
+  metaRows.set(stored.series_key, stored as unknown as Record<string, unknown>);
+}
 
 function addVolume(seriesTitle: string, volumeTitle: string, extra: object = {}) {
   volumeRows.push({
@@ -205,10 +239,15 @@ describe('reconcileMissingMetadataFiles', () => {
     // fill in later. Scheduler and gate must agree (same fold, same facts
     // test) or this folder loops schedule/drop forever.
     volumeRows.length = 0;
-    metaRows.set('naruto', {
+    // Stamped through the real `toStoredSeriesMetadata`, exactly as `store.ts`
+    // stamps every row it writes: this fixture has to be indexable by
+    // `folded_key` or it is not the row production would have stored.
+    addMeta({
       series_key: 'naruto',
       series_title: 'Naruto',
       external_ids: { anilist: 42 },
+      titles: {},
+      synonyms: [],
       updated_at: '2026-08-24T00:00:00.000Z',
       facts_updated_at: '2026-08-24T00:00:00.000Z'
     });
@@ -426,6 +465,47 @@ describe('reconcileMissingMetadataFiles', () => {
 
     // Before the writes fire — those scan again, by design, on the fresh view.
     expect(dbScans.count).toBe(1);
+  });
+
+  it('reads the metadata table by folded key, never whole, when deciding what to schedule', async () => {
+    // `locallyKnownSeriesKeys` is the second half of the schedule gate: a
+    // folder with no local row still qualifies if this device has FACTS for it.
+    // It used to answer that by reading every `series_metadata` row and folding
+    // each one in JS; it now asks the `folded_key` index about the candidate
+    // folders only.
+    //
+    // The fold is what the fixture is built around — the folder is decomposed,
+    // the record composed — so a lookup that lost the fold would schedule
+    // nothing, and the `writtenTitles` assertion is what says the keyed read
+    // still found it rather than quietly finding nothing.
+    volumeRows.length = 0;
+    const folder = 'ポケモン'.normalize('NFD');
+    addMeta({
+      series_key: 'ポケモン',
+      series_title: 'ポケモン',
+      external_ids: { anilist: 30013 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-24T00:00:00.000Z',
+      facts_updated_at: '2026-08-24T00:00:00.000Z'
+    });
+    // A second record the pass must never need to look at.
+    addMeta({
+      series_key: 'naruto',
+      series_title: 'Naruto',
+      external_ids: { anilist: 20 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-24T00:00:00.000Z',
+      facts_updated_at: '2026-08-24T00:00:00.000Z'
+    });
+    cloudListing.files = [{ path: `${folder}/Volume 1.cbz` }, { path: 'catalog.json' }];
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writtenTitles()).toEqual([folder]);
+    expect(metaToArraySpy).not.toHaveBeenCalled();
   });
 
   it('does not touch the volumes table when every folder already has a sidecar', async () => {

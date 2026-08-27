@@ -61,6 +61,23 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
   // root `catalog.json` is a single document, fetched whole and read whole, so
   // it is cached whole rather than shredded into a row per series.
   //
+  // `series_metadata`'s `folded_key` is a DERIVED secondary key —
+  // `normalizeVolumeTitleKey(series_title)`, the primary key's fold plus NFC.
+  // Names that arrive off a filesystem can be decomposed while the record was
+  // keyed off a composed title, so the sites that match a cloud FOLDER against a
+  // record cannot use the primary key; without this index each of them answered
+  // by reading the whole table and folding every row in JS. `store.ts` is the
+  // only writer and stamps it through `toStoredSeriesMetadata` — see
+  // `StoredSeriesMetadata` for why that is a type-level guarantee rather than a
+  // convention.
+  //
+  // It is added to version 2 IN PLACE, not as a version 3, for the same reason
+  // v2 collapsed the development versions: no released build has ever written a
+  // v2 database, so there is nothing to migrate. (A DEVELOPMENT database already
+  // sitting at v2 does not get the new index — Dexie only re-indexes when the
+  // declared version is higher — so a dev database from before this change must
+  // be deleted, exactly as it must for any of the other v2 edits.)
+  //
   // `cloud_covers` holds ONLY the thumbnail blob (+ dimensions) for a cloud
   // volume the user has neither installed nor read, keyed by account + path
   // because providers expose no uuid for a file the client has not opened, and
@@ -75,7 +92,7 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
       volumes: 'volume_uuid, series_uuid, series_title',
       volume_ocr: 'volume_uuid',
       volume_files: 'volume_uuid',
-      series_metadata: 'series_key',
+      series_metadata: 'series_key, folded_key',
       series_index: 'series_key',
       catalog_index: 'id',
       cloud_covers: '[account_scope+path], cached_at'

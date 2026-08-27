@@ -1,5 +1,5 @@
 import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
-import type { SeriesMetadata } from '$lib/metadata/types';
+import type { StoredSeriesMetadata } from '$lib/metadata/types';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
 import type { CloudCover } from './cloud-covers';
@@ -15,7 +15,7 @@ export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;
   volume_ocr!: Table<VolumeOCR>;
   volume_files!: Table<VolumeFiles>;
-  series_metadata!: Table<SeriesMetadata>;
+  series_metadata!: Table<StoredSeriesMetadata>;
   series_index!: Table<SeriesIndexRecord>;
   catalog_index!: Table<CatalogIndexRecord>;
   cloud_covers!: Table<CloudCover>;

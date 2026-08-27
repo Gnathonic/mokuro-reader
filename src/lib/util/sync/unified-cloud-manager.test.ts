@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { CloudFileMetadata } from './provider-interface';
 
 const fetchAll = vi.fn();
@@ -54,9 +55,35 @@ const getAllSeriesMetadata = vi.fn(async (): Promise<Record<string, unknown>> =>
 const upsertFromSeriesFile = vi.fn(
   async (_title: string, _file: unknown): Promise<boolean> => true
 );
+/**
+ * The `folded_key` lookups, DERIVED from the same `getAllSeriesMetadata`
+ * fixture every test here already seeds — never stubbed on their own.
+ *
+ * A separately-stubbed double answers whatever the test told it to, so it would
+ * report a match even for a production bug that folded the wrong side of the
+ * comparison; and it would let a fixture drift out of agreement with the rows
+ * the rest of the file asserts against. Folding the fixture's rows here is what
+ * the `folded_key` index does in the database, using the same function
+ * `toStoredSeriesMetadata` stamps rows with.
+ */
+const foldedMetaRows = async (): Promise<Array<Record<string, unknown>>> =>
+  Object.values(await getAllSeriesMetadata()).map((meta) => ({
+    ...(meta as Record<string, unknown>),
+    folded_key: normalizeVolumeTitleKey((meta as { series_title: string }).series_title)
+  }));
+
 vi.mock('$lib/metadata/store', () => ({
   getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title),
   getAllSeriesMetadata: () => getAllSeriesMetadata(),
+  getSeriesMetadataByFoldedTitle: async (title: string) => {
+    const key = normalizeVolumeTitleKey(title);
+    if (!key) return [];
+    return (await foldedMetaRows()).filter((row) => row.folded_key === key);
+  },
+  getSeriesMetadataByFoldedTitles: async (titles: Iterable<string>) => {
+    const keys = new Set([...titles].map(normalizeVolumeTitleKey).filter(Boolean));
+    return (await foldedMetaRows()).filter((row) => keys.has(row.folded_key as string));
+  },
   upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
 }));
 
