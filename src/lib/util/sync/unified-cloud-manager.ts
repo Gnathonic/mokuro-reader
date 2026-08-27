@@ -63,6 +63,7 @@ import {
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -280,6 +281,14 @@ class UnifiedCloudManager {
       markListingFresh();
       void Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
         console.warn('Metadata backfill failed:', error)
+      );
+      // The per-VOLUME counterpart of the reconcile above: archives this
+      // listing shows without their `.mokuro`/cover sidecars, for volumes
+      // installed locally, get them uploaded from local data. Rides the same
+      // settled listing for the same reason — the writes it queues must never
+      // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
+      void Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
+        console.warn('Volume sidecar backfill failed:', error)
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);

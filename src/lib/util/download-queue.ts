@@ -35,6 +35,7 @@ import { shouldReplaceDownloadedVolume } from './download-volume-repair';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { queueSidecarBackfillForVolume } from './sync/sidecar-backfill';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -493,6 +494,14 @@ export async function processVolumeData(
       console.warn('Failed to update cloud file description:', error);
     }
   }
+
+  // The volume is installed now. If the cloud archive it came from predates
+  // the sidecar convention (mokuro embedded in the .cbz, no cover file), the
+  // freshly-imported local data is exactly what the missing sidecars should
+  // say — nominate it for the lazy backfill. Fire-and-forget and internally
+  // deferred: the backfill waits for this download queue to drain before it
+  // uploads anything (see `sidecar-backfill.ts`).
+  queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
 }
 
 function getSidecarCandidatesForPlaceholder(placeholder: VolumeMetadata): string[] {

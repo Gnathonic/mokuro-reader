@@ -18,6 +18,18 @@ import { normalizeVolumeTitleKey } from './series-key';
 /** The extensions a per-volume cover sidecar can have (mirrors `placeholders.ts`). */
 const COVER_EXT_REGEX = /\.(webp|jpe?g)$/i;
 
+/**
+ * Would a file with this NAME be recognized as a cover sidecar by the listing
+ * groupers (`groupSeriesSidecarFiles` here, `indexCoverSidecarsByBasePath` in
+ * `placeholders.ts`)? An uploader must ask THIS predicate before writing a
+ * cover next to an archive: a thumbnail whose type maps to any other extension
+ * (png, avif, gif) would upload fine and then be invisible to every cover
+ * lookup — an orphan the next listing still reports as "cover missing".
+ */
+export function hasCoverSidecarExtension(name: string): boolean {
+  return COVER_EXT_REGEX.test(name);
+}
+
 /** Convert an ISO 8601 timestamp to epoch seconds, truncated (never rounded). */
 export function isoToEpochSeconds(iso: string | undefined | null): number | undefined {
   if (!iso) return undefined;

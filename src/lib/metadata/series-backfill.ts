@@ -108,8 +108,14 @@ export function releaseBackfillSlot(): void {
 /** series_key → the pass currently running for it. */
 const inFlight = new Map<string, Promise<void>>();
 
-/** A connected, writable provider that does not compile `series.json` itself. */
-function hasWritableNonServerProvider(): boolean {
+/**
+ * A connected, writable provider that does not compile `series.json` itself.
+ *
+ * Exported for `sidecar-backfill.ts`, which gates its per-volume sidecar
+ * uploads on the SAME test — one definition, so the two backfills can never
+ * disagree about which providers accept client-produced metadata.
+ */
+export function hasWritableNonServerProvider(): boolean {
   const status = get(providerManager.status);
   if (!status.hasAnyAuthenticated) return false;
   const type = status.currentProviderType;
