@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -8,7 +9,6 @@ import {
 } from '$lib/metadata/cloud-sidecar-stamps';
 import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { loadVolumeSidecars } from '$lib/util/volume-sidecars';
 import { downloadQueue } from '$lib/util/download-queue';
 import { cacheManager } from './cache-manager';
@@ -42,15 +42,23 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *
  * NON-AGGRESSIVE by construction, in this order of defenses:
  *
- * - Nothing here ever fetches a listing. The decision is made FROM a listing
- *   that just arrived (or from the provider cache it filled), and the uploads
- *   go through `unifiedCloudManager.uploadFile`, which adds each file to that
- *   same cache — so the next check sees the sidecar without any fetch, and the
- *   `series.json` write scheduled after an upload carries `fromCloudListing`
- *   so it does not open with one either. This is the same "the listing that
- *   said 'missing' IS the fresh listing" rule `reconcileMissingMetadataFiles`
- *   follows, and it is what makes the loop this feature could so easily be
- *   (write → refetch → re-decide → write) impossible.
+ * - Nothing here ever fetches a listing, and nothing here ever writes
+ *   `series.json` either. The decision is made FROM a listing that just
+ *   arrived (or from the provider cache it filled), and the uploads go
+ *   through `unifiedCloudManager.uploadFile`, which adds each file to that
+ *   same cache — so the next check sees the sidecar without any fetch. That
+ *   cache entry is stamped with the CLIENT clock (`uploadFile`'s
+ *   `cache.add`), and `cloud-sidecar-stamps.ts` forbids building a
+ *   `series.json` entry from a client-clock stamp — a server mtime that
+ *   lands even a second off would make the very next listing see its own
+ *   upload as stale and re-pull the sidecar it just wrote. Publishing the
+ *   stamp is left entirely to the next REAL listing's reconcile pass
+ *   (`reconcileMissingMetadataFiles` → `runBackfill` in
+ *   `series-backfill.ts`), which rebuilds this folder's entry from the
+ *   server's own `modifiedTime`s the moment they show up — the same
+ *   write-after-real-listing discipline `backup-queue.ts`'s
+ *   `finishBackupRun` uses (it refetches before it writes, rather than
+ *   trusting its own upload-time cache entries).
  * - Strictly serial: one volume at a time, one upload at a time. Mokuro files
  *   are megabytes; there is no hurry.
  * - Deferred behind user-driven work: the drain waits for the download queue
@@ -89,11 +97,12 @@ export const MAX_SIDECAR_BACKFILLS_PER_SESSION = 25;
 const pending = new Set<string>();
 
 /**
- * `<providerType>:<volume_uuid>` for every volume this session already
- * attempted (or proved to have nothing uploadable). Keyed with the provider
- * type so switching providers mid-session re-qualifies the volume against the
- * NEW provider's listing rather than inheriting the old verdict. Cleared only
- * by a page load.
+ * `<key(volumeUuid)>` — see {@link attemptKey} — for every volume this
+ * session already attempted (or proved to have nothing uploadable). Keyed
+ * with the ACCOUNT (falling back to the provider type when a provider cannot
+ * report one), so switching providers OR accounts mid-session re-qualifies
+ * the volume against the new listing rather than inheriting the old
+ * verdict. Cleared only by a page load.
  */
 const attemptedThisSession = new Set<string>();
 
@@ -130,7 +139,16 @@ function backfillReady(): boolean {
 function attemptKey(volumeUuid: string): string | null {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return null;
-  return `${provider.type}:${volumeUuid}`;
+  // The account, not just the provider TYPE — two accounts of one provider
+  // type (two WebDAV servers, two MEGA logins) must not share failure memory
+  // within a session, the same reason `cloud_covers` keys on `account_scope`
+  // rather than provider type alone. `activeAccountScope()` already carries
+  // the provider type as its own prefix (`<provider>:<discriminator>`, see
+  // `ProviderStatus.accountScope`), so this is strictly a refinement of the
+  // old key, never a divergent one. A null scope (a provider that cannot
+  // report one) falls back to exactly today's key.
+  const scope = activeAccountScope() ?? provider.type;
+  return `${scope}:${volumeUuid}`;
 }
 
 function hasMokuroVersion(volume: VolumeMetadata): boolean {
@@ -194,11 +212,29 @@ export function queueSidecarBackfillForVolume(volumeUuid: string): void {
  * `reconcileMissingMetadataFiles`); when absent the provider cache — which IS
  * that listing — is read instead. Never fetches, never throws.
  *
- * This pre-filter is deliberately cheap and folded (one pass over the listing,
- * one over the volumes table): folders are keyed by folded name, so a folder
- * pair that folds alike is examined as one. The drain resolves the REAL folder
- * per volume (`resolveCloudFolderTitle`) before uploading anything, so the
- * fold here can only over- or under-nominate, never mis-upload.
+ * This pre-filter is deliberately cheap and folded (one pass over the
+ * listing): folders are keyed by folded name, so a folder pair that folds
+ * alike is examined as one. The drain resolves the REAL folder per volume
+ * (`resolveCloudFolderTitle`) before uploading anything, so the fold here can
+ * only over- or under-nominate, never mis-upload.
+ *
+ * THE GAP SET IS LISTING-ONLY, AND `db.volumes` IS READ ONLY WHEN IT IS
+ * NON-EMPTY. `volumes` rows carry thumbnail File blobs inline — the exact
+ * shape `hole-patch.ts` and `history-rows.ts` both refuse to scan — and this
+ * runs on every listing load, across every `fetchAllCloudVolumes` call site.
+ * The steady state (a library with no sidecar gaps left to backfill) is
+ * therefore the common case this must cost nothing beyond the listing walk
+ * for, and it does: `gapFolderKeys` below is derived entirely from `files`,
+ * and an empty one returns before `db` is touched at all. Only once there is
+ * at least one folder with an archive missing a sidecar does this read
+ * anything — and even then keys-only first (`orderBy('series_title')
+ * .uniqueKeys()`, the same index-only shape `hole-patch.ts` and
+ * `volumesForFoldedSeriesTitle` use), then `primaryKeys()` scoped to just the
+ * matching folders (verified genuinely keys-only against Dexie 4 —
+ * `cloud-covers-store.ts` documents the same `anyOf` + `primaryKeys()`
+ * guarantee), and only THEN `bulkGet` of just those uuids — so a blob is
+ * deserialized only for a volume that lives in a gap folder, never for the
+ * rest of the table.
  */
 export async function sweepInstalledVolumesForSidecarBackfill(
   files?: CloudFileMetadata[]
@@ -243,10 +279,51 @@ export async function sweepInstalledVolumesForSidecarBackfill(
       return groups;
     };
 
-    const volumes = (await db.volumes.toArray()) as VolumeMetadata[];
+    // LISTING-only gap set: every folder holding at least one archive whose
+    // sidecar group is missing a `.mokuro` or a cover. Whether a LOCAL row
+    // actually wants that sidecar (installed, has a mokuro version, has a
+    // thumbnail) is a `db.volumes` question and is deliberately NOT asked
+    // yet — this can only over-nominate a folder, never under-nominate one,
+    // so the per-volume checks below (unchanged) still make the real call.
+    const gapFolderKeys = new Set<string>();
+    for (const [folderKey, stems] of folderArchiveStems) {
+      const groups = groupsFor(folderKey);
+      for (const stem of stems) {
+        const entry = groups.get(stem);
+        if (!entry?.mokuro || !entry?.cover) {
+          gapFolderKeys.add(folderKey);
+          break;
+        }
+      }
+    }
+    // The steady state: every listed archive already has both sidecars.
+    // `db.volumes` is never opened.
+    if (gapFolderKeys.size === 0) return;
+
+    // Keys-only: which LITERAL local `series_title` spellings fold into a gap
+    // folder. An index-only read — a folder with no local rows at all (the
+    // common shape for a cloud-only library) costs this one walk and nothing
+    // more.
+    const literalTitles = (await db.volumes.orderBy('series_title').uniqueKeys()) as string[];
+    const matchingLiterals = literalTitles.filter((title) =>
+      gapFolderKeys.has(normalizeVolumeTitleKey(title))
+    );
+    if (matchingLiterals.length === 0) return;
+
+    // Still keys-only: just the uuids filed under a gap folder, via the same
+    // index (`anyOf` + `primaryKeys()` never deserializes a row).
+    const gapUuids = (await db.volumes
+      .where('series_title')
+      .anyOf(matchingLiterals)
+      .primaryKeys()) as string[];
+    if (gapUuids.length === 0) return;
+
+    // NOW read rows — bounded to volumes that live in a gap folder, never the
+    // rest of the table.
+    const candidates = (await db.volumes.bulkGet(gapUuids)) as Array<VolumeMetadata | undefined>;
     let queued = false;
-    for (const volume of volumes) {
-      if (!isVolumeInstalled(volume)) continue;
+    for (const volume of candidates) {
+      if (!volume || !isVolumeInstalled(volume)) continue;
       const key = attemptKey(volume.volume_uuid);
       if (!key || attemptedThisSession.has(key)) continue;
 
@@ -389,15 +466,12 @@ async function backfillOne(volumeUuid: string): Promise<void> {
       // listing fetch of its own.
       await unifiedCloudManager.uploadFile(upload.path, upload.file);
     }
-    // The stamps half of the convention: the entry for this volume in
-    // `series.json` carries `mokuro_size`/`mokuro_modified` /
-    // `cover_size`/`cover_modified` derived from the listing cache
-    // (`buildCloudSidecarStamps` inside `writeSeriesFile`), which now holds
-    // the files just uploaded. `fromCloudListing` for the same reason the
-    // reconcile pass passes it: the listing that justified this write IS the
-    // fresh listing, and re-fetching it is the loop this flag exists to
-    // prevent.
-    scheduleSeriesFileWrite(folderTitle, { fromCloudListing: true });
+    // Deliberately no `series.json` write here — see the module doc's first
+    // defense. The next real listing's reconcile pass stamps this folder's
+    // entry from the server's own `modifiedTime`s; scheduling one from THIS
+    // upload's client-stamped cache entry would violate
+    // `cloud-sidecar-stamps.ts`'s "never a local clock" rule and cost every
+    // backfilled volume one spurious re-pull on the next listing.
   } catch (error) {
     // No in-session retry (`attemptedThisSession` above); the next page load
     // re-derives the gap from a fresh listing and tries once more.

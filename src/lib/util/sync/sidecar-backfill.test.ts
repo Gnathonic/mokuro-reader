@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import 'fake-indexeddb/auto';
+// Imported for its side effect as much as its export: the counter installs its
+// `IDBDatabase.transaction` wrapper at module load, and Dexie binds that method
+// once when it opens a database — so it must be in place before the Dexie
+// instance below is ever used. See `idb-op-counter.ts`.
+import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 import type { VolumeMetadata } from '$lib/types';
 
 /**
@@ -12,6 +18,15 @@ import type { VolumeMetadata } from '$lib/types';
  * accessor reads, mirroring the `cache.add` the real `uploadFile` performs
  * (asserted directly in `unified-cloud-manager.test.ts`) — which is exactly
  * the mechanism the convergence tests below pin.
+ *
+ * `db` is a REAL Dexie over `fake-indexeddb`, not a hand-rolled stub — same
+ * discipline as `history-rows.test.ts`. The sweep trigger's contract (Finding
+ * 2's fix) is about which Dexie OPERATIONS it issues: keys-only reads before
+ * ever touching a row, and `db.volumes.toArray()`/`.getAll` never called in
+ * the steady state. A stub with hand-written `.toArray()`/`.get()` methods
+ * would make that property untestable — `countIdbOps` intercepts real
+ * `IDBObjectStore`/`IDBIndex` prototype methods, and a plain JS function
+ * triggers none of them.
  */
 
 // ---------------------------------------------------------------------------
@@ -19,9 +34,19 @@ import type { VolumeMetadata } from '$lib/types';
 // ---------------------------------------------------------------------------
 
 const cloud = vi.hoisted(() => {
-  const state = { files: [] as Array<Record<string, unknown> & { path: string }> };
+  const state = {
+    files: [] as Array<Record<string, unknown> & { path: string }>,
+    // `undefined` by default, matching a provider that cannot report an
+    // account scope — `attemptKey` must fall back to `provider.type` alone in
+    // that case (Finding 4's "a null scope behaves as today").
+    accountScope: undefined as string | undefined
+  };
   const listCloudVolumes = vi.fn(async () => [...state.files]);
-  const provider = { type: 'webdav', listCloudVolumes };
+  const provider = {
+    type: 'webdav',
+    listCloudVolumes,
+    getStatus: () => ({ accountScope: state.accountScope })
+  };
   const fetchAllCloudVolumes = vi.fn(async () => {});
   const uploadFile = vi.fn();
   const defaultUpload = async (path: string, blob: Blob) => {
@@ -66,11 +91,6 @@ const cloud = vi.hoisted(() => {
   };
 });
 
-const dbState = vi.hoisted(() => ({
-  volumes: [] as Array<Record<string, unknown> & { volume_uuid: string }>,
-  ocr: new Map<string, { volume_uuid: string; pages: unknown[] }>()
-}));
-
 const gate = vi.hoisted(() => ({ writable: true }));
 const cacheState = vi.hoisted(() => ({ loaded: true }));
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
@@ -95,15 +115,15 @@ vi.mock('./unified-cloud-manager', () => ({ unifiedCloudManager: cloud.manager }
 vi.mock('./cache-manager', () => ({
   cacheManager: { getCache: () => ({ isLoaded: () => cacheState.loaded }) }
 }));
-vi.mock('$lib/catalog/db', () => ({
-  db: {
-    volumes: {
-      toArray: async () => [...dbState.volumes],
-      get: async (uuid: string) => dbState.volumes.find((v) => v.volume_uuid === uuid)
-    },
-    volume_ocr: { get: async (uuid: string) => dbState.ocr.get(uuid) }
-  }
-}));
+/**
+ * A REAL Dexie over `fake-indexeddb`, not a stub — see the module doc above
+ * for why this suite needs the real thing rather than a hand-rolled `db`.
+ */
+vi.mock('$lib/catalog/db', async () => {
+  const { CatalogDexieV3 } =
+    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+  return { db: new CatalogDexieV3('mokuro_v3_sidecar_backfill_test') };
+});
 vi.mock('$lib/metadata/series-backfill', () => ({
   hasWritableNonServerProvider: () => gate.writable
 }));
@@ -116,6 +136,7 @@ vi.mock('$lib/util/download-queue', () => ({ downloadQueue: downloadQueueMock })
 vi.mock('$lib/metadata/store', () => ({ getSeriesMetadataForTitle: vi.fn(async () => []) }));
 vi.mock('$lib/metadata/series-index', () => ({ getSeriesIndex: vi.fn(async () => undefined) }));
 
+import { db } from '$lib/catalog/db';
 import {
   MAX_SIDECAR_BACKFILLS_PER_SESSION,
   _drainForTests,
@@ -153,9 +174,13 @@ function installedVolume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadat
   } as VolumeMetadata;
 }
 
-function withOcr(volume: VolumeMetadata, pages: unknown[] = [{ img_width: 100 }]): void {
-  dbState.volumes.push(volume as never);
-  dbState.ocr.set(volume.volume_uuid, { volume_uuid: volume.volume_uuid, pages });
+/** Write an installed volume row AND its OCR row to the real db. */
+async function withOcr(
+  volume: VolumeMetadata,
+  pages: unknown[] = [{ img_width: 100 }]
+): Promise<void> {
+  await db.volumes.put(volume);
+  await db.volume_ocr.put({ volume_uuid: volume.volume_uuid, pages } as never);
 }
 
 /** Await the drain to completion, across any re-kick its `finally` performs. */
@@ -170,11 +195,12 @@ function uploadedPaths(): string[] {
   return cloud.uploadFile.mock.calls.map((call) => call[0] as string);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   _resetSidecarBackfillForTests();
-  dbState.volumes.length = 0;
-  dbState.ocr.clear();
+  await db.volumes.clear();
+  await db.volume_ocr.clear();
   cloud.state.files.length = 0;
+  cloud.state.accountScope = undefined;
   cloud.uploadFile.mockReset();
   cloud.uploadFile.mockImplementation(cloud.defaultUpload);
   cloud.fetchAllCloudVolumes.mockClear();
@@ -191,7 +217,7 @@ beforeEach(() => {
 
 describe('sidecar backfill — the sweep trigger', () => {
   it('uploads both missing sidecars for an installed volume the listing shows bare', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -218,16 +244,14 @@ describe('sidecar backfill — the sweep trigger', () => {
     });
     expect(parsed.pages).toEqual([{ img_width: 100 }]);
 
-    // The stamps ride the debounced series.json write, scheduled with the
-    // refetch-suppression flag — the listing that showed the gap IS fresh.
-    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
-    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('Legacy Series', {
-      fromCloudListing: true
-    });
+    // No `series.json` write rides this upload — see the dedicated "series.json
+    // writes" describe block below (Finding 1) for the pinned, positive-control
+    // version of this assertion.
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 
   it('never fetches a listing anywhere in the flow', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -240,7 +264,7 @@ describe('sidecar backfill — the sweep trigger', () => {
   });
 
   it('leaves a volume alone when both sidecars are already listed', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(
       listed('Legacy Series/Volume 01.cbz'),
       listed('Legacy Series/Volume 01.mokuro'),
@@ -255,7 +279,7 @@ describe('sidecar backfill — the sweep trigger', () => {
   });
 
   it('uploads only the missing HALF when the other sidecar exists', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(
       listed('Legacy Series/Volume 01.cbz'),
       listed('Legacy Series/Volume 01.mokuro')
@@ -269,7 +293,7 @@ describe('sidecar backfill — the sweep trigger', () => {
 
   it('uploads only the cover for an image-only installed volume — never an empty mokuro', async () => {
     // No OCR row, mokuro_version '' — the image-only convention.
-    dbState.volumes.push(installedVolume({ mokuro_version: '' }) as never);
+    await db.volumes.put(installedVolume({ mokuro_version: '' }));
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -286,11 +310,11 @@ describe('sidecar backfill — the sweep trigger', () => {
     // upload. The folder exists but holds someone ELSE's archive; a second
     // volume's whole folder is missing; a third volume qualifies and must
     // still be served after the two skips.
-    withOcr(installedVolume());
-    withOcr(
+    await withOcr(installedVolume());
+    await withOcr(
       installedVolume({ volume_uuid: 'uuid-2', series_title: 'Unlisted', volume_title: 'V' })
     );
-    withOcr(
+    await withOcr(
       installedVolume({ volume_uuid: 'uuid-3', volume_title: 'Volume 03', thumbnail: undefined })
     );
     cloud.state.files.push(
@@ -309,8 +333,8 @@ describe('sidecar backfill — the sweep trigger', () => {
   });
 
   it('ignores placeholder and metadata-only rows', async () => {
-    withOcr(installedVolume({ isPlaceholder: true } as Partial<VolumeMetadata>));
-    withOcr(
+    await db.volumes.put(installedVolume({ isPlaceholder: true } as Partial<VolumeMetadata>));
+    await db.volumes.put(
       installedVolume({
         volume_uuid: 'uuid-2',
         metadata_only: true
@@ -329,7 +353,7 @@ describe('sidecar backfill — the sweep trigger', () => {
     // fold alike, and the upload must land beside the archive's spelling.
     const nfdSeries = 'ポケモン'.normalize('NFD');
     const nfdVolume = 'ポケモン 1'.normalize('NFD');
-    withOcr(
+    await withOcr(
       installedVolume({
         series_title: 'ポケモン'.normalize('NFC'),
         volume_title: 'ポケモン 1'.normalize('NFC')
@@ -345,11 +369,178 @@ describe('sidecar backfill — the sweep trigger', () => {
       `${nfdSeries}/${nfdVolume}.webp`
     ]);
   });
+
+  it('never queues an already-converged volume, even in a folder with a genuine gap', async () => {
+    // Same folder as the gap volume, so folder-level scoping alone cannot
+    // save this test — only the per-volume wantsMokuro/wantsCover pre-filter
+    // can keep the converged volume out of `pending`.
+    await withOcr(installedVolume({ volume_uuid: 'bare-1', volume_title: 'Volume 01' }));
+    await withOcr(installedVolume({ volume_uuid: 'covered-1', volume_title: 'Volume 02' }));
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 01.cbz'),
+      listed('Legacy Series/Volume 02.cbz'),
+      listed('Legacy Series/Volume 02.mokuro'),
+      listed('Legacy Series/Volume 02.webp')
+    );
+
+    const counts = await countIdbOps(async () => {
+      await sweepInstalledVolumesForSidecarBackfill();
+      await settle();
+    });
+
+    // Positive control: the genuine gap really got backfilled.
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+    // If the converged volume had entered `pending`, `drain()` would have
+    // run `backfillOne` for it too, costing at least one more
+    // `db.volumes.get` (its own authoritative re-check) beyond what
+    // processing the bare volume alone costs: the folder-scoped `bulkGet`
+    // (one `get` per key, per `idb-op-counter.ts`'s own doc) reads BOTH
+    // rows (2), `backfillOne` re-reads the bare volume once more (1), and
+    // `loadVolumeSidecars` reads it a third time (1) — 4 total. A pre-filter
+    // that let the covered volume through would add a 5th: `backfillOne`'s
+    // own re-read of it before its inner check returns early.
+    expect(counts['volumes.get'] ?? 0).toBe(4);
+  });
+
+  it('never uploads a PNG thumbnail as a cover sidecar — hasCoverSidecarExtension rejects it', async () => {
+    await withOcr(
+      installedVolume({
+        thumbnail: new File([new Uint8Array([1, 2, 3, 4])], 'thumb.png', { type: 'image/png' })
+      })
+    );
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    // The `.mokuro` still uploads — only the cover half is rejected, because
+    // a PNG has no recognized cover-sidecar extension (`hasCoverSidecarExtension`,
+    // `cloud-sidecar-stamps.ts`). This is the reason that export exists: an
+    // upload here would land as a listing entry no cover lookup ever finds.
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+    expect(uploadedPaths().some((path) => path.endsWith('.png'))).toBe(false);
+  });
+});
+
+describe('sidecar backfill — the sweep never scans blobs it does not need (Finding 2)', () => {
+  it('the steady state (every archive already has both sidecars) deserializes zero blob bytes and never scans the whole table', async () => {
+    // A fully converged library: several installed volumes, each row
+    // carrying a real thumbnail blob, and the listing already showing BOTH
+    // sidecars for every one of them.
+    for (let i = 1; i <= 5; i++) {
+      const title = `Volume ${String(i).padStart(2, '0')}`;
+      await withOcr(installedVolume({ volume_uuid: `uuid-${i}`, volume_title: title }));
+      cloud.state.files.push(
+        listed(`Legacy Series/${title}.cbz`),
+        listed(`Legacy Series/${title}.mokuro`),
+        listed(`Legacy Series/${title}.webp`)
+      );
+    }
+
+    const counts = await countIdbOps(async () => {
+      await sweepInstalledVolumesForSidecarBackfill();
+      await settle();
+    });
+
+    // Positive control: there really were installed rows carrying
+    // thumbnails that an unconditional `db.volumes.toArray()` would have
+    // deserialized.
+    expect(await db.volumes.count()).toBe(5);
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+
+    expect(counts['volumes.getAll'] ?? 0).toBe(0);
+    expect(counts['volumes.bytes'] ?? 0).toBe(0);
+    // Stronger than the two above: NO transaction against `volumes` opens at
+    // all — not even the keys-only `orderBy().uniqueKeys()` read. Without
+    // this, dropping just the `gapFolderKeys.size === 0` early return (and
+    // relying on the LATER `matchingLiterals.length === 0` guard to still
+    // bail before any bytes are read) would pass the two assertions above
+    // while quietly issuing one index-only transaction per listing on a
+    // fully converged library — verified: removing that one early return
+    // leaves this suite green except for this line.
+    expect(counts['transactions'] ?? 0).toBe(0);
+  });
+
+  it('a gap in one folder never scans blobs from an unrelated, fully-converged folder', async () => {
+    // The gap folder: one bare archive to backfill.
+    await withOcr(installedVolume({ volume_uuid: 'gap-1', series_title: 'Gap Series' }));
+    cloud.state.files.push(listed('Gap Series/Volume 01.cbz'));
+
+    // A large, unrelated, fully-converged folder sitting in the same table —
+    // its rows carry big thumbnails a whole-table scan would have paid for.
+    const bigBlob = new Uint8Array(200 * 1024);
+    for (let i = 1; i <= 10; i++) {
+      const title = `Volume ${String(i).padStart(2, '0')}`;
+      await withOcr(
+        installedVolume({
+          volume_uuid: `conv-${i}`,
+          series_title: 'Converged Series',
+          volume_title: title,
+          thumbnail: new File([bigBlob], 'thumb.webp', { type: 'image/webp' })
+        })
+      );
+      cloud.state.files.push(
+        listed(`Converged Series/${title}.cbz`),
+        listed(`Converged Series/${title}.mokuro`),
+        listed(`Converged Series/${title}.webp`)
+      );
+    }
+
+    const counts = await countIdbOps(async () => {
+      await sweepInstalledVolumesForSidecarBackfill();
+      await settle();
+    });
+
+    // Positive control: the gap really got backfilled, and there really was
+    // ~2 MB of converged-folder thumbnails on the table.
+    expect(uploadedPaths().sort()).toEqual([
+      'Gap Series/Volume 01.mokuro',
+      'Gap Series/Volume 01.webp'
+    ]);
+    expect(counts['volumes.getAll'] ?? 0).toBe(0);
+    // Only the gap volume's own tiny (4-byte) thumbnail can have been
+    // deserialized, however many times its row was re-read — nowhere near
+    // the 2 MB the converged folder carries.
+    expect(counts['volumes.bytes'] ?? 0).toBeLessThan(1024);
+  });
+});
+
+describe('sidecar backfill — series.json writes (Finding 1)', () => {
+  it('the sweep trigger never schedules a series.json write, even after uploading both sidecars', async () => {
+    await withOcr(installedVolume());
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    // Positive control: the upload really happened — this is the exact
+    // moment the old code scheduled a write.
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+    // `uploadFile`'s cache entry is stamped with the CLIENT clock
+    // (`new Date().toISOString()`), and `cloud-sidecar-stamps.ts` forbids a
+    // `series.json` built from that. Only the next REAL listing's reconcile
+    // pass may publish this folder's stamp.
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('the install trigger never schedules a series.json write, even after uploading both sidecars', async () => {
+    await withOcr(installedVolume());
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillForVolume('uuid-1');
+    await settle();
+
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
 });
 
 describe('sidecar backfill — convergence', () => {
   it('a successful upload converges: the next sweep finds nothing to do', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -370,7 +561,7 @@ describe('sidecar backfill — convergence', () => {
   });
 
   it('a failed upload is not retried within the session', async () => {
-    withOcr(installedVolume({ thumbnail: undefined }));
+    await withOcr(installedVolume({ thumbnail: undefined }));
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
     cloud.uploadFile.mockRejectedValue(new Error('quota exceeded'));
 
@@ -392,7 +583,7 @@ describe('sidecar backfill — convergence', () => {
   });
 
   it('a failed MOKURO upload does not also upload the cover, and neither is retried', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
     cloud.uploadFile.mockRejectedValue(new Error('network down'));
 
@@ -409,7 +600,7 @@ describe('sidecar backfill — convergence', () => {
   it('caps one session at MAX_SIDECAR_BACKFILLS_PER_SESSION volumes', async () => {
     const total = MAX_SIDECAR_BACKFILLS_PER_SESSION + 1;
     for (let i = 1; i <= total; i++) {
-      withOcr(
+      await withOcr(
         installedVolume({
           volume_uuid: `uuid-${i}`,
           volume_title: `Volume ${String(i).padStart(2, '0')}`,
@@ -434,7 +625,7 @@ describe('sidecar backfill — gates', () => {
   it('a read-only provider enqueues nothing, uploads nothing, and logs nothing', async () => {
     const debugSpy = vi.spyOn(console, 'debug');
     gate.writable = false;
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -455,7 +646,7 @@ describe('sidecar backfill — gates', () => {
 
   it('does nothing while the provider cache has not finished loading', async () => {
     cacheState.loaded = false;
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     await sweepInstalledVolumesForSidecarBackfill();
@@ -466,7 +657,7 @@ describe('sidecar backfill — gates', () => {
 
   it('a provider that flips read-only mid-drain drops the rest of the queue', async () => {
     for (let i = 1; i <= 3; i++) {
-      withOcr(
+      await withOcr(
         installedVolume({
           volume_uuid: `uuid-${i}`,
           volume_title: `Volume ${i}`,
@@ -491,8 +682,8 @@ describe('sidecar backfill — gates', () => {
 
 describe('sidecar backfill — the install trigger', () => {
   it('converges on the same check: a bare volume uploads, a covered one does not', async () => {
-    withOcr(installedVolume());
-    withOcr(
+    await withOcr(installedVolume());
+    await withOcr(
       installedVolume({ volume_uuid: 'uuid-2', volume_title: 'Volume 02', thumbnail: undefined })
     );
     cloud.state.files.push(
@@ -514,7 +705,7 @@ describe('sidecar backfill — the install trigger', () => {
   });
 
   it('defers behind an active download queue and runs once it drains', async () => {
-    withOcr(installedVolume());
+    await withOcr(installedVolume());
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
 
     downloadQueueMock.set([{ volumeUuid: 'something-downloading' }]);
@@ -529,5 +720,44 @@ describe('sidecar backfill — the install trigger', () => {
     downloadQueueMock.set([]);
     await settle();
     expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('sidecar backfill — attempted-session memory is per ACCOUNT (Finding 4)', () => {
+  it('switching to a different account of the same provider type does not inherit the old account’s failure memory', async () => {
+    await withOcr(installedVolume({ thumbnail: undefined }));
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.state.accountScope = 'webdav:https://a.example.com|user';
+    cloud.uploadFile.mockRejectedValueOnce(new Error('quota exceeded'));
+
+    queueSidecarBackfillForVolume('uuid-1');
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
+
+    // Same provider TYPE, a DIFFERENT account: must not inherit account A's
+    // "attempted, failed" memory. This is the `cloud_covers`-style keying
+    // Finding 4 asks for — the attempt key folds in the account scope, not
+    // just the provider type.
+    cloud.state.accountScope = 'webdav:https://b.example.com|user';
+    queueSidecarBackfillForVolume('uuid-1');
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('a null account scope behaves as today — one attempt per provider type, not per account', async () => {
+    await withOcr(installedVolume({ thumbnail: undefined }));
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.state.accountScope = undefined;
+    cloud.uploadFile.mockRejectedValueOnce(new Error('quota exceeded'));
+
+    queueSidecarBackfillForVolume('uuid-1');
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
+
+    // The scope stays absent: the failure is remembered, exactly like before
+    // Finding 4's fix.
+    queueSidecarBackfillForVolume('uuid-1');
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
   });
 });
