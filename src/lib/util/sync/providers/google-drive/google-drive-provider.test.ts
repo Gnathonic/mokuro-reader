@@ -17,8 +17,13 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
-    deleteFile: vi.fn(async () => {})
-  }
+    deleteFile: vi.fn(async () => {}),
+    createFolder: vi.fn(async () => 'created-folder')
+  },
+  // The REAL escape, not a stand-in: the point of routing the folder queries
+  // through the shared helper is that they get exactly this behaviour, and a
+  // double would let production stop calling it without anything noticing.
+  escapeNameForDriveQuery: (name: string) => name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }));
 vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
@@ -33,6 +38,9 @@ vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { registerCache: vi.fn(), clearAll: vi.fn() }
 }));
+vi.mock('../../provider-manager', () => ({
+  providerManager: { updateStatus: vi.fn() }
+}));
 vi.mock('../../provider-detection', () => ({
   setActiveProviderKey: vi.fn(),
   clearActiveProviderKey: vi.fn()
@@ -45,6 +53,7 @@ import { googleDriveProvider } from './google-drive-provider';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
+import { providerManager } from '../../provider-manager';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -295,5 +304,129 @@ describe('GoogleDriveProvider login() releases the in-flight folder-resolution m
     // that needs a generation check in ensureReaderFolder()'s mutex — out of
     // scope for this one-line fix (same class as the parked
     // driveFilesCache.fetchAllFiles() writer finding).
+  });
+});
+
+/**
+ * `findOrCreateFolder` CREATES a folder when its lookup finds nothing, so a
+ * lookup that misses a folder which really is there does not fail — it forks
+ * the series into two folders and every write after that lands in the wrong
+ * one. Drive's `name='…'` filter is byte-wise, and a folder name that has been
+ * through a decomposing filesystem comes back NFD while the local title stays
+ * NFC. Japanese titles are the common case: が is one code point composed and
+ * two decomposed.
+ */
+describe('google drive folder lookup and unicode form', () => {
+  const NFC_TITLE = 'ダンジョン飯'; // composed
+  const NFD_TITLE = NFC_TITLE.normalize('NFD'); // what a decomposing filesystem stores
+
+  beforeEach(() => {
+    vi.mocked(driveFilesCache.getReaderFolderId).mockResolvedValue('reader-root');
+  });
+
+  it('reuses a folder Drive stored in a different unicode form', async () => {
+    // The exact-name query misses (NFD bytes on Drive, NFC bytes in the
+    // query); the broad parent listing is where the folder actually is.
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) => {
+      if (query.startsWith('name=')) return [];
+      return [
+        {
+          id: 'existing-folder',
+          name: NFD_TITLE,
+          mimeType: FOLDER_MIME,
+          parents: ['reader-root'],
+          createdTime: '2026-01-01T00:00:00.000Z'
+        }
+      ];
+    });
+
+    const id = await googleDriveProvider.findOrCreateFolder('reader-root', NFC_TITLE);
+
+    expect(id).toBe('existing-folder');
+    expect(driveApiClient.createFolder).not.toHaveBeenCalled();
+  });
+
+  it('still creates the folder when the parent genuinely has no match', async () => {
+    // The parent has folders — just not this one, in any unicode form. The
+    // fallback must not widen into "reuse whatever is there".
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) =>
+      query.startsWith('name=')
+        ? []
+        : [
+            {
+              id: 'someone-else',
+              name: 'Another Series',
+              mimeType: FOLDER_MIME,
+              parents: ['reader-root'],
+              createdTime: '2026-01-01T00:00:00.000Z'
+            }
+          ]
+    );
+
+    const id = await googleDriveProvider.findOrCreateFolder('reader-root', NFC_TITLE);
+
+    expect(id).toBe('created-folder');
+    expect(driveApiClient.createFolder).toHaveBeenCalledWith(NFC_TITLE, 'reader-root');
+  });
+
+  it('escapes a quote in the folder name through the shared helper', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([]);
+
+    await googleDriveProvider.findOrCreateFolder('reader-root', "Haven't You Heard");
+
+    const exactQuery = vi.mocked(driveApiClient.listFiles).mock.calls[0][0] as string;
+    expect(exactQuery).toContain("name='Haven\\'t You Heard'");
+  });
+
+  it('does not pay for the broad listing when the exact name matches', async () => {
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) =>
+      query.startsWith('name=')
+        ? [
+            {
+              id: 'exact-folder',
+              name: NFC_TITLE,
+              mimeType: FOLDER_MIME,
+              parents: ['reader-root'],
+              createdTime: '2026-01-01T00:00:00.000Z'
+            }
+          ]
+        : []
+    );
+
+    const id = await googleDriveProvider.findOrCreateFolder('reader-root', NFC_TITLE);
+
+    expect(id).toBe('exact-folder');
+    // One query, not two: the fallback is for a miss, not for every upload.
+    expect(vi.mocked(driveApiClient.listFiles).mock.calls).toHaveLength(1);
+  });
+});
+
+/**
+ * `getStatus().accountScope` is a function of the reader-folder id, and the app
+ * reads that scope two ways: live (`cloud-cache-key.ts`, used by
+ * `acquireCover`/`refreshCoverKeys`/`cover-persist.ts`) and off the status
+ * STORE (`account-scope-store.ts`, which every cover-drawing surface joins into
+ * its claim key). Resolving the folder without telling the store makes the two
+ * disagree — covers get written and refreshed under `google-drive:<id>` while
+ * mounted cards still hold handles under `google-drive:default`, which is a
+ * blank cover no re-request can repair.
+ */
+describe('google drive account scope', () => {
+  it('publishes a status update when the reader folder resolves', async () => {
+    // A FRESH module graph: the provider is a module singleton and other
+    // tests in this file have already resolved its folder, which is exactly
+    // the state this test needs not to start from.
+    vi.resetModules();
+    const { googleDriveProvider: provider } = await import('./google-drive-provider');
+    const { providerManager: manager } = await import('../../provider-manager');
+
+    // Before resolution the scope is the coarse fallback...
+    expect(provider.getStatus().accountScope).toBe('google-drive:default');
+
+    await provider.ensureReaderFolder();
+
+    // ...and resolving it both moves the scope AND says so.
+    expect(provider.getStatus().accountScope).toBe('google-drive:reader-root');
+    expect(manager.updateStatus).toHaveBeenCalled();
   });
 });

@@ -9,11 +9,18 @@ import type {
 import { ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
+import {
+  driveApiClient,
+  escapeNameForDriveQuery
+} from '$lib/util/sync/providers/google-drive/api-client';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
-import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
+import {
+  GOOGLE_DRIVE_CONFIG,
+  type DriveFile
+} from '$lib/util/sync/providers/google-drive/constants';
 import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
+import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
@@ -48,6 +55,36 @@ class GoogleDriveProvider implements SyncProvider {
   private initializePromise: Promise<void> | null = null;
   private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
   private cloudCore = getCloudProviderCore('google-drive');
+
+  /**
+   * Assign the reader-folder id AND tell the status store about it.
+   *
+   * `getStatus().accountScope` is a function of this field, and the app has
+   * TWO readers of that scope: `cloud-cache-key.ts`'s `activeAccountScope()`,
+   * which calls `getStatus()` live, and `account-scope-store.ts`'s
+   * `activeAccountScopeStore`, which is derived from the status STORE. Every
+   * cover-drawing surface joins the store into its claim key, while
+   * `acquireCover`, `refreshCoverKeys` and `cover-persist.ts` all use the live
+   * read.
+   *
+   * Setting this field silently makes the two disagree: the live read starts
+   * saying `google-drive:<folderId>` while the store still says
+   * `google-drive:default`, so covers are WRITTEN and REFRESHED under the new
+   * scope while every already-mounted card is still holding a handle under
+   * the old one — a permanently blank cover that no re-request can repair,
+   * because `refreshCoverKeys` cannot even find the holder's entry. Drive is
+   * the only provider whose scope resolves lazily like this; every other one
+   * has its discriminator at login.
+   *
+   * So the field is never assigned directly. Notifying only on a real change
+   * keeps this off the hot path — `ensureReaderFolder` short-circuits on the
+   * cached id long before it gets here.
+   */
+  private setReaderFolderId(folderId: string | null): void {
+    if (this.readerFolderId === folderId) return;
+    this.readerFolderId = folderId;
+    providerManager.updateStatus();
+  }
 
   private getAccessToken(): string {
     let token = '';
@@ -161,7 +198,7 @@ class GoogleDriveProvider implements SyncProvider {
       // account is handed straight to the next ensureReaderFolder() caller
       // via the mutex check below (a resolution issued right after login()
       // routinely races this).
-      this.readerFolderId = null;
+      this.setReaderFolderId(null);
       driveFilesCache.clear();
       this.readerFolderPromise = null;
 
@@ -202,7 +239,7 @@ class GoogleDriveProvider implements SyncProvider {
   async logout(): Promise<void> {
     // Use full logout (clears token + auth history) not just clearToken
     await tokenManager.logout();
-    this.readerFolderId = null;
+    this.setReaderFolderId(null);
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
@@ -984,14 +1021,7 @@ class GoogleDriveProvider implements SyncProvider {
 
     await this.ensureInitialized();
 
-    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
-
-    // Query for folders with this name in the parent
-    const folders = await driveApiClient.listFiles(
-      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
-      'files(id,name,createdTime)'
-    );
+    const folders = await this.listFoldersNamed(parentId, folderName, 'files(id,name,createdTime)');
 
     if (folders.length === 0) {
       // No folder exists - create one
@@ -1017,15 +1047,70 @@ class GoogleDriveProvider implements SyncProvider {
     return folders[0].id;
   }
 
+  /**
+   * Every folder in `parentId` whose name IS `folderName` — with "is"
+   * meaning the same unicode text, not the same bytes.
+   *
+   * THIS IS THE DUPLICATE-FOLDER FAUCET, so it is worth being explicit about.
+   * Its only caller that can write is `findOrCreateFolder`, which CREATES a
+   * folder when this returns nothing. A name query that misses a folder which
+   * really is there therefore does not fail — it silently forks the series
+   * into two folders, and everything downstream that keys on the folder name
+   * (the reconcile pass's `hasSidecar`, the series index, the cover
+   * resolution) then sees a folder full of archives with no `series.json`
+   * next to an empty folder holding only the `series.json`, forever, because
+   * the writes keep landing in the wrong one.
+   *
+   * Two ways the old inline query could miss:
+   *
+   * 1. ESCAPING. It hand-rolled the quote/backslash escape that
+   *    `escapeNameForDriveQuery` exists for (and that `util/backup.ts` uses).
+   *    Now it calls the shared helper — one definition, not three.
+   * 2. UNICODE FORM, which the escape never covered. `name='…'` is a
+   *    byte-wise comparison, and a folder name that has been through a
+   *    decomposing filesystem comes back NFD while the local title stays NFC.
+   *    Japanese titles with dakuten/handakuten are the common case: が is one
+   *    code point in NFC and two in NFD, and the two never match each other.
+   *
+   * So the exact query stays as the FAST path — one cheap indexed query, the
+   * normal answer — and a miss falls back to listing the parent's folders and
+   * comparing NFC-folded. That fallback costs one query per parent and only
+   * runs when the alternative was to create a duplicate. Case is deliberately
+   * NOT folded: cloud storage is case-sensitive, and `Berserk/` and
+   * `berserk/` really are two folders.
+   */
+  private async listFoldersNamed(
+    parentId: string,
+    folderName: string,
+    fields: string
+  ): Promise<DriveFile[]> {
+    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const folderClause = `${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`;
+
+    const exact = await driveApiClient.listFiles(
+      `name='${escapeNameForDriveQuery(folderName)}' and ${folderClause}`,
+      fields
+    );
+    if (exact.length > 0) return exact;
+
+    const wanted = folderName.normalize('NFC');
+    const all = await driveApiClient.listFiles(folderClause, fields);
+    const matches = all.filter((folder) => (folder.name ?? '').normalize('NFC') === wanted);
+    if (matches.length > 0) {
+      console.log(
+        `[GoogleDrive] '${folderName}' is stored under a different unicode form; reusing the existing folder`
+      );
+    }
+    return matches;
+  }
+
   private async findFolder(
     parentId: string,
     folderName: string
   ): Promise<{ id: string; parentId: string | null; name: string } | null> {
-    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
-
-    const folders = await driveApiClient.listFiles(
-      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+    const folders = await this.listFoldersNamed(
+      parentId,
+      folderName,
       'files(id,name,parents,createdTime)'
     );
 
@@ -1143,7 +1228,7 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       onRootFolderConfirmed: (folderId: string): void => {
-        this.readerFolderId = folderId;
+        this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }
     };
@@ -1165,7 +1250,7 @@ class GoogleDriveProvider implements SyncProvider {
 
     if (cachedFolderId) {
       // Found in cache
-      this.readerFolderId = cachedFolderId;
+      this.setReaderFolderId(cachedFolderId);
       return cachedFolderId;
     }
 
@@ -1179,7 +1264,7 @@ class GoogleDriveProvider implements SyncProvider {
       // Double-check cache after acquiring "lock" (another call might have finished)
       const recheckFolderId = await driveFilesCache.getReaderFolderId();
       if (recheckFolderId) {
-        this.readerFolderId = recheckFolderId;
+        this.setReaderFolderId(recheckFolderId);
         return recheckFolderId;
       }
 
@@ -1190,7 +1275,7 @@ class GoogleDriveProvider implements SyncProvider {
       );
 
       // Store in both caches
-      this.readerFolderId = folderId;
+      this.setReaderFolderId(folderId);
       driveFilesCache.setReaderFolderId(folderId);
 
       return folderId;
