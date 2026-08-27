@@ -1,6 +1,7 @@
 import { sortVolumes } from '$lib/catalog/sort-volumes';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import {
   ID_KEYS,
@@ -96,7 +97,8 @@ export interface SeriesFileVolume {
  * The content is advisory: local IndexedDB always wins for installed volumes,
  * the index only fills gaps for volumes this device does not have. `updated_at`
  * is the merge key for the *facts* only (see `upsertFromSeriesFile`); volume
- * entries merge by `volume_uuid` with the local copy winning.
+ * entries merge by `volume_uuid` OR folded `volume_title` — either key is the
+ * same volume (see `createVolumeEntryMerger`) — with the local copy winning.
  */
 export interface SeriesFile {
   version: 2;
@@ -203,6 +205,163 @@ function compareEntries(a: SeriesFileVolume, b: SeriesFileVolume): number {
   return sortVolumes(a as unknown as VolumeMetadata, b as unknown as VolumeMetadata);
 }
 
+// ---------------------------------------------------------------------------
+// Volume-entry identity and the ONE merge rule every producer shares
+// ---------------------------------------------------------------------------
+
+/**
+ * Does this entry carry anything only a read of the volume's `.mokuro` (or a
+ * local install) could have measured? The negative space is exactly what a
+ * no-metadata entry is minted with (`buildImageOnlyEntry`): zero pages, zero
+ * characters, no mokuro version.
+ */
+function hasMeasuredContent(entry: SeriesFileVolume): boolean {
+  return entry.page_count > 0 || entry.character_count > 0 || entry.mokuro_version !== '';
+}
+
+/**
+ * Is this a NO-METADATA entry — one minted without ever reading the volume's
+ * `.mokuro`? Two signals, BOTH required:
+ *
+ * - its `volume_uuid` is the DERIVED one — `generateDeterministicUUID(
+ *   '<series>/<volume>')`, the convention every placeholder minter uses
+ *   (`buildImageOnlyEntry`, `placeholders.ts`, `download-queue.ts`) —
+ *   recomputed from the entry's own titles; and
+ * - it carries no measured content at all ({@link hasMeasuredContent}).
+ *
+ * The conjunction is deliberate. The uuid signal alone would misclassify a
+ * genuinely installed IMAGE-ONLY volume, whose uuid is also derived (it has no
+ * mokuro to name it) but whose `page_count` was measured from real pages. The
+ * content signal alone would misclassify a real `.mokuro` that happens to
+ * carry no pages and no version string. And an entry whose derived uuid no
+ * longer recomputes (the series was renamed since minting, or NFC/NFD drift in
+ * the title) degrades safely: it fails this test but still has zero content,
+ * so `pickWinner`'s second rule — measured content beats none — decides the
+ * same way.
+ */
+export function isMetadataLessEntry(seriesTitle: string, entry: SeriesFileVolume): boolean {
+  if (hasMeasuredContent(entry)) return false;
+  return entry.volume_uuid === generateDeterministicUUID(`${seriesTitle}/${entry.volume_title}`);
+}
+
+/** How {@link VolumeEntryMerger.add} resolves a pure tie (same class, same content rank). */
+export type VolumeEntryMergeMode =
+  /** The incoming entry wins ties — an override pass (a pulled sidecar, an installed row, an arriving file). */
+  | 'replace'
+  /** The held entry wins ties — a fill pass (metadata-only rows, healing one file's own entries in order). */
+  | 'fill';
+
+export interface VolumeEntryMerger {
+  /** The entry the given one would merge with — matched by uuid first, folded title second. */
+  get(entry: Pick<SeriesFileVolume, 'volume_uuid' | 'volume_title'>): SeriesFileVolume | undefined;
+  /** Merge one entry in under the shared identity and winner rules. */
+  add(entry: SeriesFileVolume, mode: VolumeEntryMergeMode): void;
+  /** Every surviving entry — unique on `volume_uuid` AND on folded `volume_title`, by construction. */
+  values(): SeriesFileVolume[];
+}
+
+/**
+ * THE one merge rule for `SeriesFileVolume` entries. Every site that combines
+ * them — `parseSeriesFile` (healing a file on read), `buildSeriesFile` (the
+ * write), `mergeSeriesFileForCache` (caching an import), and
+ * `scheduleSeriesFileWrite`'s cloudMeasured accumulator — goes through this
+ * one factory, so the identity and winner rules cannot drift between sites.
+ * (They did once: every site keyed by `volume_uuid` alone, so the no-metadata
+ * entry's derived uuid never matched the real mokuro's uuid for the same file
+ * and the two entries DOUBLED instead of replacing.)
+ *
+ * IDENTITY — an incoming entry matches an existing one when EITHER key
+ * matches:
+ *
+ * - same folded `volume_title` ({@link normalizeVolumeTitleKey}): the title
+ *   maps to the archive FILENAME, unique per folder on every provider, so it
+ *   is the reliable join. The uuid legitimately CHANGES under one title — a
+ *   no-metadata entry's derived uuid is superseded by the real mokuro's, and
+ *   a re-OCR mints a fresh one;
+ * - same `volume_uuid`: the filename legitimately changes under one uuid too
+ *   — a user renames the archive, and the uuid (from the mokuro inside it)
+ *   rides along unchanged.
+ *
+ * A single incoming entry can therefore match TWO existing entries at once —
+ * one by uuid (the pre-rename entry) and one by title (whatever sat on the
+ * new name, typically a no-metadata placeholder). ALL matches collapse into
+ * ONE winner, so the invariant — no two entries share a uuid or a folded
+ * title — holds on `values()` by construction, and a violated input (an
+ * already-doubled published file) collapses deterministically instead of
+ * throwing: this code runs against real user data.
+ *
+ * WINNER, decided pairwise per match:
+ *
+ * 1. a real entry beats a no-metadata one ({@link isMetadataLessEntry}),
+ *    whichever side it arrives on — "the no-metadata entry is REPLACED when
+ *    the mokuro is read", and a later no-metadata rebuild never claws back a
+ *    real entry;
+ * 2. an entry with measured content beats one with none — the safety net for
+ *    a no-metadata entry whose derived uuid no longer recomputes (see
+ *    {@link isMetadataLessEntry});
+ * 3. otherwise the `mode` decides: `'replace'` keeps the incoming entry,
+ *    `'fill'` keeps the held one. The schema carries no per-entry clock, so
+ *    "local/installed beats published, newer beats older" is expressed by
+ *    application ORDER at the call sites (existing file → pulled sidecars →
+ *    metadata-only fills → installed rows), not by a timestamp.
+ */
+export function createVolumeEntryMerger(seriesTitle: string): VolumeEntryMerger {
+  const byUuid = new Map<string, SeriesFileVolume>();
+  const byTitle = new Map<string, SeriesFileVolume>();
+
+  function matchesFor(
+    entry: Pick<SeriesFileVolume, 'volume_uuid' | 'volume_title'>
+  ): SeriesFileVolume[] {
+    const matches: SeriesFileVolume[] = [];
+    const uuidMatch = byUuid.get(entry.volume_uuid);
+    if (uuidMatch) matches.push(uuidMatch);
+    const titleKey = normalizeVolumeTitleKey(entry.volume_title);
+    const titleMatch = titleKey ? byTitle.get(titleKey) : undefined;
+    if (titleMatch && titleMatch !== uuidMatch) matches.push(titleMatch);
+    return matches;
+  }
+
+  /** `b` is the preferred side: it wins when rules 1 and 2 do not decide. */
+  function pickWinner(a: SeriesFileVolume, b: SeriesFileVolume): SeriesFileVolume {
+    const aLess = isMetadataLessEntry(seriesTitle, a);
+    const bLess = isMetadataLessEntry(seriesTitle, b);
+    if (aLess !== bLess) return aLess ? b : a;
+    const aContent = hasMeasuredContent(a);
+    const bContent = hasMeasuredContent(b);
+    if (aContent !== bContent) return aContent ? a : b;
+    return b;
+  }
+
+  function remove(entry: SeriesFileVolume): void {
+    if (byUuid.get(entry.volume_uuid) === entry) byUuid.delete(entry.volume_uuid);
+    const titleKey = normalizeVolumeTitleKey(entry.volume_title);
+    if (byTitle.get(titleKey) === entry) byTitle.delete(titleKey);
+  }
+
+  return {
+    get(entry) {
+      return matchesFor(entry)[0];
+    },
+    add(entry, mode) {
+      const matches = matchesFor(entry);
+      let winner = entry;
+      for (const match of matches) {
+        winner = mode === 'replace' ? pickWinner(match, winner) : pickWinner(winner, match);
+      }
+      // The held entry won its only collision unchanged: keep it in place
+      // rather than re-inserting it at the back.
+      if (matches.length === 1 && winner === matches[0]) return;
+      for (const match of matches) remove(match);
+      byUuid.set(winner.volume_uuid, winner);
+      const titleKey = normalizeVolumeTitleKey(winner.volume_title);
+      if (titleKey) byTitle.set(titleKey, winner);
+    },
+    values() {
+      return [...byUuid.values()];
+    }
+  };
+}
+
 /** The shareable half of a series record (or of the file already in the cloud). */
 interface SeriesFacts {
   external_ids?: SeriesExternalIds;
@@ -269,10 +428,11 @@ function localFacts(meta: SeriesMetadata): SeriesFacts {
  *   already published is carried through untouched, and with nothing published
  *   either the file is index-only and stamped `FACTLESS_UPDATED_AT`.
  *
- * Volumes are the union of the existing index and the local rows, keyed by
- * `volume_uuid` — a device only ever knows about its own volumes, so it must not
- * delete entries written by another device. Local rows rank by how much they
- * prove:
+ * Volumes are the union of the existing index and the local rows, merged
+ * through `createVolumeEntryMerger` — matched by `volume_uuid` OR folded
+ * `volume_title`, since either key identifies the same archive — because a
+ * device only ever knows about its own volumes, so it must not delete entries
+ * written by another device. Local rows rank by how much they prove:
  *
  * - INSTALLED — measured here, archive present: overrides the published entry,
  *   and its uuid is exempt from the listing prune (a volume not backed up yet is
@@ -373,38 +533,38 @@ export function buildSeriesFile(args: {
   const installed = localVolumes.filter(isVolumeInstalled);
   const localUuids = new Set(installed.map((v) => v.volume_uuid));
 
-  const byUuid = new Map<string, SeriesFileVolume>();
-  for (const entry of existing?.volumes ?? []) byUuid.set(entry.volume_uuid, entry);
+  // Every pass below merges through the ONE shared rule (see
+  // `createVolumeEntryMerger`): an incoming entry matches an existing one by
+  // uuid OR by folded title, and a real entry always beats a no-metadata one.
+  // Seeding the existing file through it is what HEALS a published (or stale
+  // cached) copy that already carries doubled entries — the no-metadata entry
+  // beside the real one, or a pre-rename entry beside the post-rename one —
+  // so the very next write repairs the file in the cloud.
+  const merger = createVolumeEntryMerger(seriesTitle);
+  for (const entry of existing?.volumes ?? []) merger.add(entry, 'fill');
 
   // The sidecar-backfill's own entries: the pulled sidecar IS the cloud's
   // current content, so it overrides whatever is published for that VOLUME —
   // not just that uuid. A re-OCR mints a new `volume_uuid` for the same
-  // archive, so the stale published entry (still sitting under the old uuid)
-  // is retired by folded title before the fresh one is set; otherwise the two
-  // would coexist as two rows for one archive. Applied before the installed
-  // loop below, which — being measured on this device — still gets the last
-  // word for any of these same volumes.
-  for (const entry of cloudMeasuredVolumes ?? []) {
-    const titleKey = normalizeVolumeTitleKey(entry.volume_title);
-    for (const [uuid, published] of byUuid) {
-      if (
-        uuid !== entry.volume_uuid &&
-        normalizeVolumeTitleKey(published.volume_title) === titleKey
-      ) {
-        byUuid.delete(uuid);
-      }
-    }
-    byUuid.set(entry.volume_uuid, entry);
-  }
+  // archive and a rename keeps the uuid under a new filename; either way the
+  // stale published entry is retired rather than left beside the fresh one.
+  // Applied before the installed loop below, which — being measured on this
+  // device — still gets the last word for any of these same volumes. The one
+  // thing a pulled entry does NOT displace is a REAL published entry when the
+  // pull itself came back metadata-less (an image-only rebuild for an archive
+  // whose sidecar vanished): winner rule 1 keeps the measured counts.
+  for (const entry of cloudMeasuredVolumes ?? []) merger.add(entry, 'replace');
 
-  // Non-installed rows FILL a missing entry only: they never override the
+  // Non-installed rows FILL a missing entry only: they never override a real
   // published copy (which may describe a re-OCR this device has not seen), and
   // they are absent from `localUuids`, so they never exempt an entry from the
   // listing prune — a volume deleted from the cloud must not be re-added by a
-  // device that merely kept its history row.
+  // device that merely kept its history row. The one published thing they DO
+  // replace is a no-metadata entry for the same file (winner rule 1): the row
+  // was measured from a real mokuro once, the placeholder never was.
   for (const volume of localVolumes) {
     if (volume.isPlaceholder || isVolumeInstalled(volume)) continue;
-    if (!byUuid.has(volume.volume_uuid)) byUuid.set(volume.volume_uuid, volumeToIndexEntry(volume));
+    merger.add(volumeToIndexEntry(volume), 'fill');
   }
   for (const volume of installed) {
     const entry = volumeToIndexEntry(volume);
@@ -412,9 +572,11 @@ export function buildSeriesFile(args: {
     // imported from disk was never uploaded or downloaded here, so nothing ever
     // measured its archive. That is a gap in this device's knowledge, not a
     // correction of what the device that DID upload it published, so the
-    // published size rides through instead of being erased. Everything else the
-    // installed row says still wins — it measured those itself.
-    const publishedSize = byUuid.get(volume.volume_uuid)?.archive_size;
+    // published size rides through instead of being erased — from the entry
+    // this row is about to supersede, matched by uuid OR title, so it survives
+    // the uuid changing under a superseded no-metadata entry. Everything else
+    // the installed row says still wins — it measured those itself.
+    const publishedSize = merger.get(entry)?.archive_size;
     if (entry.archive_size === undefined && publishedSize !== undefined) {
       entry.archive_size = publishedSize;
     }
@@ -429,10 +591,10 @@ export function buildSeriesFile(args: {
     if (stamps?.mokuro_modified !== undefined) entry.mokuro_modified = stamps.mokuro_modified;
     if (stamps?.cover_size !== undefined) entry.cover_size = stamps.cover_size;
     if (stamps?.cover_modified !== undefined) entry.cover_modified = stamps.cover_modified;
-    byUuid.set(volume.volume_uuid, entry);
+    merger.add(entry, 'replace');
   }
 
-  let volumes = [...byUuid.values()];
+  let volumes = merger.values();
   if (cloudVolumeTitles) {
     // Folded on both sides: the listing's titles are cloud filenames, the
     // entries' are whatever wrote the file, and case/whitespace/unicode-form
@@ -454,14 +616,28 @@ export function buildSeriesFile(args: {
   // published value instead of inheriting it back — and is then omitted from
   // the file, which is what keeps build → parse an identity.
   const publishedOffsets = new Map<string, number>();
+  // Folded-title fallback: the nudge describes the ARCHIVE's cover geometry,
+  // so when the merge above retired a published entry whose uuid changed under
+  // the same filename (a no-metadata entry superseded by the real mokuro's
+  // uuid, or a re-OCR), its alignment follows the file rather than dying with
+  // the old uuid. First writer wins on the (already-invalid) doubled input.
+  const publishedOffsetsByTitle = new Map<string, number>();
   for (const entry of existing?.volumes ?? []) {
-    if (entry.offset !== undefined) publishedOffsets.set(entry.volume_uuid, entry.offset);
+    if (entry.offset === undefined) continue;
+    publishedOffsets.set(entry.volume_uuid, entry.offset);
+    const titleKey = normalizeVolumeTitleKey(entry.volume_title);
+    if (titleKey && !publishedOffsetsByTitle.has(titleKey)) {
+      publishedOffsetsByTitle.set(titleKey, entry.offset);
+    }
   }
   const localOffsets = meta?.volume_offsets ?? {};
   volumes = volumes.map((entry) => {
     const hasLocal = Object.prototype.hasOwnProperty.call(localOffsets, entry.volume_uuid);
     const local = hasLocal ? sanitizeVolumeOffset(localOffsets[entry.volume_uuid]) : undefined;
-    const offset = local ?? publishedOffsets.get(entry.volume_uuid);
+    const offset =
+      local ??
+      publishedOffsets.get(entry.volume_uuid) ??
+      publishedOffsetsByTitle.get(normalizeVolumeTitleKey(entry.volume_title));
     if (!offset) {
       if (entry.offset === undefined) return entry;
       const cleared = { ...entry };
@@ -522,11 +698,15 @@ export function buildSeriesFileFrom(args: {
 
 /**
  * Merge a `series.json` that arrived out of band (an import) over the copy this
- * device already cached: the volume entries are unioned by uuid with the
- * arriving file winning, so caching an import can never shrink an index fetched
- * from the cloud, and the facts follow the same newest-`updated_at`-wins rule as
- * `upsertFromSeriesFile`. `series_title` is stamped with the title the record is
- * filed under, keeping the file's own name and its key in step.
+ * device already cached: the volume entries are unioned through the shared
+ * merge rule (`createVolumeEntryMerger` — matched by uuid OR folded title)
+ * with the arriving file winning ties, so caching an import can never shrink
+ * an index fetched from the cloud — except by collapsing two entries that
+ * describe the SAME file (a no-metadata entry and the real one, or a pre- and
+ * post-rename pair), which the shared rule heals here the same as everywhere
+ * else. The facts follow the same newest-`updated_at`-wins rule as
+ * `upsertFromSeriesFile`. `series_title` is stamped with the title the record
+ * is filed under, keeping the file's own name and its key in step.
  */
 export function mergeSeriesFileForCache(
   seriesTitle: string,
@@ -535,12 +715,12 @@ export function mergeSeriesFileForCache(
 ): SeriesFile {
   if (!cached) return { ...file, series_title: seriesTitle };
 
-  const byUuid = new Map<string, SeriesFileVolume>();
-  for (const entry of cached.volumes) byUuid.set(entry.volume_uuid, entry);
-  for (const entry of file.volumes) byUuid.set(entry.volume_uuid, entry);
+  const merger = createVolumeEntryMerger(seriesTitle);
+  for (const entry of cached.volumes) merger.add(entry, 'fill');
+  for (const entry of file.volumes) merger.add(entry, 'replace');
 
   const base = file.updated_at >= cached.updated_at ? file : cached;
-  const volumes = [...byUuid.values()].sort(compareEntries);
+  const volumes = merger.values().sort(compareEntries);
   const merged: SeriesFile = { ...base, series_title: seriesTitle, volumes };
   if (!base.tag) delete merged.tag;
   if (!base.unit) delete merged.unit;
@@ -637,15 +817,20 @@ export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   const updated_at = normalizeUpdatedAt(value.updated_at);
   if (!updated_at) return undefined;
 
+  // Healed on read, not just validated: files already published with doubled
+  // entries (the same volume under its no-metadata derived uuid AND its real
+  // one, or under a pre- and post-rename title) collapse through the shared
+  // merge rule here, so every reader sees one entry per volume and the next
+  // write repairs the published file. 'fill' keeps the earlier entry on pure
+  // ties, preserving the old first-wins behavior for exact-uuid duplicates.
   const volumes: SeriesFileVolume[] = [];
   if (Array.isArray(value.volumes)) {
-    const seen = new Set<string>();
+    const merger = createVolumeEntryMerger(series_title);
     for (const raw of value.volumes) {
       const entry = parseVolumeEntry(raw);
-      if (!entry || seen.has(entry.volume_uuid)) continue;
-      seen.add(entry.volume_uuid);
-      volumes.push(entry);
+      if (entry) merger.add(entry, 'fill');
     }
+    volumes.push(...merger.values());
   }
 
   const file: SeriesFile = {

@@ -3,14 +3,18 @@ import {
   FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
   buildSeriesFile,
+  isMetadataLessEntry,
   isSeriesFilePath,
   mergeSeriesFileForCache,
   orderVolumeEntryFields,
   parseSeriesFile,
   stringifySeriesFile,
   volumeToIndexEntry,
-  type SeriesFile
+  type SeriesFile,
+  type SeriesFileVolume
 } from './series-file';
+import { normalizeVolumeTitleKey } from './series-key';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { createEmptySeriesMetadata, type SeriesMetadata } from './types';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -1396,5 +1400,315 @@ describe('the published facts stamp never moves backwards', () => {
 
     expect(file.updated_at).toBe('2026-02-01T00:00:00.000Z');
     expect(file.external_ids).toEqual({});
+  });
+});
+
+describe('either-key volume identity (uuid OR folded title) — the doubled-entry fix', () => {
+  /**
+   * A no-metadata entry exactly as `buildImageOnlyEntry` mints one: the uuid
+   * DERIVED from `<series>/<volume>` (the archive was listed but its `.mokuro`
+   * was never read), zero counts, no version.
+   */
+  function placeholderEntry(
+    volumeTitle: string,
+    extra: Partial<SeriesFileVolume> = {}
+  ): SeriesFileVolume {
+    return {
+      volume_uuid: generateDeterministicUUID(`One Piece/${volumeTitle}`),
+      volume_title: volumeTitle,
+      page_count: 0,
+      character_count: 0,
+      mokuro_version: '',
+      ...extra
+    };
+  }
+
+  function realEntry(
+    volumeUuid: string,
+    volumeTitle: string,
+    extra: Partial<SeriesFileVolume> = {}
+  ): SeriesFileVolume {
+    return {
+      volume_uuid: volumeUuid,
+      volume_title: volumeTitle,
+      page_count: 180,
+      character_count: 9000,
+      mokuro_version: '0.4.12',
+      ...extra
+    };
+  }
+
+  function fileWith(volumes: SeriesFileVolume[]): SeriesFile {
+    return {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-01-01T00:00:00.000Z',
+      volumes
+    };
+  }
+
+  /** The user-stated invariant, asserted directly: unique on BOTH keys independently. */
+  function expectUniqueOnBothKeys(volumes: SeriesFileVolume[]): void {
+    const uuids = volumes.map((v) => v.volume_uuid);
+    const titleKeys = volumes.map((v) => normalizeVolumeTitleKey(v.volume_title));
+    expect(new Set(uuids).size).toBe(volumes.length);
+    expect(new Set(titleKeys).size).toBe(volumes.length);
+  }
+
+  it('classifies a derived-uuid zero-content entry as no-metadata, and nothing else', () => {
+    expect(isMetadataLessEntry('One Piece', placeholderEntry('Vol 1'))).toBe(true);
+    // A real mokuro-derived uuid, even with zero content, is not a placeholder.
+    expect(
+      isMetadataLessEntry('One Piece', {
+        volume_uuid: 'real-uuid',
+        volume_title: 'Vol 1',
+        page_count: 0,
+        character_count: 0,
+        mokuro_version: ''
+      })
+    ).toBe(false);
+    // An installed IMAGE-ONLY volume also carries the derived uuid (it has no
+    // mokuro to name it) but its pages were measured — real, not a placeholder.
+    expect(
+      isMetadataLessEntry('One Piece', {
+        volume_uuid: generateDeterministicUUID('One Piece/Vol 1'),
+        volume_title: 'Vol 1',
+        page_count: 42,
+        character_count: 0,
+        mokuro_version: ''
+      })
+    ).toBe(false);
+  });
+
+  it('REPLACES the published no-metadata entry when the installed row brings the real uuid', () => {
+    // The reported bug: the placeholder was minted with a derived uuid, the
+    // real entry carries the mokuro's own uuid, and a merge keyed by uuid
+    // alone kept BOTH. The folded title is the join.
+    const existing = fileWith([placeholderEntry('Vol 1', { archive_size: 193_000_000 })]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()], // installed, volume_uuid 'vol-1', title 'Vol 1'
+      existing
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({
+      volume_uuid: 'vol-1',
+      volume_title: 'Vol 1',
+      page_count: 2,
+      character_count: 123,
+      mokuro_version: '0.2.1',
+      // Inherited across the uuid change: the placeholder learned the archive
+      // size from the listing, and the installed row (imported from disk)
+      // has no way to know it.
+      archive_size: 193_000_000
+    });
+  });
+
+  it('lets a metadata-only row replace a published no-metadata entry for the same file', () => {
+    // The row was measured from a real mokuro once (when it WAS installed);
+    // the placeholder never was. Real beats no-metadata even for a fill-rank
+    // row — this is the one published thing a metadata-only row may override.
+    const existing = fileWith([placeholderEntry('Vol 1')]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ metadata_only: true })],
+      existing
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0].volume_uuid).toBe('vol-1');
+  });
+
+  it('heals an already-doubled published file on the next build, in either order', () => {
+    for (const doubled of [
+      [placeholderEntry('Vol 1'), realEntry('vol-1-real', 'Vol 1')],
+      [realEntry('vol-1-real', 'Vol 1'), placeholderEntry('Vol 1')]
+    ]) {
+      const file = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [],
+        existing: fileWith(doubled)
+      })!;
+
+      expect(file.volumes).toHaveLength(1);
+      expect(file.volumes[0].volume_uuid).toBe('vol-1-real');
+    }
+  });
+
+  it('parseSeriesFile collapses a doubled file so every reader sees one entry per volume', () => {
+    for (const doubled of [
+      [placeholderEntry('Vol 1'), realEntry('vol-1-real', 'Vol 1')],
+      [realEntry('vol-1-real', 'Vol 1'), placeholderEntry('Vol 1')]
+    ]) {
+      const parsed = parseSeriesFile(JSON.parse(stringifySeriesFile(fileWith(doubled))))!;
+      expect(parsed.volumes).toHaveLength(1);
+      expect(parsed.volumes[0].volume_uuid).toBe('vol-1-real');
+    }
+  });
+
+  it('never lets two REAL entries survive on one title — the installed row wins', () => {
+    // A re-OCR minted a new uuid for the same archive; the published entry
+    // still carries the old one. Both are real, so the winner is rank order:
+    // the row measured on this device.
+    const existing = fileWith([realEntry('vol-1-old', 'Vol 1')]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ volume_uuid: 'vol-1-new' })],
+      existing
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0].volume_uuid).toBe('vol-1-new');
+  });
+
+  it('never lets a no-metadata rebuild claw back a real published entry', () => {
+    // The backfill re-listed an archive whose `.mokuro` sidecar has vanished
+    // and built an image-only entry for it. The published entry's counts were
+    // measured from a real mokuro; zero knowledge must not overwrite them.
+    const existing = fileWith([realEntry('vol-1-real', 'Vol 1')]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [],
+      existing,
+      cloudMeasuredVolumes: [placeholderEntry('Vol 1', { archive_size: 5 })]
+    })!;
+
+    expect(file.volumes).toEqual([realEntry('vol-1-real', 'Vol 1')]);
+  });
+
+  it('treats a RENAMED file as the same volume: uuid matches, the new title wins', () => {
+    // The user renamed the archive; the mokuro inside (and so the uuid) is
+    // unchanged. One volume, and the entry follows the current filename.
+    const existing = fileWith([realEntry('vol-1', 'Old Name')]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ volume_title: 'New Name' })], // volume_uuid 'vol-1'
+      existing,
+      cloudVolumeTitles: new Set(['New Name'])
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({ volume_uuid: 'vol-1', volume_title: 'New Name' });
+  });
+
+  it('collapses BOTH matches when a rename lands on a squatted title (multi-match)', () => {
+    // The incoming installed row matches entry A by uuid (the pre-rename
+    // entry) AND entry B by title (the no-metadata placeholder that was
+    // minted for the new filename before anyone read its mokuro). All three
+    // must collapse into ONE entry carrying the real uuid, the new title and
+    // the measured metadata.
+    const existing = fileWith([
+      realEntry('vol-1', 'Old Name'),
+      placeholderEntry('New Name', { archive_size: 7 })
+    ]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume({ volume_title: 'New Name' })], // volume_uuid 'vol-1'
+      existing,
+      cloudVolumeTitles: new Set(['New Name'])
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({
+      volume_uuid: 'vol-1',
+      volume_title: 'New Name',
+      page_count: 2,
+      character_count: 123
+    });
+    expectUniqueOnBothKeys(file.volumes);
+  });
+
+  it('heals a published file carrying an old-title AND a new-title entry for one uuid', () => {
+    // Both entries are real and there is no listing to consult at parse time,
+    // so the collapse just has to be deterministic and single: the first
+    // entry wins a pure tie, and the next build (which has the listing and
+    // the local rows) settles the title for good.
+    const parsed = parseSeriesFile(
+      JSON.parse(
+        stringifySeriesFile(
+          fileWith([realEntry('vol-1', 'Old Name'), realEntry('vol-1', 'New Name')])
+        )
+      )
+    )!;
+
+    expect(parsed.volumes).toHaveLength(1);
+    expect(parsed.volumes[0].volume_title).toBe('Old Name');
+  });
+
+  it('caching an import replaces the cached no-metadata entry — and never the reverse', () => {
+    // Arriving real entry supersedes the cached placeholder for the same file...
+    const healed = mergeSeriesFileForCache(
+      'One Piece',
+      fileWith([realEntry('vol-1-real', 'Vol 1')]),
+      fileWith([placeholderEntry('Vol 1')])
+    );
+    expect(healed.volumes).toHaveLength(1);
+    expect(healed.volumes[0].volume_uuid).toBe('vol-1-real');
+
+    // ...and an arriving placeholder must not claw back the cached real entry,
+    // even though the arriving file wins ties.
+    const kept = mergeSeriesFileForCache(
+      'One Piece',
+      fileWith([placeholderEntry('Vol 1')]),
+      fileWith([realEntry('vol-1-real', 'Vol 1')])
+    );
+    expect(kept.volumes).toHaveLength(1);
+    expect(kept.volumes[0].volume_uuid).toBe('vol-1-real');
+  });
+
+  it('holds the uniqueness invariant across a worst-case mixed merge', () => {
+    // A doubled existing file, a re-OCR'd pulled sidecar, a renamed installed
+    // row and a metadata-only fill all at once: whatever wins, no two
+    // surviving entries may share a uuid or a folded title.
+    const existing = fileWith([
+      placeholderEntry('Vol 1'),
+      realEntry('vol-1-old', 'Vol 1'),
+      realEntry('vol-2', 'Old Vol 2 Name'),
+      placeholderEntry('Vol 3')
+    ]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [
+        volume({ volume_uuid: 'vol-2', volume_title: 'Vol 2' }), // renamed, installed
+        volume({ volume_uuid: 'vol-3-real', volume_title: 'Vol 3', metadata_only: true })
+      ],
+      existing,
+      cloudMeasuredVolumes: [realEntry('vol-1-reocr', 'Vol 1')]
+    })!;
+
+    expectUniqueOnBothKeys(file.volumes);
+    expect(file.volumes.map((v) => v.volume_uuid).sort()).toEqual([
+      'vol-1-reocr',
+      'vol-2',
+      'vol-3-real'
+    ]);
+  });
+
+  it("carries the superseded entry's shelf nudge across the uuid change", () => {
+    // The offset describes the archive's cover geometry; when the real entry
+    // replaces the no-metadata one for the same file, the nudge follows the
+    // file instead of dying with the derived uuid.
+    const existing = fileWith([placeholderEntry('Vol 1', { offset: 5 })]);
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      existing
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({ volume_uuid: 'vol-1', offset: 5 });
   });
 });

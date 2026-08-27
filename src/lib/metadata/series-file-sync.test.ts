@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 
@@ -435,6 +436,33 @@ describe('series-file-sync', () => {
 
     const [, options = {}] = writeSeriesFile.mock.calls[0];
     expect(options.cloudMeasuredVolumes).toEqual([fresh]);
+  });
+
+  it('replaces an accumulated no-metadata entry when a later call brings the real mokuro uuid for the same file', async () => {
+    // Two render-demand resolutions in one debounce window can describe the
+    // SAME archive: an image-only fallback first (derived uuid, zero counts),
+    // then the real sidecar's entry (its own uuid). A by-uuid accumulator kept
+    // both — the exact doubled-entry bug — so the join is the folded title.
+    const placeholder = {
+      volume_uuid: generateDeterministicUUID('One Piece/Volume 1'),
+      volume_title: 'Volume 1',
+      page_count: 0,
+      character_count: 0,
+      mokuro_version: ''
+    };
+    const real = {
+      volume_uuid: 'real-uuid',
+      volume_title: 'Volume 1',
+      page_count: 12,
+      character_count: 300,
+      mokuro_version: '0.4.12'
+    };
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [placeholder] });
+    scheduleSeriesFileWrite('One Piece', { cloudMeasuredVolumes: [real] });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    const [, options = {}] = writeSeriesFile.mock.calls[0];
+    expect(options.cloudMeasuredVolumes).toEqual([real]);
   });
 
   it('does not let `cloudMeasuredVolumes` bleed the "last option wins" rule for duringBackupRun the other way either', async () => {

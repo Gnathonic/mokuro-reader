@@ -8,7 +8,12 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { isCbzFile } from '$lib/util/sync/syncable-file';
 import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
-import { hasSeriesFacts, isSeriesFilePath, type SeriesFileVolume } from './series-file';
+import {
+  createVolumeEntryMerger,
+  hasSeriesFacts,
+  isSeriesFilePath,
+  type SeriesFileVolume
+} from './series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { backfillNewlyLinkedSeries, backfillSeriesEntries } from './series-backfill';
 import {
@@ -449,10 +454,14 @@ export function scheduleSeriesFileWrite(seriesTitle: string, options?: ScheduleO
   const nextOptions: ScheduleOptions = { ...options };
   const priorEntries = pendingOptions.get(key)?.cloudMeasuredVolumes;
   if (priorEntries?.length || options?.cloudMeasuredVolumes?.length) {
-    const merged = new Map<string, SeriesFileVolume>();
-    for (const entry of priorEntries ?? []) merged.set(entry.volume_uuid, entry);
-    for (const entry of options?.cloudMeasuredVolumes ?? []) merged.set(entry.volume_uuid, entry);
-    nextOptions.cloudMeasuredVolumes = [...merged.values()];
+    // The shared merge rule (uuid OR folded title, real beats no-metadata),
+    // latest call winning ties — not a plain by-uuid map, so a later
+    // resolution that read the real mokuro supersedes an earlier no-metadata
+    // entry for the same archive instead of accumulating beside it.
+    const merger = createVolumeEntryMerger(seriesTitle);
+    for (const entry of priorEntries ?? []) merger.add(entry, 'fill');
+    for (const entry of options?.cloudMeasuredVolumes ?? []) merger.add(entry, 'replace');
+    nextOptions.cloudMeasuredVolumes = merger.values();
   }
   pendingOptions.set(key, nextOptions);
 
