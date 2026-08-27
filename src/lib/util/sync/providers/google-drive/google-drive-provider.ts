@@ -579,7 +579,12 @@ class GoogleDriveProvider implements SyncProvider {
         provider: 'google-drive',
         fileId: updated.id || file.fileId,
         path: normalizedNewPath,
-        modifiedTime: updated.modifiedTime || new Date().toISOString(),
+        // `fields=` above asks for modifiedTime explicitly, so the fallback is
+        // near-unreachable — but a fallback that fabricates a client time MUST
+        // carry the provisional flag, or a stamp built from it would publish a
+        // clock we invented (the exact defect the rename door closed).
+        modifiedTime: updated.modifiedTime || file.modifiedTime || new Date().toISOString(),
+        ...(updated.modifiedTime || file.modifiedTime ? {} : { modifiedTimeProvisional: true }),
         size: updated.size ? parseInt(updated.size, 10) : file.size,
         description: updated.description ?? file.description,
         parentId: updated.parents?.[0] || targetFolderId,
