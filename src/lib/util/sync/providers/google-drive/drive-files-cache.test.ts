@@ -14,11 +14,14 @@ vi.mock('../../folder-deduplicator', () => ({
 
 vi.mock('./google-drive-provider', () => ({
   googleDriveProvider: {
-    isAuthenticated: vi.fn(() => false)
+    isAuthenticated: vi.fn(() => false),
+    getFolderOperations: vi.fn(() => ({}))
   }
 }));
 
 import { driveApiClient } from './api-client';
+import { folderDeduplicator } from '../../folder-deduplicator';
+import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
 
 describe('driveFilesCache', () => {
@@ -200,5 +203,187 @@ describe('driveFilesCache series.json sidecar', () => {
     await driveFilesCache.fetch();
 
     expect(driveFilesCache.getAllFiles()).toEqual([]);
+  });
+});
+
+/**
+ * A whole-account fetch takes a snapshot when it starts paging and publishes
+ * it much later — thirteen `files.list` round trips on a 12,500-file library.
+ * What happens to everything that changed in between is not a detail: the app
+ * records its OWN uploads here (`uploadFile` → `cache.add`) so a just-written
+ * `<Series>/series.json` is visible before the next listing, and erasing those
+ * records does not merely lose information, it feeds a loop — the reconcile
+ * pass reads the cache, sees archives with no `series.json`, schedules the
+ * write again, the write uploads and re-adds, the next fetch erases it again.
+ */
+describe('driveFilesCache fetch/mutation interleaving', () => {
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+  });
+
+  /** The listing as it stood when this fetch started paging — no series.json. */
+  const LISTING_WITHOUT_SIDECAR = [
+    { id: 'reader-root', name: 'mokuro-reader', mimeType: FOLDER_MIME },
+    { id: 'series-1', name: 'Dr Stone', mimeType: FOLDER_MIME, parents: ['reader-root'] },
+    {
+      id: 'cbz-1',
+      name: 'Volume 1.cbz',
+      mimeType: 'application/x-cbz',
+      parents: ['series-1'],
+      modifiedTime: '2026-08-25T00:00:00.000Z',
+      size: '100'
+    }
+  ];
+
+  /**
+   * A fetch whose paging is still in flight, so a test can mutate the cache
+   * at exactly the moment the real hazard occurs.
+   */
+  function pendingFetch(): { finish: (files: unknown[]) => void; done: Promise<void> } {
+    let release!: (files: unknown[]) => void;
+    const paged = new Promise<unknown[]>((resolve) => {
+      release = resolve;
+    });
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockReturnValue(paged);
+    const done = driveFilesCache.fetch();
+    return { finish: release, done };
+  }
+
+  it('keeps an upload that landed while the fetch was paging', async () => {
+    const { finish, done } = pendingFetch();
+
+    // The write this app made itself, mid-fetch — the exact thing
+    // `uploadFile` records so the reconcile pass can see it.
+    driveFilesCache.add('Dr Stone/series.json', {
+      provider: 'google-drive',
+      fileId: 'series-file-1',
+      name: 'series.json',
+      path: 'Dr Stone/series.json',
+      modifiedTime: '2026-08-25T01:00:00.000Z',
+      size: 60
+    });
+
+    finish(LISTING_WITHOUT_SIDECAR);
+    await done;
+
+    expect(driveFilesCache.get('Dr Stone/series.json')?.fileId).toBe('series-file-1');
+    // ...and the listing's own files are still there: the replay adds, it does
+    // not replace.
+    expect(driveFilesCache.get('Dr Stone/Volume 1.cbz')?.fileId).toBe('cbz-1');
+  });
+
+  it('discards a listing whose account was cleared mid-fetch', async () => {
+    const { finish, done } = pendingFetch();
+
+    // Logout / provider switch, both of which go through `clear()`.
+    driveFilesCache.clear();
+
+    finish(LISTING_WITHOUT_SIDECAR);
+    await done;
+
+    expect(driveFilesCache.getAllFiles()).toEqual([]);
+  });
+
+  it('publishes the SAME map identity when the listing has not changed', async () => {
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      LISTING_WITHOUT_SIDECAR
+    );
+
+    await driveFilesCache.fetch();
+    let first: unknown;
+    driveFilesCache.store.subscribe((value) => {
+      first = value;
+    })();
+
+    await driveFilesCache.fetch();
+    let second: unknown;
+    driveFilesCache.store.subscribe((value) => {
+      second = value;
+    })();
+
+    // Identity IS the signal `catalog/index.ts` re-mints every placeholder on.
+    expect(second).toBe(first);
+  });
+
+  it('publishes a NEW map identity when the listing really moved', async () => {
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      LISTING_WITHOUT_SIDECAR
+    );
+    await driveFilesCache.fetch();
+    let first: unknown;
+    driveFilesCache.store.subscribe((value) => {
+      first = value;
+    })();
+
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      ...LISTING_WITHOUT_SIDECAR,
+      {
+        id: 'cbz-2',
+        name: 'Volume 2.cbz',
+        mimeType: 'application/x-cbz',
+        parents: ['series-1'],
+        modifiedTime: '2026-08-25T00:00:00.000Z',
+        size: '200'
+      }
+    ]);
+    await driveFilesCache.fetch();
+    let second: unknown;
+    driveFilesCache.store.subscribe((value) => {
+      second = value;
+    })();
+
+    expect(second).not.toBe(first);
+    expect(driveFilesCache.get('Dr Stone/Volume 2.cbz')?.fileId).toBe('cbz-2');
+  });
+});
+
+/**
+ * `runDeduplication` re-enters `fetchAllFiles` whenever a merge happened. That
+ * is fine while dedup converges, and an unbounded whole-account refetch engine
+ * when duplicate folders keep being created between passes — a Drive-only
+ * failure mode, since no other provider runs a dedup pass at all.
+ */
+describe('driveFilesCache dedup refetch', () => {
+  it('stops re-entering the fetch once the merge count refuses to settle', async () => {
+    driveFilesCache.clear();
+    const listFiles = driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>;
+    listFiles.mockReset();
+    let fetches = 0;
+    listFiles.mockImplementation(async () => {
+      fetches += 1;
+      return [];
+    });
+    (googleDriveProvider.isAuthenticated as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      true
+    );
+    // Every pass reports a merge, exactly as an account whose duplicates are
+    // recreated as fast as they are merged would — until a HARD CEILING well
+    // above the bound lets the chain terminate. Without that ceiling an
+    // unbounded chain does not fail this test, it hangs the whole suite
+    // forever, which is a worse way to learn the same thing.
+    const RUNAWAY_CEILING = 10;
+    (folderDeduplicator.deduplicateAll as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => ({
+        groupsMerged: fetches > RUNAWAY_CEILING ? 0 : 1,
+        foldersDeleted: 1,
+        itemsMoved: 1
+      })
+    );
+
+    await driveFilesCache.fetch();
+    // Drain the fire-and-forget dedup chain (dynamic imports + microtasks).
+    for (let round = 0; round < RUNAWAY_CEILING + 5; round++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    // 1 initial + at most MAX_DEDUP_REFETCHES re-entries. Unbounded before —
+    // this ran to the ceiling instead.
+    expect(fetches).toBeLessThanOrEqual(3);
+    // ...and the chain really did engage: a bound that never fired would
+    // prove nothing.
+    expect(fetches).toBeGreaterThan(1);
   });
 });
