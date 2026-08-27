@@ -1,10 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [1.8.3] - 2026-08-26
 
 ### Fixed
 
-- Fixed Firefox downloads failing after ~30s from catalog/cloud (#177, #261)
+- Fixed Firefox downloads aborting after 30 seconds (#177, #261)
 
 ## [1.8.2] - 2026-07-09
 
