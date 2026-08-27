@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.3] - 2026-08-26
+
+### Fixed
+
+- Fixed Firefox downloads aborting after 30 seconds (#177, #261)
+
 ## [1.8.2] - 2026-07-09
 
 ### Fixed
