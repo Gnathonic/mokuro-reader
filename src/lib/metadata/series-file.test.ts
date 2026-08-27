@@ -58,6 +58,18 @@ function linkedMeta(): SeriesMetadata {
   } as unknown as SeriesMetadata;
 }
 
+/**
+ * The path a published file actually takes to a reader: the same
+ * serialize → parse that `readCloudSeriesFile` performs — including the
+ * parse-time HEAL of doubled entries. Fixtures for anything `existing`-shaped
+ * should come through here rather than be hand-built, so a test exercises
+ * what the healer really hands the build instead of a state that cannot
+ * reach it.
+ */
+function roundTrip(file: SeriesFile): SeriesFile {
+  return parseSeriesFile(JSON.parse(stringifySeriesFile(file)))!;
+}
+
 describe('volumeToIndexEntry', () => {
   it('copies only the index fields', () => {
     expect(volumeToIndexEntry(volume({ spine_width: 17 }))).toEqual({
@@ -794,8 +806,8 @@ describe('buildSeriesFile and cloudSidecarStamps (installed rows)', () => {
     expect(file.volumes[0].mokuro_modified).toBeUndefined();
   });
 
-  it('never inherits a stamp from the published copy the way archive_size does', () => {
-    const existing: SeriesFile = {
+  function publishedWithStamps(): SeriesFile {
+    return roundTrip({
       version: 2,
       series_title: 'One Piece',
       external_ids: {},
@@ -813,16 +825,41 @@ describe('buildSeriesFile and cloudSidecarStamps (installed rows)', () => {
           mokuro_modified: 1
         }
       ]
-    };
+    });
+  }
+
+  it('prefers the listing snapshot over the stamps of the entry it displaces', () => {
     const file = buildSeriesFile({
       seriesTitle: 'One Piece',
       meta: undefined,
       localVolumes: [volume()],
-      existing
-      // No cloudSidecarStamps passed — nothing to stamp with.
+      existing: publishedWithStamps(),
+      cloudSidecarStamps: new Map([
+        ['vol 1', { mokuro_size: 4096, mokuro_modified: 1_700_000_000 }]
+      ])
     })!;
-    expect(file.volumes[0].mokuro_size).toBeUndefined();
-    expect(file.volumes[0].mokuro_modified).toBeUndefined();
+    expect(file.volumes[0].mokuro_size).toBe(4096);
+    expect(file.volumes[0].mokuro_modified).toBe(1_700_000_000);
+  });
+
+  it("inherits the displaced entry's stamps when no listing snapshot is available", () => {
+    // Publishing STAMPLESS would be strictly worse than publishing a
+    // possibly-behind stamp: a stampless entry is never stale
+    // (`isSidecarStale`), so staleness detection for the volume would never
+    // fire again on any device — while a behind stamp just triggers one
+    // self-correcting re-verify when the sidecar next moves. So with no
+    // listing to consult, the displaced entry's stamps ride through on the
+    // installed row, by the same merger inheritance that preserves
+    // `archive_size`.
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()],
+      existing: publishedWithStamps()
+      // No cloudSidecarStamps passed — the listing is not available here.
+    })!;
+    expect(file.volumes[0].mokuro_size).toBe(999);
+    expect(file.volumes[0].mokuro_modified).toBe(1);
   });
 });
 
@@ -1487,7 +1524,9 @@ describe('either-key volume identity (uuid OR folded title) — the doubled-entr
     // The reported bug: the placeholder was minted with a derived uuid, the
     // real entry carries the mokuro's own uuid, and a merge keyed by uuid
     // alone kept BOTH. The folded title is the join.
-    const existing = fileWith([placeholderEntry('Vol 1', { archive_size: 193_000_000 })]);
+    const existing = roundTrip(
+      fileWith([placeholderEntry('Vol 1', { archive_size: 193_000_000 })])
+    );
     const file = buildSeriesFile({
       seriesTitle: 'One Piece',
       meta: undefined,
@@ -1582,7 +1621,10 @@ describe('either-key volume identity (uuid OR folded title) — the doubled-entr
       cloudMeasuredVolumes: [placeholderEntry('Vol 1', { archive_size: 5 })]
     })!;
 
-    expect(file.volumes).toEqual([realEntry('vol-1-real', 'Vol 1')]);
+    // The measured CONTENT is protected — but the file fact the rebuild
+    // carried (the archive's currently-listed byte size) still lands on the
+    // surviving entry via the merger's field inheritance.
+    expect(file.volumes).toEqual([{ ...realEntry('vol-1-real', 'Vol 1'), archive_size: 5 }]);
   });
 
   it('treats a RENAMED file as the same volume: uuid matches, the new title wins', () => {
@@ -1700,7 +1742,7 @@ describe('either-key volume identity (uuid OR folded title) — the doubled-entr
     // The offset describes the archive's cover geometry; when the real entry
     // replaces the no-metadata one for the same file, the nudge follows the
     // file instead of dying with the derived uuid.
-    const existing = fileWith([placeholderEntry('Vol 1', { offset: 5 })]);
+    const existing = roundTrip(fileWith([placeholderEntry('Vol 1', { offset: 5 })]));
     const file = buildSeriesFile({
       seriesTitle: 'One Piece',
       meta: undefined,
@@ -1710,5 +1752,114 @@ describe('either-key volume identity (uuid OR folded title) — the doubled-entr
 
     expect(file.volumes).toHaveLength(1);
     expect(file.volumes[0]).toMatchObject({ volume_uuid: 'vol-1', offset: 5 });
+  });
+
+  it('still publishes archive_size, offset and cover stamps after the read healer collapsed a doubled file', () => {
+    // The REAL path to `existing` is readCloudSeriesFile → parseSeriesFile,
+    // and the parse HEALS the doubled file before buildSeriesFile ever sees
+    // it — a hand-built doubled `existing` fed straight to the build would
+    // pass even if that collapse destroyed these fields. The rescue must live
+    // inside the collapse itself, so this fixture takes the real
+    // serialize → parse path first.
+    const facts = {
+      archive_size: 193_000_000,
+      cover_size: 512,
+      cover_modified: 1_700_000_100,
+      offset: 5
+    };
+    for (const doubled of [
+      [realEntry('vol-1', 'Vol 1'), placeholderEntry('Vol 1', facts)],
+      [placeholderEntry('Vol 1', facts), realEntry('vol-1', 'Vol 1')]
+    ]) {
+      const existing = roundTrip(fileWith(doubled));
+      const file = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [],
+        existing
+      })!;
+
+      expect(file.volumes).toHaveLength(1);
+      expect(file.volumes[0]).toMatchObject({
+        volume_uuid: 'vol-1',
+        volume_title: 'Vol 1',
+        page_count: 180,
+        archive_size: 193_000_000,
+        cover_size: 512,
+        cover_modified: 1_700_000_100,
+        offset: 5
+      });
+    }
+  });
+
+  it('an installed row publishing over the parse-healed file keeps the inherited facts', () => {
+    const existing = roundTrip(
+      fileWith([
+        placeholderEntry('Vol 1', { archive_size: 193_000_000, offset: 5 }),
+        realEntry('vol-1', 'Vol 1')
+      ])
+    );
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [volume()], // installed vol-1 'Vol 1'; never measured its archive
+      existing
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    expect(file.volumes[0]).toMatchObject({
+      volume_uuid: 'vol-1',
+      character_count: 123,
+      archive_size: 193_000_000,
+      offset: 5
+    });
+  });
+
+  it("caching an import keeps the cached entry's file facts on the arriving winner", () => {
+    // The same gap, cache flavor: the arriving real entry supersedes the
+    // cached placeholder, and the placeholder's archive size and shelf nudge
+    // follow the FILE onto the winner instead of dying with the derived uuid.
+    const merged = mergeSeriesFileForCache(
+      'One Piece',
+      roundTrip(fileWith([realEntry('vol-1-real', 'Vol 1')])),
+      roundTrip(fileWith([placeholderEntry('Vol 1', { archive_size: 7, offset: 3 })]))
+    );
+
+    expect(merged.volumes).toHaveLength(1);
+    expect(merged.volumes[0]).toMatchObject({
+      volume_uuid: 'vol-1-real',
+      archive_size: 7,
+      offset: 3
+    });
+  });
+
+  it('parse keeps case-distinct titles apart — they coexist on case-sensitive providers', () => {
+    // `Vol 1.cbz` and `VOL 1.cbz` are two different files on a case-sensitive
+    // provider. The parse-time healer has no listing to ask, so it merges
+    // only what is provably the same volume — folding here would delete the
+    // entry of a file that still exists.
+    const parsed = roundTrip(fileWith([realEntry('vol-a', 'Vol 1'), realEntry('vol-b', 'VOL 1')]));
+
+    expect(parsed.volumes).toHaveLength(2);
+    expect(parsed.volumes.map((v) => v.volume_uuid).sort()).toEqual(['vol-a', 'vol-b']);
+  });
+
+  it('buildSeriesFile folds the case-drifted pair once the listing shows only one file', () => {
+    // The build site DOES know which files exist: its folded join collapses
+    // the pair, and the survivor stands for the one file the listing shows.
+    const existing = roundTrip(
+      fileWith([realEntry('vol-a', 'Vol 1'), realEntry('vol-b', 'VOL 1')])
+    );
+    const file = buildSeriesFile({
+      seriesTitle: 'One Piece',
+      meta: undefined,
+      localVolumes: [],
+      existing,
+      cloudVolumeTitles: new Set(['Vol 1'])
+    })!;
+
+    expect(file.volumes).toHaveLength(1);
+    // 'fill' order: the earlier entry wins the pure tie.
+    expect(file.volumes[0].volume_uuid).toBe('vol-a');
   });
 });
