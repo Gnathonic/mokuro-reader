@@ -11,7 +11,7 @@ import {
   parseCatalogFile,
   type CatalogFile
 } from './catalog-file';
-import { upsertFromSeriesFile } from './store';
+import { upsertManyFromSeriesFiles, type SeriesFileUpsert } from './store';
 
 /**
  * The read half of the root `catalog.json`: after every cloud listing (catalog
@@ -23,11 +23,12 @@ import { upsertFromSeriesFile } from './store';
  * - ONE download for the whole library, and none at all when the stamp matches,
  *   so a 1k-series library costs one listing and zero downloads on a normal
  *   launch.
- * - Facts go through `upsertFromSeriesFile`, which applies only strictly newer
- *   facts, never creates a record from a factless entry, and never schedules a
- *   write — so a refresh can never ping-pong into an upload. One entry at a
- *   time, deliberately: see the loop in `runRefresh` for why they must NOT
- *   share a transaction.
+ * - Facts go through `upsertManyFromSeriesFiles`, which applies only strictly
+ *   newer facts, never creates a record from a factless entry, and never
+ *   schedules a write — so a refresh can never ping-pong into an upload. The
+ *   whole file lands in ONE batched write, and a junk entry costs only itself:
+ *   see the note in `runRefresh` for why that is a batch and not a transaction
+ *   wrapped round per-entry upserts.
  * - Everything is best-effort: junk content is dropped with one warning, a
  *   failed download is skipped, and the run never rejects.
  * - A run is BOUND to the provider whose listing produced it: between the fetch
@@ -117,35 +118,64 @@ async function runRefresh(
     modifiedTime: stamp.modifiedTime
   };
 
-  // DO NOT wrap this loop in a `db.transaction`.
+  // ONE batched write, never a `db.transaction` around per-entry upserts.
   //
-  // It looks like an easy win — `series_metadata` backs a liveQuery the catalog
-  // joins, so one commit per entry means one card-set rebuild per entry — but it
-  // is a data-loss bug. `upsertFromSeriesFile` opens its OWN `rw` transaction on
-  // this table (store.ts), and Dexie joins that to any enclosing one as a
-  // SUB-transaction. A sub-transaction that rejects aborts its parent
-  // ("Transaction committed too early"), and catching the error here does not
-  // save it: the parent zone is already dead. One malformed entry would roll
-  // back every entry written before it and fail every entry after it, silently
-  // discarding the whole refresh's facts — strictly worse than the per-entry
-  // cost it was meant to save.
+  // Those are two different things, and only one of them is safe. Wrapping calls
+  // to `upsertFromSeriesFile` in an enclosing `db.transaction` is a data-loss
+  // bug: it opens its OWN `rw` transaction on this table (store.ts), which Dexie
+  // joins to any enclosing one as a SUB-transaction, and a sub-transaction that
+  // rejects aborts its parent ("Transaction committed too early") — catching the
+  // error here would not save it, because the parent zone is already dead. One
+  // malformed entry would roll back every entry written before it and fail every
+  // entry after it, discarding the whole refresh's facts.
   //
-  // The cost is small in practice anyway: `upsertFromSeriesFile` only applies
-  // strictly-newer facts, so in the steady state almost every call returns false
-  // without writing, and a transaction that writes nothing emits nothing.
+  // `upsertManyFromSeriesFiles` is not that. It does the merge for every entry
+  // against ONE read and writes them with ONE `bulkPut`, opening a single
+  // transaction of its own and nesting nothing — so a bad entry is dropped from
+  // the batch (per-entry `try`, reported below) instead of taking the batch down
+  // with it.
+  //
+  // WHY IT IS WORTH DOING. The old defence of the per-entry loop was that the
+  // cost is small because `upsertFromSeriesFile` only applies strictly-newer
+  // facts, so almost every call writes nothing and a transaction that writes
+  // nothing emits nothing. True — in the STEADY STATE, and irrelevant in the case
+  // that actually hurts. On a first sync (or the first sync after a new device
+  // publishes the library) EVERY entry is new, so every entry writes, and
+  // `series_metadata` backs a liveQuery the catalog joins: Dexie broadcasts
+  // `storagemutated` once per readwrite COMMIT, so on a ~1k-series library that
+  // was ~1k commits, each re-running the catalog's O(V) derive over every volume
+  // in the library. Batched, one sync costs one commit and one derive.
   //
   // Covered by `catalog-index-sync.facts.test.ts`, which runs this against a
-  // real Dexie rather than a stubbed one.
+  // real Dexie rather than a stubbed one — both the commit count and the
+  // one-bad-entry-costs-only-itself property.
+  const reportEntryError = (seriesTitle: string, error: unknown) => {
+    console.warn(`[catalog-index-sync] could not apply the facts for '${seriesTitle}':`, error);
+  };
+
+  const upserts: SeriesFileUpsert[] = [];
   for (const entry of parsed.series) {
     try {
       // Facts only, strictly-newer, factless entries never create or unlink.
-      await upsertFromSeriesFile(entry.series_title, catalogEntryToSeriesFile(entry));
+      upserts.push({
+        seriesTitle: entry.series_title,
+        file: catalogEntryToSeriesFile(entry)
+      });
     } catch (error) {
-      console.warn(
-        `[catalog-index-sync] could not apply the facts for '${entry.series_title}':`,
-        error
-      );
+      // Per entry here too, not one `map`: lifting an entry into a `SeriesFile`
+      // is the other place a junk entry can throw, and a `map` would lose the
+      // whole batch to it.
+      reportEntryError(entry.series_title, error);
     }
+  }
+
+  try {
+    await upsertManyFromSeriesFiles(upserts, reportEntryError);
+  } catch (error) {
+    // The batch opens a transaction; if that itself fails there are no facts to
+    // apply, but the NAMES below are still worth caching — the catalog can list
+    // and search a series whose facts did not land.
+    console.warn('[catalog-index-sync] could not apply the catalog facts:', error);
   }
 
   try {

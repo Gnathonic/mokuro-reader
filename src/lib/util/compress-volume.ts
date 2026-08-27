@@ -8,6 +8,7 @@ import {
   stringifySeriesFile
 } from '$lib/metadata/series-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 
 // Re-exported for existing importers (volume-sidecars, zip, tests).
@@ -154,36 +155,17 @@ let workerDb: Dexie | null = null;
  */
 function getDatabase(): Dexie {
   if (!workerDb) {
-    workerDb = new Dexie('mokuro_v3');
-    // Must mirror CatalogDexieV3's schema (src/lib/catalog/db-v3.ts) exactly —
-    // same version numbers, same store definitions. This is a SEPARATE Dexie
-    // connection to the same on-disk `mokuro_v3` database, opened from a Web
-    // Worker; nothing enforces the two schemas staying in sync mechanically
-    // (see compress-volume.db-mirror.test.ts for the regression test that
-    // would catch a drift). Two ways this breaks if they diverge:
-    //   - declaring an older version than what's on disk throws VersionError
-    //     on open (loud).
-    //   - declaring a newer version than what's on disk, but with a smaller
-    //     store set, makes Dexie treat the missing stores as "added since",
-    //     wiping any existing rows in them (silent data loss — confirmed by
-    //     reproduction while fixing this in Task 2 fix-round-1: a worker
-    //     mirror stuck on an old table list emptied `catalog_index` and
-    //     `cloud_covers` the moment it opened after the main schema).
-    // Whoever changes db-v3.ts's schema must update this block in lockstep.
-    workerDb.version(1).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid'
-    });
-    workerDb.version(2).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid',
-      series_metadata: 'series_key',
-      series_index: 'series_key',
-      catalog_index: 'id',
-      cloud_covers: '[account_scope+path], cached_at'
-    });
+    // A SEPARATE Dexie connection to the same on-disk database `CatalogDexieV3`
+    // (src/lib/catalog/db-v3.ts) owns, opened from a Web Worker. It takes the
+    // schema from the shared declaration rather than restating it: two
+    // hand-written ladders for one database have no mechanical guard, and a
+    // divergence between them is silent data loss (see `db-schema.ts`).
+    //
+    // `db-schema.ts` imports nothing at runtime, so this does NOT pull the
+    // main-thread graph `db-v3.ts` carries ($app/environment, the progress
+    // tracker, the thumbnail generator) into the Worker bundle.
+    workerDb = new Dexie(MOKURO_DB_NAME);
+    declareMokuroSchema(workerDb);
   }
   return workerDb;
 }

@@ -15,6 +15,7 @@ import {
   updateSeriesMetadata,
   unlinkSeries,
   upsertFromSeriesFile,
+  upsertManyFromSeriesFiles,
   moveSeriesMetadataKey,
   getAllSeriesMetadata,
   replaceAllSeriesMetadata,
@@ -801,5 +802,72 @@ describe('the tracking unit as a shared fact', () => {
       })
     );
     expect((await getSeriesMetadataForTitle('One Piece'))?.unit).toBe('chapters');
+  });
+});
+
+/**
+ * The batched form. The merge rules themselves are `mergeSeriesFileInto`'s, and
+ * every one of them is already covered above through `upsertFromSeriesFile`
+ * (which is now a thin read/merge/write around the same function) — so what is
+ * left to prove here is the wiring the batch adds on top: that it resolves each
+ * entry against the row ALREADY STORED, and that entries in one batch see each
+ * other rather than racing as two rows in one write.
+ *
+ * The commit bound and the per-entry error isolation are asserted end-to-end,
+ * against the real catalog refresh, in `catalog-index-sync.facts.test.ts`.
+ */
+describe('upsertManyFromSeriesFiles', () => {
+  beforeEach(async () => {
+    await (db as any).table('series_metadata').clear();
+  });
+
+  function file(seriesTitle: string, anilist: number, updated_at: string): SeriesFile {
+    return {
+      version: 2,
+      series_title: seriesTitle,
+      external_ids: { anilist },
+      titles: {},
+      synonyms: [],
+      updated_at,
+      volumes: []
+    };
+  }
+
+  it('applies each entry against the row already stored, newest facts winning', async () => {
+    await upsertFromSeriesFile('One Piece', file('One Piece', 1, '2026-05-01T00:00:00.000Z'));
+    await upsertFromSeriesFile('Berserk', file('Berserk', 2, '2026-05-01T00:00:00.000Z'));
+
+    const written = await upsertManyFromSeriesFiles([
+      // Older than what is stored: must not apply.
+      { seriesTitle: 'One Piece', file: file('One Piece', 99, '2020-01-01T00:00:00.000Z') },
+      // Newer: must apply.
+      { seriesTitle: 'Berserk', file: file('Berserk', 42, '2026-06-01T00:00:00.000Z') },
+      // Unknown to this library: must be created.
+      { seriesTitle: 'Vinland Saga', file: file('Vinland Saga', 7, '2026-06-01T00:00:00.000Z') }
+    ]);
+
+    expect(written).toBe(2);
+    expect((await getSeriesMetadataForTitle('One Piece'))?.external_ids.anilist).toBe(1);
+    expect((await getSeriesMetadataForTitle('Berserk'))?.external_ids.anilist).toBe(42);
+    expect((await getSeriesMetadataForTitle('Vinland Saga'))?.external_ids.anilist).toBe(7);
+  });
+
+  it('merges two entries for the same series onto each other, not against each other', async () => {
+    // Same normalized key, in one batch. Resolved in order against the running
+    // result — so the older one loses to the newer whichever way round they come.
+    const written = await upsertManyFromSeriesFiles([
+      { seriesTitle: 'One Piece', file: file('One Piece', 5, '2026-06-01T00:00:00.000Z') },
+      { seriesTitle: 'ONE PIECE', file: file('ONE PIECE', 6, '2020-01-01T00:00:00.000Z') }
+    ]);
+
+    // One row written, not two racing puts.
+    expect(written).toBe(1);
+    expect((await getSeriesMetadataForTitle('One Piece'))?.external_ids.anilist).toBe(5);
+    expect(await (db as any).table('series_metadata').count()).toBe(1);
+  });
+
+  it('writes nothing at all for an empty batch', async () => {
+    expect(await upsertManyFromSeriesFiles([])).toBe(0);
+    expect(await (db as any).table('series_metadata').count()).toBe(0);
   });
 });

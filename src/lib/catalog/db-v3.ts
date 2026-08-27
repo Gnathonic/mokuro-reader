@@ -9,6 +9,7 @@ import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { naturalSort } from '$lib/util/natural-sort';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { MOKURO_DB_NAME, declareMokuroSchema } from './db-schema';
 
 export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;
@@ -19,47 +20,13 @@ export class CatalogDexieV3 extends Dexie {
   catalog_index!: Table<CatalogIndexRecord>;
   cloud_covers!: Table<CloudCover>;
 
-  constructor(dbName: string = 'mokuro_v3') {
+  constructor(dbName: string = MOKURO_DB_NAME) {
     super(dbName);
 
-    // v1: the shipped schema — three tables, thumbnails inlined in volumes.
-    // This is the only version any released build has written, so it must stay
-    // exactly as-is for every existing user database to upgrade from.
-    this.version(1).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid'
-    });
-
-    // v2: everything the series-metadata work adds, in one step.
-    //
-    // Collapsed deliberately: `series_metadata`, `series_index` and
-    // `catalog_index` were separate versions during development but never
-    // shipped, so no database exists at those intermediate versions and the
-    // steps between them are fiction. A released client upgrades 1 -> 2 once
-    // and gets all four new tables.
-    //
-    // `catalog_index` holds exactly ONE row, at the fixed key `'catalog'`: the
-    // root `catalog.json` is a single document, fetched whole and read whole, so
-    // it is cached whole rather than shredded into a row per series.
-    //
-    // `cloud_covers` holds ONLY the thumbnail blob (+ dimensions) for a cloud
-    // volume the user has neither installed nor read, keyed by account + path
-    // because providers expose no uuid for a file the client has not opened, and
-    // the same path under a different account is a different file. Everything
-    // else a cloud card needs — title, counts, the cover sidecar's own
-    // size/modified stamps — already lives in the cached `series_index` row for
-    // that series, so this table carries no other field and needs no secondary
-    // index: a read is always "these exact paths for this account."
-    this.version(2).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid',
-      series_metadata: 'series_key',
-      series_index: 'series_key',
-      catalog_index: 'id',
-      cloud_covers: '[account_scope+path], cached_at'
-    });
+    // The one declaration, shared with every other connection to this database
+    // (the export Worker's in `compress-volume.ts`, the test fixtures). See
+    // `db-schema.ts` for what a divergence costs.
+    declareMokuroSchema(this);
   }
 
   async processThumbnails(batchSize: number = 5): Promise<void> {

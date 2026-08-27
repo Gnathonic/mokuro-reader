@@ -14,6 +14,7 @@ configure({ useWebWorkers: false });
 import { compressVolumeFromDb } from './compress-volume';
 import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
+import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {
@@ -51,22 +52,11 @@ const volume = {
 beforeAll(async () => {
   ({ Blob: NodeBlob } = (await import(/* @vite-ignore */ NODE_BUFFER)) as { Blob: typeof Blob });
 
-  // Same name and schema `compress-volume`'s own worker-side handle opens.
-  db = new Dexie('mokuro_v3');
-  db.version(1).stores({
-    volumes: 'volume_uuid, series_uuid, series_title',
-    volume_ocr: 'volume_uuid',
-    volume_files: 'volume_uuid'
-  });
-  db.version(2).stores({
-    volumes: 'volume_uuid, series_uuid, series_title',
-    volume_ocr: 'volume_uuid',
-    volume_files: 'volume_uuid',
-    series_metadata: 'series_key',
-    series_index: 'series_key',
-    catalog_index: 'id',
-    cloud_covers: '[account_scope+path], cached_at'
-  });
+  // Same name and schema `compress-volume`'s own worker-side handle opens —
+  // taken from the one shared declaration rather than restated, so this fixture
+  // cannot drift out from under the code it is testing.
+  db = new Dexie(MOKURO_DB_NAME);
+  declareMokuroSchema(db);
   await db.open();
 });
 

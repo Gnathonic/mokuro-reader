@@ -1,16 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
+// The app's real schema under a private database name. Declared from the shared
+// definition rather than a hand-written subset: a fixture that quietly holds a
+// different table set from production is a test that stops testing production.
 vi.mock('$lib/catalog/db', async () => {
   const { default: Dexie } = await import('dexie');
+  const { declareMokuroSchema } = await import('$lib/catalog/db-schema');
   const db: any = new Dexie('volume-sidecars-test');
-  db.version(1).stores({
-    volumes: 'volume_uuid, series_uuid, series_title',
-    volume_ocr: 'volume_uuid',
-    volume_files: 'volume_uuid',
-    series_metadata: 'series_key',
-    series_index: 'series_key'
-  });
+  declareMokuroSchema(db);
   return { db };
 });
 

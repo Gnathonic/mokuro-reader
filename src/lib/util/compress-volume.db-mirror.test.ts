@@ -64,41 +64,96 @@ describe('compress-volume worker DB mirror', () => {
 });
 
 /**
- * The mechanical half of the same guard. The behavioural test above proves the
- * mirror does not WIPE a table, but it cannot see a table whose primary key or
- * indexes drifted — the two connections would simply file rows under different
- * key paths, and the damage shows up later as reads that find nothing. So:
- * compare the two independently-written version ladders directly.
+ * The mechanical half of the same guard.
+ *
+ * The behavioural test above proves the worker connection does not WIPE a
+ * table, but it cannot see a table whose PRIMARY KEY or index list drifted at
+ * the SAME version number: neither connection complains, they simply file rows
+ * under different key paths, and the damage surfaces later as reads that find
+ * nothing. That divergence used to be possible because the ladder was written
+ * out twice; it is not any more, because `db-schema.ts` states it once and both
+ * connections apply it (`declareMokuroSchema`).
+ *
+ * So these two tests guard the only remaining ways back in:
+ *
+ * 1. a hand-written `.version(n).stores({...})` ladder reappearing next to
+ *    either connection — which is what would re-create two sources of truth;
+ * 2. the shared declaration itself changing a primary key or an index list,
+ *    which is a database migration rather than an edit, and must not happen by
+ *    accident. Asserted against a signature spelled out here independently, so
+ *    editing the schema alone cannot make its own test agree with it.
  *
  * Vite reads the sources as text at transform time — no node:fs, so this runs
  * the same way under vitest as it would in any browser-target runner.
  */
-const SOURCES = import.meta.glob('/src/lib/{catalog/db-v3,util/compress-volume}.ts', {
-  query: '?raw',
-  import: 'default',
-  eager: true
-}) as Record<string, string>;
+const SOURCES = import.meta.glob(
+  '/src/lib/{catalog/db-v3,catalog/migration/migrate,util/compress-volume}.ts',
+  { query: '?raw', import: 'default', eager: true }
+) as Record<string, string>;
 
-function schemaLadder(path: string): string[] {
-  const source = SOURCES[path];
-  if (source === undefined) throw new Error(`no source text for ${path}`);
-  return [...source.matchAll(/\.version\((\d+)\)\.stores\(\{([\s\S]*?)\}\)/g)].map(
-    ([, version, body]) => `v${version} {${body.replace(/\s+/g, ' ').trim()}}`
-  );
+/** A literal `.version(<number>).stores(` — the thing that must appear once, in db-schema.ts. */
+const LITERAL_LADDER = /\.version\(\s*\d+\s*\)\s*\.stores\(/;
+
+function source(path: string): string {
+  const text = SOURCES[path];
+  if (text === undefined) throw new Error(`no source text for ${path}`);
+  return text;
 }
 
-describe('compress-volume worker DB schema mirror', () => {
-  const main = schemaLadder('/src/lib/catalog/db-v3.ts');
-  const mirror = schemaLadder('/src/lib/util/compress-volume.ts');
+const MOKURO_DB_CONNECTIONS = ['/src/lib/catalog/db-v3.ts', '/src/lib/util/compress-volume.ts'];
 
-  it('finds both version ladders (guards against a broken scanner)', () => {
-    // Without this a regex that matched nothing would make [] === [] pass.
-    expect(main).toHaveLength(2);
-    expect(mirror).toHaveLength(2);
-    expect(main.join('\n')).toContain('catalog_index');
+describe('mokuro_v3 has exactly one schema declaration', () => {
+  it('matches a real hand-written ladder (guards against a broken scanner)', () => {
+    // Positive control: `migrate.ts` legitimately declares literal ladders for
+    // the LEGACY `mokuro` database. Without this, a glob that silently returned
+    // nothing — or a regex that matched nothing — would make both assertions
+    // below pass vacuously.
+    const legacy = source('/src/lib/catalog/migration/migrate.ts');
+    expect(legacy).toMatch(LITERAL_LADDER);
+    expect([...legacy.matchAll(new RegExp(LITERAL_LADDER, 'g'))]).toHaveLength(2);
   });
 
-  it('declares exactly the same version ladder as db-v3.ts', () => {
-    expect(mirror).toEqual(main);
+  it.each(MOKURO_DB_CONNECTIONS)('%s declares no ladder of its own', (path) => {
+    expect(source(path)).not.toMatch(LITERAL_LADDER);
+  });
+
+  it.each(MOKURO_DB_CONNECTIONS)('%s takes the shared declaration', (path) => {
+    expect(source(path)).toContain('declareMokuroSchema(');
+  });
+});
+
+/**
+ * The live schema Dexie derives from the shared declaration, as
+ * `store: <primary key> [<indexes>]`. Read off the opened connection rather
+ * than off `MOKURO_DB_SCHEMA`, so a typo Dexie parses differently than it reads
+ * still shows up here.
+ */
+function schemaSignature(db: Dexie): string[] {
+  return db.tables
+    .map((table) => {
+      const indexes = table.schema.indexes.map((index) => index.src).sort();
+      return `${table.name}: ${table.schema.primKey.src} [${indexes.join(', ')}]`;
+    })
+    .sort();
+}
+
+describe('the shared mokuro_v3 schema', () => {
+  it('has exactly these stores, primary keys and indexes', async () => {
+    const db = new CatalogDexieV3('mokuro_v3_schema_signature_test');
+    await db.open();
+    try {
+      expect(schemaSignature(db)).toEqual([
+        'catalog_index: id []',
+        'cloud_covers: [account_scope+path] [cached_at]',
+        'series_index: series_key []',
+        'series_metadata: series_key []',
+        'volume_files: volume_uuid []',
+        'volume_ocr: volume_uuid []',
+        'volumes: volume_uuid [series_title, series_uuid]'
+      ]);
+    } finally {
+      db.close();
+      await Dexie.delete('mokuro_v3_schema_signature_test');
+    }
   });
 });

@@ -23,9 +23,12 @@ vi.mock('$lib/metadata/catalog-index', async () => {
   };
 });
 
-const upsertFromSeriesFile = vi.fn(async (_title: string, _file: unknown) => true);
+const upsertManyFromSeriesFiles = vi.fn(async (entries: { seriesTitle: string }[]) => {
+  return entries.length;
+});
 vi.mock('$lib/metadata/store', () => ({
-  upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
+  upsertManyFromSeriesFiles: (entries: { seriesTitle: string }[]) =>
+    upsertManyFromSeriesFiles(entries)
 }));
 
 /**
@@ -133,12 +136,22 @@ describe('refreshCatalogIndex', () => {
       size: 100,
       modifiedTime: '2026-08-23T00:00:00.000Z'
     });
-    expect(upsertFromSeriesFile).toHaveBeenCalledTimes(2);
-    // Applied as a facts-only SeriesFile, so store.ts owns the factless rules.
-    expect(upsertFromSeriesFile).toHaveBeenCalledWith(
-      'Dr Stone (HD Scan)',
-      expect.objectContaining({ version: 2, volumes: [], updated_at: '2026-08-18T19:36:24.324Z' })
-    );
+    // ONE batched call for the whole file, not one per series: `series_metadata`
+    // backs a liveQuery the catalog joins, so a commit per entry is a full
+    // catalog re-derive per entry. The commit count itself is asserted against a
+    // real Dexie in `catalog-index-sync.facts.test.ts`.
+    expect(upsertManyFromSeriesFiles).toHaveBeenCalledTimes(1);
+    const batch = upsertManyFromSeriesFiles.mock.calls[0][0];
+    expect(batch.map((e) => e.seriesTitle)).toEqual(['Dr Stone (HD Scan)', 'Bare Folder']);
+    // Applied as facts-only SeriesFiles, so store.ts owns the factless rules.
+    expect(batch[0]).toEqual({
+      seriesTitle: 'Dr Stone (HD Scan)',
+      file: expect.objectContaining({
+        version: 2,
+        volumes: [],
+        updated_at: '2026-08-18T19:36:24.324Z'
+      })
+    });
   });
 
   it('does nothing when the cached stamp already matches', async () => {
@@ -186,7 +199,7 @@ describe('refreshCatalogIndex', () => {
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
 
     expect(putCatalogIndex).not.toHaveBeenCalled();
-    expect(upsertFromSeriesFile).not.toHaveBeenCalled();
+    expect(upsertManyFromSeriesFiles).not.toHaveBeenCalled();
   });
 
   it('does nothing when the listing has no catalog.json (a bare share)', async () => {

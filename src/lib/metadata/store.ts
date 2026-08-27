@@ -306,58 +306,186 @@ export async function upsertFromSeriesFile(
   const key = normalizeSeriesKey(seriesTitle);
   return db.transaction('rw', db.series_metadata, async () => {
     const existing = await db.series_metadata.get(key);
-    // No local facts stamp = no local opinion, so any sidecar with facts applies.
-    const localStamp = existing ? factsStamp(existing) : undefined;
-    const stampWins = localStamp === undefined || localStamp < file.updated_at;
-    // Neither side has facts = there are no facts to apply, so the facts branch
-    // (and the `facts_updated_at` stamp it writes) is skipped entirely. This
-    // covers both an index-only file for a series we hold no record for —
-    // creating an empty record from it would publish that emptiness — and a
-    // repeat visit to an offsets-only file, which must not mint a facts clock
-    // out of the file's epoch stamp.
-    const applyFacts =
-      stampWins && (hasSeriesFacts(file) || (!!existing && hasSeriesFacts(existing)));
-    // Neither side has facts, but this library HAS had an opinion before (it
-    // unlinked at some point) and the file's is newer: adopt the newer clock.
-    // Without this, a factless relay device strands somebody else's unlink —
-    // A unlinks at T2, B is factless at T1 so it applies nothing and keeps
-    // republishing T1, and C (linked at T1.5) compares `T1.5 < T1` → false and
-    // never learns about the unlink. A record with NO clock still mints none:
-    // it has never had an opinion, so there is nothing to relay.
-    const adoptFactlessStamp =
-      !applyFacts && localStamp !== undefined && localStamp < file.updated_at;
-    if (!applyFacts && !adoptFactlessStamp) return false;
-
-    const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
-    const linked = hasAnyId(file.external_ids);
-    const linkChanged = !sameExternalIds(base.external_ids, file.external_ids);
-    const next = stripUndefined<SeriesMetadata>({
-      ...base,
-      series_key: key,
-      series_title: seriesTitle,
-      ...(applyFacts
-        ? {
-            external_ids: { ...file.external_ids },
-            titles: { ...file.titles },
-            synonyms: [...file.synonyms],
-            tag: file.tag,
-            unit: file.unit,
-            // The record's own stamp never moves backwards: `moveSeriesMetadataKey`
-            // resolves a rename collision by it, and lowering it to an older file
-            // stamp would let a pre-link copy of the record win that comparison.
-            updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
-            facts_updated_at: file.updated_at,
-            linked_at: linked
-              ? linkChanged
-                ? file.updated_at
-                : (base.linked_at ?? file.updated_at)
-              : undefined
-          }
-        : {}),
-      ...(adoptFactlessStamp ? { facts_updated_at: file.updated_at } : {})
-    });
+    const next = mergeSeriesFileInto(seriesTitle, file, existing);
+    if (!next) return false;
     await db.series_metadata.put(next);
     return true;
+  });
+}
+
+/**
+ * The merge behind `upsertFromSeriesFile`, as a PURE function: given the record
+ * as stored (or `undefined`), what the record becomes — or `undefined` when the
+ * file changes nothing and no write is owed.
+ *
+ * Split out from the write so a caller holding MANY files can resolve all of
+ * them against one read and write them in one batch (`upsertManyFromSeriesFiles`)
+ * instead of one transaction per file. Every rule the doc comment on
+ * `upsertFromSeriesFile` describes lives here; that function is now just the
+ * one-record read/merge/write around it.
+ *
+ * Throws for a malformed `file` (a non-array `synonyms`, a missing stamp) rather
+ * than guessing — the batch caller catches per entry, which is what keeps one
+ * junk entry from costing the others.
+ */
+export function mergeSeriesFileInto(
+  seriesTitle: string,
+  file: SeriesFile,
+  existing: SeriesMetadata | undefined
+): SeriesMetadata | undefined {
+  const key = normalizeSeriesKey(seriesTitle);
+  // No local facts stamp = no local opinion, so any sidecar with facts applies.
+  const localStamp = existing ? factsStamp(existing) : undefined;
+  const stampWins = localStamp === undefined || localStamp < file.updated_at;
+  // Neither side has facts = there are no facts to apply, so the facts branch
+  // (and the `facts_updated_at` stamp it writes) is skipped entirely. This
+  // covers both an index-only file for a series we hold no record for —
+  // creating an empty record from it would publish that emptiness — and a
+  // repeat visit to an offsets-only file, which must not mint a facts clock
+  // out of the file's epoch stamp.
+  const applyFacts =
+    stampWins && (hasSeriesFacts(file) || (!!existing && hasSeriesFacts(existing)));
+  // Neither side has facts, but this library HAS had an opinion before (it
+  // unlinked at some point) and the file's is newer: adopt the newer clock.
+  // Without this, a factless relay device strands somebody else's unlink —
+  // A unlinks at T2, B is factless at T1 so it applies nothing and keeps
+  // republishing T1, and C (linked at T1.5) compares `T1.5 < T1` → false and
+  // never learns about the unlink. A record with NO clock still mints none:
+  // it has never had an opinion, so there is nothing to relay.
+  const adoptFactlessStamp =
+    !applyFacts && localStamp !== undefined && localStamp < file.updated_at;
+  if (!applyFacts && !adoptFactlessStamp) return undefined;
+
+  const base = existing ?? createEmptySeriesMetadata(seriesTitle, file.updated_at);
+  const linked = hasAnyId(file.external_ids);
+  const linkChanged = !sameExternalIds(base.external_ids, file.external_ids);
+  return stripUndefined<SeriesMetadata>({
+    ...base,
+    series_key: key,
+    series_title: seriesTitle,
+    ...(applyFacts
+      ? {
+          external_ids: { ...file.external_ids },
+          titles: { ...file.titles },
+          synonyms: [...file.synonyms],
+          tag: file.tag,
+          unit: file.unit,
+          // The record's own stamp never moves backwards: `moveSeriesMetadataKey`
+          // resolves a rename collision by it, and lowering it to an older file
+          // stamp would let a pre-link copy of the record win that comparison.
+          updated_at: file.updated_at > base.updated_at ? file.updated_at : base.updated_at,
+          facts_updated_at: file.updated_at,
+          linked_at: linked
+            ? linkChanged
+              ? file.updated_at
+              : (base.linked_at ?? file.updated_at)
+            : undefined
+        }
+      : {}),
+    ...(adoptFactlessStamp ? { facts_updated_at: file.updated_at } : {})
+  });
+}
+
+/** One `series.json`-shaped set of facts and the series it belongs to. */
+export interface SeriesFileUpsert {
+  seriesTitle: string;
+  file: SeriesFile;
+}
+
+/**
+ * `upsertFromSeriesFile` for a whole batch: ONE read, the merge for every entry
+ * resolved in memory, ONE `bulkPut`. Returns how many records were written.
+ *
+ * WHY THIS EXISTS. `series_metadata` backs a `liveQuery` the catalog joins, and
+ * Dexie broadcasts `storagemutated` once per readwrite COMMIT — so on this table
+ * a commit is a change signal is a full catalog re-derive (an O(V) group over
+ * every volume plus a per-series sort). A catalog refresh applies one entry per
+ * series in the library; at ~1k series, a commit per entry is ~1k re-derives for
+ * one sync. Batched it is one.
+ *
+ * ONE `bulkPut`, NOT CHUNKED. The rows are small fact records — ids, titles,
+ * synonyms, a tag, three stamps; no blobs — so even a few thousand of them is a
+ * fraction of a megabyte in a single transaction, and chunking would buy nothing
+ * while costing exactly what this function exists to avoid: one commit, and so
+ * one full re-derive, per chunk.
+ *
+ * PER-ENTRY ERROR ISOLATION, on both halves:
+ *
+ * - the MERGE runs per entry inside a `try`, so a malformed file is dropped from
+ *   the batch (and reported to `onEntryError`) instead of throwing the run away;
+ * - the WRITE cannot rely on `bulkPut` for that. Dexie recovers from a failed
+ *   put REQUEST, but a value IndexedDB cannot structured-clone throws
+ *   SYNCHRONOUSLY out of `IDBObjectStore.put`, before any request exists, and
+ *   `bulkPut` does not survive that: measured on a 10-row bulk with junk at
+ *   index 5, standalone it committed rows 0-4 and silently dropped 6-9, and
+ *   inside an enclosing transaction (as here) letting that rejection escape
+ *   aborts the transaction and loses ALL ten. So the `bulkPut` is caught, and
+ *   falls back to a per-row pass THROUGH THE SAME, still-live transaction with
+ *   each put caught on its own. The bad row is the only casualty, and the run
+ *   still costs one commit.
+ *
+ * The read and the write share one `rw` transaction, same as
+ * `upsertFromSeriesFile`, so a concurrent writer cannot slip a `put` between
+ * them. Nothing here is nested in a sub-transaction — that is what makes
+ * catching an error survivable (see `catalog-index-sync.ts`).
+ *
+ * Does NOT notify the facts/index listeners, for the same reason
+ * `upsertFromSeriesFile` does not: these facts came FROM a sidecar, and
+ * republishing them would be a write loop between devices.
+ */
+export async function upsertManyFromSeriesFiles(
+  entries: readonly SeriesFileUpsert[],
+  onEntryError?: (seriesTitle: string, error: unknown) => void
+): Promise<number> {
+  if (entries.length === 0) return 0;
+
+  return db.transaction('rw', db.series_metadata, async () => {
+    // One `getAll`, not one keyed `get` per entry: a refresh touches roughly
+    // every series in the library, so the whole (small, blob-free) table is
+    // cheaper than N round trips — and Dexie lowers `bulkGet` to one
+    // `IDBObjectStore.get` PER KEY, which is the storm in a different costume.
+    const stored = new Map<string, SeriesMetadata>(
+      (await db.series_metadata.toArray()).map((row) => [row.series_key, row])
+    );
+
+    // Keyed, so two entries that normalize to the same series merge onto each
+    // other in order rather than racing as two rows in one `bulkPut`.
+    const pending = new Map<string, SeriesMetadata>();
+    for (const entry of entries) {
+      try {
+        const key = normalizeSeriesKey(entry.seriesTitle);
+        const next = mergeSeriesFileInto(entry.seriesTitle, entry.file, stored.get(key));
+        if (!next) continue;
+        stored.set(next.series_key, next);
+        pending.set(next.series_key, next);
+      } catch (error) {
+        onEntryError?.(entry.seriesTitle, error);
+      }
+    }
+
+    const rows = [...pending.values()];
+    if (rows.length === 0) return 0;
+
+    try {
+      await db.series_metadata.bulkPut(rows);
+      return rows.length;
+    } catch (bulkError) {
+      // Catching it here is what keeps the transaction alive; letting it escape
+      // would abort the whole thing (see the note above). The bulk stopped at
+      // the bad row, so everything after it was never attempted — replay row by
+      // row, idempotent for the ones that already landed.
+      console.warn('[series-metadata] batch write failed, retrying row by row:', bulkError);
+      let written = 0;
+      for (const row of rows) {
+        try {
+          await db.series_metadata.put(row);
+          written++;
+        } catch (error) {
+          onEntryError?.(row.series_title, error);
+        }
+      }
+      return written;
+    }
   });
 }
 
