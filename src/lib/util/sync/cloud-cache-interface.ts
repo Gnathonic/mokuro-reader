@@ -12,6 +12,27 @@ import type { Readable } from 'svelte/store';
  */
 
 /**
+ * The metadata `add()` accepts — `T` with `modifiedTimeProvisional` promoted
+ * from optional to REQUIRED.
+ *
+ * `add()` runs at upload/rename time, the one moment a caller actually knows
+ * whether the `modifiedTime` it is about to cache came from the provider's
+ * own response or was fabricated from the client clock (see
+ * `CloudFileMetadata.modifiedTimeProvisional`'s own doc for why that
+ * distinction matters downstream). Leaving the field optional on `add()`
+ * itself let a call site omit the question entirely and default to
+ * "server-truth" by silence — which is exactly the class of bug a stale/
+ * fabricated timestamp in `series.json` comes from. Requiring it here makes
+ * that omission a compile error instead of a runtime data hazard.
+ *
+ * Whole-account listing installs (each provider's `fetch()`, which replaces
+ * the cache wholesale via its own store's `set()`) do not go through `add()`
+ * at all and need no such flag: every entry there is server-reported by
+ * construction, never client-clock-fabricated.
+ */
+export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
+
+/**
  * Generic interface for cloud file caches
  *
  * @template T The provider-specific metadata type (e.g., DriveFileMetadata)
@@ -85,9 +106,10 @@ export interface CloudCache<T = any> {
   /**
    * Add a file to the cache (e.g., after upload)
    * @param path File path
-   * @param metadata File metadata
+   * @param metadata File metadata — `modifiedTimeProvisional` is required,
+   *   not optional; see {@link CacheAddMetadata}.
    */
-  add?(path: string, metadata: T): void;
+  add?(path: string, metadata: CacheAddMetadata<T>): void;
 
   /**
    * Remove a file from the cache by file ID

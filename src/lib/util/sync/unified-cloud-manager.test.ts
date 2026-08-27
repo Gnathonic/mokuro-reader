@@ -1862,10 +1862,12 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     await unifiedCloudManager.uploadFile('One Piece/Volume 1.mokuro', new Blob(['x']));
 
     // The cache entry carries the SERVER's time — not the client clock — and
-    // is therefore not provisional.
+    // is therefore not provisional. Explicitly `false`, not merely absent:
+    // `add()`'s metadata type requires the caller to say so (see
+    // `CacheAddMetadata` in `cloud-cache-interface.ts`).
     const cached = store.find((f) => f.path === 'One Piece/Volume 1.mokuro');
     expect(cached?.modifiedTime).toBe('2026-08-27T09:00:00.000Z');
-    expect(cached?.modifiedTimeProvisional).toBeUndefined();
+    expect(cached?.modifiedTimeProvisional).toBe(false);
     expect(cached?.size).toBe(5);
 
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');

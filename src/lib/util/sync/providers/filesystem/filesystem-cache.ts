@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { filesystemProvider } from './filesystem-provider';
 
@@ -130,7 +130,7 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
     return this.loadedFlag;
   }
 
-  add(path: string, metadata: CloudFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
     this.cache.update((cache) => {
       const newCache = new Map(cache);
       const seriesTitle = path.split('/')[0];

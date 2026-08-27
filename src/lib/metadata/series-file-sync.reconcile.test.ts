@@ -553,6 +553,55 @@ describe('reconcileMissingMetadataFiles', () => {
   });
 
   /**
+   * THE HAZARD THIS PAIR OF TESTS EXISTS FOR.
+   *
+   * `runReconcile` has two callers with two different truth guarantees:
+   *
+   * - the post-listing hook (`unified-cloud-manager.ts`) hands over `files`
+   *   it just fetched — a genuinely fresh listing;
+   * - the "Backup all" / "Backup series" buttons (`SeriesView.svelte`,
+   *   `CloudView.svelte`) call `reconcileMissingMetadataFiles()` with NO
+   *   argument, so `runReconcile` falls back to whatever the provider cache
+   *   already holds — which can be arbitrarily stale (`cache?.isLoaded()` in
+   *   `unified-cloud-manager.ts` is happy with a cache from hours ago).
+   *
+   * Only the first caller may skip `ensureFreshCloudListing()` at write time
+   * — that is what `fromCloudListing` is FOR. Marking every reconcile-
+   * scheduled write with it regardless of which caller produced it meant a
+   * button press past `LISTING_TTL_MS` built `writeSeriesFile`'s prune step
+   * (`cloudVolumeTitles`) against a stale view — silently deleting another
+   * device's freshly-uploaded volume from `series.json`.
+   *
+   * Both tests hold the listing equally stale (marked fresh once, then aged
+   * past the TTL); the only variable is whether `files` was actually handed
+   * to `reconcileMissingMetadataFiles`.
+   */
+  it('a reconcile pass with no files argument (the button path) refreshes a stale listing before writing', async () => {
+    markListingFresh();
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+    await vi.advanceTimersByTimeAsync(LISTING_TTL_MS + 1000);
+
+    await reconcileMissingMetadataFiles();
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(fetchAllCloudVolumes).toHaveBeenCalled();
+  });
+
+  it('a reconcile pass GIVEN files (the post-listing hook) still skips the refresh once stale', async () => {
+    markListingFresh();
+    const files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+    cloudListing.files = files;
+    await vi.advanceTimersByTimeAsync(LISTING_TTL_MS + 1000);
+
+    await reconcileMissingMetadataFiles(files);
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+  });
+
+  /**
    * THE LOOP THIS PAIR OF TESTS EXISTS FOR.
    *
    * A reconcile pass over a half-converged library queues one write per
@@ -599,7 +648,13 @@ describe('reconcileMissingMetadataFiles', () => {
     markListingFresh();
     const titles = seedSixCandidateFolders();
 
-    await reconcileMissingMetadataFiles();
+    // The real listing-driven caller (`unified-cloud-manager.ts`'s
+    // post-listing hook) always hands `runReconcile` the `files` array it
+    // just fetched — that is what makes `fromCloudListing` true and skipping
+    // the refresh below safe. Calling with no argument here would exercise
+    // the OTHER caller shape (the backup buttons, which pass nothing and fall
+    // back to the cache) instead of the one this test is about.
+    await reconcileMissingMetadataFiles(cloudListing.files);
     await drain();
 
     // The queue really did outlast the window this test claims to test.

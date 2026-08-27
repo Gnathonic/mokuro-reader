@@ -263,6 +263,7 @@ describe('driveFilesCache fetch/mutation interleaving', () => {
       name: 'series.json',
       path: 'Dr Stone/series.json',
       modifiedTime: '2026-08-25T01:00:00.000Z',
+      modifiedTimeProvisional: false,
       size: 60
     });
 
@@ -273,6 +274,27 @@ describe('driveFilesCache fetch/mutation interleaving', () => {
     // ...and the listing's own files are still there: the replay adds, it does
     // not replace.
     expect(driveFilesCache.get('Dr Stone/Volume 1.cbz')?.fileId).toBe('cbz-1');
+  });
+
+  it('TYPE PIN: add() requires modifiedTimeProvisional to be stated, not omitted', () => {
+    // `CloudCache['add']`'s metadata parameter is `CacheAddMetadata<T>` —
+    // `T` with `modifiedTimeProvisional` promoted from optional to required
+    // — specifically so a call site cannot silently default to
+    // "server-truth" by leaving it out. This omits it on purpose: if a
+    // future change ever loosens `add()`'s signature back to accepting the
+    // plain (optional-flag) metadata type, this line stops producing a type
+    // error and the unused `@ts-expect-error` directive itself becomes a
+    // compile error (TS2578) under `npm run check` — the loosening cannot
+    // land silently.
+    // @ts-expect-error modifiedTimeProvisional omitted — see comment above
+    driveFilesCache.add('Dr Stone/series.json', {
+      provider: 'google-drive',
+      fileId: 'series-file-1',
+      name: 'series.json',
+      path: 'Dr Stone/series.json',
+      modifiedTime: '2026-08-25T01:00:00.000Z',
+      size: 60
+    });
   });
 
   it('discards a listing whose account was cleared mid-fetch', async () => {

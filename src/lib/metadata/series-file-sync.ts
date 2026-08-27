@@ -97,9 +97,24 @@ interface ScheduleOptions {
    * only because that listing was just fetched, and it describes a folder
    * that listing showed. Two call sites, both of them in that shape:
    *
-   * - `reconcileMissingMetadataFiles` (`runReconcile` below), which runs on
+   * - `reconcileMissingMetadataFiles` (`runReconcile` below) WHEN it runs on
    *   the `files` array `unified-cloud-manager.ts` hands it immediately after
-   *   `markListingFresh()` stamped that very listing;
+   *   `markListingFresh()` stamped that very listing — the post-listing hook
+   *   call site (`unified-cloud-manager.ts`'s `fetchAll()`). The BUTTON call
+   *   sites (`SeriesView.svelte`, `CloudView.svelte`) call
+   *   `reconcileMissingMetadataFiles()` with no `files` argument at all;
+   *   `runReconcile` then falls back to whatever the provider cache happens
+   *   to hold, which `cache?.isLoaded()` reports as fine even when it is
+   *   long past `LISTING_TTL_MS`. That fallback is NOT "the listing that
+   *   scheduled the write" — nothing fetched it for this call — so
+   *   `runReconcile` only sets this flag when it was actually handed `files`;
+   *   see `scheduleSeriesFileWrite(title, { fromCloudListing: files !==
+   *   undefined })` there. A button-triggered write past the TTL pays one
+   *   whole-account refresh here, same as any other stale-cache write — the
+   *   correct cost, not a bug, and it cannot reopen the loop this flag exists
+   *   to prevent: that loop needs a cover-driven write storm queuing
+   *   continuously off a whole-account re-listing; a button press is a single
+   *   discrete user action.
    * - `cover-service.ts`'s render-demand bare-placeholder resolution, whose
    *   entries are built from the listing the placeholder was minted from.
    *
@@ -659,13 +674,19 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
     const localKeys = await locallyKnownSeriesKeys(candidates);
     for (const title of candidates) {
       if (!localKeys.has(normalizeVolumeTitleKey(title))) continue;
-      // `fromCloudListing`: this pass IS the listing — its caller stamped the
-      // very listing these folders came from (`markListingFresh()` in
-      // `unified-cloud-manager.ts`, immediately before handing us `files`).
-      // Without the flag, a queue that drains past `LISTING_TTL_MS` has every
-      // straggler re-fetch the whole account to re-learn the folder set it was
-      // scheduled from. See `ScheduleOptions.fromCloudListing`.
-      scheduleSeriesFileWrite(title, { fromCloudListing: true });
+      // `fromCloudListing` asserts what is actually true HERE, not what is
+      // true of `runReconcile` in general: when we were handed `files`, this
+      // pass IS the listing — its caller stamped the very listing these
+      // folders came from (`markListingFresh()` in `unified-cloud-manager.ts`,
+      // immediately before handing us `files`), so skipping the refresh below
+      // is free. When `files` is undefined (the button call sites —
+      // `SeriesView.svelte`, `CloudView.svelte`), `listing` above fell back to
+      // whatever the provider cache holds, which may be long past
+      // `LISTING_TTL_MS` — that is NOT a listing this call just produced, and
+      // claiming it is would let `performWrite` skip `ensureFreshCloudListing`
+      // and build against a stale `cloudVolumeTitles`, pruning entries other
+      // devices published. See `ScheduleOptions.fromCloudListing`.
+      scheduleSeriesFileWrite(title, { fromCloudListing: files !== undefined });
       scheduled += 1;
     }
   }

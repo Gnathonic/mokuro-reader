@@ -60,7 +60,13 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *   provisional entry with the server's own `modifiedTime` — the same
  *   write-after-real-listing discipline `backup-queue.ts`'s
  *   `finishBackupRun` uses (it refetches before it writes, rather than
- *   trusting its own upload-time cache entries).
+ *   trusting its own upload-time cache entries). That "safe" claim is about
+ *   STAMPS only — the same no-listing button-triggered reconcile pass also
+ *   drives `series-file-sync.ts`'s prune step (`writeSeriesFile` pruning
+ *   against `cloudVolumeTitles`), which had its own hazard against a stale
+ *   cache: see `ScheduleOptions.fromCloudListing` there for the fix
+ *   (`fromCloudListing` now reflects whether THIS call actually got a fresh
+ *   listing, not whether `runReconcile` can in general).
  * - Strictly serial: one volume at a time, one upload at a time. Mokuro files
  *   are megabytes; there is no hurry.
  * - Deferred behind user-driven work: the drain waits for the download queue

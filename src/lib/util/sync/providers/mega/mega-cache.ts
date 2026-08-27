@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { megaProvider } from './mega-provider';
 
@@ -177,7 +177,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   // Optional methods for cache updates
-  add(path: string, metadata: CloudFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
     this.cache.update((cache) => {
       const newCache = new Map(cache);
 

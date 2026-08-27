@@ -605,10 +605,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               // client-clock fallback explicitly marked provisional so no stamp
               // publisher treats it as a server fact (`cloud-sidecar-stamps.ts`).
               cache.add(archivePath, {
+                provider: provider!.type,
                 fileId: uploaded.fileId,
                 path: archivePath,
                 modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
-                ...(uploaded.modifiedTime ? {} : { modifiedTimeProvisional: true }),
+                modifiedTimeProvisional: !uploaded.modifiedTime,
                 size: uploaded.size ?? archiveBlob.size
               });
             }
@@ -694,10 +695,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // so no stamp publisher treats it as a server fact
             // (`cloud-sidecar-stamps.ts`).
             cache.add(path, {
+              provider: provider!.type,
               fileId,
               path,
               modifiedTime: serverModifiedTime ?? new Date().toISOString(),
-              ...(serverModifiedTime ? {} : { modifiedTimeProvisional: true }),
+              modifiedTimeProvisional: !serverModifiedTime,
               size
             });
             console.log(`✅ Added ${path} to ${provider!.type} cache`);

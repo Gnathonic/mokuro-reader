@@ -354,10 +354,11 @@ class UnifiedCloudManager {
     const cache = cacheManager.getCache(provider.type);
     if (cache && cache.add) {
       cache.add(path, {
+        provider: provider.type,
         fileId: uploaded.fileId,
         path,
         modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
-        ...(uploaded.modifiedTime ? {} : { modifiedTimeProvisional: true }),
+        modifiedTimeProvisional: !uploaded.modifiedTime,
         size: uploaded.size ?? uploadSize,
         description
       });
@@ -489,7 +490,15 @@ class UnifiedCloudManager {
 
     const cache = cacheManager.getCache(provider.type);
     cache?.removeById?.(oldFile.fileId);
-    cache?.add?.(updatedFile.path, updatedFile);
+    // `updatedFile` comes from `provider.renameFile`, which — like
+    // `renameFolder` — already sets `modifiedTimeProvisional` correctly
+    // per-provider; absent just isn't a `boolean` structurally, so make the
+    // "absent means false" reading explicit (see the matching comment on the
+    // `renameFolder` cache-replay loop above).
+    cache?.add?.(updatedFile.path, {
+      ...updatedFile,
+      modifiedTimeProvisional: updatedFile.modifiedTimeProvisional ?? false
+    });
   }
 
   /**
@@ -989,7 +998,14 @@ class UnifiedCloudManager {
         cache.removeById(file.fileId);
       }
       for (const file of renamedFiles) {
-        cache.add(file.path, file);
+        // `renameFolder` already sets `modifiedTimeProvisional` correctly
+        // per-provider (true when it fabricated the mtime, absent/false when
+        // the server reported one back) — absent just isn't a `boolean`
+        // structurally, so make the "absent means false" reading explicit.
+        cache.add(file.path, {
+          ...file,
+          modifiedTimeProvisional: file.modifiedTimeProvisional ?? false
+        });
       }
     }
 

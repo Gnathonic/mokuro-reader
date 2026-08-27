@@ -2,7 +2,7 @@ import { get, writable } from 'svelte/store';
 import { driveApiClient } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 
@@ -721,7 +721,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path File path
    * @param metadata File metadata
    */
-  add(path: string, metadata: DriveFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<DriveFileMetadata>): void {
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {

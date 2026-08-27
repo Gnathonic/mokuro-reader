@@ -589,6 +589,16 @@ export class MegaProvider implements SyncProvider {
    * `new Date()`. `modifiedTime`/`modifiedTimeProvisional` are REQUIRED
    * (not defaulted) so a caller can't silently fall through to fabrication;
    * every caller has them because it is renaming a known cached entry.
+   *
+   * NOTE the deliberate contrast with Google Drive: a Drive rename is a
+   * metadata-only PATCH, and Drive's own server bumps that file's
+   * `modifiedTime` in response to it — Drive's `renameFile`/`renameFolder`
+   * therefore return the SERVER'S fresh timestamp, not the cached one. MEGA
+   * has no such signal to read back, so preserving the cached `modifiedTime`
+   * here (rather than fabricating a new one from the client clock) is the
+   * correct trade: the cached record and the next real listing then disagree
+   * by exactly one rename's worth of nothing, which self-corrects on the
+   * next fetch instead of poisoning `series.json` with a client-clock stamp.
    */
   private buildRenamedCloudFile(
     file: CloudFileMetadata,
