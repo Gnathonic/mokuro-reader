@@ -490,7 +490,17 @@ async function materializeBatch(
   }
   try {
     for (const [folderTitle, folderEntries] of byFolder) {
-      scheduleSeriesFileWrite(folderTitle, { cloudMeasuredVolumes: folderEntries });
+      // `fromCloudListing`: these entries were resolved from the cloud listing
+      // the placeholder itself was minted from, so the write must not open
+      // with a whole-account re-fetch. That re-fetch is what closed the loop
+      // — fetch installs a fresh file map, the map re-mints every placeholder,
+      // re-minted bare placeholders land back here, and the writes they
+      // schedule fetch again the moment the queue drains past the listing TTL.
+      // See `ScheduleOptions.fromCloudListing` in `series-file-sync.ts`.
+      scheduleSeriesFileWrite(folderTitle, {
+        cloudMeasuredVolumes: folderEntries,
+        fromCloudListing: true
+      });
     }
   } catch (error) {
     // Best-effort, and never the caller's problem: the waiters are already

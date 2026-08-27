@@ -248,6 +248,38 @@ describe('case-3 publish threading, end to end through the REAL series-file-sync
     ]);
   });
 
+  it('publishes without going back for a whole-account listing', async () => {
+    // `_resetListingRefreshForTests()` in `beforeEach` leaves the listing
+    // stamp at zero, so a write that consults `ensureFreshCloudListing()`
+    // WILL fetch — there is no TTL reuse to hide behind here. A cover-driven
+    // write must not, because the entries it carries were resolved from the
+    // listing that minted the placeholder in the first place, and fetching
+    // again re-mints every placeholder and schedules the next write: the loop
+    // the user saw as a status badge that never settled.
+    getCloudVolumesBySeries.mockReturnValue([cloudFile('One Piece/Volume 01.mokuro', 500)]);
+    pullMokuroEntryMock.mockResolvedValue({
+      volume_uuid: 'real-mokuro-uuid',
+      volume_title: 'Volume 01',
+      page_count: 12,
+      character_count: 300,
+      mokuro_version: '0.4.12'
+    });
+
+    requestCover(barePlaceholder('derived-1', { volume_title: 'Volume 01' }));
+
+    await vi.waitFor(async () => {
+      await flushPendingMaterializations();
+      expect(await db.volumes.get('real-mokuro-uuid')).toBeDefined();
+    });
+
+    await flushSeriesFileWrites();
+
+    // It really did publish — an assertion about a write that never happened
+    // would be satisfied by any broken pipeline.
+    expect(writeSeriesFileMock).toHaveBeenCalledTimes(1);
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+  });
+
   it('two different bare placeholders resolving in the same series both survive into the SAME publish', async () => {
     getCloudVolumesBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 01.mokuro', 500),

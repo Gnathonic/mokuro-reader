@@ -88,6 +88,38 @@ interface ScheduleOptions {
    */
   duringBackupRun?: boolean;
   /**
+   * This write was scheduled BY a whole-account cloud listing — it exists
+   * only because that listing was just fetched, and it describes a folder
+   * that listing showed. Two call sites, both of them in that shape:
+   *
+   * - `reconcileMissingMetadataFiles` (`runReconcile` below), which runs on
+   *   the `files` array `unified-cloud-manager.ts` hands it immediately after
+   *   `markListingFresh()` stamped that very listing;
+   * - `cover-service.ts`'s render-demand bare-placeholder resolution, whose
+   *   entries are built from the listing the placeholder was minted from.
+   *
+   * Same consequence as `duringBackupRun`: NO `ensureFreshCloudListing()`
+   * call. Refreshing would be a whole-account fetch to re-learn the listing
+   * that scheduled the write — pure waste at best.
+   *
+   * At worst it is a LOOP, which is why this flag exists. A whole-account
+   * fetch installs a fresh file map, that map re-mints every catalog
+   * placeholder, re-minted bare placeholders are re-resolved by
+   * `cover-service.ts`, and each resolution schedules another write. Those
+   * writes drain through one 2-slot pool (`write-slot.ts`), so a queue that
+   * takes longer than `LISTING_TTL_MS` to drain has its next write fetch the
+   * whole account again — and the cycle re-enters at the top with nothing
+   * converged. On a provider whose listing is a slow paged whole-account
+   * query the user sees this directly, as a status badge oscillating between
+   * "loading" and "connected" for as long as the app is open.
+   *
+   * Unlike `duringBackupRun` this says nothing about the WRITER's own
+   * `series.json` re-read, which still happens: it is free for a self-write
+   * (the listing stamp matches our cached record) and is the only thing
+   * standing between this PUT and another device's index.
+   */
+  fromCloudListing?: boolean;
+  /**
    * Entries a CALLER already pulled a sidecar for and built itself —
    * `cover-service.ts`'s render-demand bare-placeholder resolution (decision-
    * tree case 3), the SAME shape `series-backfill.ts` hands its own direct
@@ -347,12 +379,19 @@ async function performWrite(seriesKey: string): Promise<void> {
     if (!hasWritableProvider()) return;
     // Both gates below normally read the listing, so refresh it first — and
     // skip the write entirely when that fails rather than publish a file
-    // built from a view we know may be hours old. A run-scheduled write skips
-    // this refresh on purpose (see `ScheduleOptions.duringBackupRun`): the run
-    // already primed the listing and keeps it current via `cache.add` as it
-    // uploads, so refreshing again here would be a redundant whole-account
-    // fetch mid-run.
-    if (!options?.duringBackupRun) {
+    // built from a view we know may be hours old. Two kinds of schedule skip
+    // this refresh on purpose, both because the listing they were scheduled
+    // FROM is the freshest one there is:
+    //
+    // - a run-scheduled write (`ScheduleOptions.duringBackupRun`): the run
+    //   primed the listing and keeps it current via `cache.add` as it
+    //   uploads, so refreshing again here would be a redundant whole-account
+    //   fetch mid-run;
+    // - a listing-scheduled write (`ScheduleOptions.fromCloudListing`): the
+    //   whole-account fetch that produced this schedule already happened, and
+    //   re-fetching it is what closes the reconcile/cover-resolve loop that
+    //   flag documents.
+    if (!options?.duringBackupRun && !options?.fromCloudListing) {
       if (!(await ensureFreshCloudListing())) return;
     }
     if (!(await hasBackedUpVolume(seriesTitle)) && !(await hasPublishableFacts(seriesTitle))) {
@@ -611,7 +650,13 @@ async function runReconcile(files?: ListedFile[]): Promise<void> {
     const localKeys = await locallyKnownSeriesKeys(candidates);
     for (const title of candidates) {
       if (!localKeys.has(normalizeVolumeTitleKey(title))) continue;
-      scheduleSeriesFileWrite(title);
+      // `fromCloudListing`: this pass IS the listing — its caller stamped the
+      // very listing these folders came from (`markListingFresh()` in
+      // `unified-cloud-manager.ts`, immediately before handing us `files`).
+      // Without the flag, a queue that drains past `LISTING_TTL_MS` has every
+      // straggler re-fetch the whole account to re-learn the folder set it was
+      // scheduled from. See `ScheduleOptions.fromCloudListing`.
+      scheduleSeriesFileWrite(title, { fromCloudListing: true });
       scheduled += 1;
     }
   }

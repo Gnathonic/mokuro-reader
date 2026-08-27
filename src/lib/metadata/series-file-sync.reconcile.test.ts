@@ -133,8 +133,10 @@ import {
   _resetListingRefreshForTests,
   _resetReconcileForTests,
   _resetWriteSlotsForTests,
+  LISTING_TTL_MS,
   markListingFresh,
   reconcileMissingMetadataFiles,
+  scheduleSeriesFileWrite,
   SERIES_FILE_WRITE_DEBOUNCE_MS
 } from './series-file-sync';
 import { toStoredSeriesMetadata, type SeriesMetadata } from './types';
@@ -548,6 +550,76 @@ describe('reconcileMissingMetadataFiles', () => {
 
     expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
     expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE LOOP THIS PAIR OF TESTS EXISTS FOR.
+   *
+   * A reconcile pass over a half-converged library queues one write per
+   * folder, and they drain two at a time (`write-slot.ts`). Every write used
+   * to open with `ensureFreshCloudListing()`, whose stamp expires after
+   * `LISTING_TTL_MS` — so a queue that takes longer than 30 s to drain paid
+   * for a fresh WHOLE-ACCOUNT listing every 30 s, forever, to re-learn the
+   * folder set it was scheduled from. On a provider whose listing is a slow
+   * paged whole-account query the user watches the connection badge
+   * oscillate for as long as the app is open.
+   *
+   * The two tests are deliberately identical except for HOW the writes were
+   * scheduled, so the assertion cannot be satisfied by both branches: the
+   * control below must see refetches for the same queue, same timings, same
+   * number of writes.
+   */
+  const SLOW_WRITE_MS = 20_000;
+
+  /** Six folders, no sidecars, all locally known — 3 rounds of 2 slots. */
+  function seedSixCandidateFolders(): string[] {
+    const titles = ['A', 'B', 'C', 'D', 'E', 'F'];
+    cloudListing.files = titles.map((t) => ({ path: `${t}/Volume 1.cbz` }));
+    cloudListing.files.push({ path: 'catalog.json' });
+    for (const title of titles) addVolume(title, 'Volume 1');
+    // Long enough that 6 writes through 2 slots (3 rounds x 20 s = 60 s)
+    // outlast the 30 s TTL twice over — a shorter write would let the queue
+    // drain inside one window and the test would pass without the fix.
+    writeSeriesFile.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve('written'), SLOW_WRITE_MS);
+        })
+    );
+    return titles;
+  }
+
+  /** Advance past the debounce and then through the whole drain. */
+  async function drain(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(SERIES_FILE_WRITE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(SLOW_WRITE_MS * 4);
+  }
+
+  it('a burst of reconcile-scheduled writes draining past the TTL refetches nothing', async () => {
+    markListingFresh();
+    const titles = seedSixCandidateFolders();
+
+    await reconcileMissingMetadataFiles();
+    await drain();
+
+    // The queue really did outlast the window this test claims to test.
+    expect(SLOW_WRITE_MS * 3).toBeGreaterThan(LISTING_TTL_MS);
+    expect(writtenTitles()).toEqual(titles);
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: the same burst scheduled by a fact edit DOES refetch past the TTL', async () => {
+    // Same folders, same slow writes, same drain — the only difference is
+    // that these writes were not scheduled off a just-fetched listing, so
+    // they are the ones that legitimately have to go and get one.
+    markListingFresh();
+    const titles = seedSixCandidateFolders();
+
+    for (const title of titles) scheduleSeriesFileWrite(title);
+    await drain();
+
+    expect(writtenTitles()).toEqual(titles);
+    expect(fetchAllCloudVolumes).toHaveBeenCalled();
   });
 
   it('never throws out of the fire-and-forget call sites', async () => {
