@@ -338,7 +338,7 @@ class UnifiedCloudManager {
       throw new Error('No cloud provider authenticated');
     }
 
-    const fileId = await provider.uploadFile(path, blob, description, onProgress);
+    const uploaded = await provider.uploadFile(path, blob, description, onProgress);
     const uploadSize =
       blob instanceof Blob
         ? blob.size
@@ -346,19 +346,24 @@ class UnifiedCloudManager {
           ? blob.byteLength
           : blob.byteLength;
 
-    // Update cache via cacheManager
+    // Update cache via cacheManager. When the provider's upload response
+    // carried the SERVER's mtime, the entry gets that (it will agree with the
+    // next listing); otherwise the client-clock fallback is explicitly marked
+    // provisional so no stamp publisher (`cloud-sidecar-stamps.ts`) ever
+    // treats it as a server fact.
     const cache = cacheManager.getCache(provider.type);
     if (cache && cache.add) {
       cache.add(path, {
-        fileId,
+        fileId: uploaded.fileId,
         path,
-        modifiedTime: new Date().toISOString(),
-        size: uploadSize,
+        modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
+        ...(uploaded.modifiedTime ? {} : { modifiedTimeProvisional: true }),
+        size: uploaded.size ?? uploadSize,
         description
       });
     }
 
-    return fileId;
+    return uploaded.fileId;
   }
 
   /**

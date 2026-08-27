@@ -160,7 +160,9 @@ function makeRenameProvider(overrides: Record<string, unknown> = {}) {
   return {
     type: 'webdav',
     getStatus: vi.fn(() => ({ isReadOnly: false })),
-    uploadFile: vi.fn(async () => 'uploaded-fileid'),
+    // The real WebDAV shape: a fileId and NO server mtime (a PUT response
+    // carries none), so upload-time cache entries stay provisional.
+    uploadFile: vi.fn(async () => ({ fileId: 'uploaded-fileid' })),
     renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => ({
       ...file,
       fileId: `renamed-${file.fileId}`,
@@ -1759,6 +1761,119 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  // ---- Stamp provenance: upload-time cache entries vs published stamps ----
+  //
+  // `cloud-sidecar-stamps.ts` forbids client-clock stamps in `series.json`,
+  // but `uploadFile` used to cache every upload with `new Date()` presented
+  // as a real mtime — and a reconcile pass running off the live cache (the
+  // backup buttons call `reconcileMissingMetadataFiles()` with NO listing)
+  // published it. These tests drive the REAL uploadFile → cache → REAL
+  // writeSeriesFile chain over a functional in-memory cache, exactly the
+  // sequence the defect used.
+
+  /** A functional cache: `add` stores entries and `getBySeries` serves them back. */
+  function liveCacheStore(seed: CloudFileMetadata[]) {
+    const store: CloudFileMetadata[] = [...seed];
+    const cache = loadedCache({
+      add: vi.fn((path: string, entry: object) => {
+        // `cache.add` callers omit `provider`; a real cache serves entries
+        // for its own provider, so default it without overriding one given.
+        const next = { provider: 'webdav', ...entry } as CloudFileMetadata;
+        const at = store.findIndex((f) => f.path === path);
+        if (at >= 0) store[at] = next;
+        else store.push(next);
+      })
+    });
+    getCache.mockReturnValue(cache);
+    getBySeries.mockImplementation(() => [...store]);
+    return store;
+  }
+
+  it('a sidecar uploaded with NO server mtime is cached provisional and published STAMPLESS by a cache-driven write', async () => {
+    const store = liveCacheStore([cloudFile('One Piece/Volume 1.cbz')]);
+    const provider = makeRenameProvider(); // WebDAV shape: { fileId } only
+    getActiveProvider.mockReturnValue(provider);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // 1. The sidecar-backfill upload shape (`unifiedCloudManager.uploadFile`).
+    await unifiedCloudManager.uploadFile('One Piece/Volume 1.mokuro', new Blob(['x']));
+
+    // The cache entry is a client-clock fallback — and says so.
+    const cached = store.find((f) => f.path === 'One Piece/Volume 1.mokuro');
+    expect(cached?.modifiedTimeProvisional).toBe(true);
+    expect(typeof cached?.modifiedTime).toBe('string');
+
+    // 2. The reconcile-triggered write with NO fresh listing in between:
+    //    `writeSeriesFile` derives its stamps from the SAME live cache.
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes).toHaveLength(1);
+    // Positive control: the entry itself published (real local facts)…
+    expect(file.volumes[0]).toMatchObject({ volume_uuid: 'uuid-Volume 1', page_count: 2 });
+    // …but carries NO stamp for the provisionally-cached sidecar — neither
+    // the fabricated client mtime nor a size to go with it.
+    expect(file.volumes[0].mokuro_modified).toBeUndefined();
+    expect(file.volumes[0].mokuro_size).toBeUndefined();
+  });
+
+  it('the stamp publishes once the next real listing replaces the provisional entry with the server record', async () => {
+    // The convergence leg: a full `fetch()` rebuilds the cache from the
+    // listing, so the sidecar's entry now carries the SERVER mtime and no
+    // provisional flag. The very next cache-driven write publishes the stamp.
+    liveCacheStore([
+      cloudFile('One Piece/Volume 1.cbz'),
+      cloudFile('One Piece/Volume 1.mokuro', {
+        modifiedTime: '2026-08-27T08:30:00.000Z',
+        size: 7
+      })
+    ]);
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes[0].mokuro_modified).toBe(
+      Math.floor(Date.parse('2026-08-27T08:30:00.000Z') / 1000)
+    );
+    expect(file.volumes[0].mokuro_size).toBe(7);
+  });
+
+  it('a provider whose upload response carries the server mtime gets a REAL stamp published with no listing in between', async () => {
+    const store = liveCacheStore([cloudFile('One Piece/Volume 1.cbz')]);
+    // Drive/OneDrive/MEGA/filesystem shape: the upload response reports the
+    // server's own mtime (and size).
+    const provider = makeRenameProvider({
+      uploadFile: vi.fn(async () => ({
+        fileId: 'up-2',
+        modifiedTime: '2026-08-27T09:00:00.000Z',
+        size: 5
+      }))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.uploadFile('One Piece/Volume 1.mokuro', new Blob(['x']));
+
+    // The cache entry carries the SERVER's time — not the client clock — and
+    // is therefore not provisional.
+    const cached = store.find((f) => f.path === 'One Piece/Volume 1.mokuro');
+    expect(cached?.modifiedTime).toBe('2026-08-27T09:00:00.000Z');
+    expect(cached?.modifiedTimeProvisional).toBeUndefined();
+    expect(cached?.size).toBe(5);
+
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    const file = await uploadedSeriesFile(provider);
+    expect(file.volumes[0].mokuro_modified).toBe(
+      Math.floor(Date.parse('2026-08-27T09:00:00.000Z') / 1000)
+    );
+    expect(file.volumes[0].mokuro_size).toBe(5);
   });
 });
 

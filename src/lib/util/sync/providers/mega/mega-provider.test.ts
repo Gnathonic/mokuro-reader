@@ -435,7 +435,9 @@ describe('MegaProvider ghost-node handling', () => {
       name: 'mokuro-reader',
       directory: true,
       upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
-        queueMicrotask(() => cb(null, { nodeId: 'fresh-node' }));
+        // `timestamp` (epoch seconds) is the SERVER's stamp on the completed
+        // node — the same field listCloudVolumes maps to `modifiedTime`.
+        queueMicrotask(() => cb(null, { nodeId: 'fresh-node', timestamp: 1_780_000_000, size: 3 }));
       })
     } as any;
   }
@@ -468,11 +470,17 @@ describe('MegaProvider ghost-node handling', () => {
     );
     const provider = await loginWithTree({ root: folder, ghost });
 
-    const fileId = await provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]));
+    const uploaded = await provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]));
 
     expect(ghost.delete).toHaveBeenCalled();
     expect(folder.upload).toHaveBeenCalledOnce();
-    expect(fileId).toBe('fresh-node');
+    // The result carries the node's SERVER timestamp as `modifiedTime`, so
+    // the upload-time cache entry needs no provisional client-clock stamp.
+    expect(uploaded).toEqual({
+      fileId: 'fresh-node',
+      modifiedTime: new Date(1_780_000_000 * 1000).toISOString(),
+      size: 3
+    });
   });
 
   it('uploadFile replaces every same-name copy, not just the first', async () => {

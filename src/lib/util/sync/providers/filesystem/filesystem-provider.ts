@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   StorageQuota,
-  UploadPayload
+  UploadPayload,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -307,7 +308,7 @@ export class FilesystemProvider implements SyncProvider {
     blob: UploadPayload,
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     try {
       this.requireRoot();
       const fileHandle = await this.resolveFileHandle(path, { create: true });
@@ -325,7 +326,20 @@ export class FilesystemProvider implements SyncProvider {
         await writable.close();
       }
       console.log(`✅ Uploaded ${path} to filesystem`);
-      return path;
+      // A local stat, not a round trip: `lastModified` here is the SAME field
+      // `listCloudVolumes` reports for this file, so the upload-time cache
+      // entry can carry the real listing-visible mtime instead of a
+      // provisional client-clock one.
+      let modifiedTime: string | undefined;
+      let size: number | undefined;
+      try {
+        const written = await fileHandle.getFile();
+        modifiedTime = new Date(written.lastModified).toISOString();
+        size = written.size;
+      } catch {
+        // Stat failed: return no mtime and let the cache entry stay provisional.
+      }
+      return { fileId: path, modifiedTime, size };
     } catch (error) {
       throw this.toProviderError(error, 'Upload', path);
     }

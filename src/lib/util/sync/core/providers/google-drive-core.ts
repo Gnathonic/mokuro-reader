@@ -1,3 +1,4 @@
+import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 
@@ -58,7 +59,7 @@ export const googleDriveCore: CloudProviderCore = {
     mimeType,
     existingFileId,
     onProgress
-  }): Promise<string> {
+  }): Promise<UploadFileResult> {
     const accessToken = requireCredentialString(
       credentials,
       'accessToken',
@@ -77,9 +78,13 @@ export const googleDriveCore: CloudProviderCore = {
       ...(existingFileId ? {} : { parents: [seriesFolderId] })
     };
 
+    // `fields` on the session-init URL selects what the FINAL upload response
+    // returns: the server's own `modifiedTime` (and authoritative `size`) come
+    // back with the last PUT for free — no follow-up metadata request needed.
+    const responseFields = 'fields=id,modifiedTime,size';
     const uploadBase = existingFileId
-      ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=resumable`
-      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable';
+      ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
+      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&${responseFields}`;
 
     const initResponse = await fetch(uploadBase, {
       method: existingFileId ? 'PATCH' : 'POST',
@@ -113,7 +118,13 @@ export const googleDriveCore: CloudProviderCore = {
       xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const result = JSON.parse(xhr.responseText);
-          resolve(result.id);
+          // Drive serializes `size` as a string in the file resource.
+          const size = Number(result.size);
+          resolve({
+            fileId: result.id,
+            modifiedTime: typeof result.modifiedTime === 'string' ? result.modifiedTime : undefined,
+            size: Number.isFinite(size) ? size : undefined
+          });
         } else {
           reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
         }

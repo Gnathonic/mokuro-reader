@@ -167,6 +167,7 @@ interface DownloadCompleteMessage {
 interface UploadCompleteMessage {
   type: 'complete';
   fileId?: string; // For cloud uploads
+  modifiedTime?: string; // Server-reported mtime from the upload response, when available
   size?: number; // Archive size in bytes (for optimistic cache entry)
   data?: Uint8Array; // For local exports (Transferable Object)
   filename?: string; // For local exports
@@ -676,7 +677,7 @@ ctx.addEventListener('message', async (event) => {
       }
       const cloudProvider = getWorkerCloudProvider(provider);
       const filename = `${volumeTitle}.cbz`;
-      const fileId = await cloudProvider.uploadFile({
+      const uploaded = await cloudProvider.uploadFile({
         seriesTitle,
         filename,
         blob: cbzBlob,
@@ -696,7 +697,8 @@ ctx.addEventListener('message', async (event) => {
       // Send completion message
       const completeMessage: UploadCompleteMessage = {
         type: 'complete',
-        fileId
+        fileId: uploaded.fileId,
+        modifiedTime: uploaded.modifiedTime
       };
       ctx.postMessage(completeMessage);
 
@@ -861,7 +863,7 @@ ctx.addEventListener('message', async (event) => {
           progress: 0
         } satisfies UploadProgressMessage);
 
-        const fileId = await cloudProvider.uploadFile({
+        const uploaded = await cloudProvider.uploadFile({
           seriesTitle,
           filename,
           blob: cbzBlob,
@@ -879,7 +881,8 @@ ctx.addEventListener('message', async (event) => {
 
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
-          fileId,
+          fileId: uploaded.fileId,
+          modifiedTime: uploaded.modifiedTime,
           size: cbzBlob.size
         };
         ctx.postMessage(completeMessage);

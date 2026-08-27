@@ -78,7 +78,7 @@ class ExportProvider {
     throw new Error('Export provider does not support cloud operations');
   }
 
-  async uploadFile(): Promise<string> {
+  async uploadFile(): Promise<UploadFileResult> {
     throw new Error('Export provider does not support cloud operations');
   }
 
@@ -175,6 +175,26 @@ export interface ProviderCredentials {
 export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
 
 /**
+ * What a provider's `uploadFile` learned about the file it just wrote.
+ *
+ * `modifiedTime` is the SERVER's modification timestamp for the uploaded
+ * file, captured from the upload response itself (Drive's file resource,
+ * Graph's completed driveItem, a MEGA node, a filesystem stat) — never the
+ * client clock, and never an extra round trip. When the upload response
+ * carries no usable timestamp (a plain WebDAV PUT), the field stays absent
+ * and the upload-time cache entry is marked `modifiedTimeProvisional` — see
+ * `CloudFileMetadata`.
+ */
+export interface UploadFileResult {
+  /** File ID in cloud storage (the value the old string-returning contract carried). */
+  fileId: string;
+  /** Server-reported modification time (ISO 8601), when the upload response carried one. */
+  modifiedTime?: string;
+  /** Server-reported size in bytes, when the upload response carried one. */
+  size?: number;
+}
+
+/**
  * Base metadata for a cloud-stored file (CBZ file)
  * This is the common interface - use provider-specific types when possible
  */
@@ -187,6 +207,18 @@ export interface CloudFileMetadata {
   path: string;
   /** File modification timestamp */
   modifiedTime: string;
+  /**
+   * True when `modifiedTime` was fabricated from the CLIENT clock — an
+   * upload-time cache entry whose provider response carried no server
+   * timestamp — rather than reported by the server. Consumers that PUBLISH a
+   * timestamp (`cloud-sidecar-stamps.ts`) must skip flagged entries: a
+   * client-clock stamp written into `series.json` makes the next real
+   * listing's server mtime look "newer" and re-pulls a file that never
+   * changed. Absent/false = `modifiedTime` came from the provider (a
+   * listing, a rename response, or an upload response). The next full
+   * listing replaces flagged entries wholesale with server-stamped ones.
+   */
+  modifiedTimeProvisional?: boolean;
   /** File size in bytes */
   size: number;
   /** Optional description/metadata */
@@ -321,14 +353,15 @@ export interface SyncProvider {
    * @param blob File data as Blob
    * @param description Optional file description
    * @param onProgress Optional progress callback (loaded, total)
-   * @returns File ID in cloud storage
+   * @returns File ID plus, when the upload response carried one, the
+   *          server's own modification time — see {@link UploadFileResult}
    */
   uploadFile(
     path: string,
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string>;
+  ): Promise<UploadFileResult>;
 
   /**
    * Download a file from cloud storage

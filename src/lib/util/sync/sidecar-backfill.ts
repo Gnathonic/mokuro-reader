@@ -46,16 +46,18 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *   `series.json` either. The decision is made FROM a listing that just
  *   arrived (or from the provider cache it filled), and the uploads go
  *   through `unifiedCloudManager.uploadFile`, which adds each file to that
- *   same cache — so the next check sees the sidecar without any fetch. That
- *   cache entry is stamped with the CLIENT clock (`uploadFile`'s
- *   `cache.add`), and `cloud-sidecar-stamps.ts` forbids building a
- *   `series.json` entry from a client-clock stamp — a server mtime that
- *   lands even a second off would make the very next listing see its own
- *   upload as stale and re-pull the sidecar it just wrote. Publishing the
- *   stamp is left entirely to the next REAL listing's reconcile pass
- *   (`reconcileMissingMetadataFiles` → `runBackfill` in
- *   `series-backfill.ts`), which rebuilds this folder's entry from the
- *   server's own `modifiedTime`s the moment they show up — the same
+ *   same cache — so the next check sees the sidecar without any fetch. When
+ *   the provider's upload response carried no server mtime, that cache entry
+ *   is stamped with the CLIENT clock and marked `modifiedTimeProvisional`,
+ *   and `cloud-sidecar-stamps.ts` refuses to derive a `series.json` stamp
+ *   from a provisional entry — a server mtime that lands even a second off
+ *   would make the very next listing see its own upload as stale and re-pull
+ *   the sidecar it just wrote. So a reconcile pass that runs off this cache
+ *   BEFORE the next real listing (the backup buttons call
+ *   `reconcileMissingMetadataFiles()` with no listing argument) publishes the
+ *   entry stampless — safe: a stampless entry adopts the next listing as its
+ *   baseline. The stamp publishes once a REAL listing has replaced the
+ *   provisional entry with the server's own `modifiedTime` — the same
  *   write-after-real-listing discipline `backup-queue.ts`'s
  *   `finishBackupRun` uses (it refetches before it writes, rather than
  *   trusting its own upload-time cache entries).

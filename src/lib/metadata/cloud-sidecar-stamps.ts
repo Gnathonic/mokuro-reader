@@ -13,6 +13,15 @@ import { normalizeVolumeTitleKey } from './series-key';
  * entry is stale, and the whole point of the stamp is that every reader of
  * `series.json` (including a device that never pulled anything) can compare it
  * against the SAME listing and get the same answer.
+ *
+ * The provider cache is ALLOWED to hold entries whose `modifiedTime` is a
+ * client-clock fallback (an upload whose response carried no server mtime) —
+ * but every such entry is marked `modifiedTimeProvisional`, and
+ * {@link stampFromSidecarFiles} refuses to derive a stamp from one: the entry
+ * gets NO stamp for that sidecar, which is safe by design ({@link isSidecarStale}
+ * treats a stampless entry as adopting the next listing as its baseline). The
+ * next full listing replaces the provisional entry with a server-stamped one,
+ * and the stamp publishes on the pass after that.
  */
 
 /** The extensions a per-volume cover sidecar can have (mirrors `placeholders.ts`). */
@@ -104,15 +113,24 @@ export function groupSeriesSidecarFiles(
   return groups;
 }
 
-/** Derive a `CloudSidecarStamp` from ONE captured `SeriesSidecarFiles` snapshot. */
+/**
+ * Derive a `CloudSidecarStamp` from ONE captured `SeriesSidecarFiles` snapshot.
+ *
+ * A file flagged `modifiedTimeProvisional` — an upload-time cache entry whose
+ * provider returned no server mtime, stamped with the CLIENT clock — yields NO
+ * fields at all for that sidecar. Publishing its client time would make the
+ * next real listing's server mtime look "newer" and re-pull a file this device
+ * itself just wrote; publishing nothing is safe because a stampless entry
+ * adopts the next listing as its baseline (see {@link isSidecarStale}).
+ */
 export function stampFromSidecarFiles(files: SeriesSidecarFiles | undefined): CloudSidecarStamp {
   const stamp: CloudSidecarStamp = {};
-  if (files?.mokuro) {
+  if (files?.mokuro && !files.mokuro.modifiedTimeProvisional) {
     if (isArchiveSize(files.mokuro.size)) stamp.mokuro_size = files.mokuro.size;
     const modified = isoToEpochSeconds(files.mokuro.modifiedTime);
     if (modified !== undefined) stamp.mokuro_modified = modified;
   }
-  if (files?.cover) {
+  if (files?.cover && !files.cover.modifiedTimeProvisional) {
     if (isArchiveSize(files.cover.size)) stamp.cover_size = files.cover.size;
     const modified = isoToEpochSeconds(files.cover.modifiedTime);
     if (modified !== undefined) stamp.cover_modified = modified;
@@ -170,6 +188,13 @@ export function isSidecarStale(
   listingStamp: { size?: number; modified?: number } | undefined
 ): boolean {
   if (!listingStamp) return false;
+  // A listing stamp with NEITHER field carries no information to compare
+  // against — it happens when the listed sidecar is a provisional upload-time
+  // cache entry (`stampFromSidecarFiles` withholds every field for those).
+  // Treat it like "no sidecar listed": never stale, never a re-pull of a file
+  // this device just wrote.
+  const hasListingStamp = listingStamp.size !== undefined || listingStamp.modified !== undefined;
+  if (!hasListingStamp) return false;
   const hasEntryStamp = entryStamp.size !== undefined || entryStamp.modified !== undefined;
   if (!hasEntryStamp) return false;
   if (entryStamp.size !== listingStamp.size) return true;

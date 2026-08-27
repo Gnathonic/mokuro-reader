@@ -18,18 +18,30 @@ describe('onedriveCore', () => {
       vi.mocked(fetch).mockResolvedValueOnce({
         ok: true,
         status: 201,
-        json: async () => ({ id: 'new-item-id', name: 'v1.cbz' })
+        json: async () => ({
+          id: 'new-item-id',
+          name: 'v1.cbz',
+          lastModifiedDateTime: '2026-08-27T10:00:00Z',
+          size: 1000
+        })
       } as Response);
 
       const blob = new Blob([new Uint8Array(1000)]);
-      const id = await onedriveCore.uploadFile({
+      const result = await onedriveCore.uploadFile({
         seriesTitle: 'Series', // bare title — core anchors it under mokuro-reader
         filename: 'v1.cbz',
         blob,
         credentials: { accessToken: 'TOKEN' }
       });
 
-      expect(id).toBe('new-item-id');
+      // The completed driveItem's SERVER mtime travels out with the result —
+      // this is what lets the upload-time cache entry avoid a provisional
+      // client-clock stamp.
+      expect(result).toEqual({
+        fileId: 'new-item-id',
+        modifiedTime: '2026-08-27T10:00:00Z',
+        size: 1000
+      });
       const initCall = vi.mocked(fetch).mock.calls[0];
       expect(initCall[0]).toBe(
         'https://graph.microsoft.com/v1.0/me/drive/root:/mokuro-reader/Series/v1.cbz:/createUploadSession'
@@ -87,14 +99,17 @@ describe('onedriveCore', () => {
       } as Response);
 
       const blob = new Blob([new Uint8Array(15 * 1024 * 1024)]);
-      const id = await onedriveCore.uploadFile({
+      const result = await onedriveCore.uploadFile({
         seriesTitle: 'Series',
         filename: 'v1.cbz',
         blob,
         credentials: { accessToken: 'TOKEN' }
       });
 
-      expect(id).toBe('done');
+      expect(result.fileId).toBe('done');
+      // The fixture's final driveItem carried no lastModifiedDateTime, so the
+      // result must NOT invent one — absent means "cache entry stays provisional".
+      expect(result.modifiedTime).toBeUndefined();
       expect(vi.mocked(fetch).mock.calls).toHaveLength(3);
       const firstChunk = vi.mocked(fetch).mock.calls[1];
       expect((firstChunk[1] as RequestInit).headers).toMatchObject({
@@ -153,13 +168,13 @@ describe('onedriveCore', () => {
         } as Response);
 
         const blob = new Blob([new Uint8Array(CHUNK + 100)]);
-        const id = await onedriveCore.uploadFile({
+        const result = await onedriveCore.uploadFile({
           seriesTitle: 'S',
           filename: 'v.cbz',
           blob,
           credentials: { accessToken: 'TOKEN' }
         });
-        expect(id).toBe('item-after-retry');
+        expect(result.fileId).toBe('item-after-retry');
         // init + chunk1 + failed chunk2 + status query + retried chunk2
         expect(vi.mocked(fetch)).toHaveBeenCalledTimes(5);
       }

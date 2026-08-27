@@ -399,6 +399,43 @@ describe('gap detection', () => {
     ]);
   });
 
+  it('a PROVISIONAL upload-time sidecar entry publishes its pulled entry with NO mokuro stamp', async () => {
+    // The reconcile-off-the-cache shape from the backup buttons: sidecar
+    // uploads put a client-clock cache entry (marked provisional) into the
+    // provider cache, and `reconcileMissingMetadataFiles()` with no listing
+    // argument dispatches `backfillSeriesEntries`, which reads that SAME
+    // cache. The built entry's content facts are real (the sidecar bytes were
+    // pulled), but its freshness stamp must be withheld: publishing the
+    // client clock would make the next real listing's server mtime look
+    // newer and re-pull a file this device itself just wrote.
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 999),
+      { ...cloudFile('One Piece/Volume 01.mokuro', 321), modifiedTimeProvisional: true }
+    ]);
+    refreshSeriesIndexForSeries
+      .mockResolvedValueOnce(seriesFile([])) // no entry yet -> gap
+      .mockResolvedValueOnce(seriesFile([])); // post-write re-read (materialize step)
+    downloadFile.mockResolvedValue(plainMokuro());
+
+    await backfillSeriesEntries('One Piece');
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    const [, options] = writeSeriesFile.mock.calls[0];
+    expect(options.cloudMeasuredVolumes).toHaveLength(1);
+    const entry = options.cloudMeasuredVolumes[0];
+    // Positive control: the pull really happened and produced a real entry.
+    expect(entry).toMatchObject({
+      volume_uuid: 'vol-uuid-from-mokuro',
+      volume_title: 'Volume 01',
+      page_count: 2,
+      archive_size: 999
+    });
+    // The stamp is fully withheld — no client-clock mtime, no size either
+    // (a stampless entry adopts the next listing as its baseline).
+    expect(entry.mokuro_modified).toBeUndefined();
+    expect(entry.mokuro_size).toBeUndefined();
+  });
+
   it('skips an archive whose title matches a LOCALLY INSTALLED volume — never pulls its sidecar', async () => {
     volumeRows.push({
       volume_uuid: 'installed-1',

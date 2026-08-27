@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   StorageQuota,
-  UploadPayload
+  UploadPayload,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
@@ -712,7 +713,7 @@ export class MegaProvider implements SyncProvider {
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
@@ -723,7 +724,7 @@ export class MegaProvider implements SyncProvider {
         onProgress(0, payloadSize);
       }
       // Wrap upload in retry logic to handle stale cache
-      const fileId = await retryWithCacheRefresh(
+      const uploaded = await retryWithCacheRefresh(
         async () => {
           const mokuroFolder = await this.ensureMokuroFolder();
 
@@ -768,8 +769,10 @@ export class MegaProvider implements SyncProvider {
             });
           }
 
-          // Upload new file
-          const uploadedFileId = await new Promise<string>((resolve, reject) => {
+          // Upload new file. The completed node's `timestamp` is the SERVER's
+          // epoch-seconds stamp — the same field `listCloudVolumes` maps to
+          // `modifiedTime` — so the result can carry a real server mtime.
+          const uploadResult = await new Promise<UploadFileResult>((resolve, reject) => {
             const uploadStream = targetFolder.upload(
               {
                 name: fileName,
@@ -785,7 +788,19 @@ export class MegaProvider implements SyncProvider {
                     onProgress(buffer.length, buffer.length);
                   }
                   console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
-                  resolve(fileId);
+                  const ts = file?.timestamp;
+                  const nodeSize = file?.size;
+                  resolve({
+                    fileId,
+                    modifiedTime:
+                      typeof ts === 'number' && Number.isFinite(ts)
+                        ? new Date(ts * 1000).toISOString()
+                        : undefined,
+                    size:
+                      typeof nodeSize === 'number' && Number.isFinite(nodeSize)
+                        ? nodeSize
+                        : undefined
+                  });
                 }
               }
             );
@@ -797,7 +812,7 @@ export class MegaProvider implements SyncProvider {
               });
             }
           });
-          return uploadedFileId;
+          return uploadResult;
         },
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
@@ -807,7 +822,7 @@ export class MegaProvider implements SyncProvider {
       // a debounced refresh. A mid-operation rebuild would clobber the
       // manager's incremental cache updates with a not-yet-synced tree.
 
-      return fileId;
+      return uploaded;
     } catch (error) {
       // Typed QUOTA_EXCEEDED with a message users can act on, instead of
       // megajs's raw "EOVERQUOTA (-17): Request over quota".

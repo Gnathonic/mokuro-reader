@@ -4,7 +4,8 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   StorageQuota,
-  CloudFileMetadata
+  CloudFileMetadata,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -805,7 +806,7 @@ export class WebDAVProvider implements SyncProvider {
     blob: Blob,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
@@ -818,7 +819,7 @@ export class WebDAVProvider implements SyncProvider {
       const seriesTitle = pathParts.join('/');
 
       const credentials = await this.getWorkerUploadCredentials();
-      const fileId = await this.cloudCore.uploadFile({
+      const uploaded = await this.cloudCore.uploadFile({
         seriesTitle,
         filename,
         blob,
@@ -827,7 +828,7 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
-      return fileId;
+      return uploaded;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 

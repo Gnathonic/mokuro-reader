@@ -12,6 +12,14 @@ function file(path: string, size: number, modifiedTime: string): CloudFileMetada
   return { provider: 'webdav', fileId: path, path, size, modifiedTime } as CloudFileMetadata;
 }
 
+/**
+ * An upload-time cache entry whose provider returned no server mtime: its
+ * `modifiedTime` is the CLIENT clock, and the flag says so.
+ */
+function provisionalFile(path: string, size: number, modifiedTime: string): CloudFileMetadata {
+  return { ...file(path, size, modifiedTime), modifiedTimeProvisional: true };
+}
+
 describe('isoToEpochSeconds', () => {
   it('truncates, never rounds', () => {
     // 999ms would round up to the next second; truncation must not do that.
@@ -130,5 +138,56 @@ describe('isSidecarStale', () => {
 
   it('is NOT stale when the listing mtime equals the stored one, same size', () => {
     expect(isSidecarStale({ size: 10, modified: 5 }, { size: 10, modified: 5 })).toBe(false);
+  });
+});
+
+describe('stamp provenance — provisional upload-time cache entries', () => {
+  it('stampFromSidecarFiles publishes NOTHING for a provisional mokuro, while the server-stamped cover beside it still stamps', () => {
+    const stamp = stampFromSidecarFiles({
+      mokuro: provisionalFile('S/V.mokuro', 2000, '2026-08-27T00:00:00Z'),
+      cover: file('S/V.webp', 300, '2026-01-03T00:00:00Z')
+    });
+    // A client-clock mtime must never publish, and the size is withheld with
+    // it so the entry stays FULLY stampless for that sidecar (a stampless
+    // entry adopts the next listing as its baseline).
+    expect(stamp.mokuro_size).toBeUndefined();
+    expect(stamp.mokuro_modified).toBeUndefined();
+    // The refusal is per FILE, not per group: the cover's stamp is real.
+    expect(stamp.cover_size).toBe(300);
+    expect(stamp.cover_modified).toBe(Math.floor(Date.parse('2026-01-03T00:00:00Z') / 1000));
+  });
+
+  it('stampFromSidecarFiles publishes NOTHING for a provisional cover, while the server-stamped mokuro beside it still stamps', () => {
+    const stamp = stampFromSidecarFiles({
+      mokuro: file('S/V.mokuro', 2000, '2026-01-02T00:00:00Z'),
+      cover: provisionalFile('S/V.webp', 300, '2026-08-27T00:00:00Z')
+    });
+    expect(stamp.cover_size).toBeUndefined();
+    expect(stamp.cover_modified).toBeUndefined();
+    expect(stamp.mokuro_size).toBe(2000);
+    expect(stamp.mokuro_modified).toBe(Math.floor(Date.parse('2026-01-02T00:00:00Z') / 1000));
+  });
+
+  it('buildCloudSidecarStamps omits a volume whose ONLY sidecar is provisional', () => {
+    const stamps = buildCloudSidecarStamps([
+      provisionalFile('S/V1.mokuro', 2000, '2026-08-27T00:00:00Z'),
+      file('S/V2.mokuro', 4096, '2026-01-01T00:00:10Z')
+    ]);
+    // V1 contributes no stamp at all; V2 (the positive control) still does.
+    expect(stamps.size).toBe(1);
+    const only = [...stamps.values()][0];
+    expect(only).toEqual({
+      mokuro_size: 4096,
+      mokuro_modified: Math.floor(Date.parse('2026-01-01T00:00:10Z') / 1000)
+    });
+  });
+
+  it('isSidecarStale treats an information-free listing stamp as NOT stale — a provisional sidecar must never trigger a re-pull', () => {
+    // The shape a provisional listing entry produces downstream: the file is
+    // listed, but `stampFromSidecarFiles` withheld every field.
+    expect(isSidecarStale({ size: 100, modified: 1000 }, {})).toBe(false);
+    // Control: the guard must not deaden real comparisons — the same entry IS
+    // stale against a listing stamp that carries a differing size.
+    expect(isSidecarStale({ size: 100, modified: 1000 }, { size: 101 })).toBe(true);
   });
 });

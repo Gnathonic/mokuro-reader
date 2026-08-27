@@ -56,6 +56,8 @@ interface WorkerUploadSidecars {
 interface WorkerUploadCompleteData {
   type: 'complete';
   fileId?: string;
+  /** Server-reported mtime from the upload response, when the provider returned one. */
+  modifiedTime?: string;
   size?: number;
   data?: Uint8Array;
   filename?: string;
@@ -581,7 +583,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             }
 
             getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
-            const uploadedFileId = await provider!.uploadFile(
+            const uploaded = await provider!.uploadFile(
               archivePath,
               archiveBlob,
               undefined,
@@ -599,11 +601,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             const { cacheManager } = await import('./sync/cache-manager');
             const cache = cacheManager.getCache(provider!.type);
             if (cache?.add) {
+              // Server mtime when the upload response carried one; otherwise a
+              // client-clock fallback explicitly marked provisional so no stamp
+              // publisher treats it as a server fact (`cloud-sidecar-stamps.ts`).
               cache.add(archivePath, {
-                fileId: uploadedFileId,
+                fileId: uploaded.fileId,
                 path: archivePath,
-                modifiedTime: new Date().toISOString(),
-                size: archiveBlob.size
+                modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
+                ...(uploaded.modifiedTime ? {} : { modifiedTimeProvisional: true }),
+                size: uploaded.size ?? archiveBlob.size
               });
             }
 
@@ -676,19 +682,29 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
           const { cacheManager } = await import('./sync/cache-manager');
           const cache = cacheManager.getCache(provider!.type);
-          const addToCache = (path: string, fileId: string, size: number): void => {
+          const addToCache = (
+            path: string,
+            fileId: string,
+            size: number,
+            serverModifiedTime?: string
+          ): void => {
             if (!cache || !cache.add) return;
+            // Server mtime when the worker's upload response carried one;
+            // otherwise a client-clock fallback explicitly marked provisional
+            // so no stamp publisher treats it as a server fact
+            // (`cloud-sidecar-stamps.ts`).
             cache.add(path, {
               fileId,
               path,
-              modifiedTime: new Date().toISOString(),
+              modifiedTime: serverModifiedTime ?? new Date().toISOString(),
+              ...(serverModifiedTime ? {} : { modifiedTimeProvisional: true }),
               size
             });
             console.log(`✅ Added ${path} to ${provider!.type} cache`);
           };
 
           const archivePath = `${item.seriesTitle}/${item.volumeTitle}.cbz`;
-          addToCache(archivePath, uploadedFileId, data.size || 0);
+          addToCache(archivePath, uploadedFileId, data.size || 0, data.modifiedTime);
           // Same fact the cache entry above carries: the bytes the worker sent.
           await recordArchiveSize(item.volumeUuid, data.size);
           noteSeriesNeedingIndexWrite(item.seriesTitle);
