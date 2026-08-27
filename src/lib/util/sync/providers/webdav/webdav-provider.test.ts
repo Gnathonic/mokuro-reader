@@ -496,6 +496,9 @@ describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
     expect(result.path).toBe('New Series/Volume 1.cbz');
     expect(mockClient.moveFile).not.toHaveBeenCalled();
     expect(mockClient.stat).toHaveBeenCalledWith(DEST);
+    // The idempotent-retry branch is a second fabrication site: it must also
+    // carry the ORIGINAL file's real modifiedTime, not the wall clock.
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
   });
 
   it('throws TARGET_EXISTS when the source is gone but the occupant has a different size', async () => {
@@ -542,5 +545,31 @@ describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
 
     await expect(provider.deleteFile(sourceFile)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(provider.isReadOnly).toBe(false); // 404 is not a permission signal
+  });
+
+  it('preserves the source file’s real modifiedTime through a normal rename (never fabricates from the client clock)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false); // no collision anywhere along the path
+    mockClient.moveFile.mockResolvedValue(undefined);
+
+    const result = await provider.renameFile(sourceFile, 'New Series/Volume 1.cbz');
+
+    expect(mockClient.moveFile).toHaveBeenCalled();
+    expect(result.path).toBe('New Series/Volume 1.cbz');
+    // MUST equal the ORIGINAL exactly — not "close to now".
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBeUndefined();
+  });
+
+  it('keeps modifiedTimeProvisional through a rename when the source was only ever a client-clock guess', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false);
+    mockClient.moveFile.mockResolvedValue(undefined);
+    const provisionalSource = { ...sourceFile, modifiedTimeProvisional: true };
+
+    const result = await provider.renameFile(provisionalSource, 'New Series/Volume 1.cbz');
+
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBe(true);
   });
 });

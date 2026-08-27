@@ -876,17 +876,32 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /**
+   * A rename/move never changes file content, so the returned entry must
+   * carry the ORIGINAL file's real `modifiedTime` (and provisional flag, if
+   * it was never more than a client-clock guess) — never a freshly minted
+   * `new Date()`. `modifiedTime`/`modifiedTimeProvisional` are REQUIRED
+   * (not defaulted) so a caller can't silently fall through to fabrication;
+   * every caller has them because it is renaming a known cached entry.
+   */
   private buildWebDAVFileMetadata(
     file: CloudFileMetadata,
     path: string,
-    modifiedTime?: string
+    modifiedTime: string,
+    modifiedTimeProvisional?: boolean
   ): CloudFileMetadata {
-    return {
+    const result: CloudFileMetadata = {
       ...file,
       fileId: `${MOKURO_FOLDER}/${path}`,
       path,
-      modifiedTime: modifiedTime || new Date().toISOString()
+      modifiedTime
     };
+    if (modifiedTimeProvisional) {
+      result.modifiedTimeProvisional = true;
+    } else {
+      delete result.modifiedTimeProvisional;
+    }
+    return result;
   }
 
   /**
@@ -1043,7 +1058,12 @@ export class WebDAVProvider implements SyncProvider {
           )?.size;
           if (typeof file.size === 'number' && destSize === file.size) {
             console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
-            return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+            return this.buildWebDAVFileMetadata(
+              file,
+              normalizedNewPath,
+              file.modifiedTime,
+              file.modifiedTimeProvisional
+            );
           }
         }
         throw new ProviderError(
@@ -1055,7 +1075,12 @@ export class WebDAVProvider implements SyncProvider {
 
       await this.client.moveFile(file.fileId, destinationFullPath, { overwrite: false });
       console.log(`✅ Renamed ${file.path} to ${normalizedNewPath} in WebDAV`);
-      return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+      return this.buildWebDAVFileMetadata(
+        file,
+        normalizedNewPath,
+        file.modifiedTime,
+        file.modifiedTimeProvisional
+      );
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
@@ -1105,7 +1130,8 @@ export class WebDAVProvider implements SyncProvider {
         this.buildWebDAVFileMetadata(
           file,
           `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
-          file.modifiedTime
+          file.modifiedTime,
+          file.modifiedTimeProvisional
         )
       );
 

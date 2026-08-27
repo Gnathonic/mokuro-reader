@@ -582,18 +582,33 @@ export class MegaProvider implements SyncProvider {
     return currentFolder;
   }
 
+  /**
+   * A rename/move never changes file content, so the returned entry must
+   * carry the ORIGINAL file's real `modifiedTime` (and provisional flag, if
+   * it was never more than a client-clock guess) — never a freshly minted
+   * `new Date()`. `modifiedTime`/`modifiedTimeProvisional` are REQUIRED
+   * (not defaulted) so a caller can't silently fall through to fabrication;
+   * every caller has them because it is renaming a known cached entry.
+   */
   private buildRenamedCloudFile(
     file: CloudFileMetadata,
     nextPath: string,
-    fileId?: string,
-    modifiedTime?: string
+    fileId: string,
+    modifiedTime: string,
+    modifiedTimeProvisional?: boolean
   ): CloudFileMetadata {
-    return {
+    const result: CloudFileMetadata = {
       ...file,
-      fileId: fileId || file.fileId,
+      fileId,
       path: nextPath,
-      modifiedTime: modifiedTime || new Date().toISOString()
+      modifiedTime
     };
+    if (modifiedTimeProvisional) {
+      result.modifiedTimeProvisional = true;
+    } else {
+      delete result.modifiedTimeProvisional;
+    }
+    return result;
   }
 
   // VOLUME STORAGE METHODS
@@ -1054,7 +1069,13 @@ export class MegaProvider implements SyncProvider {
           }
 
           const nextFileId = megaFile.nodeId || megaFile.id || file.fileId;
-          return this.buildRenamedCloudFile(file, normalizedNewPath, nextFileId);
+          return this.buildRenamedCloudFile(
+            file,
+            normalizedNewPath,
+            nextFileId,
+            file.modifiedTime,
+            file.modifiedTimeProvisional
+          );
         },
         `Rename file ${file.fileId} in MEGA`,
         () => this.reinitialize()
@@ -1151,7 +1172,8 @@ export class MegaProvider implements SyncProvider {
           file,
           `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
           file.fileId,
-          file.modifiedTime
+          file.modifiedTime,
+          file.modifiedTimeProvisional
         )
       );
     } catch (error) {

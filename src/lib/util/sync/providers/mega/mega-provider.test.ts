@@ -566,3 +566,80 @@ describe('MegaProvider over-quota handling', () => {
     });
   });
 });
+
+describe('MegaProvider.renameFile() — modifiedTime provenance', () => {
+  // A rename must never fabricate a client-clock `modifiedTime`: it changes
+  // no content, so the cache entry the shared rename layer writes back
+  // (unified-cloud-manager's replaceCachedFile) must carry the ORIGINAL
+  // file's real mtime — otherwise cloud-sidecar-stamps.ts would publish a
+  // client-clock stamp into series.json and trigger a spurious re-pull on
+  // the next listing.
+
+  function makeMokuroFolder() {
+    return { name: 'mokuro-reader', directory: true } as any;
+  }
+
+  function makeRenameableFile(parent: any) {
+    const file: any = {
+      nodeId: 'file-1',
+      name: 'Volume 1.cbz',
+      directory: false,
+      parent,
+      rename: vi.fn(async (newName: string) => {
+        file.name = newName;
+      }),
+      moveTo: vi.fn(async () => {})
+    };
+    return file;
+  }
+
+  async function loginWithTree(files: Record<string, any>) {
+    storageState.files = files;
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  it('preserves the source file’s real modifiedTime through a single-file rename (never the wall clock)', async () => {
+    const folder = makeMokuroFolder();
+    const file = makeRenameableFile(folder);
+    const provider = await loginWithTree({ root: folder, file });
+
+    const source = {
+      provider: 'mega' as const,
+      fileId: 'file-1',
+      path: 'Volume 1.cbz',
+      modifiedTime: '2020-01-01T00:00:00.000Z',
+      size: 100
+    };
+
+    const result = await provider.renameFile(source, 'Volume 2.cbz');
+
+    expect(file.rename).toHaveBeenCalledWith('Volume 2.cbz');
+    expect(result.path).toBe('Volume 2.cbz');
+    // MUST equal the ORIGINAL exactly — not "close to now".
+    expect(result.modifiedTime).toBe('2020-01-01T00:00:00.000Z');
+    expect(result.modifiedTimeProvisional).toBeUndefined();
+  });
+
+  it('keeps modifiedTimeProvisional through a rename when the source was only ever a client-clock guess', async () => {
+    const folder = makeMokuroFolder();
+    const file = makeRenameableFile(folder);
+    const provider = await loginWithTree({ root: folder, file });
+
+    const source = {
+      provider: 'mega' as const,
+      fileId: 'file-1',
+      path: 'Volume 1.cbz',
+      modifiedTime: '2020-01-01T00:00:00.000Z',
+      modifiedTimeProvisional: true,
+      size: 100
+    };
+
+    const result = await provider.renameFile(source, 'Volume 2.cbz');
+
+    expect(result.modifiedTime).toBe('2020-01-01T00:00:00.000Z');
+    expect(result.modifiedTimeProvisional).toBe(true);
+  });
+});
