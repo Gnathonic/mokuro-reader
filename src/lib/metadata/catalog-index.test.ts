@@ -1,158 +1,261 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import Dexie from 'dexie';
 
 vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
 vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
-// The accessors below run against the app's `db` singleton, so it is pointed at
-// a throwaway fake-indexeddb database for this file.
+/**
+ * The accessors run against the app's `db` singleton, so it is pointed at a
+ * throwaway database here — but at the REAL `CatalogDexieV3` schema, never a
+ * hand-written one. A test-local `stores({...})` would keep passing after
+ * db-v3.ts's primary key moved out from under it, which is exactly the round
+ * trip these tests exist to prove.
+ */
 vi.mock('$lib/catalog/db', async () => {
-  const { default: Dexie } = await import('dexie');
-  const db = new Dexie('catalog-index-accessor-test');
-  db.version(1).stores({ catalog_index: 'series_key' });
-  return { db };
+  const { CatalogDexieV3 } = await import('$lib/catalog/db-v3');
+  return { db: new CatalogDexieV3('catalog-index-accessor-test') };
 });
 
-import { CatalogDexieV3 } from '$lib/catalog/db-v3';
-import { db as appDb } from '$lib/catalog/db';
-import type { CatalogIndexRecord } from './catalog-index';
-import { catalogNeedsRefresh, replaceCatalogIndexesForProvider } from './catalog-index';
+import { db } from '$lib/catalog/db';
+import type { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import {
+  CATALOG_INDEX_ID,
+  catalogNeedsRefresh,
+  dropCatalogEntries,
+  getCatalogIndex,
+  moveCatalogIndexKey,
+  putCatalogIndex,
+  type CatalogIndexRecord
+} from './catalog-index';
+import { buildCatalogFile, catalogEntryFromMeta, catalogSeriesEqual } from './catalog-file';
+import type { CatalogFile, CatalogFileEntry } from './catalog-file';
 
-const DB_NAME = 'mokuro_v3_catalog_index_test';
-let db: CatalogDexieV3 | null = null;
+const table = () => (db as unknown as CatalogDexieV3).catalog_index;
 
-afterEach(async () => {
-  db?.close();
-  db = null;
-  await Dexie.delete(DB_NAME);
-});
+const SOURCE = {
+  provider: 'webdav',
+  path: 'catalog.json',
+  size: 1234,
+  modifiedTime: '2026-08-23T00:00:00.000Z'
+};
 
-function record(overrides: Partial<CatalogIndexRecord> = {}): CatalogIndexRecord {
+/** A series this library knows facts about. */
+function linked(series_title: string, anilist: number, updated_at: string): CatalogFileEntry {
+  return { series_title, external_ids: { anilist }, titles: {}, synonyms: [], updated_at };
+}
+
+/** A name and nothing else — the shape only this cache preserves. */
+function factless(series_title: string, updated_at = '1970-01-01T00:00:00.000Z'): CatalogFileEntry {
+  return { series_title, external_ids: {}, titles: {}, synonyms: [], updated_at };
+}
+
+function catalog(...series: CatalogFileEntry[]): CatalogFile {
+  return { version: 1, updated_at: '2026-08-23T00:00:00.000Z', series };
+}
+
+function record(overrides: Partial<CatalogIndexRecord> = {}): Omit<CatalogIndexRecord, 'id'> {
   return {
-    series_key: 'dr stone (hd scan)',
-    series_title: 'Dr Stone (HD Scan)',
-    entry: {
-      series_title: 'Dr Stone (HD Scan)',
-      external_ids: { anilist: 98416 },
-      titles: {},
-      synonyms: [],
-      updated_at: '2026-08-18T19:36:24.324Z'
-    },
-    source: {
-      provider: 'webdav',
-      path: 'catalog.json',
-      size: 1234,
-      modifiedTime: '2026-08-23T00:00:00.000Z'
-    },
+    file: catalog(linked('Dr Stone (HD Scan)', 98416, '2026-08-18T19:36:24.324Z')),
+    source: SOURCE,
     fetched_at: '2026-08-23T00:00:01.000Z',
     ...overrides
   };
 }
 
-describe('catalog_index table', () => {
-  it('stores and reads back a record keyed by series_key', async () => {
-    db = new CatalogDexieV3(DB_NAME);
-    await db.open();
-    await db.catalog_index.put(record());
-    expect(await db.catalog_index.get('dr stone (hd scan)')).toMatchObject({
-      series_title: 'Dr Stone (HD Scan)'
-    });
+beforeEach(async () => {
+  await table().clear();
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('the catalog_index single row', () => {
+  it('round-trips a whole CatalogFile under the production schema', async () => {
+    const file = catalog(
+      linked('Dr Stone (HD Scan)', 98416, '2026-08-18T19:36:24.324Z'),
+      factless('Bare Folder')
+    );
+    await putCatalogIndex(record({ file }));
+
+    const read = await getCatalogIndex();
+    expect(read?.id).toBe(CATALOG_INDEX_ID);
+    expect(read?.file).toEqual(file);
+    expect(read?.source).toEqual(SOURCE);
+    expect(read?.fetched_at).toBe('2026-08-23T00:00:01.000Z');
+    // One remote file, one row — never a row per series.
+    expect(await table().count()).toBe(1);
+  });
+
+  it('replaces the previous copy rather than accumulating rows', async () => {
+    await putCatalogIndex(record());
+    await putCatalogIndex(record({ file: catalog(factless('Only This')) }));
+
+    expect(await table().count()).toBe(1);
+    expect((await getCatalogIndex())?.file.series.map((e) => e.series_title)).toEqual([
+      'Only This'
+    ]);
+  });
+
+  it('refuses to cache a catalog that lists nothing', async () => {
+    // A truncated upload or a half-written file is never grounds for forgetting
+    // what this device knows — and storing it would park a current stamp on an
+    // empty copy, hiding the real catalog until its size/mtime moved again.
+    await putCatalogIndex(record());
+    await putCatalogIndex(record({ file: catalog() }));
+
+    expect((await getCatalogIndex())?.file.series).toHaveLength(1);
+  });
+});
+
+describe('factless, name-only entries survive a republish', () => {
+  /**
+   * The one thing this cache holds that nothing else does. A rebuild only knows
+   * the series THIS device has facts for; every other folder in the listing
+   * projects to a factless epoch entry. The cached copy is what carries the
+   * other devices' facts — and the stamp of an unlink somebody else published,
+   * which an epoch entry must not roll back — into `buildCatalogFile`'s
+   * `existing` merge.
+   */
+  const cloudTitles = new Set(['Dr Stone (HD Scan)', 'Bare Folder', 'Unlinked Elsewhere']);
+  const cached = catalog(
+    linked('Dr Stone (HD Scan)', 98416, '2026-08-18T19:36:24.324Z'),
+    factless('Bare Folder'),
+    factless('Unlinked Elsewhere', '2026-08-20T00:00:00.000Z')
+  );
+
+  it('carries them out of the cache and back into the rebuilt catalog', async () => {
+    await putCatalogIndex(record({ file: cached }));
+    const existing = (await getCatalogIndex())?.file;
+
+    // What this device would publish on its own: it knows no facts at all.
+    const entries = [...cloudTitles].map((title) => catalogEntryFromMeta(title, undefined));
+    const rebuilt = buildCatalogFile({ entries, existing, cloudSeriesTitles: cloudTitles });
+
+    expect(rebuilt?.series.map((e) => e.series_title).sort()).toEqual([
+      'Bare Folder',
+      'Dr Stone (HD Scan)',
+      'Unlinked Elsewhere'
+    ]);
+    // Another device's link, still there.
+    expect(rebuilt?.series.find((e) => e.series_title === 'Dr Stone (HD Scan)')).toEqual(
+      linked('Dr Stone (HD Scan)', 98416, '2026-08-18T19:36:24.324Z')
+    );
+    // A published unlink keeps its stamp: rolled back to the epoch it would sit
+    // below every stale link still out there and be re-linked by one of them.
+    expect(rebuilt?.series.find((e) => e.series_title === 'Unlinked Elsewhere')?.updated_at).toBe(
+      '2026-08-20T00:00:00.000Z'
+    );
+    // And because nothing changed, the republish is a no-op — the whole reason
+    // the cache has to hold the factless entries too.
+    expect(catalogSeriesEqual(rebuilt!.series, cached.series)).toBe(true);
   });
 });
 
 describe('catalogNeedsRefresh', () => {
   const cloud = { size: 1234, modifiedTime: '2026-08-23T00:00:00.000Z' };
+  const cachedRecord: CatalogIndexRecord = { id: CATALOG_INDEX_ID, ...record() };
 
   it('is true when nothing is cached', () => {
-    expect(catalogNeedsRefresh([], cloud, 'webdav')).toBe(true);
+    expect(catalogNeedsRefresh(undefined, cloud, 'webdav')).toBe(true);
   });
 
-  it('is false when the newest cached stamp matches', () => {
-    expect(catalogNeedsRefresh([record()], cloud, 'webdav')).toBe(false);
+  it('is false when the cached stamp matches', () => {
+    expect(catalogNeedsRefresh(cachedRecord, cloud, 'webdav')).toBe(false);
   });
 
   it('is true when the size differs', () => {
-    expect(catalogNeedsRefresh([record()], { ...cloud, size: 9999 }, 'webdav')).toBe(true);
+    expect(catalogNeedsRefresh(cachedRecord, { ...cloud, size: 9999 }, 'webdav')).toBe(true);
+  });
+
+  it('is true when the modifiedTime differs', () => {
+    expect(
+      catalogNeedsRefresh(
+        cachedRecord,
+        { ...cloud, modifiedTime: '2026-08-24T00:00:00.000Z' },
+        'webdav'
+      )
+    ).toBe(true);
   });
 
   it('is true when the cache came from another provider', () => {
-    expect(catalogNeedsRefresh([record()], cloud, 'mega')).toBe(true);
+    expect(catalogNeedsRefresh(cachedRecord, cloud, 'mega')).toBe(true);
   });
 
   it('treats equivalent ISO representations of one instant as unchanged', () => {
     expect(
       catalogNeedsRefresh(
-        [record()],
+        cachedRecord,
         { size: 1234, modifiedTime: '2026-08-23T00:00:00+00:00' },
         'webdav'
       )
     ).toBe(false);
   });
+});
 
-  it('uses the newest row when rows disagree', () => {
-    const stale = record({
-      series_key: 'other',
-      source: {
-        provider: 'webdav',
-        path: 'catalog.json',
-        size: 1,
-        modifiedTime: '2026-01-01T00:00:00.000Z'
-      },
-      fetched_at: '2026-01-01T00:00:00.000Z'
-    });
-    expect(catalogNeedsRefresh([stale, record()], cloud, 'webdav')).toBe(false);
+describe('dropCatalogEntries', () => {
+  it('removes only the named series from the cached file', async () => {
+    await putCatalogIndex(
+      record({ file: catalog(factless('Gone'), factless('Kept'), factless('Also Kept')) })
+    );
+    await dropCatalogEntries(['gone']);
+
+    const read = await getCatalogIndex();
+    expect(read?.file.series.map((e) => e.series_title)).toEqual(['Kept', 'Also Kept']);
+    expect(read?.source).toEqual(SOURCE);
+  });
+
+  it('drops the whole record when nothing is left, so the next listing re-fetches', async () => {
+    await putCatalogIndex(record({ file: catalog(factless('Only One')) }));
+    await dropCatalogEntries(['only one']);
+
+    expect(await getCatalogIndex()).toBeUndefined();
   });
 });
 
-describe('replaceCatalogIndexesForProvider', () => {
-  const table = () => (appDb as unknown as CatalogDexieV3).catalog_index;
-
-  beforeEach(async () => {
-    await table().clear();
-  });
-
-  it('drops this provider rows that left the catalog and keeps the rest', async () => {
-    await table().bulkPut([
-      record({ series_key: 'gone', series_title: 'Gone' }),
-      record({ series_key: 'kept', series_title: 'Kept' }),
+describe('moveCatalogIndexKey', () => {
+  it('re-titles the entry in place, keeping its facts', async () => {
+    await putCatalogIndex(
       record({
-        series_key: 'other account',
-        series_title: 'Other Account',
-        source: { provider: 'mega', path: 'catalog.json', size: 9, modifiedTime: 'old' }
+        file: catalog(linked('Old Name', 42, '2026-08-18T00:00:00.000Z'), factless('Other'))
       })
-    ]);
+    );
+    await moveCatalogIndexKey('Old Name', 'New Name');
 
-    await replaceCatalogIndexesForProvider('webdav', [
-      record({ series_key: 'kept', series_title: 'Kept' }),
-      record({ series_key: 'fresh', series_title: 'Fresh' })
-    ]);
-
-    const keys = (await table().toArray()).map((r) => r.series_key).sort();
-    // 'gone' is this provider's and absent from the new set; 'other account' is
-    // another account's row, which this listing says nothing about.
-    expect(keys).toEqual(['fresh', 'kept', 'other account']);
+    const series = (await getCatalogIndex())?.file.series ?? [];
+    expect(series.map((e) => e.series_title).sort()).toEqual(['New Name', 'Other']);
+    expect(series.find((e) => e.series_title === 'New Name')?.external_ids).toEqual({
+      anilist: 42
+    });
   });
 
-  it('refuses to empty the table when handed no records', async () => {
-    await table().bulkPut([record({ series_key: 'kept', series_title: 'Kept' })]);
-    await replaceCatalogIndexesForProvider('webdav', []);
-    expect(await table().count()).toBe(1);
+  it('collapses a collision onto the moved entry', async () => {
+    await putCatalogIndex(
+      record({
+        file: catalog(linked('Old Name', 42, '2026-08-18T00:00:00.000Z'), factless('New Name'))
+      })
+    );
+    await moveCatalogIndexKey('Old Name', 'New Name');
+
+    const series = (await getCatalogIndex())?.file.series ?? [];
+    expect(series).toHaveLength(1);
+    expect(series[0]).toEqual({
+      series_title: 'New Name',
+      external_ids: { anilist: 42 },
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-18T00:00:00.000Z'
+    });
   });
 
-  it('writes the delete and the put in ONE transaction', async () => {
-    // The table feeds a liveQuery the catalog joins: two writes would emit twice
-    // and rebuild the whole card set a second time (visible flicker).
-    await table().bulkPut([record({ series_key: 'gone', series_title: 'Gone' })]);
-    const transaction = vi.spyOn(appDb, 'transaction');
+  it('does nothing when the old title is not cached', async () => {
+    await putCatalogIndex(record({ file: catalog(factless('Untouched')) }));
+    await moveCatalogIndexKey('Absent', 'Whatever');
 
-    await replaceCatalogIndexesForProvider('webdav', [
-      record({ series_key: 'fresh', series_title: 'Fresh' })
+    expect((await getCatalogIndex())?.file.series.map((e) => e.series_title)).toEqual([
+      'Untouched'
     ]);
-
-    expect(transaction).toHaveBeenCalledTimes(1);
-    transaction.mockRestore();
   });
 });

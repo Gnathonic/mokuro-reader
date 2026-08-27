@@ -40,7 +40,7 @@ describe('compress-volume worker DB mirror', () => {
       character_count: 1,
       page_char_counts: [1]
     } as never);
-    await main.catalog_index.add({ series_key: 's1' } as never);
+    await main.catalog_index.add({ id: 'catalog' } as never);
     await main.cloud_covers.add({
       account_scope: 'mega:a@b.com',
       path: 'Title/Vol 1.cbz',
@@ -60,5 +60,45 @@ describe('compress-volume worker DB mirror', () => {
     expect(await reopened.catalog_index.count()).toBe(1);
     expect(await reopened.cloud_covers.count()).toBe(1);
     reopened.close();
+  });
+});
+
+/**
+ * The mechanical half of the same guard. The behavioural test above proves the
+ * mirror does not WIPE a table, but it cannot see a table whose primary key or
+ * indexes drifted — the two connections would simply file rows under different
+ * key paths, and the damage shows up later as reads that find nothing. So:
+ * compare the two independently-written version ladders directly.
+ *
+ * Vite reads the sources as text at transform time — no node:fs, so this runs
+ * the same way under vitest as it would in any browser-target runner.
+ */
+const SOURCES = import.meta.glob('/src/lib/{catalog/db-v3,util/compress-volume}.ts', {
+  query: '?raw',
+  import: 'default',
+  eager: true
+}) as Record<string, string>;
+
+function schemaLadder(path: string): string[] {
+  const source = SOURCES[path];
+  if (source === undefined) throw new Error(`no source text for ${path}`);
+  return [...source.matchAll(/\.version\((\d+)\)\.stores\(\{([\s\S]*?)\}\)/g)].map(
+    ([, version, body]) => `v${version} {${body.replace(/\s+/g, ' ').trim()}}`
+  );
+}
+
+describe('compress-volume worker DB schema mirror', () => {
+  const main = schemaLadder('/src/lib/catalog/db-v3.ts');
+  const mirror = schemaLadder('/src/lib/util/compress-volume.ts');
+
+  it('finds both version ladders (guards against a broken scanner)', () => {
+    // Without this a regex that matched nothing would make [] === [] pass.
+    expect(main).toHaveLength(2);
+    expect(mirror).toHaveLength(2);
+    expect(main.join('\n')).toContain('catalog_index');
+  });
+
+  it('declares exactly the same version ladder as db-v3.ts', () => {
+    expect(mirror).toEqual(main);
   });
 });

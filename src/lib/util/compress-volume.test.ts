@@ -64,7 +64,7 @@ beforeAll(async () => {
     volume_files: 'volume_uuid',
     series_metadata: 'series_key',
     series_index: 'series_key',
-    catalog_index: 'series_key',
+    catalog_index: 'id',
     cloud_covers: '[account_scope+path], cached_at'
   });
   await db.open();

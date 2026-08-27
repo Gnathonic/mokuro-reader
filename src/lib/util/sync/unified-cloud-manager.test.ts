@@ -82,10 +82,10 @@ vi.mock('$lib/metadata/series-index', async () => {
   };
 });
 
-const catalogRows = vi.fn(async (): Promise<unknown[]> => []);
-const deleteCatalogIndexes = vi.fn(async (_keys: string[]) => {});
+const catalogCache = vi.fn(async (): Promise<unknown> => undefined);
+const dropCatalogEntries = vi.fn(async (_keys: string[]) => {});
 const moveCatalogIndexKey = vi.fn(async (_old: string, _next: string) => {});
-const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: unknown[]) => {});
+const putCatalogIndex = vi.fn(async (_rec: { file: { series: unknown[] } }) => {});
 vi.mock('$lib/metadata/catalog-index', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
     '$lib/metadata/catalog-index'
@@ -93,11 +93,9 @@ vi.mock('$lib/metadata/catalog-index', async () => {
   return {
     // The real size/mtime comparison decides whether the write re-reads first.
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
-    listCatalogIndexes: () => catalogRows(),
-
-    deleteCatalogIndexes: (keys: string[]) => deleteCatalogIndexes(keys),
-    replaceCatalogIndexesForProvider: (provider: string, recs: unknown[]) =>
-      replaceCatalogIndexes(provider, recs),
+    getCatalogIndex: () => catalogCache(),
+    dropCatalogEntries: (keys: string[]) => dropCatalogEntries(keys),
+    putCatalogIndex: (rec: { file: { series: unknown[] } }) => putCatalogIndex(rec),
     moveCatalogIndexKey: (o: string, n: string) => moveCatalogIndexKey(o, n)
   };
 });
@@ -2127,7 +2125,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     expect(deleted).toContain(`${decomposed}/series.json`);
     // Keyed by the folder, which is where every writer here cached it.
     expect(deleteSeriesIndex).toHaveBeenCalledWith(decomposed.toLowerCase());
-    expect(deleteCatalogIndexes).toHaveBeenCalledWith([decomposed.toLowerCase()]);
+    expect(dropCatalogEntries).toHaveBeenCalledWith([decomposed.toLowerCase()]);
   });
 
   it('retires the stale sidecar of a decomposed folder after a rename', async () => {
@@ -2577,20 +2575,24 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
   }
 
   /**
-   * A cached catalog row for a factless series, as the last fetch left it.
-   * `sourceOverrides` is how a test makes the cache look STALE against the
-   * listing, which is what sends the write down the re-read path.
+   * The cached catalog copy, holding a factless entry per named series, as the
+   * last fetch left it. `sourceOverrides` is how a test makes the cache look
+   * STALE against the listing, which is what sends the write down the re-read
+   * path.
    */
-  function cachedRow(seriesTitle: string, sourceOverrides: Record<string, unknown> = {}) {
+  function cachedCatalog(seriesTitles: string[], sourceOverrides: Record<string, unknown> = {}) {
     return {
-      series_key: seriesTitle.toLowerCase(),
-      series_title: seriesTitle,
-      entry: {
-        series_title: seriesTitle,
-        external_ids: {},
-        titles: {},
-        synonyms: [],
-        updated_at: '1970-01-01T00:00:00.000Z'
+      id: 'catalog',
+      file: {
+        version: 1,
+        updated_at: '2026-08-22T00:00:00.000Z',
+        series: seriesTitles.map((series_title) => ({
+          series_title,
+          external_ids: {},
+          titles: {},
+          synonyms: [],
+          updated_at: '1970-01-01T00:00:00.000Z'
+        }))
       },
       source: {
         provider: 'webdav',
@@ -2605,7 +2607,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    catalogRows.mockResolvedValue([]);
+    catalogCache.mockResolvedValue(undefined);
     getAllSeriesMetadata.mockResolvedValue({});
     getAllFiles.mockReturnValue(listing);
     getCache.mockReturnValue(loadedCache());
@@ -2678,8 +2680,10 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     expect(written.series[0].external_ids).toEqual({ anilist: 98416 });
 
     // The cache is stamped so the very next listing does not re-download our own write.
-    const cached = replaceCatalogIndexes.mock.calls.at(-1)![1] as Array<{ series_key: string }>;
-    expect(cached.map((r) => r.series_key)).toEqual(['dr stone', 'other']);
+    const cached = putCatalogIndex.mock.calls.at(-1)![0] as {
+      file: { series: Array<{ series_title: string }> };
+    };
+    expect(cached.file.series.map((e) => e.series_title)).toEqual(['Dr Stone', 'Other']);
   });
 
   it('gives an NFD folder the facts of its composed series record', async () => {
@@ -2789,11 +2793,10 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
 
     // The real `catalog_index` table is stateful, and that is the whole point
     // here — the second attempt must see what the first one wrote.
-    const rows: Array<{ series_key: string }> = [];
-    catalogRows.mockImplementation(async () => [...rows]);
-    replaceCatalogIndexes.mockImplementation(async (_provider: string, recs: unknown[]) => {
-      rows.length = 0;
-      rows.push(...(recs as Array<{ series_key: string }>));
+    let stored: Record<string, unknown> | undefined;
+    catalogCache.mockImplementation(async () => stored);
+    putCatalogIndex.mockImplementation(async (rec: unknown) => {
+      stored = { id: 'catalog', ...(rec as Record<string, unknown>) };
     });
 
     try {
@@ -2801,13 +2804,17 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
 
       await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
       expect(p.downloadFile).toHaveBeenCalledTimes(1);
-      expect(rows.map((row) => row.series_key)).toEqual(['dr stone', 'other']);
+      expect(
+        (stored as { file: { series: Array<{ series_title: string }> } }).file.series.map(
+          (e) => e.series_title
+        )
+      ).toEqual(['Dr Stone', 'Other']);
 
       await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
       expect(p.downloadFile).toHaveBeenCalledTimes(1);
       expect(uploadFile).not.toHaveBeenCalled();
     } finally {
-      replaceCatalogIndexes.mockImplementation(async () => {});
+      putCatalogIndex.mockImplementation(async () => {});
     }
   });
 
@@ -2816,7 +2823,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // about a cloud that has no such file at all.
     getActiveProvider.mockReturnValue(provider());
     getAllFiles.mockReturnValue(listing.filter((f) => f.path !== 'catalog.json'));
-    catalogRows.mockResolvedValue([cachedRow('Dr Stone'), cachedRow('Other')]);
+    catalogCache.mockResolvedValue(cachedCatalog(['Dr Stone', 'Other']));
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
@@ -2831,46 +2838,27 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     getActiveProvider.mockReturnValue(p);
     // Stale stamp, so the write re-reads the cloud copy and finds the junk.
     const stale = { modifiedTime: '2026-08-01T00:00:00.000Z' };
-    catalogRows.mockResolvedValue([cachedRow('Dr Stone', stale), cachedRow('Other', stale)]);
+    catalogCache.mockResolvedValue(cachedCatalog(['Dr Stone', 'Other'], stale));
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
     expect(uploadFile).toHaveBeenCalled();
   });
 
-  it('drops cached rows of THIS provider whose series left the catalog', async () => {
+  it('re-stamps the cache with the published copy, dropping a series that left', async () => {
     getActiveProvider.mockReturnValue(provider());
-    catalogRows.mockResolvedValue([
-      {
-        series_key: 'gone',
-        series_title: 'Gone',
-        entry: {
-          series_title: 'Gone',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '1970-01-01T00:00:00.000Z'
-        },
-        source: {
-          provider: 'webdav',
-          path: 'catalog.json',
-          size: 5,
-          modifiedTime: '2026-08-22T00:00:00.000Z'
-        },
-        fetched_at: '2026-08-22T00:00:00.000Z'
-      }
-    ]);
+    catalogCache.mockResolvedValue(cachedCatalog(['Gone']));
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await unifiedCloudManager.writeCatalogFile();
-    // The prune runs inside `replaceCatalogIndexesForProvider` (one transaction,
-    // tested in catalog-index.test.ts); what matters here is that the write
-    // hands it THIS provider and a set with no 'gone' in it.
-    const [providerType, recs] = replaceCatalogIndexes.mock.calls.at(-1)! as [
-      string,
-      Array<{ series_key: string }>
-    ];
-    expect(providerType).toBe('webdav');
-    expect(recs.map((r) => r.series_key)).not.toContain('gone');
+
+    const stamped = putCatalogIndex.mock.calls.at(-1)![0] as {
+      file: { series: Array<{ series_title: string }> };
+      source: { provider: string };
+    };
+    expect(stamped.source.provider).toBe('webdav');
+    // 'Gone' has no folder in the listing, so the published copy — and with it
+    // the cache — no longer mentions it.
+    expect(stamped.file.series.map((e) => e.series_title)).not.toContain('Gone');
   });
 });
 

@@ -54,11 +54,10 @@ import {
 } from '$lib/metadata/series-index';
 import {
   catalogNeedsRefresh,
-  deleteCatalogIndexes,
-  listCatalogIndexes,
+  dropCatalogEntries,
+  getCatalogIndex,
   moveCatalogIndexKey,
-  replaceCatalogIndexesForProvider,
-  type CatalogIndexRecord
+  putCatalogIndex
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
@@ -1427,14 +1426,14 @@ class UnifiedCloudManager {
   }
 
   /**
-   * The catalog copy to merge on top of: the cached rows, unless the listing
+   * The catalog copy to merge on top of: the cached copy, unless the listing
    * shows a different (size, modifiedTime) — then another device wrote it after
    * our last fetch, so we re-read it first and the union keeps that device's
    * series. Throws when the re-read fails: writing on top of a copy we could not
    * read would silently clobber it.
    *
    * `faithful` says whether the returned copy is known to be what the cloud file
-   * holds right now — true for a copy just downloaded, and for cached rows the
+   * holds right now — true for a copy just downloaded, and for a cached copy the
    * listing stamp vouches for. It is false when there is no cloud file at all
    * and when the cloud copy was junk, which is exactly when an identical rebuild
    * must still be published rather than short-circuited as a no-op.
@@ -1442,18 +1441,14 @@ class UnifiedCloudManager {
   private async resolveExistingCatalogFile(
     providerType: ProviderType
   ): Promise<{ file: CatalogFile | undefined; faithful: boolean }> {
-    const rows = await listCatalogIndexes();
-    const cachedFile = (): CatalogFile | undefined =>
-      rows.length === 0
-        ? undefined
-        : { version: 1, updated_at: new Date(0).toISOString(), series: rows.map((r) => r.entry) };
+    const cached = await getCatalogIndex();
 
     const cloudFile = this.getCloudCatalogFile();
-    if (!cloudFile) return { file: cachedFile(), faithful: false };
+    if (!cloudFile) return { file: cached?.file, faithful: false };
 
     const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
-    if (!catalogNeedsRefresh(rows, stamp, providerType))
-      return { file: cachedFile(), faithful: true };
+    if (!catalogNeedsRefresh(cached, stamp, providerType))
+      return { file: cached?.file, faithful: true };
 
     const blob = await this.downloadFile(cloudFile);
     let fresh: CatalogFile | undefined;
@@ -1465,7 +1460,7 @@ class UnifiedCloudManager {
     // Junk in the cloud (hand-edited, truncated, a proxy error page): this write
     // replaces it, but the series other devices published are still known from
     // the last good fetch, so merge on top of the CACHE rather than nothing.
-    return fresh ? { file: fresh, faithful: true } : { file: cachedFile(), faithful: false };
+    return fresh ? { file: fresh, faithful: true } : { file: cached?.file, faithful: false };
   }
 
   /**
@@ -1533,7 +1528,7 @@ class UnifiedCloudManager {
     // known to be the cloud's current content.
     if (faithful && catalogSeriesEqual(file.series, existing?.series)) {
       // Still stamp the cache. The content is known-good — freshly downloaded,
-      // or cached rows the listing stamp vouches for — and without the stamp
+      // or a cached copy the listing stamp vouches for — and without the stamp
       // `catalogNeedsRefresh` stays true forever, so every later write would
       // re-download catalog.json just to reach this same conclusion.
       await this.stampCatalogCache(provider.type, file);
@@ -1568,16 +1563,8 @@ class UnifiedCloudManager {
       size: cloudFile?.size ?? fallbackSize,
       modifiedTime: cloudFile?.modifiedTime ?? now
     };
-    const records: CatalogIndexRecord[] = file.series.map((entry) => ({
-      series_key: normalizeSeriesKey(entry.series_title),
-      series_title: entry.series_title,
-      entry,
-      source,
-      fetched_at: now
-    }));
-    // Same accessor the read half uses, so the prune rule lives in one place and
-    // the catalog's liveQuery sees a single emission.
-    await replaceCatalogIndexesForProvider(providerType, records);
+    // Same accessor the read half uses, so the cache has exactly one writer shape.
+    await putCatalogIndex({ file, source, fetched_at: now });
   }
 
   /**
@@ -1642,7 +1629,7 @@ class UnifiedCloudManager {
       console.warn(`Failed to drop the cached series index for '${folderTitle}':`, error);
     }
     try {
-      await deleteCatalogIndexes([normalizeSeriesKey(folderTitle)]);
+      await dropCatalogEntries([normalizeSeriesKey(folderTitle)]);
     } catch (error) {
       console.debug(`Could not drop the cached catalog entry for '${folderTitle}':`, error);
     }

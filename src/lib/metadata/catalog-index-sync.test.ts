@@ -10,17 +10,16 @@ vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActive
 // once hid a transaction-nesting bug precisely because the body never ran.
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
-const listCatalogIndexes = vi.fn(async (): Promise<CatalogIndexRecord[]> => []);
-const replaceCatalogIndexes = vi.fn(async (_provider: string, _recs: CatalogIndexRecord[]) => {});
+const getCatalogIndex = vi.fn(async (): Promise<CatalogIndexRecord | undefined> => undefined);
+const putCatalogIndex = vi.fn(async (_rec: Omit<CatalogIndexRecord, 'id'>) => {});
 vi.mock('$lib/metadata/catalog-index', async () => {
   const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
     '$lib/metadata/catalog-index'
   );
   return {
     catalogNeedsRefresh: actual.catalogNeedsRefresh,
-    listCatalogIndexes: () => listCatalogIndexes(),
-    replaceCatalogIndexesForProvider: (provider: string, recs: CatalogIndexRecord[]) =>
-      replaceCatalogIndexes(provider, recs)
+    getCatalogIndex: () => getCatalogIndex(),
+    putCatalogIndex: (rec: Omit<CatalogIndexRecord, 'id'>) => putCatalogIndex(rec)
   };
 });
 
@@ -84,24 +83,51 @@ const CATALOG_JSON = JSON.stringify({
 
 const downloadFile = vi.fn(async () => new Blob([CATALOG_JSON]));
 
+/** The cached copy of one earlier fetch, stamped `source`. */
+function cached(
+  source: { size: number; modifiedTime: string },
+  ...titles: string[]
+): CatalogIndexRecord {
+  return {
+    id: 'catalog',
+    file: {
+      version: 1,
+      updated_at: '2026-08-01T00:00:00.000Z',
+      series: titles.map((series_title) => ({
+        series_title,
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '1970-01-01T00:00:00.000Z'
+      }))
+    },
+    source: { provider: 'webdav', path: 'catalog.json', ...source },
+    fetched_at: '2026-08-01T00:00:00.000Z'
+  };
+}
+
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
-  listCatalogIndexes.mockResolvedValue([]);
+  getCatalogIndex.mockResolvedValue(undefined);
   downloadFile.mockResolvedValue(new Blob([CATALOG_JSON]));
   getActiveProvider.mockReturnValue({ type: 'webdav', downloadFile });
 });
 
 describe('refreshCatalogIndex', () => {
-  it('caches every entry in ONE write and applies the facts', async () => {
+  it('caches the parsed file in ONE write and applies the facts', async () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
 
-    expect(replaceCatalogIndexes).toHaveBeenCalledTimes(1);
-    expect(replaceCatalogIndexes.mock.calls[0][0]).toBe('webdav');
-    const rows = replaceCatalogIndexes.mock.calls[0][1];
-    expect(rows.map((r) => r.series_key)).toEqual(['dr stone (hd scan)', 'bare folder']);
-    expect(rows[0].source).toEqual({
+    expect(putCatalogIndex).toHaveBeenCalledTimes(1);
+    const cached = putCatalogIndex.mock.calls[0][0];
+    // The whole document, factless entries included — never a per-series shred.
+    expect(cached.file.series.map((e) => e.series_title)).toEqual([
+      'Dr Stone (HD Scan)',
+      'Bare Folder'
+    ]);
+    expect(cached.file.version).toBe(1);
+    expect(cached.source).toEqual({
       provider: 'webdav',
       path: 'catalog.json',
       size: 100,
@@ -116,114 +142,42 @@ describe('refreshCatalogIndex', () => {
   });
 
   it('does nothing when the cached stamp already matches', async () => {
-    listCatalogIndexes.mockResolvedValue([
-      {
-        series_key: 'dr stone (hd scan)',
-        series_title: 'Dr Stone (HD Scan)',
-        entry: {
-          series_title: 'Dr Stone (HD Scan)',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '2026-08-18T19:36:24.324Z'
-        },
-        source: {
-          provider: 'webdav',
-          path: 'catalog.json',
-          size: 100,
-          modifiedTime: '2026-08-23T00:00:00.000Z'
-        },
-        fetched_at: '2026-08-23T00:00:01.000Z'
-      }
-    ]);
+    getCatalogIndex.mockResolvedValue(
+      cached({ size: 100, modifiedTime: '2026-08-23T00:00:00.000Z' }, 'Dr Stone (HD Scan)')
+    );
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
     expect(downloadFile).not.toHaveBeenCalled();
-    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndex).not.toHaveBeenCalled();
   });
 
-  it('hands the prune the provider whose listing produced the run', async () => {
-    listCatalogIndexes.mockResolvedValue([
-      {
-        series_key: 'deleted series',
-        series_title: 'Deleted Series',
-        entry: {
-          series_title: 'Deleted Series',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '1970-01-01T00:00:00.000Z'
-        },
-        source: { provider: 'webdav', path: 'catalog.json', size: 9, modifiedTime: 'old' },
-        fetched_at: '2026-08-01T00:00:00.000Z'
-      },
-      {
-        series_key: 'other account',
-        series_title: 'Other Account',
-        entry: {
-          series_title: 'Other Account',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '1970-01-01T00:00:00.000Z'
-        },
-        source: { provider: 'mega', path: 'catalog.json', size: 9, modifiedTime: 'old' },
-        fetched_at: '2026-08-01T00:00:00.000Z'
-      }
-    ]);
+  it('replaces the cached copy wholesale, so a series that left the catalog goes', async () => {
+    getCatalogIndex.mockResolvedValue(cached({ size: 9, modifiedTime: 'old' }, 'Deleted Series'));
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
-    // Dropping 'deleted series' while leaving the mega row alone happens inside
-    // `replaceCatalogIndexesForProvider` (one transaction, tested in
-    // catalog-index.test.ts). This run's job is to bind it to THIS provider.
-    const [providerType, recs] = replaceCatalogIndexes.mock.calls.at(-1)!;
-    expect(providerType).toBe('webdav');
-    expect(recs.map((r) => r.series_key)).toEqual(['dr stone (hd scan)', 'bare folder']);
+
+    const stored = putCatalogIndex.mock.calls.at(-1)![0];
+    expect(stored.source.provider).toBe('webdav');
+    expect(stored.file.series.map((e) => e.series_title)).toEqual([
+      'Dr Stone (HD Scan)',
+      'Bare Folder'
+    ]);
   });
 
-  it('never cleans up against an empty listing', async () => {
-    listCatalogIndexes.mockResolvedValue([
-      {
-        series_key: 'anything',
-        series_title: 'Anything',
-        entry: {
-          series_title: 'Anything',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '1970-01-01T00:00:00.000Z'
-        },
-        source: { provider: 'webdav', path: 'catalog.json', size: 9, modifiedTime: 'old' },
-        fetched_at: '2026-08-01T00:00:00.000Z'
-      }
-    ]);
+  it('never touches the cache against an empty listing', async () => {
+    getCatalogIndex.mockResolvedValue(cached({ size: 9, modifiedTime: 'old' }, 'Anything'));
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(new Map(), 'webdav');
-    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndex).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
   it('never lets a catalog that parses to zero entries wipe the cache', async () => {
     // A truncated-but-valid file, a half-written upload, or a server that
-    // published an empty catalog says nothing about the library. Treating it as
-    // authoritative would delete every row for this provider AND store no stamp
-    // (an empty put is a no-op), leaving the cache empty and re-downloading on
-    // every listing forever. Keep the rows and retry on the next listing.
-    listCatalogIndexes.mockResolvedValue([
-      {
-        series_key: 'still here',
-        series_title: 'Still Here',
-        entry: {
-          series_title: 'Still Here',
-          external_ids: {},
-          titles: {},
-          synonyms: [],
-          updated_at: '1970-01-01T00:00:00.000Z'
-        },
-        source: { provider: 'webdav', path: 'catalog.json', size: 9, modifiedTime: 'old' },
-        fetched_at: '2026-08-01T00:00:00.000Z'
-      }
-    ]);
+    // published an empty catalog says nothing about the library. Caching it
+    // would replace what this device knows with an empty copy carrying a
+    // CURRENT stamp, hiding the real catalog until its size/mtime moved again.
+    getCatalogIndex.mockResolvedValue(cached({ size: 9, modifiedTime: 'old' }, 'Still Here'));
     downloadFile.mockResolvedValue(
       new Blob([JSON.stringify({ version: 1, updated_at: '2026-08-23T00:00:00.000Z', series: [] })])
     );
@@ -231,7 +185,7 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('catalog.json')), 'webdav');
 
-    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndex).not.toHaveBeenCalled();
     expect(upsertFromSeriesFile).not.toHaveBeenCalled();
   });
 
@@ -239,7 +193,7 @@ describe('refreshCatalogIndex', () => {
     const { refreshCatalogIndex } = await load();
     await refreshCatalogIndex(listing(file('Dr Stone/Volume 1.cbz')), 'webdav');
     expect(downloadFile).not.toHaveBeenCalled();
-    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndex).not.toHaveBeenCalled();
   });
 
   it('is dropped when the provider changed since the listing', async () => {
@@ -255,7 +209,7 @@ describe('refreshCatalogIndex', () => {
     await expect(
       refreshCatalogIndex(listing(file('catalog.json')), 'webdav')
     ).resolves.toBeUndefined();
-    expect(replaceCatalogIndexes).not.toHaveBeenCalled();
+    expect(putCatalogIndex).not.toHaveBeenCalled();
 
     downloadFile.mockRejectedValueOnce(new Error('network down'));
     await expect(

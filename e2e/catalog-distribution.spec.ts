@@ -247,7 +247,8 @@ async function resetDb(page: Page) {
 
 /**
  * The state one `catalog.json` download leaves behind: the parsed entries cached
- * in `catalog_index`, and their FACTS merged into `series_metadata` through the
+ * in `catalog_index` (one row holding the whole file), and their FACTS merged
+ * into `series_metadata` through the
  * same `upsertFromSeriesFile` the real refresh routes them through (which is
  * what makes a REAL, locally-present series searchable by a synonym or
  * alternate title delivered through catalog.json, and what declines to create
@@ -266,20 +267,17 @@ async function seedCatalogIndex(
       const { db } = await import('/src/lib/catalog/db.ts');
       const parsed = parseCatalogFile(raw)!;
       await db.catalog_index.clear();
-      await db.catalog_index.bulkPut(
-        parsed.series.map((entry: { series_title: string }) => ({
-          series_key: entry.series_title.trim().toLowerCase(),
-          series_title: entry.series_title,
-          entry,
-          source: {
-            provider,
-            path: 'catalog.json',
-            size: 123,
-            modifiedTime: '2026-08-23T00:00:00.000Z'
-          },
-          fetched_at: new Date().toISOString()
-        }))
-      );
+      await db.catalog_index.put({
+        id: 'catalog',
+        file: parsed,
+        source: {
+          provider,
+          path: 'catalog.json',
+          size: 123,
+          modifiedTime: '2026-08-23T00:00:00.000Z'
+        },
+        fetched_at: new Date().toISOString()
+      });
       for (const entry of parsed.series) {
         await upsertFromSeriesFile(entry.series_title, catalogEntryToSeriesFile(entry));
       }
@@ -486,12 +484,12 @@ test.describe('catalog.json', () => {
     expectCleanConsole(watch);
   });
 
-  test('cached catalog_index rows never render as cards, connected or not', async ({ page }) => {
+  test('the cached catalog never renders as cards, connected or not', async ({ page }) => {
     // catalog.json never mints cards (a stale file would otherwise produce
     // dead-end "Open to load volumes" cards for deleted folders) — its facts
     // only enrich search/mapping for series that exist locally or in a cloud
-    // listing. The rows survive a provider switch on purpose (reconnecting
-    // must not re-download a whole catalog), so they stay cached here with
+    // listing. The cached copy outlives a disconnect on purpose (reconnecting
+    // must not re-download a whole catalog), so it stays cached here with
     // nothing connected; the search-enrichment path is exercised in the Local
     // Folder suite below, where a provider really is connected.
     const watch = watchConsole(page);
@@ -526,25 +524,25 @@ test.describe('catalog.json', () => {
   test('the catalog_index cache only refetches when size or mtime moves', async ({ page }) => {
     await seedCatalogIndex(page);
     const observed = await page.evaluate(async () => {
-      const { catalogNeedsRefresh, listCatalogIndexes } = await import(
+      const { catalogNeedsRefresh, getCatalogIndex } = await import(
         '/src/lib/metadata/catalog-index.ts'
       );
-      const rows = await listCatalogIndexes();
+      const cached = await getCatalogIndex();
       const same = { size: 123, modifiedTime: '2026-08-23T00:00:00.000Z' };
       return {
-        cachedRows: rows.length,
-        unchanged: catalogNeedsRefresh(rows, same, 'webdav'),
-        sizeMoved: catalogNeedsRefresh(rows, { ...same, size: 124 }, 'webdav'),
+        cachedSeries: cached?.file.series.length ?? 0,
+        unchanged: catalogNeedsRefresh(cached, same, 'webdav'),
+        sizeMoved: catalogNeedsRefresh(cached, { ...same, size: 124 }, 'webdav'),
         mtimeMoved: catalogNeedsRefresh(
-          rows,
+          cached,
           { ...same, modifiedTime: '2026-08-24T00:00:00.000Z' },
           'webdav'
         ),
-        otherProvider: catalogNeedsRefresh(rows, same, 'filesystem'),
-        noCache: catalogNeedsRefresh([], same, 'webdav')
+        otherProvider: catalogNeedsRefresh(cached, same, 'filesystem'),
+        noCache: catalogNeedsRefresh(undefined, same, 'webdav')
       };
     });
-    expect(observed.cachedRows).toBe(2);
+    expect(observed.cachedSeries).toBe(2);
     expect(observed.unchanged).toBe(false);
     expect(observed.sizeMoved).toBe(true);
     expect(observed.mtimeMoved).toBe(true);

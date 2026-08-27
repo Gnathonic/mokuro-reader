@@ -39,6 +39,10 @@ export class CatalogDexieV3 extends Dexie {
     // steps between them are fiction. A released client upgrades 1 -> 2 once
     // and gets all four new tables.
     //
+    // `catalog_index` holds exactly ONE row, at the fixed key `'catalog'`: the
+    // root `catalog.json` is a single document, fetched whole and read whole, so
+    // it is cached whole rather than shredded into a row per series.
+    //
     // `cloud_covers` holds ONLY the thumbnail blob (+ dimensions) for a cloud
     // volume the user has neither installed nor read, keyed by account + path
     // because providers expose no uuid for a file the client has not opened, and
@@ -53,7 +57,7 @@ export class CatalogDexieV3 extends Dexie {
       volume_files: 'volume_uuid',
       series_metadata: 'series_key',
       series_index: 'series_key',
-      catalog_index: 'series_key',
+      catalog_index: 'id',
       cloud_covers: '[account_scope+path], cached_at'
     });
   }

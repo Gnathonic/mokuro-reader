@@ -28,7 +28,7 @@ vi.mock('$lib/util/progress-tracker', () => ({
 vi.mock('$lib/catalog/db', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('catalog-index-sync-facts-test');
-  db.version(1).stores({ series_metadata: 'series_key', catalog_index: 'series_key' });
+  db.version(1).stores({ series_metadata: 'series_key', catalog_index: 'id' });
   return { db };
 });
 
@@ -124,11 +124,12 @@ describe('catalog refresh facts pass (real IndexedDB)', () => {
     expect(await db.series_metadata.get('bad entry')).toBeUndefined();
 
     // Names are cached for all three regardless — the catalog can still list
-    // and search a series whose facts failed to apply.
-    expect((await db.catalog_index.toArray()).map((r) => r.series_key).sort()).toEqual([
-      'bad entry',
-      'good first',
-      'good last'
-    ]);
+    // and search a series whose facts failed to apply. One row, holding the
+    // whole file.
+    const rows = await db.catalog_index.toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].file.series.map((e: { series_title: string }) => e.series_title).sort()).toEqual(
+      ['Bad Entry', 'Good First', 'Good Last']
+    );
   });
 });

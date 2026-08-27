@@ -4,25 +4,19 @@ import type {
   SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
-import {
-  catalogNeedsRefresh,
-  listCatalogIndexes,
-  replaceCatalogIndexesForProvider,
-  type CatalogIndexRecord
-} from './catalog-index';
+import { catalogNeedsRefresh, getCatalogIndex, putCatalogIndex } from './catalog-index';
 import {
   catalogEntryToSeriesFile,
   isCatalogFilePath,
   parseCatalogFile,
   type CatalogFile
 } from './catalog-file';
-import { normalizeSeriesKey } from './series-key';
 import { upsertFromSeriesFile } from './store';
 
 /**
  * The read half of the root `catalog.json`: after every cloud listing (catalog
  * open, provider connect, backup run), re-read the file if and only if its
- * size/mtime changed, cache every entry and apply its facts.
+ * size/mtime changed, cache the file and apply its facts.
  *
  * Deliberately timid, exactly like `series-index-sync.ts`:
  *
@@ -38,12 +32,10 @@ import { upsertFromSeriesFile } from './store';
  *   failed download is skipped, and the run never rejects.
  * - A run is BOUND to the provider whose listing produced it: between the fetch
  *   and the (background, possibly queued) run the user can switch accounts.
- * - Cleanup only against a non-empty listing, and only for rows fetched from
- *   THIS provider — an empty listing means "not fetched" as often as it means
- *   "empty cloud".
- * - All rows land in ONE `replaceCatalogIndexesForProvider` transaction (prune +
- *   put together): the table feeds a liveQuery
- *   the catalog joins, so a write per series would rebuild the card set N times.
+ * - Nothing is cached against an empty listing — that means "not fetched" as
+ *   often as it means "empty cloud".
+ * - The parsed file is cached WHOLE, in one `putCatalogIndex`: it is one remote
+ *   document, and the cache exists to answer "what does the cloud copy say".
  */
 
 function normalizeCloudPath(path: string): string {
@@ -101,7 +93,7 @@ async function runRefresh(
   if (!cloudFile) return;
 
   const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
-  const cached = await listCatalogIndexes();
+  const cached = await getCatalogIndex();
   if (!catalogNeedsRefresh(cached, stamp, provider.type)) return;
 
   const parsed = await downloadCatalog(provider, cloudFile);
@@ -109,9 +101,9 @@ async function runRefresh(
   // A catalog that parses to NOTHING is never authoritative — the same refusal
   // `buildCatalogFile` makes when it declines to publish an empty file. A
   // truncated upload, a half-written file or a server that published an empty
-  // catalog would otherwise delete every row for this provider, and because an
-  // empty `put` stores no stamp the cache would then re-download on every
-  // listing forever. Keep what this device knows and retry next listing.
+  // catalog would otherwise replace the cached copy with an empty one carrying a
+  // current stamp, hiding the real catalog until its size/mtime moved again.
+  // Keep what this device knows and retry next listing.
   if (parsed.series.length === 0) {
     console.warn(`[catalog-index-sync] ignoring an empty catalog.json at '${cloudFile.path}'`);
     return;
@@ -125,7 +117,6 @@ async function runRefresh(
     modifiedTime: stamp.modifiedTime
   };
 
-  const records: CatalogIndexRecord[] = [];
   // DO NOT wrap this loop in a `db.transaction`.
   //
   // It looks like an easy win — `series_metadata` backs a liveQuery the catalog
@@ -146,15 +137,6 @@ async function runRefresh(
   // Covered by `catalog-index-sync.facts.test.ts`, which runs this against a
   // real Dexie rather than a stubbed one.
   for (const entry of parsed.series) {
-    const key = normalizeSeriesKey(entry.series_title);
-    if (!key) continue;
-    records.push({
-      series_key: key,
-      series_title: entry.series_title,
-      entry,
-      source,
-      fetched_at: now
-    });
     try {
       // Facts only, strictly-newer, factless entries never create or unlink.
       await upsertFromSeriesFile(entry.series_title, catalogEntryToSeriesFile(entry));
@@ -167,13 +149,11 @@ async function runRefresh(
   }
 
   try {
-    // One transaction, so the catalog's liveQuery sees the prune and the write
-    // as a single emission. Last writer wins against a concurrent
-    // `stampCatalogCache` (this device publishing its own catalog.json), and
-    // that is fine: both write the same shape, and whichever loses leaves a
-    // stamp that no longer matches the cloud file, so the very next listing
-    // re-reads and settles it.
-    await replaceCatalogIndexesForProvider(provider.type, records);
+    // Last writer wins against a concurrent `stampCatalogCache` (this device
+    // publishing its own catalog.json), and that is fine: both write the same
+    // shape, and whichever loses leaves a stamp that no longer matches the cloud
+    // file, so the very next listing re-reads and settles it.
+    await putCatalogIndex({ file: parsed, source, fetched_at: now });
   } catch (error) {
     console.warn('[catalog-index-sync] could not store the refreshed catalog:', error);
   }
