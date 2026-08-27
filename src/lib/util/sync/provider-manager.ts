@@ -3,6 +3,12 @@ import type { SyncProvider, ProviderType, ProviderStatus } from './provider-inte
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
 
+/**
+ * How many times one `updateStatus()` call may recompute because a subscriber
+ * re-entered it. See `updateStatus`.
+ */
+const MAX_RESTATE_PASSES = 5;
+
 export interface MultiProviderStatus {
   providers: Record<ProviderType, ProviderStatus | null>;
   hasAnyAuthenticated: boolean;
@@ -23,6 +29,11 @@ class ProviderManager {
 
   // Registry for looking up provider instances by type (they exist as singletons)
   private providerRegistry: Map<ProviderType, SyncProvider> = new Map();
+
+  /** A `updateStatus()` is publishing right now — see that method's re-entrancy note. */
+  private updatingStatus = false;
+  /** A subscriber re-entered `updateStatus()` during that publish. */
+  private statusRestateQueued = false;
 
   private statusStore = writable<MultiProviderStatus>({
     providers: {
@@ -210,8 +221,47 @@ class ProviderManager {
 
   /**
    * Update the status store with current provider state
+   *
+   * RE-ENTRANCY. This ends in `statusStore.set`, which runs every subscriber
+   * SYNCHRONOUSLY before returning. A subscriber that reacts by touching
+   * provider state calls back in here from inside that `set` — and without a
+   * guard the nested call publishes, runs the same subscribers again, and
+   * recurses until the stack blows, with nothing in the UI to say why. No
+   * subscriber does that today, but the store is public and the cost of the
+   * guard is two booleans.
+   *
+   * A re-entrant call is not DROPPED, because the state it was reporting is
+   * real and may post-date the snapshot already being published: it is
+   * recorded and the outer call recomputes, at most `MAX_RESTATE_PASSES`
+   * times. Past that the subscriber is publishing faster than it can be
+   * satisfied, which is a bug in the subscriber, so the last snapshot stands
+   * and it is said out loud once instead of hanging the tab.
    */
   updateStatus(): void {
+    if (this.updatingStatus) {
+      this.statusRestateQueued = true;
+      return;
+    }
+
+    this.updatingStatus = true;
+    try {
+      for (let pass = 0; pass < MAX_RESTATE_PASSES; pass++) {
+        this.statusRestateQueued = false;
+        this.publishStatus();
+        if (!this.statusRestateQueued) return;
+      }
+      console.warn(
+        `[ProviderManager] Status update still being re-entered after ${MAX_RESTATE_PASSES} passes; ` +
+          'a status subscriber is changing provider state on every notification.'
+      );
+    } finally {
+      this.updatingStatus = false;
+      this.statusRestateQueued = false;
+    }
+  }
+
+  /** One snapshot, computed and published. Only `updateStatus` may call this. */
+  private publishStatus(): void {
     // Use current provider type if set, otherwise check localStorage
     // This ensures UI shows the configured provider even before it finishes loading
     const currentProviderType = this.currentProvider?.type ?? getConfiguredProviderType();
