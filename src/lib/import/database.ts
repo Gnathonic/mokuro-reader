@@ -171,6 +171,22 @@ export async function saveVolume(
       console.error('Failed to recover missing thumbnail after import:', error);
     });
   }
+
+  // A LOCAL import is an install too: if this volume's cloud counterpart lacks
+  // sidecars, nominate it for the lazy backfill exactly like a cloud download
+  // does (`download-queue.ts`). Nomination is free — the drain re-derives
+  // "installed + listed + sidecar missing" at upload time, so a volume with no
+  // cloud counterpart (or none missing) costs nothing. Dynamic import because
+  // `sidecar-backfill` pulls the whole sync graph, which this import pipeline
+  // must not statically depend on (established pattern: `ensureCoverKeyWatch`).
+  void import('$lib/util/sync/sidecar-backfill')
+    .then(({ queueSidecarBackfillForVolume }) => {
+      queueSidecarBackfillForVolume(canonicalVolumeUuid);
+    })
+    .catch(() => {
+      // Best-effort: a failed chunk load only defers the backfill to the next
+      // listing-load sweep, which nominates the same volume.
+    });
 }
 
 /**
