@@ -1,7 +1,6 @@
 import { db } from '$lib/catalog/db';
-import { liveQuery } from 'dexie';
-import { readable, type Readable } from 'svelte/store';
-import { normalizeSeriesKey } from './series-key';
+import { type Readable } from 'svelte/store';
+import { keyedTableMap, moveKeyedRecord } from './keyed-table';
 import type { SeriesFile } from './series-file';
 
 /**
@@ -52,45 +51,23 @@ export async function deleteSeriesIndex(seriesKey: string): Promise<void> {
 }
 
 /**
- * After a series rename: carry the cached index to the new key. Mirrors
- * `moveSeriesMetadataKey` (`store.ts`) — on a collision the newer `fetched_at`
- * wins rather than the record being merged, since the index is a disposable
- * cache: the loser is simply re-fetched later if it was actually the fresher
- * cloud copy.
+ * After a series rename: carry the cached index to the new key. The same
+ * `moveKeyedRecord` `moveSeriesMetadataKey` uses, with THIS table's tiebreak —
+ * on a collision the newer `fetched_at` wins rather than the record being
+ * merged, since the index is a disposable cache: the loser is simply re-fetched
+ * later if it was actually the fresher cloud copy.
  */
 export async function moveSeriesIndexKey(oldTitle: string, newTitle: string): Promise<void> {
-  const oldKey = normalizeSeriesKey(oldTitle);
-  const newKey = normalizeSeriesKey(newTitle);
-
-  await db.transaction('rw', db.series_index, async () => {
-    const oldRec = await db.series_index.get(oldKey);
-    if (!oldRec) return;
-
-    if (oldKey === newKey) {
-      await db.series_index.put({ ...oldRec, series_title: newTitle });
-      return;
-    }
-
-    const newRec = await db.series_index.get(newKey);
-    const winner: SeriesIndexRecord =
-      newRec && newRec.fetched_at > oldRec.fetched_at
-        ? newRec
-        : { ...oldRec, series_key: newKey, series_title: newTitle };
-    await db.series_index.put(winner);
-    await db.series_index.delete(oldKey);
+  await moveKeyedRecord(db.series_index, oldTitle, newTitle, {
+    tiebreak: (record) => record.fetched_at,
+    rekey: (record, series_key, series_title) => ({ ...record, series_key, series_title })
   });
 }
 
 /** Reactive view of the whole table, keyed by series_key. Empty Map before first emission. */
-export const seriesIndexMap: Readable<Map<string, SeriesIndexRecord>> = readable(
-  new Map<string, SeriesIndexRecord>(),
-  (set) => {
-    const subscription = liveQuery(() => db.series_index.toArray()).subscribe({
-      next: (rows) => set(new Map(rows.map((r) => [r.series_key, r]))),
-      error: (err) => console.error('series_index liveQuery failed:', err)
-    });
-    return () => subscription.unsubscribe();
-  }
+export const seriesIndexMap: Readable<Map<string, SeriesIndexRecord>> = keyedTableMap(
+  () => db.series_index,
+  'series_key'
 );
 
 /** Epoch ms for a timestamp, or `undefined` when it does not parse. */

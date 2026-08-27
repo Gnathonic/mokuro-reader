@@ -1,6 +1,6 @@
 import { db } from '$lib/catalog/db';
-import { liveQuery } from 'dexie';
-import { readable, type Readable } from 'svelte/store';
+import { type Readable } from 'svelte/store';
+import { keyedTableMap, moveKeyedRecord } from './keyed-table';
 import { ID_KEYS } from './sanitize';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { hasSeriesFacts, seriesFactsStamp, type SeriesFile } from './series-file';
@@ -538,27 +538,20 @@ export async function upsertManyFromSeriesFiles(
   });
 }
 
-/** After a series rename: carry the record to the new key (newer record wins on collision). */
+/**
+ * After a series rename: carry the record to the new key (newer record wins on
+ * collision, by the record's own `updated_at`).
+ *
+ * The move itself is `moveKeyedRecord`, shared with `series_index` — the two
+ * used to be byte-identical routines differing only in the tiebreak field.
+ * `rekey` re-stamps `folded_key`, which is derived from the title the rename
+ * just changed.
+ */
 export async function moveSeriesMetadataKey(oldTitle: string, newTitle: string): Promise<void> {
-  const oldKey = normalizeSeriesKey(oldTitle);
-  const newKey = normalizeSeriesKey(newTitle);
-
-  await db.transaction('rw', db.series_metadata, async () => {
-    const oldRec = await db.series_metadata.get(oldKey);
-    if (!oldRec) return;
-
-    if (oldKey === newKey) {
-      await db.series_metadata.put(toStoredSeriesMetadata({ ...oldRec, series_title: newTitle }));
-      return;
-    }
-
-    const newRec = await db.series_metadata.get(newKey);
-    const winner: SeriesMetadata =
-      newRec && newRec.updated_at > oldRec.updated_at
-        ? newRec
-        : { ...oldRec, series_key: newKey, series_title: newTitle };
-    await db.series_metadata.put(toStoredSeriesMetadata(winner));
-    await db.series_metadata.delete(oldKey);
+  await moveKeyedRecord(db.series_metadata, oldTitle, newTitle, {
+    tiebreak: (record) => record.updated_at,
+    rekey: (record, series_key, series_title) =>
+      toStoredSeriesMetadata({ ...record, series_key, series_title })
   });
 }
 
@@ -588,13 +581,7 @@ export async function replaceAllSeriesMetadata(
 }
 
 /** Reactive view of the whole table, keyed by series_key. Empty Map before first emission. */
-export const seriesMetadataMap: Readable<Map<string, SeriesMetadata>> = readable(
-  new Map<string, SeriesMetadata>(),
-  (set) => {
-    const subscription = liveQuery(() => db.series_metadata.toArray()).subscribe({
-      next: (rows) => set(new Map(rows.map((r) => [r.series_key, r]))),
-      error: (err) => console.error('series_metadata liveQuery failed:', err)
-    });
-    return () => subscription.unsubscribe();
-  }
+export const seriesMetadataMap: Readable<Map<string, SeriesMetadata>> = keyedTableMap(
+  () => db.series_metadata,
+  'series_key'
 );
