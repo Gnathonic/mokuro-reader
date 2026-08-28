@@ -1,6 +1,6 @@
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 
-export type DisplayTitleLanguage = 'imported' | 'native' | 'romaji' | 'english';
+export type DisplayTitleLanguage = 'imported' | 'native' | 'english';
 export type TrackingUnit = 'volumes' | 'chapters';
 
 export interface SeriesTitles {

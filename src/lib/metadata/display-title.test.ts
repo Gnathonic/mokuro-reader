@@ -38,7 +38,6 @@ describe('resolveDisplayTitle', () => {
 
   it('returns the requested language when present', () => {
     expect(resolveDisplayTitle('One Piece', meta(), 'native')).toBe('ONE PIECE');
-    expect(resolveDisplayTitle('One Piece', meta(), 'romaji')).toBe('ONE PIECE (romaji)');
     expect(resolveDisplayTitle('One Piece', meta(), 'english')).toBe('One Piece (en)');
   });
 
@@ -54,19 +53,26 @@ describe('resolveDisplayTitle', () => {
     }
   });
 
-  it('falls back english → romaji → native → folder title when the requested language is missing', () => {
-    // english missing → romaji
+  it('follows the Native progression: native → romaji → english → folder', () => {
+    // native missing → romaji before english
+    expect(
+      resolveDisplayTitle('folder', meta({ titles: { romaji: 'R', english: 'E' } }), 'native')
+    ).toBe('R');
+    // native and romaji missing → english
+    expect(resolveDisplayTitle('folder', meta({ titles: { english: 'E' } }), 'native')).toBe('E');
+    // nothing at all → folder title
+    expect(resolveDisplayTitle('folder', meta({ titles: {} }), 'native')).toBe('folder');
+  });
+
+  it('follows the English progression: english → romaji → native → folder', () => {
+    // english missing → romaji before native
     expect(
       resolveDisplayTitle('folder', meta({ titles: { romaji: 'R', native: 'N' } }), 'english')
     ).toBe('R');
-    // native requested & missing → english first
-    expect(
-      resolveDisplayTitle('folder', meta({ titles: { romaji: 'R', english: 'E' } }), 'native')
-    ).toBe('E');
-    // romaji requested & missing, english missing → native
-    expect(resolveDisplayTitle('folder', meta({ titles: { native: 'N' } }), 'romaji')).toBe('N');
+    // english and romaji missing → native
+    expect(resolveDisplayTitle('folder', meta({ titles: { native: 'N' } }), 'english')).toBe('N');
     // nothing at all → folder title
-    expect(resolveDisplayTitle('folder', meta({ titles: {} }), 'romaji')).toBe('folder');
+    expect(resolveDisplayTitle('folder', meta({ titles: {} }), 'english')).toBe('folder');
   });
 
   it('treats blank language titles as missing', () => {
@@ -134,9 +140,9 @@ describe('resolveDisplayBase', () => {
     expect(resolveDisplayTitle('One Piece', m, 'english')).toBe('One Piece (en) (color)');
   });
 
-  it('follows the same global preference and fallback rules', () => {
+  it('follows the same global preference and progression rules', () => {
     expect(resolveDisplayBase('One Piece', meta(), 'imported')).toBe('One Piece');
-    expect(resolveDisplayBase('folder', meta({ titles: { native: 'N' } }), 'romaji')).toBe('N');
+    expect(resolveDisplayBase('folder', meta({ titles: { native: 'N' } }), 'english')).toBe('N');
     expect(resolveDisplayBase('folder', undefined, 'english')).toBe('folder');
   });
 
@@ -144,8 +150,8 @@ describe('resolveDisplayBase', () => {
     expect(
       resolveDisplayBase('One Piece', legacyMeta({ title_preference: 'native' }), 'english')
     ).toBe('One Piece (en)');
-    expect(resolveDisplayBase('One Piece', legacyMeta({ title_preference: '' }), 'romaji')).toBe(
-      'ONE PIECE (romaji)'
+    expect(resolveDisplayBase('One Piece', legacyMeta({ title_preference: '' }), 'native')).toBe(
+      'ONE PIECE'
     );
   });
 });

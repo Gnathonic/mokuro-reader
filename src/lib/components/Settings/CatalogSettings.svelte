@@ -20,10 +20,9 @@
   ];
 
   const titleLanguageOptions: { value: DisplayTitleLanguage; name: string }[] = [
-    { value: 'imported', name: 'As imported (folder name)' },
-    { value: 'native', name: 'Native (日本語)' },
-    { value: 'romaji', name: 'Romaji' },
-    { value: 'english', name: 'English' }
+    { value: 'native', name: 'Native (日本語 → romaji → English)' },
+    { value: 'english', name: 'English (→ romaji → 日本語)' },
+    { value: 'imported', name: 'As imported (folder name)' }
   ];
 
   // Preset configurations

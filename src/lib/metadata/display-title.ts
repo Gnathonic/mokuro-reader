@@ -1,8 +1,15 @@
 import { BRACKET_PAIRS } from './folder-tag';
 import type { DisplayTitleLanguage, SeriesMetadata, SeriesTitles } from './types';
 
-/** Fallback order when the requested language is missing (spec: english → romaji → native → folder). */
-const FALLBACK_ORDER: Array<keyof SeriesTitles> = ['english', 'romaji', 'native'];
+/**
+ * Each language preference is a PROGRESSION, not a single language: walk the
+ * chain, ending at the folder title. Romaji is deliberately not a primary
+ * choice — it is the second step of both progressions.
+ */
+const TITLE_PROGRESSIONS: Record<'native' | 'english', Array<keyof SeriesTitles>> = {
+  native: ['native', 'romaji', 'english'],
+  english: ['english', 'romaji', 'native']
+};
 
 function nonBlank(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -35,7 +42,8 @@ function stripOuterBracketPair(value: string): string {
  * record is never consulted.
  *
  *   'imported'  → seriesTitle
- *   otherwise   → titles[globalPref], falling back english → romaji → native → seriesTitle
+ *   'native'    → native → romaji → english → seriesTitle
+ *   'english'   → english → romaji → native → seriesTitle
  */
 export function resolveDisplayBase(
   seriesTitle: string,
@@ -44,10 +52,7 @@ export function resolveDisplayBase(
 ): string {
   if (globalPref === 'imported' || !meta) return seriesTitle;
 
-  const requested = nonBlank(meta.titles?.[globalPref]);
-  if (requested) return requested;
-
-  for (const lang of FALLBACK_ORDER) {
+  for (const lang of TITLE_PROGRESSIONS[globalPref]) {
     const candidate = nonBlank(meta.titles?.[lang]);
     if (candidate) return candidate;
   }

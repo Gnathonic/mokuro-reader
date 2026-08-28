@@ -17,7 +17,10 @@ import type {
 export const TITLE_KEYS = ['native', 'romaji', 'english'] as const;
 export const ID_KEYS = ['anilist', 'mal'] as const;
 /** Every accepted `preferredTitleLanguage` value. */
-export const DISPLAY_TITLE_LANGUAGES = ['imported', 'native', 'romaji', 'english'] as const;
+// Each language option is a PROGRESSION (see display-title.ts), so 'romaji' is
+// no longer a primary choice — it is the second step of both progressions. A
+// stored 'romaji' preference fails this guard and migrates to the default.
+export const DISPLAY_TITLE_LANGUAGES = ['imported', 'native', 'english'] as const;
 
 export function isDisplayTitleLanguage(value: unknown): value is DisplayTitleLanguage {
   return (

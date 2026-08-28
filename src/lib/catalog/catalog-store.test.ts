@@ -319,16 +319,16 @@ describe('catalog store recomputes', () => {
     expect(derive).toHaveBeenCalledTimes(0);
 
     // The language itself does rebuild the catalog
-    updateCatalogSetting('preferredTitleLanguage', 'romaji');
+    updateCatalogSetting('preferredTitleLanguage', 'english');
     expect(derive).toHaveBeenCalledTimes(1);
     expect(derive).toHaveBeenLastCalledWith(
       expect.any(Array) as unknown as VolumeMetadata[],
       expect.any(Map),
-      'romaji'
+      'english'
     );
 
     // Re-selecting the same language is a no-op
-    updateCatalogSetting('preferredTitleLanguage', 'romaji');
+    updateCatalogSetting('preferredTitleLanguage', 'english');
     expect(derive).toHaveBeenCalledTimes(1);
 
     unsubscribe();

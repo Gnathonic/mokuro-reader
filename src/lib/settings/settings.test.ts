@@ -131,9 +131,18 @@ describe('preferredTitleLanguage migration', () => {
 
   it('preserves a valid preferredTitleLanguage', () => {
     const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'english' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('english');
+  });
+
+  it("migrates the retired 'romaji' preference to the native progression", () => {
+    // Romaji stopped being a primary choice when languages became progressions;
+    // it is the second step of both chains instead.
+    const out = migrateProfiles({
       Test: { catalogSettings: { preferredTitleLanguage: 'romaji' } } as any
     });
-    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('romaji');
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
   });
 
   it('coerces an unknown preferredTitleLanguage back to native', () => {
