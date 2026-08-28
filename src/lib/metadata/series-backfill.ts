@@ -146,8 +146,10 @@ function archiveStemOf(path: string): string {
  * what `hasMeasuredContent` (series-file.ts) reads as "this entry proves
  * nothing", which keeps merges treating it as the weakest possible claim.
  * Consumers that copy a version onto a row or placeholder go through
- * `entryMokuroVersion`, which surfaces this shape as `'unknown'` — never as
- * the image-only `''`.
+ * `entryMokuroVersion`: with no cover stamps either (ALL sidecars missing)
+ * this shape surfaces as `'unknown'` — never as the image-only `''` — while
+ * cover stamps prove a modern backup wrote sidecars without a mokuro, which
+ * IS a genuine image-only signal.
  *
  * Exported for `cover-service.ts`'s render-demand path (decision-tree case
  * 4), which builds an entry for exactly one archive the same way this module

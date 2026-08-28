@@ -426,3 +426,25 @@ describe('a no-metadata entry never mints or fills an image-only claim', () => {
     expect(row?.page_count).toBe(200);
   });
 });
+
+describe('a cover sidecar without a mokuro IS a genuine image-only signal', () => {
+  it("mints the row with '' when the zero-content entry carries cover stamps", async () => {
+    const created = await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [
+        entry({
+          mokuro_version: '',
+          page_count: 0,
+          character_count: 0,
+          spine_width: undefined,
+          cover_size: 12345,
+          cover_modified: 1_700_000_000
+        })
+      ],
+      cloudVolumeTitles: CLOUD
+    });
+    expect(created).toBe(1);
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.mokuro_version).toBe('');
+  });
+});

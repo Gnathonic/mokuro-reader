@@ -220,27 +220,40 @@ function hasMeasuredContent(entry: SeriesFileVolume): boolean {
 }
 
 /**
- * The `mokuro_version` a CONSUMER may claim from this entry — the one rule
- * that keeps "no sidecar" from being read as "image-only".
+ * The `mokuro_version` a CONSUMER may claim from this entry — THE rule that
+ * keeps "no sidecars" from being read as "image-only".
  *
- * An entry with no measured content ({@link hasMeasuredContent} false — the
- * shape `buildNoMetadataEntry` mints for an archive with no `.mokuro` sidecar)
- * proves NOTHING about the volume: legacy archives carry their mokuro
- * EMBEDDED in the `.cbz`, so the absence of a sidecar must surface as
- * `'unknown'` (the "filled in after download" sentinel `createPlaceholder`
- * already uses), never as `''` — `''` is the image-only convention, and the
- * catalog's "Image Only" badge keys on it.
- *
- * An entry WITH measured content answers its real version, where `''` is a
+ * An entry with measured content answers its real version, where `''` is a
  * genuine image-only claim: its publisher counted real pages and found no
  * mokuro, embedded or otherwise.
+ *
+ * An entry with NO measured content ({@link hasMeasuredContent} false — the
+ * shape `buildNoMetadataEntry` mints when the listing shows no `.mokuro`
+ * sidecar) is decided by the COVER sidecar, whose listing stamps ride the
+ * entry:
+ *
+ * - cover stamps present → a modern backup wrote this archive's sidecars and
+ *   still produced no mokuro; it would have written one had OCR existed, so
+ *   the volume is genuinely image-only (`''`);
+ * - no cover stamps → the archive is missing ALL sidecars, which is
+ *   indistinguishable from a legacy backup whose mokuro is EMBEDDED in the
+ *   `.cbz` — so it must surface as `'unknown'` (the "filled in after
+ *   download" sentinel `createPlaceholder` already uses), NEVER as `''`,
+ *   which is what the catalog's "Image Only" badge keys on.
+ *
+ * (A cover the sidecar backfill uploaded THIS session is stamped
+ * provisionally and carries no listing stamp yet — such an entry reads
+ * 'unknown' until the next real listing, which only delays the badge, never
+ * fakes it.)
  *
  * Every consumer that copies an entry's version onto a `VolumeMetadata`
  * shape (`createPlaceholder`, `materializeSeriesVolumes`) must go through
  * here; reading `entry.mokuro_version` raw is how the false badge came back.
  */
 export function entryMokuroVersion(entry: SeriesFileVolume): string {
-  return hasMeasuredContent(entry) ? entry.mokuro_version : 'unknown';
+  if (hasMeasuredContent(entry)) return entry.mokuro_version;
+  const coverSidecarSeen = entry.cover_size !== undefined || entry.cover_modified !== undefined;
+  return coverSidecarSeen ? '' : 'unknown';
 }
 
 /**

@@ -697,3 +697,29 @@ describe('a sidecar-less archive is never labeled image-only', () => {
     expect(adopted.mokuro_version).toBe('0.4.11');
   });
 });
+
+describe('a cover sidecar without a mokuro IS a genuine image-only signal', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+  ]);
+
+  it("keeps '' when the entry's cover stamps prove a modern backup wrote sidecars without a mokuro", () => {
+    // Cover stamps ride the entry from the listing: a backup that wrote the
+    // cover would have written the mokuro too had OCR existed.
+    const [adopted] = generatePlaceholders(
+      cloudFiles,
+      [],
+      indexMap('One Piece', [
+        indexEntry({
+          mokuro_version: '',
+          page_count: 0,
+          character_count: 0,
+          cover_size: 12345,
+          cover_modified: 1_700_000_000
+        })
+      ])
+    );
+    expect(adopted.indexed).toBe(true);
+    expect(adopted.mokuro_version).toBe('');
+  });
+});

@@ -224,12 +224,13 @@ function createPlaceholder(
     indexEntry?.volume_uuid ?? generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
   const placeholder: VolumeMetadata = {
-    // Through `entryMokuroVersion`, never the raw field: an entry minted for a
-    // sidecar-less archive carries `''` on the wire, but a missing sidecar is
-    // no proof the volume is image-only (legacy archives embed their mokuro in
-    // the .cbz), and `''` is exactly what the "Image Only" badge keys on. Such
-    // entries surface as 'unknown' — filled in after download — while an entry
-    // with measured content keeps its real version, `''` included.
+    // Through `entryMokuroVersion`, never the raw field: an entry minted for
+    // an archive with NO sidecars at all carries `''` on the wire, but that is
+    // indistinguishable from a legacy backup whose mokuro is embedded in the
+    // .cbz — it surfaces as 'unknown' (filled in after download), never as the
+    // image-only claim the "Image Only" badge keys on. An entry whose COVER
+    // stamps prove a modern backup wrote sidecars without a mokuro keeps `''`
+    // (genuinely image-only), and measured content keeps its real version.
     mokuro_version: indexEntry ? entryMokuroVersion(indexEntry) : 'unknown',
     series_title: seriesTitle,
     series_uuid: seriesUuid,

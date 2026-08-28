@@ -126,11 +126,12 @@ export async function materializeSeriesVolumes(args: {
         if (!existing.character_count && entry.character_count) {
           patch.character_count = entry.character_count;
         }
-        // Through `entryMokuroVersion`: an entry with measured content carries
-        // a real value (`''` genuinely meaning image-only); a no-metadata
-        // entry (sidecar-less archive — mokuro probably EMBEDDED in the .cbz)
-        // answers 'unknown' and must never overwrite the row's own honest
-        // 'unknown' with a false image-only claim.
+        // Through `entryMokuroVersion`: measured content carries a real value
+        // (`''` genuinely meaning image-only), and cover stamps on a
+        // zero-content entry prove the same; an entry for an archive missing
+        // ALL sidecars (mokuro probably EMBEDDED in the .cbz) answers
+        // 'unknown' and must never overwrite the row's own honest 'unknown'
+        // with a false image-only claim.
         const entryVersion = entryMokuroVersion(entry);
         if (existing.mokuro_version === 'unknown' && entryVersion !== 'unknown') {
           patch.mokuro_version = entryVersion;
@@ -166,9 +167,9 @@ export async function materializeSeriesVolumes(args: {
         series_uuid: seriesUuid,
         series_title: seriesTitle,
         volume_title: entry.volume_title,
-        // `entryMokuroVersion`, not the raw field: a row minted from a
-        // no-metadata entry must say 'unknown', not claim image-only (`''`)
-        // for an archive whose mokuro is probably embedded.
+        // `entryMokuroVersion`, not the raw field: a row minted from an
+        // all-sidecars-missing entry must say 'unknown', not claim image-only
+        // (`''`) for an archive whose mokuro is probably embedded.
         mokuro_version: entryMokuroVersion(entry),
         page_count: entry.page_count,
         character_count: entry.character_count,

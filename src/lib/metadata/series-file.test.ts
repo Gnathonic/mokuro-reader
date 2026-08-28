@@ -3,6 +3,7 @@ import {
   FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
   buildSeriesFile,
+  entryMokuroVersion,
   isMetadataLessEntry,
   isSeriesFilePath,
   mergeSeriesFileForCache,
@@ -1861,5 +1862,33 @@ describe('either-key volume identity (uuid OR folded title) — the doubled-entr
     expect(file.volumes).toHaveLength(1);
     // 'fill' order: the earlier entry wins the pure tie.
     expect(file.volumes[0].volume_uuid).toBe('vol-a');
+  });
+});
+
+describe('entryMokuroVersion — the image-only vs legacy rule', () => {
+  const base = {
+    volume_uuid: 'u1',
+    volume_title: 'Volume 1',
+    page_count: 0,
+    character_count: 0,
+    mokuro_version: ''
+  };
+
+  it('measured content answers its real version, empty included', () => {
+    expect(entryMokuroVersion({ ...base, mokuro_version: '0.4.11', page_count: 200 })).toBe(
+      '0.4.11'
+    );
+    // An installed image-only volume publishes measured pages with '' — that
+    // claim stands.
+    expect(entryMokuroVersion({ ...base, page_count: 200 })).toBe('');
+  });
+
+  it("missing ALL sidecars answers 'unknown' — the mokuro is probably embedded", () => {
+    expect(entryMokuroVersion(base)).toBe('unknown');
+  });
+
+  it("a cover stamp without a mokuro answers '' — a modern backup would have written the mokuro too", () => {
+    expect(entryMokuroVersion({ ...base, cover_size: 12345 })).toBe('');
+    expect(entryMokuroVersion({ ...base, cover_modified: 1_700_000_000 })).toBe('');
   });
 });
