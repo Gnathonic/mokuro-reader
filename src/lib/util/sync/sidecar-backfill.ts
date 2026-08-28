@@ -9,11 +9,15 @@ import {
 } from '$lib/metadata/cloud-sidecar-stamps';
 import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { loadVolumeSidecars } from '$lib/util/volume-sidecars';
+import {
+  buildVolumeSidecarsFromData,
+  loadVolumeSidecars,
+  type VolumeSidecarFiles
+} from '$lib/util/volume-sidecars';
 import { downloadQueue } from '$lib/util/download-queue';
 import { cacheManager } from './cache-manager';
 import { isCbzFile } from './syncable-file';
-import type { CloudFileMetadata } from './provider-interface';
+import type { CloudFileMetadata, ProviderType } from './provider-interface';
 import { unifiedCloudManager } from './unified-cloud-manager';
 
 /**
@@ -27,18 +31,29 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  * whenever the active provider's listing shows the volume's archive without
  * them.
  *
- * Two triggers, one check:
+ * Three feeds, one check, one upload core:
  *
- * - install (`queueSidecarBackfillForVolume`, called when a cloud download
- *   finishes importing) enqueues that one volume;
+ * - IMPORT (`queueSidecarBackfillFromImport`, called the moment a cloud
+ *   download finishes importing): the parsed pages `saveVolume` just wrote
+ *   and the cover the import generated are IN MEMORY, so the missing
+ *   sidecars upload right then — no Dexie re-read, no waiting for the
+ *   download queue to drain, and no session cap (each upload is bounded by a
+ *   download the user personally started). Skipped when the download's own
+ *   provider is no longer the active one; the deferred feeds heal that later.
+ * - install nomination (`queueSidecarBackfillForVolume`, the safety net right
+ *   after the import feed at the same call site) enqueues that one volume for
+ *   the deferred drain;
  * - listing load (`sweepInstalledVolumesForSidecarBackfill`, riding the same
  *   post-listing hook as `reconcileMissingMetadataFiles`) enqueues every
  *   installed volume the fresh listing shows a sidecar gap for.
  *
- * Both only nominate CANDIDATES; the drain re-derives "installed + archive
- * listed + sidecar missing" per volume from the provider cache at upload time,
- * so the two triggers cannot disagree with each other or with what actually
- * gets uploaded.
+ * The deferred feeds only nominate CANDIDATES; the drain re-derives
+ * "installed + archive listed + sidecar missing" per volume from the provider
+ * cache at upload time. The import feed carries its data with it but runs the
+ * SAME per-volume check and upload step ({@link uploadMissingSidecars}) inside
+ * the same strictly-serial drain loop — so the three feeds cannot disagree
+ * with each other or with what actually gets uploaded, and no two uploads are
+ * ever in flight at once whatever mix of feeds produced them.
  *
  * NON-AGGRESSIVE by construction, in this order of defenses:
  *
@@ -67,14 +82,21 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *   cache: see `ScheduleOptions.fromCloudListing` there for the fix
  *   (`fromCloudListing` now reflects whether THIS call actually got a fresh
  *   listing, not whether `runReconcile` can in general).
- * - Strictly serial: one volume at a time, one upload at a time. Mokuro files
- *   are megabytes; there is no hurry.
+ * - Strictly serial: one volume at a time, one upload at a time — across ALL
+ *   feeds, import included. Mokuro files are megabytes; there is no hurry.
  * - Deferred behind user-driven work: the drain waits for the download queue
- *   to be EMPTY before every volume, so a batch download the user is watching
- *   never shares its connection with a background upload.
+ *   to be EMPTY before every DEFERRED volume, so a batch download the user is
+ *   watching never shares its connection with a background upload. Import-fed
+ *   entries are exempt from the wait — their upload IS part of the download
+ *   the user is watching (one small PUT per finished volume), and serving
+ *   them immediately is what lets their in-memory payload be released instead
+ *   of pinned for the whole batch.
  * - Capped per session ({@link MAX_SIDECAR_BACKFILLS_PER_SESSION}); a legacy
  *   library converges over a handful of sessions instead of turning one page
- *   load into a bulk migration.
+ *   load into a bulk migration. Import-fed uploads neither check nor consume
+ *   the cap: N user-started downloads bound them at N backfills, which is the
+ *   same "the user asked for this work" budget the downloads themselves ran
+ *   on.
  * - A volume ATTEMPTED this session — uploaded, failed, or found to have
  *   nothing uploadable — is never retried until the next page load, same
  *   session-scoped contract as `hole-patch.ts`'s `attemptedThisSession`.
@@ -105,6 +127,21 @@ export const MAX_SIDECAR_BACKFILLS_PER_SESSION = 25;
 const pending = new Set<string>();
 
 /**
+ * Import-fed work: the exact data `saveVolume` committed, waiting only for
+ * the drain's single upload slot (never for the download queue, never for the
+ * session cap). Entries are short-lived by design — the drain serves them
+ * before any deferred volume — because each one pins its volume's parsed
+ * pages and cover in memory until uploaded.
+ */
+const immediate: SidecarUploadFeed[] = [];
+
+/**
+ * Wake-ups for a drain that is parked on the download-queue-idle wait: an
+ * import finishing mid-batch must be served NOW, not when the batch ends.
+ */
+const importArrivalSignals = new Set<() => void>();
+
+/**
  * `<key(volumeUuid)>` — see {@link attemptKey} — for every volume this
  * session already attempted (or proved to have nothing uploadable). Keyed
  * with the ACCOUNT (falling back to the provider type when a provider cannot
@@ -120,6 +157,7 @@ let drainRunning: Promise<void> | null = null;
 /** Test-only: forget all session state so cases don't leak into each other. */
 export function _resetSidecarBackfillForTests(): void {
   pending.clear();
+  immediate.length = 0;
   attemptedThisSession.clear();
   backfilledThisSession = 0;
 }
@@ -167,21 +205,38 @@ function basename(path: string): string {
   return path.split('/').pop() ?? '';
 }
 
-/** Resolve after the download queue has drained (immediately when it is idle). */
-function whenDownloadQueueIdle(): Promise<void> {
+/**
+ * Resolve when the download queue has drained (immediately when it is idle) —
+ * OR as soon as import-fed work arrives, whichever comes first. The second
+ * arm exists for a drain parked here during a batch download: an import that
+ * completes mid-batch must be served now (its payload is pinned memory and
+ * its upload rides the user's own action), not when the whole batch ends.
+ */
+function whenDownloadQueueIdleOrImportWork(): Promise<void> {
   return new Promise((resolve) => {
     let resolved = false;
     let unsubscribe: (() => void) | null = null;
-    unsubscribe = downloadQueue.subscribe((queue) => {
-      if (resolved || queue.length > 0) return;
+    const finish = () => {
+      if (resolved) return;
       resolved = true;
+      importArrivalSignals.delete(finish);
       resolve();
-      // Emitted LATER (not the subscribe-time replay): the assignment below
+      // Fired LATER (not the subscribe-time replay): the assignment below
       // has long since happened, so tear the subscription down right here.
       if (unsubscribe) {
         unsubscribe();
         unsubscribe = null;
       }
+    };
+    importArrivalSignals.add(finish);
+    // Work that arrived before this wait even started.
+    if (immediate.length > 0) {
+      finish();
+      return;
+    }
+    unsubscribe = downloadQueue.subscribe((queue) => {
+      if (queue.length > 0) return;
+      finish();
     });
     // Resolved during the synchronous replay, before the assignment existed
     // for the callback to use: tear it down now instead.
@@ -207,6 +262,66 @@ export function queueSidecarBackfillForVolume(volumeUuid: string): void {
     kickDrain();
   } catch (error) {
     console.debug('[sidecar-backfill] could not queue volume:', error);
+  }
+}
+
+/**
+ * What a cloud download's import hands over: the exact objects `saveVolume`
+ * committed (structurally `SavedVolumeData` from `$lib/import/database`, but
+ * declared here so the sync layer owns its own input contract). `metadata` is
+ * the row `db.volumes` now holds; `ocrPages` is the array `volume_ocr` now
+ * holds, `cumulativeChars` already stripped — the DB shape, which is the only
+ * shape a `.mokuro` may be serialized from (byte-identity with what a later
+ * backup re-serializes from Dexie).
+ */
+export interface ImportedVolumeData {
+  metadata: VolumeMetadata;
+  ocrPages: unknown[];
+}
+
+/**
+ * TRIGGER 0 — the IMPORT feed: a cloud download just committed its volume to
+ * the database, and everything the missing sidecars would say is still in
+ * memory. Queue it for the drain's next upload slot: no download-queue wait,
+ * no session cap, no Dexie re-read — the drain's other work defers to it.
+ *
+ * `sourceProviderType` is the provider the archive was downloaded FROM; when
+ * the ACTIVE provider is a different one by the time the import completes (a
+ * provider switch mid-batch), this feed declines — uploading is still safe in
+ * principle (the drain would re-derive the gap against the new provider's own
+ * listing), but the moment's advantage is gone and the deferred feeds handle
+ * it with the usual caution instead.
+ *
+ * Fire-and-forget by contract: never throws, never delays the import that
+ * calls it. A failure inside the eventual upload lands in the attempted-set
+ * exactly like a drain failure — no same-session retry, healed by the next
+ * session's sweep.
+ */
+export function queueSidecarBackfillFromImport(
+  saved: ImportedVolumeData,
+  sourceProviderType: ProviderType
+): void {
+  try {
+    const volume = saved?.metadata;
+    if (!volume?.volume_uuid || !backfillReady()) return;
+    const provider = unifiedCloudManager.getActiveProvider();
+    if (!provider || provider.type !== sourceProviderType) return;
+    const key = attemptKey(volume.volume_uuid);
+    if (!key || attemptedThisSession.has(key)) return;
+    immediate.push({
+      volume,
+      // Deferred serialization: a volume whose sidecars turn out to be
+      // present (or wanted by nothing) never pays the JSON stringify — the
+      // shared core only calls this once the listing shows a real gap.
+      loadSidecars: () => buildVolumeSidecarsFromData(volume, saved.ocrPages),
+      countsAgainstSessionCap: false
+    });
+    // Wake a drain parked on the download-queue-idle wait, then make sure one
+    // is running at all.
+    for (const signal of [...importArrivalSignals]) signal();
+    kickDrain();
+  } catch (error) {
+    console.debug('[sidecar-backfill] could not queue imported volume:', error);
   }
 }
 
@@ -358,41 +473,58 @@ export async function sweepInstalledVolumesForSidecarBackfill(
 }
 
 function kickDrain(): void {
-  if (drainRunning || pending.size === 0) return;
+  if (drainRunning || (pending.size === 0 && immediate.length === 0)) return;
   const run = drain()
     .catch((error) => console.debug('[sidecar-backfill] drain failed:', error))
     .finally(() => {
       if (drainRunning === run) drainRunning = null;
       // A trigger that fired while the loop was exiting saw `drainRunning`
       // still set; pick its work up rather than stranding it.
-      if (pending.size > 0) kickDrain();
+      if (pending.size > 0 || immediate.length > 0) kickDrain();
     });
   drainRunning = run;
 }
 
 async function drain(): Promise<void> {
-  while (pending.size > 0) {
+  while (pending.size > 0 || immediate.length > 0) {
     // Re-checked every iteration: a logout, provider switch, or a WebDAV
     // write-tolerance flip to read-only can land between volumes. Dropping
     // the whole queue (not just this volume) is what "a read-only provider
-    // must not accumulate a retry queue" means.
+    // must not accumulate a retry queue" means — and import-fed entries go
+    // with it: their payload cannot upload anywhere either, and dropping
+    // them releases the memory they pin.
     if (!backfillReady()) {
       pending.clear();
+      immediate.length = 0;
       return;
     }
+    // Import-fed work first, always: no download-queue wait (its upload rides
+    // the user's own download action) and no session cap (bounded by that
+    // same action). Serving it before any deferred volume is also what keeps
+    // its pinned payload short-lived.
+    const importEntry = immediate.shift();
+    if (importEntry) {
+      await uploadMissingSidecars(importEntry);
+      continue;
+    }
     if (backfilledThisSession >= MAX_SIDECAR_BACKFILLS_PER_SESSION) {
+      // The DEFERRED budget is spent; import-fed entries stay exempt, so only
+      // the nominations are dropped and the loop re-checks for import work.
       pending.clear();
-      return;
+      continue;
     }
     // Low priority: user-driven downloads own the connection. Waits BEFORE
     // taking a volume, so work enqueued mid-download starts only once the
     // queue is empty — and re-gates afterwards, since anything can have
-    // changed while waiting.
-    await whenDownloadQueueIdle();
+    // changed while waiting. Import-fed work arriving mid-wait wakes it.
+    await whenDownloadQueueIdleOrImportWork();
     if (!backfillReady()) {
       pending.clear();
+      immediate.length = 0;
       return;
     }
+    // Woken by an import (or one landed while re-gating): serve it first.
+    if (immediate.length > 0) continue;
     const volumeUuid: string | undefined = pending.values().next().value;
     if (volumeUuid === undefined) return;
     pending.delete(volumeUuid);
@@ -401,14 +533,35 @@ async function drain(): Promise<void> {
 }
 
 /**
- * The authoritative per-volume check and, when it holds, the upload(s).
- *
- * Everything is re-derived here from the provider cache — the same cache
- * `uploadFile` adds every upload to — so a volume that converged since it was
- * nominated (another device uploaded, an earlier drain pass in this very
- * session, a stale sweep) is skipped for free, and a successful upload takes
- * the volume out of contention for every LATER check without any listing
- * round trip. That is the convergence-by-construction this feature requires.
+ * One per-volume unit of backfill work: the volume's row shape plus a way to
+ * produce its sidecar Files. The DEFERRED feeds read both from Dexie
+ * (`backfillOne`); the IMPORT feed carries both in memory
+ * (`queueSidecarBackfillFromImport`). One upload core, two data feeds — the
+ * eligibility rules, naming rules, attempted-set bookkeeping, and the
+ * deliberate absence of a `series.json` write live in exactly one place
+ * ({@link uploadMissingSidecars}).
+ */
+interface SidecarUploadFeed {
+  /** The volume's row shape — the Dexie row, or the exact row just committed. */
+  volume: VolumeMetadata;
+  /**
+   * Produce the sidecar Files, called only once the listing shows a real gap.
+   * Both feeds serialize through the SAME builder
+   * (`buildVolumeSidecarsFromData`, which `loadVolumeSidecars` also runs on
+   * the rows it reads) — that shared serializer is the byte-identity
+   * guarantee between an import-time upload and a later backup.
+   */
+  loadSidecars: () => Promise<VolumeSidecarFiles> | VolumeSidecarFiles;
+  /**
+   * Deferred-feed uploads consume {@link MAX_SIDECAR_BACKFILLS_PER_SESSION};
+   * import-fed uploads are bounded by the user's own downloads instead.
+   */
+  countsAgainstSessionCap: boolean;
+}
+
+/**
+ * The DEFERRED feeds' per-volume step: load the row from Dexie, then run the
+ * shared check-and-upload core with `loadVolumeSidecars` as the data source.
  */
 async function backfillOne(volumeUuid: string): Promise<void> {
   const key = attemptKey(volumeUuid);
@@ -416,6 +569,32 @@ async function backfillOne(volumeUuid: string): Promise<void> {
 
   const volume = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
   if (!volume || !isVolumeInstalled(volume)) return;
+
+  await uploadMissingSidecars({
+    volume,
+    loadSidecars: () => loadVolumeSidecars(volumeUuid),
+    countsAgainstSessionCap: true
+  });
+}
+
+/**
+ * The authoritative per-volume check and, when it holds, the upload(s) — the
+ * ONE upload core every feed goes through.
+ *
+ * Eligibility is re-derived here from the provider cache — the same cache
+ * `uploadFile` adds every upload to — so a volume that converged since it was
+ * nominated (another device uploaded, an earlier drain pass in this very
+ * session, a stale sweep, the import feed itself) is skipped for free, and a
+ * successful upload takes the volume out of contention for every LATER check
+ * without any listing round trip. That is the convergence-by-construction
+ * this feature requires — and it is why the import feed's safety-net
+ * nomination is harmless: by the time the drain reaches it, either the
+ * attempted-set or the cache says there is nothing left to do.
+ */
+async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
+  const { volume } = feed;
+  const key = attemptKey(volume.volume_uuid);
+  if (!key || attemptedThisSession.has(key)) return;
 
   // The folder the CLOUD spells this series with, then its files — resolved
   // the same way every writer resolves it, so the sidecar lands beside the
@@ -436,10 +615,10 @@ async function backfillOne(volumeUuid: string): Promise<void> {
   if (!wantsMokuro && !wantsCover) return;
 
   // Serialize through the SAME builder the backup and export paths use
-  // (`loadVolumeSidecars` → `buildMokuroMetadata`): an image-only volume or
-  // one whose OCR rows are missing yields `mokuroFile: null` there, so an
-  // empty `.mokuro` can never be invented here.
-  const sidecars = await loadVolumeSidecars(volumeUuid);
+  // (`buildVolumeSidecarsFromData` → `buildMokuroMetadata`): an image-only
+  // volume or one whose OCR rows are missing yields `mokuroFile: null` there,
+  // so an empty `.mokuro` can never be invented here.
+  const sidecars = await feed.loadSidecars();
   const uploads: Array<{ path: string; file: File }> = [];
   // The sidecar takes the ARCHIVE's exact stem, not the local title's
   // spelling: the two fold alike (that is how they matched) but can differ in
@@ -465,8 +644,9 @@ async function backfillOne(volumeUuid: string): Promise<void> {
   attemptedThisSession.add(key);
   if (uploads.length === 0) return;
 
-  // Only volumes that actually reach an upload consume the session budget.
-  backfilledThisSession += 1;
+  // Only DEFERRED-feed volumes that actually reach an upload consume the
+  // session budget; import-fed uploads are budgeted by the user's downloads.
+  if (feed.countsAgainstSessionCap) backfilledThisSession += 1;
   try {
     for (const upload of uploads) {
       // `unifiedCloudManager.uploadFile` adds the file to the provider's

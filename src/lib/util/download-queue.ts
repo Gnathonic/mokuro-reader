@@ -35,7 +35,11 @@ import { shouldReplaceDownloadedVolume } from './download-volume-repair';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
-import { queueSidecarBackfillForVolume } from './sync/sidecar-backfill';
+import {
+  queueSidecarBackfillForVolume,
+  queueSidecarBackfillFromImport
+} from './sync/sidecar-backfill';
+import type { SavedVolumeData } from '$lib/import/database';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -422,6 +426,7 @@ export async function processVolumeData(
     db.volume_files.get(processedVolume.metadata.volumeUuid)
   ]);
 
+  let saved: SavedVolumeData | undefined;
   if (
     shouldReplaceDownloadedVolume(
       existingVolume,
@@ -442,7 +447,7 @@ export async function processVolumeData(
     // the stored-title === cloud-path identity for legacy backups (volume
     // reads as un-backed-up, renames miss its files). Legacy titles are
     // sanitized at rename time instead, when the cloud files move with them.
-    await saveVolume(processedVolume, { preserveTitles: true });
+    saved = await saveVolume(processedVolume, { preserveTitles: true });
     await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
 
     // How big the archive we just installed was — inside this branch on
@@ -497,10 +502,20 @@ export async function processVolumeData(
 
   // The volume is installed now. If the cloud archive it came from predates
   // the sidecar convention (mokuro embedded in the .cbz, no cover file), the
-  // freshly-imported local data is exactly what the missing sidecars should
-  // say — nominate it for the lazy backfill. Fire-and-forget and internally
-  // deferred: the backfill waits for this download queue to drain before it
-  // uploads anything (see `sidecar-backfill.ts`).
+  // data the missing sidecars should carry is IN MEMORY right here — the
+  // DB-shaped pages `saveVolume` just committed and the cover the import
+  // generated — so the import feed uploads them immediately, with no Dexie
+  // re-read, gated on this download's provider still being the active one.
+  // Fire-and-forget by contract: never throws, never delays this import.
+  if (saved && cloudProvider) {
+    queueSidecarBackfillFromImport(saved, cloudProvider);
+  }
+  // Safety net for whatever the import feed declined (provider switched
+  // mid-download, a download that reused the existing install, no provider on
+  // the placeholder): nominate for the deferred drain, which re-derives
+  // everything from the provider cache. A volume the import feed already
+  // handled no-ops here at the attempted-set check — or, across sessions, at
+  // the cache the upload itself updated — without touching the database.
   queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
 }
 

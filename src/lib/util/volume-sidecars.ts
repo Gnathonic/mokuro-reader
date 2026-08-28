@@ -45,27 +45,32 @@ function extensionFromMimeType(contentType: string): string {
 }
 
 /**
- * The per-VOLUME sidecars. The series' `series.json` is deliberately not one of
- * them: building it reads the whole volumes table, which a per-volume caller
- * (the export loop) must not pay once per volume — `buildSeriesFileForExport`
- * is called once per series instead.
+ * Build a volume's sidecar Files from ALREADY-LOADED data — the single
+ * serializer behind both feeds of the sidecar backfill: `loadVolumeSidecars`
+ * hands it the Dexie rows, and the import-time feed (`sidecar-backfill.ts`)
+ * hands it the exact objects `saveVolume` just committed. One serializer is
+ * the byte-identity guarantee: a `.mokuro` uploaded at import time is
+ * byte-for-byte the one a later backup would re-serialize from the database,
+ * so the published size never drifts and `isSidecarStale` never fires on a
+ * sidecar this device itself wrote.
+ *
+ * `pages` must therefore be DB-SHAPED — the stripped pages `volume_ocr`
+ * stores (`cumulativeChars` removed, exactly what `saveVolume` writes) —
+ * never the import pipeline's in-flight pages. Pass `null` when there is no
+ * OCR row; an image-only volume (empty `mokuro_version`) never yields a
+ * `.mokuro` either way.
  */
-export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
-  const volume = await db.volumes.get(volumeUuid);
-  if (!volume) {
-    throw new Error(`Volume ${volumeUuid} not found`);
-  }
-
+export function buildVolumeSidecarsFromData(
+  volume: VolumeMetadata,
+  pages: unknown[] | null
+): VolumeSidecarFiles {
   let mokuroFile: File | null = null;
   const hasMokuroVersion =
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
-  if (hasMokuroVersion) {
-    const volumeOcr = await db.volume_ocr.get(volumeUuid);
-    if (volumeOcr?.pages) {
-      const metadata = buildMokuroMetadata(volume, volumeOcr.pages);
-      const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
-      mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
-    }
+  if (hasMokuroVersion && pages) {
+    const metadata = buildMokuroMetadata(volume, pages);
+    const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
+    mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
   }
 
   let thumbnailFile: File | null = null;
@@ -77,6 +82,24 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   }
 
   return { mokuroFile, thumbnailFile };
+}
+
+/**
+ * The per-VOLUME sidecars, loaded from the database. The series' `series.json`
+ * is deliberately not one of them: building it reads the whole volumes table,
+ * which a per-volume caller (the export loop) must not pay once per volume —
+ * `buildSeriesFileForExport` is called once per series instead.
+ */
+export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
+  const volume = await db.volumes.get(volumeUuid);
+  if (!volume) {
+    throw new Error(`Volume ${volumeUuid} not found`);
+  }
+
+  const hasMokuroVersion =
+    typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
+  const volumeOcr = hasMokuroVersion ? await db.volume_ocr.get(volumeUuid) : undefined;
+  return buildVolumeSidecarsFromData(volume, volumeOcr?.pages ?? null);
 }
 
 export function downloadFileBlob(file: File): void {

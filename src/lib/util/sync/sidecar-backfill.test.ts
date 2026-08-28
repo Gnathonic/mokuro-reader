@@ -122,7 +122,14 @@ vi.mock('./cache-manager', () => ({
 vi.mock('$lib/catalog/db', async () => {
   const { CatalogDexieV3 } =
     await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
-  return { db: new CatalogDexieV3('mokuro_v3_sidecar_backfill_test') };
+  const db = new CatalogDexieV3('mokuro_v3_sidecar_backfill_test');
+  // `saveVolume` (used by the import-feed tests below) fires a background
+  // `processThumbnails` whenever a volume lands without a cover. Its
+  // whole-table scan would bleed IndexedDB operations into a LATER test's
+  // `countIdbOps` window; this suite is not about thumbnail recovery, so it
+  // is inert here.
+  db.processThumbnails = async () => {};
+  return { db };
 });
 vi.mock('$lib/metadata/series-backfill', () => ({
   hasWritableNonServerProvider: () => gate.writable
@@ -142,8 +149,15 @@ import {
   _drainForTests,
   _resetSidecarBackfillForTests,
   queueSidecarBackfillForVolume,
+  queueSidecarBackfillFromImport,
   sweepInstalledVolumesForSidecarBackfill
 } from './sidecar-backfill';
+// REAL import pipeline pieces for the import-feed tests: `saveVolume` writes
+// through the mocked-to-real Dexie above, and the sidecar builders are the
+// production serializers whose byte-identity the tests below pin.
+import { saveVolume } from '$lib/import/database';
+import type { ProcessedVolume } from '$lib/import/types';
+import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volume-sidecars';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -199,6 +213,7 @@ beforeEach(async () => {
   _resetSidecarBackfillForTests();
   await db.volumes.clear();
   await db.volume_ocr.clear();
+  await db.volume_files.clear();
   cloud.state.files.length = 0;
   cloud.state.accountScope = undefined;
   cloud.uploadFile.mockReset();
@@ -759,5 +774,384 @@ describe('sidecar backfill — attempted-session memory is per ACCOUNT (Finding 
     queueSidecarBackfillForVolume('uuid-1');
     await settle();
     expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The IMPORT feed: a cloud download's in-memory data uploads immediately
+// ---------------------------------------------------------------------------
+
+/**
+ * A cloud download's import output, as `processVolumeData` would hand it to
+ * `saveVolume`: pages still carrying the pipeline-only `cumulativeChars`
+ * (which `saveVolume` strips into `page_char_counts`), a generated cover
+ * Blob, and unicode-bearing OCR blocks so the byte-identity assertion below
+ * exercises real serialization, not just ASCII.
+ */
+function processedVolumeFixture(
+  uuid = 'imp-1',
+  overrides: {
+    volumeTitle?: string;
+    thumbnail?: Blob | null;
+    mokuroVersion?: string;
+  } = {}
+): ProcessedVolume {
+  return {
+    metadata: {
+      volumeUuid: uuid,
+      seriesUuid: 'series-uuid-1',
+      series: 'Legacy Series',
+      volume: overrides.volumeTitle ?? 'Volume 01',
+      mokuroVersion: overrides.mokuroVersion ?? '0.2.1',
+      pageCount: 2,
+      chars: 42,
+      thumbnail:
+        overrides.thumbnail !== undefined
+          ? overrides.thumbnail
+          : new Blob([new Uint8Array([9, 9, 9, 9])], { type: 'image/webp' }),
+      thumbnailWidth: 4,
+      thumbnailHeight: 4,
+      sourceType: 'cloud',
+      spineWidth: 12
+    },
+    ocrData: {
+      volume_uuid: uuid,
+      pages: [
+        {
+          img_path: 'p1.jpg',
+          img_width: 100,
+          img_height: 200,
+          blocks: [{ box: [1, 2, 3, 4], font_size: 20, lines: ['「テスト」'] }],
+          cumulativeChars: 10
+        },
+        {
+          img_path: 'p2.jpg',
+          img_width: 100,
+          img_height: 200,
+          blocks: [],
+          cumulativeChars: 42
+        }
+      ]
+    },
+    fileData: {
+      volume_uuid: uuid,
+      files: {
+        'p1.jpg': new File(['x'], 'p1.jpg', { type: 'image/jpeg' }),
+        'p2.jpg': new File(['y'], 'p2.jpg', { type: 'image/jpeg' })
+      }
+    },
+    nestedSources: []
+  } as unknown as ProcessedVolume;
+}
+
+describe('sidecar backfill — the import feed (in-memory upload at download completion)', () => {
+  it('serializes the import-time .mokuro byte-identically to what loadVolumeSidecars later reads from the DB', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    // Positive control: the import feed really uploaded a mokuro.
+    const mokuroCall = cloud.uploadFile.mock.calls.find((call) =>
+      (call[0] as string).endsWith('.mokuro')
+    );
+    expect(mokuroCall).toBeDefined();
+    const importedBytes = new Uint8Array(await (mokuroCall![1] as File).arrayBuffer());
+    expect(importedBytes.length).toBeGreaterThan(0);
+
+    // What a future backup/export would re-serialize from Dexie.
+    const fromDb = await loadVolumeSidecars('imp-1');
+    expect(fromDb.mokuroFile).not.toBeNull();
+    const dbBytes = new Uint8Array(await fromDb.mokuroFile!.arrayBuffer());
+
+    // THE contract: byte-for-byte identical, or every such volume's published
+    // size mismatches its re-serialization and `isSidecarStale` re-pulls it.
+    expect(importedBytes).toEqual(dbBytes);
+
+    // Teeth (permanent negative control): serializing the UNSTRIPPED pipeline
+    // pages — `cumulativeChars` still present — would NOT match. If this ever
+    // starts matching, the equality above has gone vacuous.
+    const unstripped = buildVolumeSidecarsFromData(saved.metadata, processed.ocrData.pages);
+    const unstrippedBytes = new Uint8Array(await unstripped.mokuroFile!.arrayBuffer());
+    expect(unstrippedBytes).not.toEqual(dbBytes);
+  });
+
+  it('uploads both sidecars from memory with ZERO IndexedDB operations', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    const counts = await countIdbOps(async () => {
+      queueSidecarBackfillFromImport(saved, 'webdav');
+      await settle();
+    });
+
+    // Positive control: the flow really ran all the way to both uploads.
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+    // The point of the feed: the OCR rows just written are NOT re-read...
+    expect(counts['volume_ocr.get'] ?? 0).toBe(0);
+    // ...and in fact nothing is: no row read, no transaction at all.
+    expect(counts['volumes.get'] ?? 0).toBe(0);
+    expect(counts['transactions'] ?? 0).toBe(0);
+  });
+
+  it('control: the DEFERRED path for the same volume DOES read volume_ocr — the meter sees what the import feed avoids', async () => {
+    const processed = processedVolumeFixture();
+    await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    const counts = await countIdbOps(async () => {
+      queueSidecarBackfillForVolume('imp-1');
+      await settle();
+    });
+
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+    expect(counts['volume_ocr.get'] ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it('uploads nothing when the listing already shows both sidecars', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 01.cbz'),
+      listed('Legacy Series/Volume 01.mokuro'),
+      listed('Legacy Series/Volume 01.webp')
+    );
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('uploads only the missing HALF when the other sidecar exists', async () => {
+    // Also the "uploads nothing" test's positive control: same fixture, same
+    // call, one sidecar removed from the listing — and the feed acts. The
+    // no-op above is therefore the wants-check saying no, not an early bail.
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 01.cbz'),
+      listed('Legacy Series/Volume 01.webp')
+    );
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+  });
+
+  it("declines when the download's provider is no longer the active one — the deferred safety net heals it", async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    // The archive downloaded from Drive, but by import completion the user
+    // switched to WebDAV (the fixture's active provider).
+    queueSidecarBackfillFromImport(saved, 'google-drive');
+    await settle();
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+
+    // The decline poisoned nothing: the safety-net nomination that follows it
+    // at the call site still backfills, from the database, via the drain.
+    queueSidecarBackfillForVolume('imp-1');
+    await settle();
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+  });
+
+  it('a failed upload never throws into the import, and the attempted-set blocks same-session retries', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.uploadFile.mockRejectedValue(new Error('quota exceeded'));
+
+    // Fire-and-forget contract: the import's own call path sees no throw.
+    expect(() => queueSidecarBackfillFromImport(saved, 'webdav')).not.toThrow();
+    await settle();
+    // Positive control: the upload really was attempted (mokuro first, and
+    // the cover is not tried after the failure — same rule as the drain).
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
+
+    // Attempted-set: neither the safety-net nomination nor a fresh sweep
+    // retries within this session.
+    queueSidecarBackfillForVolume('imp-1');
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
+
+    // A NEW session (fresh page load) re-derives the gap from the listing and
+    // heals it — the failed import-time attempt did not strand the volume.
+    _resetSidecarBackfillForTests();
+    cloud.uploadFile.mockImplementation(cloud.defaultUpload);
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+  });
+
+  it('a PNG thumbnail uploads only the mokuro — hasCoverSidecarExtension rejects the cover half', async () => {
+    const processed = processedVolumeFixture('imp-1', {
+      thumbnail: new Blob([new Uint8Array([9, 9, 9, 9])], { type: 'image/png' })
+    });
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+    expect(uploadedPaths().some((path) => path.endsWith('.png'))).toBe(false);
+  });
+
+  it('a volume whose thumbnail generation failed uploads only the mokuro', async () => {
+    const processed = processedVolumeFixture('imp-1', { thumbnail: null });
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+  });
+
+  it('import-time success makes the safety net and the sweep no-op, in-session without touching the DB and across sessions via the cache', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+    // Positive control: the import feed really uploaded both.
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+
+    // Same session: the safety-net nomination fired right after by the call
+    // site, and the next sweep, both no-op — without a single IndexedDB op.
+    const counts = await countIdbOps(async () => {
+      queueSidecarBackfillForVolume('imp-1');
+      await sweepInstalledVolumesForSidecarBackfill();
+      await settle();
+    });
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+    expect(counts['transactions'] ?? 0).toBe(0);
+
+    // A NEW session, same provider cache: the upload's own cache adds are what
+    // the sweep now sees — convergence with no listing fetch (asserted).
+    _resetSidecarBackfillForTests();
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+    expect(cloud.fetchAllCloudVolumes).not.toHaveBeenCalled();
+  });
+
+  it('does not wait for the download queue: uploads while the batch is still running', async () => {
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    // Other downloads still in flight — the deferred drain would park here.
+    downloadQueueMock.set([{ volumeUuid: 'still-downloading' }]);
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+  });
+
+  it('an import finishing mid-batch wakes a drain parked on the download-queue-idle wait', async () => {
+    // A deferred candidate parks the drain on the idle wait first...
+    await withOcr(
+      installedVolume({
+        volume_uuid: 'uuid-deferred',
+        volume_title: 'Volume 02',
+        thumbnail: undefined
+      })
+    );
+    cloud.state.files.push(listed('Legacy Series/Volume 02.cbz'));
+    downloadQueueMock.set([{ volumeUuid: 'batch-item' }]);
+    queueSidecarBackfillForVolume('uuid-deferred');
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    // Positive control: genuinely parked, nothing uploaded.
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+
+    // ...then an import completes mid-batch. NOT `settle()` here — the drain
+    // deliberately stays parked for the deferred volume while the queue is
+    // busy, so awaiting its completion would deadlock; macrotask flushes give
+    // the wake-up every chance to run without awaiting the parked drain.
+    const processed = processedVolumeFixture();
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    for (let i = 0; i < 8; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The import's sidecars are up NOW; the deferred volume still waits.
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+
+    // The batch ends: the deferred volume gets its turn.
+    downloadQueueMock.set([]);
+    await settle();
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp',
+      'Legacy Series/Volume 02.mokuro'
+    ]);
+  });
+
+  it('neither consumes the deferred session cap nor is stopped by its exhaustion', async () => {
+    // Phase 1 — an import-fed upload BEFORE the sweep...
+    const first = processedVolumeFixture('imp-a', { volumeTitle: 'Volume 90' });
+    const savedFirst = await saveVolume(first, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 90.cbz'));
+    queueSidecarBackfillFromImport(savedFirst, 'webdav');
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+
+    // ...leaves the deferred budget UNTOUCHED: a sweep over cap+1 candidates
+    // still backfills exactly MAX volumes, not MAX-1.
+    const total = MAX_SIDECAR_BACKFILLS_PER_SESSION + 1;
+    for (let i = 1; i <= total; i++) {
+      await withOcr(
+        installedVolume({
+          volume_uuid: `uuid-${i}`,
+          volume_title: `Volume ${String(i).padStart(2, '0')}`,
+          thumbnail: undefined
+        })
+      );
+      cloud.state.files.push(listed(`Legacy Series/Volume ${String(i).padStart(2, '0')}.cbz`));
+    }
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2 + MAX_SIDECAR_BACKFILLS_PER_SESSION);
+
+    // Phase 2 — the deferred budget is now spent, and an import-fed upload
+    // still goes through: bounded by the user's downloads, not by the cap.
+    const second = processedVolumeFixture('imp-b', { volumeTitle: 'Volume 91' });
+    const savedSecond = await saveVolume(second, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 91.cbz'));
+    queueSidecarBackfillFromImport(savedSecond, 'webdav');
+    await settle();
+    expect(
+      uploadedPaths()
+        .filter((path) => path.includes('Volume 91'))
+        .sort()
+    ).toEqual(['Legacy Series/Volume 91.mokuro', 'Legacy Series/Volume 91.webp']);
   });
 });

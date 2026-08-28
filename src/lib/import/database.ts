@@ -43,6 +43,24 @@ export function storedTitleSegment(raw: string, preserveTitles?: boolean): strin
 }
 
 /**
+ * What `saveVolume` committed, in EXACTLY the shape the database now holds.
+ *
+ * This is the byte-identity contract the import-time sidecar backfill relies
+ * on: `metadata` is the very row written to `db.volumes` (including a
+ * reinstall's merged-in thumbnail), and `ocrPages` is the very array written
+ * to `volume_ocr` — `cumulativeChars` already stripped. Serializing a
+ * `.mokuro` from these through `buildVolumeSidecarsFromData` produces the
+ * same bytes `loadVolumeSidecars` would later produce from the database, so
+ * an import-time upload and a future backup agree on size to the byte.
+ */
+export interface SavedVolumeData {
+  /** The row written to `db.volumes`, post any reinstall merge. */
+  metadata: VolumeMetadata;
+  /** The pages array written to `volume_ocr` (`cumulativeChars` stripped). */
+  ocrPages: unknown[];
+}
+
+/**
  * Save a processed volume to the database
  *
  * Performs an atomic write to all three tables.
@@ -56,12 +74,16 @@ export function storedTitleSegment(raw: string, preserveTitles?: boolean): strin
  *   volume would read as un-backed-up and renames would miss its files).
  *   Legacy titles get sanitized later, at rename time, where the rename
  *   machinery moves the cloud files along with the title.
+ * @returns The exact objects committed — see {@link SavedVolumeData}. A cloud
+ *   download feeds these straight to the import-time sidecar backfill
+ *   (`queueSidecarBackfillFromImport`) so it can serialize the `.mokuro` from
+ *   the DB-shaped data without re-reading what was just written.
  * @throws If the volume already exists or if the transaction fails
  */
 export async function saveVolume(
   volume: ProcessedVolume,
   options?: { preserveTitles?: boolean }
-): Promise<void> {
+): Promise<SavedVolumeData> {
   const { metadata, ocrData, fileData } = volume;
   const canonicalVolumeUuid = metadata.volumeUuid;
 
@@ -100,6 +122,11 @@ export async function saveVolume(
     missing_page_paths: metadata.missingPagePaths,
     spine_width: metadata.spineWidth
   };
+
+  // Strip cumulativeChars (it's stored in page_char_counts) — this is the
+  // DB shape of the pages, and the ONLY shape a `.mokuro` may ever be
+  // serialized from (see `SavedVolumeData`).
+  const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
 
   // Write to all 3 tables atomically
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
@@ -145,8 +172,7 @@ export async function saveVolume(
       await db.volumes.add(volumeMetadata);
     }
 
-    // Write OCR data (strip cumulativeChars as it's stored in page_char_counts)
-    const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
+    // Write OCR data (already DB-shaped, see above)
     await db.volume_ocr.add({
       volume_uuid: canonicalVolumeUuid,
       pages: pagesForDb as any // Cast to any since Page type is stricter
@@ -172,21 +198,12 @@ export async function saveVolume(
     });
   }
 
-  // A LOCAL import is an install too: if this volume's cloud counterpart lacks
-  // sidecars, nominate it for the lazy backfill exactly like a cloud download
-  // does (`download-queue.ts`). Nomination is free — the drain re-derives
-  // "installed + listed + sidecar missing" at upload time, so a volume with no
-  // cloud counterpart (or none missing) costs nothing. Dynamic import because
-  // `sidecar-backfill` pulls the whole sync graph, which this import pipeline
-  // must not statically depend on (established pattern: `ensureCoverKeyWatch`).
-  void import('$lib/util/sync/sidecar-backfill')
-    .then(({ queueSidecarBackfillForVolume }) => {
-      queueSidecarBackfillForVolume(canonicalVolumeUuid);
-    })
-    .catch(() => {
-      // Best-effort: a failed chunk load only defers the backfill to the next
-      // listing-load sweep, which nominates the same volume.
-    });
+  // Deliberately NO backfill nomination for local imports (reverted): a local
+  // importer's cloud provider is invariably absent, read-only, or
+  // server-compiled — the writable gate skips all three, so the nomination
+  // only ever no-oped. Cloud downloads nominate from `download-queue.ts`,
+  // and the listing-load sweep remains the catch-all for installed volumes.
+  return { metadata: volumeMetadata, ocrPages: pagesForDb };
 }
 
 /**
