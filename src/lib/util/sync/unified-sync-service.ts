@@ -19,6 +19,7 @@ import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
+import { uploadCacheEntry } from './cloud-cache-interface';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 
 /**
@@ -542,7 +543,14 @@ class UnifiedSyncService {
   private async uploadVolumeDataFile(provider: SyncProvider, data: any): Promise<void> {
     const blob = this.jsonToBlob(data);
     const path = 'volume-data.json';
-    await provider.uploadFile(path, blob);
+    const uploaded = await provider.uploadFile(path, blob);
+    // Targeted cache add, so `findVolumeDataFiles` (which reads the CACHE)
+    // sees a first-ever upload without waiting for the next full listing —
+    // maintenance only Drive's in-provider refetch used to provide, by brute
+    // force; other providers never provided it at all.
+    cacheManager
+      .getCache(provider.type)
+      ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
   }
 
   /**
@@ -665,7 +673,12 @@ class UnifiedSyncService {
   private async uploadProfilesFile(provider: SyncProvider, data: any): Promise<void> {
     const blob = this.jsonToBlob(data);
     const path = 'profiles.json';
-    await provider.uploadFile(path, blob);
+    const uploaded = await provider.uploadFile(path, blob);
+    // Same targeted add as `uploadVolumeDataFile` — `findProfilesFiles` reads
+    // the cache too.
+    cacheManager
+      .getCache(provider.type)
+      ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
   }
 
   /**

@@ -3291,3 +3291,82 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     expect(() => unifiedCloudManager.refreshSeriesIndexesInBackground()).not.toThrow();
   });
 });
+
+describe('blindUploadFile — the write-and-forget upload', () => {
+  function loadedCacheWithAdd() {
+    const added: Array<{ path: string; entry: Record<string, unknown> }> = [];
+    getCache.mockReturnValue({
+      isLoaded: () => true,
+      add: vi.fn((path: string, entry: Record<string, unknown>) => added.push({ path, entry }))
+    });
+    return added;
+  }
+
+  it('routes through the provider blindUploadFile when it has one, with the same targeted cache add', async () => {
+    const added = loadedCacheWithAdd();
+    const provider = {
+      type: 'google-drive',
+      uploadFile: vi.fn(async () => {
+        throw new Error('blind path must not use the refetching uploadFile');
+      }),
+      blindUploadFile: vi.fn(async () => ({
+        fileId: 'blind-1',
+        modifiedTime: '2026-08-27T00:00:00.000Z',
+        size: 7
+      }))
+    };
+    getActiveProvider.mockReturnValue(provider);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    const fileId = await unifiedCloudManager.blindUploadFile('S/V.mokuro', new Blob(['x']));
+
+    expect(fileId).toBe('blind-1');
+    expect(provider.blindUploadFile).toHaveBeenCalledTimes(1);
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    // The SAME provenance-correct cache entry an ordinary upload earns: the
+    // server mtime from the upload response, not provisional.
+    expect(added).toHaveLength(1);
+    expect(added[0].path).toBe('S/V.mokuro');
+    expect(added[0].entry).toMatchObject({
+      fileId: 'blind-1',
+      modifiedTime: '2026-08-27T00:00:00.000Z',
+      modifiedTimeProvisional: false,
+      size: 7
+    });
+  });
+
+  it('falls back to the ordinary uploadFile for a provider without a blind variant — it is already blind', async () => {
+    const added = loadedCacheWithAdd();
+    const provider = {
+      type: 'webdav',
+      uploadFile: vi.fn(async () => ({ fileId: 'plain-1' }))
+    };
+    getActiveProvider.mockReturnValue(provider);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    const fileId = await unifiedCloudManager.blindUploadFile('S/V.webp', new Blob(['xy']));
+
+    expect(fileId).toBe('plain-1');
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    // No server mtime in the response: the entry is the provisional
+    // client-clock fallback, exactly as with an ordinary upload.
+    expect(added[0].entry).toMatchObject({ fileId: 'plain-1', modifiedTimeProvisional: true });
+    expect(added[0].entry.size).toBe(2);
+  });
+
+  it('the ordinary uploadFile never takes the blind provider path', async () => {
+    loadedCacheWithAdd();
+    const provider = {
+      type: 'google-drive',
+      uploadFile: vi.fn(async () => ({ fileId: 'legacy-1' })),
+      blindUploadFile: vi.fn(async () => ({ fileId: 'wrong' }))
+    };
+    getActiveProvider.mockReturnValue(provider);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    const fileId = await unifiedCloudManager.uploadFile('S/V.cbz', new Blob(['x']));
+
+    expect(fileId).toBe('legacy-1');
+    expect(provider.blindUploadFile).not.toHaveBeenCalled();
+  });
+});

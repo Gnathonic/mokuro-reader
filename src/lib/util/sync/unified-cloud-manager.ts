@@ -8,6 +8,7 @@ import {
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
+import { uploadCacheEntry } from './cloud-cache-interface';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
@@ -333,12 +334,45 @@ class UnifiedCloudManager {
     description?: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<string> {
+    return this.performUpload(path, blob, description, onProgress, false);
+  }
+
+  /**
+   * Write-and-forget upload: same contract and same targeted cache add as
+   * {@link uploadFile}, but routed through the provider's `blindUploadFile`
+   * when it has one — the variant that skips any post-upload refresh work the
+   * provider's ordinary upload performs (Google Drive refetches its WHOLE
+   * listing after every ordinary upload; see the interface doc). A provider
+   * without the method IS already blind, so this falls back to `uploadFile`.
+   *
+   * For callers that never read the upload back — the sidecar backfill, whose
+   * convergence runs entirely on the cache entry added here.
+   */
+  async blindUploadFile(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<string> {
+    return this.performUpload(path, blob, description, onProgress, true);
+  }
+
+  private async performUpload(
+    path: string,
+    blob: UploadPayload,
+    description: string | undefined,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    blind: boolean
+  ): Promise<string> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
     }
 
-    const uploaded = await provider.uploadFile(path, blob, description, onProgress);
+    const uploaded =
+      blind && provider.blindUploadFile
+        ? await provider.blindUploadFile(path, blob, description, onProgress)
+        : await provider.uploadFile(path, blob, description, onProgress);
     const uploadSize =
       blob instanceof Blob
         ? blob.size
@@ -346,23 +380,11 @@ class UnifiedCloudManager {
           ? blob.byteLength
           : blob.byteLength;
 
-    // Update cache via cacheManager. When the provider's upload response
-    // carried the SERVER's mtime, the entry gets that (it will agree with the
-    // next listing); otherwise the client-clock fallback is explicitly marked
-    // provisional so no stamp publisher (`cloud-sidecar-stamps.ts`) ever
-    // treats it as a server fact.
+    // The targeted post-upload cache maintenance, blind or not: an entry
+    // built from the upload response's own provenance (server mtime when
+    // reported, marked provisional otherwise) — see `uploadCacheEntry`.
     const cache = cacheManager.getCache(provider.type);
-    if (cache && cache.add) {
-      cache.add(path, {
-        provider: provider.type,
-        fileId: uploaded.fileId,
-        path,
-        modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
-        modifiedTimeProvisional: !uploaded.modifiedTime,
-        size: uploaded.size ?? uploadSize,
-        description
-      });
-    }
+    cache?.add?.(path, uploadCacheEntry(provider.type, path, uploadSize, uploaded, description));
 
     return uploaded.fileId;
   }

@@ -31,7 +31,10 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
     setReaderFolderId: vi.fn(),
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
-    clear: vi.fn()
+    clear: vi.fn(),
+    // The whole-account refetch `uploadFile` performs and `blindUploadFile`
+    // must not — the upload suites below assert on it directly.
+    fetch: vi.fn(async () => {})
   }
 }));
 vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
@@ -428,5 +431,46 @@ describe('google drive account scope', () => {
     // ...and resolving it both moves the scope AND says so.
     expect(provider.getStatus().accountScope).toBe('google-drive:reader-root');
     expect(manager.updateStatus).toHaveBeenCalled();
+  });
+});
+
+describe('GoogleDriveProvider uploads — the blind path skips the whole-account refetch', () => {
+  /**
+   * `uploadFile` has always ended with `driveFilesCache.fetch()` — a FULL
+   * paged listing walk per upload. `blindUploadFile` is the same upload minus
+   * that refetch, for callers (the sidecar backfill) that never read their
+   * own writes back and converge through the unified layer's targeted cache
+   * add instead.
+   */
+  const coreUpload = vi.fn(async () => ({
+    fileId: 'uploaded-1',
+    modifiedTime: '2026-08-27T00:00:00.000Z',
+    size: 3
+  }));
+
+  beforeEach(() => {
+    coreUpload.mockClear();
+    vi.mocked(driveFilesCache.fetch).mockClear();
+    vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
+    // The shared provider core the real upload rides; a root-level path keeps
+    // the folder machinery down to the mocked reader-root lookup.
+    (googleDriveProvider as unknown as { cloudCore: { uploadFile: typeof coreUpload } }).cloudCore =
+      { uploadFile: coreUpload };
+  });
+
+  it('uploadFile keeps the legacy refetch (unaudited callers may depend on it)', async () => {
+    const result = await googleDriveProvider.uploadFile('volume-data.json', new Blob(['abc']));
+    expect(coreUpload).toHaveBeenCalledTimes(1);
+    expect(result.fileId).toBe('uploaded-1');
+    expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('blindUploadFile performs the SAME upload with NO refetch', async () => {
+    const result = await googleDriveProvider.blindUploadFile('volume-data.json', new Blob(['abc']));
+    // Positive control: the upload genuinely ran and returned its metadata.
+    expect(coreUpload).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ fileId: 'uploaded-1', size: 3 });
+    // The point: not one listing request rides a blind upload.
+    expect(driveFilesCache.fetch).not.toHaveBeenCalled();
   });
 });

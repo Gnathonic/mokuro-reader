@@ -1,4 +1,5 @@
 import type { Readable } from 'svelte/store';
+import type { CloudFileMetadata, ProviderType } from './provider-interface';
 
 /**
  * Cloud Cache Interface
@@ -31,6 +32,41 @@ import type { Readable } from 'svelte/store';
  * construction, never client-clock-fabricated.
  */
 export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
+
+/**
+ * The cache entry ONE successful upload earns — the single rule for
+ * post-upload cache maintenance, shared by every uploader
+ * (`unifiedCloudManager.uploadFile`, the sync service's direct
+ * volume-data/profiles uploads).
+ *
+ * A targeted `cache.add` of this entry is ALL an upload needs for
+ * convergence: it carries the upload response's own fileId, and the SERVER's
+ * mtime when the response reported one — marked provisional otherwise, so no
+ * stamp publisher ever mistakes a client clock for a server fact
+ * (`cloud-sidecar-stamps.ts`). Refetching the listing instead is what the
+ * Google Drive provider used to do INSIDE `uploadFile`: a full paged walk of
+ * the account (13+ `files.list` calls on a 12,500-file library) after every
+ * upload, so each sidecar-backfill volume cost two whole listings for data
+ * nothing needed to read back. Pure and stateless on purpose — suites that
+ * mock the cache manager still exercise THIS rule for real.
+ */
+export function uploadCacheEntry(
+  providerType: ProviderType,
+  path: string,
+  uploadedBytes: number,
+  uploaded: { fileId: string; modifiedTime?: string; size?: number },
+  description?: string
+): CacheAddMetadata<CloudFileMetadata> {
+  return {
+    provider: providerType,
+    fileId: uploaded.fileId,
+    path,
+    modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
+    modifiedTimeProvisional: !uploaded.modifiedTime,
+    size: uploaded.size ?? uploadedBytes,
+    description
+  };
+}
 
 /**
  * Generic interface for cloud file caches

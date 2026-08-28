@@ -896,3 +896,40 @@ describe('profiles.json', () => {
     }
   });
 });
+
+describe('direct config uploads record a targeted cache entry', () => {
+  it('uploadProfiles makes the new profiles.json visible to the cache without any listing', async () => {
+    // `findProfilesFiles` resolves profiles.json FROM the provider cache, so a
+    // first-ever upload used to be invisible until the next full listing on
+    // every provider except Drive (whose in-provider refetch papered over it,
+    // at the cost of a whole-account walk per upload). The targeted add is
+    // the provider-neutral replacement.
+    const add = vi.fn();
+    getCache.mockReturnValue({ add });
+    const provider = {
+      type: 'webdav',
+      name: 'WebDAV',
+      uploadFile: vi.fn(async () => ({
+        fileId: 'profiles-1',
+        modifiedTime: '2026-08-27T01:00:00.000Z',
+        size: 11
+      }))
+    };
+
+    await unifiedSyncService.uploadProfiles(provider as never, { default: {} });
+
+    // Positive control: the upload really went to the provider...
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    // ...and the cache learned about it with the response's own provenance.
+    expect(add).toHaveBeenCalledTimes(1);
+    const [path, entry] = add.mock.calls[0];
+    expect(path).toBe('profiles.json');
+    expect(entry).toMatchObject({
+      provider: 'webdav',
+      fileId: 'profiles-1',
+      modifiedTime: '2026-08-27T01:00:00.000Z',
+      modifiedTimeProvisional: false,
+      size: 11
+    });
+  });
+});

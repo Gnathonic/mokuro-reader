@@ -680,10 +680,15 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   if (feed.countsAgainstSessionCap) backfilledThisSession += 1;
   try {
     for (const upload of uploads) {
-      // `unifiedCloudManager.uploadFile` adds the file to the provider's
-      // listing cache — convergence without a refetch — and never triggers a
-      // listing fetch of its own.
-      await unifiedCloudManager.uploadFile(upload.path, upload.file);
+      // BLIND upload: the backfill never reads its own writes back, so it
+      // takes the write-and-forget path — on Google Drive the ordinary
+      // `uploadFile` refetches the WHOLE listing after every upload (13+
+      // `files.list` calls on a 12,500-file library, twice per backfilled
+      // volume), which this skips. Convergence still holds: the unified
+      // layer adds the file to the provider's listing cache with the upload
+      // response's own metadata, so the next check sees the sidecar without
+      // any fetch.
+      await unifiedCloudManager.blindUploadFile(upload.path, upload.file);
     }
     // Deliberately no `series.json` write here — see the module doc's first
     // defense. The next real listing's reconcile pass stamps this folder's

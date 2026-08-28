@@ -364,6 +364,26 @@ export interface SyncProvider {
   ): Promise<UploadFileResult>;
 
   /**
+   * Upload WITHOUT any post-upload refresh work — the write-and-forget path
+   * for callers that do not need to read the result back (the sidecar
+   * backfill: it converges through the targeted cache add the unified layer
+   * performs, never through a listing).
+   *
+   * OPTIONAL, and absent means `uploadFile` is already blind: implement this
+   * only when the ordinary `uploadFile` performs extra refresh work worth
+   * skipping. Google Drive is the one such provider today — its `uploadFile`
+   * ends with a FULL paged listing refetch (13+ `files.list` calls on a
+   * 12,500-file library), which `blindUploadFile` skips. Callers go through
+   * `unifiedCloudManager.blindUploadFile`, which handles the fallback.
+   */
+  blindUploadFile?(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<UploadFileResult>;
+
+  /**
    * Download a file from cloud storage
    * @param file Cloud file metadata (provider extracts internal ID)
    * @param onProgress Optional progress callback (loaded, total)
