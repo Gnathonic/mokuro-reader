@@ -1367,7 +1367,7 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
     const uuids = await seedWorkerBatch(5);
 
     await sweepInstalledVolumesForSidecarBackfill();
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 3, 'first wave dispatched');
 
     // THE bound: 3 in flight, and — given every chance — NOTHING more is
     // dispatched while none has completed. (An unbounded drain dispatches all
@@ -1399,7 +1399,9 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
 
     // Completions free slots one at a time; the bound holds throughout.
     workerPool.complete(first!, workerCompletion('Volume 01'));
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 4, 'fourth dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 4, 'fourth dispatched');
+    await flushTurns();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(4);
     expect(workerPool.open()).toHaveLength(3);
 
     for (const task of workerPool.open()) {
@@ -1409,7 +1411,7 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
       );
       await flushTurns(2);
     }
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 5, 'fifth dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 5, 'fifth dispatched');
     for (const task of workerPool.open()) {
       workerPool.complete(
         task,
@@ -1440,7 +1442,8 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
     await seedWorkerBatch(5);
 
     await sweepInstalledVolumesForSidecarBackfill();
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 3, 'first wave dispatched');
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
 
     // A user-driven download starts mid-batch.
     downloadQueueMock.set([{ volumeUuid: 'user-download' }]);
@@ -1459,7 +1462,7 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
 
     // The queue drains: the remaining two volumes get their turn.
     downloadQueueMock.set([]);
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 5, 'rest dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 5, 'rest dispatched');
     for (const task of workerPool.open()) {
       workerPool.complete(
         task,
@@ -1555,7 +1558,8 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
   it('re-derives eligibility at dispatch time: a volume that converged while others were in flight is never dispatched', async () => {
     const uuids = await seedWorkerBatch(4);
     await sweepInstalledVolumesForSidecarBackfill();
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 3, 'first wave dispatched');
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
 
     // While the first three fly, another device publishes wp-4's sidecars —
     // the listing cache (which every check reads) now shows them.
@@ -1581,7 +1585,8 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
   it('an import arriving at full capacity is served on the main thread immediately, without a worker slot', async () => {
     await seedWorkerBatch(4);
     await sweepInstalledVolumesForSidecarBackfill();
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'at capacity');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 3, 'at capacity');
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
 
     // A cloud download finishes importing while all three slots are busy.
     const processed = processedVolumeFixture('imp-99', { volumeTitle: 'Volume 99' });
@@ -1609,7 +1614,7 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
       );
       await flushTurns(2);
     }
-    await flushUntil(() => workerPool.addTask.mock.calls.length === 4, 'fourth dispatched');
+    await flushUntil(() => workerPool.addTask.mock.calls.length >= 4, 'fourth dispatched');
     workerPool.complete(workerPool.open()[0], workerCompletion('Volume 04'));
     await settle();
     expect(workerPool.addTask).toHaveBeenCalledTimes(4);
