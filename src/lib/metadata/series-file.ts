@@ -246,6 +246,16 @@ function hasMeasuredContent(entry: SeriesFileVolume): boolean {
  * 'unknown' until the next real listing, which only delays the badge, never
  * fakes it.)
  *
+ * SEMANTICS OF THE CLAIM, stated for the one edge where it matters: this
+ * function describes the BEST-KNOWN OCR STATE of the volume, not the bytes
+ * of the cloud archive. A locally image-only volume can backfill just a
+ * cover next to a same-titled archive that secretly embeds a mokuro (only
+ * producible by out-of-band file placement — the app's own import extracts
+ * embedded mokuro before install). The entry then honestly reports the
+ * uploader's state (`''`), and "measured beats no-metadata" in the merger
+ * supersedes it the moment any device imports the real archive. Display-only
+ * and self-healing; do not "fix" it by sniffing archive contents here.
+ *
  * Every consumer that copies an entry's version onto a `VolumeMetadata`
  * shape (`createPlaceholder`, `materializeSeriesVolumes`) must go through
  * here; reading `entry.mokuro_version` raw is how the false badge came back.
