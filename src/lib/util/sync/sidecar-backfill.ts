@@ -63,9 +63,11 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *
  * - Nothing here ever fetches a listing, and nothing here ever writes
  *   `series.json` either. The decision is made FROM a listing that just
- *   arrived (or from the provider cache it filled), and the uploads go
- *   through `unifiedCloudManager.uploadFile`, which adds each file to that
- *   same cache — so the next check sees the sidecar without any fetch. When
+ *   arrived (or from the provider cache it filled), and every upload ends in
+ *   the same targeted cache add (`unifiedCloudManager.blindUploadFile` does
+ *   it internally for the main-thread feeds; the worker feed's completion
+ *   handler performs the identical `uploadCacheEntry` add) — so the next
+ *   check sees the sidecar without any fetch. When
  *   the provider's upload response carried no server mtime, that cache entry
  *   is stamped with the CLIENT clock and marked `modifiedTimeProvisional`,
  *   and `cloud-sidecar-stamps.ts` refuses to derive a `series.json` stamp
