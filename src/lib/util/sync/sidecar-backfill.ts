@@ -89,15 +89,16 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  *   watching never shares its connection with a background upload. Import-fed
  *   entries are exempt from the wait — their upload(s) ARE part of the
  *   download the user is watching (up to two PUTs per finished volume, and a
- *   `.mokuro` can run to a few MB — see {@link MAX_SIDECAR_BACKFILLS_PER_SESSION}),
+ *   `.mokuro` can run to a few MB),
  *   and serving them immediately is what lets their in-memory payload be
  *   released instead of pinned for the whole batch.
- * - Capped per session ({@link MAX_SIDECAR_BACKFILLS_PER_SESSION}); a legacy
- *   library converges over a handful of sessions instead of turning one page
- *   load into a bulk migration. Import-fed uploads neither check nor consume
- *   the cap: N user-started downloads bound them at N backfills, which is the
- *   same "the user asked for this work" budget the downloads themselves ran
- *   on.
+ * - NOT capped per session. "Non-aggressive" is the serial drain plus the
+ *   download-queue idle wait — pacing, not abandonment. An earlier 25/session
+ *   cap was removed by the user's ruling: it halted convergence (measured:
+ *   214 qualifying volumes waiting on ~9 artificial page reloads) while
+ *   buying nothing the idle-deferral did not already buy. The drain runs
+ *   until the queue is empty, one serial upload at a time, yielding to any
+ *   user-driven download before every volume.
  * - A volume ATTEMPTED this session — uploaded, failed, or found to have
  *   nothing uploadable — is never retried until the next page load, same
  *   session-scoped contract as `hole-patch.ts`'s `attemptedThisSession`.
@@ -113,16 +114,6 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  * Nothing is persisted: every set here is in-memory and session-scoped, and
  * the uploads themselves carry no account identity beyond the path.
  */
-
-/**
- * Volumes actually backfilled (uploads attempted) per page load. 25 volumes is
- * at most 50 PUTs and — at a few MB per `.mokuro` — some tens of MB in the
- * worst case, which is comparable to downloading a single volume: enough to
- * make visible progress on a legacy library every session, small enough that
- * the user never notices it happening. The cap counts volumes that reached the
- * upload stage; skips (converged, out of scope) are free.
- */
-export const MAX_SIDECAR_BACKFILLS_PER_SESSION = 25;
 
 /** Candidate volume uuids awaiting the authoritative check. */
 const pending = new Set<string>();
@@ -152,7 +143,6 @@ const importArrivalSignals = new Set<() => void>();
  */
 const attemptedThisSession = new Set<string>();
 
-let backfilledThisSession = 0;
 let drainRunning: Promise<void> | null = null;
 
 /** Test-only: forget all session state so cases don't leak into each other. */
@@ -161,7 +151,6 @@ export function _resetSidecarBackfillForTests(): void {
   immediate.length = 0;
   importArrivalSignals.clear();
   attemptedThisSession.clear();
-  backfilledThisSession = 0;
 }
 
 /** Test-only: the drain currently running, so a test can await convergence. */
@@ -316,7 +305,6 @@ export function queueSidecarBackfillFromImport(
       // present (or wanted by nothing) never pays the JSON stringify — the
       // shared core only calls this once the listing shows a real gap.
       loadSidecars: () => buildVolumeSidecarsFromData(volume, saved.ocrPages),
-      countsAgainstSessionCap: false,
       isImportFeed: true
     });
     // Wake a drain parked on the download-queue-idle wait, then make sure one
@@ -510,12 +498,6 @@ async function drain(): Promise<void> {
       await uploadMissingSidecars(importEntry);
       continue;
     }
-    if (backfilledThisSession >= MAX_SIDECAR_BACKFILLS_PER_SESSION) {
-      // The DEFERRED budget is spent; import-fed entries stay exempt, so only
-      // the nominations are dropped and the loop re-checks for import work.
-      pending.clear();
-      continue;
-    }
     // Low priority: user-driven downloads own the connection. Waits BEFORE
     // taking a volume, so work enqueued mid-download starts only once the
     // queue is empty — and re-gates afterwards, since anything can have
@@ -556,11 +538,6 @@ interface SidecarUploadFeed {
    */
   loadSidecars: () => Promise<VolumeSidecarFiles> | VolumeSidecarFiles;
   /**
-   * Deferred-feed uploads consume {@link MAX_SIDECAR_BACKFILLS_PER_SESSION};
-   * import-fed uploads are bounded by the user's own downloads instead.
-   */
-  countsAgainstSessionCap: boolean;
-  /**
    * True only for the IMPORT feed's entry for this volume. Distinguishes the
    * one place {@link uploadMissingSidecars} must withhold the attempted-mark
    * on a missing thumbnail — see that function's comment for why.
@@ -582,7 +559,6 @@ async function backfillOne(volumeUuid: string): Promise<void> {
   await uploadMissingSidecars({
     volume,
     loadSidecars: () => loadVolumeSidecars(volumeUuid),
-    countsAgainstSessionCap: true,
     isImportFeed: false
   });
 }
@@ -677,7 +653,6 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
 
   // Only DEFERRED-feed volumes that actually reach an upload consume the
   // session budget; import-fed uploads are budgeted by the user's downloads.
-  if (feed.countsAgainstSessionCap) backfilledThisSession += 1;
   try {
     for (const upload of uploads) {
       // BLIND upload — the backfill is the caller the write-and-forget path

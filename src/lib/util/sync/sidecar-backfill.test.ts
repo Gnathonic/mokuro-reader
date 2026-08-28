@@ -153,7 +153,6 @@ vi.mock('$lib/metadata/series-index', () => ({ getSeriesIndex: vi.fn(async () =>
 
 import { db } from '$lib/catalog/db';
 import {
-  MAX_SIDECAR_BACKFILLS_PER_SESSION,
   _drainForTests,
   _resetSidecarBackfillForTests,
   queueSidecarBackfillForVolume,
@@ -620,8 +619,12 @@ describe('sidecar backfill — convergence', () => {
     expect(cloud.uploadFile).toHaveBeenCalledTimes(1);
   });
 
-  it('caps one session at MAX_SIDECAR_BACKFILLS_PER_SESSION volumes', async () => {
-    const total = MAX_SIDECAR_BACKFILLS_PER_SESSION + 1;
+  it('drains EVERY qualifying volume in one session — there is no session cap', async () => {
+    // The user's ruling: "non-aggressive" is the serial drain plus the
+    // download-idle wait, NOT a convergence cap. Measured against the real
+    // library, a 25/session cap left 214 qualifying volumes waiting on ~9
+    // artificial page reloads. A re-added cap fails this test.
+    const total = 30;
     for (let i = 1; i <= total; i++) {
       await withOcr(
         installedVolume({
@@ -635,12 +638,7 @@ describe('sidecar backfill — convergence', () => {
 
     await sweepInstalledVolumesForSidecarBackfill();
     await settle();
-    expect(cloud.uploadFile).toHaveBeenCalledTimes(MAX_SIDECAR_BACKFILLS_PER_SESSION);
-
-    // Still capped when the next listing nominates the leftover volume.
-    await sweepInstalledVolumesForSidecarBackfill();
-    await settle();
-    expect(cloud.uploadFile).toHaveBeenCalledTimes(MAX_SIDECAR_BACKFILLS_PER_SESSION);
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(total);
   });
 });
 
@@ -1167,45 +1165,5 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
       'Legacy Series/Volume 01.webp',
       'Legacy Series/Volume 02.mokuro'
     ]);
-  });
-
-  it('neither consumes the deferred session cap nor is stopped by its exhaustion', async () => {
-    // Phase 1 — an import-fed upload BEFORE the sweep...
-    const first = processedVolumeFixture('imp-a', { volumeTitle: 'Volume 90' });
-    const savedFirst = await saveVolume(first, { preserveTitles: true });
-    cloud.state.files.push(listed('Legacy Series/Volume 90.cbz'));
-    queueSidecarBackfillFromImport(savedFirst, 'webdav');
-    await settle();
-    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
-
-    // ...leaves the deferred budget UNTOUCHED: a sweep over cap+1 candidates
-    // still backfills exactly MAX volumes, not MAX-1.
-    const total = MAX_SIDECAR_BACKFILLS_PER_SESSION + 1;
-    for (let i = 1; i <= total; i++) {
-      await withOcr(
-        installedVolume({
-          volume_uuid: `uuid-${i}`,
-          volume_title: `Volume ${String(i).padStart(2, '0')}`,
-          thumbnail: undefined
-        })
-      );
-      cloud.state.files.push(listed(`Legacy Series/Volume ${String(i).padStart(2, '0')}.cbz`));
-    }
-    await sweepInstalledVolumesForSidecarBackfill();
-    await settle();
-    expect(cloud.uploadFile).toHaveBeenCalledTimes(2 + MAX_SIDECAR_BACKFILLS_PER_SESSION);
-
-    // Phase 2 — the deferred budget is now spent, and an import-fed upload
-    // still goes through: bounded by the user's downloads, not by the cap.
-    const second = processedVolumeFixture('imp-b', { volumeTitle: 'Volume 91' });
-    const savedSecond = await saveVolume(second, { preserveTitles: true });
-    cloud.state.files.push(listed('Legacy Series/Volume 91.cbz'));
-    queueSidecarBackfillFromImport(savedSecond, 'webdav');
-    await settle();
-    expect(
-      uploadedPaths()
-        .filter((path) => path.includes('Volume 91'))
-        .sort()
-    ).toEqual(['Legacy Series/Volume 91.mokuro', 'Legacy Series/Volume 91.webp']);
   });
 });
