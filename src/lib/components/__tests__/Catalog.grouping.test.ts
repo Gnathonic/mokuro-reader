@@ -448,8 +448,8 @@ describe('Catalog loading stall surface', () => {
       expect(container.textContent).toContain('Loading catalog...');
       expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
 
-      // The deadline passes with the catalog still null (live repro: another
-      // frozen Mokuro tab holding the volumes lock keeps the first read
+      // The deadline passes with the catalog still null (live repro: Chrome's
+      // storage service wedged under quota pressure, holding the first read
       // queued indefinitely) — the loader must now say what is wrong.
       vi.advanceTimersByTime(CATALOG_LOAD_STALL_MS);
       await tick();
@@ -525,6 +525,47 @@ describe('Catalog loading stall surface', () => {
       // Positive control: the stall itself fired...
       expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
       // ...but no pressure line for a healthy quota.
+      expect(container.querySelector('[data-testid="catalog-quota-pressure"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      delete (navigator as { storage?: unknown }).storage;
+    }
+  });
+
+  it('re-measures quota on a later stall instead of replaying the previous reading', async () => {
+    // First stall: genuine pressure. Then recovery, quota freed, and a SECOND
+    // stall — the old "110 of 120 GB" line must not survive into it. The line
+    // must describe the stall it belongs to, not the previous incident.
+    let estimate = { usage: 110e9, quota: 120e9 };
+    Object.defineProperty(navigator, 'storage', {
+      value: { estimate: async () => estimate },
+      configurable: true
+    });
+    vi.useFakeTimers();
+    try {
+      catalogStore.set(null);
+      const { container } = render(Catalog);
+      await tick();
+      await vi.advanceTimersByTimeAsync(CATALOG_LOAD_STALL_MS);
+      await tick();
+      expect(
+        container.querySelector('[data-testid="catalog-quota-pressure"]')?.textContent
+      ).toContain('110 of 120 GB');
+
+      // Recovery, and the user frees space.
+      catalogStore.set([]);
+      await tick();
+      estimate = { usage: 50e9, quota: 120e9 };
+
+      // A later, unrelated stall in the same tab.
+      catalogStore.set(null);
+      await tick();
+      await vi.advanceTimersByTimeAsync(CATALOG_LOAD_STALL_MS);
+      await tick();
+      // Positive control: the stall message itself is back...
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
+      // ...but the stale pressure line is not, and no new one renders for a
+      // healthy quota.
       expect(container.querySelector('[data-testid="catalog-quota-pressure"]')).toBeNull();
     } finally {
       vi.useRealTimers();

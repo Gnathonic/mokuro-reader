@@ -320,6 +320,10 @@
     // condition it describes).
     if ($catalog !== null) {
       loadStalled = false;
+      // The quota line must reset with the stall it described: a later,
+      // unrelated stall in this same tab must re-measure, not replay the
+      // reading from a previous incident (quota may have been freed since).
+      quotaPressure = null;
       return;
     }
     const stallTimer = setTimeout(() => {
