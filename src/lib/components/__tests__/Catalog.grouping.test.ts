@@ -455,7 +455,10 @@ describe('Catalog loading stall surface', () => {
       await tick();
       const stalled = container.querySelector('[data-testid="catalog-load-stalled"]');
       expect(stalled).not.toBeNull();
-      expect(stalled?.textContent).toContain('another Mokuro tab');
+      expect(stalled?.textContent).toContain('restarting the browser');
+      // No quota stub in this test: the pressure line must not render on
+      // guesswork when the estimate is unavailable.
+      expect(container.querySelector('[data-testid="catalog-quota-pressure"]')).toBeNull();
 
       // The queued read finally lands (the lock freed): the message must not
       // outlive the condition it describes.
@@ -482,6 +485,50 @@ describe('Catalog loading stall surface', () => {
       expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('names storage-quota pressure when the estimate shows the origin nearly full', async () => {
+    // The condition the stall was actually diagnosed under (110 of 120 GB).
+    Object.defineProperty(navigator, 'storage', {
+      value: { estimate: async () => ({ usage: 110e9, quota: 120e9 }) },
+      configurable: true
+    });
+    vi.useFakeTimers();
+    try {
+      catalogStore.set(null);
+      const { container } = render(Catalog);
+      await tick();
+      await vi.advanceTimersByTimeAsync(CATALOG_LOAD_STALL_MS);
+      await tick();
+      const pressure = container.querySelector('[data-testid="catalog-quota-pressure"]');
+      expect(pressure).not.toBeNull();
+      expect(pressure?.textContent).toContain('110 of 120 GB');
+    } finally {
+      vi.useRealTimers();
+      delete (navigator as { storage?: unknown }).storage;
+    }
+  });
+
+  it('stays quiet about quota when usage is comfortably below it', async () => {
+    Object.defineProperty(navigator, 'storage', {
+      value: { estimate: async () => ({ usage: 50e9, quota: 120e9 }) },
+      configurable: true
+    });
+    vi.useFakeTimers();
+    try {
+      catalogStore.set(null);
+      const { container } = render(Catalog);
+      await tick();
+      await vi.advanceTimersByTimeAsync(CATALOG_LOAD_STALL_MS);
+      await tick();
+      // Positive control: the stall itself fired...
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
+      // ...but no pressure line for a healthy quota.
+      expect(container.querySelector('[data-testid="catalog-quota-pressure"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      delete (navigator as { storage?: unknown }).storage;
     }
   });
 

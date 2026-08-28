@@ -2,15 +2,19 @@
   /**
    * How long "Loading catalog..." may sit before it explains itself. The
    * first catalog read normally lands within one coalesce window (~150ms);
-   * five seconds of silence means IndexedDB is not answering at all — in
-   * practice another Mokuro tab or window wedged mid-transaction and holding
-   * the database lock (verified live: a frozen sibling tab held `volumes`
-   * readwrite open indefinitely and every other tab's first read queued
-   * behind it forever) — or a very large library on a very slow disk. The
-   * spinner keeps spinning either way (the read is still queued and completes
-   * the moment the lock frees), but past this deadline the user gets told
-   * what is wrong and what fixes it instead of an unexplained infinite
-   * spinner.
+   * five seconds of silence means IndexedDB is not answering at all.
+   *
+   * Diagnosed live (2026-08-27, 819-volume library): Chrome's storage
+   * backend (the browser-wide StorageService) wedged with readwrite
+   * transactions on `volumes`/`cloud_covers` grinding for HOURS — one took
+   * ~2.5h to commit 2 rows — right after a bulk download pushed the origin
+   * to 110GB of its 120GB quota. Once wedged, every boot's own queued
+   * writes pile on behind it, so reloading the page does NOT clear it (the
+   * aborts themselves crawl); restarting the whole browser does (fresh
+   * StorageService). No page can observe or fix that state from the inside —
+   * a queued read simply never returns — so past this deadline the loader
+   * says what is known and what actually helps, including live quota
+   * pressure when `navigator.storage.estimate()` can report it.
    */
   export const CATALOG_LOAD_STALL_MS = 5000;
 </script>
@@ -45,6 +49,8 @@
   let search = $state('');
   /** True once the loading spinner has outlived {@link CATALOG_LOAD_STALL_MS}. */
   let loadStalled = $state(false);
+  /** "110 of 120 GB" when the origin is under storage-quota pressure, else null. */
+  let quotaPressure = $state<string | null>(null);
   let pendingRestoreY = $state<number | null>(null);
   let restoringScroll = $state(false);
   let restoreAttempts = $state(0);
@@ -318,6 +324,18 @@
     }
     const stallTimer = setTimeout(() => {
       loadStalled = true;
+      // Best-effort context for the stall message: quota pressure is the one
+      // condition this failure was actually observed under. The estimate call
+      // does not touch IndexedDB, so it answers even while the database hangs.
+      void navigator.storage
+        ?.estimate?.()
+        .then(({ usage, quota }) => {
+          if (!usage || !quota) return;
+          if (usage / quota >= 0.85) {
+            quotaPressure = `${Math.round(usage / 1e9)} of ${Math.round(quota / 1e9)} GB`;
+          }
+        })
+        .catch(() => {});
     }, CATALOG_LOAD_STALL_MS);
     return () => clearTimeout(stallTimer);
   });
@@ -343,10 +361,16 @@
       <div class="max-w-md text-center" data-testid="catalog-load-stalled">
         <p>Still loading the catalog...</p>
         <p class="mt-2 text-sm text-gray-500">
-          Storage is not responding. This usually means another Mokuro tab or window is stuck and
-          holding the database — close other Mokuro tabs (or restart the browser) and this page will
-          recover by itself. A very large library on a slow disk can also take this long.
+          The browser's storage system is not responding, so the catalog's first read is stuck in
+          its queue. Fully restarting the browser (all windows) is the reliable fix — reloading just
+          this page usually is not enough.
         </p>
+        {#if quotaPressure}
+          <p class="mt-2 text-sm text-gray-500" data-testid="catalog-quota-pressure">
+            This site's browser storage is nearly full ({quotaPressure} used). Storage stalls tend to
+            happen under that pressure — removing some downloaded volumes makes them less likely.
+          </p>
+        {/if}
       </div>
     {:else}
       Loading catalog...
