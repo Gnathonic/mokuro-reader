@@ -126,8 +126,8 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 // Doubles as CONTRACT 4's "the batch has landed" signal: `materializeBatch`
 // calls this once per cloud folder, after its materialize has committed. It
 // touches no IndexedDB, which is what lets CONTRACT 4 wait for the real
-// 750ms batch window from INSIDE its counted block without polluting the
-// transaction counts it is asserting on.
+// materialize batch window from INSIDE its counted block without polluting
+// the transaction counts it is asserting on.
 vi.mock('$lib/metadata/series-file-sync', () => ({
   scheduleSeriesFileWrite: (...a: unknown[]) => scheduleSeriesFileWriteMock(...a)
 }));
@@ -664,29 +664,42 @@ describe('CONTRACT 3: cloud covers stay off relationship-less rows', () => {
   });
 });
 
-// CONTRACT 4 — a burst of case-3 resolutions commits as ONE write
-// transaction, not one per volume.
+// CONTRACT 4 — case-3 resolutions that GENUINELY co-arrive still commit as
+// ONE write transaction, not one per volume.
 //
-// THE number this whole plan is really about. Dexie broadcasts
-// `storagemutated` once per readwrite COMMIT, so on the `volumes` table a
-// write transaction is a change signal is a full catalog re-derive — a
-// placeholder scan, display-title resolution, a re-sort and the on-screen
-// canvas redraws behind it. Before Task 3, `cover-service.ts` called
-// `materializeSeriesVolumes` once per resolved volume, so a browsed screenful
-// of cloud-only cards paid one of those per CARD; on the 12,520-file library
-// that is what grew `volumes` from 434 to 11,354 rows while the main thread
-// stayed busy back to back. Resolution is still inherently per volume (each
-// pulls its own sidecar through the backfill semaphore) — the WRITE is not:
-// `queueMaterialization` collects a burst and issues one materialize per
-// series.
+// DESIGN CHANGE (2026-08, catalog-cover-ingest unbatching): this bound was
+// written when a `volumes` write transaction was, in effect, a full catalog
+// re-derive per commit — `cover-service.ts` once called
+// `materializeSeriesVolumes` per resolved volume, which is what grew
+// `volumes` from 434 to 11,354 rows on the 12,520-file library while the
+// main thread stayed busy back to back. Two things have moved since:
+// covers were decoupled from derivation outright (CONTRACTS 6/8 pin that a
+// `cloud_covers` commit cannot reach `generatePlaceholders` at all), and the
+// catalog scan itself is coalesced per quiet period (CONTRACT 1), so a
+// `volumes` commit costs a change signal and a `count()`, with the full
+// re-derive amortized across the burst. On the strength of that — and of the
+// user's ruling that batch windows were making the UI feel less reactive and
+// must never pace what the user is waiting to see — `cover-persist.ts`'s
+// 750ms cover window was REMOVED, and the materialize window here shrank to
+// a 100ms co-arrival group (see `MATERIALIZE_BATCH_WINDOW_MS`).
 //
-// This is the property the other three contracts structurally cannot see.
-// Round-trip counts are blind to it: N rows written in one transaction and N
-// rows written in N transactions issue exactly the same N `put`s. Only the
-// transaction count separates them, and only when it is qualified by MODE —
-// the reads (one keyed `db.volumes.get` per volume, in `resolveAndDeliver`)
-// are per volume by design and would otherwise swamp the bound.
-describe('CONTRACT 4: case-3 row writes batch into one transaction', () => {
+// What this contract still pins is the property that survived the redesign:
+// a burst of resolutions arriving TOGETHER (one browse gesture's worth) must
+// not un-group into a write transaction per card. `volumes` commits are
+// cheaper than they were, not free — each is a change signal, a `count()`,
+// and pressure on the scan coalescer — and grouping a genuine co-arrival
+// costs no latency, which is exactly the kind of batching the ruling keeps.
+// The bound is the same ≤3 as before because the grouping mechanism is the
+// same; what changed is WHY it holds (a short co-arrival window, not a long
+// pacing one) and how fast the burst lands (within ~100ms, not 750ms).
+//
+// Round-trip counts are structurally blind to this property: N rows written
+// in one transaction and N rows written in N transactions issue exactly the
+// same N `put`s. Only the transaction count separates them, and only when it
+// is qualified by MODE — the reads (one keyed `db.volumes.get` per volume,
+// in `resolveAndDeliver`) are per volume by design and would otherwise swamp
+// the bound.
+describe('CONTRACT 4: co-arriving case-3 row writes still group into one transaction', () => {
   it('commits a burst of resolutions in a bounded number of write transactions', async () => {
     const N = 20;
     // Deliberately UNDER the queue's size threshold, so the quiet-period
@@ -900,7 +913,7 @@ describe('CONTRACT 7: a cached cover is never re-downloaded', () => {
   it('materializes no row for a BARE placeholder whose cover is already cached', async () => {
     // The other half of what the removed placeholder decoration used to do: a cached
     // cover made `isCoverFetchTarget` decline, so cases 3/4 never ran and no row was
-    // minted. Waited out past the real materialize batch window (750ms), because that
+    // minted. Waited out well past the materialize batch window (100ms), because that
     // batch is where the row would appear.
     const fetchMock = vi.mocked(fetchCloudThumbnail);
     fetchMock.mockClear();

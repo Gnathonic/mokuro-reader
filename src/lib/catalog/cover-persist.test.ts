@@ -73,7 +73,6 @@ import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
   _resetCoverPersistForTests,
-  COVER_PERSIST_BASE_DELAY_MS,
   COVER_PERSIST_MAX_BATCH,
   COVER_PERSIST_MAX_PENDING,
   flushPendingCoverPersists,
@@ -312,9 +311,10 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
       installCover(`v-${i}`, coverResult(`v-${i}.webp`));
     }
 
-    // Nothing has flushed yet — N queued results collapse into ONE flush,
-    // which is exactly what the single explicit `flushPendingCoverPersists`
-    // below exercises (the same call the real debounce timer makes).
+    // Nothing has flushed SYNCHRONOUSLY — the drain arms on a microtask, so
+    // all N synchronous arrivals are already queued together by the time it
+    // fires, and the explicit `flushPendingCoverPersists` below takes them
+    // as the single batch the microtask would have.
     expect(emissions).toBe(0);
 
     await flushPendingCoverPersists();
@@ -330,11 +330,12 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     }
   });
 
-  it('the debounce timer itself coalesces a real-time burst into one flush', async () => {
-    // Unlike the test above (which flushes explicitly to avoid a slow real
-    // wait), this one lets the actual timer fire, proving `installCover`
-    // only ever arms ONE timer no matter how many times it is called while
-    // one is already pending.
+  it('a real-time burst lands ON ITS OWN, promptly, in one transaction — no flush call, no window', async () => {
+    // The immediacy pin against REAL Dexie (the fake-timer half lives in
+    // cover-persist.immediacy.test.ts). Nothing here calls
+    // `flushPendingCoverPersists`: the microtask-armed drain must land the
+    // covers by itself, and the tight `waitFor` bound is what fails a
+    // reintroduced fixed window — the removed 750ms one, or anything close.
     await addRow({ volume_uuid: 'v-a' });
     await addRow({ volume_uuid: 'v-b' });
 
@@ -350,13 +351,35 @@ describe('write-storm avoidance: coalescing a burst into a bounded number of tra
     installCover('v-a', coverResult('a.webp'));
     installCover('v-b', coverResult('b.webp'));
 
-    await new Promise((resolve) => setTimeout(resolve, COVER_PERSIST_BASE_DELAY_MS + 200));
-    sub.unsubscribe();
+    await vi.waitFor(
+      async () => {
+        expect(((await db.volumes.get('v-a')) as VolumeMetadata).thumbnail_width).toBe(210);
+        expect(((await db.volumes.get('v-b')) as VolumeMetadata).thumbnail_width).toBe(210);
+      },
+      { timeout: 500 }
+    );
 
-    expect(emissions).toBe(1);
-    expect(((await db.volumes.get('v-a')) as VolumeMetadata).thumbnail_width).toBe(210);
-    expect(((await db.volumes.get('v-b')) as VolumeMetadata).thumbnail_width).toBe(210);
-  }, 10000);
+    // The synchronous co-arrival still cost ONE transaction (one emission),
+    // not one per cover — immediacy did not un-group what genuinely arrived
+    // together.
+    await vi.waitFor(() => expect(emissions).toBe(1));
+    sub.unsubscribe();
+  });
+
+  it('an unrowed cover reaches cloud_covers on its own, promptly — no flush call, no window', async () => {
+    installCover(
+      { volume_uuid: 'prompt-1', cloudPath: 'Dr Stone/Volume 09.cbz' } as never,
+      coverResult('nine.webp')
+    );
+
+    await vi.waitFor(
+      async () => {
+        const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 09.cbz']);
+        expect(cached.get('Dr Stone/Volume 09.cbz')?.thumbnail).toBeInstanceOf(File);
+      },
+      { timeout: 500 }
+    );
+  });
 
   it('installCover never blocks — persistence is background', async () => {
     // installCover is synchronous (no returned promise to await), matching
@@ -463,18 +486,20 @@ describe('bounded write batches: a burst gets MORE, SMALLER transactions — nev
   }, 30000);
 
   it('bounds the QUEUE too: past COVER_PERSIST_MAX_PENDING the OLDEST waiting covers are dropped', async () => {
-    // With one flush transaction in flight at a time, a queue can still grow
-    // while that flush runs. Left unbounded it would retain every fetched
-    // blob until the backlog cleared (134MB on the reference library). The
-    // policy is stated on `COVER_PERSIST_MAX_PENDING`: keep the newest (they
-    // are the viewport-gated requests), drop the oldest.
+    // Drains start a microtask behind the first arrival, so a queue this deep
+    // now takes a single synchronous burst (or IndexedDB falling that far
+    // behind). Left unbounded it would retain every fetched blob until the
+    // backlog cleared (134MB on the reference library). The policy is stated
+    // on `COVER_PERSIST_MAX_PENDING`: keep the newest (they are the
+    // viewport-gated requests), drop the oldest. This whole burst is
+    // synchronous — no flush can snapshot any of it early — so the survivors
+    // are exactly the newest `COVER_PERSIST_MAX_PENDING`.
     //
     // No `volumes` rows are seeded on purpose: every cover here carries a
     // cloudPath and no row, so it routes to `cloud_covers`, and which
     // *paths* survive is a direct readout of what the queue kept.
-    const FIRST_BATCH = COVER_PERSIST_MAX_BATCH; // taken the instant the cap is first reached
     const OVERFLOW = 50;
-    const TOTAL = FIRST_BATCH + COVER_PERSIST_MAX_PENDING + OVERFLOW;
+    const TOTAL = COVER_PERSIST_MAX_PENDING + OVERFLOW;
 
     for (let i = 0; i < TOTAL; i++) {
       installCover({ volume_uuid: `ov-${i}`, cloudPath: `Ov/${i}.cbz` } as never, coverResult());
@@ -487,15 +512,12 @@ describe('bounded write batches: a burst gets MORE, SMALLER transactions — nev
     const survived = async (i: number) =>
       (await _getCloudCoversForTests('mega:a@b.com', [`Ov/${i}.cbz`])).size === 1;
 
-    // The batch already snapshotted before the queue ever filled is safe.
-    expect(await survived(0)).toBe(true);
-    expect(await survived(FIRST_BATCH - 1)).toBe(true);
-    // The OLDEST still-waiting covers are the ones evicted.
-    expect(await survived(FIRST_BATCH)).toBe(false);
-    expect(await survived(FIRST_BATCH + OVERFLOW - 1)).toBe(false);
+    // The OLDEST covers are the ones evicted.
+    expect(await survived(0)).toBe(false);
+    expect(await survived(OVERFLOW - 1)).toBe(false);
     // Everything newer than the evicted window survives, including the very
     // last arrival — the one most likely to be for a card on screen.
-    expect(await survived(FIRST_BATCH + OVERFLOW)).toBe(true);
+    expect(await survived(OVERFLOW)).toBe(true);
     expect(await survived(TOTAL - 1)).toBe(true);
   }, 30000);
 });

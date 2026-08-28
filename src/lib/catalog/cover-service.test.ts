@@ -1007,10 +1007,11 @@ describe('settled is scoped to the account it settled under', () => {
     ]);
 
     requestCover(placeholder);
-    // The cache hit settles the uuid without a network call — and past the 750ms
-    // materialize/persist window, so this is the settled state and not a snapshot taken
-    // before the batch that would have carried a fetch.
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // The cache hit settles the uuid without a network call — and past the 100ms
+    // materialize window (cover persistence itself is now immediate), so this is the
+    // settled state and not a snapshot taken before the batch that would have carried
+    // a fetch.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await drainQueues();
     expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
 

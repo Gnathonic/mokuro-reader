@@ -12,7 +12,26 @@ const cache = new Map<string, CloudThumbnailResult>();
 
 // Coalesce concurrent requests for the same volume
 const pendingFetches = new Map<string, Promise<CloudThumbnailResult | null>>();
-const MAX_CONCURRENT_FETCHES = 4;
+
+/**
+ * Cover downloads in flight at once. Was 4 — a number picked at this module's
+ * birth (commit 94824089), before the visible-first grant order existed, and
+ * never re-justified since. Covers are tiny (~32KB mean on the reference
+ * library), so the fetch is latency-bound, not bandwidth-bound: doubling the
+ * parallelism roughly doubles how fast the visible screenful fills, at ~256KB
+ * in flight. User ruling: the user wants to see covers asap — jank is solved
+ * by backgrounding, never by pacing downloads.
+ *
+ * Why 8 and not higher: on an HTTP/1.1 provider (WebDAV) the browser's
+ * per-host connection pool is 6, and every slot granted beyond it just parks
+ * the request in the browser's own FIFO queue — where the visible-first
+ * stack below can no longer reorder it. 8 keeps that spillover small enough
+ * that ordering stays in our hands, while HTTP/2 providers (Drive, OneDrive,
+ * MEGA) multiplex all 8 streams outright. Not split on `turboMode`: that
+ * setting gates memory-heavy archive processing, and a 32KB fetch has no
+ * memory-pressure story.
+ */
+export const MAX_CONCURRENT_FETCHES = 8;
 const FETCH_TIMEOUT_MS = 15000;
 let activeFetches = 0;
 

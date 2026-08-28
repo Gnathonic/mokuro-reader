@@ -57,9 +57,10 @@ export interface CloudCover {
    *
    * The real cost is per-touch, not runaway. Every commit re-runs that
    * liveQuery's querier (a keys-only scan of the whole table) and broadcasts
-   * `storagemutated` — the cost `COVER_PERSIST_MAX_BATCH` exists to bound. A
-   * touch per claim would put one of each behind ordinary scrolling, which is
-   * reason enough. So there is deliberately no `touchCloudCovers` — see
+   * `storagemutated` — a per-commit cost the ingest path pays deliberately
+   * (immediacy over pacing, see `cover-persist.ts`) and that nothing should
+   * add to gratuitously. A touch per claim would put one of each behind
+   * ordinary scrolling, which is reason enough. So there is deliberately no `touchCloudCovers` — see
    * `CLOUD_COVER_MAX_AGE_MS`.
    *
    * THE PRICE, STATED PLAINLY: `CLOUD_COVER_MAX_AGE_MS` is "14 days after

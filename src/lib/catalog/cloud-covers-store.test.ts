@@ -65,9 +65,27 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
+// Two of `cover-persist.ts`'s dependencies, stubbed only so the end-to-end
+// `installCover` test below can drive the REAL persist queue: the decode
+// cache would try to spawn Workers jsdom does not have, and the
+// reading-history store is irrelevant here (no cover in this file ever has a
+// row, so routing always lands in `cloud_covers`).
+vi.mock('$lib/catalog/thumbnail-cache', () => ({
+  thumbnailCache: { invalidate: vi.fn() }
+}));
+vi.mock('$lib/settings/volume-data', () => ({
+  volumes: {
+    subscribe(fn: (v: Record<string, unknown>) => void) {
+      fn({});
+      return () => {};
+    }
+  }
+}));
+
 import { db } from '$lib/catalog/db';
 import { cachedCoverPathSet, initCoverKeyWatch } from './cloud-covers-store';
 import { putCloudCovers } from './cloud-covers';
+import { _resetCoverPersistForTests, installCover } from './cover-persist';
 import {
   _heldCoverCountForTests,
   _resetCoverResolverForTests,
@@ -113,6 +131,7 @@ beforeEach(() => {
 afterEach(async () => {
   while (pendingCleanups.length) pendingCleanups.pop()?.();
   _resetCoverResolverForTests();
+  _resetCoverPersistForTests();
   cloudFiles.set(new Map());
   await db.cloud_covers.clear();
 });
@@ -257,6 +276,38 @@ describe('initCoverKeyWatch drives the resolver', () => {
     await vi.waitFor(() => expect(handle.current?.width).toBe(250), { timeout: 3000 });
     expect(handle.current?.file.size).toBe(1024);
     expect(_heldCoverCountForTests()).toBe(1);
+  });
+
+  it('fills a handle straight from installCover — the WHOLE chain, promptly, with no flush call', async () => {
+    // The production paint chain end-to-end, at the cadence production runs
+    // it: download → `installCover` → (microtask drain) → `cloud_covers`
+    // commit → keys-only liveQuery → key diff → `refreshCoverKeys` → held
+    // handle. Nothing here calls `flushPendingCoverPersists` — the persist
+    // queue must land the cover BY ITSELF — and the `waitFor` bound is
+    // deliberately far below the removed 750ms batch window, so
+    // reintroducing a fixed wait anywhere in the chain fails this test.
+    cloudFiles.set(listing(2));
+    track(initCoverKeyWatch());
+
+    const handle = acquireCover(archivePath(0));
+    track(() => handle.release());
+    await handle.ready;
+    expect(handle.current).toBeUndefined();
+
+    // No `volumes` row exists for this uuid, so routing sends the blob to
+    // `cloud_covers` under the mocked account's scope — the exact ingest
+    // path a browsed card's cover takes.
+    installCover(
+      { volume_uuid: 'chain-1', cloudPath: archivePath(0) },
+      {
+        file: new File([new Uint8Array(1024)], 'chain.webp', { type: 'image/webp' }),
+        width: 250,
+        height: 350
+      }
+    );
+
+    await vi.waitFor(() => expect(handle.current?.width).toBe(250), { timeout: 500 });
+    expect(handle.current?.file.size).toBe(1024);
   });
 
   it('leaves a path nobody is holding alone', async () => {

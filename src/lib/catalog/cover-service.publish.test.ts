@@ -198,6 +198,13 @@ beforeEach(() => {
 afterEach(async () => {
   _resetCoverPersistForTests();
   await db.volumes.clear();
+  // Covers now persist IMMEDIATELY (no batch window), so a delivered cover
+  // really is in `cloud_covers` by the time a test ends — under the same
+  // scope and path every test here uses. Left behind, it makes the next
+  // test's `isCachedCoverPath` gate settle the request before it ever
+  // materializes. The old 750ms debounce merely masked this leak: the reset
+  // above dropped the queue before it could flush.
+  await db.cloud_covers.clear();
 });
 
 describe('case-3 publish threading, end to end through the REAL series-file-sync', () => {

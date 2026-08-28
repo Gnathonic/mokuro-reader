@@ -60,67 +60,53 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  * `cover-service.ts`'s job (decision-tree cases 1-4), done BEFORE a cover
  * ever reaches this queue.
  *
- * WRITE-STORM AVOIDANCE, AND WHY BATCHES ARE CAPPED RATHER THAN WIDENED:
- * every `db.volumes.update` fires the `volumes` liveQuery and every
- * `cloud_covers` commit fires that table's, so a burst of arrivals has to be
- * coalesced — `COVER_PERSIST_BASE_DELAY_MS` (750ms) is the debounce that does
- * it, and a single interactive wave (a screenful of cards resolving covers,
- * nothing following it) still costs exactly ONE flush.
+ * IMMEDIACY, AND WHAT LITTLE BATCHING REMAINS. There used to be a fixed
+ * 750ms debounce here (and before that, one that WIDENED to 8s under
+ * pressure). Both were bandaids for a disease that is cured: back then every
+ * `cloud_covers` commit re-derived the whole catalog, so fewer commits meant
+ * fewer freezes. Covers are OUT of `volumesWithPlaceholders` entirely now, a
+ * cover commit reaches exactly the cards holding its paths (`cover-resolver`
+ * + the keys-only watch), and the provider-cache emissions are coalesced on
+ * their own — so the debounce had stopped buying anything and was only
+ * DELAYING paint: download → queue → [750ms] → commit → handle → pixel.
+ * User ruling: "The user wants to see asap, and the only remedy for ui jank
+ * is to background the downloads, not to pace them."
  *
- * What this deliberately does NOT do any more is widen that window under
- * pressure. An earlier round made the delay DOUBLE (750ms → 8,000ms) whenever
- * a batch started collecting within 750ms of the last flush, on the theory
- * that fewer flushes meant fewer catalog re-derives. Measured on a
- * 12,520-file / 1,027-series library that made batches GROW as the burst
- * intensified — roughly 270 / 535 / 1,070 / 2,140 covers, the last of them
- * ~66MB of `File` objects in a SINGLE IndexedDB transaction — which is the
- * opposite of what a loaded main thread needs. (The re-derive that motivated
- * the widening is gone by a different route: `volumesWithPlaceholders` no
- * longer takes cover data as an input at all, so a cover landing cannot
- * regenerate placeholders — see the catalog-cover-ingest design.)
+ * So a queued cover now drains on the NEXT MICROTASK — no fixed wait of any
+ * length. The only grouping left is the grouping that costs zero latency:
  *
- * So the cadence is now FIXED and the BATCH is bounded:
- *
- * - a batch never carries more than `COVER_PERSIST_MAX_BATCH` covers, and the
- *   moment the queue reaches that many it flushes immediately instead of
- *   waiting out the debounce. Batches therefore get SMALLER under pressure
- *   (more, bounded transactions) rather than larger;
- * - at most ONE flush transaction is in flight at a time. A cap reached while
- *   a flush is running does not open a second concurrent write transaction —
- *   the running drain picks the next batch up as soon as it commits, so a
- *   sustained burst drains back-to-back at bounded size;
+ * - arrivals in the same synchronous burst (one tick) share one flush,
+ *   because the microtask fires after the burst;
+ * - arrivals while a flush transaction is in flight ride the NEXT flush —
+ *   at most ONE flush transaction is ever open, and the running drain loops
+ *   until the queue is empty, so a sustained burst drains back-to-back and
+ *   IndexedDB's own write latency is what sizes the batches;
+ * - a batch never carries more than `COVER_PERSIST_MAX_BATCH` covers, so a
+ *   backlog that piled up behind a slow commit still flushes in bounded
+ *   transactions rather than one enormous one;
  * - the queue itself is bounded by `COVER_PERSIST_MAX_PENDING`. See that
  *   constant for what happens when it is exceeded.
  *
- * The debounce only ever changes WHEN a batch flushes, never WHETHER it does:
+ * Scheduling only ever changes WHEN a cover lands, never WHETHER it does:
  * every queued cover still lands, with two documented exceptions — an app
- * close before a pending flush fires (same as any other debounced write in
- * this codebase) and a queue overflow (below).
+ * close between install and the (now at-most-milliseconds-later) flush, and
+ * a queue overflow (below).
  */
 
-/** Interactive cadence: long enough to catch a burst (a first-boot catalog resolving many covers at once), short enough that "persistent" does not read as "eventually". Fixed — it never grows (see the module doc comment). */
-export const COVER_PERSIST_BASE_DELAY_MS = 750;
-
 /**
- * Hard ceiling on how many covers ONE flush transaction may carry; reaching
- * it flushes immediately rather than waiting out the debounce.
+ * Hard ceiling on how many covers ONE flush transaction may carry.
  *
- * THE TRADEOFF, at the measured mean cover size of ~31.6KB (134MB / 4,347
- * covers on the reference library): this bounds a single transaction at
- * ~3.2MB, against ~66MB for the worst batch the old growing-delay backoff
- * produced — a ~20x reduction in peak transaction size. It buys that with
- * transaction COUNT: the same 4,347-cover cold start commits ~44 times
- * instead of ~4, i.e. ~3.6 commits/second across the measured 12.2s burst.
- * That is the right side of the trade now that a `cloud_covers` commit no
- * longer re-derives the catalog (the design's decoupling), because what a
- * commit still costs — the structured clone of the batch, the transaction
- * itself, and one liveQuery re-run — is roughly linear in batch size, while
- * the main-thread stall a commit can cause is not: one 66MB clone is a
+ * With the debounce gone this is no longer what closes an ordinary batch —
+ * natural co-arrival is (see the module doc) — but it still bounds the
+ * transaction a BACKLOG produces: covers that piled up behind a slow commit,
+ * or a forced drain of a deep queue, flush in slices of at most this many.
+ * At the measured mean cover size of ~31.6KB (134MB / 4,347 covers on the
+ * reference library) that bounds a single transaction at ~3.2MB — against
+ * ~66MB for the worst batch the old widening debounce produced. What a
+ * commit costs (the structured clone of the batch, the transaction itself,
+ * one keys-only liveQuery re-run) is roughly linear in batch size, while the
+ * main-thread stall a commit can cause is not: one 66MB clone is a
  * multi-frame freeze that no amount of "fewer commits" makes up for.
- *
- * Also chosen to stay comfortably above the size of an ordinary interactive
- * wave (a screenful of cards is tens of covers, not hundreds), so the cap
- * never splits a batch the debounce was already going to coalesce.
  */
 export const COVER_PERSIST_MAX_BATCH = 100;
 
@@ -133,9 +119,9 @@ export const COVER_PERSIST_MAX_BATCH = 100;
  * unbounded `Map`: when a new cover arrives at a full queue, the OLDEST
  * queued cover is DROPPED to make room. Rationale:
  *
- * - the queue can only exceed one batch while a flush is in flight (a cap
- *   reached with nothing in flight flushes on the spot), so overflow means
- *   arrivals are outrunning IndexedDB for ~10 consecutive transactions.
+ * - drains start a microtask behind the first arrival, so a queue this deep
+ *   means either arrivals outran IndexedDB for ~10 consecutive transactions
+ *   or one synchronous burst queued a thousand covers in a single tick.
  *   Without a bound the queue would retain every fetched blob until the
  *   backlog cleared — 134MB on the reference library's cold start;
  * - the newest arrivals are kept because cover requests are viewport-gated
@@ -175,7 +161,8 @@ interface PendingCoverPersist {
  * that has been waiting keeps its place in line.
  */
 const pending = new Map<string, PendingCoverPersist>();
-let timer: ReturnType<typeof setTimeout> | null = null;
+/** A drain is armed on the microtask queue but has not started yet. */
+let drainScheduled = false;
 /**
  * The drain currently running, or `null`. Non-null means a write transaction
  * is (or is about to be) open, and no second one may be started.
@@ -190,49 +177,40 @@ let generation = 0;
 /** How many covers this overflow episode has dropped; reset once the queue drains. */
 let overflowDropped = 0;
 
-/** Arm the fixed-delay debounce if nothing is already pending. */
-function armTimer(): void {
-  if (timer) return; // Already coalescing a batch; this entry rides along with it.
-  timer = setTimeout(() => {
-    timer = null;
-    drainSoon();
-  }, COVER_PERSIST_BASE_DELAY_MS);
-}
-
 /**
- * Start (or join) a drain, then put whatever is still queued back on the
- * debounce. Fire-and-forget: nothing in the arming path ever awaits a write.
+ * Arm a drain on the microtask queue — the whole cadence now. Immediate
+ * (nothing waits out any window), yet still a single flush for a synchronous
+ * burst: every `installCover` in the current tick lands in `pending` before
+ * the microtask fires. Fire-and-forget: nothing here ever awaits a write.
+ * When a drain is already armed or running there is nothing to do — the
+ * armed microtask, or the running drain's own until-empty loop, picks the
+ * new entry up.
  */
-function drainSoon(): void {
-  const rearm = () => {
-    if (pending.size > 0) armTimer();
-  };
-  void runDrain(false).then(rearm, rearm);
+function scheduleDrain(): void {
+  if (drainScheduled || inFlight) return;
+  drainScheduled = true;
+  queueMicrotask(() => {
+    drainScheduled = false;
+    void runDrain();
+  });
 }
 
 /**
  * The ONE place a flush transaction is started, so at most one is ever open.
- *
- * `untilEmpty` distinguishes the two callers. The scheduled/cap-triggered
- * path (`false`) keeps flushing only while the queue is still at or above the
- * cap — a trickle left behind it goes back on the debounce rather than paying
- * a transaction per cover. A forced drain (`true`, `flushPendingCoverPersists`)
- * keeps going until the queue is empty, because its caller is waiting to know
- * the writes have landed.
+ * Drains until the queue is empty, in `COVER_PERSIST_MAX_BATCH`-bounded
+ * slices: covers that arrive while a batch's transaction is awaiting
+ * IndexedDB are seen by the loop's next check and ride the next slice —
+ * which is all the batching that remains, and it costs zero added latency.
  */
-function runDrain(untilEmpty: boolean): Promise<void> {
+function runDrain(): Promise<void> {
   if (inFlight) return inFlight;
-  if (timer) {
-    clearTimeout(timer);
-    timer = null;
-  }
   const gen = generation;
   const run = (async () => {
     try {
-      do {
+      while (pending.size > 0) {
         if (gen !== generation) return;
         await flushOneBatch();
-      } while (untilEmpty ? pending.size > 0 : pending.size >= COVER_PERSIST_MAX_BATCH);
+      }
     } finally {
       if (gen === generation) inFlight = null;
     }
@@ -270,11 +248,7 @@ export function installCover(
 
   while (pending.size > COVER_PERSIST_MAX_PENDING) evictOldest();
 
-  // At the cap, flush NOW rather than waiting out the debounce — this is what
-  // makes batches shrink under pressure instead of growing. When a flush is
-  // already running this is a no-op: its own loop takes the next batch.
-  if (pending.size >= COVER_PERSIST_MAX_BATCH) drainSoon();
-  else armTimer();
+  scheduleDrain();
 }
 
 /** Drop the oldest queued cover to keep the queue under `COVER_PERSIST_MAX_PENDING` (see that constant for why the oldest). */
@@ -294,24 +268,18 @@ function evictOldest(): void {
  * Flush every queued cover, in `COVER_PERSIST_MAX_BATCH`-sized transactions,
  * until nothing is left. Exported (not just internal to the scheduled flush)
  * so a test — or a caller that wants the writes to have landed before
- * proceeding (`series-backfill.ts`'s `refreshStaleCover`) — can flush
- * deterministically instead of advancing timers. A direct call like this is a
- * forced, immediate drain: it cancels the debounce and ignores the cap's
- * "wait for the next tick" behaviour, but it still respects the ONE
- * transaction at a time rule, joining a flush that is already running rather
- * than racing it.
+ * proceeding (`series-backfill.ts`'s `refreshStaleCover`) — can drain
+ * deterministically. It starts the drain the scheduled microtask would have
+ * (or joins the one already running — the ONE transaction at a time rule
+ * holds here too) and returns only once the queue is empty.
  */
 export async function flushPendingCoverPersists(): Promise<void> {
   // Loop rather than a single call because joining an in-flight drain only
   // guarantees THAT drain's entries landed; anything queued behind it still
   // needs draining before this can promise the queue is empty.
   for (;;) {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
     if (!inFlight && pending.size === 0) return;
-    await runDrain(true);
+    await runDrain();
   }
 }
 
@@ -430,10 +398,8 @@ async function flushOneBatch(): Promise<void> {
   }
 }
 
-/** Test hook: drop anything queued and forget the pending timer/drain state, without flushing. */
+/** Test hook: drop anything queued and forget the drain state, without flushing. An already-armed microtask cannot be cancelled, but it finds an empty queue and does no IndexedDB work. */
 export function _resetCoverPersistForTests(): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
   pending.clear();
   // A drain may still be awaiting IndexedDB. Bumping the generation makes it
   // stop at its next loop check instead of flushing the next test's queue.

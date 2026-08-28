@@ -26,7 +26,7 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { fetchCloudThumbnail, type CloudThumbnailResult } from './cloud-thumbnails';
-import { COVER_PERSIST_BASE_DELAY_MS, installCover } from './cover-persist';
+import { installCover } from './cover-persist';
 
 /**
  * THE cover service: every surface that draws a cloud cover — the catalog
@@ -127,19 +127,30 @@ const RETRY_DELAYS_MS = [2000, 8000];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * How long a case-3/4 batch collects before it materializes. The SAME
- * interactive cadence `cover-persist.ts` debounces its own row writes on
- * (deliberately not a second, unrelated one): both queues exist for the same
- * reason — every mutation of `volumes` re-derives the whole catalog — so a
- * burst of resolutions landing in one window should cost one re-derive, not
- * one per volume.
+ * How long a case-3/4 batch collects before it materializes.
  *
- * The window is armed by the FIRST entry and never re-armed while it is open
- * (same shape as `cover-persist.ts`'s `armTimer`), so latency is bounded by
- * the window itself rather than by when arrivals happen to stop — a browsing
- * user's row still appears within one cadence of its cover resolving.
+ * This used to borrow `cover-persist.ts`'s 750ms debounce. That debounce is
+ * gone (user ruling: batching was making the UI feel less reactive, and the
+ * remedy for jank is backgrounding, never pacing), and this window shrank
+ * with it — but it is KEPT, small, because the two queues no longer share a
+ * disease: a `cloud_covers` commit is decoupled from catalog derivation, but
+ * a `volumes` materialize commit is still a genuine catalog change (new rows
+ * ARE catalog content — a change signal, a `count()`, and eventually one
+ * coalesced full re-derive). Grouping resolutions that GENUINELY co-arrive —
+ * a screenful of image-only case-4s resolves within a few milliseconds of
+ * each other — still turns N transactions into one, and 100ms is enough to
+ * catch exactly that co-arrival while being imperceptible next to the
+ * network fetch that follows. Note this window is DB write grouping only:
+ * the `series.json` CLOUD write is batched separately, by
+ * `scheduleSeriesFileWrite`'s own 2s per-series debounce and write-slot
+ * pool, and does not depend on this number.
+ *
+ * The window is armed by the FIRST entry and never re-armed while it is
+ * open, so latency is bounded by the window itself rather than by when
+ * arrivals happen to stop — a browsing user's row still appears within one
+ * window of its cover resolving.
  */
-const MATERIALIZE_BATCH_WINDOW_MS = COVER_PERSIST_BASE_DELAY_MS;
+const MATERIALIZE_BATCH_WINDOW_MS = 100;
 
 /**
  * Hard ceiling on how many resolutions one batch may hold before it flushes

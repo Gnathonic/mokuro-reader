@@ -12,9 +12,11 @@ import type { VolumeMetadata } from '$lib/types';
  * waits — order changes, outcomes never do (every request is eventually
  * granted; the suite completing at all is the no-livelock proof).
  *
- * `downloadFile` is a hand-rolled deferred per call, so a test can hold all
- * four slots saturated, enqueue waiters, then release slots one at a time and
- * read the GRANT ORDER off the order downloads start.
+ * `downloadFile` is a hand-rolled deferred per call, so a test can hold
+ * every slot saturated, enqueue waiters, then release slots one at a time and
+ * read the GRANT ORDER off the order downloads start. Everything is derived
+ * from `MAX_CONCURRENT_FETCHES` so the suite tracks the real cap — the cap's
+ * VALUE is pinned separately below.
  */
 
 const cloud = vi.hoisted(() => {
@@ -36,7 +38,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-import { fetchCloudThumbnail } from './cloud-thumbnails';
+import { fetchCloudThumbnail, MAX_CONCURRENT_FETCHES } from './cloud-thumbnails';
 
 // jsdom has no createImageBitmap; the fetch path only reads dimensions.
 (globalThis as { createImageBitmap?: unknown }).createImageBitmap = async () => ({
@@ -73,11 +75,14 @@ async function drainAll(pending: Array<Promise<unknown>>): Promise<void> {
   await Promise.all(pending);
 }
 
-/** Saturate all four slots; returns their fetch promises. */
+/** Every slot's id, S1..Sn — the saturating requests. */
+const SATURATORS = Array.from({ length: MAX_CONCURRENT_FETCHES }, (_, i) => `S${i + 1}`);
+
+/** Saturate every download slot; returns their fetch promises. */
 async function saturate(): Promise<Array<Promise<unknown>>> {
-  const held = ['S1', 'S2', 'S3', 'S4'].map((id) => fetchCloudThumbnail(vol(id)));
+  const held = SATURATORS.map((id) => fetchCloudThumbnail(vol(id)));
   await flush();
-  expect(cloud.calls).toEqual(['S1', 'S2', 'S3', 'S4']);
+  expect(cloud.calls).toEqual(SATURATORS);
   return held;
 }
 
@@ -99,19 +104,19 @@ describe('cover download slots are granted newest-first (FILO)', () => {
     ];
     await flush();
     // Positive control: all three are genuinely waiting, none started.
-    expect(cloud.calls).toHaveLength(4);
+    expect(cloud.calls).toHaveLength(MAX_CONCURRENT_FETCHES);
 
     cloud.resolvers.shift()!(); // S1 finishes, one slot frees
     await flush();
-    expect(cloud.calls[4]).toBe('C'); // newest first...
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES]).toBe('C'); // newest first...
 
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[5]).toBe('B');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 1]).toBe('B');
 
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[6]).toBe('A'); // ...oldest last
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 2]).toBe('A'); // ...oldest last
 
     await drainAll([...held, ...pending]);
   });
@@ -128,16 +133,16 @@ describe('visible requests outrank newer invisible ones', () => {
       fetchCloudThumbnail(vol('GONE'), () => false)
     ];
     await flush();
-    expect(cloud.calls).toHaveLength(4);
+    expect(cloud.calls).toHaveLength(MAX_CONCURRENT_FETCHES);
 
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[4]).toBe('NEAR');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES]).toBe('NEAR');
 
     // The backlog still drains: nothing visible is left, newest-anyway.
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[5]).toBe('GONE');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 1]).toBe('GONE');
 
     await drainAll([...held, ...pending]);
   });
@@ -165,7 +170,7 @@ describe('visible requests outrank newer invisible ones', () => {
     // and NEWEST are all still queued after it). Only the scan can pick it.
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[4]).toBe('MID');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES]).toBe('MID');
 
     // The user scrolls back to OLD. NEWER and NEWEST are still queued and
     // still newer than OLD, and neither is near — so OLD winning is not a
@@ -175,14 +180,14 @@ describe('visible requests outrank newer invisible ones', () => {
     oldNear = true;
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[5]).toBe('OLD');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 1]).toBe('OLD');
 
     // Nothing visible is left: the backlog drains newest-first, same as the
     // no-visibility-preference case — a sanity check that the two remaining
     // requests still resolve.
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[6]).toBe('NEWEST');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 2]).toBe('NEWEST');
 
     await drainAll([...held, ...pending]);
   });
@@ -198,7 +203,7 @@ describe('visible requests outrank newer invisible ones', () => {
 
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[4]).toBe('NEW'); // drain newest-first, visibility or not
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES]).toBe('NEW'); // drain newest-first, visibility or not
 
     const throwing = fetchCloudThumbnail(vol('THROWS'), () => {
       throw new Error('probe exploded');
@@ -207,8 +212,40 @@ describe('visible requests outrank newer invisible ones', () => {
     cloud.resolvers.shift()!();
     await flush();
     // A broken probe must not wedge or demote its request forever.
-    expect(cloud.calls[5]).toBe('THROWS');
+    expect(cloud.calls[MAX_CONCURRENT_FETCHES + 1]).toBe('THROWS');
 
     await drainAll([...held, ...pending, throwing]);
+  });
+});
+
+describe('the concurrency bound itself', () => {
+  it('is 8 — the widened parallelism the user ruled for, not the old pacing 4', () => {
+    // The VALUE is pinned, not just honored: covers are ~32KB and
+    // latency-bound, the visible-first stack (not a narrow slot count) is
+    // what keeps on-screen cards first, and the user's ruling is that
+    // downloads are backgrounded, never paced. 8 fills a screenful twice as
+    // fast as the old 4 while staying close enough to the HTTP/1.1 per-host
+    // connection pool (6) that grant ordering stays in this queue's hands
+    // rather than the browser's FIFO. Lowering this back to 4 is a design
+    // decision, and this pin is where it must be made deliberately.
+    expect(MAX_CONCURRENT_FETCHES).toBe(8);
+  });
+
+  it('starts exactly MAX_CONCURRENT_FETCHES downloads for a wider burst — no more, and eventually all', async () => {
+    const EXTRA = 5;
+    const burst = Array.from({ length: MAX_CONCURRENT_FETCHES + EXTRA }, (_, i) =>
+      fetchCloudThumbnail(vol(`B${i}`))
+    );
+    await flush();
+
+    // The cap is honored at its widened value: every slot is filled...
+    expect(cloud.calls).toHaveLength(MAX_CONCURRENT_FETCHES);
+    // ...and not one request beyond it has started.
+    expect(cloud.downloadFile).toHaveBeenCalledTimes(MAX_CONCURRENT_FETCHES);
+
+    // Positive control that the cap (and not the burst size) was the limiter,
+    // and that nothing beyond it is lost: draining serves every waiter.
+    await drainAll(burst);
+    expect(cloud.calls).toHaveLength(MAX_CONCURRENT_FETCHES + EXTRA);
   });
 });

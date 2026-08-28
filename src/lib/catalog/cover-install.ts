@@ -10,8 +10,14 @@ import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/serie
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 
-/** Cover downloads started at once. `fetchCloudThumbnail` caps the network at 4 anyway. */
-const MAX_CONCURRENT_COVER_INSTALLS = 4;
+/**
+ * Cover downloads started at once by one series-open pass. Matched to
+ * `fetchCloudThumbnail`'s own `MAX_CONCURRENT_FETCHES` (the real network
+ * cap) so a pass can actually fill that pool rather than starving it at
+ * half width; the per-worker DB re-check between fetches is a keyed read
+ * and costs nothing at this parallelism.
+ */
+const MAX_CONCURRENT_COVER_INSTALLS = 8;
 
 /**
  * The running pass per normalized series key, plus whether a joiner arrived
@@ -89,9 +95,9 @@ function foldArchiveIndex(files: Iterable<CloudFileMetadata>): Map<string, strin
  * blank cards is worse than a slow one — but the covers are the only heavy part
  * of the series-open path, so they are fetched lazily, bounded, and only for
  * rows that actually lack one. `fetchCloudThumbnail` provides the session cache,
- * the request coalescing, the 4-way concurrency cap and the 15 s timeout; this
- * function only decides WHICH rows need one and hands the result to
- * `cover-persist.ts`.
+ * the request coalescing, the concurrency cap (`MAX_CONCURRENT_FETCHES`) and the
+ * 15 s timeout; this function only decides WHICH rows need one and hands the
+ * result to `cover-persist.ts`.
  *
  * It does NOT decide where the blob lands. `installCover` does, for every cover
  * path in the app: onto the `volumes` row only when this device has a

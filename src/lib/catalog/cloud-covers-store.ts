@@ -128,7 +128,11 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * deserializing nothing. It got ~11x worse for free when write batches were
  * capped at `COVER_PERSIST_MAX_BATCH`: a reference cold start went from ~4
  * commits to ~44, so the same walk ran ~44 times (~190,000 redundant
- * normalisations). Two tasks of one plan, each right on its own.
+ * normalisations). Two tasks of one plan, each right on its own. And now
+ * that `cover-persist.ts` flushes immediately (batching removed by user
+ * ruling — covers paint asap), a cold start commits once per co-arrival
+ * group, potentially once per COVER — which is exactly why per-commit work
+ * here must stay O(what landed), never O(library).
  *
  * So this keeps the last published set and passes on only the keys that are
  * NEW — which is precisely "these covers just landed", the only thing
