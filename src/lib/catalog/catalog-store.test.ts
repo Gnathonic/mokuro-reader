@@ -63,7 +63,13 @@ const {
     next: ((v: unknown) => void) | null;
     error: ((e: unknown) => void) | null;
     subscribeCalls: number;
-  } = { next: null, error: null, subscribeCalls: 0 };
+    // When set, the NEXT `subscribe()` call (and every one after it, until
+    // cleared) errors immediately instead of firing `next` — the real shape
+    // of a persistently-broken liveQuery subscription. A genuinely-healthy
+    // resubscribe fires `next` (Dexie always emits once on subscribe); a
+    // genuinely-broken backend fails again before it ever gets the chance.
+    subscribeShouldFail: boolean;
+  } = { next: null, error: null, subscribeCalls: 0, subscribeShouldFail: false };
   const toArrayCalls: unknown[] = [];
 
   // Lets a test hold a `toArray()` call open instead of letting it settle in
@@ -136,9 +142,17 @@ vi.mock('$lib/catalog/db', () => ({
 vi.mock('dexie', () => ({
   liveQuery: () => ({
     subscribe: ({ next, error }: { next: (v: unknown) => void; error?: (e: unknown) => void }) => {
+      liveQueryState.subscribeCalls += 1;
+      // A persistently-broken backend: this subscription attempt fails
+      // before it ever proves itself alive, exactly like the last one did.
+      if (liveQueryState.subscribeShouldFail) {
+        liveQueryState.next = null;
+        liveQueryState.error = null;
+        error?.(new Error('injected persistent signal failure'));
+        return { unsubscribe() {} };
+      }
       liveQueryState.next = next;
       liveQueryState.error = error ?? null;
-      liveQueryState.subscribeCalls += 1;
       next(undefined);
       return {
         unsubscribe() {
@@ -174,7 +188,8 @@ import {
   volumes,
   volumesWithPlaceholders,
   VOLUMES_EMISSION_COALESCE_MS,
-  VOLUMES_RETRY_BASE_MS
+  VOLUMES_RETRY_BASE_MS,
+  VOLUMES_RETRY_MAX_MS
 } from '$lib/catalog';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
@@ -201,6 +216,7 @@ afterEach(() => {
   toArrayGate.failNext = 0;
   toArrayResolvers.length = 0;
   toArrayCalls.length = 0;
+  liveQueryState.subscribeShouldFail = false;
   for (const key of Object.keys(volumeRecord)) {
     if (key !== 'v1') delete volumeRecord[key];
   }
@@ -817,6 +833,183 @@ describe('volumes recovery', () => {
       emitMutationSignal();
       await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
       expect(latest?.v8).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The read and the signal are independent recovery circuits (see the doc
+ * comment on `VOLUMES_RETRY_BASE_MS` in index.ts). Before this, a single
+ * shared backoff meant a persistently-broken change signal with a perfectly
+ * working `toArray()` never actually backed off: every resubscribe also
+ * fired a direct read, and that read's success reset the ONE delay back to
+ * base every cycle — a resubscribe AND a full table scan every
+ * {@link VOLUMES_RETRY_BASE_MS}, forever, with the cap never engaging. These
+ * tests pin the fix: each circuit's own backoff, reset only by that
+ * circuit's own proof of health.
+ */
+describe('volumes recovery backoff isolation', () => {
+  it('recovers a dead signal with exactly one scan, not the two a redundant direct read used to cost', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      trackSubscription(volumes.subscribe(() => {}));
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      toArrayCalls.length = 0;
+
+      emitSignalError(new Error('injected signal failure'));
+      // The recovery timer resubscribes; the resubscribed liveQuery's own
+      // initial `next` is what schedules the read (see the comment on
+      // `scheduleRecovery` in index.ts) — nothing should also call
+      // `runQuery` directly for the same recovery.
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS + VOLUMES_EMISSION_COALESCE_MS);
+
+      expect(toArrayCalls.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('keeps doubling the SIGNAL backoff to the cap, unpinned by an unrelated read that succeeds while the signal is still dead', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      trackSubscription(volumes.subscribe(() => {}));
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      toArrayCalls.length = 0;
+      const subscribesAtStart = liveQueryState.subscribeCalls;
+
+      // Failure #1: a genuine, momentary recovery. The resubscribe succeeds
+      // — its own initial `next` fires (real Dexie behaviour: a subscribe
+      // that can run its querier at all fires once immediately) — which
+      // arms a coalesced read 150ms out and legitimately resets the signal
+      // backoff, since firing `next` really is proof the subscription is
+      // alive.
+      emitSignalError(new Error('signal failure 1'));
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS);
+      expect(liveQueryState.subscribeCalls).toBe(subscribesAtStart + 1);
+      expect(liveQueryState.next).not.toBeNull();
+
+      // Before that armed read can land, the signal dies again — and,
+      // unlike the momentary blip above, stays dead from here: every
+      // resubscribe from now on fails immediately, never reaching `next`
+      // again (a real permanently broken backend).
+      liveQueryState.subscribeShouldFail = true;
+      emitSignalError(new Error('signal failure 2'));
+
+      // The stale read lands anyway — toArray works fine — but this must
+      // not be mistaken for the SIGNAL recovering: only its own `next`
+      // proves that, and it has not fired since failure #2.
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      expect(toArrayCalls.length).toBe(1);
+
+      // The recovery timer failure #2 armed (scheduled before
+      // subscribeShouldFail took effect, at the base delay `next` had just
+      // reset) still fires on its own schedule, and now fails immediately
+      // too.
+      const beforeThirdAttempt = liveQueryState.subscribeCalls;
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS - VOLUMES_EMISSION_COALESCE_MS);
+      expect(liveQueryState.subscribeCalls).toBe(beforeThirdAttempt + 1);
+
+      // From here every resubscribe attempt fails immediately, so the
+      // sequence below is driven purely by the signal's own backoff.
+      // Pinned-at-base code (the bug) would keep retrying every
+      // VOLUMES_RETRY_BASE_MS forever; fixed code must keep doubling — 2×,
+      // 4×, 8×, 16× base — until the cap engages and holds.
+      let delay = VOLUMES_RETRY_BASE_MS * 2;
+      for (let i = 0; i < 5; i++) {
+        const before = liveQueryState.subscribeCalls;
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(liveQueryState.subscribeCalls).toBe(before);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(liveQueryState.subscribeCalls).toBe(before + 1);
+        delay = Math.min(delay * 2, VOLUMES_RETRY_MAX_MS);
+      }
+      expect(delay).toBe(VOLUMES_RETRY_MAX_MS);
+
+      // And that whole climb never needed a second scan.
+      expect(toArrayCalls.length).toBe(1);
+    } finally {
+      liveQueryState.subscribeShouldFail = false;
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('resets the READ backoff to base after a successful recovery, so a later independent failure starts from base again', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      toArrayGate.failNext = 1;
+      trackSubscription(volumes.subscribe(() => {}));
+
+      // First failure + recovery: base delay, then success.
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      expect(toArrayCalls.length).toBe(1);
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS);
+      expect(toArrayCalls.length).toBe(2);
+
+      // A second, LATER, independent read failure — driven by a genuine
+      // mutation signal, not the recovery machinery.
+      toArrayGate.failNext = 1;
+      emitMutationSignal();
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      expect(toArrayCalls.length).toBe(3);
+
+      // If the read backoff had not been reset by the first recovery's
+      // success, this second failure would still retry at the DOUBLED delay
+      // left over from before; it must instead retry at the base delay
+      // again.
+      const before = toArrayCalls.length;
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS - 1);
+      expect(toArrayCalls.length).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(toArrayCalls.length).toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('clears the pending recovery timer on teardown, so nothing fires after the store is torn down', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      toArrayGate.failNext = 1;
+      const unsubscribe = trackSubscription(volumes.subscribe(() => {}));
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      expect(toArrayCalls.length).toBe(1);
+
+      // Tear down while the recovery timer for that failure is still
+      // pending — the store's stop callback must clear it.
+      unsubscribe();
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_MAX_MS);
+
+      expect(toArrayCalls.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('does not resubscribe a dead signal after the store has been torn down', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      const unsubscribe = trackSubscription(volumes.subscribe(() => {}));
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+
+      emitSignalError(new Error('injected signal failure'));
+      const subscribesBefore = liveQueryState.subscribeCalls;
+
+      unsubscribe();
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_MAX_MS);
+
+      expect(liveQueryState.subscribeCalls).toBe(subscribesBefore);
     } finally {
       vi.useRealTimers();
       errorSpy.mockRestore();

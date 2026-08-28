@@ -471,6 +471,15 @@ describe('Catalog loading stall surface', () => {
       await tick();
       expect(container.textContent).toContain('Loading catalog...');
       expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+
+      // The flag reset alone proves nothing if the clock was never re-armed:
+      // advance the FULL deadline again and confirm the message actually
+      // comes back. An implementation that resets `loadStalled` but forgets
+      // to schedule a fresh timer would pass every assertion above while
+      // leaving the spinner stuck unexplained forever.
+      vi.advanceTimersByTime(CATALOG_LOAD_STALL_MS);
+      await tick();
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -491,6 +500,25 @@ describe('Catalog loading stall surface', () => {
       await tick();
       expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
       expect(container.textContent).toContain('currently empty');
+
+      // Return to the loading state — with the fake clock already TWO
+      // deadlines ahead of where this loading period starts. The absence
+      // check above is vacuous on its own: the loader isn't even rendered
+      // while `$catalog` is `[]`, so it would hold even if a leaked timer
+      // had left `loadStalled` permanently true. Re-entering `null` makes
+      // the loader render again, so a leaked/instant stall would show up
+      // immediately here.
+      catalogStore.set(null);
+      await tick();
+      expect(container.textContent).toContain('Loading catalog...');
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+
+      // Only a genuine fresh wait of the full deadline explains the spinner —
+      // proving the clock actually restarted rather than the message being
+      // permanently suppressed.
+      vi.advanceTimersByTime(CATALOG_LOAD_STALL_MS);
+      await tick();
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }

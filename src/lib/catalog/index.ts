@@ -86,10 +86,21 @@ export const VOLUMES_EMISSION_COALESCE_MS = 150;
  * DEAD: it can never fire again, so without an explicit resubscribe one
  * transient IndexedDB failure at boot would leave `volumes` silently
  * `undefined` forever, which the catalog renders as an infinite "Loading
- * catalog..." spinner). Doubles per failed attempt, capped, and resets on the
- * first successful read — a permanently broken backend costs one retried read
- * per {@link VOLUMES_RETRY_MAX_MS} rather than a hot loop, and a backend that
- * comes back heals the catalog without a reload.
+ * catalog..." spinner). Doubles per failed attempt, capped — a permanently
+ * broken backend costs one retried attempt per {@link VOLUMES_RETRY_MAX_MS}
+ * rather than a hot loop, and a backend that comes back heals the catalog
+ * without a reload.
+ *
+ * The read and the signal are two INDEPENDENT circuits, each with its own
+ * backoff counter (`readRetryDelay` / `signalRetryDelay` below), reset only
+ * by that circuit's own proof of health — a successful `toArray()` for the
+ * read, the change signal's own `next` firing for the signal. Sharing one
+ * counter between them used to let a healthy read reset the backoff for a
+ * signal that never recovered: a persistently-broken liveQuery subscription
+ * with a perfectly working `toArray()` resubscribed AND rescanned the whole
+ * table every {@link VOLUMES_RETRY_BASE_MS}, forever, because each cycle's
+ * incidental read success reset the one shared delay back to base before it
+ * could ever double.
  */
 export const VOLUMES_RETRY_BASE_MS = 1000;
 export const VOLUMES_RETRY_MAX_MS = 30000;
@@ -103,7 +114,10 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   let running = false;
   let dirty = false;
   let disposed = false;
-  let retryDelay = VOLUMES_RETRY_BASE_MS;
+  // Two independent backoff counters — see the doc comment on
+  // VOLUMES_RETRY_BASE_MS above for why they must not share one delay.
+  let readRetryDelay = VOLUMES_RETRY_BASE_MS;
+  let signalRetryDelay = VOLUMES_RETRY_BASE_MS;
   let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let signalDead = false;
 
@@ -138,9 +152,21 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
       // clobber it — e.g. a just-imported volume vanishing from the catalog
       // until some unrelated write happens to trigger another scan.
       if (disposed) return;
-      // A successful read proves the backend is healthy again: recovery
-      // backoff starts over from the base for the next incident.
-      retryDelay = VOLUMES_RETRY_BASE_MS;
+      // A successful read proves the READ path is healthy again: its own
+      // backoff starts over from the base for the next incident. This must
+      // NOT touch `signalRetryDelay` — an unrelated read succeeding is not
+      // proof the change signal recovered (see the doc comment above
+      // VOLUMES_RETRY_BASE_MS); only that circuit's own `next` firing
+      // resets it, in `subscribeChangeSignal` below. Gating on `!signalDead`
+      // is belt-and-suspenders: nothing in the recovery path calls
+      // `runQuery` while the signal is still dead (finding 2's fix removed
+      // that call), but the `dirty` re-schedule below is not itself
+      // signal-gated, so this keeps the read backoff's reset scoped to a
+      // read that actually happened while the read circuit — not the
+      // signal circuit — was the one being recovered.
+      if (!signalDead) {
+        readRetryDelay = VOLUMES_RETRY_BASE_MS;
+      }
       set(
         rows.reduce(
           (acc, vol) => {
@@ -177,25 +203,45 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   };
 
   /**
-   * One recovery timer for both failure modes, with a shared backoff: when it
-   * fires it first resurrects the change signal if the old subscription died
-   * (an errored liveQuery subscription never fires again), then re-attempts
-   * the read directly — the resubscribed liveQuery also fires `next` on its
-   * own initial execution, and the `running`/`dirty`/`timer` guards fold the
-   * two paths into one read.
+   * One recovery timer, but it drives one of two DISJOINT paths depending on
+   * which circuit is broken when it fires:
+   *
+   * - signal dead: resubscribe, and STOP — do not also call `runQuery`
+   *   directly. The fresh subscription fires its own initial `next` (Dexie
+   *   fires once immediately on subscribe, the same as a real recovery), and
+   *   that `next` is what schedules the coalesced read. Calling `runQuery`
+   *   here too used to mean every signal recovery paid for two scans instead
+   *   of one.
+   * - signal alive (a pure read failure): retry the read directly — there is
+   *   no subscription to rebuild, and no `next` coming to schedule one.
+   *
+   * The delay it schedules at, and the counter it doubles, are chosen by the
+   * SAME distinction (`signalDead` at the moment this is called, which is
+   * always set before the caller invokes it — see the `error` handlers
+   * above and below), so a persistently-broken signal keeps doubling its own
+   * delay to the cap even while the read circuit stays perfectly healthy.
    */
   const scheduleRecovery = () => {
     if (disposed || recoveryTimer) return;
-    recoveryTimer = setTimeout(() => {
-      recoveryTimer = null;
-      if (disposed) return;
-      if (signalDead) {
-        signalDead = false;
-        subscribeChangeSignal();
-      }
-      void runQuery();
-    }, retryDelay);
-    retryDelay = Math.min(retryDelay * 2, VOLUMES_RETRY_MAX_MS);
+    const recoveringSignal = signalDead;
+    recoveryTimer = setTimeout(
+      () => {
+        recoveryTimer = null;
+        if (disposed) return;
+        if (signalDead) {
+          signalDead = false;
+          subscribeChangeSignal();
+        } else {
+          void runQuery();
+        }
+      },
+      recoveringSignal ? signalRetryDelay : readRetryDelay
+    );
+    if (recoveringSignal) {
+      signalRetryDelay = Math.min(signalRetryDelay * 2, VOLUMES_RETRY_MAX_MS);
+    } else {
+      readRetryDelay = Math.min(readRetryDelay * 2, VOLUMES_RETRY_MAX_MS);
+    }
   };
 
   /**
@@ -207,7 +253,14 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   let subscription: { unsubscribe: () => void } | null = null;
   const subscribeChangeSignal = () => {
     subscription = liveQuery(() => db.volumes.count()).subscribe({
-      next: schedule,
+      next: () => {
+        // The signal firing at all — including the resubscribed liveQuery's
+        // own initial emission — is the only genuine proof THIS circuit is
+        // alive again: reset its backoff here, not on an unrelated read's
+        // success (see the doc comment above VOLUMES_RETRY_BASE_MS).
+        signalRetryDelay = VOLUMES_RETRY_BASE_MS;
+        schedule();
+      },
       error: (err) => {
         console.error('[catalog] volumes change signal failed; will resubscribe:', err);
         signalDead = true;
