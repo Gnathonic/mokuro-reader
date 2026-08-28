@@ -168,7 +168,6 @@ const inFlight = new Map<string, Promise<void>>();
  * the rest of the session. Scoping the ledger is also what lets a mid-session
  * cache prune be repaired by a re-request rather than only by a reload:
  * whatever settled belongs to the scope it settled under, and nothing else.
-
  *
  * `null` (nothing connected) gets its own bucket rather than borrowing
  * another account's, for the same reason `activeAccountScope` refuses to

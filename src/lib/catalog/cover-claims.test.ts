@@ -175,3 +175,88 @@ describe('every request carries a live still-near-viewport probe', () => {
     expect(probe!()).toBe(false);
   });
 });
+
+/** The on-screen rect `getBoundingClientRect` stubs return in these tests. */
+const ONSCREEN_RECT = {
+  top: 10,
+  bottom: 110,
+  left: 10,
+  right: 110,
+  width: 100,
+  height: 100
+} as DOMRect;
+
+describe('the probe survives its own gate node being torn down', () => {
+  it('an unmounted card never outranks a genuinely visible one again', async () => {
+    const { unmount } = render(CoverClaimsHost, { props: { volumes: [cloudVolume()] } });
+    await settle();
+    observer.gates[0].emit(true);
+    await settle();
+
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    const probe = requestCoverMock.mock.calls[0][1] as () => boolean;
+    const node = observer.gates[0].target as HTMLElement;
+
+    // Positive control #1: while mounted, the probe reads the LIVE rect —
+    // not a hardcoded `false` — so a later `false` can't be a stuck answer.
+    node.getBoundingClientRect = () => ONSCREEN_RECT;
+    expect(probe()).toBe(true);
+
+    // Back to jsdom's default (all-zero) rect before tearing the card down,
+    // so the post-unmount read below isn't just inheriting this override.
+    node.getBoundingClientRect = () => ({ width: 0, height: 0 }) as DOMRect;
+    expect(probe()).toBe(false);
+
+    // The card scrolls out of a hide-read filter, a search, or navigation
+    // away from the catalog mid-fetch — `onDestroy` runs, but the request
+    // this probe belongs to is still queued (`cloud-thumbnails.ts`).
+    unmount();
+
+    // Positive control #2: an UNMOUNTED card must never read the same as a
+    // surface that was never gated in the first place (see the ungated-
+    // gate-warning describe block above: such a surface issues no request
+    // at all, so its probe is never consulted — `false` here is the only
+    // value that keeps a dead card from outranking a live one; flipping to
+    // `true` is exactly the bug this test exists to catch).
+    expect(probe()).toBe(false);
+  });
+});
+
+describe('a swap between two gated elements', () => {
+  it('always ends probing the NEW node, not the torn-down old one', async () => {
+    // Same array both renders: the swap below must be attributable to the
+    // gate-node change alone, not to the claim/target set also changing.
+    const volumes = [cloudVolume()];
+
+    const { container, rerender } = render(CoverClaimsHost, {
+      props: { volumes, gateVariant: 'a' }
+    });
+    await settle();
+    observer.gates[0].emit(true);
+    await settle();
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    const probe = requestCoverMock.mock.calls[0][1] as () => boolean;
+    const nodeA = observer.gates[0].target as HTMLElement;
+
+    // The `PlaceholderThumbnail` shape: a structurally different element
+    // takes over `use:gate`, and the old element's action is destroyed. The
+    // gate is already open (latched, per `cover-viewport.ts`), so `gate()`
+    // takes its early-return path for the new node and never re-observes —
+    // `observer.gates` stays length 1. Find the new node from the DOM instead.
+    await rerender({ volumes, gateVariant: 'b' });
+    await settle();
+    const nodeB = container.querySelector('[data-variant="b"]') as HTMLElement;
+    expect(nodeB).not.toBeNull();
+    expect(nodeB).not.toBe(nodeA);
+
+    // A masquerades as on-screen. If the probe still (wrongly) pointed at
+    // the torn-down A, this alone would flip it true.
+    nodeA.getBoundingClientRect = () => ONSCREEN_RECT;
+    expect(probe()).toBe(false);
+
+    // Only giving B a rect flips it — proof the probe follows the new node,
+    // regardless of which of the two `destroy`/`gate` calls ran last.
+    nodeB.getBoundingClientRect = () => ONSCREEN_RECT;
+    expect(probe()).toBe(true);
+  });
+});

@@ -18,9 +18,17 @@
     withTargets?: boolean;
     /** False = the defect: a fetching surface whose gate is never armed. */
     attachGate?: boolean;
+    /**
+     * Which of two structurally distinct gated elements is rendered.
+     * Flipping this between `'a'` and `'b'` (while {@link attachGate} stays
+     * true) makes Svelte tear down one `use:gate` element and mount the
+     * other in the same update — the `PlaceholderThumbnail` boxes-to-`<img>`
+     * shape — so a test can assert the probe ends up following the new one.
+     */
+    gateVariant?: 'a' | 'b';
   }
 
-  let { volumes, withTargets = true, attachGate = true }: Props = $props();
+  let { volumes, withTargets = true, attachGate = true, gateVariant = 'a' }: Props = $props();
 
   const coverClaims = createCoverClaims({
     claims: () => volumes,
@@ -30,7 +38,11 @@
 </script>
 
 {#if attachGate}
-  <div use:gate data-testid="surface">{coverClaims.covers.size}</div>
+  {#if gateVariant === 'a'}
+    <div use:gate data-testid="surface" data-variant="a">{coverClaims.covers.size}</div>
+  {:else}
+    <div use:gate data-testid="surface" data-variant="b">{coverClaims.covers.size}</div>
+  {/if}
 {:else}
   <div data-testid="surface">{coverClaims.covers.size}</div>
 {/if}

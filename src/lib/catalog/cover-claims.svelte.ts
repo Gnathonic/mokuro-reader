@@ -223,22 +223,43 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
   let nearViewport = $state(false);
 
   /**
-   * The element the gate currently watches (or last watched — kept through
-   * the one-shot observer's disconnect), so requests can carry a liveness
-   * probe: "is this surface STILL near the viewport?" The fetch queue
-   * (`cloud-thumbnails.ts`) serves still-near requests first and treats the
-   * rest as backlog. Updated on every `gate` attach — a surface that swaps
-   * its gated element (`PlaceholderThumbnail` trades boxes for an `<img>`)
-   * keeps the probe pointed at what is actually on screen — and cleared when
-   * the current node's action is destroyed, so a dead element reads as "not
-   * near" via its detached rect rather than pinning a stale answer.
+   * The element the gate currently watches — or, once that element's action
+   * is destroyed with no replacement, the LAST one it watched. Requests carry
+   * this as a liveness probe: "is this surface STILL near the viewport?" The
+   * fetch queue (`cloud-thumbnails.ts`) serves still-near requests first and
+   * treats the rest as backlog.
+   *
+   * THREE readings, by state (see {@link stillNear}):
+   *  - never gated (a paint-only surface, or before this surface's first
+   *    `gate` attach): stays `null`, and the probe degrades to `true`.
+   *  - gated and mounted: `isNearViewport` reads its live rect.
+   *  - gated and torn down, with no swap-in: `isNearViewport` reads its now-
+   *    detached (0x0) rect, which reads as `false`.
+   *
+   * Updated on every `gate` attach — a surface that swaps its gated element
+   * (`PlaceholderThumbnail` trades boxes for an `<img>`) keeps the probe
+   * pointed at what is actually on screen, and the attach in {@link gate}
+   * overwrites this UNCONDITIONALLY, before the old node's `destroy` can run
+   * — so a swap always lands on the new element even when the old element's
+   * teardown happens to run after this call.
+   *
+   * DELIBERATELY NEVER CLEARED on destroy. Nulling it there would make an
+   * unmounted surface's still-in-flight request answer the SAME as a surface
+   * that was never gated at all — indistinguishable from the legitimate
+   * "never gated" degrade — which is backwards: it would prioritize a card
+   * that no longer exists on screen ahead of one that genuinely does, instead
+   * of behind it. Leaving the reference in place after teardown means its
+   * probe instead reads the element's real, now-detached rect.
    */
   let gateNode: Element | null = null;
 
   /**
    * The probe handed to every `requestCover` this surface issues. With no
-   * gate node (paint-only surfaces never attach one; jsdom opens the gate
-   * without one) it answers `true`, degrading to plain newest-first ordering.
+   * gate node at all (paint-only surfaces never attach one; jsdom opens the
+   * gate without one) it answers `true`, degrading to plain newest-first
+   * ordering — the only state {@link gateNode} being `null` can mean, since a
+   * torn-down gate stays pointed at its (now detached) element rather than
+   * reverting to `null`. See {@link gateNode} for the three states.
    */
   const stillNear = () => (gateNode ? isNearViewport(gateNode) : true);
 
@@ -273,22 +294,23 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
 
   function gate(node: Element): { destroy(): void } {
     gateAttached = true;
-    // The probe always follows the newest gated element, opened or not.
+    // The probe always follows the newest gated element, opened or not. This
+    // is unconditional and runs before anything below, so it always wins over
+    // the PREVIOUS node's `destroy` — whichever order the two run in (see
+    // {@link gateNode}) — and is why `destroy` below has nothing to undo.
     gateNode = node;
-    const releaseNode = () => {
-      if (gateNode === node) gateNode = null;
-    };
     // Already open: nothing left to watch for. This also covers a surface whose
     // observed element is swapped for another (`PlaceholderThumbnail` trades its
     // placeholder boxes for an `<img>` the moment a cover lands).
-    if (untrack(() => nearViewport)) return { destroy: releaseNode };
+    if (untrack(() => nearViewport)) return { destroy() {} };
     const stop = observeNearViewport(node, () => {
       nearViewport = true;
     });
     return {
       destroy() {
         stop();
-        releaseNode();
+        // Deliberately does not touch `gateNode`: see {@link gateNode} for why
+        // a torn-down node stays the probe target instead of being cleared.
       }
     };
   }

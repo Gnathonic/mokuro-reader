@@ -145,23 +145,44 @@ describe('visible requests outrank newer invisible ones', () => {
   it('probes are consulted at GRANT time, so scrolling back re-prioritizes a waiting request', async () => {
     const held = await saturate();
 
-    let backNear = false;
+    // Four waiters, oldest to newest: OLD, MID, NEWER, NEWEST. At every grant
+    // below the winner is NOT the newest waiter and at least one other
+    // (not-near) waiter remains queued afterward — so elimination alone can
+    // never produce the expected order. Only the visibility scan, re-read at
+    // grant time, can: a mutant that drops the scan and just pops newest-first
+    // would pick NEWEST, then NEWEST-of-what's-left, at every step.
+    let oldNear = false;
     const pending = [
-      fetchCloudThumbnail(vol('BACK'), () => backNear),
-      fetchCloudThumbnail(vol('AHEAD'), () => true)
+      fetchCloudThumbnail(vol('OLD'), () => oldNear),
+      fetchCloudThumbnail(vol('MID'), () => true),
+      fetchCloudThumbnail(vol('NEWER'), () => false),
+      fetchCloudThumbnail(vol('NEWEST'), () => false)
     ];
     await flush();
 
-    // First grant: BACK is not near yet — AHEAD (also newest) wins.
+    // First grant: MID is near but is neither the newest waiter (NEWER and
+    // NEWEST both outrank it by recency) nor the last one left (OLD, NEWER
+    // and NEWEST are all still queued after it). Only the scan can pick it.
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[4]).toBe('AHEAD');
+    expect(cloud.calls[4]).toBe('MID');
 
-    // The user scrolls back; the SAME queued request is now preferred.
-    backNear = true;
+    // The user scrolls back to OLD. NEWER and NEWEST are still queued and
+    // still newer than OLD, and neither is near — so OLD winning is not a
+    // last-one-standing default. The SAME queued OLD request is preferred
+    // only because its probe is re-read live at this grant, not cached from
+    // when it was enqueued.
+    oldNear = true;
     cloud.resolvers.shift()!();
     await flush();
-    expect(cloud.calls[5]).toBe('BACK');
+    expect(cloud.calls[5]).toBe('OLD');
+
+    // Nothing visible is left: the backlog drains newest-first, same as the
+    // no-visibility-preference case — a sanity check that the two remaining
+    // requests still resolve.
+    cloud.resolvers.shift()!();
+    await flush();
+    expect(cloud.calls[6]).toBe('NEWEST');
 
     await drainAll([...held, ...pending]);
   });
