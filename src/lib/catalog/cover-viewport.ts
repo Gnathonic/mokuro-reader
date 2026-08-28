@@ -95,3 +95,44 @@ export function observeNearViewport(node: Element, onNear: () => void): () => vo
 
   return () => observer.disconnect();
 }
+
+/**
+ * "IS THIS SURFACE STILL NEAR THE VIEWPORT RIGHT NOW?" — the liveness probe
+ * behind the cover fetch queue's visibility preference.
+ *
+ * {@link observeNearViewport} answers "has this surface EVER come close" and
+ * latches; this answers the question the fetch queue actually has when a slot
+ * frees up: is the surface that asked still worth serving FIRST? A fast
+ * scroll enqueues a request for every card it passes (each one crossed the
+ * margin), and by the time a slot frees most of them are thousands of pixels
+ * behind — `cloud-thumbnails.ts` grants its slots newest-first among the
+ * requests whose probe still says yes, and treats everything else as
+ * backlog to drain when nothing visible is waiting.
+ *
+ * Same geometry as {@link COVER_VIEWPORT_ROOT_MARGIN}: one full viewport of
+ * vertical lead in each direction, none sideways. A DETACHED node (its
+ * surface unmounted or swapped) measures 0x0 at 0,0 and reads as "not near",
+ * which is the right answer for a card that no longer exists on screen — its
+ * request still drains eventually, it just never outranks a visible one.
+ *
+ * No `IntersectionObserver` involvement: this is a synchronous rect check,
+ * taken only when a slot is granted (a handful of times per second at most),
+ * so it costs one layout read, not a persistent observer per card. An
+ * environment without a window (SSR, a bare worker) answers `true` — the
+ * preference degrades to plain newest-first, never to starvation.
+ */
+export function isNearViewport(node: Element): boolean {
+  if (typeof window === 'undefined') return true;
+  const rect = node.getBoundingClientRect();
+  // Detached from the document: jsdom and real DOMs both report an all-zero
+  // rect. (A mounted card is never zero-sized.)
+  if (rect.width === 0 && rect.height === 0) return false;
+  const viewportHeight = window.innerHeight;
+  const viewportWidth = window.innerWidth;
+  return (
+    rect.bottom >= -viewportHeight &&
+    rect.top <= viewportHeight * 2 &&
+    rect.right >= 0 &&
+    rect.left <= viewportWidth
+  );
+}

@@ -1810,7 +1810,11 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
       }
     });
     await tick();
-    expect(requestCoverMock).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'c-2' }));
+    expect(requestCoverMock).toHaveBeenCalledWith(
+      expect.objectContaining({ volume_uuid: 'c-2' }),
+      // The still-near-viewport probe every request now carries.
+      expect.any(Function)
+    );
 
     updateCatalogSetting('horizontalStep', 12);
     await tick();
@@ -1818,10 +1822,14 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
       // `requestCover` is idempotent by contract, so a redundant call here is
       // harmless — the card is not expected to suppress it itself.
       expect(requestCoverMock).toHaveBeenCalledWith(
-        expect.objectContaining({ volume_uuid: 'c-2' })
+        expect.objectContaining({ volume_uuid: 'c-2' }),
+        expect.any(Function)
       );
+      // Arity matters here: with the probe argument, a volume-only matcher
+      // would "not match" every call vacuously.
       expect(requestCoverMock).not.toHaveBeenCalledWith(
-        expect.objectContaining({ volume_uuid: 'f-1' })
+        expect.objectContaining({ volume_uuid: 'f-1' }),
+        expect.anything()
       );
     } finally {
       updateCatalogSetting('horizontalStep', 11);

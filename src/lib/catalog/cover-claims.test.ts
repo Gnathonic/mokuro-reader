@@ -148,3 +148,30 @@ describe('the surfaces that are wired correctly stay quiet', () => {
     expect(warn.mock.calls.map(String).join('\n')).not.toMatch(ungatedWarning);
   });
 });
+
+describe('every request carries a live still-near-viewport probe', () => {
+  it('binds the probe to the gated element and answers from its CURRENT rect', async () => {
+    render(CoverClaimsHost, { props: { volumes: [cloudVolume()] } });
+    await settle();
+    observer.gates[0].emit(true);
+    await settle();
+
+    expect(requestCoverMock).toHaveBeenCalledTimes(1);
+    const probe = requestCoverMock.mock.calls[0][1] as (() => boolean) | undefined;
+    expect(typeof probe).toBe('function');
+
+    // jsdom rects are all zeros — indistinguishable from a detached node, so
+    // the probe answers "not near"...
+    expect(probe!()).toBe(false);
+
+    // ...and the SAME probe answers from the element's rect at ASK time, not
+    // from a snapshot: give the gated element an on-screen rect and it flips.
+    const node = observer.gates[0].target as HTMLElement;
+    const originalRect = node.getBoundingClientRect.bind(node);
+    node.getBoundingClientRect = () =>
+      ({ top: 10, bottom: 110, left: 10, right: 110, width: 100, height: 100 }) as DOMRect;
+    expect(probe!()).toBe(true);
+    node.getBoundingClientRect = originalRect;
+    expect(probe!()).toBe(false);
+  });
+});

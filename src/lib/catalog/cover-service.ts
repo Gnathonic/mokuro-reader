@@ -168,6 +168,7 @@ const inFlight = new Map<string, Promise<void>>();
  * the rest of the session. Scoping the ledger is also what lets a mid-session
  * cache prune be repaired by a re-request rather than only by a reload:
  * whatever settled belongs to the scope it settled under, and nothing else.
+
  *
  * `null` (nothing connected) gets its own bucket rather than borrowing
  * another account's, for the same reason `activeAccountScope` refuses to
@@ -604,7 +605,7 @@ async function isCachedCoverPath(cloudPath: string | undefined): Promise<boolean
  * yet" answer settled forever is exactly the "no covers until I navigate
  * away and back" regression this return value exists to prevent.
  */
-async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
+async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean): Promise<boolean> {
   // Already on disk for this account: the surface drawing this volume resolves
   // it by path (`cover-resolver.ts`) and there is nothing to fetch. Settled, so
   // the uuid is never asked again this session. Checked BEFORE the case split
@@ -617,12 +618,15 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
 
   if (existingRow) {
     if (!vol.cloudThumbnailFileId) return true; // the row itself claims no cover exists
-    const result = await fetchCloudThumbnail({
-      ...existingRow,
-      cloudProvider: vol.cloudProvider,
-      cloudThumbnailFileId: vol.cloudThumbnailFileId,
-      cloudThumbnailPath: vol.cloudThumbnailPath
-    });
+    const result = await fetchCloudThumbnail(
+      {
+        ...existingRow,
+        cloudProvider: vol.cloudProvider,
+        cloudThumbnailFileId: vol.cloudThumbnailFileId,
+        cloudThumbnailPath: vol.cloudThumbnailPath
+      },
+      stillNear
+    );
     if (!result) return false; // transient: worth another attempt
     deliverToRow(
       vol.volume_uuid,
@@ -648,7 +652,7 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
     // it, never minting a `volumes` row just because this placeholder was
     // rendered.
     if (!vol.cloudThumbnailFileId) return true; // no row, and genuinely no cover to fetch
-    const result = await fetchCloudThumbnail(vol);
+    const result = await fetchCloudThumbnail(vol, stillNear);
     if (!result) return false; // transient: worth another attempt
     installCover({ volume_uuid: vol.volume_uuid, cloudPath: vol.cloudPath }, result, {
       size: vol.cloudThumbnailSize,
@@ -687,7 +691,8 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
       vol.volume_title,
       vol.cloudProvider,
       cover
-    )
+    ),
+    stillNear
   );
   if (!result) return false;
   deliverToRow(
@@ -709,7 +714,16 @@ async function resolveAndDeliver(vol: VolumeMetadata): Promise<boolean> {
  * from every surface's own effect on every re-render; the dedupe below makes
  * a redundant call free.
  */
-export function requestCover(vol: VolumeMetadata): void {
+/**
+ * `stillNear` — optional liveness probe from the requesting surface ("is my
+ * element still near the viewport?", see `isNearViewport`). It changes fetch
+ * ORDER only, never outcome: `cloud-thumbnails.ts` grants its download slots
+ * newest-first among probes that answer yes, and drains the rest as backlog.
+ * A deduped request keeps the FIRST caller's probe — two surfaces rarely
+ * fetch-target one uuid at once, and the cost of a stale probe is one
+ * mis-ranked grant, not a lost cover.
+ */
+export function requestCover(vol: VolumeMetadata, stillNear?: () => boolean): void {
   const uuid = vol.volume_uuid;
   if (!uuid) return;
   // Bound to the account the request is being made FOR, once: the same
@@ -722,7 +736,7 @@ export function requestCover(vol: VolumeMetadata): void {
   const run = (async () => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const delivered = await resolveAndDeliver(vol);
+        const delivered = await resolveAndDeliver(vol, stillNear);
         if (delivered) {
           settled.add(key);
           return;

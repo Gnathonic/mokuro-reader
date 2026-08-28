@@ -4,7 +4,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { acquireCover, type CoverHandle, type ResolvedCover } from './cover-resolver';
 import { activeAccountScopeStore } from './account-scope-store';
 import { isCoverFetchTarget, requestCover } from './cover-service';
-import { observeNearViewport } from './cover-viewport';
+import { isNearViewport, observeNearViewport } from './cover-viewport';
 
 /**
  * THE ONE COVER EFFECT. Every surface that draws a cloud cover — the catalog
@@ -222,6 +222,26 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
    */
   let nearViewport = $state(false);
 
+  /**
+   * The element the gate currently watches (or last watched — kept through
+   * the one-shot observer's disconnect), so requests can carry a liveness
+   * probe: "is this surface STILL near the viewport?" The fetch queue
+   * (`cloud-thumbnails.ts`) serves still-near requests first and treats the
+   * rest as backlog. Updated on every `gate` attach — a surface that swaps
+   * its gated element (`PlaceholderThumbnail` trades boxes for an `<img>`)
+   * keeps the probe pointed at what is actually on screen — and cleared when
+   * the current node's action is destroyed, so a dead element reads as "not
+   * near" via its detached rect rather than pinning a stale answer.
+   */
+  let gateNode: Element | null = null;
+
+  /**
+   * The probe handed to every `requestCover` this surface issues. With no
+   * gate node (paint-only surfaces never attach one; jsdom opens the gate
+   * without one) it answers `true`, degrading to plain newest-first ordering.
+   */
+  const stillNear = () => (gateNode ? isNearViewport(gateNode) : true);
+
   /** The volumes actually worth asking for: the shared rule, deduped. */
   const fetchTargets = $derived.by(() => {
     const source = options.targets?.() ?? NO_VOLUMES;
@@ -245,7 +265,7 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
   // nothing, and the list it finally asks for is the one current when it came into view.
   $effect(() => {
     if (!nearViewport) return;
-    for (const vol of fetchTargets) requestCover(vol);
+    for (const vol of fetchTargets) requestCover(vol, stillNear);
   });
 
   /** Set by {@link gate}. See {@link warnIfUngated} for why this is worth tracking. */
@@ -253,14 +273,24 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
 
   function gate(node: Element): { destroy(): void } {
     gateAttached = true;
+    // The probe always follows the newest gated element, opened or not.
+    gateNode = node;
+    const releaseNode = () => {
+      if (gateNode === node) gateNode = null;
+    };
     // Already open: nothing left to watch for. This also covers a surface whose
     // observed element is swapped for another (`PlaceholderThumbnail` trades its
     // placeholder boxes for an `<img>` the moment a cover lands).
-    if (untrack(() => nearViewport)) return { destroy() {} };
+    if (untrack(() => nearViewport)) return { destroy: releaseNode };
     const stop = observeNearViewport(node, () => {
       nearViewport = true;
     });
-    return { destroy: stop };
+    return {
+      destroy() {
+        stop();
+        releaseNode();
+      }
+    };
   }
 
   if (import.meta.env.DEV) warnIfUngated();

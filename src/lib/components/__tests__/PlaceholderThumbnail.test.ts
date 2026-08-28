@@ -91,7 +91,10 @@ describe('PlaceholderThumbnail cover lifetime', () => {
     render(PlaceholderThumbnail, { props: { volume: volume('c-3') } });
     await tick();
 
-    expect(requestCover).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'c-3' }));
+    expect(requestCover).toHaveBeenCalledWith(
+      expect.objectContaining({ volume_uuid: 'c-3' }),
+      expect.any(Function)
+    );
   });
 
   it('does not ask when the volume is not a fetch target (e.g. already has a fresh thumbnail)', async () => {
@@ -206,7 +209,10 @@ describe('PlaceholderThumbnail asks for a cover only once it is near the viewpor
     await tick();
 
     expect(requestCover).toHaveBeenCalledTimes(1);
-    expect(requestCover).toHaveBeenCalledWith(expect.objectContaining({ volume_uuid: 'near-1' }));
+    expect(requestCover).toHaveBeenCalledWith(
+      expect.objectContaining({ volume_uuid: 'near-1' }),
+      expect.any(Function)
+    );
   });
 
   it('does not ask again when it leaves the viewport and comes back', async () => {
