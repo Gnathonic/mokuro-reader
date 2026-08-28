@@ -45,7 +45,12 @@ const cloud = vi.hoisted(() => {
   const provider = {
     type: 'webdav',
     listCloudVolumes,
-    getStatus: () => ({ accountScope: state.accountScope })
+    getStatus: () => ({ accountScope: state.accountScope }),
+    // Worker-path capability, toggled per test. `undefined` (the beforeEach
+    // reset) keeps every pre-existing test on the serial main-thread path —
+    // the drain requires `=== true`.
+    supportsWorkerUpload: undefined as boolean | undefined,
+    uploadConcurrencyLimit: 4
   };
   const fetchAllCloudVolumes = vi.fn(async () => {});
   const uploadFile = vi.fn();
@@ -103,6 +108,65 @@ const gate = vi.hoisted(() => ({ writable: true }));
 const cacheState = vi.hoisted(() => ({ loaded: true }));
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
 
+/**
+ * The provider cache's `add` — what the worker path's completion handler
+ * calls directly (the main-thread path's adds happen inside the real
+ * `blindUploadFile`, mirrored by the fixture's `defaultUpload`). The
+ * beforeEach default implementation pushes the entry into the same listing
+ * fixture, mirroring production: a cache add IS what the next eligibility
+ * check reads.
+ */
+const cacheAdd = vi.hoisted(() => vi.fn());
+
+/**
+ * Fake shared worker pool for the DEFERRED feed's parallel dispatch tests.
+ * `addTask` only records; each test settles tasks itself via
+ * `complete`/`fail`, so dispatch timing and completion order are fully under
+ * test control.
+ */
+const workerPool = vi.hoisted(() => {
+  interface FakeTask {
+    id: string;
+    data?: Record<string, unknown>;
+    provider?: string;
+    providerConcurrencyLimit?: number;
+    memoryRequirement?: number;
+    onComplete?: (result: unknown, done: () => void) => void;
+    onError?: (error: unknown) => void;
+    settled?: boolean;
+  }
+  const state = { tasks: [] as FakeTask[] };
+  const incrementPoolUsers = vi.fn();
+  const decrementPoolUsers = vi.fn();
+  const addTask = vi.fn((task: FakeTask) => {
+    state.tasks.push(task);
+  });
+  return {
+    state,
+    addTask,
+    incrementPoolUsers,
+    decrementPoolUsers,
+    /** Tasks dispatched to the pool and not yet completed/failed by the test. */
+    open: () => state.tasks.filter((task) => !task.settled),
+    complete: (task: FakeTask, result: unknown) => {
+      task.settled = true;
+      task.onComplete?.(result, () => {});
+    },
+    fail: (task: FakeTask, error: string) => {
+      task.settled = true;
+      task.onError?.({ type: 'error', error });
+    }
+  };
+});
+
+const workerCreds = vi.hoisted(() => ({
+  getUploadWorkerCredentials: vi.fn(async () => ({
+    webdavUrl: 'https://dav.example',
+    webdavUsername: 'user',
+    webdavPassword: 'secret'
+  }))
+}));
+
 const downloadQueueMock = vi.hoisted(() => {
   let value: unknown[] = [];
   const subs = new Set<(v: unknown[]) => void>();
@@ -121,7 +185,18 @@ const downloadQueueMock = vi.hoisted(() => {
 
 vi.mock('./unified-cloud-manager', () => ({ unifiedCloudManager: cloud.manager }));
 vi.mock('./cache-manager', () => ({
-  cacheManager: { getCache: () => ({ isLoaded: () => cacheState.loaded }) }
+  cacheManager: { getCache: () => ({ isLoaded: () => cacheState.loaded, add: cacheAdd }) }
+}));
+// The worker plumbing the DEFERRED feed dynamically imports. The pool mock
+// hands tasks to the fixture above instead of real Workers; the credentials
+// helper is the module the backup queue shares.
+vi.mock('../file-processing-pool', () => ({
+  getFileProcessingPool: async () => ({ addTask: workerPool.addTask }),
+  incrementPoolUsers: workerPool.incrementPoolUsers,
+  decrementPoolUsers: workerPool.decrementPoolUsers
+}));
+vi.mock('../upload-worker-credentials', () => ({
+  getUploadWorkerCredentials: workerCreds.getUploadWorkerCredentials
 }));
 /**
  * A REAL Dexie over `fake-indexeddb`, not a stub — see the module doc above
@@ -165,6 +240,10 @@ import {
 import { saveVolume } from '$lib/import/database';
 import type { ProcessedVolume } from '$lib/import/types';
 import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volume-sidecars';
+// The WORKER feed's serializer (runs inside `unified-file-worker.ts` in
+// production) and the real main schema, for the byte-identity three-way below.
+import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
+import { CatalogDexieV3 } from '$lib/catalog/db-v3';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,10 +306,23 @@ beforeEach(async () => {
   cloud.uploadFile.mockImplementation(cloud.defaultUpload);
   cloud.fetchAllCloudVolumes.mockClear();
   cloud.provider.listCloudVolumes.mockClear();
+  cloud.provider.supportsWorkerUpload = undefined;
+  cloud.provider.uploadConcurrencyLimit = 4;
   scheduleSeriesFileWrite.mockClear();
   gate.writable = true;
   cacheState.loaded = true;
   downloadQueueMock.set([]);
+  workerPool.state.tasks.length = 0;
+  workerPool.addTask.mockClear();
+  workerPool.incrementPoolUsers.mockClear();
+  workerPool.decrementPoolUsers.mockClear();
+  workerCreds.getUploadWorkerCredentials.mockClear();
+  cacheAdd.mockReset();
+  // Mirror of production: `cache.add` puts the entry where every cache read
+  // (the listing fixture) sees it — that IS the convergence mechanism.
+  cacheAdd.mockImplementation((path: string, entry: Record<string, unknown>) => {
+    cloud.state.files.push({ ...entry, path });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -851,7 +943,7 @@ function processedVolumeFixture(
 }
 
 describe('sidecar backfill — the import feed (in-memory upload at download completion)', () => {
-  it('serializes the import-time .mokuro byte-identically to what loadVolumeSidecars later reads from the DB', async () => {
+  it('serializes the .mokuro byte-identically across all three feeds: import-time, loadVolumeSidecars, and the worker feed', async () => {
     const processed = processedVolumeFixture();
     const saved = await saveVolume(processed, { preserveTitles: true });
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
@@ -875,6 +967,32 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
     // THE contract: byte-for-byte identical, or every such volume's published
     // size mismatches its re-serialization and `isSidecarStale` re-pulls it.
     expect(importedBytes).toEqual(dbBytes);
+
+    // The WORKER feed's serializer (`generateVolumeSidecarsFromDb`, run by
+    // `unified-file-worker.ts`'s `upload-sidecars` mode) reads its OWN Dexie
+    // connection to `mokuro_v3` — this suite's mocked db deliberately lives
+    // under a test name, so mirror the exact committed rows there and run the
+    // real thing.
+    const workerSide = new CatalogDexieV3();
+    try {
+      const volumeRow = await db.volumes.get('imp-1');
+      const ocrRow = await db.volume_ocr.get('imp-1');
+      expect(volumeRow).toBeDefined();
+      expect(ocrRow).toBeDefined();
+      await workerSide.volumes.put(volumeRow!);
+      await workerSide.volume_ocr.put(ocrRow!);
+
+      const workerSidecars = await generateVolumeSidecarsFromDb('imp-1');
+      expect(workerSidecars.mokuro).toBeDefined();
+      const workerBytes = new Uint8Array(await workerSidecars.mokuro!.blob.arrayBuffer());
+      // Same rows, same `buildMokuroMetadata`, NO title overrides: the worker
+      // upload is byte-for-byte the import-time/backup serialization.
+      expect(workerBytes).toEqual(dbBytes);
+    } finally {
+      await workerSide.volumes.clear();
+      await workerSide.volume_ocr.clear();
+      workerSide.close();
+    }
 
     // Teeth (permanent negative control): serializing the UNSTRIPPED pipeline
     // pages — `cumulativeChars` still present — would NOT match. If this ever
@@ -1164,6 +1282,352 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
       'Legacy Series/Volume 01.mokuro',
       'Legacy Series/Volume 01.webp',
       'Legacy Series/Volume 02.mokuro'
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DEFERRED feed through the worker pool: bounded parallel uploads
+// ---------------------------------------------------------------------------
+
+function paddedVolumeTitle(index: number): string {
+  return `Volume ${String(index).padStart(2, '0')}`;
+}
+
+/**
+ * Seed `count` installed volumes (rows + OCR + listed archives, no sidecars)
+ * and flip the provider worker-capable. Returns the uuids in seed order —
+ * which is also the drain's dispatch order (`pending` iterates insertion
+ * order).
+ */
+async function seedWorkerBatch(count: number): Promise<string[]> {
+  cloud.provider.supportsWorkerUpload = true;
+  const uuids: string[] = [];
+  for (let index = 1; index <= count; index++) {
+    const uuid = `wp-${index}`;
+    await withOcr(installedVolume({ volume_uuid: uuid, volume_title: paddedVolumeTitle(index) }));
+    cloud.state.files.push(listed(`Legacy Series/${paddedVolumeTitle(index)}.cbz`));
+    uuids.push(uuid);
+  }
+  return uuids;
+}
+
+/** Macrotask-flush until `predicate` holds; throws (with `label`) if it never does. */
+async function flushUntil(predicate: () => boolean, label: string): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`flushUntil: ${label}`);
+}
+
+/** A handful of macrotask turns, for "and nothing further happens" windows. */
+async function flushTurns(turns = 8): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function taskFor(volumeUuid: string) {
+  return workerPool.state.tasks.find(
+    (task) => (task.data as Record<string, unknown> | undefined)?.volumeUuid === volumeUuid
+  );
+}
+
+/** A worker `upload-sidecars` completion for both sidecars of `stem`. */
+function workerCompletion(
+  stem: string,
+  opts: { mokuroMtime?: string | null; coverMtime?: string | null } = {}
+): Record<string, unknown> {
+  const mtime = (value: string | null | undefined) =>
+    value === null ? {} : { modifiedTime: value ?? '2026-08-28T00:00:00Z' };
+  return {
+    type: 'complete',
+    sidecarResults: [
+      {
+        kind: 'mokuro',
+        extension: 'mokuro',
+        fileId: `w-${stem}.mokuro`,
+        ...mtime(opts.mokuroMtime),
+        size: 128
+      },
+      {
+        kind: 'cover',
+        extension: 'webp',
+        fileId: `w-${stem}.webp`,
+        ...mtime(opts.coverMtime),
+        size: 4
+      }
+    ]
+  };
+}
+
+describe('sidecar backfill — the deferred feed uploads through the worker pool', () => {
+  it('a batch of 5 dispatches at most 3 at a time and completes all 5, fetching no listing', async () => {
+    const uuids = await seedWorkerBatch(5);
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+
+    // THE bound: 3 in flight, and — given every chance — NOTHING more is
+    // dispatched while none has completed. (An unbounded drain dispatches all
+    // 5 here.)
+    await flushTurns();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
+    expect(workerPool.open()).toHaveLength(3);
+
+    // Dispatch order is nomination order, and every task carries the worker
+    // message plus the pool discipline fields.
+    const first = taskFor(uuids[0]);
+    expect(first).toBeDefined();
+    expect(first!.data).toMatchObject({
+      mode: 'upload-sidecars',
+      provider: 'webdav',
+      volumeUuid: 'wp-1',
+      seriesTitle: 'Legacy Series',
+      sidecarStem: 'Volume 01',
+      wantMokuro: true,
+      wantCover: true,
+      credentials: { webdavUrl: 'https://dav.example' }
+    });
+    expect(first!.provider).toBe('webdav:upload');
+    expect(first!.providerConcurrencyLimit).toBe(3);
+    expect(workerCreds.getUploadWorkerCredentials).toHaveBeenCalledWith(
+      cloud.provider,
+      'Legacy Series'
+    );
+
+    // Completions free slots one at a time; the bound holds throughout.
+    workerPool.complete(first!, workerCompletion('Volume 01'));
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 4, 'fourth dispatched');
+    expect(workerPool.open()).toHaveLength(3);
+
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+      await flushTurns(2);
+    }
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 5, 'fifth dispatched');
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+    }
+    await settle();
+
+    // All 5 volumes healed: every completion cache-added both sidecars, the
+    // main-thread upload spy stayed untouched, and nothing fetched a listing.
+    expect(workerPool.addTask).toHaveBeenCalledTimes(5);
+    expect(cacheAdd).toHaveBeenCalledTimes(10);
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+    expect(cloud.fetchAllCloudVolumes).not.toHaveBeenCalled();
+    expect(cloud.provider.listCloudVolumes).not.toHaveBeenCalled();
+
+    // Pool user bookkeeping: counted in once for the batch, out once at the end.
+    expect(workerPool.incrementPoolUsers).toHaveBeenCalledTimes(1);
+    expect(workerPool.decrementPoolUsers).toHaveBeenCalledTimes(1);
+
+    // Convergence: a fresh sweep finds nothing left to do.
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(5);
+  });
+
+  it('downloads starting mid-batch let in-flight uploads finish but pause new dispatches until idle', async () => {
+    await seedWorkerBatch(5);
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+
+    // A user-driven download starts mid-batch.
+    downloadQueueMock.set([{ volumeUuid: 'user-download' }]);
+
+    // Everything in flight completes — and its completions are honored (cache
+    // adds land) — but NO new dispatch happens while the queue is busy.
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+    }
+    await flushTurns(12);
+    expect(cacheAdd).toHaveBeenCalledTimes(6);
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
+
+    // The queue drains: the remaining two volumes get their turn.
+    downloadQueueMock.set([]);
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 5, 'rest dispatched');
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+    }
+    await settle();
+    expect(cacheAdd).toHaveBeenCalledTimes(10);
+  });
+
+  it('one failed volume neither stops the batch nor retries in-session; the rest complete', async () => {
+    const uuids = await seedWorkerBatch(3);
+    await sweepInstalledVolumesForSidecarBackfill();
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'all three dispatched');
+
+    // The middle volume's worker dies mid-upload.
+    workerPool.fail(taskFor(uuids[1])!, 'worker crashed');
+    workerPool.complete(taskFor(uuids[0])!, workerCompletion('Volume 01'));
+    workerPool.complete(taskFor(uuids[2])!, workerCompletion('Volume 03'));
+    await settle();
+
+    // The two survivors converged; the failure added nothing.
+    const addedPaths = cacheAdd.mock.calls.map((call) => call[0] as string).sort();
+    expect(addedPaths).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp',
+      'Legacy Series/Volume 03.mokuro',
+      'Legacy Series/Volume 03.webp'
+    ]);
+
+    // No in-session retry: the failed volume is attempted-marked, so a fresh
+    // sweep re-nominates nothing (the survivors are converged via the cache).
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
+  });
+
+  it('a partial worker completion cache-adds what DID upload and still counts as attempted', async () => {
+    await seedWorkerBatch(1);
+    queueSidecarBackfillForVolume('wp-1');
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 1, 'dispatched');
+
+    // The mokuro made it; the cover upload failed inside the worker.
+    const completion = workerCompletion('Volume 01') as { sidecarResults: unknown[] };
+    workerPool.complete(taskFor('wp-1')!, {
+      type: 'complete',
+      sidecarResults: [completion.sidecarResults[0]],
+      error: 'cover PUT failed'
+    });
+    await settle();
+
+    expect(cacheAdd).toHaveBeenCalledTimes(1);
+    expect(cacheAdd.mock.calls[0][0]).toBe('Legacy Series/Volume 01.mokuro');
+
+    // Attempted: the cover is NOT retried this session (next session's sweep
+    // re-derives the remaining gap from a fresh listing).
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('the completion cache add carries the worker-reported server mtime — and marks a missing one provisional', async () => {
+    await seedWorkerBatch(1);
+    queueSidecarBackfillForVolume('wp-1');
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 1, 'dispatched');
+
+    workerPool.complete(
+      taskFor('wp-1')!,
+      workerCompletion('Volume 01', { mokuroMtime: '2026-08-28T12:34:56Z', coverMtime: null })
+    );
+    await settle();
+
+    const entryFor = (path: string) =>
+      cacheAdd.mock.calls.find((call) => call[0] === path)?.[1] as
+        | Record<string, unknown>
+        | undefined;
+
+    // Server mtime present: cached as server truth.
+    expect(entryFor('Legacy Series/Volume 01.mokuro')).toMatchObject({
+      provider: 'webdav',
+      fileId: 'w-Volume 01.mokuro',
+      modifiedTime: '2026-08-28T12:34:56Z',
+      modifiedTimeProvisional: false,
+      size: 128
+    });
+    // No server mtime: a client-clock entry, explicitly provisional — the
+    // stamp publishers must never mistake it for a server fact.
+    const coverEntry = entryFor('Legacy Series/Volume 01.webp');
+    expect(coverEntry).toMatchObject({ modifiedTimeProvisional: true, size: 4 });
+    expect(typeof coverEntry?.modifiedTime).toBe('string');
+  });
+
+  it('re-derives eligibility at dispatch time: a volume that converged while others were in flight is never dispatched', async () => {
+    const uuids = await seedWorkerBatch(4);
+    await sweepInstalledVolumesForSidecarBackfill();
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'first wave dispatched');
+
+    // While the first three fly, another device publishes wp-4's sidecars —
+    // the listing cache (which every check reads) now shows them.
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 04.mokuro'),
+      listed('Legacy Series/Volume 04.webp')
+    );
+
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+    }
+    await settle();
+
+    // wp-4 was nominated but never dispatched: the pre-dispatch re-derive saw
+    // no gap left.
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
+    expect(taskFor(uuids[3])).toBeUndefined();
+  });
+
+  it('an import arriving at full capacity is served on the main thread immediately, without a worker slot', async () => {
+    await seedWorkerBatch(4);
+    await sweepInstalledVolumesForSidecarBackfill();
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 3, 'at capacity');
+
+    // A cloud download finishes importing while all three slots are busy.
+    const processed = processedVolumeFixture('imp-99', { volumeTitle: 'Volume 99' });
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 99.cbz'));
+    queueSidecarBackfillFromImport(saved, 'webdav');
+
+    // Served NOW — main thread, blind upload — while every worker task is
+    // still open and the fourth deferred volume still waits.
+    await flushUntil(
+      () => uploadedPaths().includes('Legacy Series/Volume 99.mokuro'),
+      'import served at capacity'
+    );
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 99.mokuro',
+      'Legacy Series/Volume 99.webp'
+    ]);
+    expect(workerPool.open()).toHaveLength(3);
+    expect(workerPool.addTask).toHaveBeenCalledTimes(3);
+
+    for (const task of workerPool.open()) {
+      workerPool.complete(
+        task,
+        workerCompletion((task.data as { sidecarStem: string }).sidecarStem)
+      );
+      await flushTurns(2);
+    }
+    await flushUntil(() => workerPool.addTask.mock.calls.length === 4, 'fourth dispatched');
+    workerPool.complete(workerPool.open()[0], workerCompletion('Volume 04'));
+    await settle();
+    expect(workerPool.addTask).toHaveBeenCalledTimes(4);
+  });
+
+  it('a provider that cannot upload from a worker falls back to the serial main-thread path', async () => {
+    await seedWorkerBatch(2);
+    cloud.provider.supportsWorkerUpload = false;
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    expect(workerPool.addTask).not.toHaveBeenCalled();
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp',
+      'Legacy Series/Volume 02.mokuro',
+      'Legacy Series/Volume 02.webp'
     ]);
   });
 });

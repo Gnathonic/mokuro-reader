@@ -19,6 +19,7 @@ import {
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
   includeSidecars: boolean;
@@ -89,11 +90,6 @@ export function isBackupRunActive(): boolean {
 // Queue lock: Ensures processQueue() executions wait in line instead of skipping
 // Each call waits for the previous one to finish before proceeding
 let queueLock = Promise.resolve();
-
-// Series upload target initialization lock (provider-agnostic)
-// Prevents multiple concurrent workers from racing to prepare the same provider+series target
-// Maps "provider:seriesTitle" -> Promise that resolves when target is guaranteed to exist
-const seriesFolderLocks = new Map<string, Promise<Record<string, any> | void>>();
 
 // Subscribe to queue changes and update progress tracker
 queueStore.subscribe((queue) => {
@@ -274,43 +270,9 @@ export function getSeriesBackupQueueStatus(seriesTitle: string): SeriesQueueStat
   };
 }
 
-async function prepareSeriesUploadTarget(
-  provider: SyncProvider,
-  seriesTitle: string
-): Promise<Record<string, any> | void> {
-  if (!provider.prepareUploadTarget) return;
-
-  const lockKey = `${provider.type}:${seriesTitle}`;
-  const existingLock = seriesFolderLocks.get(lockKey);
-  if (existingLock) {
-    return await existingLock;
-  }
-
-  const lockPromise = (async () => {
-    try {
-      return await provider.prepareUploadTarget!(seriesTitle);
-    } catch (error) {
-      // On error, remove lock so it can be retried
-      seriesFolderLocks.delete(lockKey);
-      throw error;
-    }
-  })();
-
-  seriesFolderLocks.set(lockKey, lockPromise);
-  return await lockPromise;
-}
-
-async function getUploadWorkerCredentials(
-  provider: SyncProvider,
-  seriesTitle: string
-): Promise<Record<string, any>> {
-  const baseCredentials = provider.getWorkerUploadCredentials
-    ? await provider.getWorkerUploadCredentials()
-    : {};
-
-  const targetData = await prepareSeriesUploadTarget(provider, seriesTitle);
-  return { ...baseCredentials, ...(targetData || {}) };
-}
+// prepareSeriesUploadTarget / getUploadWorkerCredentials moved to
+// `upload-worker-credentials.ts` — the sidecar backfill's worker feed shares
+// them (and, deliberately, their per-`provider:series` folder lock map).
 
 /**
  * Handle backup errors consistently
