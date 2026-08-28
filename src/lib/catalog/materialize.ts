@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { entryMokuroVersion } from '$lib/metadata/series-file';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesFileVolume } from '$lib/metadata/series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
@@ -125,10 +126,14 @@ export async function materializeSeriesVolumes(args: {
         if (!existing.character_count && entry.character_count) {
           patch.character_count = entry.character_count;
         }
-        // `''` is a real value (image-only volume); `'unknown'` is the
-        // placeholder default, i.e. "nobody has told us yet".
-        if (existing.mokuro_version === 'unknown' && entry.mokuro_version !== 'unknown') {
-          patch.mokuro_version = entry.mokuro_version;
+        // Through `entryMokuroVersion`: an entry with measured content carries
+        // a real value (`''` genuinely meaning image-only); a no-metadata
+        // entry (sidecar-less archive — mokuro probably EMBEDDED in the .cbz)
+        // answers 'unknown' and must never overwrite the row's own honest
+        // 'unknown' with a false image-only claim.
+        const entryVersion = entryMokuroVersion(entry);
+        if (existing.mokuro_version === 'unknown' && entryVersion !== 'unknown') {
+          patch.mokuro_version = entryVersion;
         }
         if (existing.spine_width === undefined && entry.spine_width !== undefined) {
           patch.spine_width = entry.spine_width;
@@ -161,7 +166,10 @@ export async function materializeSeriesVolumes(args: {
         series_uuid: seriesUuid,
         series_title: seriesTitle,
         volume_title: entry.volume_title,
-        mokuro_version: entry.mokuro_version,
+        // `entryMokuroVersion`, not the raw field: a row minted from a
+        // no-metadata entry must say 'unknown', not claim image-only (`''`)
+        // for an archive whose mokuro is probably embedded.
+        mokuro_version: entryMokuroVersion(entry),
         page_count: entry.page_count,
         character_count: entry.character_count,
         // Totals only — the index deliberately carries no per-page array.

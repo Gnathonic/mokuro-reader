@@ -212,11 +212,35 @@ function compareEntries(a: SeriesFileVolume, b: SeriesFileVolume): number {
 /**
  * Does this entry carry anything only a read of the volume's `.mokuro` (or a
  * local install) could have measured? The negative space is exactly what a
- * no-metadata entry is minted with (`buildImageOnlyEntry`): zero pages, zero
+ * no-metadata entry is minted with (`buildNoMetadataEntry`): zero pages, zero
  * characters, no mokuro version.
  */
 function hasMeasuredContent(entry: SeriesFileVolume): boolean {
   return entry.page_count > 0 || entry.character_count > 0 || entry.mokuro_version !== '';
+}
+
+/**
+ * The `mokuro_version` a CONSUMER may claim from this entry — the one rule
+ * that keeps "no sidecar" from being read as "image-only".
+ *
+ * An entry with no measured content ({@link hasMeasuredContent} false — the
+ * shape `buildNoMetadataEntry` mints for an archive with no `.mokuro` sidecar)
+ * proves NOTHING about the volume: legacy archives carry their mokuro
+ * EMBEDDED in the `.cbz`, so the absence of a sidecar must surface as
+ * `'unknown'` (the "filled in after download" sentinel `createPlaceholder`
+ * already uses), never as `''` — `''` is the image-only convention, and the
+ * catalog's "Image Only" badge keys on it.
+ *
+ * An entry WITH measured content answers its real version, where `''` is a
+ * genuine image-only claim: its publisher counted real pages and found no
+ * mokuro, embedded or otherwise.
+ *
+ * Every consumer that copies an entry's version onto a `VolumeMetadata`
+ * shape (`createPlaceholder`, `materializeSeriesVolumes`) must go through
+ * here; reading `entry.mokuro_version` raw is how the false badge came back.
+ */
+export function entryMokuroVersion(entry: SeriesFileVolume): string {
+  return hasMeasuredContent(entry) ? entry.mokuro_version : 'unknown';
 }
 
 /**
@@ -225,7 +249,7 @@ function hasMeasuredContent(entry: SeriesFileVolume): boolean {
  *
  * - its `volume_uuid` is the DERIVED one — `generateDeterministicUUID(
  *   '<series>/<volume>')`, the convention every placeholder minter uses
- *   (`buildImageOnlyEntry`, `placeholders.ts`, `download-queue.ts`) —
+ *   (`buildNoMetadataEntry`, `placeholders.ts`, `download-queue.ts`) —
  *   recomputed from the entry's own titles; and
  * - it carries no measured content at all ({@link hasMeasuredContent}).
  *

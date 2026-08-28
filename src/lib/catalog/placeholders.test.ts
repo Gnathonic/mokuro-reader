@@ -657,3 +657,43 @@ describe('generatePlaceholders carries cover pointers, never cover bytes', () =>
     expect(generatePlaceholders.length).toBe(3);
   });
 });
+
+describe('a sidecar-less archive is never labeled image-only', () => {
+  const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+    ['One Piece', [cloudFile('One Piece/Volume 1.cbz')]]
+  ]);
+
+  it("surfaces a no-metadata entry's empty version as 'unknown' — the mokuro is probably embedded", () => {
+    // The exact shape `buildNoMetadataEntry` publishes for an archive with no
+    // `.mokuro` sidecar. A missing sidecar proves nothing about the volume —
+    // legacy backups EMBED the mokuro in the .cbz — so the placeholder must
+    // not inherit `''`, the claim the catalog's "Image Only" badge keys on.
+    const [adopted] = generatePlaceholders(
+      cloudFiles,
+      [],
+      indexMap('One Piece', [indexEntry({ mokuro_version: '', page_count: 0, character_count: 0 })])
+    );
+    expect(adopted.mokuro_version).toBe('unknown');
+    // Guard against the vacuous pass: 'unknown' is also the BARE fallback, so
+    // prove the entry really was adopted (indexed is only set from an entry).
+    expect(adopted.indexed).toBe(true);
+    expect(adopted.volume_uuid).toBe('real-uuid-1');
+  });
+
+  it('keeps a MEASURED image-only claim — a publisher counted real pages and found no mokuro', () => {
+    const [adopted] = generatePlaceholders(
+      cloudFiles,
+      [],
+      indexMap('One Piece', [
+        indexEntry({ mokuro_version: '', page_count: 180, character_count: 0 })
+      ])
+    );
+    expect(adopted.mokuro_version).toBe('');
+    expect(adopted.page_count).toBe(180);
+  });
+
+  it('keeps a real mokuro version untouched', () => {
+    const [adopted] = generatePlaceholders(cloudFiles, [], indexMap('One Piece', [indexEntry()]));
+    expect(adopted.mokuro_version).toBe('0.4.11');
+  });
+});

@@ -18,7 +18,7 @@ import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache
 import { cachedCoverPaths } from '$lib/catalog/cloud-covers';
 import {
   acquireBackfillSlot,
-  buildImageOnlyEntry,
+  buildNoMetadataEntry,
   pullMokuroEntry,
   releaseBackfillSlot
 } from '$lib/metadata/series-backfill';
@@ -282,7 +282,7 @@ async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
     provider: vol.cloudProvider ?? provider.type,
     fileId: vol.cloudFileId ?? '',
     // Deliberately NOT synthesized when absent — see `archivePath` above.
-    // `buildImageOnlyEntry` reads only `size` from this record, so an empty
+    // `buildNoMetadataEntry` reads only `size` from this record, so an empty
     // path costs nothing here and cannot leak into a cache key.
     path: vol.cloudPath ?? '',
     size: vol.cloudSize ?? 0,
@@ -309,7 +309,7 @@ async function resolveBarePlaceholder(vol: VolumeMetadata): Promise<
     if (mokuroStamp.mokuro_modified !== undefined)
       entry.mokuro_modified = mokuroStamp.mokuro_modified;
   } else {
-    entry = buildImageOnlyEntry(folderTitle, vol.volume_title, archiveFile);
+    entry = buildNoMetadataEntry(folderTitle, vol.volume_title, archiveFile);
   }
 
   if (sidecars?.cover) {

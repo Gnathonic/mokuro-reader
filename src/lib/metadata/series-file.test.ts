@@ -1442,7 +1442,7 @@ describe('the published facts stamp never moves backwards', () => {
 
 describe('either-key volume identity (uuid OR folded title) — the doubled-entry fix', () => {
   /**
-   * A no-metadata entry exactly as `buildImageOnlyEntry` mints one: the uuid
+   * A no-metadata entry exactly as `buildNoMetadataEntry` mints one: the uuid
    * DERIVED from `<series>/<volume>` (the archive was listed but its `.mokuro`
    * was never read), zero counts, no version.
    */

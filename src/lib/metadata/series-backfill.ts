@@ -135,13 +135,25 @@ function archiveStemOf(path: string): string {
 }
 
 /**
- * Zero-count entry for an archive with no sidecar at all — the image-only
- * convention `volumeToIndexEntry` gives an installed image-only volume.
+ * Zero-count entry for an archive with no `.mokuro` sidecar at all.
+ *
+ * NOT an image-only claim, despite the empty `mokuro_version`. A sidecar-less
+ * archive is most often a LEGACY backup whose mokuro is EMBEDDED in the
+ * `.cbz` (the whole reason `sidecar-backfill.ts` exists) — nothing can know
+ * which until the archive is downloaded. This entry exists only to carry the
+ * archive's identity, size and cover stamps, and to stop the backfill pass
+ * re-planning the archive on every listing; its zero-content shape is exactly
+ * what `hasMeasuredContent` (series-file.ts) reads as "this entry proves
+ * nothing", which keeps merges treating it as the weakest possible claim.
+ * Consumers that copy a version onto a row or placeholder go through
+ * `entryMokuroVersion`, which surfaces this shape as `'unknown'` — never as
+ * the image-only `''`.
+ *
  * Exported for `cover-service.ts`'s render-demand path (decision-tree case
  * 4), which builds an entry for exactly one archive the same way this module
  * does for a whole series — reused, not re-derived.
  */
-export function buildImageOnlyEntry(
+export function buildNoMetadataEntry(
   folderTitle: string,
   archiveStem: string,
   archiveFile: CloudFileMetadata
@@ -253,7 +265,7 @@ async function buildEntryForTask(
         entry.mokuro_modified = mokuroStamp.mokuro_modified;
       }
     } else {
-      entry = buildImageOnlyEntry(folderTitle, task.archiveStem, task.archiveFile);
+      entry = buildNoMetadataEntry(folderTitle, task.archiveStem, task.archiveFile);
     }
   } else if (task.existingEntry) {
     // Cover-only refresh: the mokuro side is already fresh, so it is carried

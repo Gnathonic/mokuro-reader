@@ -4,7 +4,12 @@ import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manag
 import { browser } from '$app/environment';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
-import { isArchiveSize, isSeriesFilePath, type SeriesFileVolume } from '$lib/metadata/series-file';
+import {
+  isArchiveSize,
+  isSeriesFilePath,
+  type SeriesFileVolume,
+  entryMokuroVersion
+} from '$lib/metadata/series-file';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
@@ -219,7 +224,13 @@ function createPlaceholder(
     indexEntry?.volume_uuid ?? generateDeterministicUUID(`${seriesTitle}/${volumeTitle}`);
 
   const placeholder: VolumeMetadata = {
-    mokuro_version: indexEntry?.mokuro_version ?? 'unknown', // Filled in after download
+    // Through `entryMokuroVersion`, never the raw field: an entry minted for a
+    // sidecar-less archive carries `''` on the wire, but a missing sidecar is
+    // no proof the volume is image-only (legacy archives embed their mokuro in
+    // the .cbz), and `''` is exactly what the "Image Only" badge keys on. Such
+    // entries surface as 'unknown' — filled in after download — while an entry
+    // with measured content keeps its real version, `''` included.
+    mokuro_version: indexEntry ? entryMokuroVersion(indexEntry) : 'unknown',
     series_title: seriesTitle,
     series_uuid: seriesUuid,
     volume_title: volumeTitle,

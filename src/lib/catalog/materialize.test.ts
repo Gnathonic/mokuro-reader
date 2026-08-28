@@ -353,3 +353,76 @@ describe('materializeSeriesVolumes', () => {
     ).toBe(0);
   });
 });
+
+describe('a no-metadata entry never mints or fills an image-only claim', () => {
+  const noMetadata = () =>
+    entry({
+      mokuro_version: '',
+      page_count: 0,
+      character_count: 0,
+      spine_width: undefined
+    });
+
+  it("creates the row with mokuro_version 'unknown', not the wire's ''", async () => {
+    // `buildNoMetadataEntry`'s shape: a sidecar-less archive, whose mokuro is
+    // probably embedded in the .cbz. The durable row must say "don't know",
+    // never wear the image-only claim the catalog badge renders.
+    const created = await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [noMetadata()],
+      cloudVolumeTitles: CLOUD
+    });
+    expect(created).toBe(1);
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.metadata_only).toBe(true);
+    expect(row?.mokuro_version).toBe('unknown');
+  });
+
+  it("never overwrites a row's honest 'unknown' from a no-metadata entry", async () => {
+    await db.volumes.add({
+      volume_uuid: 'uuid-1',
+      series_uuid: 's1',
+      series_title: 'Dr Stone',
+      volume_title: 'Volume 1',
+      mokuro_version: 'unknown',
+      page_count: 0,
+      character_count: 0,
+      page_char_counts: [],
+      metadata_only: true
+    } as never);
+
+    await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [noMetadata()],
+      cloudVolumeTitles: CLOUD
+    });
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.mokuro_version).toBe('unknown');
+  });
+
+  it('still fills a genuinely MEASURED image-only claim through the same path', async () => {
+    // Positive control for the test above: identical setup, but the entry
+    // carries measured pages — proof the fill path is reachable and that
+    // `hasMeasuredContent`, not some earlier gate, is what decides.
+    await db.volumes.add({
+      volume_uuid: 'uuid-1',
+      series_uuid: 's1',
+      series_title: 'Dr Stone',
+      volume_title: 'Volume 1',
+      mokuro_version: 'unknown',
+      page_count: 0,
+      character_count: 0,
+      page_char_counts: [],
+      metadata_only: true
+    } as never);
+
+    await materializeSeriesVolumes({
+      seriesTitle: 'Dr Stone',
+      entries: [entry({ mokuro_version: '', page_count: 200, character_count: 0 })],
+      cloudVolumeTitles: CLOUD
+    });
+    const row = await db.volumes.get('uuid-1');
+    expect(row?.mokuro_version).toBe('');
+    expect(row?.page_count).toBe(200);
+  });
+});

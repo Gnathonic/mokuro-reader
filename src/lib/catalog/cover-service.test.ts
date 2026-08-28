@@ -540,7 +540,7 @@ describe('decision tree case 4: a bare placeholder with no mokuro sidecar (image
 
     requestCover(barePlaceholder('bare-2', { volume_title: 'Volume 02' }));
 
-    // Deterministic uuid: the SAME convention `buildImageOnlyEntry` in
+    // Deterministic uuid: the SAME convention `buildNoMetadataEntry` in
     // series-backfill.ts uses for a whole-series sweep.
     const { generateDeterministicUUID } = await import('$lib/util/series-extraction');
     const expectedUuid = generateDeterministicUUID('One Piece/Volume 02');
