@@ -374,7 +374,11 @@ export interface SyncProvider {
    * skipping. Google Drive is the one such provider today — its `uploadFile`
    * ends with a FULL paged listing refetch (13+ `files.list` calls on a
    * 12,500-file library), which `blindUploadFile` skips. Callers go through
-   * `unifiedCloudManager.blindUploadFile`, which handles the fallback.
+   * `unifiedCloudManager.blindUploadFile`, which handles the fallback and
+   * documents WHICH callers qualify — a write must change nothing any view
+   * renders, be retryable by a self-healing process, and lose nothing
+   * important on failure; everything else stays on `uploadFile`, whose
+   * refreshed cache is how backups are confirmed and rendered.
    */
   blindUploadFile?(
     path: string,

@@ -345,8 +345,20 @@ class UnifiedCloudManager {
    * listing after every ordinary upload; see the interface doc). A provider
    * without the method IS already blind, so this falls back to `uploadFile`.
    *
-   * For callers that never read the upload back — the sidecar backfill, whose
-   * convergence runs entirely on the cache entry added here.
+   * WHO MAY USE THIS — the ruling (2026-08-28): most callers use the updated
+   * cache to CONFIRM files are backed up and to RENDER those changes — the
+   * backup queue's badges, `writeSeriesFile`/`writeCatalogFile` and every
+   * flow a view reads back — and they stay on {@link uploadFile}. A caller
+   * qualifies for the blind path only when ALL THREE hold, as they do for
+   * the sidecar backfill:
+   *
+   * - the write changes NOTHING any view renders;
+   * - the process can simply try again later (self-healing — the next
+   *   session's sweep re-derives the gap and re-uploads);
+   * - nothing important is lost when it fails.
+   *
+   * Do not convert another caller to this path on efficiency grounds alone —
+   * check it against those three first.
    */
   async blindUploadFile(
     path: string,
