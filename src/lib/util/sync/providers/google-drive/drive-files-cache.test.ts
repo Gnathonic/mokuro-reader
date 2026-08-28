@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api-client', () => ({
   driveApiClient: {
@@ -23,6 +23,7 @@ import { driveApiClient } from './api-client';
 import { folderDeduplicator } from '../../folder-deduplicator';
 import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
+import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
 
 describe('driveFilesCache', () => {
   beforeEach(() => {
@@ -359,6 +360,194 @@ describe('driveFilesCache fetch/mutation interleaving', () => {
 
     expect(second).not.toBe(first);
     expect(driveFilesCache.get('Dr Stone/Volume 2.cbz')?.fileId).toBe('cbz-2');
+  });
+});
+
+/**
+ * The state/emission split, at Drive's own cache — the one with the
+ * mutation-replay machinery and the `sameCacheMap` identity skip, both of
+ * which the coalescing has to coexist with. (The primitive itself is pinned
+ * in `coalesced-cache-store.test.ts`; the cross-provider path in
+ * `cache-emission-coalescing.test.ts`.)
+ */
+describe('driveFilesCache emission coalescing', () => {
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+  const LISTING_WITHOUT_SIDECAR = [
+    { id: 'reader-root', name: 'mokuro-reader', mimeType: FOLDER_MIME },
+    { id: 'series-1', name: 'Dr Stone', mimeType: FOLDER_MIME, parents: ['reader-root'] },
+    {
+      id: 'cbz-1',
+      name: 'Volume 1.cbz',
+      mimeType: 'application/x-cbz',
+      parents: ['series-1'],
+      modifiedTime: '2026-08-25T00:00:00.000Z',
+      size: '100'
+    }
+  ];
+
+  /**
+   * The same account WITH the sidecar this suite's `add()` writes — built so
+   * the listing's entry tokenizes identically to the added one (`fileToken`
+   * compares fileId, path, name, mtime, size, description, parentId), which
+   * is exactly what a listing that has caught up with our own upload looks
+   * like.
+   */
+  const LISTING_WITH_SIDECAR = [
+    ...LISTING_WITHOUT_SIDECAR,
+    {
+      id: 'series-file-1',
+      name: 'series.json',
+      mimeType: 'application/json',
+      parents: ['series-1'],
+      modifiedTime: '2026-08-25T01:00:00.000Z',
+      size: '60'
+    }
+  ];
+
+  const SIDECAR_ADD = {
+    provider: 'google-drive',
+    fileId: 'series-file-1',
+    name: 'series.json',
+    path: 'Dr Stone/series.json',
+    modifiedTime: '2026-08-25T01:00:00.000Z',
+    modifiedTimeProvisional: false,
+    size: 60,
+    parentId: 'series-1'
+  } as const;
+
+  let seen: unknown[];
+  let unsubscribe: () => void;
+
+  function watchStore(): void {
+    seen = [];
+    unsubscribe = driveFilesCache.store.subscribe((map) => {
+      seen.push(map);
+    });
+    seen.length = 0; // drop the subscribe-time replay
+  }
+
+  function pendingFetch(): { finish: (files: unknown[]) => void; done: Promise<void> } {
+    let release!: (files: unknown[]) => void;
+    const paged = new Promise<unknown[]>((resolve) => {
+      release = resolve;
+    });
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockReturnValue(paged);
+    const done = driveFilesCache.fetch();
+    return { finish: release, done };
+  }
+
+  function pathsIn(map: unknown): string[] {
+    return [...(map as Map<string, { path: string }[]>).values()]
+      .flat()
+      .map((file) => file.path)
+      .sort();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    unsubscribe?.();
+    vi.useRealTimers();
+  });
+
+  it('shows an add() to the synchronous readers IMMEDIATELY while the store emission is pending', () => {
+    watchStore();
+
+    driveFilesCache.add('Dr Stone/series.json', SIDECAR_ADD);
+
+    // The reads the backfill drain and reconcile re-derive from at upload
+    // time — un-lagged, or a just-uploaded sidecar would be re-uploaded.
+    expect(driveFilesCache.get('Dr Stone/series.json')?.fileId).toBe('series-file-1');
+    expect(driveFilesCache.getBySeries('Dr Stone').map((f) => f.path)).toEqual([
+      'Dr Stone/series.json'
+    ]);
+    expect(driveFilesCache.has('Dr Stone/series.json')).toBe(true);
+
+    // ...while the emission is GENUINELY still pending: without this line
+    // the reads above would also pass under publish-per-add and pin nothing.
+    expect(seen).toHaveLength(0);
+
+    vi.advanceTimersByTime(CACHE_MUTATION_COALESCE_MS);
+    expect(seen).toHaveLength(1);
+    expect(pathsIn(seen[0])).toEqual(['Dr Stone/series.json']);
+  });
+
+  it('publishes a burst of adds ONCE, not once per file', () => {
+    watchStore();
+
+    for (let vol = 1; vol <= 5; vol++) {
+      driveFilesCache.add(`Dr Stone/Volume ${vol}.mokuro`, {
+        ...SIDECAR_ADD,
+        fileId: `mokuro-${vol}`,
+        name: `Volume ${vol}.mokuro`,
+        path: `Dr Stone/Volume ${vol}.mokuro`
+      });
+    }
+
+    expect(seen).toHaveLength(0);
+    vi.advanceTimersByTime(CACHE_MUTATION_COALESCE_MS);
+
+    expect(seen).toHaveLength(1);
+    expect(pathsIn(seen[0])).toHaveLength(5);
+
+    vi.advanceTimersByTime(10 * CACHE_MUTATION_COALESCE_MS);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a coalesced add pending when a fetch installs a CHANGED listing is superseded — replayed into the install, never fired after it', async () => {
+    const { finish, done } = pendingFetch();
+    watchStore();
+
+    // Mid-fetch upload: recorded for replay AND riding the coalescing timer.
+    driveFilesCache.add('Dr Stone/series.json', SIDECAR_ADD);
+    expect(seen).toHaveLength(0);
+
+    finish(LISTING_WITHOUT_SIDECAR);
+    await done;
+
+    // ONE emission: the atomic swap, already carrying the replayed add.
+    expect(seen).toHaveLength(1);
+    expect(pathsIn(seen[0])).toEqual(['Dr Stone/Volume 1.cbz', 'Dr Stone/series.json']);
+
+    // The pre-fetch timer is dead — nothing fires later to spend another Map
+    // identity (or worse, publish the pre-fetch state) on top of the install.
+    vi.advanceTimersByTime(10 * CACHE_MUTATION_COALESCE_MS);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('the sameCacheMap skip still delivers a pending add AT fetch completion (flush), preserving identity when nothing is pending', async () => {
+    // Seed: the account as fetched once already.
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      LISTING_WITHOUT_SIDECAR
+    );
+    await driveFilesCache.fetch();
+
+    watchStore();
+
+    // Second fetch in flight; our own upload lands mid-page.
+    const { finish, done } = pendingFetch();
+    driveFilesCache.add('Dr Stone/series.json', SIDECAR_ADD);
+    expect(seen).toHaveLength(0);
+
+    // The listing comes back already CONTAINING that upload — content-equal
+    // to the state, so the identity-preserving skip refuses the set()...
+    finish(LISTING_WITH_SIDECAR);
+    await done;
+
+    // ...but the pending add is flushed AT completion, not left to the
+    // timer: consumers treat "the fetch resolved" as "the listing is
+    // visible". No timer advance before this assertion, deliberately.
+    expect(seen).toHaveLength(1);
+    expect(pathsIn(seen[0])).toEqual(['Dr Stone/Volume 1.cbz', 'Dr Stone/series.json']);
+
+    // And quiet afterwards: the flush consumed the pending emission.
+    vi.advanceTimersByTime(10 * CACHE_MUTATION_COALESCE_MS);
+    expect(seen).toHaveLength(1);
   });
 });
 

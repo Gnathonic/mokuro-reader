@@ -1,8 +1,9 @@
-import { get, writable } from 'svelte/store';
+import { writable } from 'svelte/store';
 import { driveApiClient } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
+import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 
@@ -75,7 +76,10 @@ function sameCacheMap(
 }
 
 class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
-  private cache = writable<Map<string, DriveFileMetadata[]>>(new Map());
+  // State split from emission: `read()` is synchronous and never lagged (all
+  // the getters below use it), while subscribers get incremental mutations
+  // coalesced — see `CoalescedCacheStore`.
+  private cache = new CoalescedCacheStore<DriveFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
   private cacheLoadedStore = writable<boolean>(false);
   private fetchingFlag = false;
@@ -120,10 +124,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   }
 
   getVolumeDataFiles(): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     return currentCache.get(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) || [];
   }
@@ -330,9 +331,18 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           cacheMap as Map<string, DriveFileMetadata[]>
         );
         this.mutationsDuringFetch = null;
-        const previous = get(this.cache);
+        // Compared against the STATE (which already holds the replayed
+        // mutations), not the published side: when they agree, the listing
+        // brought nothing the state didn't know.
+        const previous = this.cache.read();
         if (!sameCacheMap(previous, replayed)) {
           this.cache.set(replayed);
+        } else {
+          // The listing changed nothing — but mutations may still be riding
+          // the coalescing timer, and "a fetch completed" is the moment
+          // consumers wait on. Publish them now; a no-op (identity
+          // preserved) when nothing is pending.
+          this.cache.flush();
         }
         this.lastFetchTime = Date.now();
         this.cacheLoadedStore.set(true);
@@ -406,10 +416,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Used to determine if a local volume is already backed up
    */
   existsInDrive(seriesTitle: string, volumeTitle: string): boolean {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -421,10 +428,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Returns first file if there are duplicates
    */
   getDriveFile(seriesTitle: string, volumeTitle: string): DriveFileMetadata | undefined {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -436,10 +440,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Returns array of all files with this path (handles duplicates)
    */
   getDriveFiles(seriesTitle: string, volumeTitle: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -451,10 +452,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Future use: Discover remote-only volumes for download placeholders
    */
   getAllDriveFiles(): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const result: DriveFileMetadata[] = [];
     for (const files of currentCache.values()) {
@@ -468,10 +466,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Future use: Show remote-only volumes in series view
    */
   getDriveFilesBySeries(seriesTitle: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // With series-grouped cache, just get the series directly (O(1) lookup)
     return currentCache.get(seriesTitle) || [];
@@ -626,10 +621,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   has(path: string): boolean {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -642,10 +634,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   get(path: string): DriveFileMetadata | null {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -658,10 +647,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   getAll(path: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find all matches within that series
     const seriesTitle = path.split('/')[0];
