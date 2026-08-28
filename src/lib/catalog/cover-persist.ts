@@ -191,7 +191,14 @@ function scheduleDrain(): void {
   drainScheduled = true;
   queueMicrotask(() => {
     drainScheduled = false;
-    void runDrain();
+    runDrain().catch((error) => {
+      // A drain that dies must not silently strand the queue: the old
+      // debounce re-armed on every failure as a side effect of its timer;
+      // write-through has no timer, so the re-arm is explicit. Entries left
+      // in `pending` get a fresh drain; a repeat throw surfaces the same way.
+      console.debug('[cover-persist] drain failed, re-arming:', error);
+      if (pending.size > 0) scheduleDrain();
+    });
   });
 }
 

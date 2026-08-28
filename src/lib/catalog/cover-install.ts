@@ -17,7 +17,12 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
  * half width; the per-worker DB re-check between fetches is a keyed read
  * and costs nothing at this parallelism.
  */
-const MAX_CONCURRENT_COVER_INSTALLS = 8;
+/**
+ * Matched to `MAX_CONCURRENT_FETCHES` in `cloud-thumbnails.ts` (both 8) so the
+ * install pass can keep the widened fetch pool fed. Pinned by test — change
+ * both together or the narrower one silently becomes the real limit.
+ */
+export const MAX_CONCURRENT_COVER_INSTALLS = 8;
 
 /**
  * The running pass per normalized series key, plus whether a joiner arrived

@@ -75,7 +75,7 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 import { db } from '$lib/catalog/db';
 import { _getCloudCoversForTests } from './cloud-covers';
 import { _resetCoverPersistForTests } from './cover-persist';
-import { installCoversForSeries } from './cover-install';
+import { MAX_CONCURRENT_COVER_INSTALLS, installCoversForSeries } from './cover-install';
 
 const activeProvider = {
   type: 'webdav',
@@ -382,5 +382,14 @@ describe('installCoversForSeries', () => {
 
     expect(await installCoversForSeries('Dr Stone')).toBe(0);
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('concurrency pinning', () => {
+  it('pins the install pass width at 8 — matched to MAX_CONCURRENT_FETCHES, change both together', () => {
+    // The fetch-pool constant has its own pin in cloud-thumbnails' suite
+    // (this file mocks that module, so cross-module equality cannot be
+    // asserted here); the pairing lives in both constants' doc comments.
+    expect(MAX_CONCURRENT_COVER_INSTALLS).toBe(8);
   });
 });

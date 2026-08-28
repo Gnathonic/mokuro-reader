@@ -160,6 +160,17 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  *
  * Returns the unsubscriber for tests; production never calls it.
  */
+/*
+ * COST NOTE, and the boundary on how to fix it if it ever shows in a profile:
+ * write-through cover persistence commits per co-arrival group, and every
+ * commit re-runs the keys-only querier here (~one key per listed archive,
+ * ZERO blob bytes — pinned by contract). If that duty cycle ever matters,
+ * the fix is a cheaper announce channel (e.g. publishing changed keys
+ * directly instead of re-scanning) — NEVER a reintroduced write delay:
+ * pacing the writes was the old design, it only delayed paint, and the
+ * user ruled it out explicitly ("the only remedy for ui jank is to
+ * background the downloads, not to pace them").
+ */
 export function initCoverKeyWatch(): () => void {
   // The scope and key set this watch last handed to the resolver. Read back
   // from `activeAccountScope()` rather than carried on the emission: it is the
