@@ -527,19 +527,51 @@ function findStaleRowCovers(
  * (stamp-gated) returned moments ago, and `previewSeriesFileBuild` reads only
  * the local tables and the already-fetched listing cache.
  *
- * Two triggers, in order:
+ * The LOCAL read cost is NOT a flat handful of reads per folder, though:
+ * `previewSeriesFileBuild`, and (when `raw_entry_collapse` is the only
+ * candidate term) {@link hasLocalVolumeStanding} below, both go through
+ * `volumesForFoldedSeriesTitle`, whose `orderBy('series_title').uniqueKeys()`
+ * walks every DISTINCT local series title on each call (see that function's
+ * own doc) — index-only, never a row, but not O(1) either. Swept across a
+ * whole reconcile pass (`runReconcile` calls this seam once per
+ * sidecar-bearing cloud folder) the true shape is O(folders × distinct local
+ * series titles) index-only reads, not O(folders). No cheap prefilter was
+ * added to cut that down on purpose: every necessary-condition set analyzed
+ * while building this seam either missed a material case (rename-shaped
+ * collapses, additions) or duplicated the predicate outright — a missed case
+ * is a heal lost silently, which is the bug the seam exists to fix. A future
+ * optimizer narrowing this should know that ground was already covered, not
+ * re-walk it from scratch.
  *
- * - `raw_entry_collapse` on the cached record: the published BYTES still hold
- *   doubled entries that read-time healing collapsed — invisible in any
- *   parsed copy, so the parse sites persist the fact (see
- *   `SeriesIndexRecord.raw_entry_collapse`). Heals a doubled file with no
- *   install and no local rows at all. Converges because a successful write
- *   re-stamps the record WITHOUT the flag.
+ * Two triggers, both run through the SAME preview this function fetches once
+ * — no bypass, no second read path:
+ *
  * - {@link seriesFileHealDifference} over (published, preview build): the
  *   material terms — collapse, 0/0 superseded by measured, inherited-field
  *   enrichment, listing-backed addition — and nothing else; see its doc for
  *   why uuid tie flips, value drift, prunes and local-only additions are
  *   deliberately NOT material (each would ping-pong two live devices).
+ * - `raw_entry_collapse` on the cached record, checked only when the above
+ *   found nothing: the published BYTES still hold doubled entries that
+ *   read-time healing collapsed — invisible in any parsed copy, so
+ *   `existing` here already looks clean and `seriesFileHealDifference` can
+ *   never see it (the parse sites persist the fact separately, see
+ *   `SeriesIndexRecord.raw_entry_collapse`). Gated on
+ *   {@link hasLocalVolumeStanding}: earlier this fired unconditionally and
+ *   was the one MEDIUM bug in the seam's first review — a folder this device
+ *   has no local rows for still gets swept every reconcile pass (every
+ *   sidecar-bearing cloud folder, not just this device's own, see
+ *   `runReconcile`), so an unconditional flag would schedule a write EVERY
+ *   pass, `performWrite`'s own publishability gate (`hasBackedUpVolume` /
+ *   `hasPublishableFacts` in `series-file-sync.ts`) would drop it every time,
+ *   and the flag — true about a file this device cannot fix — would never
+ *   clear: scheduled, dropped, rescheduled, forever. Exactly the shape
+ *   `locallyKnownSeriesKeys` exists to prevent on the OTHER trigger
+ *   (missing-sidecar candidates). A foreign folder now fails the standing
+ *   check and never schedules; the flag persists harmlessly on the cached
+ *   record until a device WITH standing reads the file and heals it —
+ *   converging the same way, because a successful write re-stamps the record
+ *   WITHOUT the flag.
  *
  * The write itself goes through `scheduleSeriesFileWrite`: the same 2 s
  * per-series debounce (so this coalesces with install-triggered schedules for
@@ -564,14 +596,16 @@ export async function maybeScheduleSeriesHealWrite(
   try {
     if (!hasWritableNonServerProvider()) return false;
 
-    let material = false;
-    const record = await getSeriesIndex(normalizeSeriesKey(folderTitle));
-    if (record?.raw_entry_collapse === true) material = true;
+    const preview = await unifiedCloudManager.previewSeriesFileBuild(folderTitle, existing);
+    if (!preview?.built) return false;
+
+    let material = seriesFileHealDifference(existing, preview.built, preview.cloudTitleKeys);
 
     if (!material) {
-      const preview = await unifiedCloudManager.previewSeriesFileBuild(folderTitle, existing);
-      if (!preview?.built) return false;
-      material = seriesFileHealDifference(existing, preview.built, preview.cloudTitleKeys);
+      const record = await getSeriesIndex(normalizeSeriesKey(folderTitle));
+      if (record?.raw_entry_collapse === true) {
+        material = await hasLocalVolumeStanding(folderTitle, preview.cloudTitleKeys);
+      }
     }
     if (!material) return false;
 
@@ -581,6 +615,47 @@ export async function maybeScheduleSeriesHealWrite(
     console.debug(`[series-backfill] heal check for '${folderTitle}' failed:`, error);
     return false;
   }
+}
+
+/**
+ * Does this device hold a local VOLUME row for `folderTitle` — a
+ * non-placeholder row whose title the cloud listing still shows (the same
+ * `cloudTitleKeys` the preview just computed, so this costs no extra listing
+ * read). Function-body use only, mirroring (not importing — series-file-sync
+ * keeps `hasBackedUpVolume` private, and the existing series-file-sync ↔
+ * series-backfill cycle stays a `scheduleSeriesFileWrite`-only import) the
+ * row half of `performWrite`'s own publishability gate.
+ *
+ * The ONE thing `raw_entry_collapse` needs that the seam's other three
+ * material terms get for free: they can never fire without genuine local
+ * content (SUPERSEDE/ENRICHMENT need an installed row, LISTING-BACKED
+ * ADDITION needs a local-only entry), so a foreign folder's preview build
+ * naturally reproduces `existing` and nothing trips. The raw-doubles flag has
+ * no such built-in gate — it is a fact about the CLOUD FILE, not about this
+ * device's build — so without this check it would fire for every folder the
+ * reconcile sweep touches, foreign or not (see the seam doc above for the
+ * eternal-reschedule shape that produces).
+ *
+ * Deliberately NOT `hasPublishableFacts`: a series linked purely by facts,
+ * with zero local volume rows, WOULD pass `performWrite`'s own gate and
+ * COULD heal a doubled file it holds no volumes for (the write republishes
+ * `existing`'s already-healed volumes regardless of local content) — but
+ * this narrower row-only check declines it too. A real residual, left for a
+ * device that actually holds a row, matching the scope of the tests this
+ * check shipped with.
+ */
+async function hasLocalVolumeStanding(
+  folderTitle: string,
+  cloudTitleKeys: Set<string>
+): Promise<boolean> {
+  const localKey = normalizeVolumeTitleKey(folderTitle);
+  const rows = await volumesForFoldedSeriesTitle(folderTitle, normalizeVolumeTitleKey);
+  return rows.some(
+    (row) =>
+      !row.isPlaceholder &&
+      normalizeVolumeTitleKey(row.series_title) === localKey &&
+      cloudTitleKeys.has(normalizeVolumeTitleKey(row.volume_title))
+  );
 }
 
 async function runBackfill(seriesTitle: string, requireExisting: boolean): Promise<void> {

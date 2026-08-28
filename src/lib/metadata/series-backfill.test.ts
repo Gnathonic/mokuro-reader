@@ -1350,22 +1350,59 @@ describe('the heal seam — maybeScheduleSeriesHealWrite (heal-by-overwrite)', (
     expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 
-  it('a DOUBLED published file heals off the raw-collapse flag — no install, no local rows, and converges once the flag clears', async () => {
+  it('a DOUBLED published file on a FOREIGN folder never schedules — no local rows, no publishable facts, across TWO reconcile passes', async () => {
     // The raw bytes hold the same volume twice; the parsed copy in hand is
-    // already healed, so the flag on the cached record is the only evidence.
+    // already healed (parse-time healing), so the flag on the cached record
+    // is the only evidence — and this device has NO local row for the
+    // series at all (`volumeRows` stays empty: no `installRow` call).
     const healedView = seriesFile([measuredEntry('mokuro-uuid-1', 'Vol 1')]);
     getSeriesIndex.mockResolvedValue({ raw_entry_collapse: true });
+    armRealPreview(['Vol 1']);
+
+    // Pass 1: the flag is set, but this device has no standing to act on it.
+    await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(false);
+    // Pass 2: nothing here ever clears the flag (only a successful write
+    // does), so a reconcile sweep re-parsing the same doubled bytes would
+    // re-set the SAME flag and land right back here — zero schedules is the
+    // fix, not "eventually clears".
+    await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(false);
+
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+    // Non-vacuous: both passes genuinely reached and evaluated the flag
+    // (preview ran, the record was read) rather than bailing out earlier —
+    // an unconditional decline (e.g. a broken gate) would pass this
+    // assertion too, so the counts below are what tell them apart.
+    expect(previewSeriesFileBuild).toHaveBeenCalledTimes(2);
+    expect(getSeriesIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it('mirror: the SAME doubled file on a folder WITH an installed row — exactly ONE write, doubles healed, flag cleared', async () => {
+    // Identical fixture to the foreign-folder case above, except this
+    // device holds Vol 1 installed with the SAME measured content already
+    // published — so none of `seriesFileHealDifference`'s own four terms
+    // can explain a write (no supersede, no enrichment, nothing to
+    // collapse or add): only the standing check on the raw-collapse flag
+    // can, isolating exactly what this fix changed.
+    const healedView = seriesFile([measuredEntry('mokuro-uuid-1', 'Vol 1')]);
+    installRow('Vol 1', 'mokuro-uuid-1', 180, 12_000);
+    getSeriesIndex.mockResolvedValue({ raw_entry_collapse: true });
+    armRealPreview(['Vol 1']);
 
     await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(true);
     expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
-    // The flag alone decides — no preview build was needed.
-    expect(previewSeriesFileBuild).not.toHaveBeenCalled();
+    // Doubles healed: the scheduled write publishes exactly what the preview
+    // built, which merges from the ALREADY-healed `existing.volumes` — one
+    // entry for Vol 1, not two.
+    const { built } = (await previewSeriesFileBuild.mock.results[0].value)!;
+    expect(built!.volumes).toHaveLength(1);
+    expect(built!.volumes[0].volume_uuid).toBe('mokuro-uuid-1');
 
     // The write re-stamps the record WITHOUT the flag; the next cycle finds
-    // the published copy equal to the build and goes quiet.
+    // the published copy equal to the build and goes quiet — same
+    // convergence guarantee as every other trigger.
     getSeriesIndex.mockResolvedValue({});
-    armRealPreview(['Vol 1']);
-    await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(false);
+    const published2 = parseSeriesFile(JSON.parse(stringifySeriesFile(built!)))!;
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published2)).resolves.toBe(false);
     expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
   });
 

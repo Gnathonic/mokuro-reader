@@ -395,7 +395,14 @@ const INHERITED_FILE_FACTS = [
  * for good. Losing a stamp is the expensive direction: a stampless entry is
  * never stale (`isSidecarStale`), so staleness detection for it never fires
  * again on any device, while an inherited stamp that turns out to be behind
- * the listing just triggers one self-correcting re-verify.
+ * the listing just triggers one self-correcting re-verify. One field is not
+ * unconditionally covered by this rescue: `buildSeriesFile` applies the
+ * local shelf alignment — including an explicit zero, a deliberate reset —
+ * to `offset` AFTER this merge runs, so a device holding a local zero for a
+ * volume can still drop the `offset` its OWN merge just inherited onto that
+ * volume's entry (a stable, one-time drop this device's own build keeps
+ * making, not a ping-pong with another device — see the reset's own comment
+ * there).
  *
  * DEVICE-LOCAL ALTERNATION — the trade rule 3 makes. When two devices hold
  * DIFFERENT real entries for the same archive (device A still has the
