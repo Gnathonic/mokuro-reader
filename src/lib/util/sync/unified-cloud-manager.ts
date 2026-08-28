@@ -12,6 +12,7 @@ import { uploadCacheEntry } from './cloud-cache-interface';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
+import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { naturalSort } from '$lib/util/natural-sort';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
@@ -21,8 +22,9 @@ import {
   buildSeriesFile,
   hasSeriesFacts,
   isSeriesFilePath,
-  parseSeriesFile,
+  parseSeriesFileWithReport,
   seriesFactsStamp,
+  type CloudSidecarStamp,
   type SeriesFile,
   type SeriesFileVolume,
   stringifySeriesFile
@@ -1063,11 +1065,21 @@ class UnifiedCloudManager {
     );
   }
 
-  /** Download + validate a cloud `series.json`. Returns `undefined` for junk content. */
-  private async readCloudSeriesFile(file: CloudFileMetadata): Promise<SeriesFile | undefined> {
+  /**
+   * Download + validate a cloud `series.json`. Returns `undefined` for junk
+   * content. `entryCollapse` reports that the RAW bytes carried doubled
+   * entries the parse healed away — the callers persist it as
+   * `SeriesIndexRecord.raw_entry_collapse` so the heal seam can schedule the
+   * overwrite that repairs the published file (see that field's doc).
+   */
+  private async readCloudSeriesFile(
+    file: CloudFileMetadata
+  ): Promise<{ file: SeriesFile; entryCollapse: boolean } | undefined> {
     const blob = await this.downloadFile(file);
     try {
-      return parseSeriesFile(JSON.parse(await blob.text()));
+      const report = parseSeriesFileWithReport(JSON.parse(await blob.text()));
+      if (!report.file) return undefined;
+      return { file: report.file, entryCollapse: report.entryCollapse };
     } catch {
       // Not JSON at all (hand-edited, truncated upload). Same outcome as a file
       // that fails validation: it carries no usable state, so it gets replaced.
@@ -1117,16 +1129,17 @@ class UnifiedCloudManager {
     await putSeriesIndex({
       series_key: seriesKey,
       series_title: seriesTitle,
-      file: fresh,
+      file: fresh.file,
       source: {
         provider: providerType,
         path: normalizeCloudPath(cloudFile.path),
         size: stamp.size,
         modifiedTime: stamp.modifiedTime
       },
-      fetched_at: new Date().toISOString()
+      fetched_at: new Date().toISOString(),
+      ...(fresh.entryCollapse ? { raw_entry_collapse: true } : {})
     });
-    return fresh;
+    return fresh.file;
   }
 
   /**
@@ -1282,25 +1295,175 @@ class UnifiedCloudManager {
       await putSeriesIndex({
         series_key: folderKey,
         series_title: folderTitle,
-        file: fresh,
+        file: fresh.file,
         source: {
           provider: provider.type,
           path: normalizeCloudPath(cloudFile.path),
           size: stamp.size,
           modifiedTime: stamp.modifiedTime
         },
-        fetched_at: new Date().toISOString()
+        fetched_at: new Date().toISOString(),
+        ...(fresh.entryCollapse ? { raw_entry_collapse: true } : {})
       });
       // Facts only, strictly-newer only, never a write trigger. The shelf
       // alignment is not applied to the record — the `series_index` row cached
       // just above is what carries it, joined at display time
       // (`getSpineOffsets`), so it stays the publishing device's value.
-      await upsertFromSeriesFile(folderTitle, fresh);
-      return fresh;
+      await upsertFromSeriesFile(folderTitle, fresh.file);
+      return fresh.file;
     } catch (error) {
       console.debug(`Could not refresh series.json for '${seriesTitle}':`, error);
       return cached?.file;
     }
+  }
+
+  /**
+   * Everything a `series.json` build needs besides the copy to merge on top
+   * of, assembled the ONE way: the folded local rows, the series facts, the
+   * folder as the LISTING spells it, the archive gate, and the current
+   * listing's sidecar stamps.
+   *
+   * Shared by `writeSeriesFile` and `previewSeriesFileBuild` BY DESIGN, not
+   * convenience: the heal seam (`series-backfill.ts`) compares a preview
+   * build against the published copy to decide whether an overwrite is worth
+   * scheduling, and the scheduled write then rebuilds through this same
+   * assembly. If the two assemblies could drift, the heal predicate could
+   * keep finding a "difference" the write never publishes — a write per
+   * reconcile pass, forever. One assembly makes that structurally impossible.
+   *
+   * `undefined` = the write-side gates failed: the provider's listing cache
+   * is not fully loaded (see the comment inline — pruning against a partial
+   * listing deletes other devices' volumes), or the folder has no `.cbz` at
+   * all (an index never describes an empty folder).
+   */
+  private async assembleSeriesBuildInputs(
+    provider: SyncProvider,
+    seriesTitle: string,
+    localSeriesTitle: string | undefined,
+    /**
+     * How the local rows are read. `'scan'` (the write path) keeps
+     * `writeSeriesFile`'s long-standing whole-table read; `'indexed'` (the
+     * heal preview) answers off the `series_title` index instead —
+     * `volumesForFoldedSeriesTitle`, the same read `runBackfill` and
+     * `hasBackedUpVolume` use — because the preview runs once per
+     * sidecar-bearing folder per reconcile pass, and a full table scan at
+     * that frequency is exactly the per-series always-scan cost the
+     * write-slot fix removed. Both sources feed the ONE filter below, so
+     * they cannot disagree about which rows count.
+     */
+    rowSource: 'scan' | 'indexed'
+  ): Promise<
+    | {
+        folderTitle: string;
+        folderKey: string;
+        meta: SeriesMetadata | undefined;
+        localVolumes: VolumeMetadata[];
+        cloudTitles: Set<string>;
+        cloudSidecarStamps: Map<string, CloudSidecarStamp>;
+      }
+    | undefined
+  > {
+    // Folded with `normalizeVolumeTitleKey`, not the plain series key: this
+    // matches a cloud FOLDER name against titles stored in IndexedDB, and a
+    // folder that made the round trip through a filesystem can come back
+    // decomposed (NFD) while the rows stay composed. Byte-wise the filter then
+    // matches nothing and the index is published with no volumes at all.
+    const localKey = normalizeVolumeTitleKey(localSeriesTitle ?? seriesTitle);
+    const rows =
+      rowSource === 'scan'
+        ? ((await db.volumes.toArray()) as VolumeMetadata[])
+        : await volumesForFoldedSeriesTitle(
+            localSeriesTitle ?? seriesTitle,
+            normalizeVolumeTitleKey
+          );
+    const localVolumes = rows.filter(
+      (volume) => normalizeVolumeTitleKey(volume.series_title) === localKey && !volume.isPlaceholder
+    );
+
+    // Same reason as `localSeriesTitle` above: mid-rename the series_metadata
+    // record is still filed under the old title, and dropping its facts here
+    // would publish a file that unlinks the series everywhere else.
+    const meta =
+      (await this.resolveSeriesMetadata(seriesTitle)) ??
+      (localSeriesTitle ? await this.resolveSeriesMetadata(localSeriesTitle) : undefined);
+
+    // Both gates below need a COMPLETE listing, and only the cache knows it has
+    // one: `uploadFile` adds every upload to it, so mid-`fetchAll()` the folder
+    // lists this device's own uploads and nothing else — non-empty, and pruning
+    // `buildSeriesFile` against it drops the volumes every other device
+    // published. Callers prime the listing before writing, but priming is not
+    // the same as finished.
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.isLoaded()) return undefined;
+
+    // From here on the CLOUD's spelling of the folder, and the key that goes
+    // with it: the file is written into that folder, and its cached record must
+    // be the one the listing-driven refresh reads back.
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const folderKey = normalizeSeriesKey(folderTitle) || normalizeSeriesKey(seriesTitle);
+
+    // The index describes a folder of volumes: with no `.cbz` in it there is
+    // nothing to index, and writing would create `<Series>/series.json` (and
+    // the folder itself) for a series the cloud does not hold — a local-only
+    // series, or one whose volumes have all been deleted.
+    const cloudTitles = this.cloudVolumeTitles(folderTitle);
+    if (cloudTitles.size === 0) return undefined;
+
+    // Cheap: the folder's listing is already fetched (the `cache?.isLoaded()`
+    // gate above), so this is a local grouping pass, not a network call. Built
+    // on every write, not just a backfill-triggered one — an ordinary install
+    // or fact edit is exactly where an INSTALLED row picks up its own
+    // `mokuro_size`/`cover_size` stamps (see `buildSeriesFile`).
+    const cloudSidecarStamps = buildCloudSidecarStamps(this.getCloudVolumesBySeries(folderTitle));
+
+    return { folderTitle, folderKey, meta, localVolumes, cloudTitles, cloudSidecarStamps };
+  }
+
+  /**
+   * What `writeSeriesFile(seriesTitle)` WOULD publish, given `existing` as
+   * the copy to merge on top of — built through the same
+   * `assembleSeriesBuildInputs` a real write uses, with no network read and
+   * no upload.
+   *
+   * For the heal seam only (`series-backfill.ts`'s
+   * `maybeScheduleSeriesHealWrite`), which piggybacks on read cycles that
+   * already hold the freshest cached copy of the published file — that is why
+   * `existing` is an argument rather than re-resolved here: re-reading it
+   * would add a network GET to a pure decision step, and the caller's copy
+   * came through the stamp-gated `refreshSeriesIndexForSeries` moments
+   * before. `undefined` when there is nothing a write could do: no provider,
+   * a read-only provider, or the assembly gates (unloaded cache, archiveless
+   * folder) say a write would be `'skipped'` anyway.
+   */
+  async previewSeriesFileBuild(
+    seriesTitle: string,
+    existing: SeriesFile | undefined
+  ): Promise<{ built: SeriesFile | undefined; cloudTitleKeys: Set<string> } | undefined> {
+    const provider = this.getActiveProvider();
+    if (!provider) return undefined;
+    if (provider.getStatus().isReadOnly) return undefined;
+    if (!normalizeSeriesKey(seriesTitle)) return undefined;
+
+    const inputs = await this.assembleSeriesBuildInputs(
+      provider,
+      seriesTitle,
+      undefined,
+      'indexed'
+    );
+    if (!inputs) return undefined;
+
+    const built = buildSeriesFile({
+      seriesTitle: inputs.folderTitle,
+      meta: inputs.meta,
+      localVolumes: inputs.localVolumes,
+      existing,
+      cloudVolumeTitles: inputs.cloudTitles,
+      cloudSidecarStamps: inputs.cloudSidecarStamps
+    });
+    return {
+      built,
+      cloudTitleKeys: new Set([...inputs.cloudTitles].map(normalizeVolumeTitleKey))
+    };
   }
 
   /**
@@ -1364,47 +1527,14 @@ class UnifiedCloudManager {
     const seriesKey = normalizeSeriesKey(seriesTitle);
     if (!seriesKey) return 'skipped';
 
-    // Folded with `normalizeVolumeTitleKey`, not the plain series key: this
-    // matches a cloud FOLDER name against titles stored in IndexedDB, and a
-    // folder that made the round trip through a filesystem can come back
-    // decomposed (NFD) while the rows stay composed. Byte-wise the filter then
-    // matches nothing and the index is published with no volumes at all.
-    const localKey = normalizeVolumeTitleKey(options?.localSeriesTitle ?? seriesTitle);
-    const allVolumes = (await db.volumes.toArray()) as VolumeMetadata[];
-    const localVolumes = allVolumes.filter(
-      (volume) => normalizeVolumeTitleKey(volume.series_title) === localKey && !volume.isPlaceholder
+    const inputs = await this.assembleSeriesBuildInputs(
+      provider,
+      seriesTitle,
+      options?.localSeriesTitle,
+      'scan'
     );
-
-    // Same reason as `localSeriesTitle` above: mid-rename the series_metadata
-    // record is still filed under the old title, and dropping its facts here
-    // would publish a file that unlinks the series everywhere else.
-    const meta =
-      (await this.resolveSeriesMetadata(seriesTitle)) ??
-      (options?.localSeriesTitle
-        ? await this.resolveSeriesMetadata(options.localSeriesTitle)
-        : undefined);
-
-    // Both gates below need a COMPLETE listing, and only the cache knows it has
-    // one: `uploadFile` adds every upload to it, so mid-`fetchAll()` the folder
-    // lists this device's own uploads and nothing else — non-empty, and pruning
-    // `buildSeriesFile` against it drops the volumes every other device
-    // published. Callers prime the listing before writing, but priming is not
-    // the same as finished.
-    const cache = cacheManager.getCache(provider.type);
-    if (!cache?.isLoaded()) return 'skipped';
-
-    // From here on the CLOUD's spelling of the folder, and the key that goes
-    // with it: the file is written into that folder, and its cached record must
-    // be the one the listing-driven refresh reads back.
-    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
-    const folderKey = normalizeSeriesKey(folderTitle) || seriesKey;
-
-    // The index describes a folder of volumes: with no `.cbz` in it there is
-    // nothing to index, and writing would create `<Series>/series.json` (and
-    // the folder itself) for a series the cloud does not hold — a local-only
-    // series, or one whose volumes have all been deleted.
-    const cloudTitles = this.cloudVolumeTitles(folderTitle);
-    if (cloudTitles.size === 0) return 'skipped';
+    if (!inputs) return 'skipped';
+    const { folderTitle, folderKey, meta, localVolumes, cloudTitles, cloudSidecarStamps } = inputs;
 
     let existing: SeriesFile | undefined;
     try {
@@ -1413,13 +1543,6 @@ class UnifiedCloudManager {
       console.warn(`Could not read the cloud series.json for '${folderTitle}':`, error);
       return 'skipped';
     }
-
-    // Cheap: the folder's listing is already fetched (the `cache?.isLoaded()`
-    // gate above), so this is a local grouping pass, not a network call. Built
-    // on every write, not just a backfill-triggered one — an ordinary install
-    // or fact edit is exactly where an INSTALLED row picks up its own
-    // `mokuro_size`/`cover_size` stamps (see `buildSeriesFile`).
-    const cloudSidecarStamps = buildCloudSidecarStamps(this.getCloudVolumesBySeries(folderTitle));
 
     const file = buildSeriesFile({
       seriesTitle: folderTitle,

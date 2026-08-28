@@ -11,7 +11,7 @@ import {
   putSeriesIndexes,
   type SeriesIndexRecord
 } from './series-index';
-import { isSeriesFilePath, parseSeriesFile, type SeriesFile } from './series-file';
+import { isSeriesFilePath, parseSeriesFileWithReport, type SeriesFile } from './series-file';
 import { normalizeSeriesKey } from './series-key';
 import { upsertFromSeriesFile } from './store';
 
@@ -123,9 +123,12 @@ async function refreshOne(
   task: RefreshTask
 ): Promise<SeriesIndexRecord | undefined> {
   let parsed: SeriesFile | undefined;
+  let entryCollapse = false;
   try {
     const blob = await provider.downloadFile(task.sidecar);
-    parsed = parseSeriesFile(JSON.parse(await blob.text()));
+    const report = parseSeriesFileWithReport(JSON.parse(await blob.text()));
+    parsed = report.file;
+    entryCollapse = report.entryCollapse;
   } catch (error) {
     console.warn(`[series-index-sync] could not read '${task.sidecar.path}':`, error);
     return undefined;
@@ -149,7 +152,14 @@ async function refreshOne(
       size: task.stamp.size,
       modifiedTime: task.stamp.modifiedTime
     },
-    fetched_at: new Date().toISOString()
+    fetched_at: new Date().toISOString(),
+    // The raw published bytes still hold the doubles this parse collapsed —
+    // recorded so the heal seam can schedule the overwrite that repairs the
+    // file (see `SeriesIndexRecord.raw_entry_collapse`). This listing-wide
+    // warm-up is often the FIRST reader of a foreign file, so dropping the
+    // signal here would lose it for the whole session: every later read is a
+    // stamp-gated cache hit.
+    ...(entryCollapse ? { raw_entry_collapse: true } : {})
   };
 
   try {

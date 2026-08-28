@@ -62,6 +62,16 @@ vi.mock('$lib/catalog/stranded-rows', () => ({
   dropStrandedMetadataOnlyRow: vi.fn(async () => {})
 }));
 
+// The install trigger's collaborators: the writable/non-server gate and the
+// debounced series.json scheduler. Gate defaults CLOSED so every pre-existing
+// test keeps its exact surface; the trigger tests open it explicitly.
+const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() => ({
+  hasWritableNonServerProvider: vi.fn(() => false),
+  scheduleSeriesFileWrite: vi.fn((_title: string) => {})
+}));
+vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
+vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+
 import { processVolumeData } from './download-queue';
 
 /** The queued placeholder, carrying the size the LISTING claimed. */
@@ -113,6 +123,9 @@ afterEach(async () => {
   vi.mocked(db.volume_ocr.get).mockResolvedValue(undefined as never);
   vi.mocked(db.volume_files.get).mockReset();
   vi.mocked(db.volume_files.get).mockResolvedValue(undefined as never);
+  hasWritableNonServerProvider.mockReset();
+  hasWritableNonServerProvider.mockReturnValue(false);
+  scheduleSeriesFileWrite.mockClear();
 });
 
 describe('installing a downloaded volume', () => {
@@ -183,5 +196,71 @@ describe('downloading a volume whose files were removed from this device', () =>
     // deleted first — that row is the read history and the cover.
     expect(saveVolume).toHaveBeenCalledTimes(1);
     expect(deleteVolumeCompletely).not.toHaveBeenCalled();
+  });
+});
+
+describe('the install trigger — a finished install schedules its series.json write', () => {
+  it('schedules ONE write for the cloud FOLDER when the provider is writable and not server-compiled', async () => {
+    // The user's bug: the measured page/char counts land in Dexie right here,
+    // and before this trigger existed NOTHING scheduled a series.json write —
+    // the published 0/0 no-metadata entries persisted indefinitely.
+    hasWritableNonServerProvider.mockReturnValue(true);
+    vi.mocked(processVolume).mockResolvedValue(processed());
+
+    await processVolumeData([], placeholder(), 193_000_000);
+
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+    // The FOLDER title (the placeholder's series_title comes from the cloud
+    // path), and no options: no fromCloudListing, no cloudMeasuredVolumes.
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('One Piece');
+  });
+
+  it('a batch install of one series coalesces through the per-series debounce: N completions, N same-key schedules', async () => {
+    // The write-side coalescing itself (N same-key schedules -> one PUT) is
+    // series-file-sync's own debounce, pinned in its tests; this pins the
+    // input shape: every completion schedules under the SAME folder key.
+    hasWritableNonServerProvider.mockReturnValue(true);
+    for (let i = 1; i <= 20; i++) {
+      vi.mocked(processVolume).mockResolvedValue({
+        ...processed(),
+        metadata: { ...processed().metadata, volumeUuid: `uuid-${i}`, volume: `Vol ${i}` }
+      });
+      await processVolumeData(
+        [],
+        placeholder({ volume_uuid: `uuid-${i}`, volume_title: `Vol ${i}` }),
+        1000
+      );
+    }
+
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(20);
+    for (const call of scheduleSeriesFileWrite.mock.calls) {
+      expect(call).toEqual(['One Piece']);
+    }
+  });
+
+  it('schedules even when the download kept the existing install — the volume is installed either way', async () => {
+    hasWritableNonServerProvider.mockReturnValue(true);
+    vi.mocked(processVolume).mockResolvedValue(processed());
+    vi.mocked(volumesGet).mockResolvedValue({
+      ...placeholder({ isPlaceholder: undefined, mokuro_version: '0.4.11' })
+    } as VolumeMetadata);
+    const { db } = await import('$lib/catalog/db');
+    vi.mocked(db.volume_ocr.get).mockResolvedValue({ volume_uuid: 'uuid-1', pages: [] } as never);
+    vi.mocked(db.volume_files.get).mockResolvedValue({ volume_uuid: 'uuid-1', files: {} } as never);
+
+    await processVolumeData([], placeholder(), 193_000_000);
+
+    expect(saveVolume).not.toHaveBeenCalled();
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('read-only and server-compiled providers schedule NOTHING — a browser without write rights never fires heal writes', async () => {
+    hasWritableNonServerProvider.mockReturnValue(false);
+    vi.mocked(processVolume).mockResolvedValue(processed());
+
+    await processVolumeData([], placeholder(), 193_000_000);
+
+    expect(saveVolume).toHaveBeenCalledTimes(1); // the install itself still happened
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 });

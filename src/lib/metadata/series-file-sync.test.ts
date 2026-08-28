@@ -224,6 +224,21 @@ describe('series-file-sync', () => {
     expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
   });
 
+  it('a 20-volume batch install coalesces to ONE write and ONE listing refresh', async () => {
+    // The install trigger (download-queue.ts / import-service.ts) schedules
+    // once per completed volume under the same folder key. Twenty completions
+    // inside the debounce window must cost one PUT, not twenty — and the one
+    // debounced write pays at most one whole-account listing refresh.
+    for (let i = 0; i < 20; i++) scheduleSeriesFileWrite('One Piece');
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(writeSeriesFile).toHaveBeenCalledWith('One Piece');
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
+  });
+
   it('debounces per series — two series each get their own write', async () => {
     addVolume('Berserk', 'Volume 1');
     backUp('Berserk', 'Volume 1');

@@ -20,7 +20,20 @@ import {
   stampFromSidecarFiles,
   type SeriesSidecarFiles
 } from './cloud-sidecar-stamps';
-import { isArchiveSize, orderVolumeEntryFields, type SeriesFileVolume } from './series-file';
+import {
+  isArchiveSize,
+  orderVolumeEntryFields,
+  seriesFileHealDifference,
+  type SeriesFile,
+  type SeriesFileVolume
+} from './series-file';
+import { getSeriesIndex } from './series-index';
+// Deferred-use import into the module cycle series-file-sync ↔ series-backfill
+// (series-file-sync statically imports the two backfill entry points). Safe for
+// the same reason the existing unified-cloud-manager ↔ series-file-sync cycle
+// is: nothing on either side calls across at module-init time, only from
+// inside function bodies.
+import { scheduleSeriesFileWrite } from './series-file-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
 
@@ -483,6 +496,93 @@ function findStaleRowCovers(
   return stale;
 }
 
+/**
+ * Heal-by-overwrite: schedule a `series.json` write when the published copy
+ * MATERIALLY differs from what this device would build — the write-side
+ * counterpart of the read-side healing that has existed all along
+ * (`parseSeriesFile` collapses doubles, `buildSeriesFile`'s winner rules
+ * replace 0/0 entries), which produced healed content that nothing ever
+ * published.
+ *
+ * THE RATCHET this closes (user-reported, confirmed against the code paths):
+ * cover resolution for a BARE placeholder takes decision-tree case 3
+ * (`cover-service.ts`), which measures the volume and schedules a series.json
+ * write — but covers are only requested for what a catalog card actually
+ * shows (the top volume, or the top few in stack mode). So the FIRST write
+ * for a browsed series publishes volume 1 measured and volumes 2..N as 0/0
+ * no-metadata entries — and that write is a ratchet: once `series.json`
+ * exists, every later placeholder is INDEXED, cover resolution takes case 2
+ * (direct sidecar fetch — no measurement, no write), and the 0/0 entries
+ * lock themselves in permanently. Installing the volumes did not help either
+ * (nothing scheduled a write on install — fixed alongside this, in
+ * `download-queue.ts` / `import-service.ts`), and this seam is what repairs
+ * the files that ratchet already damaged: the next read cycle that flows
+ * through `runBackfill` (series open, or the reconcile sweep) notices the
+ * material difference and publishes the healed content once.
+ *
+ * ONE seam on purpose: every read+build cycle outside the write path already
+ * funnels through `runBackfill`, so the difference check exists exactly here
+ * — no new whole-listing sweep, no second predicate to drift. The decision
+ * costs no network: `existing` is the copy `refreshSeriesIndexForSeries`
+ * (stamp-gated) returned moments ago, and `previewSeriesFileBuild` reads only
+ * the local tables and the already-fetched listing cache.
+ *
+ * Two triggers, in order:
+ *
+ * - `raw_entry_collapse` on the cached record: the published BYTES still hold
+ *   doubled entries that read-time healing collapsed — invisible in any
+ *   parsed copy, so the parse sites persist the fact (see
+ *   `SeriesIndexRecord.raw_entry_collapse`). Heals a doubled file with no
+ *   install and no local rows at all. Converges because a successful write
+ *   re-stamps the record WITHOUT the flag.
+ * - {@link seriesFileHealDifference} over (published, preview build): the
+ *   material terms — collapse, 0/0 superseded by measured, inherited-field
+ *   enrichment, listing-backed addition — and nothing else; see its doc for
+ *   why uuid tie flips, value drift, prunes and local-only additions are
+ *   deliberately NOT material (each would ping-pong two live devices).
+ *
+ * The write itself goes through `scheduleSeriesFileWrite`: the same 2 s
+ * per-series debounce (so this coalesces with install-triggered schedules for
+ * the same folder), the same fire-time gates, the same shared write slots —
+ * and NO options: no `fromCloudListing` (no listing was fetched to back this
+ * schedule — the write pays the ordinary TTL-coalesced refresh, usually free
+ * right after the reconcile pass's own fetch), and no `cloudMeasuredVolumes`
+ * (the write rebuilds from local rows and the listing's own stamps, so a
+ * heal-write can never publish provisional stamps).
+ *
+ * Callers gate on `hasWritableNonServerProvider()` (runBackfill's first
+ * line); the belt here keeps the seam safe if it ever grows another caller —
+ * a read-only browser of a shared library, or a server that compiles
+ * series.json itself, must never fire heal-writes.
+ *
+ * Returns whether a write was scheduled (for tests). Never throws.
+ */
+export async function maybeScheduleSeriesHealWrite(
+  folderTitle: string,
+  existing: SeriesFile
+): Promise<boolean> {
+  try {
+    if (!hasWritableNonServerProvider()) return false;
+
+    let material = false;
+    const record = await getSeriesIndex(normalizeSeriesKey(folderTitle));
+    if (record?.raw_entry_collapse === true) material = true;
+
+    if (!material) {
+      const preview = await unifiedCloudManager.previewSeriesFileBuild(folderTitle, existing);
+      if (!preview?.built) return false;
+      material = seriesFileHealDifference(existing, preview.built, preview.cloudTitleKeys);
+    }
+    if (!material) return false;
+
+    scheduleSeriesFileWrite(folderTitle);
+    return true;
+  } catch (error) {
+    console.debug(`[series-backfill] heal check for '${folderTitle}' failed:`, error);
+    return false;
+  }
+}
+
 async function runBackfill(seriesTitle: string, requireExisting: boolean): Promise<void> {
   if (!hasWritableNonServerProvider()) return;
 
@@ -505,11 +605,17 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
 
   const sidecarGroups = groupSeriesSidecarFiles(folderFiles);
   const candidates = planCandidateArchives(archives, existingByTitle, sidecarGroups);
-  // Zero gaps and nothing stale: not even a `db.volumes` scan was needed,
-  // let alone the backfill-pass slot, a download, or a write. This is what
-  // keeps a reconcile sweep over a library that is mostly already converged
-  // from costing anything beyond the listing it already had in hand.
-  if (candidates.length === 0) return;
+  // Zero gaps and nothing stale BY THE SIDECAR RULES — which is exactly where
+  // the published file can still be materially wrong: a 0/0 no-metadata entry
+  // is stampless, and stampless is never stale, so the volumes the user has
+  // since INSTALLED never become pull candidates (the install measured them
+  // right here; pulling would be waste). The heal seam is what publishes what
+  // this device already knows. It reads local tables and the cached listing
+  // only — still zero downloads for a genuinely converged series.
+  if (candidates.length === 0) {
+    if (existing) await maybeScheduleSeriesHealWrite(folderTitle, existing);
+    return;
+  }
 
   // ---- EXPENSIVE phase: indexed row read, pulls, write — capped at
   // BACKFILL_PASS_CONCURRENCY across every series in flight. ----
@@ -594,6 +700,14 @@ async function runBackfill(seriesTitle: string, requireExisting: boolean): Promi
         }
         await installCoversForSeries(folderTitle);
       }
+    } else if (existing) {
+      // Every candidate was excluded (each matched a LOCALLY INSTALLED volume,
+      // whose sidecar is never pulled) or failed to build — so no write is
+      // coming from this pass, and the published gaps those installed volumes
+      // could fill stay unpublished. Same heal seam as the no-candidates exit:
+      // the preview build carries the installed rows, and the material check
+      // decides whether their claims are worth one write.
+      await maybeScheduleSeriesHealWrite(folderTitle, existing);
     }
 
     // `installCoversForSeries` only fills a BLANK cover; a row that already

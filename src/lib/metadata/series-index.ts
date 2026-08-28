@@ -17,6 +17,19 @@ export interface SeriesIndexRecord {
   file: SeriesFile;
   source: { provider: string; path: string; size: number; modifiedTime: string };
   fetched_at: string;
+  /**
+   * The RAW cloud bytes this record was parsed from carried doubled volume
+   * entries that read-time healing collapsed (`parseSeriesFileWithReport`).
+   * `file` above is the HEALED shape — this flag is the only survivor of the
+   * fact that the published file itself is still damaged, and it is what lets
+   * the heal seam (`series-backfill.ts`'s `maybeScheduleSeriesHealWrite`)
+   * schedule the overwrite that repairs it in the cloud. Set by the two
+   * cloud-download sites (`readCloudSeriesFile`, `series-index-sync.ts`);
+   * absent on records our own `writeSeriesFile` stamps, since our serializer
+   * cannot produce doubles — which is exactly how one heal-write converges:
+   * the write's own record replaces this one without the flag.
+   */
+  raw_entry_collapse?: boolean;
 }
 
 export async function getSeriesIndex(seriesKey: string): Promise<SeriesIndexRecord | undefined> {

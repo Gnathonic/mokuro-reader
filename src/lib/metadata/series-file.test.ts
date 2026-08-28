@@ -9,6 +9,8 @@ import {
   mergeSeriesFileForCache,
   orderVolumeEntryFields,
   parseSeriesFile,
+  parseSeriesFileWithReport,
+  seriesFileHealDifference,
   stringifySeriesFile,
   volumeToIndexEntry,
   type SeriesFile,
@@ -1890,5 +1892,328 @@ describe('entryMokuroVersion — the image-only vs legacy rule', () => {
   it("a cover stamp without a mokuro answers '' — a modern backup would have written the mokuro too", () => {
     expect(entryMokuroVersion({ ...base, cover_size: 12345 })).toBe('');
     expect(entryMokuroVersion({ ...base, cover_modified: 1_700_000_000 })).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heal-by-overwrite: the material-difference predicate and its convergence
+// ---------------------------------------------------------------------------
+
+describe('seriesFileHealDifference — the material-difference predicate', () => {
+  const SERIES = 'One Piece';
+
+  function healFile(volumes: SeriesFileVolume[]): SeriesFile {
+    return {
+      version: 2,
+      series_title: SERIES,
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      volumes
+    };
+  }
+
+  /** A fully-measured published entry with every inheritable field present. */
+  function measuredEntry(overrides: Partial<SeriesFileVolume> = {}): SeriesFileVolume {
+    return {
+      volume_uuid: 'real-uuid-1',
+      volume_title: 'Vol 1',
+      page_count: 180,
+      character_count: 12_000,
+      mokuro_version: '0.2.1',
+      archive_size: 55_555,
+      mokuro_size: 2_222,
+      mokuro_modified: 1_700_000_000,
+      cover_size: 333,
+      cover_modified: 1_700_000_001,
+      ...overrides
+    };
+  }
+
+  /** The 0/0 shape `buildNoMetadataEntry` mints: derived uuid, nothing measured. */
+  function noMetaEntry(title: string): SeriesFileVolume {
+    return {
+      volume_uuid: generateDeterministicUUID(`${SERIES}/${title}`),
+      volume_title: title,
+      page_count: 0,
+      character_count: 0,
+      mokuro_version: '',
+      archive_size: 44_444
+    };
+  }
+
+  const keysFor = (titles: string[]) => new Set(titles.map(normalizeVolumeTitleKey));
+
+  it('SUPERSEDE: a published 0/0 entry whose built counterpart is measured is material', () => {
+    const published = healFile([noMetaEntry('Vol 2')]);
+    const built = healFile([
+      measuredEntry({ volume_uuid: 'mokuro-uuid-2', volume_title: 'Vol 2' })
+    ]);
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 2']))).toBe(true);
+  });
+
+  it("the user's exact shape: vol 1 measured, vols 2..N published 0/0 with the data installed — material, and ONE build heals ALL of them", () => {
+    // The ratchet fixture: the first browse-time write published volume 1
+    // measured (its cover was resolved) and volumes 2..N as 0/0 no-metadata
+    // entries; the user then INSTALLED 2..N. The heal must repair every one
+    // of them in a single write — one-volume-per-trigger would just be the
+    // ratchet again, one notch at a time.
+    const titles = ['Vol 2', 'Vol 3', 'Vol 4', 'Vol 5', 'Vol 6'];
+    const published = healFile([measuredEntry(), ...titles.map((title) => noMetaEntry(title))]);
+    const installedRows = titles.map((title, i) =>
+      volume({
+        volume_title: title,
+        volume_uuid: `mokuro-uuid-${i + 2}`,
+        page_count: 100 + i,
+        character_count: 9_000 + i,
+        page_char_counts: []
+      })
+    );
+    const cloudTitles = new Set(['Vol 1', ...titles]);
+
+    const built = buildSeriesFile({
+      seriesTitle: SERIES,
+      meta: undefined,
+      localVolumes: installedRows,
+      existing: published,
+      cloudVolumeTitles: cloudTitles
+    })!;
+
+    // Every installed volume's counts landed — all of them, not just one.
+    expect(built.volumes).toHaveLength(6);
+    for (const [i, title] of titles.entries()) {
+      const entry = built.volumes.find((v) => v.volume_title === title)!;
+      expect(entry.volume_uuid).toBe(`mokuro-uuid-${i + 2}`);
+      expect(entry.page_count).toBe(100 + i);
+      expect(entry.character_count).toBe(9_000 + i);
+      expect(entry.mokuro_version).toBe('0.2.1');
+      // The 0/0 entry it displaced still donates the archive size it carried.
+      expect(entry.archive_size).toBe(44_444);
+    }
+    // Volume 1's foreign measured entry rides through untouched.
+    expect(built.volumes.find((v) => v.volume_title === 'Vol 1')).toEqual(measuredEntry());
+
+    expect(seriesFileHealDifference(published, built, keysFor([...cloudTitles]))).toBe(true);
+  });
+
+  it('the mirror shape: vols 2..N installed but vol 1 NOT — healing never damages vol 1’s measured published entry', () => {
+    const published = healFile([measuredEntry(), noMetaEntry('Vol 2')]);
+    const built = buildSeriesFile({
+      seriesTitle: SERIES,
+      meta: undefined,
+      localVolumes: [
+        volume({ volume_title: 'Vol 2', volume_uuid: 'mokuro-uuid-2', page_char_counts: [] })
+      ],
+      existing: published,
+      cloudVolumeTitles: new Set(['Vol 1', 'Vol 2'])
+    })!;
+
+    expect(built.volumes.find((v) => v.volume_title === 'Vol 1')).toEqual(measuredEntry());
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1', 'Vol 2']))).toBe(true);
+  });
+
+  it('CONVERGENCE: after the heal-write publishes the built file, a second full cycle finds nothing material', () => {
+    // Two FULL cycles, wire round trip included: build → publish
+    // (stringify → parse, exactly what the cloud and the cache round-trip) →
+    // rebuild from the same local state → the predicate must go quiet.
+    // One write per damaged file per device, ever.
+    const titles = ['Vol 2', 'Vol 3', 'Vol 4'];
+    const published = healFile([measuredEntry(), ...titles.map((t) => noMetaEntry(t))]);
+    const installedRows = titles.map((title, i) =>
+      volume({
+        volume_title: title,
+        volume_uuid: `mokuro-uuid-${i + 2}`,
+        page_char_counts: []
+      })
+    );
+    const cloudTitles = new Set(['Vol 1', ...titles]);
+    const buildArgs = {
+      seriesTitle: SERIES,
+      meta: undefined,
+      localVolumes: installedRows,
+      cloudVolumeTitles: cloudTitles
+    };
+
+    const built1 = buildSeriesFile({ ...buildArgs, existing: published })!;
+    expect(seriesFileHealDifference(published, built1, keysFor([...cloudTitles]))).toBe(true);
+
+    const published2 = parseSeriesFile(JSON.parse(stringifySeriesFile(built1)))!;
+    const built2 = buildSeriesFile({ ...buildArgs, existing: published2 })!;
+    expect(seriesFileHealDifference(published2, built2, keysFor([...cloudTitles]))).toBe(false);
+  });
+
+  it('COLLAPSE: two published entries landing on one built entry is material', () => {
+    // The doubled shape that SURVIVES parse healing: case-distinct titles for
+    // the same archive (exact join keeps them apart; the build folds them
+    // under the listing).
+    const published = healFile([
+      measuredEntry({ volume_uuid: 'real-uuid-2', volume_title: 'VOL 2' }),
+      noMetaEntry('Vol 2')
+    ]);
+    const built = healFile([
+      measuredEntry({ volume_uuid: 'real-uuid-2', volume_title: 'VOL 2', archive_size: 44_444 })
+    ]);
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 2']))).toBe(true);
+  });
+
+  it('ENRICHMENT: each inherited file fact landing where the published entry had none is material — and only absent→present counts', () => {
+    const fields = [
+      'archive_size',
+      'mokuro_size',
+      'mokuro_modified',
+      'cover_size',
+      'cover_modified'
+    ] as const;
+    for (const field of fields) {
+      const publishedEntry = measuredEntry();
+      delete publishedEntry[field];
+      expect(
+        seriesFileHealDifference(
+          healFile([publishedEntry]),
+          healFile([measuredEntry()]),
+          keysFor(['Vol 1'])
+        ),
+        `absent ${field} gained by the build`
+      ).toBe(true);
+    }
+
+    // `offset` too — it is one of the merger's inherited file facts.
+    expect(
+      seriesFileHealDifference(
+        healFile([measuredEntry()]),
+        healFile([measuredEntry({ offset: 6 })]),
+        keysFor(['Vol 1'])
+      )
+    ).toBe(true);
+
+    // The reverse direction — the build LACKING a field the published entry
+    // carries — is not material: that is a value the write would drop, not
+    // one it would land, and the merger's inheritance normally prevents it.
+    const builtEntry = measuredEntry();
+    delete builtEntry.mokuro_size;
+    expect(
+      seriesFileHealDifference(
+        healFile([measuredEntry()]),
+        healFile([builtEntry]),
+        keysFor(['Vol 1'])
+      )
+    ).toBe(false);
+  });
+
+  it('EXCLUDED — the two-real-uuid tie flip: divergent uuids on both sides, both measured, is NOT material', () => {
+    // Device A holds `uuid-old` installed; device B re-OCR'd the same archive
+    // into `uuid-new` and published it. Each device's build prefers its own —
+    // the documented, accepted alternation. If a uuid-only difference counted
+    // as heal-worthy, two live devices would ping-pong the published file
+    // forever; this exclusion is what keeps heal-writes from weaponizing it.
+    const published = healFile([measuredEntry({ volume_uuid: 'uuid-new' })]);
+    const built = healFile([
+      measuredEntry({ volume_uuid: 'uuid-old', page_count: 181, character_count: 12_500 })
+    ]);
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1']))).toBe(false);
+  });
+
+  it('EXCLUDED — value drift in fields both sides carry is NOT material', () => {
+    const published = healFile([measuredEntry()]);
+    const built = healFile([
+      measuredEntry({
+        page_count: 200,
+        character_count: 13_000,
+        mokuro_version: '0.3.0',
+        archive_size: 55_556,
+        mokuro_size: 2_223,
+        mokuro_modified: 1_700_000_002,
+        cover_size: 334,
+        cover_modified: 1_700_000_003
+      })
+    ]);
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1']))).toBe(false);
+  });
+
+  it('EXCLUDED — a published entry the build pruned away is NOT material', () => {
+    // The prune alternates between devices (one holds the volume locally, one
+    // does not); removals as a heal trigger would ping-pong the same way.
+    const published = healFile([
+      measuredEntry(),
+      measuredEntry({ volume_uuid: 'gone', volume_title: 'Vol 9' })
+    ]);
+    const built = healFile([measuredEntry()]);
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1']))).toBe(false);
+  });
+
+  it('ADDITION: a built entry the listing vouches for is material; a local-only addition is NOT', () => {
+    const published = healFile([measuredEntry()]);
+    const built = healFile([
+      measuredEntry(),
+      measuredEntry({ volume_uuid: 'mokuro-uuid-7', volume_title: 'Vol 7' })
+    ]);
+    // Cloud-listed: every other device's prune keeps it → converges.
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1', 'Vol 7']))).toBe(true);
+    // Local-only install: the next device's ordinary write would prune it and
+    // this device would re-add it — never a heal trigger.
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1']))).toBe(false);
+  });
+
+  it('EXCLUDED — entry order and facts are never read', () => {
+    const a = measuredEntry();
+    const b = measuredEntry({ volume_uuid: 'real-uuid-2', volume_title: 'Vol 2' });
+    const published = healFile([a, b]);
+    const built = { ...healFile([b, a]), updated_at: '2026-08-01T00:00:00.000Z', tag: '[x]' };
+    expect(seriesFileHealDifference(published, built, keysFor(['Vol 1', 'Vol 2']))).toBe(false);
+  });
+});
+
+describe('parseSeriesFileWithReport — the raw-doubles signal', () => {
+  const base = {
+    version: 2,
+    series_title: 'One Piece',
+    updated_at: '2026-08-16T00:00:00.000Z'
+  };
+
+  const realEntry = {
+    volume_uuid: 'mokuro-uuid-1',
+    volume_title: 'Vol 1',
+    page_count: 180,
+    character_count: 12_000,
+    mokuro_version: '0.2.1'
+  };
+
+  it('reports a collapse for a raw file holding the same volume twice — and still heals it', () => {
+    const doubled = {
+      ...base,
+      volumes: [
+        {
+          volume_uuid: generateDeterministicUUID('One Piece/Vol 1'),
+          volume_title: 'Vol 1',
+          page_count: 0,
+          character_count: 0,
+          mokuro_version: '',
+          archive_size: 44_444
+        },
+        realEntry
+      ]
+    };
+    const report = parseSeriesFileWithReport(doubled);
+    expect(report.entryCollapse).toBe(true);
+    expect(report.file?.volumes).toHaveLength(1);
+    expect(report.file?.volumes[0].volume_uuid).toBe('mokuro-uuid-1');
+    // Healed the same way `parseSeriesFile` always has.
+    expect(report.file).toEqual(parseSeriesFile(doubled));
+  });
+
+  it('reports NO collapse for a clean file, for an empty index, and for junk', () => {
+    expect(parseSeriesFileWithReport({ ...base, volumes: [realEntry] }).entryCollapse).toBe(false);
+    expect(parseSeriesFileWithReport({ ...base, version: 1 }).entryCollapse).toBe(false);
+    expect(parseSeriesFileWithReport('junk')).toEqual({ file: undefined, entryCollapse: false });
+  });
+
+  it('an INVALID entry dropped by validation is not a collapse', () => {
+    const report = parseSeriesFileWithReport({
+      ...base,
+      volumes: [realEntry, { volume_uuid: '', volume_title: 'Vol 2' }]
+    });
+    expect(report.entryCollapse).toBe(false);
+    expect(report.file?.volumes).toHaveLength(1);
   });
 });

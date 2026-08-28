@@ -32,6 +32,8 @@ import {
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
@@ -517,6 +519,29 @@ export async function processVolumeData(
   // handled no-ops here at the attempted-set check — or, across sessions, at
   // the cache the upload itself updated — without touching the database.
   queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
+
+  // The volume is INSTALLED now (freshly saved, or the kept existing install)
+  // and its measured page/char counts are in Dexie — publish them. Without
+  // this, installing never scheduled a `series.json` write at all, so a
+  // published 0/0 no-metadata entry for this volume stood forever: the first
+  // browse-time write ratchets the file into existence with only the shown
+  // volume measured, and after that cover resolution takes the indexed path
+  // (no measurement, no write) while the sidecar backfill sees the stampless
+  // 0/0 entry as never-stale and the installed volume as never-pull — nothing
+  // left to trigger a write (see `maybeScheduleSeriesHealWrite` in
+  // `series-backfill.ts`, this trigger's read-cycle counterpart).
+  //
+  // Scheduled under the FOLDER title (the placeholder's series_title comes
+  // from the cloud path), with no options: no `fromCloudListing` — no listing
+  // was fetched to back this schedule, so the debounced write pays the
+  // ordinary TTL-coalesced refresh — and the 2 s per-series debounce is what
+  // makes a batch install of one series coalesce into ~one PUT instead of one
+  // per volume. Gated so read-only providers and servers that compile
+  // series.json themselves are never written to; the write re-checks its own
+  // gates at fire time.
+  if (hasWritableNonServerProvider()) {
+    scheduleSeriesFileWrite(placeholder.series_title);
+  }
 }
 
 function getSidecarCandidatesForPlaceholder(placeholder: VolumeMetadata): string[] {

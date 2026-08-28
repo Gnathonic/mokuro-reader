@@ -18,6 +18,8 @@ import {
   resetImportedSeriesFiles
 } from './series-file-import';
 import { isSeriesFilePath } from '$lib/metadata/series-file';
+import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
   FileEntry,
@@ -169,12 +171,25 @@ function hasUnfinishedImports(): boolean {
 /**
  * Note the series title a saved volume ended up under, so a `series.json` that
  * came with this import can be keyed to it once the batch is done.
+ *
+ * Also the disk-import half of the install trigger (`download-queue.ts`'s
+ * `processVolumeData` is the cloud half): a volume imported from disk carries
+ * measured page/char counts that a published 0/0 no-metadata entry for the
+ * same archive is waiting on, and without a schedule here nothing publishes
+ * them — installing was the one event that never scheduled a `series.json`
+ * write. Same shape as the cloud half: the 2 s per-series debounce coalesces
+ * a batch import into ~one write, the gate keeps read-only and
+ * server-compiled providers untouched, and a series the cloud does not hold
+ * is dropped by the write's own fire-time gates.
  */
 function noteImportedVolume(processed: ProcessedVolume): void {
   recordImportedSeriesTitle(
     storedTitleSegment(processed.metadata.series),
     processed.metadata.volumeUuid
   );
+  if (hasWritableNonServerProvider()) {
+    scheduleSeriesFileWrite(storedTitleSegment(processed.metadata.series));
+  }
 }
 
 // ============================================

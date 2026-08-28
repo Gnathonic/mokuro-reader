@@ -53,6 +53,13 @@ const cloudVolumeTitlesFor = vi.fn((_title: string) => new Set<string>());
 const writeSeriesFile = vi.fn(
   async (_seriesTitle: string, _options: WriteSeriesFileOptions) => 'written' as const
 );
+const previewSeriesFileBuild = vi.fn(
+  async (
+    _title: string,
+    _existing: SeriesFile | undefined
+  ): Promise<{ built: SeriesFile | undefined; cloudTitleKeys: Set<string> } | undefined> =>
+    undefined
+);
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     getActiveProvider: (...a: Parameters<typeof getActiveProvider>) => getActiveProvider(...a),
@@ -64,8 +71,24 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
       refreshSeriesIndexForSeries(...a),
     cloudVolumeTitlesFor: (...a: Parameters<typeof cloudVolumeTitlesFor>) =>
       cloudVolumeTitlesFor(...a),
-    writeSeriesFile: (...a: Parameters<typeof writeSeriesFile>) => writeSeriesFile(...a)
+    writeSeriesFile: (...a: Parameters<typeof writeSeriesFile>) => writeSeriesFile(...a),
+    previewSeriesFileBuild: (...a: Parameters<typeof previewSeriesFileBuild>) =>
+      previewSeriesFileBuild(...a)
   }
+}));
+
+// The heal seam's collaborators: the cached record (for the raw-doubles flag)
+// and the debounced scheduler the seam hands its decision to.
+const getSeriesIndex = vi.fn(
+  async (_key: string): Promise<Record<string, unknown> | undefined> => undefined
+);
+vi.mock('./series-index', () => ({
+  getSeriesIndex: (...a: Parameters<typeof getSeriesIndex>) => getSeriesIndex(...a)
+}));
+const scheduleSeriesFileWrite = vi.fn((_title: string) => {});
+vi.mock('./series-file-sync', () => ({
+  scheduleSeriesFileWrite: (...a: Parameters<typeof scheduleSeriesFileWrite>) =>
+    scheduleSeriesFileWrite(...a)
 }));
 
 const materializeSeriesVolumes = vi.fn(
@@ -206,8 +229,13 @@ vi.mock('./write-slot', async (importOriginal) => {
 import {
   _resetSeriesBackfillForTests,
   backfillNewlyLinkedSeries,
-  backfillSeriesEntries
+  backfillSeriesEntries,
+  maybeScheduleSeriesHealWrite
 } from './series-backfill';
+import { buildSeriesFile, parseSeriesFile, stringifySeriesFile } from './series-file';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
+import type { VolumeMetadata } from '$lib/types';
+import { normalizeVolumeTitleKey } from './series-key';
 import { _resetWriteSlotForTests } from './write-slot';
 
 function cloudFile(
@@ -1172,5 +1200,232 @@ describe('backfillNewlyLinkedSeries (the link-event trigger)', () => {
       entries: [expect.objectContaining({ volume_uuid: 'vol-uuid-from-mokuro' })]
     });
     expect(installCoversForSeries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the heal seam — maybeScheduleSeriesHealWrite (heal-by-overwrite)', () => {
+  const SERIES = 'One Piece';
+
+  function measuredEntry(
+    uuid: string,
+    title: string,
+    extra: Partial<SeriesFileVolume> = {}
+  ): SeriesFileVolume {
+    return {
+      volume_uuid: uuid,
+      volume_title: title,
+      page_count: 180,
+      character_count: 12_000,
+      mokuro_version: '0.2.1',
+      archive_size: 100,
+      ...extra
+    };
+  }
+
+  /** The 0/0 no-metadata shape the ratchet published for every unseen volume. */
+  function noMetaEntry(title: string): SeriesFileVolume {
+    return {
+      volume_uuid: generateDeterministicUUID(`${SERIES}/${title}`),
+      volume_title: title,
+      page_count: 0,
+      character_count: 0,
+      mokuro_version: '',
+      archive_size: 100
+    };
+  }
+
+  function installRow(title: string, uuid: string, pages = 100, chars = 9000): void {
+    volumeRows.push({
+      series_title: SERIES,
+      series_uuid: 'series-uuid',
+      volume_title: title,
+      volume_uuid: uuid,
+      page_count: pages,
+      character_count: chars,
+      mokuro_version: '0.2.1',
+      archive_size: 100,
+      page_char_counts: []
+    });
+  }
+
+  /**
+   * Arm the preview with the REAL build engine over the db fixture — the seam
+   * tests exercise the actual `buildSeriesFile` + predicate interplay, with
+   * only the manager's plumbing (gates, listing lookups) doubled.
+   */
+  function armRealPreview(cloudTitles: string[]): void {
+    previewSeriesFileBuild.mockImplementation(async (title, existing) => ({
+      built: buildSeriesFile({
+        seriesTitle: title,
+        meta: undefined,
+        localVolumes: volumeRows.filter((r) => !r.isPlaceholder) as unknown as VolumeMetadata[],
+        existing,
+        cloudVolumeTitles: new Set(cloudTitles)
+      }),
+      cloudTitleKeys: new Set(cloudTitles.map(normalizeVolumeTitleKey))
+    }));
+  }
+
+  it("the user's exact scenario: installed volumes vs a published 0/0 index — exactly ONE write scheduled for the folder", async () => {
+    const published = seriesFile([
+      measuredEntry('mokuro-uuid-1', 'Vol 1'),
+      noMetaEntry('Vol 2'),
+      noMetaEntry('Vol 3'),
+      noMetaEntry('Vol 4')
+    ]);
+    installRow('Vol 2', 'mokuro-uuid-2');
+    installRow('Vol 3', 'mokuro-uuid-3');
+    installRow('Vol 4', 'mokuro-uuid-4');
+    armRealPreview(['Vol 1', 'Vol 2', 'Vol 3', 'Vol 4']);
+
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(true);
+
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+    // The folder title, and NO options: no `fromCloudListing` (nothing fetched
+    // a listing to back this schedule) and no `cloudMeasuredVolumes` (a heal
+    // write must never carry provisional stamps).
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith(SERIES);
+  });
+
+  it('TWO FULL CYCLES converge: the heal-write lands, the next read+build schedules NOTHING', async () => {
+    const published = seriesFile([
+      measuredEntry('mokuro-uuid-1', 'Vol 1'),
+      noMetaEntry('Vol 2'),
+      noMetaEntry('Vol 3')
+    ]);
+    installRow('Vol 2', 'mokuro-uuid-2');
+    installRow('Vol 3', 'mokuro-uuid-3');
+    armRealPreview(['Vol 1', 'Vol 2', 'Vol 3']);
+
+    // Cycle 1: the damaged file is material — one write scheduled.
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(true);
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+
+    // The scheduled write publishes exactly what the preview built (same
+    // engine, same inputs); the wire round trip is what the cloud sees.
+    const { built } = (await previewSeriesFileBuild.mock.results[0].value)!;
+    const healedAll = built!.volumes.filter((v: SeriesFileVolume) => v.page_count > 0);
+    expect(healedAll).toHaveLength(3); // every 0/0 entry healed in the ONE write
+    const published2 = parseSeriesFile(JSON.parse(stringifySeriesFile(built!)))!;
+
+    // Cycle 2: same local state, healed published copy — nothing material.
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published2)).resolves.toBe(false);
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('the two-real-uuid tie does NOT trigger: divergent uuids on both sides stay an unscheduled alternation', async () => {
+    // Device B published its re-OCR (`uuid-new`); this device holds `uuid-old`
+    // installed. The build prefers its own — the documented flip — and the
+    // predicate must not weaponize it into a write loop.
+    const published = seriesFile([measuredEntry('uuid-new', 'Vol 1')]);
+    installRow('Vol 1', 'uuid-old', 181, 12_500);
+    armRealPreview(['Vol 1']);
+
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(false);
+
+    // Non-vacuous: the gate passed and the preview genuinely ran — the
+    // PREDICATE declined, not some earlier bail-out.
+    expect(previewSeriesFileBuild).toHaveBeenCalledTimes(1);
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('gates: a read-only provider, a server that compiles series.json, and no provider each schedule nothing', async () => {
+    const published = seriesFile([noMetaEntry('Vol 2')]);
+    installRow('Vol 2', 'mokuro-uuid-2');
+    armRealPreview(['Vol 2']);
+
+    status.providers.webdav = { isReadOnly: true, serverCompilesMetadata: false };
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(false);
+
+    status.providers.webdav = { isReadOnly: false, serverCompilesMetadata: true };
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(false);
+
+    status = { hasAnyAuthenticated: false, currentProviderType: null, providers: {} };
+    await expect(maybeScheduleSeriesHealWrite(SERIES, published)).resolves.toBe(false);
+
+    // Fully excluded: not even the record read or the preview happens for a
+    // browser without write rights.
+    expect(getSeriesIndex).not.toHaveBeenCalled();
+    expect(previewSeriesFileBuild).not.toHaveBeenCalled();
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('a DOUBLED published file heals off the raw-collapse flag — no install, no local rows, and converges once the flag clears', async () => {
+    // The raw bytes hold the same volume twice; the parsed copy in hand is
+    // already healed, so the flag on the cached record is the only evidence.
+    const healedView = seriesFile([measuredEntry('mokuro-uuid-1', 'Vol 1')]);
+    getSeriesIndex.mockResolvedValue({ raw_entry_collapse: true });
+
+    await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(true);
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+    // The flag alone decides — no preview build was needed.
+    expect(previewSeriesFileBuild).not.toHaveBeenCalled();
+
+    // The write re-stamps the record WITHOUT the flag; the next cycle finds
+    // the published copy equal to the build and goes quiet.
+    getSeriesIndex.mockResolvedValue({});
+    armRealPreview(['Vol 1']);
+    await expect(maybeScheduleSeriesHealWrite(SERIES, healedView)).resolves.toBe(false);
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('runBackfill reaches the seam for a sidecar-converged series: the ratchet fixture heals with ZERO downloads', async () => {
+    // The published index has entries for every archive (so nothing is a pull
+    // candidate: 0/0 entries are stampless, and stampless is never stale) —
+    // exactly the state the ratchet leaves behind. The heal seam is the only
+    // thing left that can publish the installed volume's measured counts.
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Vol 1.cbz', 100),
+      cloudFile('One Piece/Vol 2.cbz', 100)
+    ]);
+    refreshSeriesIndexForSeries.mockResolvedValue(
+      seriesFile([measuredEntry('mokuro-uuid-1', 'Vol 1'), noMetaEntry('Vol 2')])
+    );
+    installRow('Vol 2', 'mokuro-uuid-2');
+    armRealPreview(['Vol 1', 'Vol 2']);
+
+    await backfillSeriesEntries(SERIES);
+
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled(); // no direct publish — the debounced writer owns it
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledWith(SERIES);
+  });
+
+  it('a pass that publishes DIRECTLY (a genuine pull) never also schedules a heal write', async () => {
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Volume 01.cbz', 999),
+      cloudFile('One Piece/Volume 01.mokuro.gz', 321, '2026-02-01T00:00:00.000Z')
+    ]);
+    refreshSeriesIndexForSeries
+      .mockResolvedValueOnce(seriesFile([]))
+      .mockResolvedValueOnce(seriesFile([]));
+    downloadFile.mockResolvedValue(gzippedMokuro());
+
+    await backfillSeriesEntries(SERIES);
+
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+
+  it('candidates ALL excluded as locally installed: the second seam site schedules the write the exclusion swallowed', async () => {
+    // A cloud archive with a sidecar and NO published entry is a pull
+    // candidate — but the volume is installed here, so the pull is excluded
+    // as waste (the install already measured it). Before the seam existed
+    // this path simply never wrote, which is how an installed volume's entry
+    // stayed missing forever.
+    getCloudVolumesBySeries.mockReturnValue([
+      cloudFile('One Piece/Vol 1.cbz', 100),
+      cloudFile('One Piece/Vol 1.mokuro.gz', 321)
+    ]);
+    refreshSeriesIndexForSeries.mockResolvedValue(seriesFile([]));
+    installRow('Vol 1', 'mokuro-uuid-1');
+    armRealPreview(['Vol 1']);
+
+    await backfillSeriesEntries(SERIES);
+
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
   });
 });

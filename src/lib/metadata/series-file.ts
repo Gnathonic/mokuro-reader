@@ -214,8 +214,12 @@ function compareEntries(a: SeriesFileVolume, b: SeriesFileVolume): number {
  * local install) could have measured? The negative space is exactly what a
  * no-metadata entry is minted with (`buildNoMetadataEntry`): zero pages, zero
  * characters, no mokuro version.
+ *
+ * Exported for {@link seriesFileHealDifference}'s material-difference terms,
+ * which must read "0/0 superseded by measured" with exactly the same eyes the
+ * merger's winner rules use — a private copy would drift.
  */
-function hasMeasuredContent(entry: SeriesFileVolume): boolean {
+export function hasMeasuredContent(entry: SeriesFileVolume): boolean {
   return entry.page_count > 0 || entry.character_count > 0 || entry.mokuro_version !== '';
 }
 
@@ -491,6 +495,104 @@ export function createVolumeEntryMerger(
       return [...byUuid.values()];
     }
   };
+}
+
+/**
+ * Would publishing `built` MATERIALLY repair what `published` currently says —
+ * the heal-by-overwrite decision, and nothing else.
+ *
+ * The read side has healed quietly for a while (`parseSeriesFile` collapses
+ * doubles, `buildSeriesFile`'s winner rules replace 0/0 entries) — but only a
+ * WRITE publishes the healed content, and until this predicate existed nothing
+ * scheduled one, so a damaged published file stayed damaged for every reader
+ * that does not heal (and kept re-materializing 0/0 placeholders). This
+ * decides, from one already-run read+build cycle, whether that write is worth
+ * scheduling.
+ *
+ * Entries are matched pairwise — `volume_uuid` first, else folded
+ * `volume_title` — the merger's own identity rule, because "the same archive"
+ * is what a material difference must be judged per. MATERIAL means:
+ *
+ * - COLLAPSE: two published entries land on one built entry (the doubled-index
+ *   shape that survives parse healing: case-drift titles folding together
+ *   under the listing);
+ * - SUPERSEDE: a published no-metadata entry ({@link hasMeasuredContent}
+ *   false — the 0/0 shape `buildNoMetadataEntry` mints) whose built
+ *   counterpart is measured. This is the user-visible bug this predicate was
+ *   built for: install the volume, the measured counts land in Dexie, the
+ *   published 0/0 entry stands forever;
+ * - ENRICHMENT: a built entry carries one of {@link INHERITED_FILE_FACTS}
+ *   where its published counterpart has none. EXACTLY that field list, not
+ *   one more: those are the fields the merger's INHERITANCE rule guarantees
+ *   survive any later device's replace-mode collapse, which is what makes
+ *   absent→present convergent across devices. A field outside the list
+ *   (`spine_width`, deliberately uninherited) can be DROPPED by another
+ *   device's installed-row win, and counting it would have two devices
+ *   add-and-drop it at each other forever;
+ * - LISTING-BACKED ADDITION: a built entry with no published counterpart
+ *   whose folded title the cloud listing shows as an archive. Cloud-backed
+ *   only, because every other device's prune KEEPS a listed entry — an
+ *   addition the listing does not vouch for (a local-only install) would be
+ *   pruned by the next device's ordinary write and re-added here, forever.
+ *
+ * Everything else is deliberately NOT material:
+ *
+ * - a matched pair whose `volume_uuid` differs while BOTH sides are measured.
+ *   That is the device-local alternation `createVolumeEntryMerger` documents
+ *   (device A holds `vol-1-old` installed, device B re-OCR'd into
+ *   `vol-1-new`; each build prefers its own) — an accepted trade precisely
+ *   BECAUSE nothing schedules writes off it. Counting uuid flips would have
+ *   two live devices ping-pong the published file forever;
+ * - value changes in fields both sides carry (counts, versions, stamp
+ *   values): same alternation logic one level down, and staleness detection
+ *   (`isSidecarStale`) already owns stamp movement;
+ * - published entries with no built counterpart (the listing prune at work):
+ *   a device holding the volume locally re-adds what a device without it
+ *   removes, so removals as a trigger would alternate the same way;
+ * - entry order, facts, `updated_at`, `spine_offset`, serialization: the
+ *   comparison never reads them.
+ *
+ * CONVERGENCE, the property the whole feature hangs on: after the heal-write
+ * publishes `built`, the next cycle's `published` IS this `built` (modulo a
+ * wire round trip, which `stringifySeriesFile`/`parseSeriesFile` keep an
+ * identity), every pair matches itself, no term fires, and no further write
+ * is scheduled — one write per damaged file per device, ever. Pinned by the
+ * two-cycle tests in `series-file.test.ts` / `series-backfill.test.ts`.
+ */
+export function seriesFileHealDifference(
+  published: SeriesFile,
+  built: SeriesFile,
+  cloudTitleKeys: Set<string>
+): boolean {
+  const builtByUuid = new Map<string, SeriesFileVolume>();
+  const builtByTitle = new Map<string, SeriesFileVolume>();
+  for (const entry of built.volumes) {
+    builtByUuid.set(entry.volume_uuid, entry);
+    const key = normalizeVolumeTitleKey(entry.volume_title);
+    if (key) builtByTitle.set(key, entry);
+  }
+
+  const claimed = new Set<SeriesFileVolume>();
+  for (const entry of published.volumes) {
+    const match =
+      builtByUuid.get(entry.volume_uuid) ??
+      builtByTitle.get(normalizeVolumeTitleKey(entry.volume_title));
+    if (!match) continue; // removal/prune: never material
+    if (claimed.has(match)) return true; // COLLAPSE
+    claimed.add(match);
+    if (!hasMeasuredContent(entry) && hasMeasuredContent(match)) return true; // SUPERSEDE
+    for (const field of INHERITED_FILE_FACTS) {
+      if (entry[field] === undefined && match[field] !== undefined) return true; // ENRICHMENT
+    }
+  }
+
+  for (const entry of built.volumes) {
+    if (claimed.has(entry)) continue;
+    const key = normalizeVolumeTitleKey(entry.volume_title);
+    if (key && cloudTitleKeys.has(key)) return true; // LISTING-BACKED ADDITION
+  }
+
+  return false;
 }
 
 /** The shareable half of a series record (or of the file already in the cloud). */
@@ -925,14 +1027,39 @@ export function stringifySeriesFile(file: SeriesFile): string {
 }
 
 export function parseSeriesFile(value: unknown): SeriesFile | undefined {
-  if (!isRecord(value)) return undefined;
-  if (value.version !== 1 && value.version !== 2) return undefined;
+  return parseSeriesFileWithReport(value).file;
+}
+
+/**
+ * {@link parseSeriesFile}, additionally reporting whether the RAW file carried
+ * doubled entries that the read-time healing collapsed.
+ *
+ * The healed shape is all any reader ever sees — which is exactly why the
+ * cloud-download call sites (`readCloudSeriesFile`,
+ * `series-index-sync.ts`'s `refreshOne`) need this signal: once the parsed
+ * copy is cached, nothing downstream can tell the published bytes are still
+ * doubled, so "this file needs a heal-write" would be unknowable. They persist
+ * it as `SeriesIndexRecord.raw_entry_collapse`, and the heal seam
+ * (`series-backfill.ts`'s `maybeScheduleSeriesHealWrite`) schedules the
+ * overwrite that repairs the file in the cloud. `entryCollapse` is exact, not
+ * a heuristic: the merger only ever collapses (never invents), so fewer
+ * entries out than valid entries in means the raw file genuinely held two
+ * entries for one volume.
+ */
+export function parseSeriesFileWithReport(value: unknown): {
+  file: SeriesFile | undefined;
+  entryCollapse: boolean;
+} {
+  if (!isRecord(value)) return { file: undefined, entryCollapse: false };
+  if (value.version !== 1 && value.version !== 2) return { file: undefined, entryCollapse: false };
 
   const series_title = value.series_title;
-  if (typeof series_title !== 'string' || !series_title.trim()) return undefined;
+  if (typeof series_title !== 'string' || !series_title.trim()) {
+    return { file: undefined, entryCollapse: false };
+  }
 
   const updated_at = normalizeUpdatedAt(value.updated_at);
-  if (!updated_at) return undefined;
+  if (!updated_at) return { file: undefined, entryCollapse: false };
 
   // Healed on read, not just validated: files already published with doubled
   // entries (the same volume under its no-metadata derived uuid AND its real
@@ -948,11 +1075,15 @@ export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   // Case/whitespace drift between two entries for one file is left to
   // `buildSeriesFile`, which folds under a real listing.
   const volumes: SeriesFileVolume[] = [];
+  let validEntries = 0;
   if (Array.isArray(value.volumes)) {
     const merger = createVolumeEntryMerger(series_title, { titleKeyOf: (title) => title });
     for (const raw of value.volumes) {
       const entry = parseVolumeEntry(raw);
-      if (entry) merger.add(entry, 'fill');
+      if (entry) {
+        validEntries += 1;
+        merger.add(entry, 'fill');
+      }
     }
     volumes.push(...merger.values());
   }
@@ -972,7 +1103,7 @@ export function parseSeriesFile(value: unknown): SeriesFile | undefined {
   if (unit) file.unit = unit;
   const spineOffset = sanitizeSpineOffset(value.spine_offset);
   if (spineOffset) file.spine_offset = spineOffset;
-  return file;
+  return { file, entryCollapse: volumes.length < validEntries };
 }
 
 /** True when `path` points at a series sidecar (basename match, case-insensitive). */

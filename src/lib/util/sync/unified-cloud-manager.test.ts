@@ -45,8 +45,28 @@ vi.mock('$lib/catalog/db', () => ({
       // The rename path reads the row to tell a metadata-only volume (no OCR
       // here to rebuild its sidecar from) apart from a DB inconsistency.
       get: async (uuid: string) =>
-        ((await localVolumes()) as { volume_uuid?: string }[]).find((v) => v.volume_uuid === uuid)
-    }
+        ((await localVolumes()) as { volume_uuid?: string }[]).find((v) => v.volume_uuid === uuid),
+      // `volumesForFoldedSeriesTitle`'s two indexed reads (the heal preview's
+      // row source), derived from the SAME `localVolumes` fixture the scan
+      // reads — so preview and write see one truth here, as in production.
+      orderBy: (_index: string) => ({
+        uniqueKeys: async () =>
+          [
+            ...new Set(
+              ((await localVolumes()) as { series_title?: string }[]).map((v) => v.series_title)
+            )
+          ].filter((t): t is string => !!t)
+      }),
+      where: (_index: string) => ({
+        anyOf: (values: string[]) => ({
+          toArray: async () =>
+            ((await localVolumes()) as { series_title?: string }[]).filter((v) =>
+              values.includes(v.series_title as string)
+            )
+        })
+      })
+    },
+    transaction: async (_mode: string, _tables: unknown, body: () => Promise<unknown>) => body()
   }
 }));
 
@@ -3368,5 +3388,200 @@ describe('blindUploadFile — the write-and-forget upload', () => {
 
     expect(fileId).toBe('legacy-1');
     expect(provider.blindUploadFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('UnifiedCloudManager.previewSeriesFileBuild (the heal preview)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    getAllSeriesMetadata.mockResolvedValue({});
+    getSeriesIndex.mockResolvedValue(undefined);
+  });
+
+  function previewProvider(overrides: Record<string, unknown> = {}) {
+    return {
+      type: 'webdav',
+      getStatus: vi.fn(() => ({ isReadOnly: false })),
+      downloadFile: vi.fn(async () => new Blob(['{}'])),
+      ...overrides
+    };
+  }
+
+  function file(path: string, size = 100): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size
+    };
+  }
+
+  const publishedWithZeroVol2 = {
+    version: 2 as const,
+    series_title: 'One Piece',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at: '2026-08-17T00:00:00.000Z',
+    volumes: [
+      {
+        volume_uuid: 'mokuro-uuid-1',
+        volume_title: 'Vol 1',
+        page_count: 180,
+        character_count: 12000,
+        mokuro_version: '0.4.11'
+      },
+      {
+        volume_uuid: 'derived-uuid-2',
+        volume_title: 'Vol 2',
+        page_count: 0,
+        character_count: 0,
+        mokuro_version: '',
+        archive_size: 4444
+      }
+    ]
+  };
+
+  it('runs the REAL shared assembly: installed rows supersede the published 0/0 entry, stamped from the listing, keys folded', async () => {
+    getActiveProvider.mockReturnValue(previewProvider());
+    getCache.mockReturnValue({ isLoaded: () => true });
+    getBySeries.mockReturnValue([
+      file('One Piece/Vol 1.cbz'),
+      file('One Piece/Vol 2.cbz'),
+      file('One Piece/Vol 2.mokuro', 321)
+    ]);
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'mokuro-uuid-2',
+        series_uuid: 'series-uuid',
+        series_title: 'One Piece',
+        volume_title: 'Vol 2',
+        mokuro_version: '0.4.11',
+        page_count: 90,
+        character_count: 9000,
+        page_char_counts: []
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const preview = await unifiedCloudManager.previewSeriesFileBuild(
+      'One Piece',
+      publishedWithZeroVol2
+    );
+
+    const vol2 = preview!.built!.volumes.find((v) => v.volume_title === 'Vol 2')!;
+    expect(vol2.volume_uuid).toBe('mokuro-uuid-2'); // measured row replaced the derived-uuid 0/0
+    expect(vol2.page_count).toBe(90);
+    expect(vol2.character_count).toBe(9000);
+    expect(vol2.archive_size).toBe(4444); // inherited from the entry it displaced
+    expect(vol2.mokuro_size).toBe(321); // stamped from the CURRENT listing, never invented
+    // Vol 1's foreign measured entry rides through untouched.
+    expect(preview!.built!.volumes.find((v) => v.volume_title === 'Vol 1')).toEqual(
+      publishedWithZeroVol2.volumes[0]
+    );
+    expect(preview!.cloudTitleKeys).toEqual(
+      new Set([normalizeVolumeTitleKey('Vol 1'), normalizeVolumeTitleKey('Vol 2')])
+    );
+  });
+
+  it('returns undefined behind every write gate: read-only provider, unloaded cache, archiveless folder', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    getActiveProvider.mockReturnValue(
+      previewProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) })
+    );
+    getCache.mockReturnValue({ isLoaded: () => true });
+    getBySeries.mockReturnValue([file('One Piece/Vol 1.cbz')]);
+    await expect(
+      unifiedCloudManager.previewSeriesFileBuild('One Piece', publishedWithZeroVol2)
+    ).resolves.toBeUndefined();
+
+    getActiveProvider.mockReturnValue(previewProvider());
+    getCache.mockReturnValue({ isLoaded: () => false });
+    await expect(
+      unifiedCloudManager.previewSeriesFileBuild('One Piece', publishedWithZeroVol2)
+    ).resolves.toBeUndefined();
+
+    getCache.mockReturnValue({ isLoaded: () => true });
+    getBySeries.mockReturnValue([]);
+    await expect(
+      unifiedCloudManager.previewSeriesFileBuild('One Piece', publishedWithZeroVol2)
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('the raw-doubles flag on cached records (raw_entry_collapse)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    getSeriesMetadataForTitle.mockResolvedValue(undefined);
+    getAllSeriesMetadata.mockResolvedValue({});
+    getSeriesIndex.mockResolvedValue(undefined);
+  });
+
+  function file(path: string, size = 100): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-08-17T00:00:00.000Z',
+      size
+    };
+  }
+
+  function cloudSeriesJson(volumes: unknown[]): string {
+    return JSON.stringify({
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: '2026-08-17T00:00:00.000Z',
+      volumes
+    });
+  }
+
+  const realEntry = {
+    volume_uuid: 'mokuro-uuid-1',
+    volume_title: 'Vol 1',
+    page_count: 180,
+    character_count: 12000,
+    mokuro_version: '0.4.11'
+  };
+  const doubledEntry = {
+    volume_uuid: 'derived-uuid-1',
+    volume_title: 'Vol 1',
+    page_count: 0,
+    character_count: 0,
+    mokuro_version: ''
+  };
+
+  async function refreshWith(body: string) {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: vi.fn(() => ({ isReadOnly: false })),
+      downloadFile: vi.fn(async () => new Blob([body]))
+    });
+    getBySeries.mockReturnValue([file('One Piece/Vol 1.cbz'), file('One Piece/series.json', 50)]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    return unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
+  }
+
+  it('a RAW cloud copy holding the same volume twice caches a healed file WITH the flag', async () => {
+    const fresh = await refreshWith(cloudSeriesJson([doubledEntry, realEntry]));
+
+    expect(fresh?.volumes).toHaveLength(1); // healed view for every reader
+    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndex.mock.calls[0][0]).toMatchObject({ raw_entry_collapse: true });
+  });
+
+  it('a clean cloud copy caches no flag at all', async () => {
+    await refreshWith(cloudSeriesJson([realEntry]));
+
+    expect(putSeriesIndex).toHaveBeenCalledTimes(1);
+    expect(putSeriesIndex.mock.calls[0][0]).not.toHaveProperty('raw_entry_collapse');
   });
 });
