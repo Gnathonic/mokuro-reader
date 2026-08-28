@@ -87,10 +87,11 @@ import { unifiedCloudManager } from './unified-cloud-manager';
  * - Deferred behind user-driven work: the drain waits for the download queue
  *   to be EMPTY before every DEFERRED volume, so a batch download the user is
  *   watching never shares its connection with a background upload. Import-fed
- *   entries are exempt from the wait — their upload IS part of the download
- *   the user is watching (one small PUT per finished volume), and serving
- *   them immediately is what lets their in-memory payload be released instead
- *   of pinned for the whole batch.
+ *   entries are exempt from the wait — their upload(s) ARE part of the
+ *   download the user is watching (up to two PUTs per finished volume, and a
+ *   `.mokuro` can run to a few MB — see {@link MAX_SIDECAR_BACKFILLS_PER_SESSION}),
+ *   and serving them immediately is what lets their in-memory payload be
+ *   released instead of pinned for the whole batch.
  * - Capped per session ({@link MAX_SIDECAR_BACKFILLS_PER_SESSION}); a legacy
  *   library converges over a handful of sessions instead of turning one page
  *   load into a bulk migration. Import-fed uploads neither check nor consume
@@ -158,6 +159,7 @@ let drainRunning: Promise<void> | null = null;
 export function _resetSidecarBackfillForTests(): void {
   pending.clear();
   immediate.length = 0;
+  importArrivalSignals.clear();
   attemptedThisSession.clear();
   backfilledThisSession = 0;
 }
@@ -314,7 +316,8 @@ export function queueSidecarBackfillFromImport(
       // present (or wanted by nothing) never pays the JSON stringify — the
       // shared core only calls this once the listing shows a real gap.
       loadSidecars: () => buildVolumeSidecarsFromData(volume, saved.ocrPages),
-      countsAgainstSessionCap: false
+      countsAgainstSessionCap: false,
+      isImportFeed: true
     });
     // Wake a drain parked on the download-queue-idle wait, then make sure one
     // is running at all.
@@ -557,6 +560,12 @@ interface SidecarUploadFeed {
    * import-fed uploads are bounded by the user's own downloads instead.
    */
   countsAgainstSessionCap: boolean;
+  /**
+   * True only for the IMPORT feed's entry for this volume. Distinguishes the
+   * one place {@link uploadMissingSidecars} must withhold the attempted-mark
+   * on a missing thumbnail — see that function's comment for why.
+   */
+  isImportFeed: boolean;
 }
 
 /**
@@ -573,7 +582,8 @@ async function backfillOne(volumeUuid: string): Promise<void> {
   await uploadMissingSidecars({
     volume,
     loadSidecars: () => loadVolumeSidecars(volumeUuid),
-    countsAgainstSessionCap: true
+    countsAgainstSessionCap: true,
+    isImportFeed: false
   });
 }
 
@@ -588,8 +598,13 @@ async function backfillOne(volumeUuid: string): Promise<void> {
  * successful upload takes the volume out of contention for every LATER check
  * without any listing round trip. That is the convergence-by-construction
  * this feature requires — and it is why the import feed's safety-net
- * nomination is harmless: by the time the drain reaches it, either the
- * attempted-set or the cache says there is nothing left to do.
+ * nomination is USUALLY harmless: by the time the drain reaches it, either
+ * the attempted-set or the cache says there is nothing left to do. The one
+ * exception is deliberate, not a gap: when the import feed's own thumbnail
+ * was missing (a failed generation, recovered in the background moments
+ * later), the attempted-mark below is withheld specifically so this
+ * "harmless" nomination — and every sweep for the rest of the session — stay
+ * able to pick the cover back up once the recovery lands.
  */
 async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   const { volume } = feed;
@@ -640,8 +655,24 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   // Attempted either way — with nothing uploadable (a thumbnail whose type has
   // no recognized cover extension, or OCR rows that vanished) the volume would
   // otherwise be re-nominated by every listing this session and re-checked
-  // forever without ever converging.
-  attemptedThisSession.add(key);
+  // forever without ever converging — EXCEPT for one case: the IMPORT feed
+  // running before thumbnail generation finished. `saveVolume` returns
+  // `thumbnail: undefined` on a failed generation and fires background
+  // `db.processThumbnails(1)` recovery; marking the volume attempted now would
+  // leave nothing to re-check it once that recovery fills the thumbnail
+  // moments later — the safety-net nomination right after this feed at the
+  // call site, and every sweep for the rest of the session, would all see an
+  // already-attempted volume and no-op, stranding the cover until the next
+  // page load. Withholding the mark here — the mokuro upload below still
+  // happens immediately — leaves the volume open for that later re-check,
+  // which re-reads the row from Dexie (by then holding the recovered
+  // thumbnail) and re-derives eligibility against the provider cache this
+  // upload is about to update, so it uploads ONLY the cover, never a second
+  // copy of the `.mokuro` this pass already sent.
+  const awaitingThumbnailRecovery = feed.isImportFeed && !volume.thumbnail;
+  if (!awaitingThumbnailRecovery) {
+    attemptedThisSession.add(key);
+  }
   if (uploads.length === 0) return;
 
   // Only DEFERRED-feed volumes that actually reach an upload consume the

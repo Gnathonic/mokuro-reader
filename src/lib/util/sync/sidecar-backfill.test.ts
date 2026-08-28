@@ -1028,6 +1028,52 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
     expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
   });
 
+  it('recovers the cover once background thumbnail recovery fills a failed-generation gap (Finding 1)', async () => {
+    // A failed thumbnail generation: `saveVolume` writes the row with
+    // `thumbnail: undefined` and (in production) fires background
+    // `db.processThumbnails(1)` recovery — stubbed inert in this suite (see
+    // the `$lib/catalog/db` mock above), so the recovery is simulated by hand
+    // below instead of relying on the real one to race this test.
+    const processed = processedVolumeFixture('imp-1', { thumbnail: null });
+    const saved = await saveVolume(processed, { preserveTitles: true });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    // Positive control: the import feed really ran, and really uploaded only
+    // the mokuro — there was no thumbnail yet to send as a cover.
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+
+    // The background recovery lands moments later and fills the row.
+    const recoveredThumbnail = new File([new Uint8Array([5, 5, 5, 5])], 'thumb.webp', {
+      type: 'image/webp'
+    });
+    await db.volumes.update('imp-1', {
+      thumbnail: recoveredThumbnail,
+      thumbnail_width: 4,
+      thumbnail_height: 4
+    });
+
+    // The safety-net nomination — called right after the import feed at the
+    // real call site (`download-queue.ts`'s `queueSidecarBackfillForVolume`
+    // right after `queueSidecarBackfillFromImport`) — must still be able to
+    // pick the volume back up: the import feed must NOT have marked it
+    // attempted while its thumbnail was still missing.
+    queueSidecarBackfillForVolume('imp-1');
+    await settle();
+
+    // The cover uploads now — and ONLY the cover: the mokuro already sits in
+    // the provider's listing cache from the first upload (`uploadFile` adds
+    // to it directly), so the re-derived wants-check excludes it rather than
+    // sending a second copy.
+    expect(uploadedPaths().sort()).toEqual([
+      'Legacy Series/Volume 01.mokuro',
+      'Legacy Series/Volume 01.webp'
+    ]);
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+  });
+
   it('import-time success makes the safety net and the sweep no-op, in-session without touching the DB and across sessions via the cache', async () => {
     const processed = processedVolumeFixture();
     const saved = await saveVolume(processed, { preserveTitles: true });
