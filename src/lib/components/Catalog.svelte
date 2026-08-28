@@ -1,3 +1,20 @@
+<script module lang="ts">
+  /**
+   * How long "Loading catalog..." may sit before it explains itself. The
+   * first catalog read normally lands within one coalesce window (~150ms);
+   * five seconds of silence means IndexedDB is not answering at all — in
+   * practice another Mokuro tab or window wedged mid-transaction and holding
+   * the database lock (verified live: a frozen sibling tab held `volumes`
+   * readwrite open indefinitely and every other tab's first read queued
+   * behind it forever) — or a very large library on a very slow disk. The
+   * spinner keeps spinning either way (the read is still queued and completes
+   * the moment the lock frees), but past this deadline the user gets told
+   * what is wrong and what fixes it instead of an unexplained infinite
+   * spinner.
+   */
+  export const CATALOG_LOAD_STALL_MS = 5000;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import { catalog } from '$lib/catalog';
@@ -26,6 +43,8 @@
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   let search = $state('');
+  /** True once the loading spinner has outlived {@link CATALOG_LOAD_STALL_MS}. */
+  let loadStalled = $state(false);
   let pendingRestoreY = $state<number | null>(null);
   let restoringScroll = $state(false);
   let restoreAttempts = $state(0);
@@ -287,6 +306,22 @@
     startRestoreLoop();
   });
 
+  $effect(() => {
+    // Stall watch for the loading spinner: armed while the catalog is still
+    // null, cleared the moment data lands (including data that arrives AFTER
+    // the stall message showed — the queued read completes as soon as the
+    // blocked database frees up, and the message must not outlive the
+    // condition it describes).
+    if ($catalog !== null) {
+      loadStalled = false;
+      return;
+    }
+    const stallTimer = setTimeout(() => {
+      loadStalled = true;
+    }, CATALOG_LOAD_STALL_MS);
+    return () => clearTimeout(stallTimer);
+  });
+
   async function downloadAllPlaceholders() {
     if (downloadableVolumes.length === 0) return;
     if (!hasAuthenticatedProvider) {
@@ -303,7 +338,20 @@
 </script>
 
 {#if $catalog === null}
-  <Loader>Loading catalog...</Loader>
+  <Loader>
+    {#if loadStalled}
+      <div class="max-w-md text-center" data-testid="catalog-load-stalled">
+        <p>Still loading the catalog...</p>
+        <p class="mt-2 text-sm text-gray-500">
+          Storage is not responding. This usually means another Mokuro tab or window is stuck and
+          holding the database — close other Mokuro tabs (or restart the browser) and this page will
+          recover by itself. A very large library on a slow disk can also take this long.
+        </p>
+      </div>
+    {:else}
+      Loading catalog...
+    {/if}
+  </Loader>
 {:else if $catalog.length > 0}
   <div class="flex flex-col gap-5">
     <div class="flex w-full gap-1 py-2">

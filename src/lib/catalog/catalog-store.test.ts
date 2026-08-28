@@ -20,6 +20,7 @@ const {
   generatePlaceholders,
   liveQueryState,
   emitMutationSignal,
+  emitSignalError,
   toArrayCalls,
   toArrayGate,
   toArrayResolvers,
@@ -58,7 +59,11 @@ const {
   // so a test can drive it as an explicit change signal via `emitMutationSignal`
   // — `volumes` now uses `liveQuery(() => db.volumes.count())` purely as a cheap
   // trigger, so the mock ignores the querier entirely and never needs to run it.
-  const liveQueryState: { next: ((v: unknown) => void) | null } = { next: null };
+  const liveQueryState: {
+    next: ((v: unknown) => void) | null;
+    error: ((e: unknown) => void) | null;
+    subscribeCalls: number;
+  } = { next: null, error: null, subscribeCalls: 0 };
   const toArrayCalls: unknown[] = [];
 
   // Lets a test hold a `toArray()` call open instead of letting it settle in
@@ -68,7 +73,7 @@ const {
   // (mirroring a real Dexie read), then handed to the matching queued resolver
   // via `resolveNextToArray`, so a later mutation to `volumeRecord` can't
   // retroactively change what an already-in-flight read delivers.
-  const toArrayGate = { deferred: false };
+  const toArrayGate = { deferred: false, failNext: 0 };
   const toArrayResolvers: Array<() => void> = [];
   const resolveNextToArray = () => toArrayResolvers.shift()?.();
 
@@ -81,6 +86,15 @@ const {
     generatePlaceholders: vi.fn(() => [] as unknown[]),
     liveQueryState,
     emitMutationSignal: () => liveQueryState.next?.(undefined),
+    // Mirrors an Rx-contract subscription error: the subscription is DEAD
+    // afterwards — `next` can never fire again — which is exactly why the
+    // production store must build a NEW subscription to keep living.
+    emitSignalError: (err: unknown) => {
+      const fire = liveQueryState.error;
+      liveQueryState.next = null;
+      liveQueryState.error = null;
+      fire?.(err);
+    },
     toArrayCalls,
     toArrayGate,
     toArrayResolvers,
@@ -100,6 +114,12 @@ vi.mock('$lib/catalog/db', () => ({
     volumes: {
       toArray: () => {
         toArrayCalls.push(1);
+        // Injected backend failure (recovery tests): the read REJECTS, the
+        // way a transient IndexedDB error at boot does.
+        if (toArrayGate.failNext > 0) {
+          toArrayGate.failNext -= 1;
+          return Promise.reject(new Error('injected backend failure'));
+        }
         const snapshot = Object.values(volumeRecord);
         if (!toArrayGate.deferred) return Promise.resolve(snapshot);
         return new Promise((resolve) => {
@@ -115,12 +135,15 @@ vi.mock('$lib/catalog/db', () => ({
 // re-firing the live query on any table write.
 vi.mock('dexie', () => ({
   liveQuery: () => ({
-    subscribe: ({ next }: { next: (v: unknown) => void }) => {
+    subscribe: ({ next, error }: { next: (v: unknown) => void; error?: (e: unknown) => void }) => {
       liveQueryState.next = next;
+      liveQueryState.error = error ?? null;
+      liveQueryState.subscribeCalls += 1;
       next(undefined);
       return {
         unsubscribe() {
           liveQueryState.next = null;
+          liveQueryState.error = null;
         }
       };
     }
@@ -150,7 +173,8 @@ import {
   catalog,
   volumes,
   volumesWithPlaceholders,
-  VOLUMES_EMISSION_COALESCE_MS
+  VOLUMES_EMISSION_COALESCE_MS,
+  VOLUMES_RETRY_BASE_MS
 } from '$lib/catalog';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
 import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
@@ -174,6 +198,7 @@ afterEach(() => {
   while (pendingCleanups.length) pendingCleanups.pop()?.();
   vi.useRealTimers();
   toArrayGate.deferred = false;
+  toArrayGate.failNext = 0;
   toArrayResolvers.length = 0;
   toArrayCalls.length = 0;
   for (const key of Object.keys(volumeRecord)) {
@@ -724,5 +749,77 @@ describe('volumes disposal guard', () => {
     unsubscribeB();
     vi.useRealTimers();
     delete volumeRecord.v2;
+  });
+});
+
+/**
+ * The two ways one transient IndexedDB failure used to wedge the catalog on
+ * its loading spinner for the whole session:
+ *
+ * - the coalesced read (`db.volumes.toArray()`) REJECTS once — nothing
+ *   retried it, and with no table mutation there is no change signal to
+ *   trigger another read, so `volumes` stayed `undefined` forever;
+ * - the change-signal subscription itself ERRORS — an errored Rx-style
+ *   subscription is terminated and can never fire `next` again, so even
+ *   later mutations went unseen.
+ *
+ * Both now recover on a backoff timer (`VOLUMES_RETRY_BASE_MS`, doubling,
+ * capped) with no reload and no user action.
+ */
+describe('volumes recovery', () => {
+  it('retries a rejected read on the backoff timer and delivers when the backend recovers', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      volumeRecord.v9 = { volume_uuid: 'v9', series_uuid: 's9', series_title: 'Recovered' };
+      toArrayGate.failNext = 1;
+      vi.useFakeTimers();
+      let latest: Record<string, unknown> | undefined;
+      trackSubscription(volumes.subscribe((v) => (latest = v as Record<string, unknown>)));
+
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      // Positive control: the first read really ran and really failed —
+      // nothing has delivered v9 yet.
+      expect(toArrayCalls.length).toBe(1);
+      expect(latest?.v9).toBeUndefined();
+
+      // No mutation signal fires here — recovery must come from the store's
+      // own retry timer, because a failed FIRST read has nothing else coming.
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS);
+      expect(toArrayCalls.length).toBe(2);
+      expect(latest?.v9).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('resubscribes a dead change signal so later mutations still reach subscribers', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.useFakeTimers();
+      let latest: Record<string, unknown> | undefined;
+      trackSubscription(volumes.subscribe((v) => (latest = v as Record<string, unknown>)));
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      const subscribesBefore = liveQueryState.subscribeCalls;
+
+      // The signal dies (the mock, like a real Rx subscription, can never
+      // fire `next` again after `error`).
+      emitSignalError(new Error('injected signal failure'));
+      expect(liveQueryState.next).toBeNull();
+
+      // The recovery timer builds a NEW subscription...
+      await vi.advanceTimersByTimeAsync(VOLUMES_RETRY_BASE_MS + VOLUMES_EMISSION_COALESCE_MS);
+      expect(liveQueryState.subscribeCalls).toBe(subscribesBefore + 1);
+      expect(liveQueryState.next).not.toBeNull();
+
+      // ...and that new signal genuinely carries a mutation to a delivery.
+      volumeRecord.v8 = { volume_uuid: 'v8', series_uuid: 's8', series_title: 'PostError' };
+      emitMutationSignal();
+      await vi.advanceTimersByTimeAsync(VOLUMES_EMISSION_COALESCE_MS);
+      expect(latest?.v8).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
   });
 });

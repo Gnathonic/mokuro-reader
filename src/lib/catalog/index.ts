@@ -80,6 +80,20 @@ async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData
  */
 export const VOLUMES_EMISSION_COALESCE_MS = 150;
 
+/**
+ * Backoff for the RECOVERY paths below — a rejected read, or a change signal
+ * whose liveQuery subscription errored (an errored Rx-style subscription is
+ * DEAD: it can never fire again, so without an explicit resubscribe one
+ * transient IndexedDB failure at boot would leave `volumes` silently
+ * `undefined` forever, which the catalog renders as an infinite "Loading
+ * catalog..." spinner). Doubles per failed attempt, capped, and resets on the
+ * first successful read — a permanently broken backend costs one retried read
+ * per {@link VOLUMES_RETRY_MAX_MS} rather than a hot loop, and a backend that
+ * comes back heals the catalog without a reload.
+ */
+export const VOLUMES_RETRY_BASE_MS = 1000;
+export const VOLUMES_RETRY_MAX_MS = 30000;
+
 // Single source of truth from the database. `undefined` until the first
 // coalesced emission lands — never `{}` — so a genuinely-loading catalog is
 // distinguishable from a genuinely-empty one; see `volumesWithPlaceholders`
@@ -89,6 +103,9 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   let running = false;
   let dirty = false;
   let disposed = false;
+  let retryDelay = VOLUMES_RETRY_BASE_MS;
+  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let signalDead = false;
 
   /**
    * The expensive read, run at most once per quiet period.
@@ -121,6 +138,9 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
       // clobber it — e.g. a just-imported volume vanishing from the catalog
       // until some unrelated write happens to trigger another scan.
       if (disposed) return;
+      // A successful read proves the backend is healthy again: recovery
+      // backoff starts over from the base for the next incident.
+      retryDelay = VOLUMES_RETRY_BASE_MS;
       set(
         rows.reduce(
           (acc, vol) => {
@@ -131,7 +151,12 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
         )
       );
     } catch (err) {
-      console.error(err);
+      // A rejected read must not strand the store: before this retry existed,
+      // one transient failure of the FIRST read (nothing else writes, so no
+      // change signal ever re-fires) froze the catalog on its loading
+      // spinner for the rest of the session.
+      console.error('[catalog] volumes read failed; will retry:', err);
+      scheduleRecovery();
     } finally {
       running = false;
       // A disposed store must not resurrect itself by scheduling more work —
@@ -152,20 +177,51 @@ export const volumes = readable<Record<string, VolumeMetadata> | undefined>(unde
   };
 
   /**
+   * One recovery timer for both failure modes, with a shared backoff: when it
+   * fires it first resurrects the change signal if the old subscription died
+   * (an errored liveQuery subscription never fires again), then re-attempts
+   * the read directly — the resubscribed liveQuery also fires `next` on its
+   * own initial execution, and the `running`/`dirty`/`timer` guards fold the
+   * two paths into one read.
+   */
+  const scheduleRecovery = () => {
+    if (disposed || recoveryTimer) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      if (disposed) return;
+      if (signalDead) {
+        signalDead = false;
+        subscribeChangeSignal();
+      }
+      void runQuery();
+    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, VOLUMES_RETRY_MAX_MS);
+  };
+
+  /**
    * `count()` touches the whole store, so Dexie re-fires it on any mutation
    * in the table — including an update, which a key-list query would miss —
    * and it costs an index count rather than deserializing every row and its
    * thumbnail blob.
    */
-  const subscription = liveQuery(() => db.volumes.count()).subscribe({
-    next: schedule,
-    error: (err) => console.error(err)
-  });
+  let subscription: { unsubscribe: () => void } | null = null;
+  const subscribeChangeSignal = () => {
+    subscription = liveQuery(() => db.volumes.count()).subscribe({
+      next: schedule,
+      error: (err) => {
+        console.error('[catalog] volumes change signal failed; will resubscribe:', err);
+        signalDead = true;
+        scheduleRecovery();
+      }
+    });
+  };
+  subscribeChangeSignal();
 
   return () => {
     disposed = true;
     if (timer) clearTimeout(timer);
-    subscription.unsubscribe();
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+    subscription?.unsubscribe();
   };
 });
 

@@ -68,7 +68,7 @@ vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn() }));
 vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval: vi.fn() }));
 vi.mock('$lib/util/hash-router', () => ({ nav: { toSeries: vi.fn() } }));
 
-import Catalog from '../Catalog.svelte';
+import Catalog, { CATALOG_LOAD_STALL_MS } from '../Catalog.svelte';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(series: string, overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -427,6 +427,72 @@ describe('Catalog sorts and colours a series by the SAME completion rule', () =>
       const firstGreen = rows.findIndex((row) => row.green);
       expect(firstGreen).toBeGreaterThan(-1);
       expect(rows.slice(firstGreen).every((row) => row.green)).toBe(true);
+    }
+  });
+});
+
+describe('Catalog loading stall surface', () => {
+  afterEach(() => {
+    cleanup();
+    catalogStore.set([]);
+  });
+
+  it('explains itself once the spinner outlives the stall deadline, and recovers when data lands', async () => {
+    vi.useFakeTimers();
+    try {
+      catalogStore.set(null);
+      const { container } = render(Catalog);
+      await tick();
+
+      // Fresh spinner: no diagnosis yet.
+      expect(container.textContent).toContain('Loading catalog...');
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+
+      // The deadline passes with the catalog still null (live repro: another
+      // frozen Mokuro tab holding the volumes lock keeps the first read
+      // queued indefinitely) — the loader must now say what is wrong.
+      vi.advanceTimersByTime(CATALOG_LOAD_STALL_MS);
+      await tick();
+      const stalled = container.querySelector('[data-testid="catalog-load-stalled"]');
+      expect(stalled).not.toBeNull();
+      expect(stalled?.textContent).toContain('another Mokuro tab');
+
+      // The queued read finally lands (the lock freed): the message must not
+      // outlive the condition it describes.
+      catalogStore.set([]);
+      await tick();
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+      expect(container.textContent).toContain('currently empty');
+
+      // A LATER return to the loading state starts a fresh stall clock: the
+      // old verdict must not flash back instantly (this is what pins the
+      // flag RESET, which the template branch above cannot distinguish).
+      catalogStore.set(null);
+      await tick();
+      expect(container.textContent).toContain('Loading catalog...');
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never shows the stall message when the catalog arrives before the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      catalogStore.set(null);
+      const { container } = render(Catalog);
+      await tick();
+      catalogStore.set([]);
+      await tick();
+
+      // Positive control that the wait is real: the full deadline (twice
+      // over) elapses after data arrived, and nothing stalls.
+      vi.advanceTimersByTime(CATALOG_LOAD_STALL_MS * 2);
+      await tick();
+      expect(container.querySelector('[data-testid="catalog-load-stalled"]')).toBeNull();
+      expect(container.textContent).toContain('currently empty');
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
