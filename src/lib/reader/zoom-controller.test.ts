@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ContinuousZoomController } from './zoom-controller';
-import type { RectLike } from './zoom-math';
+import { ContinuousZoomController, WHEEL_ZOOM_SETTLE_MS } from './zoom-controller';
+import { WHEEL_ZOOM_SENSITIVITY, type RectLike } from './zoom-math';
 
 /**
  * Fake layout world simulating the browser geometry the controller corrects
@@ -321,6 +321,164 @@ describe('ContinuousZoomController — wheel', () => {
     c.wheelZoom({ deltaY: -120, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 2000 });
     pump();
     expect(c.currentZoom).toBe(3);
+  });
+});
+
+/**
+ * The trackpad path (#259): a fine wheel stream zooms continuously at the
+ * cursor instead of stepping the ladder. Only setTimeout is faked — the
+ * suite's rAF pump and performance.now stubs drive the Animator.
+ */
+describe('ContinuousZoomController — fine wheel (trackpad)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const fineWheel = (deltaY: number, timeStamp: number, x = 500, y = 400) => ({
+    deltaY,
+    deltaMode: 0,
+    clientX: x,
+    clientY: y,
+    timeStamp
+  });
+
+  it('zooms immediately by the event ratio, anchored at the cursor', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+
+    const expected = Math.exp(20 * WHEEL_ZOOM_SENSITIVITY);
+    expect(c.currentZoom).toBeCloseTo(expected, 10);
+    expect(world.zoom).toBeCloseTo(expected, 10);
+    // Content under the cursor (500, 400) → content (500, 700) stays there.
+    expect(world.scrollLeft).toBeCloseTo(500 * expected - 500, 3);
+    expect(world.scrollTop).toBeCloseTo(700 * expected - 400, 3);
+  });
+
+  it('compounds across the stream instead of snapping to a level', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+    c.wheelZoom(fineWheel(-20, 1016), true);
+
+    expect(c.currentZoom).toBeCloseTo(Math.exp(40 * WHEEL_ZOOM_SENSITIVITY), 10);
+  });
+
+  it('scrolling back down undoes the zoom exactly', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-37, 1000), true);
+    c.wheelZoom(fineWheel(37, 1016), true);
+
+    expect(c.currentZoom).toBeCloseTo(1, 10);
+    expect(world.scrollTop).toBeCloseTo(300, 3);
+  });
+
+  it('clamps to the ladder ends', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-4000, 1000), true);
+    expect(c.currentZoom).toBe(3);
+
+    c.wheelZoom(fineWheel(4000, 1016), true);
+    expect(c.currentZoom).toBe(1);
+  });
+
+  it('stays active through the stream, then settles once when it goes idle', () => {
+    const world = tallPageWorld();
+    const settled = vi.fn();
+    const c = makeController(world, { settled });
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+    c.wheelZoom(fineWheel(-20, 1016), true);
+    expect(c.isActive).toBe(true);
+    expect(settled).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(WHEEL_ZOOM_SETTLE_MS);
+
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(c.currentZoom, 'gesture');
+    expect(c.zoomTarget).toBe(c.currentZoom);
+    expect(c.isActive).toBe(false);
+  });
+
+  it('an interrupting gesture settles the stream once, not twice', () => {
+    const world = tallPageWorld();
+    const settled = vi.fn();
+    const c = makeController(world, { settled });
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+    c.finishNow();
+
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(c.currentZoom, 'interrupt');
+
+    vi.advanceTimersByTime(WHEEL_ZOOM_SETTLE_MS * 2);
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a following notch steps to the adjacent level from the off-level zoom', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-20, 1000), true); // ~1.105
+    vi.advanceTimersByTime(WHEEL_ZOOM_SETTLE_MS);
+
+    c.wheelZoom(fineWheel(-120, 2000), false);
+    pump();
+    expect(c.currentZoom).toBe(1.5);
+  });
+
+  it('reports the zoomed state as the stream moves', () => {
+    const world = tallPageWorld();
+    const zoomed = vi.fn();
+    const c = makeController(world, { zoomed });
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+    expect(zoomed).toHaveBeenLastCalledWith(true);
+
+    c.wheelZoom(fineWheel(20, 1016), true);
+    expect(zoomed).toHaveBeenLastCalledWith(false);
+  });
+
+  it('re-anchors when the cursor moves mid-stream', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    c.wheelZoom(fineWheel(-20, 1000, 500, 400), true);
+
+    // Content sitting under the cursor's NEW position, before the next event.
+    const before = c.currentZoom;
+    const content = {
+      x: (world.scrollLeft + 200) / before,
+      y: (world.scrollTop + 600) / before
+    };
+
+    c.wheelZoom(fineWheel(-20, 1016, 200, 600), true);
+
+    const after = c.currentZoom;
+    expect(content.x * after - world.scrollLeft).toBeCloseTo(200, 3);
+    expect(content.y * after - world.scrollTop).toBeCloseTo(600, 3);
+  });
+
+  it('a stalled stream that leaves the timer pending is cleaned up by destroy', () => {
+    const world = tallPageWorld();
+    const settled = vi.fn();
+    const c = makeController(world, { settled });
+
+    c.wheelZoom(fineWheel(-20, 1000), true);
+    c.destroy();
+
+    vi.advanceTimersByTime(WHEEL_ZOOM_SETTLE_MS * 2);
+    expect(settled).not.toHaveBeenCalled();
   });
 });
 

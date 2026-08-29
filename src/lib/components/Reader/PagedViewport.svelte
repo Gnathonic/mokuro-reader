@@ -15,6 +15,7 @@
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
     WheelAccumulator,
+    WheelStreamClassifier,
     gapWheelSteps,
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
@@ -143,6 +144,13 @@
 
   const gapAccumulator = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
 
+  /**
+   * Trackpad vs notched wheel, per stream (#259). Classified once per event
+   * and shared by the intent check and the zoom itself: the classifier is
+   * stateful, so asking it twice would double-count the stream.
+   */
+  const wheelStream = new WheelStreamClassifier();
+
   function adjustGap(delta: number) {
     if (delta === 0) return;
     const next = Math.max(0, Math.min(MAX_PAGE_GAP, ($settings.pagedGap ?? 0) + delta));
@@ -151,16 +159,17 @@
   }
 
   function handleWheel(e: WheelEvent) {
+    const fine = wheelStream.classify(e);
     if (wheelIntentIsGapAdjust(e)) {
       e.preventDefault();
       adjustGap(gapWheelSteps(e, gapAccumulator));
       return;
     }
     const modifier = e.ctrlKey || e.metaKey;
-    if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior)) {
+    if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
       e.preventDefault();
       motion.beforeZoom();
-      controller.wheelZoom(e);
+      controller.wheelZoom(e, fine);
       return;
     }
     e.preventDefault();

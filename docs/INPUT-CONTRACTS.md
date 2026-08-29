@@ -82,6 +82,34 @@ Every handler that starts motion opens with the gate call matching its
 intent. Never call `finishNow`/`stop`/`stopPan` combinations inline — add
 to the gate if a new intent appears.
 
+### Wheel granularity decides the zoom's shape (#259)
+
+A wheel stream is classified as **fine** (trackpad, precision wheel,
+synthetic pinch) or **notched** by `WheelStreamClassifier` — once per event,
+at the top of each surface's `handleWheel`, shared by the intent check and
+the zoom so the stateful classifier is never asked twice.
+
+- **Fine streams zoom continuously** at the cursor, through the same
+  anchored path a pinch uses. Stepping a ladder on a device that reports
+  every millimetre of travel is what #259 reported: nothing, nothing,
+  nothing, lurch.
+- **Notched streams keep the level ladder** — one notch is one deliberate
+  step, and mouse users are untouched.
+- **A fine ctrl/meta+wheel is a pinch, so it always zooms**, whatever
+  `swapWheelBehavior` says. Chrome and Firefox deliver trackpad pinch as a
+  synthetic ctrl+wheel; only Safari has real pinch events. Without this a
+  Mac user with the swap on has no working pinch at all. A _notched_
+  ctrl+wheel is a genuine keyboard chord and keeps the swap semantics.
+- Classification is **sticky per stream** and only ever upgrades to fine:
+  trackpad momentum reports large round deltas indistinguishable from
+  notches, while a mouse never reports the small ones. Erring toward fine
+  costs a precision-wheel owner a smooth zoom, which is what they wanted;
+  erring the other way is the bug.
+
+Wheel zoom has no release event, so a fine stream settles on an idle
+timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
+camera into bounds and reports reading progress.
+
 ### Swipe-to-flip is edge-gated (#186)
 
 A touch swipe flips the page only if no pannable content was hidden in the
@@ -104,15 +132,16 @@ Zoom settles carry a `SettleReason` (`zoom-controller.ts`): only
 
 ## Per-surface policy matrix
 
-| Policy         | PagedViewport                     | Scroll readers                          |
-| -------------- | --------------------------------- | --------------------------------------- |
-| Capture        | deferred (at drag threshold)      | immediate (at pan press)                |
-| Pan deltas     | incremental → `camera.adjustView` | totals → absolute scroll from baselines |
-| Text-box pan   | suppressed for mouse/pen only     | suppressed for all pointer types        |
-| Pinch survivor | keeps panning                     | ignored until fresh press               |
-| Tap commit     | immediate                         | deferred (300 ms)                       |
-| Swipe-to-flip  | yes (mobile setting, edge-gated)  | no (panning is the scroll)              |
-| Wheel          | zoom, gap, or camera glide        | zoom, gap, or (native/strip) scroll     |
+| Policy         | PagedViewport                        | Scroll readers                          |
+| -------------- | ------------------------------------ | --------------------------------------- |
+| Capture        | deferred (at drag threshold)         | immediate (at pan press)                |
+| Pan deltas     | incremental → `camera.adjustView`    | totals → absolute scroll from baselines |
+| Text-box pan   | suppressed for mouse/pen only        | suppressed for all pointer types        |
+| Pinch survivor | keeps panning                        | ignored until fresh press               |
+| Tap commit     | immediate                            | deferred (300 ms)                       |
+| Swipe-to-flip  | yes (mobile setting, edge-gated)     | no (panning is the scroll)              |
+| Wheel          | zoom, gap, or camera glide           | zoom, gap, or (native/strip) scroll     |
+| Wheel zoom     | continuous (fine) / ladder (notched) | continuous (fine) / ladder (notched)    |
 
 Ctrl/meta+shift+wheel is the page-gap adjustment chord on every surface
 (paged writes `pagedGap`; scroll readers write `scrollGap` and sync
