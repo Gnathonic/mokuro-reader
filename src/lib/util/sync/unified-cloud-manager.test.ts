@@ -161,9 +161,16 @@ vi.mock('$lib/metadata/catalog-index-sync', () => ({
 
 const reconcileMissingMetadataFiles = vi.fn(async (_files?: unknown) => {});
 const markListingFresh = vi.fn();
+const scheduleSeriesFileWrite = vi.fn();
+const scheduleCatalogFileWrite = vi.fn();
+vi.mock('$lib/metadata/catalog-file-sync', () => ({
+  scheduleCatalogFileWrite: () => scheduleCatalogFileWrite()
+}));
 vi.mock('$lib/metadata/series-file-sync', () => ({
   reconcileMissingMetadataFiles: (files?: unknown) => reconcileMissingMetadataFiles(files),
-  markListingFresh: () => markListingFresh()
+  markListingFresh: () => markListingFresh(),
+  scheduleSeriesFileWrite: (title: string, options?: unknown) =>
+    scheduleSeriesFileWrite(title, options)
 }));
 
 /**
@@ -224,6 +231,43 @@ function oldSeriesFiles(): CloudFileMetadata[] {
 describe('UnifiedCloudManager rename operations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('a cross-series rename schedules series.json rewrites for BOTH folders and a catalog write', async () => {
+    // The old folder keeps other volumes, so its series.json still lists the
+    // moved one until rewritten; the new folder needs the arrival added.
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    const files = [
+      ...oldSeriesFiles(),
+      {
+        provider: 'webdav',
+        fileId: 'cbz-2',
+        path: 'Old Series/Volume 2.cbz',
+        modifiedTime: 't',
+        size: 5
+      }
+    ];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+
+    const scheduled = scheduleSeriesFileWrite.mock.calls.map((c) => c[0]);
+    expect(scheduled).toContain('Old Series');
+    expect(scheduled).toContain('New Series');
+    expect(scheduleCatalogFileWrite).toHaveBeenCalled();
   });
 
   it('regenerates the .mokuro at the new path, moves cbz+cover, and deletes the stale .mokuro', async () => {
@@ -1015,6 +1059,39 @@ describe('UnifiedCloudManager rename operations', () => {
     // it safe even though volume 1's files still occupy the old directory.
     expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledTimes(1);
     expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('Old Series');
+  });
+});
+
+describe('metadata maintenance on delete', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('a volume delete schedules a series.json rewrite and a catalog write', async () => {
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('Old Series', 'Volume 1');
+
+    expect(scheduleSeriesFileWrite.mock.calls.map((c) => c[0])).toContain('Old Series');
+    expect(scheduleCatalogFileWrite).toHaveBeenCalled();
+  });
+
+  it('a series delete schedules a catalog write', async () => {
+    const provider = makeRenameProvider();
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteSeriesFolder('Old Series');
+
+    expect(scheduleCatalogFileWrite).toHaveBeenCalled();
   });
 });
 
