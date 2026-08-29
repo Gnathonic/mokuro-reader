@@ -483,6 +483,9 @@ class UnifiedCloudManager {
     }
 
     await this.cleanupSeriesFileIfFolderEmptied(seriesTitle);
+    // When the folder still holds volumes, its series.json now lists one too
+    // many; either way the catalog's counts and freshness moved.
+    await this.scheduleMetadataMaintenance([seriesTitle]);
   }
 
   /**
@@ -501,6 +504,31 @@ class UnifiedCloudManager {
    * remote `series.json` — recoverable, since the next write republishes it from
    * the cached index, but it is a destructive step gated on local state.
    */
+  /**
+   * After a delete/rename mutated cloud files, bring the metadata files back
+   * in line: every affected series' `series.json` gets the standard debounced
+   * rewrite (self-gating — an emptied folder writes nothing, a bunko server
+   * merges it as an update request), and one catalog write follows (its own
+   * scheduler refuses on servers that compile their own). Best-effort: the
+   * heal-by-review pass catches anything this loses.
+   */
+  private async scheduleMetadataMaintenance(
+    seriesTitles: Array<string | undefined>
+  ): Promise<void> {
+    try {
+      const [{ scheduleSeriesFileWrite }, { scheduleCatalogFileWrite }] = await Promise.all([
+        import('$lib/metadata/series-file-sync'),
+        import('$lib/metadata/catalog-file-sync')
+      ]);
+      for (const title of new Set(seriesTitles.filter((t): t is string => !!t))) {
+        scheduleSeriesFileWrite(title);
+      }
+      scheduleCatalogFileWrite();
+    } catch (error) {
+      console.debug('Could not schedule metadata maintenance:', error);
+    }
+  }
+
   private async cleanupSeriesFileIfFolderEmptied(seriesTitle: string): Promise<void> {
     try {
       // Same folder the write path uses, and the same key it cached the record
@@ -633,6 +661,13 @@ class UnifiedCloudManager {
       // never be empty, so the prune below would always no-op.
       await this.cleanupSeriesFileIfFolderEmptied(oldFolderTitle);
       await this.pruneSeriesDirectoryIfEmpty(provider, oldFolderTitle);
+    }
+
+    if (changed > 0) {
+      // The old folder's series.json still lists the moved volume (when other
+      // volumes kept the folder alive), the new folder's needs the arrival —
+      // and a plain retitle stales the entry in place. Rewrite both sides.
+      await this.scheduleMetadataMaintenance([oldFolderTitle, newSeriesTitle]);
     }
 
     return changed;
@@ -1009,6 +1044,9 @@ class UnifiedCloudManager {
       // volumes failed and their files still occupy the old directory.
       if (result.renamedVolumeUuids.length > 0) {
         await this.pruneSeriesDirectoryIfEmpty(provider, oldFolderTitle);
+        // The moved series.json still says "series_title": old name inside it,
+        // and the catalog still lists the old folder. Rewrite both.
+        await this.scheduleMetadataMaintenance([oldFolderTitle, newSeriesTitle]);
       }
 
       return result;
@@ -1027,6 +1065,9 @@ class UnifiedCloudManager {
     } catch (error) {
       console.warn(`Failed to move the cached series index to '${newSeriesTitle}':`, error);
     }
+    // The carried series.json still names the old series inside it, and the
+    // catalog still lists the old folder. Rewrite both.
+    await this.scheduleMetadataMaintenance([oldFolderTitle, newSeriesTitle]);
 
     const cache = cacheManager.getCache(provider.type);
     if (cache?.removeById && cache?.add) {
@@ -1823,6 +1864,9 @@ class UnifiedCloudManager {
     } catch (error) {
       console.debug(`Could not drop the cached catalog entry for '${folderTitle}':`, error);
     }
+    // The cloud catalog still lists the deleted series (client-produced
+    // backends); the series write self-gates to nothing for a gone folder.
+    await this.scheduleMetadataMaintenance([]);
     return result;
   }
 
