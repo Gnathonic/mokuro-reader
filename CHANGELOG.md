@@ -4,38 +4,22 @@
 
 ### Added
 
-- Link a series to AniList; alt titles, link-out chips, free-text tag
-- `series.json` per series: link, titles, tag and a volume index (stats for not-installed volumes)
-- Re-read count, mute and AniList tracking now sync across devices
-- Series titles follow a language progression: Native → Romaji → English → folder name
-- Push read progress and re-reads to AniList for every linked series
-- Restart series: archive a finished read; reader offers it on re-open
-- Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
-- Series editor: spine shelf offsets now sync across devices
-- Search matches a cloud library's series by AniList titles and synonyms before you download anything
-- Opening a series installs its volume list, stats and covers
-- Cloud covers show while browsing; cached per account, expire after 14 days
-- Covers download visible-first, newest-first
-- Not-on-device volumes show a download badge and file size
+- **AniList tracking** — push read progress and re-reads to AniList for every linked series
+- **Series lookup and names** — AniList linking brings alt titles and synonyms; search matches them all; titles display in your preferred language
+- **Series editor** — pencil or hover + E: rename, AniList link, titles, tag, tracking
+- **Re-reading** — restart a finished series; the previous read archives and re-read counts sync
+- **Legacy cloud upgrades** — installed volumes quietly fill in whatever your cloud library is missing
+- **Persistent series stats** — removing volumes from device keeps stats, history and covers
+- **Not-on-device volumes** — full catalog cards before you download: cover, size and reading stats
+- **Spine width** — spine shelf offsets sync across devices
+- **Bunko integration** — improved throughout, with better handling of write-permission issues
 - Hover a series card and press Delete to remove it
-- Installed volumes upload missing mokuro and cover sidecars to your cloud
-- Already-uploaded libraries backfill their series.json and catalog.json
-- series.json volume stats heal in as volumes install
-- Edit and delete controls follow bunko account permissions
 
 ### Changed
 
-- Removing a volume from device keeps thumbnails, stats and history
-- Metadata sync failures no longer switch a server to read-only
 - Settings profiles now sync automatically; button removed
-- Not-on-device volumes always group into their own section
 - Huge cloud libraries browse without repeated full-library scans
-
-### Fixed
-
-- Google Drive no longer forks a series into duplicate folders
-- Google Drive re-login no longer wedges folder lookups
-- Catalog loading recovers from storage stalls and says why
+- Cloud covers cached per account, downloaded visible-first, expire after 14 days
 
 ## [1.8.3] - 2026-08-26
 
