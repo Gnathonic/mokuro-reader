@@ -7,23 +7,41 @@
 - Link a series to AniList; alt titles, link-out chips, free-text tag
 - `series.json` per series: link, titles, tag and a volume index (stats for not-installed volumes)
 - Re-read count, mute and AniList tracking now sync across devices
-- Show series titles in your preferred language (native/romaji/english)
+- Series titles follow a language progression: Native → Romaji → English → folder name
 - Push read progress and re-reads to AniList for every linked series
 - Restart series: archive a finished read; reader offers it on re-open
 - Series editor modal (pencil or hover + E): rename, AniList, titles, tracking
 - Series editor: spine shelf offsets now sync across devices
 - Search matches a cloud library's series by AniList titles and synonyms before you download anything
 - Opening a series installs its volume list, stats and covers
+- Cloud covers show while browsing; cached per account, expire after 14 days
+- Covers download visible-first, newest-first
 - Not-on-device volumes show a download badge and file size
 - Hover a series card and press Delete to remove it
-- Catalog setting groups not-on-device volumes into their own section
+- Installed volumes upload missing mokuro and cover sidecars to your cloud
 - Already-uploaded libraries backfill their series.json and catalog.json
+- series.json volume stats heal in as volumes install
+- Edit and delete controls follow bunko account permissions
 
 ### Changed
 
 - Removing a volume from device keeps thumbnails, stats and history
 - Metadata sync failures no longer switch a server to read-only
 - Settings profiles now sync automatically; button removed
+- Not-on-device volumes always group into their own section
+- Huge cloud libraries browse without repeated full-library scans
+
+### Fixed
+
+- Google Drive no longer forks a series into duplicate folders
+- Google Drive re-login no longer wedges folder lookups
+- Catalog loading recovers from storage stalls and says why
+
+## [1.8.3] - 2026-08-26
+
+### Fixed
+
+- Fixed Firefox downloads aborting after 30 seconds (#177, #261)
 
 ## [1.8.2] - 2026-07-09
 

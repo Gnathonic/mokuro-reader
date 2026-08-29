@@ -191,15 +191,16 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
     }
   }
 
+  const source = params.get('source');
   const manga = params.get('manga');
   const volume = params.get('volume');
-  if (!manga || !volume) return null;
+  if (!source || !manga || !volume) return null;
 
   const type = (params.get('type') || 'directory').toLowerCase();
   if (type !== 'directory' && type !== 'cbz') return null;
 
   return {
-    source: (params.get('source') || 'https://mokuro.moe/manga').replace(/\/$/, ''),
+    source: source.replace(/\/$/, ''),
     manga,
     volume,
     type,
