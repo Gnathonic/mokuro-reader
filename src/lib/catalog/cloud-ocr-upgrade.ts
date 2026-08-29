@@ -5,6 +5,7 @@ import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { ProviderType } from '$lib/util/sync/provider-interface';
 
 /**
@@ -35,7 +36,16 @@ function countCharsInLines(lines: unknown): number {
   return total;
 }
 
-function buildPageCharCounts(pages: unknown[]): { totalChars: number; cumulative: number[] } {
+/**
+ * Exported for `series-backfill.ts`, which needs the same char math to compute
+ * a sidecar-derived `series.json` entry's `character_count` — the one
+ * definition of "how many characters does this mokuro have", shared rather
+ * than re-implemented.
+ */
+export function buildPageCharCounts(pages: unknown[]): {
+  totalChars: number;
+  cumulative: number[];
+} {
   let totalChars = 0;
   const cumulative: number[] = [];
 
@@ -54,7 +64,12 @@ function buildPageCharCounts(pages: unknown[]): { totalChars: number; cumulative
   return { totalChars, cumulative };
 }
 
-async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
+/**
+ * Exported for `series-backfill.ts`, which pulls the same `.mokuro`/`.mokuro.gz`
+ * sidecars straight from a cloud folder listing (rather than a placeholder's
+ * matched sidecar) and needs the identical gunzip-and-rename handling.
+ */
+export async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Promise<File | null> {
   if (sidecarPath.toLowerCase().endsWith('.mokuro')) {
     console.log('[Cloud OCR Upgrade] Decoding plain mokuro sidecar:', sidecarPath, blob.size);
     return new File([blob], sidecarPath.split('/').pop() || sidecarPath, {
@@ -181,8 +196,11 @@ export function enqueueCloudOcrUpgrade(
   volume: VolumeMetadata,
   sidecar: CloudVolumeWithProvider
 ): void {
-  if (volume.isPlaceholder) {
-    console.log('[Cloud OCR Upgrade] Skip enqueue for placeholder volume:', volume.volume_uuid);
+  // Nothing to upgrade unless the pages are actually here: writing OCR onto a
+  // placeholder is meaningless, and writing it onto a metadata-only row would
+  // leave OCR without images and a row that still claims to be metadata only.
+  if (!isVolumeInstalled(volume)) {
+    console.log('[Cloud OCR Upgrade] Skip enqueue, volume not installed:', volume.volume_uuid);
     return;
   }
   const currentMokuroVersion =

@@ -9,6 +9,7 @@
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
+  import MetadataSettings from './MetadataSettings.svelte';
   import Stats from './Stats.svelte';
   import VolumeDefaults from './Volume/VolumeDefaults.svelte';
   import About from './About.svelte';
@@ -93,6 +94,7 @@
       <Profiles {onClose} />
       <AnkiConnectSettings />
       <CatalogSettings />
+      <MetadataSettings />
       <AppearanceSettings />
       <Stats />
       <About />

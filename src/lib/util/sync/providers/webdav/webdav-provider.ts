@@ -4,7 +4,8 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   StorageQuota,
-  CloudFileMetadata
+  CloudFileMetadata,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -14,7 +15,7 @@ import { webdavAuthOptions } from '../../core/providers/webdav-auth';
 import { basicAuthHeader } from '$lib/util/base64';
 import { fetchServerIdentity, type ServerPermissions } from './identity';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
-import { isSyncableFile } from '../../syncable-file';
+import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -27,6 +28,26 @@ const STORAGE_KEYS = {
   USERNAME: 'webdav_username',
   PASSWORD: 'webdav_password'
 };
+
+/**
+ * Drop any embedded userinfo (`user:pass@`) from a server URL before it feeds
+ * `accountScope`, which is persisted to IndexedDB. The login form has separate
+ * username/password fields, but nothing stops a user pasting
+ * `https://user:pass@host/dav` into the URL field itself — that must never
+ * leak a password into a persisted cache key.
+ */
+export function stripUrlUserinfo(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    // Not a parseable absolute URL — fall back to stripping an
+    // authority-embedded `user:pass@` prefix by hand.
+    return url.replace(/^(\w+:\/\/)[^/@]*@/, '$1');
+  }
+}
 
 const MOKURO_FOLDER = '/mokuro-reader';
 const VOLUME_DATA_FILE = '/mokuro-reader/volume-data.json';
@@ -46,6 +67,8 @@ export class WebDAVProvider implements SyncProvider {
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
   /** Server-reported permissions (mokuro-bunko identity endpoint); null = unknown/generic server */
   private _capabilities: ServerPermissions | null = null;
+  /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
+  private _serverCompilesMetadata = false;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Whether the current session was established with a password */
@@ -77,6 +100,38 @@ export class WebDAVProvider implements SyncProvider {
    */
   get isReadOnly(): boolean {
     return this._isReadOnly;
+  }
+
+  /**
+   * Re-fetch the identity endpoint and publish the fresh permissions.
+   *
+   * Server-side permissions move mid-session: `ownedSeries` grows as this
+   * account uploads new series, so a snapshot taken at connect goes stale and
+   * wrongly gates edits on series the account now owns. Called after the
+   * backup queue drains; fails quietly — the connect-time snapshot stays.
+   */
+  async refreshIdentity(): Promise<void> {
+    if (!browser || !this.client) return;
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    if (!serverUrl) return;
+    try {
+      const identity = await fetchServerIdentity(
+        serverUrl,
+        username ?? undefined,
+        password ?? undefined
+      );
+      if (identity.kind === 'authenticated') {
+        this._capabilities = identity.permissions;
+        this._isReadOnly = !(
+          identity.permissions.canWriteProgress || identity.permissions.canAddFiles
+        );
+        this.notifyStatusChanged();
+      }
+    } catch (error) {
+      console.warn('[WebDAV] identity refresh failed (keeping last known):', error);
+    }
   }
 
   /**
@@ -117,7 +172,9 @@ export class WebDAVProvider implements SyncProvider {
 
   getStatus(): ProviderStatus {
     // Only serverUrl is required - username/password are optional for some servers
-    const hasCredentials = !!(browser && localStorage.getItem(STORAGE_KEYS.SERVER_URL));
+    const serverUrl = browser ? localStorage.getItem(STORAGE_KEYS.SERVER_URL) : null;
+    const username = browser ? localStorage.getItem(STORAGE_KEYS.USERNAME) : null;
+    const hasCredentials = !!serverUrl;
     const isConnected = this.isAuthenticated();
 
     return {
@@ -131,7 +188,16 @@ export class WebDAVProvider implements SyncProvider {
         : hasCredentials
           ? 'Configured (not connected)'
           : 'Not configured',
-      isReadOnly: this._isReadOnly
+      isReadOnly: this._isReadOnly,
+      serverCompilesMetadata: this._serverCompilesMetadata,
+      metadataPermissions: this._capabilities?.metadata,
+      canModifyDelete: this._capabilities?.canModifyDelete,
+      // username is optional (some servers support password-only or no auth),
+      // so it's an extra discriminator on top of the required serverUrl, not
+      // a requirement in its own right.
+      accountScope: serverUrl
+        ? `webdav:${stripUrlUserinfo(serverUrl)}${username ? `|${username}` : ''}`
+        : undefined
     };
   }
 
@@ -210,6 +276,9 @@ export class WebDAVProvider implements SyncProvider {
         case 'authenticated':
           // Permissions come straight from the server - skip OPTIONS guessing
           this._capabilities = identity.permissions;
+          // The endpoint answered in bunko's contract shape, so bunko compiles
+          // series.json/catalog.json itself and this client must not.
+          this._serverCompilesMetadata = true;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -226,6 +295,7 @@ export class WebDAVProvider implements SyncProvider {
             canModifyDelete: false
           };
           this._isReadOnly = true;
+          this._serverCompilesMetadata = true;
           break;
 
         case 'unsupported':
@@ -233,6 +303,13 @@ export class WebDAVProvider implements SyncProvider {
           // Generic WebDAV server (or older mokuro-bunko): keep the existing
           // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
           this._capabilities = null;
+          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
+          // is unreachable, so a bunko server behind a flaky hop degrades to
+          // client-compiled. Safe in that direction: the resulting PUT is
+          // best-effort (see `isBestEffortMetadataPath`), so at worst bunko
+          // regenerates the file — whereas defaulting the other way would leave
+          // a plain WebDAV share with no catalog at all.
+          this._serverCompilesMetadata = false;
 
           // Ensure mokuro folder exists
           await this.ensureMokuroFolder();
@@ -340,6 +417,7 @@ export class WebDAVProvider implements SyncProvider {
     this.client = null;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
+    this._serverCompilesMetadata = false;
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
@@ -761,7 +839,7 @@ export class WebDAVProvider implements SyncProvider {
     blob: Blob,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
     }
@@ -774,7 +852,7 @@ export class WebDAVProvider implements SyncProvider {
       const seriesTitle = pathParts.join('/');
 
       const credentials = await this.getWorkerUploadCredentials();
-      const fileId = await this.cloudCore.uploadFile({
+      const uploaded = await this.cloudCore.uploadFile({
         seriesTitle,
         filename,
         blob,
@@ -783,13 +861,19 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
-      return fileId;
+      return uploaded;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      const kind = classifyWriteError(errorMessage);
-      if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
+      // Compiled metadata files are best-effort: a server that compiles them
+      // itself (mokuro-bunko) rejects the write by design, and that says
+      // nothing about progress sync or archive uploads. Demoting the provider
+      // here would hide backup and upload for a perfectly writable account.
+      if (!isBestEffortMetadataPath(path)) {
+        const kind = classifyWriteError(errorMessage);
+        if (kind !== 'other') {
+          this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
+        }
       }
 
       throw new ProviderError(
@@ -825,17 +909,43 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /**
+   * A rename/move never changes file content, so the returned entry must
+   * carry the ORIGINAL file's real `modifiedTime` (and provisional flag, if
+   * it was never more than a client-clock guess) — never a freshly minted
+   * `new Date()`. `modifiedTime`/`modifiedTimeProvisional` are REQUIRED
+   * (not defaulted) so a caller can't silently fall through to fabrication;
+   * every caller has them because it is renaming a known cached entry.
+   *
+   * NOTE the deliberate contrast with Google Drive: a Drive rename is a
+   * metadata-only PATCH, and Drive's own server bumps that file's
+   * `modifiedTime` in response to it — Drive's `renameFile`/`renameFolder`
+   * therefore return the SERVER'S fresh timestamp, not the cached one. A
+   * WebDAV MOVE carries no such signal back, so preserving the cached
+   * `modifiedTime` here (rather than fabricating a new one from the client
+   * clock) is the correct trade: the cached record and the next real listing
+   * then disagree by exactly one rename's worth of nothing, which
+   * self-corrects on the next fetch instead of poisoning `series.json` with
+   * a client-clock stamp.
+   */
   private buildWebDAVFileMetadata(
     file: CloudFileMetadata,
     path: string,
-    modifiedTime?: string
+    modifiedTime: string,
+    modifiedTimeProvisional?: boolean
   ): CloudFileMetadata {
-    return {
+    const result: CloudFileMetadata = {
       ...file,
       fileId: `${MOKURO_FOLDER}/${path}`,
       path,
-      modifiedTime: modifiedTime || new Date().toISOString()
+      modifiedTime
     };
+    if (modifiedTimeProvisional) {
+      result.modifiedTimeProvisional = true;
+    } else {
+      delete result.modifiedTimeProvisional;
+    }
+    return result;
   }
 
   /**
@@ -931,9 +1041,15 @@ export class WebDAVProvider implements SyncProvider {
         throw new ProviderError(`File not found: ${file.path}`, 'webdav', 'NOT_FOUND');
       }
 
-      const kind = classifyWriteError(errorMessage);
-      if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+      // Same best-effort contract as uploadFile: cleanupSeriesFileIfFolderEmptied()
+      // and moveSeriesFileAfterRename() DELETE `<Series>/series.json`, which a
+      // server that compiles it rejects by design. The callers swallow the throw,
+      // so an unguarded demotion here would flip the provider read-only silently.
+      if (!isBestEffortMetadataPath(file.path)) {
+        const kind = classifyWriteError(errorMessage);
+        if (kind !== 'other') {
+          this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+        }
       }
 
       throw new ProviderError(
@@ -986,7 +1102,12 @@ export class WebDAVProvider implements SyncProvider {
           )?.size;
           if (typeof file.size === 'number' && destSize === file.size) {
             console.log(`↩️ ${normalizedNewPath} already at destination (idempotent retry)`);
-            return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+            return this.buildWebDAVFileMetadata(
+              file,
+              normalizedNewPath,
+              file.modifiedTime,
+              file.modifiedTimeProvisional
+            );
           }
         }
         throw new ProviderError(
@@ -998,7 +1119,12 @@ export class WebDAVProvider implements SyncProvider {
 
       await this.client.moveFile(file.fileId, destinationFullPath, { overwrite: false });
       console.log(`✅ Renamed ${file.path} to ${normalizedNewPath} in WebDAV`);
-      return this.buildWebDAVFileMetadata(file, normalizedNewPath);
+      return this.buildWebDAVFileMetadata(
+        file,
+        normalizedNewPath,
+        file.modifiedTime,
+        file.modifiedTimeProvisional
+      );
     } catch (error) {
       if (error instanceof ProviderError) {
         throw error;
@@ -1048,7 +1174,8 @@ export class WebDAVProvider implements SyncProvider {
         this.buildWebDAVFileMetadata(
           file,
           `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
-          file.modifiedTime
+          file.modifiedTime,
+          file.modifiedTimeProvisional
         )
       );
 

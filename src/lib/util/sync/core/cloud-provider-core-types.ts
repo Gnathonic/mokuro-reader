@@ -1,4 +1,4 @@
-import type { ProviderType } from '$lib/util/sync/provider-interface';
+import type { ProviderType, UploadFileResult } from '$lib/util/sync/provider-interface';
 
 export type CloudCoreProviderType = ProviderType;
 
@@ -22,7 +22,7 @@ export interface CloudCoreUploadArgs {
 
 export interface CloudProviderCore {
   downloadFile(args: CloudCoreDownloadArgs): Promise<ArrayBuffer>;
-  uploadFile(args: CloudCoreUploadArgs): Promise<string>;
+  uploadFile(args: CloudCoreUploadArgs): Promise<UploadFileResult>;
 }
 
 export function requireCredentialString(

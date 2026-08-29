@@ -2,8 +2,10 @@ import { writable } from 'svelte/store';
 import { driveApiClient } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
+import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
+import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -17,14 +19,91 @@ import type { DriveFileMetadata } from '../../provider-interface';
  *
  * Implements CloudCache interface for multi-provider architecture compatibility.
  */
+/** One in-place edit of the cache map: takes the current map, returns the next. */
+type CacheMutation = (cache: Map<string, DriveFileMetadata[]>) => Map<string, DriveFileMetadata[]>;
+
+/**
+ * How many times a dedup-triggered refetch may re-enter `fetchAllFiles`
+ * before the chain gives up. A converged dedup needs exactly one; anything
+ * beyond that means duplicates are being recreated between passes, and a
+ * whole-account fetch per round is not a fix for that.
+ */
+const MAX_DEDUP_REFETCHES = 2;
+
+/**
+ * Everything about one cached file that a consumer can observe, as one
+ * comparable token. `fileId` alone is not enough — a re-upload keeps the id
+ * and moves the size/mtime, which is exactly what a staleness check reads.
+ */
+function fileToken(file: DriveFileMetadata): string {
+  return [
+    file.fileId,
+    file.path,
+    file.name,
+    file.modifiedTime,
+    file.size,
+    file.description ?? '',
+    file.parentId ?? ''
+    // Joined on a separator, so "ab" + "c" can never read as "a" + "bc".
+  ].join('\u0001');
+}
+
+/**
+ * Do two built cache maps describe the same account state?
+ *
+ * Order-insensitive WITHIN a folder: the entries come out of the Drive
+ * listing in whatever order the API paged them, and two fetches of an
+ * unchanged account can legitimately hand back the same files in a different
+ * order. Comparing them order-sensitively would report "changed" on every
+ * fetch and give back nothing.
+ */
+function sameCacheMap(
+  a: Map<string, DriveFileMetadata[]>,
+  b: Map<string, DriveFileMetadata[]>
+): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [key, aFiles] of a) {
+    const bFiles = b.get(key);
+    if (!bFiles || bFiles.length !== aFiles.length) return false;
+    const aTokens = aFiles.map(fileToken).sort();
+    const bTokens = bFiles.map(fileToken).sort();
+    for (let i = 0; i < aTokens.length; i++) {
+      if (aTokens[i] !== bTokens[i]) return false;
+    }
+  }
+  return true;
+}
+
 class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
-  private cache = writable<Map<string, DriveFileMetadata[]>>(new Map());
+  // State split from emission: `read()` is synchronous and never lagged (all
+  // the getters below use it), while subscribers get incremental mutations
+  // coalesced — see `CoalescedCacheStore`.
+  private cache = new CoalescedCacheStore<DriveFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
   private cacheLoadedStore = writable<boolean>(false);
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
   private fetchPromise: Promise<void> | null = null;
+  /**
+   * How many times IN A ROW a dedup-triggered refetch has re-entered
+   * `fetchAllFiles`. Reset by any fetch that is not itself dedup-triggered.
+   * See {@link MAX_DEDUP_REFETCHES}.
+   */
+  private dedupRefetchDepth = 0;
+  /**
+   * Mutations applied to the live cache WHILE a whole-account fetch is in
+   * flight, so the fetch can replay them onto its own result instead of
+   * throwing them away. `null` when no fetch is running — see {@link mutate}.
+   */
+  private mutationsDuringFetch: CacheMutation[] | null = null;
+  /**
+   * Bumped by anything that invalidates the cache outright (`clearCache`,
+   * which logout and account switching go through). A fetch that started
+   * before the bump must not publish its result over the top.
+   */
+  private cacheGeneration = 0;
 
   get store() {
     // Return Map grouped by series for efficient series-based operations
@@ -45,10 +124,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   }
 
   getVolumeDataFiles(): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     return currentCache.get(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) || [];
   }
@@ -56,8 +132,14 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   /**
    * Fetch metadata for all managed files in the mokuro-reader folder
    * and cache them in memory for the session
+   *
+   * `options.dedupRefetch` marks the re-entry `runDeduplication` performs
+   * after it merges duplicate folders — the ONLY caller that can call this
+   * function as a result of this function. Every other caller resets the
+   * re-entry counter, so an ordinary refresh is never charged for an earlier
+   * dedup storm.
    */
-  async fetchAllFiles(): Promise<void> {
+  async fetchAllFiles(options?: { dedupRefetch?: boolean }): Promise<void> {
     if (this.fetchingFlag) {
       console.log('Drive files cache fetch already in progress');
       // Return existing promise to allow callers to wait
@@ -67,8 +149,15 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       return;
     }
 
+    if (!options?.dedupRefetch) this.dedupRefetchDepth = 0;
+
     this.fetchingFlag = true;
     this.isFetchingStore.set(true);
+    // From here until the swap below, every mutation is recorded as well as
+    // applied, so the snapshot this fetch is about to take cannot erase the
+    // uploads that land while it pages. See `mutate`.
+    this.mutationsDuringFetch = [];
+    const startedAtGeneration = this.cacheGeneration;
 
     // Create promise for this fetch operation
     this.fetchPromise = (async () => {
@@ -87,8 +176,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const typeCounts: Record<string, number> = {};
         const cbzFiles: any[] = [];
         const sidecarFiles: any[] = [];
-        const volumeDataFiles: any[] = [];
-        const profilesFiles: any[] = [];
+        const rootConfigFiles: any[] = [];
         const folderNames = new Map<string, string>();
         const foundFolderNames: string[] = [];
 
@@ -110,23 +198,25 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
-          } else if (
-            item.name.endsWith('.mokuro') ||
-            item.name.endsWith('.mokuro.gz') ||
-            /\.(webp|jpe?g)$/i.test(item.name)
-          ) {
+          } else if (isSidecarFile(item.name)) {
+            // .mokuro / .mokuro.gz / cover images AND the per-series index
+            // `<Series>/series.json`. Hand-rolling this test is what made
+            // series.json invisible on Drive while every other provider listed
+            // it — the shared allowlist is the only definition.
             sidecarFiles.push(item);
-          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA) {
-            volumeDataFiles.push(item);
-          } else if (item.name === GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES) {
-            profilesFiles.push(item);
+          } else if (isRootConfigFile(item.name)) {
+            // volume-data.json, profiles.json, catalog.json
+            rootConfigFiles.push(item);
           }
         }
 
         // Log warning if duplicates found
-        if (volumeDataFiles.length > 1) {
+        const volumeDataCount = rootConfigFiles.filter(
+          (file) => file.name.toLowerCase() === GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA
+        ).length;
+        if (volumeDataCount > 1) {
           console.warn(
-            `Found ${volumeDataFiles.length} volume-data.json files - duplicates will be merged and cleaned up during sync`
+            `Found ${volumeDataCount} volume-data.json files - duplicates will be merged and cleaned up during sync`
           );
         }
 
@@ -168,48 +258,92 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           }
         }
 
-        // Add volume-data.json files as an array
-        if (volumeDataFiles.length > 0) {
-          const volumeDataMetadata = volumeDataFiles.map((file) => {
-            console.log('Volume data file from API:', file);
-            const metadata: DriveFileMetadata = {
-              provider: 'google-drive',
-              fileId: file.id,
-              name: file.name,
-              modifiedTime: file.modifiedTime || new Date().toISOString(),
-              size: file.size ? parseInt(file.size) : 0,
-              path: file.name
-            };
-            return metadata;
-          });
+        // Add root config files, keyed by BASENAME (`get()`/`has()` derive the
+        // cache key from `path.split('/')[0]`, so `catalog.json` is its own key).
+        //
+        // One that lives in a SERIES folder is NOT a root file: cached at the bare
+        // name it would shadow the real root copy and readers would fetch the wrong
+        // file. Those keep their full `<Series>/<name>` path and are grouped with
+        // the series, exactly like the archives and sidecars above — the same guard
+        // MEGA applies with `isJson && pathParts.length === 0`.
+        for (const file of rootConfigFiles) {
+          const parentId = file.parents?.[0];
+          const parentName = parentId ? folderNames.get(parentId) : null;
+          const seriesFolder =
+            parentName && parentName !== GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER
+              ? parentName
+              : null;
 
-          console.log('Cached volume data metadata:', volumeDataMetadata);
-          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.VOLUME_DATA, volumeDataMetadata);
-        }
+          const metadata: DriveFileMetadata = {
+            provider: 'google-drive',
+            fileId: file.id,
+            name: file.name,
+            modifiedTime: file.modifiedTime || new Date().toISOString(),
+            size: file.size ? parseInt(file.size) : 0,
+            path: seriesFolder ? `${seriesFolder}/${file.name}` : file.name,
+            description: file.description,
+            parentId
+          };
 
-        // Add profiles.json files as an array
-        if (profilesFiles.length > 0) {
-          const profilesMetadata = profilesFiles.map((file) => {
-            console.log('Profiles file from API:', file);
-            const metadata: DriveFileMetadata = {
-              provider: 'google-drive',
-              fileId: file.id,
-              name: file.name,
-              modifiedTime: file.modifiedTime || new Date().toISOString(),
-              size: file.size ? parseInt(file.size) : 0,
-              path: file.name
-            };
-            return metadata;
-          });
-
-          console.log('Cached profiles metadata:', profilesMetadata);
-          cacheMap.set(GOOGLE_DRIVE_CONFIG.FILE_NAMES.PROFILES, profilesMetadata);
+          const key = seriesFolder ?? file.name.toLowerCase();
+          const existing = cacheMap.get(key);
+          if (existing) {
+            existing.push(metadata);
+          } else {
+            cacheMap.set(key, [metadata]);
+          }
         }
 
         console.log(
-          `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files, ${volumeDataFiles.length} volume-data.json file(s), and ${profilesFiles.length} profiles.json file(s)`
+          `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${rootConfigFiles.length} root config file(s)`
         );
-        this.cache.set(cacheMap);
+        // IDENTITY IS A SIGNAL, so do not spend it on a listing that did not
+        // change. `catalog/index.ts`'s `volumesWithPlaceholders` decides
+        // whether to re-mint EVERY placeholder object by comparing the
+        // cloud-files Map by reference (`lastPlaceholderInputs.cloudFiles !==
+        // $cloudFiles`) — that identity check is its documented contract and
+        // the reason a cover landing no longer re-derives the catalog. A
+        // brand-new Map after a fetch that found exactly the same files
+        // therefore re-mints thousands of placeholders for nothing, and every
+        // re-minted bare placeholder is re-resolved by `cover-service.ts`,
+        // which schedules another `series.json` write, which (before
+        // `ScheduleOptions.fromCloudListing`) fetched the whole account
+        // again. Publishing the SAME Map when nothing moved cuts that at the
+        // source, for every consumer rather than one.
+        //
+        // ATOMIC SWAP. `cacheMap` was built entirely off to the side — no
+        // subscriber has seen a half-assembled listing — and it is installed
+        // here in ONE `set`, with two corrections applied first:
+        //
+        // 1. Mutations that landed WHILE this fetch was paging are replayed
+        //    on top, so an upload made during the fetch survives it (see
+        //    `mutate` for why erasing them does not stay erased).
+        // 2. A `clearCache()` during the fetch wins outright. It means the
+        //    account went away (logout, or a switch to another provider);
+        //    publishing the old account's listing over the empty cache would
+        //    hand every consumer files it must not see.
+        if (this.cacheGeneration !== startedAtGeneration) {
+          console.log('Drive files cache was cleared mid-fetch; discarding this listing');
+          return;
+        }
+        const replayed = (this.mutationsDuringFetch ?? []).reduce(
+          (map, fn) => fn(map),
+          cacheMap as Map<string, DriveFileMetadata[]>
+        );
+        this.mutationsDuringFetch = null;
+        // Compared against the STATE (which already holds the replayed
+        // mutations), not the published side: when they agree, the listing
+        // brought nothing the state didn't know.
+        const previous = this.cache.read();
+        if (!sameCacheMap(previous, replayed)) {
+          this.cache.set(replayed);
+        } else {
+          // The listing changed nothing — but mutations may still be riding
+          // the coalescing timer, and "a fetch completed" is the moment
+          // consumers wait on. Publish them now; a no-op (identity
+          // preserved) when nothing is pending.
+          this.cache.flush();
+        }
         this.lastFetchTime = Date.now();
         this.cacheLoadedStore.set(true);
       } catch (error) {
@@ -221,6 +355,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         }
         // Don't clear cache on error, keep stale data
       } finally {
+        this.mutationsDuringFetch = null;
         this.fetchingFlag = false;
         this.isFetchingStore.set(false);
         this.fetchPromise = null;
@@ -281,10 +416,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Used to determine if a local volume is already backed up
    */
   existsInDrive(seriesTitle: string, volumeTitle: string): boolean {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -296,10 +428,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Returns first file if there are duplicates
    */
   getDriveFile(seriesTitle: string, volumeTitle: string): DriveFileMetadata | undefined {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -311,10 +440,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Returns array of all files with this path (handles duplicates)
    */
   getDriveFiles(seriesTitle: string, volumeTitle: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const path = `${seriesTitle}/${volumeTitle}.cbz`;
     const seriesFiles = currentCache.get(seriesTitle);
@@ -326,10 +452,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Future use: Discover remote-only volumes for download placeholders
    */
   getAllDriveFiles(): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const result: DriveFileMetadata[] = [];
     for (const files of currentCache.values()) {
@@ -343,20 +466,46 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Future use: Show remote-only volumes in series view
    */
   getDriveFilesBySeries(seriesTitle: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // With series-grouped cache, just get the series directly (O(1) lookup)
     return currentCache.get(seriesTitle) || [];
   }
 
   /**
+   * THE ONE WAY THIS CLASS CHANGES ITS CACHE OUTSIDE A FETCH.
+   *
+   * A whole-account fetch takes a snapshot of Drive at the moment it starts
+   * paging and publishes it minutes later — on a 12,500-file library that is
+   * thirteen `files.list` round trips. Anything that changed Drive in the
+   * meantime is IN that snapshot only by luck, and the uploads this app makes
+   * itself are the ones that matter: `uploadFile` records every upload here
+   * via `cache.add`, precisely so a just-written `<Series>/series.json` is
+   * visible before the next listing.
+   *
+   * Publishing the snapshot straight over the top erased exactly those
+   * records, and the erasure is self-sustaining rather than merely wrong: the
+   * reconcile pass reads the cache, sees a folder with archives and no
+   * `series.json`, schedules the write again, the write uploads and re-adds,
+   * the next fetch erases it again. The user sees a listing that never
+   * converges and a status badge that never settles.
+   *
+   * So every mutation is also RECORDED while a fetch is in flight, and the
+   * fetch replays them onto its own map before publishing. Replay order is
+   * arrival order, and the functions are the same ones the live store ran, so
+   * the replayed result is what the live cache would have held had the fetch
+   * landed first.
+   */
+  private mutate(fn: CacheMutation): void {
+    if (this.mutationsDuringFetch) this.mutationsDuringFetch.push(fn);
+    this.cache.update(fn);
+  }
+
+  /**
    * Add or update the Drive state after successful upload
    */
   addDriveFile(seriesTitle: string, volumeTitle: string, metadata: DriveFileMetadata): void {
-    this.cache.update((cache) => {
+    this.mutate((cache) => {
       const newCache = new Map(cache);
       // Group by series title instead of full path
       const existing = newCache.get(seriesTitle);
@@ -381,7 +530,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Remove specific file from cache by file ID
    */
   removeDriveFileById(fileId: string): void {
-    this.cache.update((cache) => {
+    this.mutate((cache) => {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
@@ -401,7 +550,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Remove from cache after deletion from Drive (removes all files with this path)
    */
   removeDriveFile(seriesTitle: string, volumeTitle: string): void {
-    this.cache.update((cache) => {
+    this.mutate((cache) => {
       const path = `${seriesTitle}/${volumeTitle}.cbz`;
       const newCache = new Map(cache);
       const seriesFiles = newCache.get(seriesTitle);
@@ -423,7 +572,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Update file description in cache
    */
   updateFileDescription(fileId: string, description: string): void {
-    this.cache.update((cache) => {
+    this.mutate((cache) => {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
@@ -441,6 +590,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * Clear the entire cache (useful for sign out)
    */
   clearCache(): void {
+    this.cacheGeneration += 1;
     this.cache.set(new Map());
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
@@ -471,10 +621,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   has(path: string): boolean {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -487,10 +634,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   get(path: string): DriveFileMetadata | null {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -503,10 +647,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path Full path like "SeriesTitle/VolumeTitle.cbz"
    */
   getAll(path: string): DriveFileMetadata[] {
-    let currentCache: Map<string, DriveFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find all matches within that series
     const seriesTitle = path.split('/')[0];
@@ -566,7 +707,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * @param path File path
    * @param metadata File metadata
    */
-  add(path: string, metadata: DriveFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<DriveFileMetadata>): void {
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {
@@ -597,7 +738,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     }
 
     // For other fields, update the cache directly
-    this.cache.update((cache) => {
+    this.mutate((cache) => {
       const newCache = new Map(cache);
 
       for (const [path, files] of newCache.entries()) {
@@ -614,6 +755,24 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   /**
    * Run folder deduplication asynchronously
    * Called after cache fetch completes
+   *
+   * The refetch below is the only path in this file that can make a fetch
+   * cause another fetch, and it used to be UNCONDITIONAL — every merge bought
+   * a whole-account refetch, whose own `finally` ran dedup again. That is
+   * fine while dedup converges (`deduplicateAll` already loops internally
+   * until it finds nothing, so the follow-up pass normally merges zero and
+   * the chain stops after one refetch). It is not fine when duplicates keep
+   * being CREATED between passes — `findOrCreateFolder` creates a folder
+   * whenever its lookup misses, and Drive's file index is eventually
+   * consistent, so a write landing during a dedup pass can mint the very
+   * duplicate the next pass merges. That is an unbounded refetch engine, and
+   * it exists on no other provider: WebDAV and MEGA run no dedup at all.
+   *
+   * So the chain is now DEPTH-BOUNDED. Convergence is unaffected (one refetch
+   * is all a converged dedup ever needed); a pathological account gives up on
+   * refreshing the view rather than fetching the whole account forever, and
+   * says so once. The counter is reset by any fetch that is not itself a
+   * dedup refetch, so the next ordinary refresh starts the budget over.
    */
   private runDeduplication(): void {
     // Import dynamically to avoid circular dependencies
@@ -626,12 +785,21 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const ops = googleDriveProvider.getFolderOperations();
         const result = await folderDeduplicator.deduplicateAll('google-drive', ops);
 
-        if (result.groupsMerged > 0) {
-          // Refetch cache to reflect the merged state
-          // This will trigger another dedup pass for any new duplicates created
-          console.log('[DriveCache] Dedup merged folders, refetching cache...');
-          await this.fetchAllFiles();
+        if (result.groupsMerged === 0) return;
+
+        if (this.dedupRefetchDepth >= MAX_DEDUP_REFETCHES) {
+          console.warn(
+            `[DriveCache] Dedup merged folders again after ${MAX_DEDUP_REFETCHES} refetches; ` +
+              'not refetching. Duplicate folders are being recreated as fast as they are merged.'
+          );
+          return;
         }
+
+        // Refetch cache to reflect the merged state
+        // This will trigger another dedup pass for any new duplicates created
+        this.dedupRefetchDepth += 1;
+        console.log('[DriveCache] Dedup merged folders, refetching cache...');
+        await this.fetchAllFiles({ dedupRefetch: true });
       })
       .catch((err) => {
         console.error('[DriveCache] Deduplication failed:', err);

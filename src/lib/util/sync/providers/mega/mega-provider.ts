@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   StorageQuota,
-  UploadPayload
+  UploadPayload,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
@@ -243,7 +244,10 @@ export class MegaProvider implements SyncProvider {
           ? 'MEGA session expired — please reconnect'
           : hasSession || hasLegacy
             ? 'Configured (not connected)'
-            : 'Not configured'
+            : 'Not configured',
+      // Lowercased: MEGA email login is case-insensitive, so 'A@B.com' and
+      // 'a@b.com' authenticate the same account and must not split the cache.
+      accountScope: this.reconnectEmail ? `mega:${this.reconnectEmail.toLowerCase()}` : undefined
     };
   }
 
@@ -578,18 +582,43 @@ export class MegaProvider implements SyncProvider {
     return currentFolder;
   }
 
+  /**
+   * A rename/move never changes file content, so the returned entry must
+   * carry the ORIGINAL file's real `modifiedTime` (and provisional flag, if
+   * it was never more than a client-clock guess) — never a freshly minted
+   * `new Date()`. `modifiedTime`/`modifiedTimeProvisional` are REQUIRED
+   * (not defaulted) so a caller can't silently fall through to fabrication;
+   * every caller has them because it is renaming a known cached entry.
+   *
+   * NOTE the deliberate contrast with Google Drive: a Drive rename is a
+   * metadata-only PATCH, and Drive's own server bumps that file's
+   * `modifiedTime` in response to it — Drive's `renameFile`/`renameFolder`
+   * therefore return the SERVER'S fresh timestamp, not the cached one. MEGA
+   * has no such signal to read back, so preserving the cached `modifiedTime`
+   * here (rather than fabricating a new one from the client clock) is the
+   * correct trade: the cached record and the next real listing then disagree
+   * by exactly one rename's worth of nothing, which self-corrects on the
+   * next fetch instead of poisoning `series.json` with a client-clock stamp.
+   */
   private buildRenamedCloudFile(
     file: CloudFileMetadata,
     nextPath: string,
-    fileId?: string,
-    modifiedTime?: string
+    fileId: string,
+    modifiedTime: string,
+    modifiedTimeProvisional?: boolean
   ): CloudFileMetadata {
-    return {
+    const result: CloudFileMetadata = {
       ...file,
-      fileId: fileId || file.fileId,
+      fileId,
       path: nextPath,
-      modifiedTime: modifiedTime || new Date().toISOString()
+      modifiedTime
     };
+    if (modifiedTimeProvisional) {
+      result.modifiedTimeProvisional = true;
+    } else {
+      delete result.modifiedTimeProvisional;
+    }
+    return result;
   }
 
   // VOLUME STORAGE METHODS
@@ -709,7 +738,7 @@ export class MegaProvider implements SyncProvider {
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
@@ -720,7 +749,7 @@ export class MegaProvider implements SyncProvider {
         onProgress(0, payloadSize);
       }
       // Wrap upload in retry logic to handle stale cache
-      const fileId = await retryWithCacheRefresh(
+      const uploaded = await retryWithCacheRefresh(
         async () => {
           const mokuroFolder = await this.ensureMokuroFolder();
 
@@ -765,8 +794,10 @@ export class MegaProvider implements SyncProvider {
             });
           }
 
-          // Upload new file
-          const uploadedFileId = await new Promise<string>((resolve, reject) => {
+          // Upload new file. The completed node's `timestamp` is the SERVER's
+          // epoch-seconds stamp — the same field `listCloudVolumes` maps to
+          // `modifiedTime` — so the result can carry a real server mtime.
+          const uploadResult = await new Promise<UploadFileResult>((resolve, reject) => {
             const uploadStream = targetFolder.upload(
               {
                 name: fileName,
@@ -782,7 +813,19 @@ export class MegaProvider implements SyncProvider {
                     onProgress(buffer.length, buffer.length);
                   }
                   console.log(`✅ Uploaded ${fileName} to MEGA (${fileId})`);
-                  resolve(fileId);
+                  const ts = file?.timestamp;
+                  const nodeSize = file?.size;
+                  resolve({
+                    fileId,
+                    modifiedTime:
+                      typeof ts === 'number' && Number.isFinite(ts)
+                        ? new Date(ts * 1000).toISOString()
+                        : undefined,
+                    size:
+                      typeof nodeSize === 'number' && Number.isFinite(nodeSize)
+                        ? nodeSize
+                        : undefined
+                  });
                 }
               }
             );
@@ -794,7 +837,7 @@ export class MegaProvider implements SyncProvider {
               });
             }
           });
-          return uploadedFileId;
+          return uploadResult;
         },
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
@@ -804,7 +847,7 @@ export class MegaProvider implements SyncProvider {
       // a debounced refresh. A mid-operation rebuild would clobber the
       // manager's incremental cache updates with a not-yet-synced tree.
 
-      return fileId;
+      return uploaded;
     } catch (error) {
       // Typed QUOTA_EXCEEDED with a message users can act on, instead of
       // megajs's raw "EOVERQUOTA (-17): Request over quota".
@@ -1036,7 +1079,13 @@ export class MegaProvider implements SyncProvider {
           }
 
           const nextFileId = megaFile.nodeId || megaFile.id || file.fileId;
-          return this.buildRenamedCloudFile(file, normalizedNewPath, nextFileId);
+          return this.buildRenamedCloudFile(
+            file,
+            normalizedNewPath,
+            nextFileId,
+            file.modifiedTime,
+            file.modifiedTimeProvisional
+          );
         },
         `Rename file ${file.fileId} in MEGA`,
         () => this.reinitialize()
@@ -1133,7 +1182,8 @@ export class MegaProvider implements SyncProvider {
           file,
           `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`,
           file.fileId,
-          file.modifiedTime
+          file.modifiedTime,
+          file.modifiedTimeProvisional
         )
       );
     } catch (error) {

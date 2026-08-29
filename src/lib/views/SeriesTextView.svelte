@@ -2,6 +2,7 @@
   import { catalog } from '$lib/catalog';
   import { nav, routeParams } from '$lib/util/hash-router';
   import { db } from '$lib/catalog/db';
+  import { isVolumeInstalled } from '$lib/catalog/volume-state';
   import { getCharCount } from '$lib/util/count-chars';
   import { Button, Alert } from 'flowbite-svelte';
   import { ArrowLeftOutline, ClipboardOutline, CheckOutline } from 'flowbite-svelte-icons';
@@ -22,7 +23,8 @@
   );
   let volumes = $derived(
     seriesData?.volumes
-      .filter((v) => !v.isPlaceholder)
+      // Only volumes whose OCR is on this device have text to show.
+      .filter(isVolumeInstalled)
       .sort((a, b) =>
         a.volume_title.localeCompare(b.volume_title, undefined, {
           numeric: true,
@@ -183,7 +185,7 @@
 </script>
 
 <svelte:head>
-  <title>{seriesData?.title || 'Series'} - Text View</title>
+  <title>{seriesData?.displayTitle || 'Series'} - Text View</title>
 </svelte:head>
 
 {#if dataLoaded && volumesData.length > 0 && seriesData}
@@ -220,7 +222,7 @@
 
         <!-- Series Title -->
         <h1 class="mb-2 text-3xl font-bold text-gray-900 dark:text-white">
-          {seriesData.title}
+          {seriesData.displayTitle}
         </h1>
         <p class="mb-4 text-lg text-gray-600 dark:text-gray-400">
           All volumes combined in a single text view for language analysis and searching

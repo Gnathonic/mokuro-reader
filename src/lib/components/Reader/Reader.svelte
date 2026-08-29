@@ -2,6 +2,7 @@
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
+  import { get } from 'svelte/store';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
@@ -12,6 +13,7 @@
   import {
     effectiveVolumeSettings,
     imageFilter,
+    preferredTitleLanguage,
     progress,
     settings,
     updateProgress,
@@ -23,6 +25,12 @@
     type ScheduleSettingKey
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  import RereadPromptModal from './RereadPromptModal.svelte';
+  import { shouldOfferReread } from '$lib/metadata/reread';
+  import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+  import { getSeriesReadingState } from '$lib/settings/series-data';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
@@ -55,6 +63,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import '$lib/styles/page-transitions.css';
@@ -69,6 +78,46 @@
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
+
+  // Re-read detection: once per opened volume, ask when this is the first LOCAL
+  // volume of a series whose every local volume is completed (see
+  // $lib/metadata/reread.shouldOfferReread). `rereadCheckedFor` guards this to
+  // run once per reader mount for the opened volume, not on every $volumes tick.
+  let rereadPromptOpen = $state(false);
+  let rereadCheckedFor = $state<string | null>(null);
+  let rereadDisplayTitle = $state('');
+  let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
+
+  $effect(() => {
+    const v = volume;
+    const seriesVolumes = localSeriesVolumes;
+    if (!v || seriesVolumes.length === 0 || rereadCheckedFor === v.volume_uuid) return;
+    rereadCheckedFor = v.volume_uuid;
+    const seriesKey = normalizeSeriesKey(v.series_title);
+    // The record read is for the display title only; the suppression flag comes
+    // from the reading-state store, which is synchronous and therefore always
+    // current (a just-finished restartSeries() has already cleared it).
+    getSeriesMetadataForTitle(v.series_title)
+      .then((meta) => {
+        // The user may have navigated to a different volume while this DB
+        // read was in flight — don't prompt (or set the display title) for a
+        // series that's no longer the one open in the reader.
+        if (volume?.volume_uuid !== v.volume_uuid) return;
+        rereadDisplayTitle = resolveDisplayTitle(v.series_title, meta, get(preferredTitleLanguage));
+        if (
+          shouldOfferReread({
+            volumeUuid: v.volume_uuid,
+            seriesVolumes,
+            volumesData: get(volumes),
+            suppressed: getSeriesReadingState(seriesKey).reread_prompt_suppressed === true,
+            seriesKey
+          })
+        ) {
+          rereadPromptOpen = true;
+        }
+      })
+      .catch((error) => console.warn('[reader] reread check failed:', error));
+  });
 
   // Use store directly for reactivity instead of prop
   let volumeSettings = $derived(
@@ -195,6 +244,14 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
+    // The re-read prompt modal owns the keyboard while it's open: its buttons
+    // live inside a native <dialog>, and keydowns still bubble past it up to
+    // this window listener, so without this guard Escape would both close the
+    // modal AND fire navigateBack() below, and arrow keys / Space would page
+    // the reader underneath it.
+    if (rereadPromptOpen) {
+      return;
+    }
     // Ignore shortcuts when the user is typing or inside reader UI overlays
     if (keyboardShouldIgnore(event.target)) {
       return;
@@ -1079,6 +1136,13 @@
     visible={overlaysVisible}
   />
   <SettingsButton visible={overlaysVisible} />
+  <RereadPromptModal
+    bind:open={rereadPromptOpen}
+    seriesTitle={volume.series_title}
+    seriesKey={normalizeSeriesKey(volume.series_title)}
+    seriesVolumes={localSeriesVolumes}
+    displayTitle={rereadDisplayTitle || volume.series_title}
+  />
   <TextBoxPicker />
   {#if overlaysVisible}
     <Popover
@@ -1282,6 +1346,20 @@
   <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else if volume && needsDownload(volume)}
+  <!-- The row is real (its history is why it is kept) but its pages are not on
+       this device. Reachable by opening an old link or a bookmark; the catalog
+       offers a download instead of opening it. -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">This volume is not on this device</p>
+    <p class="text-sm text-gray-500">Download it again from the series page to read it.</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {:else}
   <!-- Volume not found or no data -->

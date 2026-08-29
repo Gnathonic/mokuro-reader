@@ -49,7 +49,10 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 ### 🔧 Power Features
 
 - **Volume Editor** - Edit metadata, reading progress, and cover (with cropping) directly from the catalog
-- **Series Management** - Rename or merge series from the series page
+- **Series Editor** - Rename a series and edit its AniList link, titles and tracking in one modal - open it with the pencil on the series page, or hover a catalog card and press `E` (merging series lives in Catalog settings)
+- **Preferred Series Titles** - Display series in native, romaji, or English titles from their AniList link, set globally in Catalog settings (folder names are never changed)
+- **AniList Progress Tracking** - Opt a linked series in to push read progress, completions and re-reads to your AniList list
+- **Restart Series** - Archive a finished read and send every volume back to the start; the reader offers it when you re-open the first volume
 - **Context Menu for Text Boxes** - Right-click or long-press OCR text boxes for quick copy and Anki card creation
 - **Copy Without Linebreaks** - Copied text automatically strips linebreaks for cleaner pasting
 - **Text Analysis Tools** - Dedicated text pages for both volumes and series for analysis by browser extensions
@@ -91,6 +94,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 | `C`                     | Toggle cover display                                   |
 | `Z`                     | Toggle zoom mode                                       |
 | `F`                     | Toggle fullscreen                                      |
+| `E`                     | Open the editor for the hovered catalog card or volume |
 | `Esc`                   | Exit current volume (or exit series if on series page) |
 | `←` / `→`               | Navigate to previous/next page                         |
 | `↑` / `↓`               | Pan view up/down                                       |
@@ -190,11 +194,17 @@ For Google Drive and/or OneDrive integration, create a `.env` file:
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
+VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 For OneDrive, register an Azure AD app ("common" authority) and add your deploy
 origin as a **Single-page application** redirect URI. When unset, the OneDrive
 option is hidden. MEGA, WebDAV, and Local Folder need no configuration.
+
+For AniList progress tracking, create an API client at
+https://anilist.co/settings/developer whose redirect URL is your deploy origin
+(e.g. `https://reader.mokuro.app/`). When unset, series linking still works but
+the AniList account/tracking controls are hidden.
 
 ## 💬 Community
 

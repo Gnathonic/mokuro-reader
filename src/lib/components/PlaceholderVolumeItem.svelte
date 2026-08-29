@@ -7,14 +7,17 @@
   import { showSnackbar, promptConfirmation } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import {
+    getArchiveSize,
     getCloudFileId,
     getCloudProvider,
     getCloudSize,
     getCloudModifiedTime
   } from '$lib/util/cloud-fields';
+  import { formatArchiveSize } from '$lib/util/format-size';
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { PROVIDER_SHORT_LABELS, PROVIDER_BADGE_COLORS } from '$lib/util/sync/provider-display';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
+  import DownloadBadge from './DownloadBadge.svelte';
 
   interface Props {
     volume: VolumeMetadata;
@@ -30,12 +33,8 @@
   const cloudProvider = getCloudProvider(volume);
   const cloudSize = getCloudSize(volume);
 
-  // Format file size
-  let sizeDisplay = $derived.by(() => {
-    if (!cloudSize) return 'Unknown size';
-    const mb = (cloudSize / (1024 * 1024)).toFixed(1);
-    return `${mb} MB`;
-  });
+  // The download size, in the same words a real volume row uses.
+  let sizeDisplay = $derived(formatArchiveSize(getArchiveSize(volume) ?? 0) || 'Unknown size');
 
   const providerName = cloudProvider ? PROVIDER_SHORT_LABELS[cloudProvider] : 'Cloud';
   const badgeColor = cloudProvider ? PROVIDER_BADGE_COLORS[cloudProvider] : 'gray';
@@ -108,12 +107,22 @@
     class="divide-y divide-gray-200 rounded-lg border border-gray-200 dark:divide-gray-600 dark:border-gray-700"
   >
     <ListgroupItem class="py-4 opacity-70">
-      <DownloadSolid class="mr-3 h-[70px] w-[50px] text-blue-400" />
+      <!-- Wrapper exists only to anchor the badge; the icon keeps its own box. A
+           placeholder wears the SAME mark as a metadata-only row, so the two absent
+           states read identically wherever they are listed side by side. -->
+      <div class="relative mr-3 flex-shrink-0">
+        <DownloadSolid class="h-[70px] w-[50px] text-blue-400" />
+        {#if !isDownloading}
+          <DownloadBadge size="sm" class="right-0.5 bottom-0.5" />
+        {/if}
+      </div>
       <div class="flex w-full flex-row items-center justify-between gap-5">
         <div>
           <p class="font-semibold text-gray-400">{volName}</p>
           <div class="flex items-center gap-2">
-            <p class="text-sm text-gray-500">In Cloud • {sizeDisplay}</p>
+            <p data-testid="archive-size" class="text-sm text-gray-500">
+              In Cloud • {sizeDisplay}
+            </p>
             <Badge color={badgeColor} class="text-xs">{providerName}</Badge>
           </div>
         </div>
@@ -145,13 +154,18 @@
     class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 border-transparent p-3 text-center opacity-70 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
     class:cursor-not-allowed={isDownloading}
   >
-    <PlaceholderThumbnail {isDownloading} showDownloadUI={true} {volume} />
+    <div class="relative">
+      <PlaceholderThumbnail {isDownloading} showDownloadUI={true} {volume} />
+      {#if !isDownloading}
+        <DownloadBadge class="right-1 bottom-1" />
+      {/if}
+    </div>
     <p class="line-clamp-2 font-semibold sm:w-[250px]">{volName}</p>
     <div
       class="flex flex-wrap items-center justify-center gap-x-2 text-xs text-gray-500 dark:text-gray-400"
     >
       <Badge color={badgeColor} class="text-xs">{providerName}</Badge>
-      <span>{sizeDisplay}</span>
+      <span data-testid="archive-size">{sizeDisplay}</span>
     </div>
   </button>
 {/if}

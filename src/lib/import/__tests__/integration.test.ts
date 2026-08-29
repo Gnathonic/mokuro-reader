@@ -124,6 +124,16 @@ vi.mock('$lib/util/file-processing-pool', () => ({
   decrementPoolUsers: vi.fn()
 }));
 
+// The disk-import install trigger's collaborators (mirrors download-queue's
+// cloud trigger): the writable/non-server gate and the debounced series.json
+// scheduler. Gate defaults CLOSED so every other test keeps its surface.
+const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() => ({
+  hasWritableNonServerProvider: vi.fn(() => false),
+  scheduleSeriesFileWrite: vi.fn((_title: string) => {})
+}));
+vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
+vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+
 // Import after mocks are set up
 import { importFiles, importQueue, isImporting, clearCompletedImports } from '../import-service';
 import { showSnackbar } from '$lib/util/snackbar';
@@ -226,6 +236,33 @@ describe('importFiles integration', () => {
       expect(result.imported).toBe(1);
       expect(savedVolumes).toHaveLength(1);
       expect(savedVolumes[0].metadata.mokuro_version).toBe(''); // Image-only marker
+    });
+  });
+
+  describe('the install trigger — a saved disk import schedules its series.json write', () => {
+    it('schedules ONE write under the stored series title when a writable non-server provider is connected', async () => {
+      hasWritableNonServerProvider.mockReturnValue(true);
+      const fixture = await loadFixture('basic', 'mokuro-inside-dir');
+
+      const result = await importFiles(fixtureToFiles(fixture));
+
+      expect(result.imported).toBe(1);
+      expect(scheduleSeriesFileWrite).toHaveBeenCalledTimes(1);
+      // The same title segment the volume row is stored under — the write's
+      // own fire-time gates match it against the cloud folder (and drop it
+      // for a series the cloud does not hold).
+      expect(scheduleSeriesFileWrite).toHaveBeenCalledWith(savedVolumes[0].metadata.series_title);
+    });
+
+    it('schedules NOTHING without a writable non-server provider — the import itself still lands', async () => {
+      hasWritableNonServerProvider.mockReturnValue(false);
+      const fixture = await loadFixture('basic', 'mokuro-inside-dir');
+
+      const result = await importFiles(fixtureToFiles(fixture));
+
+      expect(result.imported).toBe(1);
+      expect(savedVolumes).toHaveLength(1);
+      expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
     });
   });
 

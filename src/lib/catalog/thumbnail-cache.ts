@@ -49,6 +49,9 @@ class ThumbnailCache {
   private queue: QueuedLoad[] = [];
   private activeLoads = 0;
 
+  // Notified whenever a bitmap lands in the cache (see subscribeCommits).
+  private commitListeners = new Set<(volumeUuid: string) => void>();
+
   // Worker pool
   private workers: Worker[] = [];
   private workerIndex = 0;
@@ -278,6 +281,33 @@ class ThumbnailCache {
   }
 
   /**
+   * Subscribe to cache commits.
+   *
+   * A canvas that missed on `getSync` has no other way to learn that the bitmap it wanted
+   * has since landed from somewhere else — another card's load, a cover install, a
+   * re-decode after an invalidate. Without this it can only find out by being re-rendered,
+   * so a commit that arrives while its inputs are quiet leaves it blank.
+   *
+   * Fires with the volume uuid, after the entry is in the cache. Returns the unsubscribe.
+   */
+  subscribeCommits(listener: (volumeUuid: string) => void): () => void {
+    this.commitListeners.add(listener);
+    return () => {
+      this.commitListeners.delete(listener);
+    };
+  }
+
+  private notifyCommit(volumeUuid: string): void {
+    for (const listener of this.commitListeners) {
+      try {
+        listener(volumeUuid);
+      } catch (error) {
+        console.error('Thumbnail cache commit listener failed:', error);
+      }
+    }
+  }
+
+  /**
    * Invalidate a specific cache entry (e.g., when cover is edited)
    * Does not close bitmap - components may still hold references.
    */
@@ -289,8 +319,18 @@ class ThumbnailCache {
     }
     // Also remove from pending if in progress
     this.pending.delete(volumeUuid);
-    // Remove from queue if waiting
-    this.queue = this.queue.filter((item) => item.volumeUuid !== volumeUuid);
+    // Remove from queue if waiting. A dropped item still owns a `get()` promise, and a
+    // promise that never settles is worse than a rejected one: the caller's own
+    // "already loading" guard is cleared in a `finally`, so silently discarding the item
+    // leaves that uuid marked as in-flight forever and its cover blank until the
+    // component remounts. Reject what is dropped.
+    const dropped = this.queue.filter((item) => item.volumeUuid === volumeUuid);
+    if (dropped.length > 0) {
+      this.queue = this.queue.filter((item) => item.volumeUuid !== volumeUuid);
+      for (const item of dropped) {
+        item.reject(new Error(`Thumbnail load for ${volumeUuid} was invalidated`));
+      }
+    }
   }
 
   /**
@@ -342,6 +382,7 @@ class ThumbnailCache {
 
     this.cache.set(volumeUuid, entry);
     this.totalBytes += size;
+    this.notifyCommit(volumeUuid);
 
     return entry;
   }

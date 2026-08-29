@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **AniList tracking** — push read progress and re-reads to AniList for every linked series
+- **Series lookup and names** — AniList linking brings alt titles and synonyms; search matches them all; titles display in your preferred language
+- **Series editor** — pencil or hover + E: rename, AniList link, titles, tag, tracking
+- **Re-reading** — restart a finished series; the previous read archives and re-read counts sync
+- **Legacy cloud upgrades** — installed volumes quietly fill in whatever your cloud library is missing
+- **Persistent series stats** — removing volumes from device keeps stats, history and covers
+- **Not-on-device volumes** — full catalog cards before you download: cover, size and reading stats
+- **Spine width** — spine shelf offsets sync across devices
+- **Bunko integration** — improved throughout, with better handling of write-permission issues
+- Hover a series card and press Delete to remove it
+
+### Changed
+
+- Settings profiles now sync automatically; button removed
+- Huge cloud libraries browse without repeated full-library scans
+- Cloud covers cached per account, downloaded visible-first, expire after 14 days
+
 ## [1.8.3] - 2026-08-26
 
 ### Fixed

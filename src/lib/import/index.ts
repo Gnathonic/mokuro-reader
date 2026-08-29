@@ -76,7 +76,7 @@ export {
 } from './processing';
 
 // Database
-export { saveVolume, volumeExists, deleteVolume } from './database';
+export { saveVolume, volumeExists, removeVolumeFiles, deleteVolumeCompletely } from './database';
 
 // Import Service (main entry point)
 export {

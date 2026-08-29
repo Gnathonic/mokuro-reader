@@ -130,13 +130,16 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie. Data is split across three tables for performance:
+The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie schema **version 4** (`db-v3.ts`; version 2 added `series_metadata`, version 3 added `series_index`, version 4 added `catalog_index` — all additive, no data migration). Volume data is split across three tables for performance, alongside per-series metadata and index tables:
 
-| Table          | Primary Key   | Indexed Fields                | Purpose                     |
-| -------------- | ------------- | ----------------------------- | --------------------------- |
-| `volumes`      | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails        |
-| `volume_ocr`   | `volume_uuid` | —                             | OCR page data (text blocks) |
-| `volume_files` | `volume_uuid` | —                             | Image files (File objects)  |
+| Table             | Primary Key   | Indexed Fields                | Purpose                                                                           |
+| ----------------- | ------------- | ----------------------------- | --------------------------------------------------------------------------------- |
+| `volumes`         | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails                                                              |
+| `volume_ocr`      | `volume_uuid` | —                             | OCR page data (text blocks)                                                       |
+| `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                        |
+| `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)  |
+| `series_index`    | `series_key`  | —                             | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative) |
+| `catalog_index`   | `series_key`  | —                             | Cached root `catalog.json` entry per series (names/facts only, download cache)    |
 
 **Key Types:**
 
@@ -153,6 +156,7 @@ interface VolumeMetadata {
   thumbnail?: File;
   thumbnail_width?: number;
   thumbnail_height?: number;
+  metadata_only?: true; // pages removed from this device — see below
 }
 
 interface VolumeOCR {
@@ -182,6 +186,42 @@ const files = await db.volume_files.get(volume_uuid);
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
+**Volume states** (`$lib/catalog/volume-state.ts` — always test them through
+`isVolumeInstalled(v)` / `needsDownload(v)`, never the raw flags):
+
+| State         | Row? | `volume_ocr` / `volume_files` | Marked by             |
+| ------------- | ---- | ----------------------------- | --------------------- |
+| installed     | yes  | yes                           | —                     |
+| metadata only | yes  | no                            | `metadata_only: true` |
+| placeholder   | no   | no                            | `isPlaceholder: true` |
+
+"Remove from device" (`removeVolumeFiles`) deletes only the OCR and image rows
+and flags the `volumes` row `metadata_only`. The row keeps the thumbnail and,
+crucially, the `volume_uuid` the read history is keyed by, so stats, progress
+and the catalog cover survive; a re-download or re-import fills the same row
+(`saveVolume` clears the flag). `deleteVolumeCompletely` is the real delete,
+used when the user also asks to forget the stats. Placeholders therefore exist
+only for volumes this device has NEVER installed — a metadata-only row shadows
+the placeholder its cloud file would produce, and the catalog join decorates it
+with that file's id/provider so it can be downloaded again.
+
+Anything that reads a volume's pages (exports, backups, the reader, OCR
+upgrades, thumbnail generation, the cloud rename's sidecar regeneration) must
+skip volumes that are not installed; anything about the volume as a volume
+(stats, progress, `series.json`, series metadata) keeps counting them.
+
+A per-profile catalog setting, `notOnDeviceDisplay` (`'mixed' | 'cloud-section'`,
+`catalogSettings` in `settings.ts`), controls how not-on-device volumes are
+grouped in the catalog and series views — woven into natural reading order, or
+collected into their own trailing section. Display only: it never touches the
+rows above, downloads nothing, and every volume keeps its progress and actions
+either way.
+
+**Catalog card shortcuts**: hovering a card and pressing `E` opens the series
+editor (`series-editor-shortcut.ts`); hovering and pressing `Delete` raises the
+series removal dialog (`delete-shortcut.ts`). Both are document-level `keydown`
+listeners gated on hover + no modal open + focus not on a typing target.
+
 ## Important Patterns
 
 ### Mokuro File Format
@@ -201,6 +241,207 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 ```
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
+
+The app writes `.mokuro` files in this pure upstream format — no reader-specific
+keys. Series-level data lives beside them in `series.json`.
+
+### Series sidecar `series.json`
+
+One file per series at `<Series Title>/series.json` (`src/lib/metadata/series-file.ts`,
+`SERIES_FILE_NAME`). It carries the shareable series facts plus an index of the
+series' volumes:
+
+```typescript
+{
+  version: 2,
+  series_title: string,          // the folder name, never derived from metadata
+  external_ids: { anilist?: number, mal?: number },
+  titles: { native?, romaji?, english? },
+  synonyms: string[],
+  tag?: string,
+  unit?: 'volumes' | 'chapters', // are the archives volumes or chapters? absent = auto-detect
+  updated_at: string,            // ISO — the facts stamp (SeriesMetadata.facts_updated_at)
+  spine_offset?: number,         // % — shelf alignment, INDEX data (never a fact)
+  volumes: {                     // the index
+    volume_uuid: string,
+    volume_title: string,
+    page_count: number,
+    character_count: number,
+    mokuro_version: string,
+    spine_width?: number,
+    archive_size?: number,        // bytes of the .cbz; optional, like spine_width
+    offset?: number                // px — per-volume shelf alignment, INDEX data
+  }[]
+}
+```
+
+Rules:
+
+- **Unauthoritative.** Local IndexedDB always wins for installed volumes; the
+  index only fills gaps for volumes this device does not have, so the catalog can
+  show a cloud-only volume with real page/char totals and attach synced progress
+  to its real `volume_uuid` (`placeholders.ts`). Totals only — no per-page
+  `page_char_counts` (it bloated the file; a placeholder's chars read come from
+  the synced `VolumeData.chars`).
+- **Never per-user state**: no progress, tracking, `title_preference`,
+  `read_count`, `reread_prompt_suppressed`, thumbnails or page/OCR data. Series
+  reading state (`read_count`, re-read mute, `tracking`) lives in
+  `volume-data.json`'s `series` section instead (`src/lib/settings/series-data.ts`
+  — same newest-`lastUpdated`-wins merge as the volume map it rides alongside).
+- **Shelf alignment is index data, not a fact.** `spine_offset` (top-level, %)
+  and each volume's `offset` (px) ride the file but never move
+  `facts_updated_at`. An absent value means "no opinion" and inherits whatever
+  the other side already published; a local `0` suppresses the published value
+  at build time and is omitted from the file (build → parse stays an identity).
+  Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
+  this user edited, and a published alignment reaches the shelf from the cached
+  `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
+  and rides back out through `buildSeriesFile`. Filling it into the record would
+  make it ours to republish forever, so the device that measured it could never
+  correct or reset it. Readers clamp both fields on parse (±50% / ±500px);
+  mokuro-bunko stores whatever it is sent verbatim (one side owns the range
+  rule).
+- **AniList display data (`format`, `status`, volume/chapter totals,
+  `cover_url`) is never stored** — not here, not anywhere. The link picker
+  shows it transiently from the search result only; the read-progress push
+  (`progress-tracker.ts`) fetches the totals fresh in the same GraphQL request
+  every time. The reader-facing "Auto" unit option only names a unit
+  (`Auto (volumes)`/`Auto (chapters)`) when a marker in the archive names
+  actually decided it; otherwise it shows plain `Auto` rather than a guess it
+  can't stand behind — the guess itself can still differ from what a push
+  resolves once real totals are in hand.
+- **Merge**: facts merge by `updated_at` (strictly newer wins,
+  `upsertFromSeriesFile`); volume entries merge by `volume_uuid` (local wins),
+  then entries missing from the cloud listing are pruned (`buildSeriesFile`).
+- **Written** automatically — debounced 2 s per series after a local fact OR
+  shelf-alignment edit (`series-file-sync.ts` registers both
+  `registerFactsChangeListener` and `registerIndexChangeListener` from
+  `store.ts`, funnelling into the same per-series debounce so one patch
+  touching both costs one write), after a series' backup uploads finish, on
+  series rename (written at the new title, old deleted) and removed with the
+  series folder. Gated on a writable connected provider and ≥1 backed-up
+  volume; read-only providers skip silently. There is no UI button. Facts or
+  offsets arriving _from_ a sidecar never schedule a write (no ping-pong).
+- **Backfill.** Every cloud listing also reconciles: a folder with at least one
+  `.cbz`, no `series.json`, and at least one non-placeholder local row (counts
+  even if its files were removed from this device) gets a write queued the same
+  way (`reconcileMissingMetadataFiles`) — closes the hole left by libraries
+  uploaded before this feature existed, or connected before their facts were
+  ever set. The root `catalog.json` gets the same treatment when missing outright.
+- **Cached** in the `series_index` Dexie table with the cloud file's
+  `size`/`modifiedTime`. After every cloud listing, `series-index-sync.ts`
+  re-downloads only the files whose (`size`, `modifiedTime`, provider) differ
+  from the cached stamp (`indexNeedsRefresh`), max 4 concurrent, in the
+  background.
+- **Import/export**: a `series.json` in an imported ZIP (or file selection) is
+  applied after the volumes save; series ZIP and single-volume ZIP/CBZ exports
+  include one built from the local volumes.
+- **mokuro-bunko**: bunko compiles `series.json` and `catalog.json` itself and is
+  their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
+  it must partition metadata files out of progress handling (root `.json` =
+  progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
+  A scoped user's `series.json` PUT is accepted as an update REQUEST.
+
+### Root `catalog.json`
+
+The library's name/mapping/search data in one root file. It joins the same
+root-config allowlist as `volume-data.json`/`profiles.json`
+(`isRootConfigFile` in `syncable-file.ts`) — every provider lists, caches and
+syncs it the same way — but for writes it is one of the two best-effort
+compiled files, along with `series.json` (see Best-effort writes below).
+
+### What syncs where
+
+| Data                                                        | File                                      | Merge key                            |
+| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------ |
+| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume      |
+| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`       |
+| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile            |
+| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp       |
+| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value |
+
+Read progress, the series section and settings profiles all sync automatically
+on every `syncProvider` call — there is no per-file opt-in and no separate
+"Sync profiles" button; `profiles.json` rides along unconditionally, the same
+way `volume-data.json` always has.
+
+`series-metadata.json` was retired on 2026-08-23 before it ever shipped. A stale
+copy in an existing cloud folder is inert junk — never listed, never read.
+
+Clock-skew hazard: a cloud stamp more than 5 minutes into the future
+(`FUTURE_TOLERANCE_MS`) is bogus — a fast-clock device's edit, or corruption.
+The series section and `profiles.json` merges clamp such a cloud stamp to
+`now` on read, but clamping alone can let the clamped value tie-or-beat a
+genuine pending local edit on the first sync after the poisoning. Both merges
+add FORFEIT-ON-BOGUS on top: detected on the _raw_, pre-clamp stamp, a bogus
+cloud entry never outranks an existing local entry for that key — the clamped
+value is only adopted when local has no entry at all. See
+`detectBogusSeriesKeys`/`mergeSeriesSections` (`series-data.ts`) and
+`isBogusCloudProfile`/`clampCloudProfileStamps` (`unified-sync-service.ts`).
+Known and out of scope (pre-existing): only the `series` section of
+`volume-data.json` got the clamp and FORFEIT-ON-BOGUS. The volume half still
+merges on the raw, unclamped stamps (`lastProgressUpdate`/`addedOn`/`deletedOn`),
+so a fast-clock device can still out-rank a local progress edit there.
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-08-23T00:00:00.000Z",
+  "series": [
+    {
+      "series_title": "Dr Stone (HD Scan)",
+      "titles": { "native": "Dr.STONE", "romaji": "Dr. STONE", "english": "Dr. STONE" },
+      "synonyms": [],
+      "tag": "HD Scan",
+      "unit": "volumes",
+      "external_ids": { "anilist": 98416 },
+      "updated_at": "2026-08-18T19:36:24.324Z"
+    }
+  ]
+}
+```
+
+Rules:
+
+- **Names only.** Each entry is the FACTS subset of that series' `series.json` —
+  same keys, same meaning, same facts stamp. No counts, no covers, no volume
+  lists: those live in `series.json` and arrive when the series is opened. A
+  series with no facts still gets an entry carrying just `series_title` and
+  `FACTLESS_UPDATED_AT`, so the cached table stays complete for the
+  size/mtime staleness check.
+- **Load schedule.** Catalog open / provider connect → fetch `catalog.json` when
+  its size/mtime changed (`catalog-index-sync.ts`), cache the entries in
+  `catalog_index`, apply each entry's facts through `upsertFromSeriesFile` (so
+  the factless rules apply unchanged). Series open → refresh that ONE
+  `series.json` and materialize its volumes (`series-open.ts`).
+- **Search enrichment, not cards.** `catalog.json` never mints a catalog card —
+  a stale file would otherwise produce dead-end "Open to load volumes" cards
+  for folders that no longer exist. Its facts merge into `series_metadata`
+  the same way regardless: a series that already has rows or a cloud listing
+  becomes searchable by every synonym/alt title/tag the file carries (same
+  `seriesSearchTerms` as any other series), while a catalog-only entry with
+  nothing local at all gets a `series_metadata` record but no card until it
+  becomes real.
+- **Materialization.** Series open promotes each index entry into a real
+  `volumes` row in the metadata-only state (real uuid, counts, `mokuro_version`,
+  `spine_width`), so progress attaches and stats count before anything is
+  downloaded. It never overwrites an installed row, never gives a volume title a
+  second row, and only ever FILLS gaps on an existing metadata-only row — the
+  index stays unauthoritative (local wins). Covers come from the existing
+  per-volume sidecars (`cover-install.ts`), never from the metadata files.
+- **Produced by the client** for plain storage backends (Drive/MEGA/WebDAV/
+  OneDrive/Local Folder): debounced globally after a fact edit and once per
+  backup run, union-by-key with the cloud copy (newest facts stamp wins), pruned
+  against the listing, never written from a stale listing. Never produced when
+  the provider reports `serverCompilesMetadata` (mokuro-bunko compiles both files
+  itself and is their sole producer).
+- **Best-effort writes.** A failed `series.json` or `catalog.json` write logs at
+  debug and changes nothing else: no read-only fallback, no cleared credentials,
+  no snackbar (`isBestEffortMetadataPath`). A server that rejects metadata writes
+  while serving reads is a first-class configuration.
+- **Hole patching.** Synced progress referencing a series with no local rows and
+  no cached index pulls that series' `series.json` and materializes it
+  (`hole-patch.ts`), so stats views never dangle.
 
 ### Settings Architecture
 
@@ -260,6 +501,7 @@ Create a `.env.local` file for cloud provider integration:
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
 VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
+VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
@@ -268,6 +510,9 @@ VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
   deploy origin as a **Single-page application** redirect URI. Scopes used:
   `Files.ReadWrite`, `offline_access`, `User.Read`. When unset, the OneDrive
   option is hidden from the cloud screen.
+- `VITE_ANILIST_CLIENT_ID`: required only for pushing read progress to AniList.
+  Register an AniList API client (implicit grant) whose redirect URL is the deploy
+  origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
 
 ## Testing

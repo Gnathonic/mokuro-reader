@@ -2,7 +2,7 @@
   import type { VolumeMetadata } from '$lib/types';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
-  import { fetchCloudThumbnail, getCachedCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -35,49 +35,97 @@
   const stepH = 35;
   let stepV = $derived(stackCount > 1 ? Math.min(40, 35 / (stackCount - 1)) : 0);
 
-  // Cloud thumbnail state
+  // Cloud thumbnail state — an object URL over `volume.thumbnail`, kept in sync with it.
+  // This effect only manages the object URL's lifecycle (create/revoke), never the fetch.
+  //
+  // A ROW's cover only. A cloud volume with no row of its own — a placeholder, or a
+  // metadata-only row a series open materialized — has its cover in `cloud_covers`, and
+  // that one is resolved by path below.
   let cloudThumbnailUrl: string | null = $state(null);
 
-  let hasCloudThumbnailId = $derived(!!volume?.cloudThumbnailFileId);
+  /**
+   * THIS BOX RESOLVES ITS OWN CLOUD COVER.
+   *
+   * Cloud covers used to arrive on the `volume` prop: `generatePlaceholders` stamped the
+   * cached blob onto every placeholder it minted, and the catalog decorated a
+   * metadata-only row's copy the same way. That is exactly what made one cover landing
+   * re-derive the whole library and re-render every mounted card (a measured 1,784 ms
+   * long task on a 1,027-series library), so covers were cut out of the derivation. This
+   * is the replacement for the surfaces that box draws: one keyed `cloud_covers` read for
+   * the one volume on screen.
+   *
+   * The path comes from the LISTING-derived object — `cloudPath` is decorated onto the
+   * catalog's in-memory copy and is NEVER persisted on a stored row, so it is only ever
+   * present on the props handed down from the catalog, which is what these are.
+   */
+  const coverClaims = createCoverClaims({
+    claims: () => (volume ? [volume] : []),
+    targets: () => (volume ? [volume] : [])
+  });
+  const { gate } = coverClaims;
+
+  /** The resolved cover's object URL, minted lazily and revoked by the resolver. */
+  let resolvedCoverUrl = $derived(coverClaims.cover?.url ?? null);
+
+  /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
+  let displayUrl = $derived(cloudThumbnailUrl ?? resolvedCoverUrl);
+
+  // A CATALOG-WIDE re-derive (any row anywhere committing) hands every mounted card a
+  // BRAND NEW `volume` object, even for a row whose own cover has not changed — Dexie
+  // gives back a fresh `File` instance per read regardless. Without this key, the effect
+  // below would treat every re-derive as "a new cover", tearing down and recreating the
+  // object URL (and forcing the browser to re-decode/re-paint the `<img>`) for every
+  // already-painted card on screen, every time. `size`+`lastModified` is cheap to compare
+  // and, unlike object identity, survives a structured-clone round trip through IndexedDB
+  // unchanged — a GENUINELY new cover (a fresh fetch, a self-heal overwrite) always gets a
+  // new `lastModified` (see `cloud-thumbnails.ts`), so this never masks a real update.
+  let renderedCoverKey: string | null = null;
+  let activeThumbnailUrl: string | null = null; // mirrors `cloudThumbnailUrl`; read/written outside reactivity so comparing it never itself triggers a re-run.
+
+  function releaseActiveThumbnailUrl(): void {
+    if (activeThumbnailUrl) {
+      URL.revokeObjectURL(activeThumbnailUrl);
+      activeThumbnailUrl = null;
+    }
+  }
 
   $effect(() => {
-    if (!hasCloudThumbnailId || !volume) return;
+    const file = volume?.thumbnail;
+    const uuid = volume?.volume_uuid;
+    const key = file && uuid ? `${uuid}:${file.size}:${file.lastModified}` : null;
+    if (key === renderedCoverKey) return; // Same cover as already rendered — nothing to do.
+    renderedCoverKey = key;
 
-    const cached = getCachedCloudThumbnail(volume.volume_uuid);
-    if (cached) {
-      console.log(
-        `[PlaceholderThumbnail] ${volume.volume_title}: using cached ${cached.width}x${cached.height}`
-      );
-      const url = URL.createObjectURL(cached.file);
-      cloudThumbnailUrl = url;
-      return () => URL.revokeObjectURL(url);
+    releaseActiveThumbnailUrl();
+    if (!file) {
+      cloudThumbnailUrl = null;
+      return;
     }
+    const url = URL.createObjectURL(file);
+    activeThumbnailUrl = url;
+    cloudThumbnailUrl = url;
+  });
 
-    let cancelled = false;
-    fetchCloudThumbnail(volume).then((result) => {
-      if (cancelled || !result) return;
-      console.log(
-        `[PlaceholderThumbnail] ${volume.volume_title}: fetched ${result.width}x${result.height}`
-      );
-      const url = URL.createObjectURL(result.file);
-      cloudThumbnailUrl = url;
-    });
-
-    return () => {
-      cancelled = true;
-      if (cloudThumbnailUrl) {
-        URL.revokeObjectURL(cloudThumbnailUrl);
-        cloudThumbnailUrl = null;
-      }
-    };
+  // Revoke whatever is active when this component is torn down. Deliberately a SEPARATE
+  // effect with no reactive reads of its own (so it runs its body once, on mount, and its
+  // cleanup only on unmount) — folding this into the effect above would tie revocation to
+  // Svelte's automatic "run the previous cleanup before every re-run" behavior, which fires
+  // on EVERY re-run regardless of the early return above and would revoke a URL this
+  // component is still actively showing.
+  $effect(() => {
+    return () => releaseActiveThumbnailUrl();
   });
 </script>
 
-{#if cloudThumbnailUrl}
+{#if displayUrl}
   <!-- Cloud thumbnail loaded: render like VolumeItem's local thumbnail -->
-  <div class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
+  <!-- use:gate on BOTH branches: this box swaps its root element the moment a cover
+       lands, and the gate has to survive that swap (it latches, so the second attach is
+       a no-op). Still armed here because a row that already HAS a cover can be a
+       self-heal target — a stale stamp against the listing's current one. -->
+  <div use:gate class="flex items-center justify-center sm:h-[350px] sm:w-[250px]">
     <img
-      src={cloudThumbnailUrl}
+      src={displayUrl}
       alt={volume?.volume_title || ''}
       style="max-width: 250px; max-height: 350px; width: auto; height: auto;"
       class="border border-gray-300 bg-gray-100 dark:border-gray-900 dark:bg-black"
@@ -95,6 +143,7 @@
 {:else}
   <!-- Placeholder boxes (thumbnail loading or unavailable) -->
   <div
+    use:gate
     class="relative overflow-hidden sm:h-[350px] sm:w-[250px]"
     class:sm:h-[385px]={stackCount > 1}
     class:sm:w-[325px]={stackCount > 1}

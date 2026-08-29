@@ -9,7 +9,17 @@ import { writable, get } from 'svelte/store';
 import { pairMokuroWithSources } from './pairing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
-import { saveVolume, volumeExists } from './database';
+import { saveVolume, storedTitleSegment, volumeExists } from './database';
+import {
+  applyImportedSeriesFiles,
+  collectSeriesFileFromBytes,
+  collectSeriesFileFromFile,
+  recordImportedSeriesTitle,
+  resetImportedSeriesFiles
+} from './series-file-import';
+import { isSeriesFilePath } from '$lib/metadata/series-file';
+import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
   FileEntry,
@@ -144,6 +154,42 @@ function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolea
 
 function getThumbnailCandidatePaths(basePath: string): string[] {
   return [`${basePath}.webp`];
+}
+
+/**
+ * Is work still outstanding in the queue?
+ *
+ * Deliberately NOT `queue.length === 0`: failed items stay in the store until
+ * the user clears them, and a pinned `error` item must not stop later imports
+ * from applying their `series.json` (the pending files would then sit in the
+ * batch and risk being keyed to an unrelated import).
+ */
+function hasUnfinishedImports(): boolean {
+  return get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing');
+}
+
+/**
+ * Note the series title a saved volume ended up under, so a `series.json` that
+ * came with this import can be keyed to it once the batch is done.
+ *
+ * Also the disk-import half of the install trigger (`download-queue.ts`'s
+ * `processVolumeData` is the cloud half): a volume imported from disk carries
+ * measured page/char counts that a published 0/0 no-metadata entry for the
+ * same archive is waiting on, and without a schedule here nothing publishes
+ * them — installing was the one event that never scheduled a `series.json`
+ * write. Same shape as the cloud half: the 2 s per-series debounce coalesces
+ * a batch import into ~one write, the gate keeps read-only and
+ * server-compiled providers untouched, and a series the cloud does not hold
+ * is dropped by the write's own fire-time gates.
+ */
+function noteImportedVolume(processed: ProcessedVolume): void {
+  recordImportedSeriesTitle(
+    storedTitleSegment(processed.metadata.series),
+    processed.metadata.volumeUuid
+  );
+  if (hasWritableNonServerProvider()) {
+    scheduleSeriesFileWrite(storedTitleSegment(processed.metadata.series));
+  }
 }
 
 // ============================================
@@ -418,6 +464,10 @@ async function processArchiveContents(
     }
   }
 
+  // `series.json` entries were only listed by the scan (it extracts .mokuro
+  // content), so their content is fetched in the targeted pass below.
+  const seriesFilePaths: string[] = [];
+
   for (const entry of scanResult.entries) {
     // Skip system files and directories
     if (isSystemFile(entry.filename)) continue;
@@ -425,7 +475,9 @@ async function processArchiveContents(
     const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
     const filename = entry.filename.split('/').pop() || entry.filename;
 
-    if (isMokuroExtension(ext)) {
+    if (isSeriesFilePath(entry.filename)) {
+      seriesFilePaths.push(entry.filename);
+    } else if (isMokuroExtension(ext)) {
       // Mokuro file - has actual content
       const file = new File([entry.data], filename, { lastModified: Date.now() });
       fileEntries.push({ path: entry.filename, file });
@@ -493,12 +545,19 @@ async function processArchiveContents(
     }
   }
 
+  // One targeted pass for the small files we only listed so far: the thumbnail
+  // sidecars of the matched volumes and any `series.json` in the archive.
   const thumbnailByPath = new Map<string, File>();
-  if (thumbnailCandidates.size > 0) {
-    const thumbResult = await decompressArchiveRaw(archiveFile, undefined, {
-      pathPrefixes: Array.from(thumbnailCandidates)
+  const smallFilePaths = [...thumbnailCandidates, ...seriesFilePaths];
+  if (smallFilePaths.length > 0) {
+    const smallResult = await decompressArchiveRaw(archiveFile, undefined, {
+      pathPrefixes: smallFilePaths
     });
-    for (const entry of thumbResult.entries) {
+    for (const entry of smallResult.entries) {
+      if (isSeriesFilePath(entry.filename)) {
+        collectSeriesFileFromBytes(entry.filename, entry.data, archiveFile.lastModified);
+        continue;
+      }
       const filename = entry.filename.split('/').pop() || entry.filename;
       thumbnailByPath.set(
         entry.filename.toLowerCase(),
@@ -604,6 +663,7 @@ async function processArchiveContents(
         } else {
           // Save to database
           await saveVolume(processed);
+          noteImportedVolume(processed);
           successCount++;
         }
 
@@ -726,9 +786,13 @@ async function processSingleVolume(
         .toLowerCase();
       const imageFiles = new Map<string, File>();
       for (const entry of archiveEntries.entries) {
+        if (isSystemFile(entry.filename)) continue;
+        if (isSeriesFilePath(entry.filename)) {
+          collectSeriesFileFromBytes(entry.filename, entry.data, source.source.file.lastModified);
+          continue;
+        }
         const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
         if (!isImageExtension(ext)) continue;
-        if (isSystemFile(entry.filename)) continue;
 
         // Ignore embedded cover sidecar if it matches archive stem.
         const filename = entry.filename.split('/').pop() || entry.filename;
@@ -781,6 +845,7 @@ async function processSingleVolume(
 
       onProgress?.('Saving...', 85);
       await saveVolume(processed);
+      noteImportedVolume(processed);
       onProgress?.('Complete', 100);
       return { success: true };
     }
@@ -851,6 +916,7 @@ async function processSingleVolume(
 
     // Save to database
     await saveVolume(processed);
+    noteImportedVolume(processed);
 
     onProgress?.('Complete', 100);
 
@@ -950,6 +1016,9 @@ async function processQueue(): Promise<void> {
     isImporting.set(false);
     currentImport.set(null);
     decrementPoolUsers(); // Release pool when queue is empty
+    // The queue is drained: every volume of this batch has a stored title, so
+    // any `series.json` that came with it can finally be keyed to a series.
+    await applyImportedSeriesFiles();
   }
 }
 
@@ -1045,12 +1114,29 @@ export async function importArchiveWithOptionalMokuro(
   } finally {
     isImporting.set(false);
     currentImport.set(null);
+    if (!hasUnfinishedImports()) {
+      await applyImportedSeriesFiles();
+    }
   }
 
   return result;
 }
 
 export async function importFiles(files: File[], options?: ImportOptions): Promise<ImportResult> {
+  try {
+    return await runImportFiles(files, options);
+  } finally {
+    // Anything still queued (a multi-item batch, a nested archive) has volumes
+    // that are not saved yet, so its `series.json` files wait for the queue to
+    // drain — `processQueue` applies them there, once every volume of the batch
+    // has a stored title to key them to.
+    if (!hasUnfinishedImports()) {
+      await applyImportedSeriesFiles();
+    }
+  }
+}
+
+async function runImportFiles(files: File[], options?: ImportOptions): Promise<ImportResult> {
   const result: ImportResult = {
     success: true,
     imported: 0,
@@ -1072,6 +1158,14 @@ export async function importFiles(files: File[], options?: ImportOptions): Promi
   try {
     // Convert to FileEntry format
     const entries = filesToEntries(files);
+
+    // A picked/dropped `series.json` is not a volume — pairing ignores it, so
+    // collect it here and apply it once the batch's volumes are saved.
+    for (const entry of entries) {
+      if (isSeriesFilePath(entry.path)) {
+        await collectSeriesFileFromFile(entry.path, entry.file);
+      }
+    }
 
     // Pair mokuro files with sources
     const pairingResult = await pairMokuroWithSources(entries);
@@ -1229,4 +1323,7 @@ export function clearCompletedImports(): void {
  */
 export function cancelQueuedImports(): void {
   importQueue.update((q) => q.filter((item) => item.status === 'processing'));
+  // The volumes those items would have saved are never coming, so any
+  // `series.json` still waiting for them has nothing left to key onto.
+  resetImportedSeriesFiles();
 }

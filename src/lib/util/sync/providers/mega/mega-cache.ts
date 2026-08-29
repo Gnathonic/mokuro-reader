@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
+import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { megaProvider } from './mega-provider';
 
 /**
@@ -10,7 +11,9 @@ import { megaProvider } from './mega-provider';
  * Cache is grouped by series folder names extracted from file paths.
  */
 class MegaCacheManager implements CloudCache<CloudFileMetadata> {
-  private cache = writable<Map<string, CloudFileMetadata[]>>(new Map());
+  // State split from emission: `read()` is synchronous and never lagged,
+  // subscribers get incremental mutations coalesced — see CoalescedCacheStore.
+  private cache = new CoalescedCacheStore<CloudFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
   private fetchingFlag = false;
   private loadedFlag = false;
@@ -102,10 +105,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   has(path: string): boolean {
-    let currentCache: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -114,10 +114,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   get(path: string): CloudFileMetadata | null {
-    let currentCache: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find within that series
     const seriesTitle = path.split('/')[0];
@@ -126,10 +123,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   getAll(path: string): CloudFileMetadata[] {
-    let currentCache: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     // Extract series title from path and find all matches within that series
     const seriesTitle = path.split('/')[0];
@@ -138,10 +132,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   getBySeries(seriesTitle: string): CloudFileMetadata[] {
-    let currentCache: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const result: CloudFileMetadata[] = [];
     for (const files of currentCache.values()) {
@@ -151,10 +142,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   getAllFiles(): CloudFileMetadata[] {
-    let currentCache: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((value) => {
-      currentCache = value;
-    })();
+    const currentCache = this.cache.read();
 
     const result: CloudFileMetadata[] = [];
     for (const files of currentCache.values()) {
@@ -177,7 +165,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   // Optional methods for cache updates
-  add(path: string, metadata: CloudFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
     this.cache.update((cache) => {
       const newCache = new Map(cache);
 

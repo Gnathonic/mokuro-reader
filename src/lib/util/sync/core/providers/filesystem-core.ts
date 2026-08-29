@@ -1,3 +1,4 @@
+import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type {
   CloudProviderCore,
   CloudCoreDownloadArgs,
@@ -14,7 +15,7 @@ export const filesystemCore: CloudProviderCore = {
   downloadFile(_args: CloudCoreDownloadArgs): Promise<ArrayBuffer> {
     throw new Error('FilesystemProvider does not use worker-based downloads');
   },
-  uploadFile(_args: CloudCoreUploadArgs): Promise<string> {
+  uploadFile(_args: CloudCoreUploadArgs): Promise<UploadFileResult> {
     throw new Error('FilesystemProvider does not use worker-based uploads');
   }
 };

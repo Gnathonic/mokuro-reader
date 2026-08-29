@@ -13,9 +13,10 @@
     volumes,
     clearVolumeSpeedData,
     clearOrphanedVolumeData,
-    enrichAllOrphanedVolumes
+    isOrphanedVolumeData
   } from '$lib/settings/volume-data';
   import { volumes as catalogStore } from '$lib/catalog';
+  import { patchProgressHolesWhenListingReady } from '$lib/metadata/hole-patch';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     Badge,
@@ -102,8 +103,11 @@
   let deleteModalOpen = $state(false);
   let volumeToDelete: VolumeSpeedData | null = $state(null);
 
-  // Orphaned data deletion modal
+  // Orphaned data deletion modal. `orphanedBucketSeriesId` is the series ROW
+  // whose trash button was pressed — the deletion is scoped to it, never to the
+  // whole store (see `orphanedBucketIds`).
   let orphanedDeleteModalOpen = $state(false);
+  let orphanedBucketSeriesId: string | null = $state(null);
 
   // Toggle for showing all achievements
   let showAllAchievements = $state(false);
@@ -248,8 +252,8 @@
 
   // Derived stores
   const volumeSpeedData = derived([volumes, catalogStore], ([$volumes, $catalogStore]) => {
-    // Handle loading state (null means still loading from IndexedDB)
-    if ($catalogStore === null) return [];
+    // Handle loading state (undefined until the first coalesced emission from IndexedDB)
+    if ($catalogStore === undefined) return [];
     const catalog = Object.values($catalogStore);
     return processVolumeSpeedData($volumes, catalog);
   });
@@ -314,34 +318,46 @@
     return hasPageTurns;
   });
 
-  // Detect ALL orphaned volumes (lacking metadata) in the entire volumes store
-  const orphanedVolumeIds = derived(volumes, ($volumes) => {
-    return Object.keys($volumes).filter((volumeId) => {
-      const vol = $volumes[volumeId];
-      return (
-        !vol.series_uuid ||
-        vol.series_uuid === 'missing-series-info' ||
-        !vol.series_title ||
-        vol.series_title === '[Missing Series Info]' ||
-        !vol.volume_title ||
-        vol.volume_title.startsWith('Volume ')
-      );
-    });
-  });
+  // Detect ALL orphaned volumes (lacking metadata) in the entire volumes store.
+  // The predicate is IMPORTED, not transcribed: this page uses it to decide what
+  // to offer for deletion, and `volume-data.ts` uses it to decide what to
+  // repair. Two copies of that rule are two chances for the destructive one to
+  // outlive the repair. (The copy that lived here also carried a
+  // `volume_title.startsWith('Volume ')` clause, which matched every volume
+  // genuinely titled "Volume 1" — see `isOrphanedVolumeData`.)
+  const orphanedVolumeIds = derived(volumes, ($volumes) =>
+    Object.keys($volumes).filter((volumeId) => isOrphanedVolumeData($volumes[volumeId]))
+  );
 
-  // Count orphaned volumes visible in speed data vs. not visible
+  // Orphans visible in the speed table (the `[Missing Series Info]` row) versus
+  // the whole store's count. `speedTracked` is what reveals that row's trash
+  // button; `total` is only ever shown, never acted on — the difference between
+  // the two is the reading history the button deliberately leaves alone.
   const orphanedCounts = $derived.by(() => {
     const visibleIds = new Set(
       $volumeSpeedData.filter((v) => v.seriesId === 'missing-series-info').map((v) => v.volumeId)
     );
     const speedTracked = $orphanedVolumeIds.filter((id) => visibleIds.has(id)).length;
+    return { speedTracked, total: $orphanedVolumeIds.length };
+  });
 
-    // Split non-speed-tracked into marked as read vs. other
-    const notSpeedTracked = $orphanedVolumeIds.filter((id) => !visibleIds.has(id));
-    const markedAsRead = notSpeedTracked.filter((id) => $volumes[id]?.completed).length;
-    const other = notSpeedTracked.length - markedAsRead;
-
-    return { speedTracked, markedAsRead, other, total: $orphanedVolumeIds.length };
+  /**
+   * The volumes the pressed trash button actually stands for.
+   *
+   * SCOPED TO THE CLICKED ROW, deliberately. This button lives in one cell of
+   * one row of the "Speed by Series" table and is revealed by that row having
+   * speed-tracked orphans in it; it used to hand `clearOrphanedVolumeData` the
+   * WHOLE store's orphan list. On the library that prompted this work that was
+   * a row showing a handful of volumes tombstoning 456 — and `deletedOn` syncs,
+   * so the other devices lost that history too. A control revealed by one row
+   * acts on one row.
+   */
+  const orphanedBucketIds = $derived.by(() => {
+    if (!orphanedBucketSeriesId) return [];
+    const orphaned = new Set($orphanedVolumeIds);
+    return $volumeSpeedData
+      .filter((vol) => vol.seriesId === orphanedBucketSeriesId && orphaned.has(vol.volumeId))
+      .map((vol) => vol.volumeId);
   });
 
   // Sorted volume list using $derived for reactivity
@@ -686,11 +702,29 @@
   });
 
   onMount(() => {
-    // Proactively enrich ALL orphaned volumes when page loads
-    // This ensures even volumes that don't pass speed filters get enriched
-    enrichAllOrphanedVolumes();
+    // Enrich, sweep, then enrich AGAIN — in that order, each awaited.
+    //
+    // `enrichAllOrphanedVolumes` can only copy metadata off rows this device
+    // already has; a volume read on another machine has none, which is what
+    // puts it in the `[Missing Series Info]` bucket this page then offers for
+    // deletion. The sweep mints those missing rows from data already on the
+    // device (see `materializeHistoryRows`) — but a row only reaches
+    // `$orphanedVolumeIds` once an enrichment pass has copied it onto the
+    // reading record. Enriching BEFORE the sweep and firing the sweep off
+    // un-awaited (which is what this used to do) therefore left the bucket, and
+    // the trash button on it, holding every volume the sweep had just resolved
+    // for the whole visit. `patchProgressHolesAndEnrich` is that ordering, and
+    // `patchProgressHolesWhenListingReady` (see hole-patch.ts) is what re-runs
+    // it once more if THIS mount fired before the cloud listing was in —
+    // otherwise a cold start straight into this page can sweep zero volumes
+    // for the whole visit, which was the user-reported bug.
+    //
+    // The promise itself is not awaited here: it never rejects and must never
+    // hold up the page. What matters is the order INSIDE it.
+    const unsubscribeListing = patchProgressHolesWhenListingReady();
 
     return () => {
+      unsubscribeListing();
       if (chart) {
         chart.destroy();
       }
@@ -992,13 +1026,16 @@
     volumeToDelete = null;
   }
 
-  function confirmDeleteOrphaned() {
+  function confirmDeleteOrphaned(seriesId: string) {
+    orphanedBucketSeriesId = seriesId;
     orphanedDeleteModalOpen = true;
   }
 
   function deleteOrphanedData() {
-    clearOrphanedVolumeData($orphanedVolumeIds);
+    // Never the whole store — only what the pressed row stands for.
+    if (orphanedBucketIds.length > 0) clearOrphanedVolumeData(orphanedBucketIds);
     orphanedDeleteModalOpen = false;
+    orphanedBucketSeriesId = null;
   }
 
   // Get animation class for prestige and mythic tier badges
@@ -1285,13 +1322,13 @@
                   {/if}
                 </TableBodyCell>
                 <TableBodyCell>
-                  {#if !isSeriesDemo && series.seriesTitle === '[Missing Series Info]' && $orphanedVolumeIds.length > 0}
+                  {#if !isSeriesDemo && series.seriesTitle === '[Missing Series Info]' && orphanedCounts.speedTracked > 0}
                     <Button
                       size="xs"
                       color="red"
                       onclick={(e: MouseEvent) => {
                         e.stopPropagation();
-                        confirmDeleteOrphaned();
+                        confirmDeleteOrphaned(series.seriesId);
                       }}
                     >
                       <TrashBinSolid class="h-3 w-3" />
@@ -1418,31 +1455,20 @@
     <TrashBinSolid size="lg" class="mx-auto mb-4 text-gray-400 dark:text-gray-200" />
     <h3 class="mb-4 text-xl font-semibold text-gray-300">Remove Orphaned Volume Data?</h3>
     <p class="mb-4 text-base text-gray-400">
-      You have <span class="font-semibold text-gray-900 dark:text-white"
-        >{orphanedCounts.total} volume(s)</span
-      > with missing series information in your reading history.
+      This removes reading data for the <span class="font-semibold text-gray-900 dark:text-white"
+        >{orphanedBucketIds.length} volume(s)</span
+      > listed in this row.
     </p>
-    {#if orphanedCounts.speedTracked > 0 || orphanedCounts.markedAsRead > 0 || orphanedCounts.other > 0}
+    {#if orphanedCounts.total > orphanedBucketIds.length}
       <div class="mb-4 rounded bg-gray-800 p-3 text-left text-sm text-gray-400">
-        <p class="mb-1">This includes:</p>
-        <ul class="ml-2 list-inside list-disc">
-          {#if orphanedCounts.speedTracked > 0}
-            <li>
-              Speed-tracked volumes: <span class="font-semibold">{orphanedCounts.speedTracked}</span
-              >
-            </li>
-          {/if}
-          {#if orphanedCounts.markedAsRead > 0}
-            <li>
-              Marked as read: <span class="font-semibold">{orphanedCounts.markedAsRead}</span>
-            </li>
-          {/if}
-          {#if orphanedCounts.other > 0}
-            <li>
-              Other orphaned volumes: <span class="font-semibold">{orphanedCounts.other}</span>
-            </li>
-          {/if}
-        </ul>
+        <p>
+          <span class="font-semibold text-gray-300"
+            >{orphanedCounts.total - orphanedBucketIds.length} other volume(s)</span
+          >
+          in your reading history are also missing series information — volumes with no speed data, or
+          only marked as read.
+          <span class="font-semibold text-gray-300">They are not touched by this.</span>
+        </p>
       </div>
     {/if}
     <p class="mb-3 text-left text-sm text-gray-400">
@@ -1470,12 +1496,13 @@
     </p>
     <div class="flex justify-center gap-4">
       <Button color="red" onclick={deleteOrphanedData}>
-        Yes, Remove {orphanedCounts.total} volume{orphanedCounts.total !== 1 ? 's' : ''}
+        Yes, Remove {orphanedBucketIds.length} volume{orphanedBucketIds.length !== 1 ? 's' : ''}
       </Button>
       <Button
         color="alternative"
         onclick={() => {
           orphanedDeleteModalOpen = false;
+          orphanedBucketSeriesId = null;
         }}
       >
         Cancel

@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zipManga, createArchiveBlob } from './zip';
 import { db } from '$lib/catalog/db';
 import { compressVolume } from './compress-volume';
+import { TextReader, ZipWriter } from '@zip.js/zip.js';
+import { parseSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
 
 // Mock the database with v3 tables
 vi.mock('$lib/catalog/db', () => ({
   db: {
+    volumes: {
+      toArray: vi.fn().mockResolvedValue([])
+    },
     volume_ocr: {
       get: vi.fn()
     },
@@ -13,6 +18,14 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn()
     }
   }
+}));
+
+vi.mock('$lib/metadata/store', () => ({
+  getSeriesMetadataForTitle: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('$lib/metadata/series-index', () => ({
+  getSeriesIndex: vi.fn().mockResolvedValue(undefined)
 }));
 
 // Mock the backup queue to avoid Worker issues
@@ -23,12 +36,16 @@ vi.mock('./backup-queue', () => ({
 }));
 
 // Store the actual compressVolume calls for verification
-const compressVolumeCalls: { metadata: unknown; filesData: unknown[] }[] = [];
+const compressVolumeCalls: {
+  metadata: unknown;
+  filesData: unknown[];
+  options?: { seriesFile?: unknown };
+}[] = [];
 
 // Mock the compression module to capture calls
 vi.mock('./compress-volume', () => ({
-  compressVolume: vi.fn().mockImplementation((title, metadata, filesData) => {
-    compressVolumeCalls.push({ metadata, filesData });
+  compressVolume: vi.fn().mockImplementation((title, metadata, filesData, _onProgress, options) => {
+    compressVolumeCalls.push({ metadata, filesData, options });
     return Promise.resolve(new Uint8Array([1, 2, 3]));
   })
 }));
@@ -36,6 +53,7 @@ vi.mock('./compress-volume', () => ({
 // Mock @zip.js/zip.js to avoid real compression
 vi.mock('@zip.js/zip.js', () => ({
   BlobReader: vi.fn(),
+  BlobWriter: vi.fn(),
   Uint8ArrayWriter: vi.fn(),
   TextReader: vi.fn(),
   ZipWriter: vi.fn().mockImplementation(() => ({
@@ -201,6 +219,89 @@ describe('zipManga', () => {
       'zip',
       { includeSidecars: false, embedSidecarsInArchive: false }
     );
+  });
+});
+
+describe('series.json in exported archives', () => {
+  const seriesVolume = {
+    volume_uuid: 'vol-1-uuid',
+    series_uuid: 'series-uuid',
+    series_title: 'Test Manga',
+    volume_title: 'Volume 1',
+    mokuro_version: '1.0',
+    character_count: 100,
+    page_count: 1,
+    page_char_counts: [100] as number[]
+  };
+
+  const secondVolume = {
+    ...seriesVolume,
+    volume_uuid: 'vol-2-uuid',
+    volume_title: 'Volume 2'
+  };
+
+  const ocr = {
+    volume_uuid: 'vol-1-uuid',
+    pages: [{ img_path: 'page1.jpg', img_width: 100, img_height: 100, blocks: [] }]
+  };
+
+  const files = {
+    volume_uuid: 'vol-1-uuid',
+    files: { 'page1.jpg': new Blob(['image'], { type: 'image/jpeg' }) }
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    compressVolumeCalls.length = 0;
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.toArray.mockResolvedValue([seriesVolume, secondVolume]);
+    // @ts-expect-error - Mock type mismatch
+    db.volume_ocr.get.mockResolvedValue(ocr);
+    // @ts-expect-error - Mock type mismatch
+    db.volume_files.get.mockResolvedValue(files);
+  });
+
+  it('hands the single-volume archive the series file, indexing every local volume', async () => {
+    await createArchiveBlob([seriesVolume]);
+
+    expect(compressVolumeCalls).toHaveLength(1);
+    const seriesFile = compressVolumeCalls[0].options?.seriesFile as SeriesFile;
+    expect(seriesFile.series_title).toBe('Test Manga');
+    expect(seriesFile.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1-uuid', 'vol-2-uuid']);
+    // Round-trips through the parser the importer uses.
+    expect(parseSeriesFile(JSON.parse(JSON.stringify(seriesFile)))).toEqual(seriesFile);
+  });
+
+  it('writes series.json at the root of a multi-volume series archive', async () => {
+    await createArchiveBlob([seriesVolume, secondVolume], 'Test Manga');
+
+    const writer = vi.mocked(ZipWriter).mock.results[0].value;
+    const entryPaths = writer.add.mock.calls.map((call: unknown[]) => call[0]);
+    expect(entryPaths.filter((path: string) => path === 'series.json')).toHaveLength(1);
+
+    const texts = vi.mocked(TextReader).mock.calls.map((call) => call[0] as string);
+    const written = texts
+      .map((text) => {
+        try {
+          return parseSeriesFile(JSON.parse(text));
+        } catch {
+          return undefined;
+        }
+      })
+      .find((file) => file !== undefined);
+    expect(written?.series_title).toBe('Test Manga');
+    expect(written?.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1-uuid', 'vol-2-uuid']);
+  });
+
+  it('writes no series.json when the series has nothing to index', async () => {
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.toArray.mockResolvedValue([]);
+
+    await createArchiveBlob([seriesVolume, secondVolume], 'Test Manga');
+
+    const writer = vi.mocked(ZipWriter).mock.results[0].value;
+    const entryPaths = writer.add.mock.calls.map((call: unknown[]) => call[0]);
+    expect(entryPaths).not.toContain('series.json');
   });
 });
 

@@ -2,6 +2,13 @@
   import { thumbnailCache, type CacheEntry } from '$lib/catalog/thumbnail-cache';
   import type { VolumeMetadata } from '$lib/types';
 
+  /**
+   * Shared identity for "this canvas was handed no covers", so a caller that has none can
+   * hand the same object every render instead of a fresh empty Map that would invalidate
+   * the draw effect on every re-render.
+   */
+  const NO_COVERS: Map<string, File> = new Map();
+
   interface Props {
     volumes: VolumeMetadata[];
     canvasWidth: number;
@@ -14,8 +21,26 @@
       topOffset: number;
     };
     dropShadow?: boolean;
+    /**
+     * The 1px edge around each thumbnail. Defaults to `dropShadow` (the catalog card ships
+     * both together), but the spine shelf wants the edges WITHOUT the shadow: the edges are
+     * what makes the spacing between two spines judgeable, while the shadow only muddies it.
+     */
+    border?: boolean;
     volumeOffsets?: Map<number, number>;
     highlightIndex?: number | null;
+    /**
+     * Cover blobs handed to this canvas rather than read off the row: the CLOUD covers a
+     * card resolved by path through `cover-resolver.ts`, which a cloud-only volume has no
+     * `thumbnail` field to carry (its row either doesn't exist or was never written one).
+     *
+     * Keyed by `volume_uuid` — the SAME key `thumbnailCache` decodes under — so one volume
+     * has one bitmap however its bytes arrived, and a cover that lands while the card is
+     * mounted reuses the cache instead of re-decoding.
+     *
+     * A row's own `thumbnail` always wins: the local path is untouched by this prop.
+     */
+    covers?: Map<string, File>;
   }
 
   let {
@@ -25,9 +50,13 @@
     getCanvasDimensions,
     stepSizes,
     dropShadow = true,
+    border,
     volumeOffsets = new Map(),
-    highlightIndex = null
+    highlightIndex = null,
+    covers = NO_COVERS
   }: Props = $props();
+
+  let showBorder = $derived(border ?? dropShadow);
 
   // Hardware limits for canvas segments
   const MAX_SEGMENT_SIZE = 1024;
@@ -123,7 +152,11 @@
 
     for (let i = 0; i < volumes.length; i++) {
       const vol = volumes[i];
-      if (!vol.thumbnail) continue;
+      // The row's own cover first — an installed volume, or one with reading history,
+      // carries its bytes here and must never depend on the cloud resolver. Only when
+      // there is none does the card's resolved cloud cover stand in.
+      const coverFile = vol.thumbnail ?? covers.get(vol.volume_uuid);
+      if (!coverFile) continue;
 
       const dims = getCanvasDimensions(vol.volume_uuid);
       if (!dims) continue;
@@ -141,7 +174,7 @@
         loadingUuids = new Set(loadingUuids);
 
         thumbnailCache
-          .get(vol.volume_uuid, vol.thumbnail, i, visibilityElement)
+          .get(vol.volume_uuid, coverFile, i, visibilityElement)
           .then(() => {
             // Trigger redraw when load completes
             drawTrigger++;
@@ -201,7 +234,7 @@
         // Draw the thumbnail
         ctx.drawImage(entry.bitmap, localX, localY, dims.width, dims.height);
 
-        if (dropShadow) {
+        if (showBorder) {
           // Draw border
           ctx.strokeStyle = '#111827'; // gray-900
           ctx.lineWidth = 1;
@@ -224,6 +257,25 @@
     }
   }
 
+  /**
+   * Repaint when a bitmap this canvas is waiting for lands in the cache.
+   *
+   * `draw()` reads the cache SYNCHRONOUSLY, so a miss can only be recovered by drawing
+   * again. Its own `thumbnailCache.get(...)` covers the load it started itself, but not a
+   * commit that came from anywhere else — another card sharing the volume, a cover
+   * install, a re-decode after an invalidate. Those used to reach this canvas only if
+   * something happened to re-render it, which is why a cover could arrive and the card
+   * stay blank until it was remounted.
+   *
+   * Subscribed once, for the component's life: the listener re-reads `volumes` when it
+   * fires rather than being torn down and rebuilt on every data change.
+   */
+  $effect(() => {
+    return thumbnailCache.subscribeCommits((volumeUuid) => {
+      if (volumes.some((vol) => vol.volume_uuid === volumeUuid)) drawTrigger++;
+    });
+  });
+
   // Draw effect - reacts to data changes
   $effect(() => {
     // Dependencies - access to track
@@ -236,6 +288,14 @@
     void isVisible;
     void highlightIndex;
     void volumeOffsets;
+    // `draw()` reads this, but inside a `requestAnimationFrame` callback where nothing is
+    // tracked, so THIS is the only tracked read of the covers map — remove it and a cover
+    // landing can no longer repaint on its own. Pinned by "redraws on a covers change
+    // alone" in `CompositeCanvas.test.ts`, which drives `covers` through a host component
+    // so it is genuinely the only prop that moves.
+    void covers;
+    void dropShadow;
+    void showBorder;
 
     // Use rAF to ensure DOM is ready
     requestAnimationFrame(draw);

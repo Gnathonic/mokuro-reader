@@ -1,3 +1,24 @@
+<script module lang="ts">
+  /**
+   * How long "Loading catalog..." may sit before it explains itself. The
+   * first catalog read normally lands within one coalesce window (~150ms);
+   * five seconds of silence means IndexedDB is not answering at all.
+   *
+   * Diagnosed live (2026-08-27, 819-volume library): Chrome's storage
+   * backend (the browser-wide StorageService) wedged with readwrite
+   * transactions on `volumes`/`cloud_covers` grinding for HOURS — one took
+   * ~2.5h to commit 2 rows — right after a bulk download pushed the origin
+   * to 110GB of its 120GB quota. Once wedged, every boot's own queued
+   * writes pile on behind it, so reloading the page does NOT clear it (the
+   * aborts themselves crawl); restarting the whole browser does (fresh
+   * StorageService). No page can observe or fix that state from the inside —
+   * a queued read simply never returns — so past this deadline the loader
+   * says what is known and what actually helps, including live quota
+   * pressure when `navigator.storage.estimate()` can report it.
+   */
+  export const CATALOG_LOAD_STALL_MS = 5000;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import { catalog } from '$lib/catalog';
@@ -12,17 +33,24 @@
     UploadSolid
   } from 'flowbite-svelte-icons';
   import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
+  import { partitionCatalogSeries } from '$lib/catalog/catalog';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { queueSeriesVolumes } from '$lib/util/download-queue';
-  import { getCloudProvider } from '$lib/util/cloud-fields';
+  import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
+  import { needsDownload } from '$lib/catalog/volume-state';
+  import { isSeriesFinished } from '$lib/util/volume-helpers';
   import { showSnackbar } from '$lib/util';
   import type { ProviderType } from '$lib/util/sync/provider-interface';
 
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   let search = $state('');
+  /** True once the loading spinner has outlived {@link CATALOG_LOAD_STALL_MS}. */
+  let loadStalled = $state(false);
+  /** "110 of 120 GB" when the origin is under storage-quota pressure, else null. */
+  let quotaPressure = $state<string | null>(null);
   let pendingRestoreY = $state<number | null>(null);
   let restoringScroll = $state(false);
   let restoreAttempts = $state(0);
@@ -172,17 +200,26 @@
     return [...$catalog]
       .sort((a, b) => {
         if ($miscSettings.gallerySorting === 'ASC') {
-          return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+          return a.displayTitle.localeCompare(b.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         } else if ($miscSettings.gallerySorting === 'DESC') {
-          return b.title.localeCompare(a.title, undefined, { numeric: true, sensitivity: 'base' });
+          return b.displayTitle.localeCompare(a.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         } else {
           // SMART sorting
-          // Check if series are completed
+          // Check if series are completed — through the app's ONE series-completion rule,
+          // the same call the cards colour themselves by (`$lib/util/volume-helpers`).
+          // This used to read the stored `completed` flag alone, which the card did not,
+          // so a finished series could sort to the bottom and never turn green.
           const aVolumes = a.volumes.map((vol) => vol.volume_uuid);
           const bVolumes = b.volumes.map((vol) => vol.volume_uuid);
 
-          const aCompleted = aVolumes.every((volId) => volumesSnapshot[volId]?.completed);
-          const bCompleted = bVolumes.every((volId) => volumesSnapshot[volId]?.completed);
+          const aCompleted = isSeriesFinished(a.volumes, volumesSnapshot);
+          const bCompleted = isSeriesFinished(b.volumes, volumesSnapshot);
 
           // If completion status differs, completed series go to the end
           if (aCompleted !== bCompleted) {
@@ -209,33 +246,44 @@
             return bLastUpdated - aLastUpdated;
           }
 
-          // If all else is equal, use natural sorting on title
-          return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+          // If all else is equal, use natural sorting on display title
+          return a.displayTitle.localeCompare(b.displayTitle, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          });
         }
       })
       .filter((item) => {
-        return item.title.toLowerCase().indexOf(search.toLowerCase()) !== -1;
+        const query = search.trim().toLowerCase();
+        if (!query) return true;
+        // Matches folder title, AniList titles, synonyms, tag and the display title
+        return item.searchTerms.some((term) => term.includes(query));
       });
   });
 
-  // Separate local series from placeholder-only series
-  let localSeries = $derived(
-    sortedCatalog.filter((series) => series.volumes.some((vol) => !vol.isPlaceholder))
+  // The three regions, decided in ONE pass over the sorted catalog (never per card).
+  // Series with nothing readable here always render in their own cloud section.
+  let sections = $derived(partitionCatalogSeries(sortedCatalog));
+  let localSeries = $derived(sections.localSeries);
+  let placeholderSeries = $derived(sections.cloudSeries);
+
+  // Everything "Download all" fetches: every volume in the LIBRARY that is not on this
+  // device and has a cloud file to pull from — cloud-only placeholders and metadata-only
+  // rows alike, wherever their series card is currently filed. The button has always meant
+  // "get all the ones I don't have"; scoping it to the cloud section's own series dropped
+  // both the removed rows and the cloud volumes of a partly-downloaded series.
+  // Same rule as the series page's "Download all" (needsDownload + a cloud file id).
+  let downloadableVolumes = $derived(
+    sortedCatalog.flatMap((series) =>
+      series.volumes.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol))
+    )
   );
 
-  let placeholderSeries = $derived(
-    sortedCatalog.filter((series) => series.volumes.every((vol) => vol.isPlaceholder))
-  );
-
-  // Collect all placeholder volumes from the entire catalog
-  let allPlaceholderVolumes = $derived(
-    sortedCatalog.flatMap((series) => series.volumes.filter((vol) => vol.isPlaceholder))
-  );
-
-  // Count placeholders by provider for UI display
+  // Provider breakdown OF THAT SET, so the line above the button counts what the button
+  // will actually queue.
   let placeholdersByProvider = $derived.by(() => {
     const counts: Record<string, number> = {};
-    for (const vol of allPlaceholderVolumes) {
+    for (const vol of downloadableVolumes) {
       const provider = getCloudProvider(vol) || 'unknown';
       counts[provider] = (counts[provider] || 0) + 1;
     }
@@ -264,15 +312,47 @@
     startRestoreLoop();
   });
 
+  $effect(() => {
+    // Stall watch for the loading spinner: armed while the catalog is still
+    // null, cleared the moment data lands (including data that arrives AFTER
+    // the stall message showed — the queued read completes as soon as the
+    // blocked database frees up, and the message must not outlive the
+    // condition it describes).
+    if ($catalog !== null) {
+      loadStalled = false;
+      // The quota line must reset with the stall it described: a later,
+      // unrelated stall in this same tab must re-measure, not replay the
+      // reading from a previous incident (quota may have been freed since).
+      quotaPressure = null;
+      return;
+    }
+    const stallTimer = setTimeout(() => {
+      loadStalled = true;
+      // Best-effort context for the stall message: quota pressure is the one
+      // condition this failure was actually observed under. The estimate call
+      // does not touch IndexedDB, so it answers even while the database hangs.
+      void navigator.storage
+        ?.estimate?.()
+        .then(({ usage, quota }) => {
+          if (!usage || !quota) return;
+          if (usage / quota >= 0.85) {
+            quotaPressure = `${Math.round(usage / 1e9)} of ${Math.round(quota / 1e9)} GB`;
+          }
+        })
+        .catch(() => {});
+    }, CATALOG_LOAD_STALL_MS);
+    return () => clearTimeout(stallTimer);
+  });
+
   async function downloadAllPlaceholders() {
-    if (!allPlaceholderVolumes || allPlaceholderVolumes.length === 0) return;
+    if (downloadableVolumes.length === 0) return;
     if (!hasAuthenticatedProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
       return;
     }
 
     try {
-      queueSeriesVolumes(allPlaceholderVolumes);
+      queueSeriesVolumes(downloadableVolumes);
     } catch (error) {
       console.error('Failed to queue placeholders for download:', error);
     }
@@ -280,7 +360,26 @@
 </script>
 
 {#if $catalog === null}
-  <Loader>Loading catalog...</Loader>
+  <Loader>
+    {#if loadStalled}
+      <div class="max-w-md text-center" data-testid="catalog-load-stalled">
+        <p>Still loading the catalog...</p>
+        <p class="mt-2 text-sm text-gray-500">
+          The browser's storage system is not responding, so the catalog's first read is stuck in
+          its queue. Fully restarting the browser (all windows) is the reliable fix — reloading just
+          this page usually is not enough.
+        </p>
+        {#if quotaPressure}
+          <p class="mt-2 text-sm text-gray-500" data-testid="catalog-quota-pressure">
+            This site's browser storage is nearly full ({quotaPressure} used). Storage stalls tend to
+            happen under that pressure — removing some downloaded volumes makes them less likely.
+          </p>
+        {/if}
+      </div>
+    {:else}
+      Loading catalog...
+    {/if}
+  </Loader>
 {:else if $catalog.length > 0}
   <div class="flex flex-col gap-5">
     <div class="flex w-full gap-1 py-2">
@@ -323,15 +422,18 @@
       </div>
     {:else}
       <!-- Local series -->
-      <div class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start">
+      <div
+        data-testid="catalog-library"
+        class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
+      >
         {#if $miscSettings.galleryLayout === 'grid'}
-          {#each localSeries as { title, volumes } (title)}
-            <CatalogItem {volumes} providerName={providerDisplayName} />
+          {#each localSeries as { title, displayTitle, volumes } (title)}
+            <CatalogItem {volumes} {displayTitle} providerName={providerDisplayName} />
           {/each}
         {:else}
           <Listgroup active class="w-full">
-            {#each localSeries as { title, volumes } (title)}
-              <CatalogListItem {volumes} providerName={providerDisplayName} />
+            {#each localSeries as { title, displayTitle, volumes } (title)}
+              <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
             {/each}
           </Listgroup>
         {/if}
@@ -339,17 +441,23 @@
 
       <!-- Placeholder series (Cloud providers) -->
       {#if placeholderSeries && placeholderSeries.length > 0}
-        <div class="mt-8">
+        <div class="mt-8" data-testid="catalog-cloud">
           <div class="mb-4 flex items-center justify-between px-4">
             <div>
+              <!-- Keyed: counts are exactly the text Migaku rewrites and then holds
+                   stale, and these two change under the display setting (see CLAUDE.md). -->
               <h4 class="text-lg font-semibold text-gray-400">
-                Available in {providerDisplayName} ({placeholderSeries.length} series)
+                Available in {providerDisplayName}
+                {#key placeholderSeries.length}<span>({placeholderSeries.length} series)</span
+                  >{/key}
               </h4>
               {#if providerBreakdown}
-                <p class="mt-1 text-sm text-gray-500">{providerBreakdown}</p>
+                {#key providerBreakdown}
+                  <p class="mt-1 text-sm text-gray-500">{providerBreakdown}</p>
+                {/key}
               {/if}
             </div>
-            {#if hasAuthenticatedProvider && allPlaceholderVolumes.length > 0}
+            {#if hasAuthenticatedProvider && downloadableVolumes.length > 0}
               <Button size="sm" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
@@ -360,13 +468,13 @@
             class="flex flex-col flex-wrap justify-center gap-[3px] sm:flex-row sm:justify-start"
           >
             {#if $miscSettings.galleryLayout === 'grid'}
-              {#each placeholderSeries as { title, volumes } (title)}
-                <CatalogItem {volumes} providerName={providerDisplayName} />
+              {#each placeholderSeries as { title, displayTitle, volumes } (title)}
+                <CatalogItem {volumes} {displayTitle} providerName={providerDisplayName} />
               {/each}
             {:else}
               <Listgroup active class="w-full">
-                {#each placeholderSeries as { title, volumes } (title)}
-                  <CatalogListItem {volumes} providerName={providerDisplayName} />
+                {#each placeholderSeries as { title, displayTitle, volumes } (title)}
+                  <CatalogListItem {volumes} {displayTitle} providerName={providerDisplayName} />
                 {/each}
               </Listgroup>
             {/if}

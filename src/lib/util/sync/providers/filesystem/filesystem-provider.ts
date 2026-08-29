@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   StorageQuota,
-  UploadPayload
+  UploadPayload,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -46,11 +47,24 @@ export class FilesystemProvider implements SyncProvider {
       isAuthenticated: this.isAuthenticated(),
       hasStoredCredentials: this.hasStoredHandle,
       needsAttention: this.hasStoredHandle && !this.isAuthenticated(),
+      // Stated rather than omitted: the `series.json` / `catalog.json` writers
+      // gate on both, and an absent flag would pass those gates by accident
+      // instead of by decision. A connected folder is writable by construction
+      // — the picker asks for `readwrite` and `restoreHandle` only adopts a
+      // stored handle whose `readwrite` permission is already granted — and a
+      // local folder has no server to compile the metadata files for us.
+      isReadOnly: false,
+      serverCompilesMetadata: false,
       statusMessage: this.isAuthenticated()
         ? `Connected to folder "${this.rootHandle?.name ?? ''}"`
         : this.hasStoredHandle
           ? 'Folder permission needs to be reconnected'
-          : 'Not configured'
+          : 'Not configured',
+      // The picked folder's own name is the only non-secret discriminator the
+      // File System Access API exposes; two different folders that happen to
+      // share a basename would collide, but that's an acceptable rough edge
+      // versus never scoping this provider's cache at all.
+      accountScope: this.rootHandle?.name ? `filesystem:${this.rootHandle.name}` : undefined
     };
   }
 
@@ -294,7 +308,7 @@ export class FilesystemProvider implements SyncProvider {
     blob: UploadPayload,
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     try {
       this.requireRoot();
       const fileHandle = await this.resolveFileHandle(path, { create: true });
@@ -312,7 +326,20 @@ export class FilesystemProvider implements SyncProvider {
         await writable.close();
       }
       console.log(`✅ Uploaded ${path} to filesystem`);
-      return path;
+      // A local stat, not a round trip: `lastModified` here is the SAME field
+      // `listCloudVolumes` reports for this file, so the upload-time cache
+      // entry can carry the real listing-visible mtime instead of a
+      // provisional client-clock one.
+      let modifiedTime: string | undefined;
+      let size: number | undefined;
+      try {
+        const written = await fileHandle.getFile();
+        modifiedTime = new Date(written.lastModified).toISOString();
+        size = written.size;
+      } catch {
+        // Stat failed: return no mtime and let the cache entry stay provisional.
+      }
+      return { fileId: path, modifiedTime, size };
     } catch (error) {
       throw this.toProviderError(error, 'Upload', path);
     }

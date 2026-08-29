@@ -1,6 +1,20 @@
 import { File as MegaFile, Storage } from 'megajs';
+import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
+
+/**
+ * The server timestamp of a completed-upload node, as an ISO string — the
+ * SAME `timestamp` (epoch seconds, server-assigned) the listing mapper in
+ * `mega-provider.ts` turns into `modifiedTime`, so an upload-time cache entry
+ * stamped from it agrees with the next listing. `undefined` when the node
+ * carries no finite timestamp (leave the cache entry provisional).
+ */
+export function megaNodeModifiedTime(node: unknown): string | undefined {
+  const ts = (node as { timestamp?: unknown } | null | undefined)?.timestamp;
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return undefined;
+  return new Date(ts * 1000).toISOString();
+}
 
 let uploadStoragePromise: Promise<Storage> | null = null;
 let uploadSessionKey: string | null = null;
@@ -256,7 +270,7 @@ export const megaCore: CloudProviderCore = {
     credentials,
     onProgress,
     mimeType
-  }): Promise<string> {
+  }): Promise<UploadFileResult> {
     const session = requireCredentialString(credentials, 'megaSession', 'MEGA session');
     const storage = await getUploadStorage(session);
 
@@ -326,7 +340,12 @@ export const megaCore: CloudProviderCore = {
         await attachMegaThumbnail(uploadedFile, blob);
       }
 
-      return uploadedFileId;
+      const nodeSize = (uploadedFile as { size?: unknown } | undefined)?.size;
+      return {
+        fileId: uploadedFileId,
+        modifiedTime: megaNodeModifiedTime(uploadedFile),
+        size: typeof nodeSize === 'number' && Number.isFinite(nodeSize) ? nodeSize : undefined
+      };
     } catch (error: any) {
       throw new Error(`MEGA upload failed: ${error.message || error}`);
     }

@@ -26,12 +26,22 @@ import {
   isImageExtension,
   processVolume,
   saveVolume,
-  deleteVolume as deleteStoredVolume,
+  deleteVolumeCompletely,
   isSystemFile
 } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
+import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
+import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
+import { recordArchiveSize } from '$lib/catalog/archive-size';
+import {
+  queueSidecarBackfillForVolume,
+  queueSidecarBackfillFromImport
+} from './sync/sidecar-backfill';
+import type { SavedVolumeData } from '$lib/import/database';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -118,8 +128,10 @@ export function queueVolume(volume: VolumeMetadata): void {
   const cloudFileId = getCloudFileId(volume);
   const cloudProvider = getCloudProvider(volume);
 
-  if (!volume.isPlaceholder || !cloudFileId || !cloudProvider) {
-    console.warn('Can only queue placeholder volumes with cloud file IDs');
+  // Both flavours of not-installed volume are downloadable: a cloud-only
+  // placeholder, and a metadata-only row whose files were removed here.
+  if (!needsDownload(volume) || !cloudFileId || !cloudProvider) {
+    console.warn('Can only queue not-installed volumes with cloud file IDs');
     return;
   }
 
@@ -157,11 +169,11 @@ export function queueVolume(volume: VolumeMetadata): void {
 export function queueSeriesVolumes(volumes: VolumeMetadata[]): void {
   const placeholders = volumes.filter((v) => {
     const cloudFileId = getCloudFileId(v);
-    return v.isPlaceholder && cloudFileId;
+    return needsDownload(v) && cloudFileId;
   });
 
   if (placeholders.length === 0) {
-    console.warn('No placeholder volumes to queue');
+    console.warn('No downloadable volumes to queue');
     return;
   }
 
@@ -360,9 +372,16 @@ async function entriesToDecompressedVolume(
  * Process downloaded volume data using unified import system
  * Handles missing pages, image-only volumes, and all other import scenarios
  */
-async function processVolumeData(
+
+export async function processVolumeData(
   entries: DecompressedEntry[],
-  placeholder: VolumeMetadata
+  placeholder: VolumeMetadata,
+  /**
+   * Bytes of the archive that actually arrived, as measured by the worker.
+   * Undefined when nothing measured it — the listing's claim is NOT a
+   * substitute: it is what the cloud says about a file, not what we received.
+   */
+  archiveBytes?: number
 ): Promise<void> {
   // Use the original cloud path for basePath to get proper series extraction
   // Falls back to volume_title if cloudPath not available (older placeholders)
@@ -376,6 +395,20 @@ async function processVolumeData(
   // This handles missing pages, image-only volumes, placeholder generation, etc.
   const processedVolume = await processVolume(decompressedVolume);
 
+  // UUID contract with the catalog placeholder (see `generatePlaceholders`):
+  // the queued placeholder keeps whatever uuid it was shown with, and the
+  // imported volume must land on the same one so progress recorded against the
+  // placeholder (volume-data.json is keyed by uuid) stays attached.
+  //
+  // - OCR volumes: `processVolume` takes the uuid from the archive's `.mokuro`,
+  //   which is the same source the `series.json` index entry was written from,
+  //   so an index-backed placeholder already matches. Without an index the
+  //   placeholder's uuid was derived from the path and the real one replaces it
+  //   — the pre-existing behaviour, and the placeholder disappears because the
+  //   local row now owns that cloud path.
+  // - Image-only volumes: the import mints a uuid from the path, so the
+  //   placeholder's uuid is forced in below.
+  //
   // Keep cloud placeholder series identity for image-only imports so they stay grouped
   // with existing volumes before OCR sidecars are applied.
   const isImageOnly =
@@ -395,6 +428,7 @@ async function processVolumeData(
     db.volume_files.get(processedVolume.metadata.volumeUuid)
   ]);
 
+  let saved: SavedVolumeData | undefined;
   if (
     shouldReplaceDownloadedVolume(
       existingVolume,
@@ -403,8 +437,11 @@ async function processVolumeData(
       processedVolume.metadata.mokuroVersion
     )
   ) {
-    if (existingVolume) {
-      await deleteStoredVolume(processedVolume.metadata.volumeUuid);
+    // A metadata-only row is this volume's history: leave it for `saveVolume`
+    // to fill in place (same uuid, same cover). Any other stale row is replaced
+    // wholesale by the save below, so it can go.
+    if (existingVolume && !isMetadataOnly(existingVolume)) {
+      await deleteVolumeCompletely(processedVolume.metadata.volumeUuid);
     }
 
     // Save using unified database function. preserveTitles: the titles here
@@ -412,7 +449,14 @@ async function processVolumeData(
     // the stored-title === cloud-path identity for legacy backups (volume
     // reads as un-backed-up, renames miss its files). Legacy titles are
     // sanitized at rename time instead, when the cloud files move with them.
-    await saveVolume(processedVolume, { preserveTitles: true });
+    saved = await saveVolume(processedVolume, { preserveTitles: true });
+    await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
+
+    // How big the archive we just installed was — inside this branch on
+    // purpose: a download that decided to leave the existing row alone did not
+    // put those bytes on it, so it has no business restamping its size.
+    // `saveVolume` writes the row with a `put`, so this has to come after it.
+    await recordArchiveSize(processedVolume.metadata.volumeUuid, archiveBytes);
   }
 
   // Update cloud file description if folder name doesn't match series title
@@ -456,6 +500,47 @@ async function processVolumeData(
     } catch (error) {
       console.warn('Failed to update cloud file description:', error);
     }
+  }
+
+  // The volume is installed now. If the cloud archive it came from predates
+  // the sidecar convention (mokuro embedded in the .cbz, no cover file), the
+  // data the missing sidecars should carry is IN MEMORY right here — the
+  // DB-shaped pages `saveVolume` just committed and the cover the import
+  // generated — so the import feed uploads them immediately, with no Dexie
+  // re-read, gated on this download's provider still being the active one.
+  // Fire-and-forget by contract: never throws, never delays this import.
+  if (saved && cloudProvider) {
+    queueSidecarBackfillFromImport(saved, cloudProvider);
+  }
+  // Safety net for whatever the import feed declined (provider switched
+  // mid-download, a download that reused the existing install, no provider on
+  // the placeholder): nominate for the deferred drain, which re-derives
+  // everything from the provider cache. A volume the import feed already
+  // handled no-ops here at the attempted-set check — or, across sessions, at
+  // the cache the upload itself updated — without touching the database.
+  queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
+
+  // The volume is INSTALLED now (freshly saved, or the kept existing install)
+  // and its measured page/char counts are in Dexie — publish them. Without
+  // this, installing never scheduled a `series.json` write at all, so a
+  // published 0/0 no-metadata entry for this volume stood forever: the first
+  // browse-time write ratchets the file into existence with only the shown
+  // volume measured, and after that cover resolution takes the indexed path
+  // (no measurement, no write) while the sidecar backfill sees the stampless
+  // 0/0 entry as never-stale and the installed volume as never-pull — nothing
+  // left to trigger a write (see `maybeScheduleSeriesHealWrite` in
+  // `series-backfill.ts`, this trigger's read-cycle counterpart).
+  //
+  // Scheduled under the FOLDER title (the placeholder's series_title comes
+  // from the cloud path), with no options: no `fromCloudListing` — no listing
+  // was fetched to back this schedule, so the debounced write pays the
+  // ordinary TTL-coalesced refresh — and the 2 s per-series debounce is what
+  // makes a batch install of one series coalesce into ~one PUT instead of one
+  // per volume. Gated so read-only providers and servers that compile
+  // series.json themselves are never written to; the write re-checks its own
+  // gates at fire time.
+  if (hasWritableNonServerProvider()) {
+    scheduleSeriesFileWrite(placeholder.series_title);
   }
 }
 
@@ -688,7 +773,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             '[Download Queue] Sidecar entries merged:',
             sidecarEntries.map((entry) => entry.filename)
           );
-          await processVolumeData(allEntries, item.volumeMetadata);
+          await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
 
           progressTrackerStore.updateProcess(processId, {
             progress: 100,
@@ -791,7 +876,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
         const sidecarEntries = await downloadSidecarEntries(item.volumeMetadata);
         const allEntries =
           sidecarEntries.length > 0 ? [...data.entries, ...sidecarEntries] : data.entries;
-        await processVolumeData(allEntries, item.volumeMetadata);
+        await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
         progressTrackerStore.updateProcess(processId, {
           progress: 100,
           status: 'Download complete'

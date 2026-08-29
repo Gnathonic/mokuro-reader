@@ -2,13 +2,12 @@
   import { catalog, currentSeries } from '$lib/catalog';
   import VolumeItem from '$lib/components/VolumeItem.svelte';
   import PlaceholderVolumeItem from '$lib/components/PlaceholderVolumeItem.svelte';
+  import SeriesMetadataBar from '$lib/components/Series/SeriesMetadataBar.svelte';
   import { Button, Listgroup, Spinner, Badge, Dropdown, DropdownItem } from 'flowbite-svelte';
   import { promptConfirmation, zipManga, showSnackbar } from '$lib/util';
-  import { promptExtraction } from '$lib/util/modals';
+  import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import type { VolumeMetadata } from '$lib/types';
-  import { deleteVolume as deleteVolumeStats, volumes, progress, settings } from '$lib/settings';
-  import { deleteVolume as deleteStoredVolume } from '$lib/import';
+  import { volumes, progress, settings } from '$lib/settings';
   import { getEffectiveReadingTime } from '$lib/util/reading-speed';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
@@ -21,18 +20,28 @@
     GridOutline,
     ListOutline,
     DotsVerticalOutline,
-    EditOutline,
-    CloseOutline,
-    CheckOutline
+    EditOutline
   } from 'flowbite-svelte-icons';
-  import { executeRenameSeries } from '$lib/util/series-rename';
   import { backupQueue } from '$lib/util/backup-queue';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import { onMount } from 'svelte';
-  import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
+  import { partitionSeriesVolumes } from '$lib/catalog/catalog';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { openSeries } from '$lib/metadata/series-open';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+  import { sortVolumes } from '$lib/catalog/sort-volumes';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
+  import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
+  import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
+  import { getCloudFileId } from '$lib/util/cloud-fields';
+  import { downloadQueue } from '$lib/util/download-queue';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
@@ -81,13 +90,22 @@
     return manga.reduce((total, vol) => {
       const volumeData = $volumes?.[vol.volume_uuid];
       const currentPage = volumeData?.progress || 0;
-      if (currentPage <= 0 || !vol.page_char_counts?.length) return total;
+      if (currentPage <= 0) return total;
 
       // If volume is completed, use full character count
       // (completion can trigger on second-to-last page, so progress may be short)
       if (volumeData?.completed) {
-        return total + (vol.page_char_counts[vol.page_char_counts.length - 1] || 0);
+        return (
+          total +
+          (vol.page_char_counts?.length
+            ? vol.page_char_counts[vol.page_char_counts.length - 1] || 0
+            : vol.character_count || volumeData.chars || 0)
+        );
       }
+
+      // Not installed (placeholder from the series index): no per-page counts,
+      // but the progress record keeps the cumulative chars read of that volume.
+      if (!vol.page_char_counts?.length) return total + (volumeData?.chars || 0);
 
       // page_char_counts is cumulative: [50, 120, 200] means page 3 has 200 total chars through it
       // currentPage is 1-indexed, so page 1 = index 0, page N = index N-1
@@ -149,6 +167,26 @@
     }
   });
 
+  // Series open is a load step: refresh this series' series.json, materialize
+  // its volumes, install covers. Keyed on the route param so navigating between
+  // series re-runs it; `openSeries` itself dedupes, never rejects, and settles
+  // once the rows exist rather than waiting on the cover downloads behind them.
+  let seriesOpenPending = $state(false);
+  // Only the newest run may clear the flag. Series A settling after a
+  // navigation to B would otherwise drop B's spinner and flash "Series not
+  // found" over a series still being materialized.
+  let seriesOpenRun = 0;
+
+  $effect(() => {
+    const title = $routeParams.manga;
+    if (!browser || !title) return;
+    const run = ++seriesOpenRun;
+    seriesOpenPending = true;
+    openSeries(title).finally(() => {
+      if (run === seriesOpenRun) seriesOpenPending = false;
+    });
+  });
+
   function toggleViewMode() {
     viewMode = viewMode === 'list' ? 'grid' : 'list';
   }
@@ -160,6 +198,11 @@
         : sortMode === 'alphabetical'
           ? 'reverse-alphabetical'
           : 'unread-first';
+  }
+
+  /** Read through? The app's one completion rule, over this list's raw progress. */
+  function isReadThrough(vol: { volume_uuid: string; page_count: number }): boolean {
+    return isVolumeComplete($progress?.[vol.volume_uuid] || 0, vol.page_count);
   }
 
   // Reactive sorted volumes - uses currentSeries which handles title/UUID matching
@@ -175,29 +218,20 @@
 
     volumesToSort.sort((a, b) => {
       if (sortMode === 'unread-first') {
-        // Get completion status from current page position only (source of truth)
-        const aCurrentPage = $progress?.[a.volume_uuid] || 0;
-        const bCurrentPage = $progress?.[b.volume_uuid] || 0;
-
-        const aComplete = aCurrentPage === a.page_count || aCurrentPage === a.page_count - 1;
-        const bComplete = bCurrentPage === b.page_count || bCurrentPage === b.page_count - 1;
+        const aComplete = isReadThrough(a);
+        const bComplete = isReadThrough(b);
 
         // Sort unread first, then by title
         if (aComplete !== bComplete) {
           return aComplete ? 1 : -1; // Unread (false) comes before complete (true)
         }
       } else if (sortMode === 'reverse-alphabetical') {
-        return b.volume_title.localeCompare(a.volume_title, undefined, {
-          numeric: true,
-          sensitivity: 'base'
-        });
+        return -sortVolumes(a, b);
       }
 
-      // Within same completion status (or alphabetical mode), sort alphabetically
-      return a.volume_title.localeCompare(b.volume_title, undefined, {
-        numeric: true,
-        sensitivity: 'base'
-      });
+      // Within same completion status (or alphabetical mode), the catalog's own natural
+      // volume order — one collator for every list of volumes in the app.
+      return sortVolumes(a, b);
     });
 
     return volumesToSort;
@@ -206,6 +240,34 @@
   // Separate real volumes from placeholders
   let manga = $derived(allVolumes?.filter((v) => !v.isPlaceholder) || []);
   let placeholders = $derived(allVolumes?.filter((v) => v.isPlaceholder) || []);
+  // Rows kept for their history whose pages are gone. They stay in `manga` —
+  // they are real volumes with real stats — but they are downloadable, not
+  // readable, and nothing may try to read their files. Only the ones the
+  // catalog could match to a cloud file are counted as "available": a volume
+  // whose backup is gone too has nowhere to download from, and counting it
+  // would promise a "Download all" that silently does nothing.
+  let notInstalled = $derived(manga.filter((vol) => needsDownload(vol) && !!getCloudFileId(vol)));
+
+  // Where the rows whose pages are gone are DRAWN (display only — they keep their data,
+  // their progress and every action they had).
+  let volumeSections = $derived(partitionSeriesVolumes(manga));
+  let listedVolumes = $derived(volumeSections.listed);
+  let sectionVolumes = $derived(volumeSections.absent);
+  // The header counts what the section is offering: the absent rows it holds
+  // plus the cloud-only placeholders.
+  let cloudSectionCount = $derived(placeholders.length + sectionVolumes.length);
+  // Raw folder title (identity) and its human-facing overlay. The overlay is
+  // presentation only: rename/cloud/delete flows below keep using seriesTitle.
+  let seriesTitle = $derived(manga[0]?.series_title || placeholders[0]?.series_title || '');
+  let seriesDisplayTitle = $derived(
+    seriesTitle
+      ? resolveDisplayTitle(
+          seriesTitle,
+          $seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)),
+          $preferredTitleLanguage
+        )
+      : ''
+  );
   let volumeListRenderKey = $derived.by(() =>
     manga
       .map((vol) => {
@@ -218,23 +280,6 @@
   );
 
   let loading = $state(false);
-
-  // Inline rename state
-  let isRenaming = $state(false);
-  let renameValue = $state('');
-  let renameError = $state('');
-  let renameSaving = $state(false);
-  let renameInputEl = $state<HTMLInputElement | null>(null);
-
-  // Focus rename field when entering rename mode (avoids a11y autofocus warning).
-  $effect(() => {
-    if (isRenaming) {
-      tick().then(() => {
-        renameInputEl?.focus();
-        renameInputEl?.select();
-      });
-    }
-  });
 
   // Subscribe to unified cloud cache updates
   let cloudFiles = $state<Map<string, any[]>>(new Map());
@@ -295,6 +340,15 @@
     });
   });
   let hasAnyProvider = $derived(providerStatus.hasAnyAuthenticated);
+
+  // Every absent row that reaches this view is one the active listing can deliver: the
+  // catalog store already dropped removed volumes with no current cloud file behind them
+  // (`isCatalogVisible`), so the section never seats an offer nothing can honor. The rows
+  // still up in the list (mixed mode) only justify a section when there is a provider to
+  // fetch them from — otherwise an offer of "available in <cloud>" would head an empty
+  // section built from a cached cloud id nothing can act on.
+  // Declared here because it reads `hasAnyProvider`, which the provider block above sets up.
+  let showCloudSection = $derived(sectionVolumes.length > 0 || placeholders.length > 0);
   let isCloudReady = $derived(hasAnyProvider && cacheHasLoaded);
 
   // Check if current provider is WebDAV and in read-only mode
@@ -362,62 +416,6 @@
     );
   });
 
-  async function confirmDelete(deleteStats = false, deleteCloud = false) {
-    const seriesUuid = manga?.[0].series_uuid;
-    if (seriesUuid) {
-      await Promise.all(
-        (manga || []).map(async (vol) => {
-          await deleteStoredVolume(vol.volume_uuid);
-
-          if (deleteStats) {
-            deleteVolumeStats(vol.volume_uuid);
-          }
-        })
-      );
-
-      // Delete from cloud if checkbox checked
-      if (deleteCloud && hasAnyProvider && manga) {
-        await deleteSeriesFromCloud(manga);
-      }
-
-      nav.toCatalog();
-    }
-  }
-
-  async function deleteSeriesFromCloudByTitle(seriesTitle: string) {
-    if (!seriesTitle) return;
-
-    // Check if any volumes are backed up (efficient O(1) Map lookup)
-    const backedUpVolumes = cloudFiles.get(seriesTitle) || [];
-
-    if (backedUpVolumes.length === 0) {
-      showSnackbar(`No volumes found in ${providerDisplayName}`);
-      return;
-    }
-
-    try {
-      // Use the new deleteSeriesFolder method which deletes the entire folder
-      // The unified manager automatically updates its cache, so no need to fetch again
-      const result = await unifiedCloudManager.deleteSeriesFolder(seriesTitle);
-
-      if (result.failed === 0) {
-        showSnackbar(`Deleted ${result.succeeded} volume(s) from ${providerDisplayName}`);
-      } else {
-        showSnackbar(`Deleted ${result.succeeded} volume(s), ${result.failed} failed`);
-      }
-    } catch (error) {
-      console.error(`Failed to delete series from ${providerDisplayName}:`, error);
-      showSnackbar(`Failed to delete from ${providerDisplayName}`);
-      // Refresh cache to restore correct state on error
-      await unifiedCloudManager.fetchAllCloudVolumes();
-    }
-  }
-
-  async function deleteSeriesFromCloud(volumes: VolumeMetadata[]) {
-    if (!volumes || volumes.length === 0) return;
-    await deleteSeriesFromCloudByTitle(volumes[0].series_title);
-  }
-
   async function onDeleteFromCloud() {
     if (!hasAnyProvider) {
       showSnackbar('Please connect to a cloud storage provider first');
@@ -438,29 +436,10 @@
     });
   }
 
+  // The dialog itself lives in $lib/catalog/series-delete so the catalog's hover +
+  // Delete shortcut raises exactly this one, checkboxes and all.
   function onDelete() {
-    const hasCloudBackups = manga?.some((vol) =>
-      unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
-    );
-
-    promptConfirmation(
-      'Are you sure you want to delete this manga?',
-      confirmDelete,
-      undefined,
-      {
-        label: 'Also delete stats and progress?',
-        storageKey: 'deleteStatsPreference',
-        defaultValue: false
-      },
-      // Don't show cloud delete option in read-only mode
-      hasCloudBackups && !isReadOnlyMode
-        ? {
-            label: `Also delete from ${providerDisplayName}?`,
-            storageKey: 'deleteCloudPreference',
-            defaultValue: false
-          }
-        : undefined
-    );
+    void promptSeriesRemoval(manga, { onRemoved: () => nav.toCatalog() });
   }
 
   async function onExtract() {
@@ -509,10 +488,16 @@
     }
 
     const volumesToBackup = manga.filter(
-      (vol) => !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
+      // Metadata-only rows have no pages to upload.
+      (vol) =>
+        isVolumeInstalled(vol) && !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
     );
 
     if (volumesToBackup.length === 0) {
+      // Same hole as the cloud screen's "backup all": nothing to upload means
+      // the backup run never starts, so the `series.json` this folder may never
+      // have had would stay missing. Back it off the current listing instead.
+      void reconcileMissingMetadataFiles();
       showSnackbar('All volumes already backed up');
       return;
     }
@@ -524,7 +509,10 @@
   }
 
   async function downloadAllPlaceholders() {
-    if (!placeholders || placeholders.length === 0) return;
+    // Both flavours of not-installed volume: cloud-only placeholders and rows
+    // whose files were removed from this device.
+    const toDownload = [...notInstalled, ...placeholders];
+    if (toDownload.length === 0) return;
 
     // Check if any cloud provider is authenticated
     if (!hasAnyProvider) {
@@ -533,11 +521,14 @@
     }
 
     try {
-      // Use the download queue to handle placeholders
       const { queueSeriesVolumes } = await import('$lib/util/download-queue');
-      queueSeriesVolumes(placeholders);
+      const before = get(downloadQueue).length;
+      queueSeriesVolumes(toDownload);
+      if (get(downloadQueue).length === before) {
+        showSnackbar('Nothing to download — these volumes are already queued or unavailable');
+      }
     } catch (error) {
-      console.error('Failed to download placeholders:', error);
+      console.error('Failed to download volumes:', error);
     }
   }
 
@@ -625,77 +616,6 @@
     if (seriesId) nav.toSeriesText(seriesId);
   }
 
-  function startRename() {
-    if (!manga || manga.length === 0) return;
-    renameValue = manga[0].series_title;
-    renameError = '';
-    isRenaming = true;
-  }
-
-  function cancelRename() {
-    isRenaming = false;
-    renameValue = '';
-    renameError = '';
-  }
-
-  async function saveRename() {
-    if (!manga || manga.length === 0) return;
-
-    const oldTitle = manga[0].series_title;
-    const newTitle = renameValue.trim();
-
-    if (!newTitle) {
-      renameError = 'Name cannot be empty';
-      return;
-    }
-
-    if (newTitle === oldTitle) {
-      cancelRename();
-      return;
-    }
-
-    try {
-      renameSaving = true;
-      renameError = '';
-
-      // Execute the rename for this series UUID — one volume at a time; each
-      // volume commits locally only after its cloud rename succeeds.
-      const result = await executeRenameSeries(oldTitle, newTitle, manga[0].series_uuid);
-
-      if (result.failures.length === 0) {
-        nav.toSeries(result.finalTitle, { replaceState: true });
-        showSnackbar(`Renamed to "${result.finalTitle}"`);
-        isRenaming = false;
-        renameValue = '';
-      } else {
-        // Partial: the failed volumes keep the old title everywhere (cloud and
-        // local stay consistent per volume). Retrying the same rename finishes
-        // just the stragglers.
-        const failedNames = result.failures.map((f) => f.volumeTitle);
-        const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ', …' : '');
-        renameError =
-          `Renamed ${result.renamedCount} volume(s), but ${result.failures.length} failed (${shown}). ` +
-          `Failed volumes keep the old name in both your library and the cloud — ` +
-          `rename again to retry just those.`;
-      }
-    } catch (err) {
-      renameError = err instanceof Error ? err.message : 'Failed to rename';
-      console.error('Error renaming series:', err);
-    } finally {
-      renameSaving = false;
-    }
-  }
-
-  function handleRenameKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      saveRename();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelRename();
-    }
-  }
-
   onMount(() => {
     // Check if cache is already loaded on mount (for navigation scenarios)
     const currentCloudFiles = unifiedCloudManager.getAllCloudVolumes();
@@ -726,7 +646,7 @@
 </script>
 
 <svelte:head>
-  <title>{manga?.[0]?.series_title || placeholders?.[0]?.series_title || 'Manga'}</title>
+  <title>{seriesDisplayTitle || 'Manga'}</title>
 </svelte:head>
 {#if $catalog === null || allVolumes === null}
   <!-- Still loading from IndexedDB -->
@@ -737,52 +657,18 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title on left, Stats on right -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      {#if isRenaming}
-        <div class="flex min-w-0 flex-1 items-center gap-2 px-2">
-          <input
-            type="text"
-            bind:this={renameInputEl}
-            bind:value={renameValue}
-            onkeydown={handleRenameKeydown}
-            disabled={renameSaving}
-            class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xl font-bold text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-primary-500 dark:focus:ring-primary-500"
-          />
-          <button
-            onclick={saveRename}
-            disabled={renameSaving}
-            class="rounded-lg p-2 text-green-600 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900/30"
-            title="Save"
-          >
-            {#if renameSaving}
-              <Spinner size="5" />
-            {:else}
-              <CheckOutline class="h-5 w-5" />
-            {/if}
-          </button>
-          <button
-            onclick={cancelRename}
-            disabled={renameSaving}
-            class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-            title="Cancel"
-          >
-            <CloseOutline class="h-5 w-5" />
-          </button>
-        </div>
-        {#if renameError}
-          <span class="px-2 text-sm text-red-500">{renameError}</span>
-        {/if}
-      {:else}
-        <div class="flex min-w-0 items-center gap-1">
-          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{manga[0].series_title}</h3>
-          <button
-            onclick={startRename}
-            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            title="Rename series"
-          >
-            <EditOutline class="h-4 w-4" />
-          </button>
-        </div>
-      {/if}
+      <div class="flex min-w-0 items-center gap-1">
+        {#key seriesDisplayTitle}
+          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
+        {/key}
+        <button
+          onclick={() => promptSeriesEditor(seriesTitle)}
+          class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+          title="Edit series"
+        >
+          <EditOutline class="h-4 w-4" />
+        </button>
+      </div>
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="gray" class="!min-w-0 bg-gray-100 break-words dark:bg-gray-700"
           >Volumes: {mangaStats.completed} / {manga.length}</Badge
@@ -803,6 +689,8 @@
         {/if}
       </div>
     </div>
+
+    <SeriesMetadataBar seriesTitle={manga[0].series_title} volumes={manga} />
 
     <!-- Actions Row: All buttons -->
     <div class="flex flex-row items-stretch justify-end gap-2">
@@ -893,15 +781,18 @@
         {/if}
 
         {#key volumeListRenderKey}
-          {#each manga as volume (volume.volume_uuid)}
+          {#each listedVolumes as volume (volume.volume_uuid)}
             <VolumeItem {volume} variant="list" />
           {/each}
         {/key}
 
-        {#if placeholders && placeholders.length > 0}
+        {#if showCloudSection}
           <div class="mt-4 mb-2 flex items-center justify-between px-4">
+            <!-- Keyed: a live-flipping count is exactly the text Migaku rewrites and then
+                 holds stale (see CLAUDE.md). -->
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length})
+              Available in {providerDisplayName}
+              {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
             {#if hasAnyProvider}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
@@ -910,8 +801,23 @@
               </Button>
             {/if}
           </div>
+          <!-- Real rows, drawn here rather than up in the list: still VolumeItem, so the
+               download fills the row and hover + Delete still removes it. -->
+          {#key volumeListRenderKey}
+            {#each sectionVolumes as volume (volume.volume_uuid)}
+              <VolumeItem {volume} variant="list" />
+            {/each}
+          {/key}
+          <!-- A placeholder that adopted a `series.json` entry has a real uuid and real
+               counts, so it gets the SAME row a metadata-only volume gets: progress,
+               estimate, cover, badge, size. Only bare shares (derived uuid, zero
+               counts) keep the minimal card, which is all they can fill. -->
           {#each placeholders as placeholder (placeholder.volume_uuid)}
-            <PlaceholderVolumeItem volume={placeholder} variant="list" />
+            {#if isIndexedPlaceholder(placeholder)}
+              <VolumeItem volume={placeholder} variant="list" />
+            {:else}
+              <PlaceholderVolumeItem volume={placeholder} variant="list" />
+            {/if}
           {/each}
         {/if}
       </Listgroup>
@@ -920,25 +826,39 @@
       <div class="flex flex-col gap-4">
         <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
           {#key volumeListRenderKey}
-            {#each manga as volume (volume.volume_uuid)}
+            {#each listedVolumes as volume (volume.volume_uuid)}
               <VolumeItem {volume} variant="grid" />
             {/each}
           {/key}
         </div>
 
-        {#if placeholders && placeholders.length > 0 && hasAnyProvider}
+        {#if showCloudSection}
           <div class="flex items-center justify-between px-2 pt-4">
+            <!-- Keyed for the same reason as the list view's heading above. -->
             <h4 class="text-sm font-semibold text-gray-400">
-              Available in {providerDisplayName} ({placeholders.length})
+              Available in {providerDisplayName}
+              {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
-            <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
-              <DownloadSolid class="me-1 h-3 w-3" />
-              Download all
-            </Button>
+            {#if hasAnyProvider}
+              <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
+                <DownloadSolid class="me-1 h-3 w-3" />
+                Download all
+              </Button>
+            {/if}
           </div>
           <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
+            <!-- Real rows (see the list view above): same component, same actions. -->
+            {#key volumeListRenderKey}
+              {#each sectionVolumes as volume (volume.volume_uuid)}
+                <VolumeItem {volume} variant="grid" />
+              {/each}
+            {/key}
             {#each placeholders as placeholder (placeholder.volume_uuid)}
-              <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+              {#if isIndexedPlaceholder(placeholder)}
+                <VolumeItem volume={placeholder} variant="grid" />
+              {:else}
+                <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+              {/if}
             {/each}
           </div>
         {/if}
@@ -950,15 +870,28 @@
   <div class="flex flex-col gap-5 p-2">
     <!-- Header Row: Title and cloud info -->
     <div class="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-      <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
-        {placeholders[0]?.series_title || 'Cloud Series'}
-      </h3>
+      <div class="flex min-w-0 items-center gap-1">
+        {#key seriesDisplayTitle}
+          <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold text-gray-400">
+            {seriesDisplayTitle || 'Cloud Series'}
+          </h3>
+        {/key}
+        <button
+          onclick={() => promptSeriesEditor(placeholders[0].series_title)}
+          class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+          title="Edit series"
+        >
+          <EditOutline class="h-4 w-4" />
+        </button>
+      </div>
       <div class="flex flex-row gap-2 px-2 text-base">
         <Badge color="blue" class="!min-w-0 bg-blue-100 dark:bg-blue-900/30">
           {placeholders.length} volume{placeholders.length !== 1 ? 's' : ''} in {providerDisplayName}
         </Badge>
       </div>
     </div>
+
+    <SeriesMetadataBar seriesTitle={placeholders[0].series_title} volumes={placeholders} />
 
     <!-- Actions Row -->
     <div class="flex flex-row items-stretch justify-end gap-2">
@@ -1004,16 +937,28 @@
     {#if viewMode === 'list'}
       <Listgroup active class="h-full w-full flex-1">
         {#each placeholders as placeholder (placeholder.volume_uuid)}
-          <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          {#if isIndexedPlaceholder(placeholder)}
+            <VolumeItem volume={placeholder} variant="list" />
+          {:else}
+            <PlaceholderVolumeItem volume={placeholder} variant="list" />
+          {/if}
         {/each}
       </Listgroup>
     {:else}
       <div class="flex flex-col flex-wrap justify-center gap-5 sm:flex-row sm:justify-start">
         {#each placeholders as placeholder (placeholder.volume_uuid)}
-          <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+          {#if isIndexedPlaceholder(placeholder)}
+            <VolumeItem volume={placeholder} variant="grid" />
+          {:else}
+            <PlaceholderVolumeItem volume={placeholder} variant="grid" />
+          {/if}
         {/each}
       </div>
     {/if}
+  </div>
+{:else if seriesOpenPending}
+  <div class="flex items-center justify-center p-16">
+    <Spinner size="12" />
   </div>
 {:else}
   <div class="flex flex-col items-center justify-center gap-4 p-16">
