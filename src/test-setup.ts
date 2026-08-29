@@ -166,8 +166,25 @@ function installStorageMocksIfNeeded() {
   }
 }
 
-// Ensure valid storage APIs exist before test modules are evaluated.
-installStorageMocksIfNeeded();
+function installStorageMocks() {
+  const local = createStorageMock();
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: local });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: local });
+  const session = createStorageMock();
+  Object.defineProperty(window, 'sessionStorage', { configurable: true, value: session });
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: session });
+}
+
+// Install the plain-object storage mocks UNCONDITIONALLY before test modules
+// are evaluated. The suite is authored against these mocks (tests spy on the
+// instance methods directly); leaving jsdom's real Storage in place when it
+// happens to pass the feature check breaks those spies, because jsdom's
+// Storage is a Proxy where defining `setItem` writes a storage ENTRY instead
+// of overriding the method. Which object survives the check varies with the
+// Node version's own WebStorage globals — Node 24 kept jsdom's, so instance
+// spies silently stopped intercepting while every other version used the
+// mock. Unconditional install makes every environment identical.
+installStorageMocks();
 
 // Some tests mutate storage globals; repair before each test case.
 beforeEach(() => {
