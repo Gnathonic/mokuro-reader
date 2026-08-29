@@ -95,7 +95,14 @@ async function runRefresh(
 
   const stamp = { size: cloudFile.size ?? 0, modifiedTime: cloudFile.modifiedTime ?? '' };
   const cached = await getCatalogIndex();
-  if (!catalogNeedsRefresh(cached, stamp, provider.type)) return;
+  if (!catalogNeedsRefresh(cached, stamp, provider.type)) {
+    // The catalog didn't change — which is exactly what a silently dropped
+    // local push looks like from here (the cloud stamp never moves). Healing
+    // therefore runs on EVERY listing, off the cached copy when the file is
+    // current.
+    if (cached) await healFactsBehindCatalog(cached.file, provider);
+    return;
+  }
 
   const parsed = await downloadCatalog(provider, cloudFile);
   if (!parsed) return;
@@ -186,6 +193,70 @@ async function runRefresh(
     await putCatalogIndex({ file: parsed, source, fetched_at: now });
   } catch (error) {
     console.warn('[catalog-index-sync] could not store the refreshed catalog:', error);
+  }
+
+  await healFactsBehindCatalog(parsed, provider);
+}
+
+/**
+ * The local→cloud half of the refresh: HEAL what the catalog shows is behind.
+ *
+ * The cloud→local upsert above trusts strictly-newer catalog facts; this is
+ * its mirror. For every locally stored series that carries facts, compare the
+ * local facts stamp against the catalog entry's (the same clock `series.json`
+ * merges by): a local stamp strictly ahead — or a series the catalog does not
+ * list at all — means a push was dropped somewhere, so schedule the standard
+ * per-series write (which re-reads the cloud file and merges, so a stale
+ * local copy still cannot clobber a newer cloud one). Facts only land in an
+ * existing cloud folder, same as every other publish path. Finishes by
+ * scheduling a catalog write — a no-op on servers that compile their own.
+ *
+ * Best-effort by contract, like everything else on this path: a heal that
+ * fails to schedule is retried by the next listing.
+ */
+async function healFactsBehindCatalog(file: CatalogFile, provider: SyncProvider): Promise<void> {
+  try {
+    if (file.series.length === 0) return;
+    const [{ db }, { hasSeriesFacts }, { factsStamp }, { normalizeVolumeTitleKey }] =
+      await Promise.all([
+        import('$lib/catalog/db'),
+        import('./series-file'),
+        import('./store'),
+        import('./series-key')
+      ]);
+    const locals = (await db.series_metadata.toArray()).filter((record) => hasSeriesFacts(record));
+    if (locals.length === 0) return;
+
+    const entryStampByKey = new Map(
+      file.series.map((entry) => [normalizeVolumeTitleKey(entry.series_title), entry.updated_at])
+    );
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    const behind: string[] = [];
+    for (const record of locals) {
+      const localStamp = factsStamp(record);
+      if (!localStamp) continue;
+      const cloudStamp = entryStampByKey.get(normalizeVolumeTitleKey(record.series_title));
+      if (cloudStamp !== undefined && cloudStamp >= localStamp) continue;
+      if (unifiedCloudManager.cloudVolumeTitlesFor(record.series_title).size === 0) continue;
+      behind.push(record.series_title);
+    }
+    if (behind.length === 0) return;
+
+    console.log(
+      `[catalog-index-sync] catalog is behind local facts for ${behind.length} series — healing`
+    );
+    const { scheduleSeriesFileWrite } = await import('./series-file-sync');
+    for (const title of behind) {
+      scheduleSeriesFileWrite(title, { fromCloudListing: true });
+    }
+    // Producer-side catch-all: on a client-compiled backend this republishes
+    // catalog.json once the series writes land; `scheduleCatalogFileWrite`
+    // itself refuses on a server that compiles its own.
+    const { scheduleCatalogFileWrite } = await import('./catalog-file-sync');
+    scheduleCatalogFileWrite();
+  } catch (error) {
+    console.debug('[catalog-index-sync] facts heal skipped:', error);
   }
 }
 
