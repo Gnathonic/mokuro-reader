@@ -82,13 +82,14 @@ function shouldPreserveCompletedAt(
 
 function buildCompletedAtMapFromState(
   allVolumes: Record<string, VolumeData>,
-  catalog: Record<string, { page_count?: number }>,
+  catalog: Record<string, { page_count?: number }> | undefined,
   previousMap: CompletedAtMap
 ): CompletedAtMap {
   const nextMap: CompletedAtMap = {};
+  const catalogMap = catalog ?? {};
 
   Object.entries(allVolumes).forEach(([volumeId, volumeData]) => {
-    const totalPages = catalog[volumeId]?.page_count ?? 0;
+    const totalPages = catalogMap[volumeId]?.page_count ?? 0;
 
     if (!isVolumeCompleted(volumeData, totalPages)) {
       if (shouldPreserveCompletedAt(volumeData, totalPages, previousMap[volumeId])) {
@@ -128,7 +129,7 @@ const _completionTracking = readable(null, () => {
     _completedAtMap.update((map) => {
       const updated = buildCompletedAtMapFromState(
         $volumes as Record<string, VolumeData>,
-        $catalog as Record<string, { page_count?: number }>,
+        $catalog as Record<string, { page_count?: number }> | undefined,
         map
       );
 
