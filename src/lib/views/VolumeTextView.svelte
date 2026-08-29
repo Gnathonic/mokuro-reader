@@ -9,9 +9,23 @@
   import type { VolumeData, VolumeMetadata } from '$lib/types';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
+  import { preferredTitleLanguage } from '$lib/settings/settings';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
+  import { needsDownload } from '$lib/catalog/volume-state';
 
   let volumeId = $derived($routeParams.volume || '');
   let volume = $derived($currentVolume);
+  let seriesDisplayTitle = $derived(
+    volume
+      ? resolveDisplayTitle(
+          volume.series_title,
+          $seriesMetadataMap.get(normalizeSeriesKey(volume.series_title)),
+          $preferredTitleLanguage
+        )
+      : ''
+  );
 
   // Use state instead of derived to wait for data to fully load
   let volumeData = $state<VolumeData | undefined>(undefined);
@@ -172,7 +186,7 @@
           {volume.volume_title}
         </h1>
         <p class="mb-4 text-lg text-gray-600 dark:text-gray-400">
-          {volume.series_title} • Text-only view for language analysis
+          {seriesDisplayTitle} • Text-only view for language analysis
         </p>
 
         <!-- Stats -->
@@ -254,6 +268,19 @@
           </p>
         </div>
       </div>
+    </div>
+  </div>
+{:else if volume && needsDownload(volume)}
+  <!-- The row is real but its OCR is not on this device, so `currentVolumeData`
+       never resolves: without this the spinner below would spin forever. -->
+  <div class="flex h-screen w-screen items-center justify-center">
+    <div class="text-center">
+      <p class="text-gray-600 dark:text-gray-400">This volume is not on this device.</p>
+      <p class="mt-1 text-sm text-gray-500">Download it again to read its text.</p>
+      <Button class="mt-4" color="alternative" onclick={goBackToSeries}>
+        <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
+        Back to Series
+      </Button>
     </div>
   </div>
 {:else if !volume || !volumeData}

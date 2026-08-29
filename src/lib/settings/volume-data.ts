@@ -1,8 +1,10 @@
 import { browser } from '$app/environment';
-import { derived, writable, readable } from 'svelte/store';
+import { derived, get, writable, readable } from 'svelte/store';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+import { SERIES_SECTION_KEY } from './series-data';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -41,6 +43,21 @@ export type AggregateSession = {
   charsRead: number;
 };
 
+// One archived read pass, appended by "restart series". `pages`/`chars` are the
+// values at the moment of the restart; `completed` says whether that pass finished.
+export type ArchivedRead = { at: number; pages: number; chars: number; completed: boolean };
+
+function isArchivedRead(value: unknown): value is ArchivedRead {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.at === 'number' &&
+    typeof v.pages === 'number' &&
+    typeof v.chars === 'number' &&
+    typeof v.completed === 'boolean'
+  );
+}
+
 type Progress = Record<string, number> | undefined;
 type VolumeDataJSON = {
   progress?: number;
@@ -53,6 +70,8 @@ type VolumeDataJSON = {
   recentPageTurns?: PageTurn[];
   // Aggregate session data for reading speed calculation
   sessions?: AggregateSession[];
+  // Archived read passes (restart series)
+  archivedReads?: ArchivedRead[];
   // Volume metadata for self-describing sync data
   series_uuid?: string;
   series_title?: string;
@@ -71,6 +90,7 @@ export class VolumeData implements VolumeDataJSON {
   lastProgressUpdate: string;
   recentPageTurns: PageTurn[];
   sessions: AggregateSession[];
+  archivedReads: ArchivedRead[];
   series_uuid?: string;
   series_title?: string;
   volume_title?: string;
@@ -88,6 +108,9 @@ export class VolumeData implements VolumeDataJSON {
     // Session tracking fields
     this.recentPageTurns = data.recentPageTurns || [];
     this.sessions = data.sessions || [];
+    this.archivedReads = Array.isArray(data.archivedReads)
+      ? data.archivedReads.filter(isArchivedRead)
+      : [];
 
     // Volume metadata (optional, for self-describing sync data)
     this.series_uuid = data.series_uuid;
@@ -163,6 +186,11 @@ export class VolumeData implements VolumeDataJSON {
       result.sessions = this.sessions;
     }
 
+    // Archived read passes (restart series) — sync with the volume
+    if (this.archivedReads.length > 0) {
+      result.archivedReads = this.archivedReads;
+    }
+
     // Include volume metadata if present (for self-describing sync data)
     if (this.series_uuid) {
       result.series_uuid = this.series_uuid;
@@ -200,8 +228,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
     const parsed = JSON.parse(storedData);
     return Object.fromEntries(
       Object.entries(parsed)
-        // Filter out entries with empty/invalid volume IDs (bug cleanup)
-        .filter(([key]) => key && key.length > 0)
+        // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
+        // reserved `series` section — series-level reading state shares this file
+        // but is not a volume (see `$lib/settings/series-data`).
+        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
@@ -279,15 +309,65 @@ export function updateVolumeSeriesTitle(volumeUuid: string, newSeriesTitle: stri
 }
 
 /**
+ * Is this reading record missing the metadata every stats surface joins on?
+ *
+ * ONE definition, exported, because two copies of it drifted into being: this
+ * module used it to decide what to enrich, and `ReadingSpeedView` used its own
+ * transcription of it to decide what to OFFER FOR DELETION. A predicate that
+ * gates a destructive action must not be a copy of the one that gates the
+ * repair — the two have to agree by construction.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Both copies used to end in
+ * `volume_title.startsWith('Volume ')`. The intent was to catch
+ * `processVolumeSpeedData`'s display placeholder (`Volume <8 hex chars>...`),
+ * but that placeholder is never written back to a reading record — it exists
+ * only inside the `VolumeSpeedData` row it is rendered from. What the clause
+ * actually matched was real data: "Volume 1", "Volume 3" and friends are
+ * ordinary mokuro volume titles, so any record carrying one was reported as an
+ * orphan forever, even with a perfect, fully-populated row behind it — and on
+ * this page that meant it was offered up for deletion.
+ */
+export function isOrphanedVolumeData(
+  volumeData: Pick<VolumeData, 'series_uuid' | 'series_title' | 'volume_title'> | undefined | null
+): boolean {
+  if (!volumeData) return false;
+  return (
+    !volumeData.series_uuid ||
+    volumeData.series_uuid === 'missing-series-info' ||
+    !volumeData.series_title ||
+    volumeData.series_title === '[Missing Series Info]' ||
+    !volumeData.volume_title
+  );
+}
+
+/**
  * Enriches ALL orphaned volumes (those lacking metadata) from the catalog
  * This is more aggressive than lazy enrichment and runs proactively
+ *
+ * READS ONLY THE ORPHANS' ROWS. This used to `toArray()` the whole `volumes`
+ * table to build a lookup for the handful of ids it cares about, deserializing
+ * every installed volume's thumbnail blob on the way (the exact shape of the
+ * 437 MB-per-read cover regression). It is keyed by `volume_uuid`, so a
+ * `bulkGet` of the orphan ids answers the same question, and a store with no
+ * orphans in it touches IndexedDB not at all — which is what makes it cheap
+ * enough to run again after `materializeHistoryRows` has minted new rows.
  */
 export async function enrichAllOrphanedVolumes() {
   if (!browser) return;
 
   try {
-    const catalog = await db.volumes.toArray();
-    const catalogMap = new Map(catalog.map((v) => [v.volume_uuid, v]));
+    const snapshot = get(_volumesInternal);
+    const orphanIds = Object.keys(snapshot).filter(
+      (id) => !snapshot[id].deletedOn && isOrphanedVolumeData(snapshot[id])
+    );
+    if (orphanIds.length === 0) return;
+
+    const rows = await db.volumes.bulkGet(orphanIds);
+    const catalogMap = new Map<string, VolumeMetadata>();
+    rows.forEach((row) => {
+      if (row) catalogMap.set(row.volume_uuid, row);
+    });
+    if (catalogMap.size === 0) return;
 
     _volumesInternal.update((prev) => {
       const updated = { ...prev };
@@ -296,27 +376,17 @@ export async function enrichAllOrphanedVolumes() {
       Object.entries(prev).forEach(([volumeId, volumeData]) => {
         // Skip deleted volumes (tombstones)
         if (volumeData.deletedOn) return;
+        if (!isOrphanedVolumeData(volumeData)) return;
 
-        // Check if volume lacks metadata
-        const needsEnrichment =
-          !volumeData.series_uuid ||
-          volumeData.series_uuid === 'missing-series-info' ||
-          !volumeData.series_title ||
-          volumeData.series_title === '[Missing Series Info]' ||
-          !volumeData.volume_title ||
-          volumeData.volume_title.startsWith('Volume ');
-
-        if (needsEnrichment) {
-          const catalogInfo = catalogMap.get(volumeId);
-          if (catalogInfo) {
-            updated[volumeId] = new VolumeData({
-              ...volumeData,
-              series_uuid: catalogInfo.series_uuid,
-              series_title: catalogInfo.series_title,
-              volume_title: catalogInfo.volume_title
-            });
-            enrichedCount++;
-          }
+        const catalogInfo = catalogMap.get(volumeId);
+        if (catalogInfo) {
+          updated[volumeId] = new VolumeData({
+            ...volumeData,
+            series_uuid: catalogInfo.series_uuid,
+            series_title: catalogInfo.series_title,
+            volume_title: catalogInfo.volume_title
+          });
+          enrichedCount++;
         }
       });
 
@@ -429,14 +499,40 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
   });
 }
 
+type CompletionListener = (volumeUuid: string) => void;
+const completionListeners = new Set<CompletionListener>();
+
+/**
+ * Called when a volume's `completed` flips false → true (via updateProgress or
+ * markVolumeAsComplete). Returns an unregister function.
+ */
+export function registerCompletionListener(fn: CompletionListener): () => void {
+  completionListeners.add(fn);
+  return () => {
+    completionListeners.delete(fn);
+  };
+}
+
+function notifyCompletion(volumeUuid: string) {
+  for (const fn of completionListeners) {
+    try {
+      fn(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] completion listener failed:', error);
+    }
+  }
+}
+
 export function updateProgress(
   volume: string,
   progress: number,
   chars?: number,
   completed = false
 ) {
+  let becameCompleted = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
+    becameCompleted = completed && !currentVolume.completed;
     const now = Date.now();
 
     // Add new turn with cumulative character count
@@ -480,6 +576,10 @@ export function updateProgress(
       })
     };
   });
+
+  if (becameCompleted) {
+    notifyCompletion(volume);
+  }
 }
 
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
@@ -488,6 +588,42 @@ export function markVolumeAsComplete(volumeUuid: string, pageCount: number, tota
 
 export function markVolumeAsUnread(volumeUuid: string) {
   updateProgress(volumeUuid, 0, 0, false);
+}
+
+/**
+ * "Restart series": archive each volume's current read (progress/chars/completed)
+ * onto `archivedReads`, then reset it to the start. Reading history
+ * (recentPageTurns, sessions, timeReadInMinutes) is untouched. Volumes with no
+ * progress are skipped; unknown UUIDs are not created.
+ */
+export function archiveAndResetVolumes(volumeUuids: string[]) {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  _volumesInternal.update((prev) => {
+    const updated = { ...prev };
+    for (const uuid of volumeUuids) {
+      const existing = updated[uuid];
+      if (!existing || existing.deletedOn) continue;
+      if (existing.progress <= 0 && !existing.completed) continue;
+      updated[uuid] = new VolumeData({
+        ...existing,
+        archivedReads: [
+          ...existing.archivedReads,
+          {
+            at: now,
+            pages: existing.progress,
+            chars: existing.chars,
+            completed: existing.completed
+          }
+        ],
+        progress: 0,
+        chars: 0,
+        completed: false,
+        lastProgressUpdate: nowIso
+      });
+    }
+    return updated;
+  });
 }
 
 export function startCount(volume: string) {
@@ -610,6 +746,11 @@ export const totalStats = derived([volumes, globalSettings], ([$volumes, $settin
         stats.pagesRead += volumeData.progress;
         stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
         stats.charsRead += volumeData.chars;
+        // Lifetime totals keep every archived pass (restart series never lowers them)
+        for (const read of volumeData.archivedReads) {
+          stats.pagesRead += read.pages;
+          stats.charsRead += read.chars;
+        }
 
         return stats;
       },

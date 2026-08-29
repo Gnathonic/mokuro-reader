@@ -78,7 +78,7 @@ class ExportProvider {
     throw new Error('Export provider does not support cloud operations');
   }
 
-  async uploadFile(): Promise<string> {
+  async uploadFile(): Promise<UploadFileResult> {
     throw new Error('Export provider does not support cloud operations');
   }
 
@@ -116,6 +116,47 @@ export interface ProviderStatus {
   statusMessage: string;
   /** Whether the provider is in read-only mode (e.g., WebDAV without write permissions) */
   isReadOnly?: boolean;
+  /**
+   * The server compiles `series.json` and `catalog.json` itself (mokuro-bunko).
+   * Clients must not produce those files for it: bunko is the sole producer, and
+   * a client write would race its regeneration. Absent/false = a plain storage
+   * backend, where the client is the producer.
+   */
+  serverCompilesMetadata?: boolean;
+  /**
+   * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
+   * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
+   * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
+   * any provider that doesn't support the concept at all.
+   */
+  metadataPermissions?: SeriesMetadataPermissions;
+  /**
+   * Whether this account may modify/delete existing server files, as reported by a
+   * provider capable of restricting it (mokuro-bunko's identity endpoint). Absent =
+   * no restriction — a server or provider without the concept.
+   */
+  canModifyDelete?: boolean;
+  /**
+   * Stable, non-secret identifier for the connected account, used to scope the
+   * cloud metadata cache so switching accounts cannot cross-contaminate it.
+   * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
+   * this is persisted to IndexedDB. Absent = the provider cannot identify an
+   * account, and the cache is skipped entirely for it.
+   */
+  accountScope?: string;
+}
+
+/** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
+export type SeriesMetadataScope = 'all' | 'owned' | 'none';
+
+/**
+ * Per-series metadata edit permissions reported by the server. `canEditSeriesMetadata` in
+ * `$lib/util/sync/metadata-permissions.ts` is the single place that interprets this.
+ */
+export interface SeriesMetadataPermissions {
+  scope: SeriesMetadataScope;
+  /** Series FOLDER names this account may edit; present only when scope === 'owned'. */
+  ownedSeries?: string[];
 }
 
 /**
@@ -140,6 +181,26 @@ export interface ProviderCredentials {
 export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
 
 /**
+ * What a provider's `uploadFile` learned about the file it just wrote.
+ *
+ * `modifiedTime` is the SERVER's modification timestamp for the uploaded
+ * file, captured from the upload response itself (Drive's file resource,
+ * Graph's completed driveItem, a MEGA node, a filesystem stat) — never the
+ * client clock, and never an extra round trip. When the upload response
+ * carries no usable timestamp (a plain WebDAV PUT), the field stays absent
+ * and the upload-time cache entry is marked `modifiedTimeProvisional` — see
+ * `CloudFileMetadata`.
+ */
+export interface UploadFileResult {
+  /** File ID in cloud storage (the value the old string-returning contract carried). */
+  fileId: string;
+  /** Server-reported modification time (ISO 8601), when the upload response carried one. */
+  modifiedTime?: string;
+  /** Server-reported size in bytes, when the upload response carried one. */
+  size?: number;
+}
+
+/**
  * Base metadata for a cloud-stored file (CBZ file)
  * This is the common interface - use provider-specific types when possible
  */
@@ -152,6 +213,18 @@ export interface CloudFileMetadata {
   path: string;
   /** File modification timestamp */
   modifiedTime: string;
+  /**
+   * True when `modifiedTime` was fabricated from the CLIENT clock — an
+   * upload-time cache entry whose provider response carried no server
+   * timestamp — rather than reported by the server. Consumers that PUBLISH a
+   * timestamp (`cloud-sidecar-stamps.ts`) must skip flagged entries: a
+   * client-clock stamp written into `series.json` makes the next real
+   * listing's server mtime look "newer" and re-pulls a file that never
+   * changed. Absent/false = `modifiedTime` came from the provider (a
+   * listing, a rename response, or an upload response). The next full
+   * listing replaces flagged entries wholesale with server-stamped ones.
+   */
+  modifiedTimeProvisional?: boolean;
   /** File size in bytes */
   size: number;
   /** Optional description/metadata */
@@ -286,14 +359,39 @@ export interface SyncProvider {
    * @param blob File data as Blob
    * @param description Optional file description
    * @param onProgress Optional progress callback (loaded, total)
-   * @returns File ID in cloud storage
+   * @returns File ID plus, when the upload response carried one, the
+   *          server's own modification time — see {@link UploadFileResult}
    */
   uploadFile(
     path: string,
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string>;
+  ): Promise<UploadFileResult>;
+
+  /**
+   * Upload WITHOUT any post-upload refresh work — the write-and-forget path
+   * for callers that do not need to read the result back (the sidecar
+   * backfill: it converges through the targeted cache add the unified layer
+   * performs, never through a listing).
+   *
+   * OPTIONAL, and absent means `uploadFile` is already blind: implement this
+   * only when the ordinary `uploadFile` performs extra refresh work worth
+   * skipping. Google Drive is the one such provider today — its `uploadFile`
+   * ends with a FULL paged listing refetch (13+ `files.list` calls on a
+   * 12,500-file library), which `blindUploadFile` skips. Callers go through
+   * `unifiedCloudManager.blindUploadFile`, which handles the fallback and
+   * documents WHICH callers qualify — a write must change nothing any view
+   * renders, be retryable by a self-healing process, and lose nothing
+   * important on failure; everything else stays on `uploadFile`, whose
+   * refreshed cache is how backups are confirmed and rendered.
+   */
+  blindUploadFile?(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<UploadFileResult>;
 
   /**
    * Download a file from cloud storage
@@ -329,6 +427,14 @@ export interface SyncProvider {
    * Implementations may fall back to deleting files individually.
    */
   deleteSeriesFolder?(seriesTitle: string): Promise<void>;
+
+  /**
+   * Re-run the provider's identity/permission check and publish the result via a
+   * status update. Providers whose permissions can change server-side mid-session
+   * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
+   * the UI's gates track reality without a reconnect. Must fail quietly.
+   */
+  refreshIdentity?(): Promise<void>;
 
   /**
    * Optionally remove a directory ONLY if the provider confirms (server-side)

@@ -1,95 +1,281 @@
+<script module lang="ts">
+  // Cooldown so a wheel/right-click burst against a blocked series doesn't spam the
+  // snackbar with a toast per tick — shared across every mounted card, not scoped to one
+  // instance, so gesturing across several cards in quick succession still only shows one.
+  const METADATA_GATE_SNACKBAR_COOLDOWN_MS = 4000;
+  let lastMetadataGateSnackbarAt = 0;
+
+  /**
+   * Shared "nothing resolved" identity. A fresh empty Map per assignment would
+   * invalidate `thumbnailDimensions` (and so the whole canvas) on every card that has no
+   * cloud covers to resolve, every time its claim set is recomputed.
+   */
+  const NO_COVER_FILES: Map<string, File> = new Map();
+</script>
+
 <script lang="ts">
   import type { VolumeMetadata } from '$lib/types';
-  import { progress, catalogSettings } from '$lib/settings';
+  // `volumes` is the READING RECORD store (page + `completed` per uuid), aliased because
+  // this component's own `volumes` prop is the series' catalog rows.
+  import { volumes as readStates, catalogSettings } from '$lib/settings';
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
+  import { promptSeriesEditor } from '$lib/util/modals';
+  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
+  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { promptSeriesRemoval } from '$lib/catalog/series-delete';
+  import { seriesMetadataMap } from '$lib/metadata/store';
+  import { seriesIndexMap } from '$lib/metadata/series-index';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { canEditSeriesMetadata } from '$lib/util/sync/metadata-permissions';
+  import { showSnackbar } from '$lib/util';
+  import {
+    clampSpineOffset,
+    clampVolumeOffset,
+    getSpineOffsets,
+    sameSpineOffsets,
+    sameVolumeOffsets,
+    scheduleSpineOffsetWrite,
+    volumeOffsetsByIndex,
+    type SpineOffsetPatch,
+    type SpineOffsets
+  } from '$lib/metadata/spine-offsets';
+  import {
+    computeStackLayout,
+    hitTestStack,
+    spineBadgePlacements
+  } from '$lib/util/spine-stack-layout';
+  import {
+    CARD_BASE_HEIGHT,
+    CARD_BASE_WIDTH,
+    MAX_CLOUD_STACK,
+    computeStepSizes,
+    computeUniformHeight,
+    getSpineCanvasDimensions,
+    selectCardStackVolumes
+  } from '$lib/util/spine-stack-geometry';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
-  import {
-    fetchCloudThumbnail,
-    getCachedCloudThumbnail,
-    type CloudThumbnailResult
-  } from '$lib/catalog/cloud-thumbnails';
+  import DownloadBadge from './DownloadBadge.svelte';
+  import { needsDownload } from '$lib/catalog/volume-state';
+  import { sortVolumes } from '$lib/catalog/sort-volumes';
+  import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
     volumes: VolumeMetadata[]; // Pre-computed by parent - avoids O(N) re-filtering
     providerName?: string; // Shared across all items - avoids repeated lookups
+    displayTitle?: string; // Pre-resolved by the catalog store; falls back to series_title
   }
 
-  let { volumes, providerName = 'Cloud' }: Props = $props();
+  let { volumes, providerName = 'Cloud', displayTitle }: Props = $props();
 
   // Volumes are pre-sorted by catalog store (natural sort)
   let seriesVolumes = $derived(volumes);
 
   // Split into local vs cloud placeholders
   let localVolumes = $derived(seriesVolumes.filter((v) => !v.isPlaceholder));
-  let hasLocalVolumes = $derived(localVolumes.length > 0);
 
-  // Find unread volumes (only among local volumes)
-  let unreadVolumes = $derived(
-    localVolumes.filter((v) => ($progress?.[v.volume_uuid] || 1) < v.page_count - 1)
-  );
+  /** Not read through, by the app's one volume-completion rule. */
+  function isUnread(vol: VolumeMetadata): boolean {
+    return !isVolumeFinished(vol, $readStates?.[vol.volume_uuid]);
+  }
+
+  // Unread among the volumes that are HERE — only for picking which cover faces out.
+  let unreadLocalVolumes = $derived(localVolumes.filter(isUnread));
 
   // Display volume: first unread, or first local, or first placeholder
-  let volume = $derived(unreadVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
+  let volume = $derived(unreadLocalVolumes[0] ?? localVolumes[0] ?? seriesVolumes[0]);
 
-  // UI state flags
-  let isComplete = $derived(unreadVolumes.length === 0 && hasLocalVolumes);
-  let isPlaceholderOnly = $derived(!hasLocalVolumes);
+  // UI state flag — the app's ONE series-completion rule, over the WHOLE series.
+  //
+  // This used to be `unreadLocalVolumes.length === 0 && hasLocalVolumes`, on the theory
+  // that read history is something only a series with rows can have. It is not: history is
+  // keyed by uuid in localStorage and needs no row, so requiring one made "finished" false
+  // by construction for a cloud-only series — which then sorted to the bottom of the smart
+  // catalog (that predicate counted every volume) while staying uncoloured here, and went
+  // green only once opening it materialised rows.
+  let isComplete = $derived(isSeriesFinished(seriesVolumes, $readStates));
 
-  // Enrich cloud placeholders with fetched thumbnail data so they render via CompositeCanvas.
-  // Includes ALL target volumes (not just those with loaded thumbnails) so that
-  // stackedVolumes.length is stable. CompositeCanvas skips volumes without thumbnail,
-  // so positions are pre-allocated: each thumbnail pops into its fixed slot without
-  // shifting existing ones.
-  let enrichedPlaceholders = $derived.by(() => {
-    if (!isPlaceholderOnly) return [];
-    return seriesVolumes.map((vol) => {
-      const ct = cloudThumbnailData[vol.volume_uuid];
-      if (ct) {
-        return {
-          ...vol,
-          thumbnail: ct.file,
-          thumbnail_width: ct.width,
-          thumbnail_height: ct.height
-        };
-      }
-      return vol;
-    });
-  });
+  // Not one page of this series is on the device: cloud-only placeholders, rows whose
+  // files were removed, or a mix of the two. `needsDownload` covers both absent states —
+  // never `isPlaceholder` on its own (see $lib/catalog/volume-state).
+  let seriesNeedsDownload = $derived(
+    seriesVolumes.length > 0 && seriesVolumes.every(needsDownload)
+  );
 
-  // Cap for cloud thumbnail stacks to limit memory and network usage.
-  // Each decoded bitmap uses ~360KB (250×360×4 RGBA). The cache limit is 100MB.
-  // Without a cap, large series (100+ volumes) cause constant cache eviction/re-decode loops.
-  const MAX_CLOUD_STACK = 25;
+  /**
+   * What the CLOUD half of the stack rule draws.
+   *
+   * For a series with nothing on the device: every volume. For one that is only PARTLY
+   * here: its cloud-only volumes — they are part of the series and belong in the stack,
+   * marked, not dropped (the metadata-only rows are already among `localVolumes`, drawn
+   * from the covers they kept).
+   */
+  let cloudStackVolumes = $derived(
+    seriesNeedsDownload ? seriesVolumes : seriesVolumes.filter((vol) => vol.isPlaceholder)
+  );
 
-  // Get volumes for stacked thumbnail based on settings
-  let stackedVolumes = $derived.by(() => {
-    const hideRead = $catalogSettings?.hideReadVolumes ?? true;
-    const stackCount = $catalogSettings?.stackCount ?? 3;
+  // Delivery of a fetched cover is now the DB write itself (`cover-service.ts`): once a
+  // cover lands, `db.volumes.update(...)` fires the `volumes` liveQuery → `volumesWith-
+  // Placeholders` → the catalog re-derives → this card's OWN `volumes` prop arrives with
+  // `thumbnail`/`thumbnail_width`/`thumbnail_height` already on it, from the parent. There
+  // is no per-card enrichment step any more — `localVolumes`/`cloudStackVolumes` (the raw
+  // props, already filtered above) are exactly what the stack draws.
+  //
+  // Unread across the WHOLE series — what "hide read" hides. Spans both absent states: a
+  // finished cloud volume hides like any other. Filtered off `seriesVolumes` rather than
+  // off `localVolumes + cloudStackVolumes`, which double-counts every metadata-only row of
+  // a series that is entirely absent (`cloudStackVolumes` is then the whole series).
+  let unreadVolumes = $derived(seriesVolumes.filter(isUnread));
 
-    if (hasLocalVolumes) {
-      // Local path: existing behavior
-      const sourceVolumes = hideRead && unreadVolumes.length > 0 ? unreadVolumes : localVolumes;
-      return stackCount === 0 ? sourceVolumes : sourceVolumes.slice(0, stackCount);
-    }
+  // Check if cloud series should use compact layout
+  let useCompactForCloud = $derived(
+    seriesNeedsDownload && ($catalogSettings?.compactCloudSeries ?? false)
+  );
 
-    // Cloud path: use enriched placeholders, capped to prevent cache thrashing
-    if (useCompactForCloud) {
-      return enrichedPlaceholders.slice(0, 1);
-    }
-    const limit = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
-    return enrichedPlaceholders.slice(0, limit);
-  });
+  // Get volumes for stacked thumbnail based on settings.
+  // The rule itself lives in $lib/util/spine-stack-geometry so the series editor's spine
+  // shelf stacks EXACTLY the same volumes (cloud placeholders capped there too).
+  //
+  // A series with nothing on the device goes down the CLOUD path of that rule even when
+  // its volumes are real rows: `localVolumes` is what the selector reads as "there is
+  // something to read here", and a removed series has to stack, cap and collapse exactly
+  // like a cloud one — same treatment, only the covers arrive sooner.
+  //
+  // `unreadVolumes` is handed over WHICHEVER path is taken. Zeroing it alongside
+  // `localVolumes` is what made "hide completed volumes" a local-only setting: the cloud
+  // path had no unread set to work from, so a cloud series stacked its finished volumes
+  // like any other. The set is computed either way; it was only ever thrown away.
+  let stackedVolumes = $derived(
+    selectCardStackVolumes({
+      localVolumes: seriesNeedsDownload ? [] : localVolumes,
+      unreadVolumes,
+      placeholders: cloudStackVolumes,
+      hideRead: $catalogSettings?.hideReadVolumes ?? true,
+      stackCount: $catalogSettings?.stackCount ?? 3,
+      compactCloud: useCompactForCloud,
+      // Keeps a missing volume in its own place in the series rather than after the ones
+      // that are here.
+      compare: sortVolumes
+    })
+  );
 
   let showDropShadow = $derived($catalogSettings?.dropShadow ?? true);
 
-  // Per-series horizontal offset adjustment (in-memory only, not persisted)
+  // Spine offsets live on the synced series record (see $lib/metadata/spine-offsets).
+  // Local copies are optimistic: the wheel updates them immediately while the debounced
+  // write lands, and they resync from the store once our write has come back around.
+  //
+  // The record holds only THIS user's edits; an alignment another device published
+  // reaches the card by joining the cached `series.json` here at read time, so it stays
+  // theirs to correct or retract.
+  let seriesKey = $derived(normalizeSeriesKey(volume?.series_title ?? ''));
+  let storedRecord = $derived($seriesMetadataMap.get(seriesKey));
+  let publishedIndex = $derived($seriesIndexMap.get(seriesKey)?.file);
+  let storedOffsets = $derived(getSpineOffsets(storedRecord, publishedIndex));
+
+  // Per-series horizontal offset adjustment, in percent
   let hOffsetAdjust = $state(0);
-  // Per-volume horizontal offset adjustments (index → pixels)
-  let volumeOffsets = $state<Map<number, number>>(new Map());
+  // Per-volume horizontal offset adjustments (volume_uuid → pixels)
+  let volumeOffsetsByUuid = $state<Record<string, number>>({});
+  let pendingOffsetWrites = $state(0);
+  // The record our last write produced, until the store echoes it back. Deliberately not
+  // reactive: only the effect below clears it, and it must not re-trigger that effect.
+  let awaitingEcho: { offsets: SpineOffsets; updatedAt: string } | null = null;
+
+  $effect(() => {
+    const stored = storedOffsets;
+    const storedUpdatedAt = storedRecord?.updated_at ?? '';
+    // While a write of ours is in flight the local values are the newer truth.
+    if (pendingOffsetWrites > 0) return;
+    if (awaitingEcho) {
+      // The write resolves when its transaction commits, but the liveQuery emission lands
+      // a beat later — until it does, `stored` is still the PRE-write record and applying
+      // it would visibly bounce the stack back for ~300 ms after every gesture. Wait for
+      // the emission that carries our own values (or, if another writer got in after us,
+      // for anything strictly newer, so this can never wedge).
+      const settled =
+        sameSpineOffsets(stored, awaitingEcho.offsets) || storedUpdatedAt > awaitingEcho.updatedAt;
+      if (!settled) return;
+      awaitingEcho = null;
+    }
+    // Assign only on a real change: `seriesMetadataMap` emits on ANY series' metadata write
+    // (a tag edit, a tracking push, a sync) and `seriesIndexMap` on any cloud listing
+    // refresh — both rebuild their whole Map, so `stored` is a fresh object every time.
+    // A fresh-but-equal assignment here would invalidate containerDimensions → stepSizes
+    // → the canvas draw on every mounted card.
+    if (hOffsetAdjust !== stored.spineOffset) hOffsetAdjust = stored.spineOffset;
+    if (!sameVolumeOffsets(volumeOffsetsByUuid, stored.volumeOffsets)) {
+      volumeOffsetsByUuid = stored.volumeOffsets;
+    }
+  });
+
+  function writeSpineOffsets(patch: SpineOffsetPatch) {
+    const seriesTitle = volume?.series_title;
+    if (!seriesTitle) return;
+    // Nothing queued and the gesture landed back on what is already stored (a reset on a
+    // series that never had offsets): skip the write rather than create an empty record /
+    // bump `updated_at` for nothing. With a write still queued the patch is corrective —
+    // it has to go out to undo what that queued write is about to store.
+    if (
+      pendingOffsetWrites === 0 &&
+      sameSpineOffsets(storedOffsets, {
+        spineOffset: hOffsetAdjust,
+        volumeOffsets: volumeOffsetsByUuid
+      })
+    ) {
+      return;
+    }
+    pendingOffsetWrites++;
+    void scheduleSpineOffsetWrite(seriesTitle, patch)
+      .then((written) => {
+        if (written) {
+          // Joined the same way `storedOffsets` is, so the echo comparison is
+          // like for like — a write that stores nothing still displays the
+          // published value.
+          awaitingEcho = {
+            offsets: getSpineOffsets(written, publishedIndex),
+            updatedAt: written.updated_at
+          };
+        }
+      })
+      .finally(() => {
+        pendingOffsetWrites--;
+      });
+  }
+
+  /**
+   * Gate for the wheel/right-click spine-offset gestures below. Unlike SeriesSpineShowcase
+   * (inside the series editor modal, which has a persistent label to disable + explain), a
+   * catalog card has no such surface — a shift+wheel gesture is not discoverable UI to begin
+   * with, so "disable + label" here means: block the write, change NOTHING locally (an
+   * offset applied only on this device, that can never publish, would silently diverge from
+   * the server), and surface the reason once via a snackbar rather than every wheel tick.
+   * See $lib/util/sync/metadata-permissions.ts.
+   */
+  function checkSpineOffsetEditAllowed(): boolean {
+    const seriesTitle = volume?.series_title;
+    // No resolvable series title: `writeSpineOffsets` itself is a no-op in that case, so
+    // there's nothing to gate — let the existing dead-end behavior stand.
+    if (!seriesTitle) return true;
+    const gate = canEditSeriesMetadata(seriesTitle);
+    if (gate.allowed) return true;
+    const now = Date.now();
+    if (now - lastMetadataGateSnackbarAt > METADATA_GATE_SNACKBAR_COOLDOWN_MS) {
+      lastMetadataGateSnackbarAt = now;
+      showSnackbar(gate.reason ?? "This account can't edit series details on this server");
+    }
+    return false;
+  }
+
+  // Index-keyed view of the offsets for the stack currently on screen. Keyed by uuid in
+  // storage precisely because this list changes (hideReadVolumes, stackCount), so an
+  // index-keyed record would drift onto the wrong volume.
+  let volumeOffsets = $derived(volumeOffsetsByIndex(stackedVolumes, volumeOffsetsByUuid));
+
   let isHovered = $state(false);
   let modifierState = $state<'none' | 'shift' | 'alt-shift'>('none');
   let hoveredVolumeIndex = $state<number | null>(null);
@@ -127,6 +313,23 @@
 
   function handleKeyChange(e: KeyboardEvent) {
     if (!isHovered) return;
+    if (e.type === 'keydown' && shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
+      e.preventDefault();
+      if (volume) promptSeriesEditor(volume.series_title);
+      return;
+    }
+    // Hover + Delete raises the series page's own "Remove manga" dialog — the same
+    // prompt, with the same forget/cloud checkboxes. Shift is left alone: the card has
+    // no cloud-only delete to map it to.
+    if (
+      e.type === 'keydown' &&
+      !e.shiftKey &&
+      shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())
+    ) {
+      e.preventDefault();
+      void promptSeriesRemoval(seriesVolumes);
+      return;
+    }
     updateModifierState(e);
   }
 
@@ -134,33 +337,60 @@
     if (!isHovered) return;
     updateModifierState(e);
 
+    // Holding shift makes some browsers (Chrome) report a vertical wheel as deltaX, so the
+    // gesture's direction has to come from whichever axis actually carries it.
+    const wheelDelta = e.deltaY || e.deltaX;
+
+    // No delta on either axis is no gesture. Without this, `wheelDelta > 0 ? … : …` reads a
+    // stationary wheel as "up" and every stray event nudges the offset by a step.
+    if (wheelDelta === 0) return;
+
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+Scroll: adjust individual volume
+      const target = stackedVolumes[hoveredVolumeIndex];
+      if (!target) return;
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
-      const current = volumeOffsets.get(hoveredVolumeIndex) ?? 0;
-      const next = new Map(volumeOffsets);
-      next.set(hoveredVolumeIndex, current + delta);
-      volumeOffsets = next;
+      const delta = wheelDelta > 0 ? -VOLUME_ADJUST_STEP : VOLUME_ADJUST_STEP;
+      setVolumeOffset(target.volume_uuid, (volumeOffsetsByUuid[target.volume_uuid] ?? 0) + delta);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+Scroll: adjust series offset
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -ADJUST_STEP : ADJUST_STEP;
-      hOffsetAdjust += delta;
+      const delta = wheelDelta > 0 ? -ADJUST_STEP : ADJUST_STEP;
+      setSeriesOffset(hOffsetAdjust + delta);
     }
+  }
+
+  function setSeriesOffset(value: number) {
+    if (!checkSpineOffsetEditAllowed()) return;
+    // Clamped with the same rule the writer applies, so the stack never shows a value
+    // that storage would refuse.
+    hOffsetAdjust = clampSpineOffset(value);
+    writeSpineOffsets({ spineOffset: hOffsetAdjust });
+  }
+
+  function setVolumeOffset(volumeUuid: string, value: number) {
+    if (!checkSpineOffsetEditAllowed()) return;
+    const px = clampVolumeOffset(value);
+    const next = { ...volumeOffsetsByUuid };
+    if (px === 0) delete next[volumeUuid];
+    else next[volumeUuid] = px;
+    volumeOffsetsByUuid = next;
+    // 0 is stored, not deleted: it is what outranks an alignment published by
+    // another device (see spine-offsets.ts).
+    writeSpineOffsets({ volumeOffsets: { [volumeUuid]: px } });
   }
 
   function handleContextMenu(e: MouseEvent) {
     if (e.shiftKey && e.altKey && hoveredVolumeIndex !== null) {
       // Alt+Shift+RMB: reset individual volume offset
+      const target = stackedVolumes[hoveredVolumeIndex];
+      if (!target) return;
       e.preventDefault();
-      const next = new Map(volumeOffsets);
-      next.delete(hoveredVolumeIndex);
-      volumeOffsets = next;
+      setVolumeOffset(target.volume_uuid, 0);
     } else if (e.shiftKey && !e.altKey) {
       // Shift+RMB: reset series offset
       e.preventDefault();
-      hOffsetAdjust = 0;
+      setSeriesOffset(0);
     }
   }
 
@@ -179,24 +409,28 @@
       stackedVolumes.length > 0 && hasRenderableThumbnails ? stepSizes : placeholderStepSizes;
     const count = stackedVolumes.length;
 
-    // Build cascading left positions
-    let cumOffset = 0;
-    const positions: number[] = [];
-    for (let i = 0; i < count; i++) {
-      positions[i] = sizes.leftOffset + i * sizes.horizontal + cumOffset;
-      cumOffset += volumeOffsets.get(i) ?? 0;
+    // Shared with the series editor's spine showcase so both agree on which spine a
+    // pointer is over. The hit test runs in stack-local coordinates, so the pointer has to
+    // be shifted by whatever moved the stack — and the two branches move it differently:
+    // CompositeCanvas pins the stack's RIGHT edge to the container (`alignShift`, mirrored
+    // from the shelf and from `spineBadgePlacements`), while the placeholder boxes are
+    // drawn at the centering inset. Using `leftOffset` for both put the pointer up to a
+    // spine's width away from what was painted, so a nudge landed on the neighbour.
+    // Past every spine's right edge falls back to the back-most volume (nothing is drawn
+    // there, but the nudge gesture still needs a target).
+    const layout = computeStackLayout({
+      count,
+      baseWidth: BASE_WIDTH,
+      horizontalStepPx: sizes.horizontal,
+      volumeOffsetsByIndex: volumeOffsets
+    });
+    let shift = sizes.leftOffset;
+    if (hasRenderableThumbnails) {
+      // `?? 0` exactly like the canvas: a last spine with no pixels contributes no width.
+      const lastWidth = getCanvasDimensions(stackedVolumes[count - 1].volume_uuid)?.width ?? 0;
+      shift = containerDimensions.innerWidth - ((layout.lefts[count - 1] ?? 0) + lastWidth);
     }
-
-    // Hit test front-to-back (index 0 is front/leftmost, drawn on top)
-    for (let i = 0; i < count; i++) {
-      const left = positions[i];
-      const right = left + BASE_WIDTH;
-      if (mouseX >= left && mouseX <= right) {
-        hoveredVolumeIndex = i;
-        return;
-      }
-    }
-    hoveredVolumeIndex = count - 1;
+    hoveredVolumeIndex = hitTestStack(layout, mouseX - shift, BASE_WIDTH) ?? count - 1;
   }
 
   $effect(() => {
@@ -223,41 +457,124 @@
     `${$catalogSettings?.stackCount ?? 3}-${$catalogSettings?.horizontalStep ?? 11}-${$catalogSettings?.verticalStep ?? 5}-${($catalogSettings?.compactCloudSeries ?? false) ? 'compact' : 'full'}-${showDropShadow}-${hOffsetAdjust}-${volumeOffsetsKey}`
   );
 
+  /**
+   * Where to mark the individual spines whose pages are not on this device, for a series
+   * that still has something to read. The placement rule is shared with the series
+   * editor's spine shelf (`spineBadgePlacements`), so both ride the painted spines the
+   * same way, and it is overlays only — the card's geometry is untouched.
+   *
+   * Skipped entirely when the WHOLE series is absent: the card is then the cloud card,
+   * which carries one mark of its own (see `absentMark`), and marking every spine on top
+   * of it would say the same thing four times.
+   */
+  let stackBadges = $derived.by(() => {
+    if (seriesNeedsDownload || !hasRenderableThumbnails) return [];
+    // Nothing in the drawn stack is absent: skip the placement pass entirely. In spine
+    // mode this derived re-runs on every wheel tick, over every card on screen.
+    if (!stackedVolumes.some(needsDownload)) return [];
+
+    return spineBadgePlacements({
+      volumes: stackedVolumes,
+      // A volume with no pixels is not painted, so it has no corner to mark — from its
+      // own row or from the resolver, the same rule CompositeCanvas draws by.
+      isMarked: (vol) => needsDownload(vol) && hasCoverPixels(vol),
+      drawnSize: (vol) => getCanvasDimensions(vol.volume_uuid),
+      horizontalStepPx: stepSizes.horizontal,
+      verticalStepPx: stepSizes.vertical,
+      topOffsetPx: stepSizes.topOffset,
+      canvasWidth: containerDimensions.innerWidth,
+      volumeOffsetsByIndex: volumeOffsets
+    });
+  });
+
   // Visual indicator state
   let showSeriesIndicator = $derived(isHovered && modifierState === 'shift');
   let showVolumeIndicator = $derived(isHovered && modifierState === 'alt-shift');
 
   // Check if this series is downloading or queued
   let isDownloading = $derived(
-    isPlaceholderOnly && volume
+    seriesNeedsDownload && volume
       ? $downloadQueue.some((item) => item.seriesTitle === volume.series_title)
       : false
   );
 
-  // Cloud thumbnail data keyed by volume_uuid (File objects, no blob URLs needed)
-  let cloudThumbnailData: Record<string, CloudThumbnailResult> = $state({});
+  /**
+   * THIS CARD RESOLVES ITS OWN CLOUD COVERS.
+   *
+   * Covers used to reach a card by riding the catalog derivation: one cover landing
+   * re-materialised every `cloud_covers` row, re-walked the whole listing, minted fresh
+   * placeholder objects and re-rendered every mounted card — measured at a 1,784 ms long
+   * task on a 1,027-series library, ~15x the next contributor. A card that can fetch its
+   * own cover by path is what lets that dependency be cut (see the design doc).
+   *
+   * Only for volumes with NO cover of their own. A row that carries `thumbnail` — an
+   * installed volume, or a metadata-only row whose cover was persisted — draws from it
+   * exactly as before; the resolver is the CLOUD path and nothing else.
+   */
+  const coverClaims = createCoverClaims({
+    // Claimed and asked-for are the SAME set here: everything `stackedVolumes` draws, and
+    // only once this card is near the viewport. They used to be sliced independently,
+    // which is what left a 42-volume series with one local volume showing spines 1-25 and
+    // 42: the rest were in the stack with no cover ever requested, and CompositeCanvas
+    // paints nothing for a volume without pixels.
+    claims: () => stackedVolumes,
+    targets: () => stackedVolumes
+  });
+  const { gate } = coverClaims;
 
-  // Base thumbnail dimensions
-  const BASE_WIDTH = 250;
-  const BASE_HEIGHT = 360;
+  let resolvedCovers = $derived(coverClaims.covers);
+
+  /** The cover bytes CompositeCanvas should draw, keyed the way `thumbnailCache` decodes. */
+  let coverFiles = $derived.by(() => {
+    if (resolvedCovers.size === 0) return NO_COVER_FILES;
+    const files = new Map<string, File>();
+    for (const [uuid, cover] of resolvedCovers) files.set(uuid, cover.file);
+    return files;
+  });
+
+  /** Does this volume have pixels to paint at all — from its row, or from the resolver? */
+  function hasCoverPixels(vol: VolumeMetadata): boolean {
+    return !!vol.thumbnail || resolvedCovers.has(vol.volume_uuid);
+  }
+
+  // Base thumbnail dimensions (shared with the series editor's spine shelf)
+  const BASE_WIDTH = CARD_BASE_WIDTH;
+  const BASE_HEIGHT = CARD_BASE_HEIGHT;
   const OUTER_PADDING = 25; // pt-4 pb-6 ≈ 25px
 
-  // Get dimensions from volume metadata, with fallback to defaults
+  // Get dimensions from volume metadata, with fallback to defaults.
+  //
+  // PIXELS FIRST: a volume earns an entry here only once it has a thumbnail to draw.
+  // Stored dimensions alone are not enough — CompositeCanvas skips a volume without a
+  // thumbnail (it has nothing to paint), so a stack whose only "dimensions" came from
+  // rows with no cover would render the canvas branch as a correctly-sized, permanently
+  // empty box instead of the honest placeholder below it.
   let thumbnailDimensions = $derived.by(() => {
     const dims = new Map<string, { width: number; height: number }>();
     for (const vol of stackedVolumes) {
-      if (vol.thumbnail_width && vol.thumbnail_height) {
-        dims.set(vol.volume_uuid, {
-          width: vol.thumbnail_width,
-          height: vol.thumbnail_height
-        });
-      } else if (vol.thumbnail) {
-        // Fallback to default aspect ratio for volumes without stored dimensions
-        dims.set(vol.volume_uuid, {
-          width: BASE_WIDTH,
-          height: BASE_HEIGHT
-        });
+      if (vol.thumbnail) {
+        if (vol.thumbnail_width && vol.thumbnail_height) {
+          dims.set(vol.volume_uuid, {
+            width: vol.thumbnail_width,
+            height: vol.thumbnail_height
+          });
+        } else {
+          // Fallback to default aspect ratio for volumes without stored dimensions
+          dims.set(vol.volume_uuid, {
+            width: BASE_WIDTH,
+            height: BASE_HEIGHT
+          });
+        }
+        continue;
       }
+      // No cover on the row: the cloud cover this card resolved for itself, whose
+      // dimensions travel with the blob in `cloud_covers` rather than on a row.
+      const resolved = resolvedCovers.get(vol.volume_uuid);
+      if (!resolved) continue;
+      dims.set(vol.volume_uuid, {
+        width: resolved.width || BASE_WIDTH,
+        height: resolved.height || BASE_HEIGHT
+      });
     }
     return dims;
   });
@@ -266,63 +583,27 @@
   // In that window, render a stable placeholder stack instead of a blank canvas.
   let hasRenderableThumbnails = $derived(thumbnailDimensions.size > 0);
 
-  // Check if cloud series should use compact layout
-  let useCompactForCloud = $derived(
-    isPlaceholderOnly && ($catalogSettings?.compactCloudSeries ?? false)
-  );
-
-  // Calculate rendered dimensions for an image given max constraints
-  function getRenderedDimensions(naturalWidth: number, naturalHeight: number) {
-    const scaleW = BASE_WIDTH / naturalWidth;
-    const scaleH = BASE_HEIGHT / naturalHeight;
-    const scale = Math.min(scaleW, scaleH, 1);
-    return {
-      width: naturalWidth * scale,
-      height: naturalHeight * scale
-    };
-  }
+  // Thumbnail dimensions in stack order (undefined where a thumbnail is still missing) —
+  // the shape the shared geometry module works in.
+  let stackedDims = $derived(stackedVolumes.map((vol) => thumbnailDimensions.get(vol.volume_uuid)));
 
   // Calculate uniform height when vertical offset is 0 or stack count is 0 (spine mode)
-  let uniformHeight = $derived.by(() => {
-    const vOffsetPercent = $catalogSettings?.verticalStep ?? 5;
-    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    // Force uniform height when stack count is 0 (all volumes) or v.offset is 0
-    if ((vOffsetPercent !== 0 && stackCountSetting !== 0) || thumbnailDimensions.size === 0)
-      return null;
-
-    // Calculate average rendered height
-    let totalHeight = 0;
-    let count = 0;
-    for (const vol of stackedVolumes) {
-      const dims = thumbnailDimensions.get(vol.volume_uuid);
-      if (dims) {
-        const rendered = getRenderedDimensions(dims.width, dims.height);
-        totalHeight += rendered.height;
-        count++;
-      }
-    }
-
-    return count > 0 ? totalHeight / count : BASE_HEIGHT;
-  });
+  let uniformHeight = $derived(
+    computeUniformHeight({
+      dims: stackedDims,
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      stackCountSetting: $catalogSettings?.stackCount ?? 3,
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
+  );
 
   // Get the rendered width of the top (first) volume - defines the left edge of the stack
   // Wider volumes underneath will be clipped by overflow-hidden
-  let topVolumeWidth = $derived.by(() => {
-    if (stackedVolumes.length === 0) return BASE_WIDTH;
-
-    const topVol = stackedVolumes[0];
-    const dims = thumbnailDimensions.get(topVol.volume_uuid);
-    if (!dims) return BASE_WIDTH;
-
-    if (uniformHeight !== null) {
-      // Uniform height mode: width from aspect ratio (capped at BASE_WIDTH)
-      const aspectRatio = dims.width / dims.height;
-      return Math.min(uniformHeight * aspectRatio, BASE_WIDTH);
-    } else {
-      // Normal mode: contain within max bounds
-      return getRenderedDimensions(dims.width, dims.height).width;
-    }
-  });
+  let topVolumeWidth = $derived(
+    getSpineCanvasDimensions(stackedDims[0], uniformHeight, BASE_WIDTH, BASE_HEIGHT)?.width ??
+      BASE_WIDTH
+  );
 
   // Calculate container dimensions based on settings
   let containerDimensions = $derived.by(() => {
@@ -377,97 +658,36 @@
 
   // Calculate canvas dimensions for a volume thumbnail
   function getCanvasDimensions(volumeUuid: string): { width: number; height: number } | null {
-    const dims = thumbnailDimensions.get(volumeUuid);
-    if (!dims) return null;
-
-    if (uniformHeight !== null) {
-      // Uniform height mode: fixed height, width from aspect ratio (capped)
-      const aspectRatio = dims.width / dims.height;
-      const width = Math.min(uniformHeight * aspectRatio, BASE_WIDTH);
-      return { width, height: uniformHeight };
-    } else {
-      // Normal mode: contain within max bounds
-      return getRenderedDimensions(dims.width, dims.height);
-    }
+    return getSpineCanvasDimensions(
+      thumbnailDimensions.get(volumeUuid),
+      uniformHeight,
+      BASE_WIDTH,
+      BASE_HEIGHT
+    );
   }
 
   // Calculate step sizes and centering/spreading offsets
-  let stepSizes = $derived.by(() => {
-    const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
-    // Force vertical offset to 0 when stack count is 0 (all volumes / spine mode)
-    const vOffsetPercent =
-      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
-    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
-    const centerVertical = $catalogSettings?.centerVertical ?? false;
+  let stepSizes = $derived(
+    computeStepSizes({
+      stackCountSetting: $catalogSettings?.stackCount ?? 3,
+      horizontalStepPct: $catalogSettings?.horizontalStep ?? 11,
+      verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+      hOffsetAdjust,
+      centerHorizontal: $catalogSettings?.centerHorizontal ?? true,
+      centerVertical: $catalogSettings?.centerVertical ?? false,
+      actualCount: stackedVolumes.length,
+      innerWidth: containerDimensions.innerWidth,
+      innerHeight: containerDimensions.innerHeight,
+      uniformHeight,
+      dims: stackedDims,
+      baseWidth: BASE_WIDTH,
+      baseHeight: BASE_HEIGHT
+    })
+  );
 
-    // Default step in pixels based on base thumbnail size
-    let horizontalStep = BASE_WIDTH * hOffsetPercent;
-    let verticalStep = BASE_HEIGHT * vOffsetPercent;
-
-    const actualCount = stackedVolumes.length;
-    // Use actual count when stackCount is 0 (all volumes)
-    const effectiveStackCount = stackCountSetting === 0 ? actualCount : stackCountSetting;
-    const { innerWidth, innerHeight } = containerDimensions;
-
-    // Calculate horizontal layout
-    let leftOffset = 0;
-    if (actualCount < effectiveStackCount && actualCount > 1) {
-      if (centerHorizontal) {
-        // Center: keep step size, add offset
-        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
-        leftOffset = (innerWidth - actualStackWidth) / 2;
-      } else {
-        // Spread: recalculate step to fill width evenly
-        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
-      }
-    }
-
-    // Get max rendered height from actual thumbnails (or uniform height if in spine mode)
-    let maxRenderedHeight = uniformHeight ?? BASE_HEIGHT;
-    if (uniformHeight === null && thumbnailDimensions.size > 0) {
-      // Start at 0 to find actual max, not clamped to BASE_HEIGHT
-      let actualMaxHeight = 0;
-      for (const vol of stackedVolumes) {
-        const dims = thumbnailDimensions.get(vol.volume_uuid);
-        if (dims) {
-          const rendered = getRenderedDimensions(dims.width, dims.height);
-          actualMaxHeight = Math.max(actualMaxHeight, rendered.height);
-        }
-      }
-      // Use actual max if we found dimensions, otherwise keep BASE_HEIGHT default
-      if (actualMaxHeight > 0) {
-        maxRenderedHeight = actualMaxHeight;
-      }
-    }
-
-    // Calculate vertical layout
-    let topOffset = 0;
-    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
-    const extraVerticalSpace = innerHeight - actualStackHeight;
-
-    if (actualCount > 0 && extraVerticalSpace > 0) {
-      // Spreading only works with 2+ volumes and v.offset > 0
-      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
-
-      if (canSpread) {
-        // Spread: recalculate step to fill height evenly
-        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
-      } else {
-        // Center: for single volumes, v.offset = 0, or when centering enabled
-        topOffset = extraVerticalSpace / 2;
-      }
-    }
-
-    return {
-      horizontal: horizontalStep,
-      vertical: verticalStep,
-      leftOffset,
-      topOffset
-    };
-  });
-
-  // Calculate step sizes for placeholder thumbnails (same logic but uses all series volumes)
+  // Calculate step sizes for placeholder thumbnails: the same rule over all series volumes,
+  // drawn as uniform base-size boxes (no thumbnails yet) in the capped number of slots the
+  // container was sized for.
   let placeholderStepSizes = $derived.by(() => {
     // Use compact settings for cloud series if enabled
     if (useCompactForCloud) {
@@ -481,98 +701,32 @@
     }
 
     const stackCountSetting = $catalogSettings?.stackCount ?? 3;
-    const hOffsetPercent = (($catalogSettings?.horizontalStep ?? 11) + hOffsetAdjust) / 100;
-    const vOffsetPercent =
-      stackCountSetting === 0 ? 0 : ($catalogSettings?.verticalStep ?? 5) / 100;
-    const centerHorizontal = $catalogSettings?.centerHorizontal ?? true;
-    const centerVertical = $catalogSettings?.centerVertical ?? false;
-
-    let horizontalStep = BASE_WIDTH * hOffsetPercent;
-    let verticalStep = BASE_HEIGHT * vOffsetPercent;
-
-    // For placeholders, use capped count to match stackedVolumes sizing
-    const maxCount = isPlaceholderOnly
+    const maxCount = seriesNeedsDownload
       ? stackCountSetting === 0
         ? MAX_CLOUD_STACK
         : Math.min(stackCountSetting, MAX_CLOUD_STACK)
       : stackCountSetting;
     const actualCount = Math.min(seriesVolumes.length, maxCount);
-    const effectiveStackCount = maxCount;
-    const { innerWidth, innerHeight } = containerDimensions;
-
-    // Calculate horizontal layout
-    let leftOffset = 0;
-    if (actualCount < effectiveStackCount && actualCount > 1) {
-      if (centerHorizontal) {
-        const actualStackWidth = BASE_WIDTH + horizontalStep * (actualCount - 1);
-        leftOffset = (innerWidth - actualStackWidth) / 2;
-      } else {
-        horizontalStep = (innerWidth - BASE_WIDTH) / (actualCount - 1);
-      }
-    }
-
-    // For placeholders, height is always BASE_HEIGHT (uniform boxes)
-    const maxRenderedHeight = BASE_HEIGHT;
-    let topOffset = 0;
-    const actualStackHeight = maxRenderedHeight + verticalStep * (actualCount - 1);
-    const extraVerticalSpace = innerHeight - actualStackHeight;
-
-    if (actualCount > 0 && extraVerticalSpace > 0) {
-      const canSpread = !centerVertical && vOffsetPercent > 0 && actualCount > 1;
-      if (canSpread) {
-        verticalStep = (innerHeight - maxRenderedHeight) / (actualCount - 1);
-      } else {
-        topOffset = extraVerticalSpace / 2;
-      }
-    }
 
     return {
       count: actualCount,
-      horizontal: horizontalStep,
-      vertical: verticalStep,
-      leftOffset,
-      topOffset
-    };
-  });
-
-  // Fetch cloud thumbnails for visible placeholder volumes
-  // Fetch targets are computed from stable inputs only (seriesVolumes, catalogSettings)
-  // to avoid a reactive cycle: thumbnails loaded → containerDimensions changed →
-  // placeholderStepSizes recomputed → effect re-triggered → cleanup resets data → loop
-  $effect(() => {
-    if (!isPlaceholderOnly) return;
-
-    const stackCount = $catalogSettings?.stackCount ?? 3;
-    const maxCount = stackCount === 0 ? MAX_CLOUD_STACK : Math.min(stackCount, MAX_CLOUD_STACK);
-    const count = useCompactForCloud ? 1 : Math.min(seriesVolumes.length, maxCount);
-    const vols = seriesVolumes.slice(0, count);
-    let cancelled = false;
-
-    for (const vol of vols) {
-      if (!vol.cloudThumbnailFileId) continue;
-
-      // Check synchronous cache first
-      const cached = getCachedCloudThumbnail(vol.volume_uuid);
-      if (cached) {
-        cloudThumbnailData[vol.volume_uuid] = cached;
-        continue;
-      }
-
-      // Fetch async
-      fetchCloudThumbnail(vol).then((result) => {
-        if (cancelled || !result) return;
-        console.log(
-          `[CatalogItem] Cloud thumbnail loaded: ${vol.volume_title} ${result.width}x${result.height}`
-        );
-        cloudThumbnailData[vol.volume_uuid] = result;
-      });
-    }
-
-    return () => {
-      cancelled = true;
-      // Don't reset cloudThumbnailData - File objects don't need cleanup (unlike blob URLs),
-      // and resetting triggers expensive enrichedPlaceholders → template flip-flop when the
-      // parent re-renders (e.g., from local thumbnail processing updating the catalog store)
+      ...computeStepSizes({
+        stackCountSetting,
+        horizontalStepPct: $catalogSettings?.horizontalStep ?? 11,
+        verticalStepPct: $catalogSettings?.verticalStep ?? 5,
+        hOffsetAdjust,
+        centerHorizontal: $catalogSettings?.centerHorizontal ?? true,
+        centerVertical: $catalogSettings?.centerVertical ?? false,
+        actualCount,
+        effectiveStackCount: maxCount,
+        innerWidth: containerDimensions.innerWidth,
+        innerHeight: containerDimensions.innerHeight,
+        // Placeholder boxes are always full base size.
+        uniformHeight: BASE_HEIGHT,
+        dims: [],
+        baseWidth: BASE_WIDTH,
+        baseHeight: BASE_HEIGHT
+      })
     };
   });
 
@@ -591,18 +745,40 @@
   }
 </script>
 
+<!-- Nothing of this series is here. The mark is the cloud card's own, unchanged since
+     before the not-on-device work: a download glyph in the corner of the cover stack, the
+     design language people already read as "this one is in the cloud". Both absent kinds
+     get it — a series whose files were removed IS a cloud series (see `seriesNeedsDownload`).
+     Named for screen readers, since on a card it is the only cue. -->
+{#snippet absentMark()}
+  {#if seriesNeedsDownload}
+    <div
+      data-testid="cloud-card-mark"
+      class="pointer-events-none absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5"
+    >
+      {#if isDownloading}
+        <Spinner size="4" color="blue" />
+      {:else}
+        <DownloadSolid class="h-4 w-4 text-blue-400" />
+      {/if}
+      <span class="sr-only">Not on this device</span>
+    </div>
+  {/if}
+{/snippet}
+
 {#if volume}
   <a href="#/series/{encodeURIComponent(navId)}" onclick={handleClick}>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       bind:this={outerEl}
+      use:gate
       class:text-green-400={isComplete}
-      class:opacity-70={isPlaceholderOnly}
+      class:opacity-70={seriesNeedsDownload}
       class="relative flex flex-col items-center gap-[5px] rounded-lg border-2 p-3 text-center transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
       class:border-transparent={!showSeriesIndicator}
       class:border-blue-400={showSeriesIndicator}
       class:border-dashed={showSeriesIndicator}
-      class:cursor-pointer={isPlaceholderOnly}
+      class:cursor-pointer={seriesNeedsDownload}
       onmouseenter={() => (isHovered = true)}
       onmouseleave={() => {
         isHovered = false;
@@ -630,24 +806,27 @@
                 {getCanvasDimensions}
                 {stepSizes}
                 dropShadow={showDropShadow}
+                covers={coverFiles}
                 {volumeOffsets}
                 highlightIndex={showVolumeIndicator ? hoveredVolumeIndex : null}
               />
             {/key}
+            {#each stackBadges as mark (stackedVolumes[mark.index].volume_uuid)}
+              <!-- Named: on a card that is otherwise a normal library card, this badge is
+                   the only thing that says the volume under it is not here. -->
+              <DownloadBadge
+                size="spine"
+                class=""
+                style="left: {mark.left}px; top: {mark.top}px;"
+                label="{stackedVolumes[mark.index].volume_title} not on this device"
+              />
+            {/each}
           </div>
-          {#if isPlaceholderOnly}
-            <!-- Download overlay for cloud series -->
-            <div class="absolute right-2 bottom-8 z-10 rounded-full bg-black/60 p-1.5">
-              {#if isDownloading}
-                <Spinner size="4" color="blue" />
-              {:else}
-                <DownloadSolid class="h-4 w-4 text-blue-400" />
-              {/if}
-            </div>
-          {/if}
+          {@render absentMark()}
         </div>
-      {:else if isPlaceholderOnly}
-        <!-- Placeholder boxes (cloud thumbnails loading or unavailable) -->
+      {:else if seriesNeedsDownload}
+        <!-- Nothing here to draw a cover from: the download boxes. Not "Generating…" —
+             nothing is generating a cover for a series whose pages are all gone. -->
         <div
           class="relative pt-4 pb-6"
           style="width: {containerDimensions.outerWidth}px; height: {containerDimensions.outerHeight}px;"
@@ -684,6 +863,8 @@
               </div>
             {/each}
           </div>
+          <!-- No badge here: the 64px download icon and "Click to download" under it ARE
+               the mark, and a second glyph in the corner only repeats them. -->
         </div>
       {:else if stackedVolumes.length > 0}
         <!-- Local volumes exist, but thumbnails are not ready yet -->
@@ -715,15 +896,26 @@
               </div>
             {/each}
           </div>
+          <!-- No mark here: this branch is only reached by a series with pages on the
+               device, whose covers are still being generated. -->
         </div>
       {/if}
-      <p class="line-clamp-2 font-semibold" style="width: {containerDimensions.outerWidth}px;">
-        {volume.series_title}
+      <!-- Muted while the series is not here — the same grey the cloud series page titles
+           itself in. A series you finished keeps its green: that is progress, not identity. -->
+      <p
+        class="line-clamp-2 font-semibold"
+        class:text-gray-400={seriesNeedsDownload && !isComplete}
+        style="width: {containerDimensions.outerWidth}px;"
+      >
+        {displayTitle ?? volume.series_title}
       </p>
-      {#if isPlaceholderOnly}
-        <p class="text-xs text-blue-400">
-          {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerName}
-        </p>
+      {#if seriesNeedsDownload}
+        <!-- Keyed: a count is exactly the text Migaku rewrites and then holds stale. -->
+        {#key seriesVolumes.length}
+          <p class="text-xs text-blue-400">
+            {seriesVolumes.length} volume{seriesVolumes.length !== 1 ? 's' : ''} in {providerName}
+          </p>
+        {/key}
       {/if}
     </div>
   </a>

@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { saveVolume, volumeExists, deleteVolume } from '../database';
+import { saveVolume, volumeExists, removeVolumeFiles, deleteVolumeCompletely } from '../database';
 import type { ProcessedVolume, ProcessedMetadata, ProcessedPage } from '../types';
 
 // Mock the db module to use our test database
@@ -16,6 +16,8 @@ vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
       add: vi.fn(),
+      put: vi.fn(),
+      update: vi.fn(),
       get: vi.fn(),
       where: vi.fn(),
       delete: vi.fn()
@@ -74,8 +76,7 @@ function createProcessedVolume(overrides: Partial<ProcessedVolume> = {}): Proces
         'page002.jpg': new File([], 'page002.jpg')
       }
     },
-    nestedSources: overrides.nestedSources ?? [],
-    ...overrides
+    nestedSources: overrides.nestedSources ?? []
   };
 }
 
@@ -168,6 +169,53 @@ describe('saveVolume', () => {
     const addCall = (db.volumes.add as any).mock.calls[0][0];
     expect(addCall.series_title).toBe('Steins;Gate: 0');
     expect(addCall.volume_title).toBe('Vol?1');
+  });
+
+  it('fills a row whose files were removed instead of rejecting it as a duplicate', async () => {
+    const retainedCover = new File(['cover'], 'thumb.webp', { type: 'image/webp' });
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      thumbnail: retainedCover,
+      thumbnail_width: 210,
+      thumbnail_height: 297
+    });
+
+    await saveVolume(
+      createProcessedVolume({
+        metadata: { thumbnail: null, thumbnailWidth: 0, thumbnailHeight: 0 } as any
+      })
+    );
+
+    // `put`, not `add`: the same row (and therefore the same history) is refilled.
+    expect(db.volumes.add).not.toHaveBeenCalled();
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.metadata_only).toBeUndefined();
+    expect(written.thumbnail).toBe(retainedCover);
+    expect(written.thumbnail_width).toBe(210);
+  });
+
+  it('prefers the reinstalled archive’s own cover over the retained one', async () => {
+    const retainedCover = new File(['old'], 'old.webp', { type: 'image/webp' });
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      thumbnail: retainedCover
+    });
+
+    await saveVolume(createProcessedVolume());
+
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.thumbnail).not.toBe(retainedCover);
+    expect(written.metadata_only).toBeUndefined();
+  });
+
+  it('still rejects a genuinely installed duplicate', async () => {
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid' });
+
+    await expect(saveVolume(createProcessedVolume())).rejects.toThrow('already exists');
+    expect(db.volumes.put).not.toHaveBeenCalled();
+    expect(db.volumes.add).not.toHaveBeenCalled();
   });
 
   it('writes OCR data with pages (strips cumulativeChars)', async () => {
@@ -312,9 +360,53 @@ describe('volumeExists', () => {
 
     expect(exists).toBe(false);
   });
+
+  it('does not count a row whose files were removed — re-importing reinstalls it', async () => {
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'stripped', metadata_only: true });
+
+    const exists = await volumeExists('stripped');
+
+    expect(exists).toBe(false);
+  });
 });
 
-describe('deleteVolume', () => {
+describe('removeVolumeFiles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (db.transaction as any).mockImplementation(
+      async (_mode: string, _tables: any[], callback: () => Promise<void>) => {
+        await callback();
+      }
+    );
+  });
+
+  it('drops the OCR and file rows but keeps the volume row', async () => {
+    await removeVolumeFiles('test-uuid');
+
+    expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
+    expect(db.volume_files.delete).toHaveBeenCalledWith('test-uuid');
+    // The row carries the read history and the cover — it must survive.
+    expect(db.volumes.delete).not.toHaveBeenCalled();
+  });
+
+  it('flags the surviving row as not installed', async () => {
+    await removeVolumeFiles('test-uuid');
+
+    expect(db.volumes.update).toHaveBeenCalledWith('test-uuid', { metadata_only: true });
+  });
+
+  it('uses transaction for atomicity', async () => {
+    await removeVolumeFiles('test-uuid');
+
+    expect(db.transaction).toHaveBeenCalledWith(
+      'rw',
+      expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files]),
+      expect.any(Function)
+    );
+  });
+});
+
+describe('deleteVolumeCompletely', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (db.transaction as any).mockImplementation(
@@ -325,7 +417,7 @@ describe('deleteVolume', () => {
   });
 
   it('deletes from all three tables', async () => {
-    await deleteVolume('test-uuid');
+    await deleteVolumeCompletely('test-uuid');
 
     expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
@@ -333,7 +425,7 @@ describe('deleteVolume', () => {
   });
 
   it('uses transaction for atomicity', async () => {
-    await deleteVolume('test-uuid');
+    await deleteVolumeCompletely('test-uuid');
 
     expect(db.transaction).toHaveBeenCalledWith(
       'rw',

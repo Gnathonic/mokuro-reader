@@ -4,6 +4,11 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
+import {
+  consumeAniListReturnHash,
+  handleAniListCallbackHash,
+  isAniListCallbackHash
+} from '$lib/metadata/anilist-auth';
 
 /**
  * View types for in-app navigation
@@ -227,6 +232,28 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  * Call this on app initialization, returns cleanup function
  */
 export function initRouter(): () => void {
+  // AniList implicit-grant callback lands on `{origin}/#access_token=…` — in
+  // whatever parameter order AniList chooses, hence the order-independent test.
+  // Handled first, before the legacy-pathname redirect below — that block
+  // rewrites the hash outright on subpath deploys, which would otherwise
+  // wipe the fragment before we ever get to read it.
+  if (isAniListCallbackHash(window.location.hash)) {
+    const callbackHash = window.location.hash;
+    const rawReturnHash = consumeAniListReturnHash();
+    // Only a same-origin script can have written `anilist_return` (it's set
+    // by startAniListLogin() right before navigating to AniList), so its
+    // presence is proof this tab initiated the login. An attacker can send
+    // a bare `#access_token=…` link with no such key set — without this
+    // check that link would silently log the victim into the attacker's
+    // AniList account. Absent proof, scrub the fragment and store nothing.
+    const returnHash =
+      rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
+    window.history.replaceState(null, '', '/' + returnHash);
+    if (rawReturnHash) {
+      void handleAniListCallbackHash(callbackHash).catch(() => {});
+    }
+  }
+
   // Handle legacy pathname-based routes from before hash router migration
   const pathname = window.location.pathname;
 

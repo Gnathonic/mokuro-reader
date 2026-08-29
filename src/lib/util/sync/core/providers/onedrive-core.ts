@@ -1,3 +1,4 @@
+import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG } from '../../providers/onedrive/constants';
@@ -59,18 +60,26 @@ async function findCompletedUpload(
   accessToken: string,
   targetPath: string,
   expectedSize: number
-): Promise<string | null> {
+): Promise<CompletedDriveItem | null> {
   try {
     const response = await fetch(`${BASE}/me/drive/root:/${encodePath(targetPath)}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS)
     });
     if (!response.ok) return null;
-    const item = (await response.json()) as { id: string; size?: number };
-    return item.size === expectedSize ? item.id : null;
+    const item = (await response.json()) as CompletedDriveItem;
+    return item.size === expectedSize ? item : null;
   } catch {
     return null;
   }
+}
+
+/** The slice of a Graph driveItem the upload paths read. */
+interface CompletedDriveItem {
+  id: string;
+  /** The server's own modification timestamp — what listings later report. */
+  lastModifiedDateTime?: string;
+  size?: number;
 }
 
 export const onedriveCore: CloudProviderCore = {
@@ -103,7 +112,13 @@ export const onedriveCore: CloudProviderCore = {
     });
   },
 
-  async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
+  async uploadFile({
+    seriesTitle,
+    filename,
+    blob,
+    credentials,
+    onProgress
+  }): Promise<UploadFileResult> {
     const accessToken = requireCredentialString(
       credentials,
       'accessToken',
@@ -169,7 +184,7 @@ export const onedriveCore: CloudProviderCore = {
       }
     }
 
-    let lastItemId: string | null = null;
+    let lastItem: CompletedDriveItem | null = null;
     let offset = 0;
     let attempt = 0;
 
@@ -178,9 +193,9 @@ export const onedriveCore: CloudProviderCore = {
       if (attempt >= MAX_CHUNK_ATTEMPTS) {
         // The write may well have succeeded even though we never saw the ack
         // (dropped connection, client-side timeout). Confirm before failing.
-        const completedId = await findCompletedUpload(accessToken, targetPath, blob.size);
-        if (completedId) {
-          lastItemId = completedId;
+        const completed = await findCompletedUpload(accessToken, targetPath, blob.size);
+        if (completed) {
+          lastItem = completed;
           offset = blob.size;
           return;
         }
@@ -212,9 +227,10 @@ export const onedriveCore: CloudProviderCore = {
       }
 
       if (chunkResponse.status === 200 || chunkResponse.status === 201) {
-        // Final chunk returns the completed driveItem.
-        const item = (await chunkResponse.json()) as { id: string };
-        lastItemId = item.id;
+        // Final chunk returns the completed driveItem — including the
+        // server's `lastModifiedDateTime`, the same field listings report.
+        const item = (await chunkResponse.json()) as CompletedDriveItem;
+        lastItem = item;
         offset = end + 1;
         attempt = 0;
         onProgress?.(offset, blob.size);
@@ -249,9 +265,17 @@ export const onedriveCore: CloudProviderCore = {
       await retryOrThrow(`HTTP ${chunkResponse.status} ${chunkResponse.statusText}`, waitMs);
     }
 
-    if (!lastItemId) {
+    if (!lastItem) {
       throw new Error('OneDrive upload session did not return a final driveItem');
     }
-    return lastItemId;
+    const finalItem: CompletedDriveItem = lastItem;
+    return {
+      fileId: finalItem.id,
+      modifiedTime:
+        typeof finalItem.lastModifiedDateTime === 'string'
+          ? finalItem.lastModifiedDateTime
+          : undefined,
+      size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+    };
   }
 };

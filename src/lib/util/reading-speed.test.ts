@@ -375,6 +375,33 @@ describe('calculateReadingSpeed', () => {
     expect(result.sessionsUsed).toBe(1);
   });
 
+  it('should skip turns where the character count went backwards', () => {
+    // "Restart series" sends every volume back to page 1, so a jump from the end
+    // of a volume to its start is now a first-class flow. That pair carries a
+    // negative char delta and must not cancel out real reading.
+    const now = Date.now();
+    const result = calculateReadingSpeed(
+      {
+        'vol-1': {
+          completed: false,
+          timeReadInMinutes: 0,
+          chars: 6000,
+          lastProgressUpdate: '2024-01-01T00:00:00Z',
+          recentPageTurns: [
+            [now - 120000, 10, 1000], // 2 min ago, near the end of the volume
+            [now - 60000, 0, 0], // restart: back to page 0, count resets
+            [now, 1, 100] // 100 chars in 60s = 100 CPM
+          ]
+        }
+      },
+      10
+    );
+    // Without the guard the -1000 delta drags the total to -900 chars, which
+    // reads as "no personalized data at all".
+    expect(result.charsPerMinute).toBe(100);
+    expect(result.isPersonalized).toBe(true);
+  });
+
   it('should skip idle periods based on timeout', () => {
     const now = Date.now();
     const result = calculateReadingSpeed(

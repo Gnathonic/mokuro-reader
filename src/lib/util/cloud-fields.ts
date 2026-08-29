@@ -1,10 +1,17 @@
 import type { VolumeMetadata } from '$lib/types';
+import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+import { isArchiveSize } from '$lib/metadata/series-file';
 import type { ProviderType } from './sync/provider-interface';
 
 /**
  * Cloud field helpers for VolumeMetadata
  *
- * Handles migration from legacy Drive-specific fields to generic cloud fields
+ * Handles migration from legacy Drive-specific fields to generic cloud fields.
+ *
+ * They answer "where would this volume be downloaded from", so they apply to
+ * both kinds of not-installed volume: a cloud placeholder, and a metadata-only
+ * row the catalog decorated with its cloud file (`cloudFieldsForRemovedVolume`).
+ * An installed volume has nothing to download and always reads as null.
  */
 
 /**
@@ -12,7 +19,7 @@ import type { ProviderType } from './sync/provider-interface';
  * Automatically migrates from legacy driveFileId format
  */
 export function getCloudProvider(volume: VolumeMetadata): ProviderType | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format: explicit cloudProvider
   if (volume.cloudProvider) {
@@ -32,7 +39,7 @@ export function getCloudProvider(volume: VolumeMetadata): ProviderType | null {
  * Automatically migrates from legacy driveFileId format
  */
 export function getCloudFileId(volume: VolumeMetadata): string | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format: explicit cloudFileId
   if (volume.cloudFileId) {
@@ -52,7 +59,7 @@ export function getCloudFileId(volume: VolumeMetadata): string | null {
  * Automatically migrates from legacy driveModifiedTime format
  */
 export function getCloudModifiedTime(volume: VolumeMetadata): string | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format
   if (volume.cloudModifiedTime) {
@@ -72,7 +79,7 @@ export function getCloudModifiedTime(volume: VolumeMetadata): string | null {
  * Automatically migrates from legacy driveSize format
  */
 export function getCloudSize(volume: VolumeMetadata): number | null {
-  if (!volume.isPlaceholder) return null;
+  if (!needsDownload(volume)) return null;
 
   // New format
   if (volume.cloudSize !== undefined) {
@@ -85,6 +92,23 @@ export function getCloudSize(volume: VolumeMetadata): number | null {
   }
 
   return null;
+}
+
+/**
+ * How big this volume's `.cbz` is, in bytes, or null when nobody has measured it.
+ *
+ * Two sources, in order: the CURRENT cloud listing (`cloudSize`, decorated onto
+ * the row for exactly as long as a provider is connected and reporting), then
+ * `archive_size` — the fact recorded by whichever upload, download or index
+ * last knew it, which survives disconnecting the provider.
+ *
+ * Unlike the helpers above this is not gated on `needsDownload`: the size of an
+ * installed volume's archive is just as true, it simply has nowhere to show yet.
+ */
+export function getArchiveSize(volume: VolumeMetadata): number | null {
+  const listed = getCloudSize(volume);
+  if (listed !== null && listed > 0) return listed;
+  return isArchiveSize(volume.archive_size) ? volume.archive_size : null;
 }
 
 /**
@@ -134,5 +158,20 @@ export function createCloudFields(
  * Check if a volume has cloud metadata (either new or legacy format)
  */
 export function hasCloudMetadata(volume: VolumeMetadata): boolean {
-  return !!(volume.isPlaceholder && (volume.cloudFileId || volume.driveFileId));
+  return !!(needsDownload(volume) && (volume.cloudFileId || volume.driveFileId));
+}
+
+/**
+ * May the catalog show this volume? Installed pages always qualify; absent ones
+ * (placeholders and metadata-only rows) only when the ACTIVE listing carries the
+ * file to download them from — i.e. the placeholder pass minted them or the
+ * catalog decorated them (`cloudFieldsForRemovedVolume`) this session.
+ *
+ * A metadata-only row whose cloud copy is gone, or lives on a provider that is
+ * not connected right now, fails this check: its row, thumbnail and history stay
+ * in the database for the stats views, but it gets no card — a card would offer
+ * a download from a provider that does not have it.
+ */
+export function isCatalogVisible(volume: VolumeMetadata): boolean {
+  return isVolumeInstalled(volume) || hasCloudMetadata(volume);
 }

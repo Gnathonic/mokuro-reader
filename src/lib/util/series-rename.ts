@@ -40,8 +40,10 @@ export interface RenameSeriesResult {
   /** Volumes fully renamed (cloud + local). */
   renamedCount: number;
   /** Volumes that keep the old title everywhere because their cloud rename
-   * failed. Retrying the same rename converges: it picks up just these. */
-  failures: Array<{ volumeUuid: string; volumeTitle: string }>;
+   * failed. Retrying the same rename converges: it picks up just these —
+   * except when `reason` says otherwise (e.g. the volume is not on this
+   * device), which is why the reason is carried to the UI rather than logged. */
+  failures: Array<{ volumeUuid: string; volumeTitle: string; reason?: string }>;
 }
 
 /**
@@ -238,10 +240,33 @@ export async function executeRenameSeries(
       }
     }
 
+    // Carry the per-series metadata (AniList link, tag, …) and the per-user
+    // reading state (read count, re-read suppression, push bookkeeping) to the
+    // new key — both are keyed by the series title. Non-fatal: the rename itself
+    // already succeeded.
+    if (renamedSet.size > 0) {
+      try {
+        const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
+        await moveSeriesMetadataKey(oldTitle, newTitle);
+      } catch (error) {
+        console.warn('Failed to move series metadata after rename:', error);
+      }
+      try {
+        const { moveSeriesReadingStateKey } = await import('$lib/settings/series-data');
+        moveSeriesReadingStateKey(oldTitle, newTitle);
+      } catch (error) {
+        console.warn('Failed to move series reading state after rename:', error);
+      }
+    }
+
     return {
       finalTitle: newTitle,
       renamedCount: cloud.renamedVolumeUuids.length,
-      failures: cloud.failures.map(({ volumeUuid, volumeTitle }) => ({ volumeUuid, volumeTitle }))
+      failures: cloud.failures.map(({ volumeUuid, volumeTitle, error }) => ({
+        volumeUuid,
+        volumeTitle,
+        reason: error instanceof Error ? error.message : undefined
+      }))
     };
   } catch (error) {
     console.error('Error executing series rename:', error);

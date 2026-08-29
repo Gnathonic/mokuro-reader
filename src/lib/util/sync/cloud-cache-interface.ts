@@ -1,4 +1,5 @@
 import type { Readable } from 'svelte/store';
+import type { CloudFileMetadata, ProviderType } from './provider-interface';
 
 /**
  * Cloud Cache Interface
@@ -10,6 +11,62 @@ import type { Readable } from 'svelte/store';
  * This interface provides common operations while preserving provider-specific capabilities
  * like Drive's duplicate detection, MEGA's deduplication, etc.
  */
+
+/**
+ * The metadata `add()` accepts — `T` with `modifiedTimeProvisional` promoted
+ * from optional to REQUIRED.
+ *
+ * `add()` runs at upload/rename time, the one moment a caller actually knows
+ * whether the `modifiedTime` it is about to cache came from the provider's
+ * own response or was fabricated from the client clock (see
+ * `CloudFileMetadata.modifiedTimeProvisional`'s own doc for why that
+ * distinction matters downstream). Leaving the field optional on `add()`
+ * itself let a call site omit the question entirely and default to
+ * "server-truth" by silence — which is exactly the class of bug a stale/
+ * fabricated timestamp in `series.json` comes from. Requiring it here makes
+ * that omission a compile error instead of a runtime data hazard.
+ *
+ * Whole-account listing installs (each provider's `fetch()`, which replaces
+ * the cache wholesale via its own store's `set()`) do not go through `add()`
+ * at all and need no such flag: every entry there is server-reported by
+ * construction, never client-clock-fabricated.
+ */
+export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
+
+/**
+ * The cache entry ONE successful upload earns — the single rule for
+ * post-upload cache maintenance, shared by every uploader
+ * (`unifiedCloudManager.uploadFile`, the sync service's direct
+ * volume-data/profiles uploads).
+ *
+ * A targeted `cache.add` of this entry is ALL an upload needs for
+ * convergence: it carries the upload response's own fileId, and the SERVER's
+ * mtime when the response reported one — marked provisional otherwise, so no
+ * stamp publisher ever mistakes a client clock for a server fact
+ * (`cloud-sidecar-stamps.ts`). Refetching the listing instead is what the
+ * Google Drive provider used to do INSIDE `uploadFile`: a full paged walk of
+ * the account (13+ `files.list` calls on a 12,500-file library) after every
+ * upload, so each sidecar-backfill volume cost two whole listings for data
+ * nothing needed to read back. Pure and stateless on purpose — suites that
+ * mock the cache manager still exercise THIS rule for real.
+ */
+export function uploadCacheEntry(
+  providerType: ProviderType,
+  path: string,
+  uploadedBytes: number,
+  uploaded: { fileId: string; modifiedTime?: string; size?: number },
+  description?: string
+): CacheAddMetadata<CloudFileMetadata> {
+  return {
+    provider: providerType,
+    fileId: uploaded.fileId,
+    path,
+    modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
+    modifiedTimeProvisional: !uploaded.modifiedTime,
+    size: uploaded.size ?? uploadedBytes,
+    description
+  };
+}
 
 /**
  * Generic interface for cloud file caches
@@ -85,9 +142,10 @@ export interface CloudCache<T = any> {
   /**
    * Add a file to the cache (e.g., after upload)
    * @param path File path
-   * @param metadata File metadata
+   * @param metadata File metadata — `modifiedTimeProvisional` is required,
+   *   not optional; see {@link CacheAddMetadata}.
    */
-  add?(path: string, metadata: T): void;
+  add?(path: string, metadata: CacheAddMetadata<T>): void;
 
   /**
    * Remove a file from the cache by file ID

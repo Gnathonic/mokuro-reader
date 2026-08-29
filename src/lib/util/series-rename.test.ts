@@ -30,6 +30,16 @@ vi.mock('svelte/store', () => ({
   get: vi.fn()
 }));
 
+const moveSeriesMetadataKey = vi.fn();
+vi.mock('$lib/metadata/store', () => ({
+  moveSeriesMetadataKey: (...args: unknown[]) => moveSeriesMetadataKey(...args)
+}));
+
+const moveSeriesReadingStateKey = vi.fn();
+vi.mock('$lib/settings/series-data', () => ({
+  moveSeriesReadingStateKey: (...args: unknown[]) => moveSeriesReadingStateKey(...args)
+}));
+
 describe('Series rename cloud propagation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -151,7 +161,11 @@ describe('Series rename cloud propagation', () => {
     expect(updateVolumeSeriesTitle).toHaveBeenCalledTimes(1);
     expect(updateVolumeSeriesTitle).toHaveBeenCalledWith('vol-2', 'New Series');
     expect(result.renamedCount).toBe(1);
-    expect(result.failures).toEqual([{ volumeUuid: 'vol-1', volumeTitle: 'Volume 1' }]);
+    // The reason travels with the failure: some of them ("not on this device")
+    // cannot be fixed by the retry the UI otherwise suggests.
+    expect(result.failures).toEqual([
+      { volumeUuid: 'vol-1', volumeTitle: 'Volume 1', reason: 'network' }
+    ]);
   });
 
   it('sanitizes the new series title before cloud rename and DB write', async () => {
@@ -194,5 +208,32 @@ describe('Series rename cloud propagation', () => {
     } as any);
 
     await expect(executeRenameSeries('Old Series', '', 'series-1')).rejects.toThrow();
+  });
+
+  it('moves the series metadata record to the new title after a successful rename', async () => {
+    const { db } = await import('$lib/catalog/db');
+    const { get } = await import('svelte/store');
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    vi.mocked(db.volumes.where).mockReturnValue({
+      toArray: vi.fn().mockResolvedValue([
+        {
+          volume_uuid: 'vol-1',
+          series_uuid: 'series-1',
+          series_title: 'Old Series',
+          volume_title: 'V1'
+        }
+      ])
+    } as any);
+    vi.mocked(get).mockReturnValue({});
+    vi.mocked(unifiedCloudManager.renameSeries).mockResolvedValue({
+      renamedVolumeUuids: ['vol-1'],
+      failures: []
+    } as any);
+
+    await executeRenameSeries('Old Series', 'New Series');
+    expect(moveSeriesMetadataKey).toHaveBeenCalledWith('Old Series', 'New Series');
+    // The reading state is keyed the same way and has to follow the same rename,
+    // or "Read N times" and the AniList bookkeeping stay behind on the old key.
+    expect(moveSeriesReadingStateKey).toHaveBeenCalledWith('Old Series', 'New Series');
   });
 });

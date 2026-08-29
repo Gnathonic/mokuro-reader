@@ -1,19 +1,18 @@
 import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
+import type { VolumeMetadata } from '$lib/types';
+import {
+  SERIES_FILE_NAME,
+  buildSeriesFileFrom,
+  type SeriesFile,
+  stringifySeriesFile
+} from '$lib/metadata/series-file';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
+import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 
-/**
- * Mokuro metadata format for CBZ files
- */
-export interface MokuroMetadata {
-  version: string;
-  title: string;
-  title_uuid: string;
-  volume: string;
-  volume_uuid: string;
-  pages: any[];
-  chars: number;
-  spine_width?: number;
-}
+// Re-exported for existing importers (volume-sidecars, zip, tests).
+export type { MokuroMetadata } from './mokuro-metadata';
 
 export interface VolumeSidecarBlobData {
   filename: string;
@@ -47,13 +46,17 @@ function extensionFromMimeType(contentType: string): string {
  * @param metadata Mokuro metadata object (null for image-only volumes)
  * @param filesData Array of files with filenames and Uint8Array data
  * @param onProgress Optional progress callback (completed items, total items)
+ * @param options.seriesFile The series' `series.json`, written at the archive
+ *   root for self-contained exports. Cloud uploads leave it out: there the file
+ *   lives once per series folder, merged with what other devices published.
  * @returns Promise resolving to compressed CBZ as Blob
  */
 export async function compressVolume(
   volumeTitle: string,
   metadata: MokuroMetadata | null,
   filesData: { filename: string; data: Uint8Array }[],
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  options: { seriesFile?: SeriesFile | null } = {}
 ): Promise<Blob> {
   // Create zip writer with compatibility options:
   // - bufferedWrite: true - writes sizes in header (not data descriptor after data)
@@ -129,6 +132,11 @@ export async function compressVolume(
     }
   }
 
+  // The series sidecar rides at the archive root, next to the .mokuro.
+  if (options.seriesFile) {
+    await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(options.seriesFile)));
+  }
+
   // Close and get the compressed data as Blob
   const blob = await zipWriter.close();
 
@@ -147,12 +155,17 @@ let workerDb: Dexie | null = null;
  */
 function getDatabase(): Dexie {
   if (!workerDb) {
-    workerDb = new Dexie('mokuro_v3');
-    workerDb.version(1).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid'
-    });
+    // A SEPARATE Dexie connection to the same on-disk database `CatalogDexieV3`
+    // (src/lib/catalog/db-v3.ts) owns, opened from a Web Worker. It takes the
+    // schema from the shared declaration rather than restating it: two
+    // hand-written ladders for one database have no mechanical guard, and a
+    // divergence between them is silent data loss (see `db-schema.ts`).
+    //
+    // `db-schema.ts` imports nothing at runtime, so this does NOT pull the
+    // main-thread graph `db-v3.ts` carries ($app/environment, the progress
+    // tracker, the thumbnail generator) into the Worker bundle.
+    workerDb = new Dexie(MOKURO_DB_NAME);
+    declareMokuroSchema(workerDb);
   }
   return workerDb;
 }
@@ -181,15 +194,10 @@ export async function generateVolumeSidecarsFromDb(
   if (hasMokuroVersion) {
     const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
     if (volumeOcr?.pages) {
-      const metadata: MokuroMetadata = {
-        version: volume.mokuro_version,
-        title: seriesTitle,
-        title_uuid: volume.series_uuid,
-        volume: volumeTitle,
-        volume_uuid: volume.volume_uuid,
-        pages: volumeOcr.pages,
-        chars: volume.character_count
-      };
+      const metadata = buildMokuroMetadata(volume, volumeOcr.pages, {
+        seriesTitle,
+        volumeTitle
+      });
       sidecars.mokuro = {
         filename: `${volumeTitle}.mokuro`,
         blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
@@ -209,6 +217,32 @@ export async function generateVolumeSidecarsFromDb(
 }
 
 /**
+ * The series sidecar an export embeds, built from the same database handle the
+ * compression uses (this runs in a Worker, which has no access to the app's own
+ * Dexie instance). Mirrors `buildSeriesFileForExport` in `volume-sidecars.ts`.
+ */
+async function buildSeriesFileFromDb(
+  db: Dexie,
+  seriesTitle: string
+): Promise<SeriesFile | undefined> {
+  const key = normalizeSeriesKey(seriesTitle);
+  if (!key) return undefined;
+
+  const [meta, cached, volumes] = await Promise.all([
+    db.table('series_metadata').get(key),
+    db.table('series_index').get(key),
+    db.table('volumes').toArray()
+  ]);
+
+  return buildSeriesFileFrom({
+    seriesTitle,
+    meta,
+    volumes: volumes as VolumeMetadata[],
+    existing: cached?.file
+  });
+}
+
+/**
  * Compress a volume by streaming files directly from IndexedDB
  * This avoids memory issues with large volumes by:
  * 1. Reading files one at a time from IndexedDB
@@ -222,7 +256,11 @@ export async function generateVolumeSidecarsFromDb(
 export async function compressVolumeFromDb(
   volumeUuid: string,
   onProgress?: (completed: number, total: number) => void,
-  options: { embedThumbnailSidecar?: boolean; embedMokuroInArchive?: boolean } = {}
+  options: {
+    embedThumbnailSidecar?: boolean;
+    embedMokuroInArchive?: boolean;
+    embedSeriesFile?: boolean;
+  } = {}
 ): Promise<Blob> {
   const db = getDatabase();
 
@@ -242,16 +280,7 @@ export async function compressVolumeFromDb(
   const isImageOnly = volume.mokuro_version === '';
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : {
-        version: volume.mokuro_version,
-        title: volume.series_title,
-        title_uuid: volume.series_uuid,
-        volume: volume.volume_title,
-        volume_uuid: volume.volume_uuid,
-        pages: volumeOcr?.pages || [],
-        chars: volume.character_count,
-        ...(volume.spine_width != null && { spine_width: volume.spine_width })
-      };
+    : buildMokuroMetadata(volume, volumeOcr?.pages || []);
 
   // Get list of files, excluding placeholders
   const filenames = Object.keys(volumeFiles.files);
@@ -332,6 +361,16 @@ export async function compressVolumeFromDb(
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
+  }
+
+  // The series sidecar: only for self-contained exports. A cloud upload gets
+  // `<Series>/series.json` written once per series instead, merged with the
+  // copy other devices published — an archive-local copy would be stale.
+  if (options.embedSeriesFile) {
+    const seriesFile = await buildSeriesFileFromDb(db, volume.series_title);
+    if (seriesFile) {
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(seriesFile)));
+    }
   }
 
   // Add thumbnail sidecar when requested (used by sidecar-aware exports/backups)

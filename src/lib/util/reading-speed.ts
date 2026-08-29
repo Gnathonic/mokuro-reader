@@ -56,6 +56,12 @@ function calculateTurnStats(
     // Calculate chars read on this page (difference between cumulative counts)
     const charsOnPage = currChars - prevChars;
 
+    // A negative delta is not reading: the cumulative count went backwards
+    // because the reader jumped back — and "Restart series" now sends every
+    // volume to page 1 mid-history, making that boundary a normal event.
+    // Counting it would subtract characters the user really did read.
+    if (charsOnPage < 0) continue;
+
     // Accumulate time and chars for this page
     const current = timePerPage.get(prevPage) || { duration: 0, chars: 0 };
     timePerPage.set(prevPage, {

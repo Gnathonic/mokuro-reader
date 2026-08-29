@@ -1,10 +1,13 @@
 import { writable } from 'svelte/store';
-import type { CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
+import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { onedriveProvider } from './onedrive-provider';
 
 class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
-  private cache = writable<Map<string, CloudFileMetadata[]>>(new Map());
+  // State split from emission: `read()` is synchronous and never lagged,
+  // subscribers get incremental mutations coalesced — see CoalescedCacheStore.
+  private cache = new CoalescedCacheStore<CloudFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
   private fetchingFlag = false;
   private loadedFlag = false;
@@ -49,37 +52,25 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   has(path: string): boolean {
-    let current: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((v) => {
-      current = v;
-    })();
+    const current = this.cache.read();
     const seriesTitle = path.split('/')[0];
     return current.get(seriesTitle)?.some((f) => f.path === path) || false;
   }
 
   get(path: string): CloudFileMetadata | null {
-    let current: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((v) => {
-      current = v;
-    })();
+    const current = this.cache.read();
     const seriesTitle = path.split('/')[0];
     return current.get(seriesTitle)?.find((f) => f.path === path) || null;
   }
 
   getAll(path: string): CloudFileMetadata[] {
-    let current: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((v) => {
-      current = v;
-    })();
+    const current = this.cache.read();
     const seriesTitle = path.split('/')[0];
     return current.get(seriesTitle)?.filter((f) => f.path === path) || [];
   }
 
   getBySeries(seriesTitle: string): CloudFileMetadata[] {
-    let current: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((v) => {
-      current = v;
-    })();
+    const current = this.cache.read();
     const result: CloudFileMetadata[] = [];
     for (const files of current.values()) {
       result.push(...files.filter((file) => file.path.startsWith(`${seriesTitle}/`)));
@@ -88,10 +79,7 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   getAllFiles(): CloudFileMetadata[] {
-    let current: Map<string, CloudFileMetadata[]> = new Map();
-    this.cache.subscribe((v) => {
-      current = v;
-    })();
+    const current = this.cache.read();
     const result: CloudFileMetadata[] = [];
     for (const files of current.values()) result.push(...files);
     return result;
@@ -110,7 +98,7 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     return this.loadedFlag;
   }
 
-  add(path: string, metadata: CloudFileMetadata): void {
+  add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
     this.cache.update((cache) => {
       const newCache = new Map(cache);
       const seriesTitle = path.split('/')[0];

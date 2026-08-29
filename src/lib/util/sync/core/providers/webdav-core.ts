@@ -4,6 +4,7 @@ import {
   uploadFileWithClient
 } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { basicAuthHeader } from '$lib/util/base64';
+import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { optionalCredentialString, requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
@@ -205,7 +206,13 @@ export const webdavCore: CloudProviderCore = {
     return buffer;
   },
 
-  async uploadFile({ seriesTitle, filename, blob, credentials, onProgress }): Promise<string> {
+  async uploadFile({
+    seriesTitle,
+    filename,
+    blob,
+    credentials,
+    onProgress
+  }): Promise<UploadFileResult> {
     const serverUrl = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
     const username = optionalCredentialString(credentials, 'webdavUsername');
     const password = optionalCredentialString(credentials, 'webdavPassword');
@@ -227,6 +234,10 @@ export const webdavCore: CloudProviderCore = {
       // ignore existence/delete checks here; upload attempt will report fatal errors
     }
 
-    return await uploadFileWithClient(client, filePath, blob, onProgress);
+    // A WebDAV PUT response carries no usable resource mtime, and probing one
+    // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
+    // must not pay — so no `modifiedTime` here: the upload-time cache entry
+    // stays provisional until the next real listing replaces it.
+    return { fileId: await uploadFileWithClient(client, filePath, blob, onProgress) };
   }
 };

@@ -16,6 +16,7 @@ import {
   type MokuroMetadata
 } from '$lib/util/compress-volume';
 import { matchFileToVolume } from '$lib/import/archive-extraction';
+import { hasCoverSidecarExtension } from '$lib/metadata/cloud-sidecar-stamps';
 import { getWorkerCloudProvider } from './cloud-providers';
 import type { WorkerProviderCredentials, WorkerProviderType } from './cloud-providers/types';
 
@@ -119,7 +120,36 @@ interface CompressFromDbMessage {
   downloadFilename?: string; // For local export
   embedThumbnailSidecar?: boolean;
   embedMokuroInArchive?: boolean;
+  /** Write the series' `series.json` into the archive (self-contained exports). */
+  embedSeriesFile?: boolean;
   includeSidecars?: boolean;
+}
+
+/**
+ * Upload a volume's MISSING sidecars (`.mokuro` and/or cover) for the sidecar
+ * backfill's DEFERRED feed. The worker serializes from IndexedDB itself
+ * (`generateVolumeSidecarsFromDb` → `buildMokuroMetadata`, the same single
+ * serializer every other `.mokuro` writer uses — byte-identity with the
+ * main-thread feeds is a pinned contract) and uploads via the worker cloud
+ * provider core, which performs a TARGETED upload only: no listing fetch,
+ * matching the main thread's blind-upload rule for this caller.
+ */
+interface UploadSidecarsMessage {
+  mode: 'upload-sidecars';
+  provider: WorkerProviderType;
+  volumeUuid: string;
+  /** The CLOUD's spelling of the series folder (`resolveCloudFolderTitle`). */
+  seriesTitle: string;
+  /**
+   * The listed archive's exact stem (basename, `.cbz` stripped): the sidecars
+   * take `${sidecarStem}.mokuro` / `${sidecarStem}.<ext>`, never the local
+   * volume title's spelling — the pairing on every reader is by listed path.
+   */
+  sidecarStem: string;
+  /** Which halves the caller's cache-derived eligibility check found missing. */
+  wantMokuro: boolean;
+  wantCover: boolean;
+  credentials: ProviderCredentials;
 }
 
 type WorkerMessage =
@@ -129,7 +159,8 @@ type WorkerMessage =
   | StreamExtractMessage
   | CompressAndUploadMessage
   | CompressAndReturnMessage
-  | CompressFromDbMessage;
+  | CompressFromDbMessage
+  | UploadSidecarsMessage;
 
 // Progress messages
 interface DownloadProgressMessage {
@@ -152,6 +183,8 @@ interface DownloadCompleteMessage {
   fileName: string;
   data: ArrayBuffer;
   entries: DecompressedEntry[];
+  /** Bytes of the archive that was actually fetched/read, before decompression. */
+  archiveSize?: number;
   metadata?: VolumeMetadata;
   bundle?: {
     archive: { url: string; data: ArrayBuffer; contentType?: string };
@@ -163,6 +196,7 @@ interface DownloadCompleteMessage {
 interface UploadCompleteMessage {
   type: 'complete';
   fileId?: string; // For cloud uploads
+  modifiedTime?: string; // Server-reported mtime from the upload response, when available
   size?: number; // Archive size in bytes (for optimistic cache entry)
   data?: Uint8Array; // For local exports (Transferable Object)
   filename?: string; // For local exports
@@ -170,6 +204,29 @@ interface UploadCompleteMessage {
     mokuro?: { filename: string; blob: Blob };
     thumbnail?: { filename: string; blob: Blob };
   };
+}
+
+/** One sidecar the `upload-sidecars` mode successfully uploaded. */
+interface SidecarUploadResult {
+  kind: 'mokuro' | 'cover';
+  /** Extension the file took (`mokuro`, `webp`, `jpg`): full path = `${archiveStem}.${extension}`. */
+  extension: string;
+  fileId: string;
+  /** Server-reported mtime from the upload response, when available. */
+  modifiedTime?: string;
+  size: number;
+}
+
+/**
+ * Completion for `upload-sidecars`. Sent as `complete` even on failure so the
+ * caller still receives — and cache-adds — whatever DID upload before the
+ * error (uploads are sequential: mokuro first, then cover, same order as the
+ * main-thread feeds); `error` carries the failure when one occurred.
+ */
+interface SidecarsUploadCompleteMessage {
+  type: 'complete';
+  sidecarResults: SidecarUploadResult[];
+  error?: string;
 }
 
 interface ErrorMessage {
@@ -439,6 +496,11 @@ ctx.addEventListener('message', async (event) => {
 
       console.log(`Worker: Download complete for ${fileName}`);
 
+      // Measured before decompression hands the buffer away: this is the size
+      // of the archive itself, the one fact the main thread cannot re-derive
+      // from the extracted entries.
+      const archiveSize = arrayBuffer.byteLength;
+
       // Decompress the ArrayBuffer
       const entries = await decompressCbz(arrayBuffer);
 
@@ -449,6 +511,7 @@ ctx.addEventListener('message', async (event) => {
         fileName,
         data: new ArrayBuffer(0),
         entries,
+        archiveSize,
         metadata
       };
 
@@ -474,6 +537,8 @@ ctx.addEventListener('message', async (event) => {
         fileName,
         data: new ArrayBuffer(0),
         entries,
+        // The blob the main thread handed over IS the archive.
+        archiveSize: blob?.size,
         metadata
       };
 
@@ -664,7 +729,7 @@ ctx.addEventListener('message', async (event) => {
       }
       const cloudProvider = getWorkerCloudProvider(provider);
       const filename = `${volumeTitle}.cbz`;
-      const fileId = await cloudProvider.uploadFile({
+      const uploaded = await cloudProvider.uploadFile({
         seriesTitle,
         filename,
         blob: cbzBlob,
@@ -684,7 +749,8 @@ ctx.addEventListener('message', async (event) => {
       // Send completion message
       const completeMessage: UploadCompleteMessage = {
         type: 'complete',
-        fileId
+        fileId: uploaded.fileId,
+        modifiedTime: uploaded.modifiedTime
       };
       ctx.postMessage(completeMessage);
 
@@ -760,7 +826,8 @@ ctx.addEventListener('message', async (event) => {
         },
         {
           embedThumbnailSidecar: message.embedThumbnailSidecar === true,
-          embedMokuroInArchive: message.embedMokuroInArchive !== false
+          embedMokuroInArchive: message.embedMokuroInArchive !== false,
+          embedSeriesFile: message.embedSeriesFile === true
         }
       );
 
@@ -848,7 +915,7 @@ ctx.addEventListener('message', async (event) => {
           progress: 0
         } satisfies UploadProgressMessage);
 
-        const fileId = await cloudProvider.uploadFile({
+        const uploaded = await cloudProvider.uploadFile({
           seriesTitle,
           filename,
           blob: cbzBlob,
@@ -866,12 +933,84 @@ ctx.addEventListener('message', async (event) => {
 
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
-          fileId,
+          fileId: uploaded.fileId,
+          modifiedTime: uploaded.modifiedTime,
           size: cbzBlob.size
         };
         ctx.postMessage(completeMessage);
         console.log(`Worker: Backup complete for ${volumeTitle}`);
       }
+    } else if (message.mode === 'upload-sidecars') {
+      // ========== UPLOAD SIDECARS MODE (sidecar backfill, deferred feed) ==========
+      const { provider, volumeUuid, seriesTitle, sidecarStem, wantMokuro, wantCover, credentials } =
+        message;
+      if (!credentials) {
+        throw new Error(`Missing ${provider} worker credentials`);
+      }
+      const cloudProvider = getWorkerCloudProvider(provider);
+      const sidecarResults: SidecarUploadResult[] = [];
+      let sidecarError: string | undefined;
+      try {
+        // Serialize from IndexedDB with NO title overrides: byte-identical to
+        // what `loadVolumeSidecars`/`buildVolumeSidecarsFromData` produce from
+        // the same rows on the main thread (pinned by the byte-identity test).
+        // Only the upload FILENAME takes the archive's stem.
+        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+        if (wantMokuro && sidecars.mokuro) {
+          const uploaded = await cloudProvider.uploadFile({
+            seriesTitle,
+            filename: `${sidecarStem}.mokuro`,
+            blob: sidecars.mokuro.blob,
+            credentials,
+            mimeType: 'application/json'
+          });
+          sidecarResults.push({
+            kind: 'mokuro',
+            extension: 'mokuro',
+            fileId: uploaded.fileId,
+            modifiedTime: uploaded.modifiedTime,
+            size: uploaded.size ?? sidecars.mokuro.blob.size
+          });
+        }
+        // Same guard as the main-thread core: a thumbnail whose type maps to
+        // an unrecognized extension (png, avif, …) would upload fine and then
+        // be invisible to every cover lookup — an orphan. Never upload it.
+        if (
+          wantCover &&
+          sidecars.thumbnail &&
+          hasCoverSidecarExtension(sidecars.thumbnail.filename)
+        ) {
+          const ext = sidecars.thumbnail.filename.split('.').pop() ?? 'webp';
+          const uploaded = await cloudProvider.uploadFile({
+            seriesTitle,
+            filename: `${sidecarStem}.${ext}`,
+            blob: sidecars.thumbnail.blob,
+            credentials,
+            mimeType: sidecars.thumbnail.blob.type || 'image/webp'
+          });
+          sidecarResults.push({
+            kind: 'cover',
+            extension: ext,
+            fileId: uploaded.fileId,
+            modifiedTime: uploaded.modifiedTime,
+            size: uploaded.size ?? sidecars.thumbnail.blob.size
+          });
+        }
+      } catch (error) {
+        // Partial completions still count: whatever uploaded before the
+        // failure is reported so the caller's cache add keeps convergence
+        // exact; the error rides along instead of dropping the results.
+        sidecarError = error instanceof Error ? error.message : String(error);
+      }
+      const completeMessage: SidecarsUploadCompleteMessage = {
+        type: 'complete',
+        sidecarResults,
+        ...(sidecarError !== undefined ? { error: sidecarError } : {})
+      };
+      ctx.postMessage(completeMessage);
+      console.log(
+        `Worker: Sidecar backfill ${sidecarError ? 'failed after' : 'complete with'} ${sidecarResults.length} upload(s) for ${sidecarStem}`
+      );
     } else {
       throw new Error(`Unknown mode: ${(message as any).mode}`);
     }

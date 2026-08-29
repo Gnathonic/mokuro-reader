@@ -309,3 +309,40 @@ describe('removeDirectoryIfEmpty', () => {
     await expect(provider.removeDirectoryIfEmpty('Old Series')).resolves.toBeUndefined();
   });
 });
+
+describe('FilesystemProvider.getStatus metadata gates', () => {
+  it('states the two metadata flags explicitly instead of leaving them undefined', () => {
+    // `series.json` / `catalog.json` writing gates on these. Omitting them
+    // reads as "not read-only, not server-compiled" by accident rather than by
+    // decision — and the next gate added would default the other way.
+    const provider = makeProvider(new FakeDirHandle(''));
+    const status = provider.getStatus();
+
+    // The picker asks for `readwrite` and a restored handle is only adopted
+    // when that permission is already granted, so a connected folder is
+    // writable by construction.
+    expect(status.isReadOnly).toBe(false);
+    // No server on the other end of a local folder — this client compiles both.
+    expect(status.serverCompilesMetadata).toBe(false);
+  });
+
+  it('keeps the flags set while disconnected, so the gates never read undefined', () => {
+    const status = new FilesystemProvider().getStatus();
+
+    expect(status.isAuthenticated).toBe(false);
+    expect(status.isReadOnly).toBe(false);
+    expect(status.serverCompilesMetadata).toBe(false);
+  });
+
+  it('is `filesystem:<folder name>` once a folder is connected', () => {
+    const provider = makeProvider(new FakeDirHandle('my-manga-library'));
+
+    expect(provider.getStatus().accountScope).toBe('filesystem:my-manga-library');
+  });
+
+  it('is undefined before any folder is connected', () => {
+    const status = new FilesystemProvider().getStatus();
+
+    expect(status.accountScope).toBeUndefined();
+  });
+});

@@ -1,33 +1,47 @@
 import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
+import type { StoredSeriesMetadata } from '$lib/metadata/types';
+import type { SeriesIndexRecord } from '$lib/metadata/series-index';
+import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
+import type { CloudCover } from './cloud-covers';
 import Dexie, { type Table } from 'dexie';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { naturalSort } from '$lib/util/natural-sort';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { MOKURO_DB_NAME, declareMokuroSchema } from './db-schema';
 
 export class CatalogDexieV3 extends Dexie {
   volumes!: Table<VolumeMetadata>;
   volume_ocr!: Table<VolumeOCR>;
   volume_files!: Table<VolumeFiles>;
+  series_metadata!: Table<StoredSeriesMetadata>;
+  series_index!: Table<SeriesIndexRecord>;
+  catalog_index!: Table<CatalogIndexRecord>;
+  cloud_covers!: Table<CloudCover>;
 
-  constructor(dbName: string = 'mokuro_v3') {
+  constructor(dbName: string = MOKURO_DB_NAME) {
     super(dbName);
 
-    // v3 schema: 3 tables (thumbnails are inlined in volumes)
-    this.version(1).stores({
-      volumes: 'volume_uuid, series_uuid, series_title',
-      volume_ocr: 'volume_uuid',
-      volume_files: 'volume_uuid'
-    });
+    // The one declaration, shared with every other connection to this database
+    // (the export Worker's in `compress-volume.ts`, the test fixtures). See
+    // `db-schema.ts` for what a divergence costs.
+    declareMokuroSchema(this);
   }
 
   async processThumbnails(batchSize: number = 5): Promise<void> {
     const processId = 'thumbnail-generation';
 
     // Get volumes that need thumbnail generation/regeneration
-    // Missing any of thumbnail, width, or height indicates need for (re)generation
+    // Missing any of thumbnail, width, or height indicates need for (re)generation.
+    // Metadata-only rows are excluded: their images are not on this device, so
+    // there is nothing to generate from and every pass would retry them forever.
     const volumesNeedingThumbnails = await this.volumes
-      .filter((vol) => !vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+      .filter(
+        (vol) =>
+          isVolumeInstalled(vol) &&
+          (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+      )
       .primaryKeys();
 
     if (volumesNeedingThumbnails.length === 0) return;

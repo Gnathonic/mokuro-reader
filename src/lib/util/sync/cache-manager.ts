@@ -1,6 +1,6 @@
 import { derived, writable, type Readable } from 'svelte/store';
 import type { CloudCache } from './cloud-cache-interface';
-import type { ProviderType } from './provider-interface';
+import type { CloudFileMetadata, ProviderType } from './provider-interface';
 
 /**
  * Cache Manager
@@ -33,18 +33,24 @@ export interface GenericCloudFile {
 
 class CacheManager {
   private activeProviderType: ProviderType | null = null;
-  private activeCache: CloudCache | null = null;
+  // `CloudCache<CloudFileMetadata>`, not the bare (`T = any`) default: every
+  // registered cache's `T` is `CloudFileMetadata` or a subtype of it
+  // (`DriveFileMetadata`), and leaving this bare made `CacheAddMetadata<T>`
+  // on `add()` collapse to `any` at every real call site — the exact
+  // required-`modifiedTimeProvisional` guarantee that type exists to
+  // enforce, silently defeated by going through `getCache()`.
+  private activeCache: CloudCache<CloudFileMetadata> | null = null;
   // Keep a registry for lookup purposes
-  private cacheRegistry = new Map<ProviderType, CloudCache>();
+  private cacheRegistry = new Map<ProviderType, CloudCache<CloudFileMetadata>>();
   // Writable store to track active cache changes
-  private activeCacheStore = writable<CloudCache | null>(null);
+  private activeCacheStore = writable<CloudCache<CloudFileMetadata> | null>(null);
 
   /**
    * Register a provider-specific cache
    * @param provider Provider type
    * @param cache CloudCache implementation for this provider
    */
-  registerCache(provider: ProviderType, cache: CloudCache): void {
+  registerCache(provider: ProviderType, cache: CloudCache<CloudFileMetadata>): void {
     this.cacheRegistry.set(provider, cache);
   }
 
@@ -77,7 +83,7 @@ class CacheManager {
    * @param provider Provider type
    * @returns CloudCache instance or null if not registered
    */
-  getCache(provider: ProviderType): CloudCache | null {
+  getCache(provider: ProviderType): CloudCache<CloudFileMetadata> | null {
     return this.cacheRegistry.get(provider) || null;
   }
 

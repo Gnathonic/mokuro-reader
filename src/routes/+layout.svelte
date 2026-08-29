@@ -12,6 +12,7 @@
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
   import VolumeEditorModal from '$lib/components/VolumeEditorModal.svelte';
+  import SeriesEditorModal from '$lib/components/Series/SeriesEditorModal.svelte';
   import AnkiFieldModal from '$lib/components/Reader/AnkiFieldModal.svelte';
   import ImportPreparingModal from '$lib/components/ImportPreparingModal.svelte';
   import ProgressTracker from '$lib/components/ProgressTracker.svelte';
@@ -22,6 +23,9 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { initFileHandler } from '$lib/util/file-handler';
+  import { initProgressTracker } from '$lib/metadata/progress-tracker';
+  import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
+  import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -84,6 +88,11 @@
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
 
+    // Prune expired cloud cover cache, fire-and-forget
+    void import('$lib/catalog/cloud-covers')
+      .then((m) => m.pruneExpiredCloudCovers())
+      .catch((error) => console.debug('[cloud-covers] prune skipped:', error));
+
     // Fire and forget - don't block app initialization
     initializeProviders().catch((error) => {
       console.error('Failed to initialize providers:', error);
@@ -91,6 +100,15 @@
 
     // Initialize file handler for PWA file associations
     initFileHandler();
+
+    // AniList progress push: completion listener + pending-queue flush
+    initProgressTracker();
+
+    // Debounced <Series>/series.json writes after local series-metadata edits
+    initSeriesFileSync();
+
+    // Debounced root catalog.json writes for backends that don't compile it
+    initCatalogFileSync();
 
     // Initialize service worker update detection
     initSwUpdateDetection();
@@ -118,6 +136,7 @@
     <WebDAVErrorModal />
     <MissingFilesModal />
     <VolumeEditorModal />
+    <SeriesEditorModal />
     <AnkiFieldModal />
     <ImportPreparingModal />
     <ProgressTracker />

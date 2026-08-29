@@ -1,5 +1,6 @@
 import { providerManager } from './provider-manager';
 import { unifiedCloudManager } from './unified-cloud-manager';
+import { patchProgressHoles } from '$lib/metadata/hole-patch';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
@@ -149,6 +150,9 @@ export async function initializeProviders(): Promise<void> {
         console.log('🔄 Syncing progress on app startup...');
         await unifiedCloudManager.syncProgress({ silent: true });
         console.log('✅ Initial sync completed');
+
+        // Synced progress may reference series this device knows nothing about.
+        void patchProgressHoles();
       } catch (error) {
         console.warn('⚠️ Failed to populate cloud cache or sync on startup:', error);
       }

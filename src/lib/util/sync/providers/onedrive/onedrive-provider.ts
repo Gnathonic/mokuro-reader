@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   StorageQuota,
-  UploadPayload
+  UploadPayload,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -80,11 +81,13 @@ export class OneDriveProvider implements SyncProvider {
       : hasCredentials
         ? 'Configured (not connected)'
         : 'Not configured';
+    const accountId = onedriveTokenManager.getActiveAccountId();
     return {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
-      statusMessage
+      statusMessage,
+      accountScope: accountId ? `onedrive:${accountId}` : undefined
     };
   }
 
@@ -253,7 +256,7 @@ export class OneDriveProvider implements SyncProvider {
     blob: UploadPayload,
     _description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }
@@ -269,9 +272,9 @@ export class OneDriveProvider implements SyncProvider {
         : blob instanceof ArrayBuffer
           ? new Blob([blob])
           : new Blob([new Uint8Array(blob).buffer as ArrayBuffer]);
-    let fileId: string;
+    let uploaded: UploadFileResult;
     try {
-      fileId = await this.cloudCore.uploadFile({
+      uploaded = await this.cloudCore.uploadFile({
         // onedrive-core prefixes its own mokuro-reader root, so pass just the
         // bare series title here.
         seriesTitle,
@@ -292,7 +295,7 @@ export class OneDriveProvider implements SyncProvider {
       );
     }
     console.log(`✅ Uploaded ${path} to OneDrive`);
-    return fileId;
+    return uploaded;
   }
 
   async downloadFile(

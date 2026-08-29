@@ -84,12 +84,43 @@ describe('WebDAVProvider login()', () => {
     // registered (canWriteProgress) => NOT read-only
     expect(provider.isReadOnly).toBe(false);
     expect(provider.getStatus().needsAttention).toBe(false);
+    // The endpoint answered in bunko's shape: bunko compiles the metadata files.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
     // checkWritePermissions would have used global fetch - it must not run
     expect(fetchMock).not.toHaveBeenCalled();
     // credentials persisted as plain strings (C6: format unchanged)
     expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
     expect(localStorage.getItem('webdav_username')).toBe('alice');
     expect(localStorage.getItem('webdav_password')).toBe('pässwörd');
+  });
+
+  it('carries the identity endpoint’s metadata scope through to getStatus()', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'authenticated' as const,
+      username: 'alice',
+      role: 'registered',
+      permissions: {
+        ...REGISTERED_PERMS,
+        metadata: { scope: 'owned' as const, ownedSeries: ['One Piece'] }
+      }
+    });
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toEqual({
+      scope: 'owned',
+      ownedSeries: ['One Piece']
+    });
+  });
+
+  it('leaves getStatus().metadataPermissions undefined when the identity response omits it', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toBeUndefined();
   });
 
   it('throws a typed auth error and does not persist credentials on invalid-credentials', async () => {
@@ -137,6 +168,8 @@ describe('WebDAVProvider login()', () => {
     expect(fetchMock).toHaveBeenCalled();
     // fail-open heuristics => writable
     expect(provider.isReadOnly).toBe(false);
+    // No identity endpoint (or an unreachable one): this client is the producer.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
   });
 
   it('classifies a 401-bearing FOLDER_ERROR on the unsupported path as an auth-typed LOGIN_FAILED', async () => {
@@ -167,6 +200,8 @@ describe('WebDAVProvider login()', () => {
     expect(identityMock).toHaveBeenCalledWith('https://host', undefined, undefined);
     expect(provider.isReadOnly).toBe(true);
     expect(provider.getStatus().needsAttention).toBe(false);
+    // An anonymous answer still proves the endpoint spoke bunko's contract.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
     // no folder creation / write attempts for read-only anonymous sessions
     expect(mockClient.exists).not.toHaveBeenCalled();
     expect(mockClient.createDirectory).not.toHaveBeenCalled();
@@ -187,6 +222,47 @@ describe('WebDAVProvider login()', () => {
 
     expect(identityMock).not.toHaveBeenCalled();
     expect(provider.isAuthenticated()).toBe(false);
+  });
+});
+
+describe('WebDAVProvider getStatus().accountScope', () => {
+  it('is undefined before any connection', async () => {
+    const provider = await freshProvider();
+    expect(provider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('is `webdav:<serverUrl>|<username>` after login', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/|alice');
+  });
+
+  it('omits the username segment for a password-only (no-username) session', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+
+    await provider.login({ serverUrl: 'https://host' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/');
+  });
+
+  it('strips embedded userinfo from a credentialed URL so no password reaches the persisted scope', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({
+      serverUrl: 'https://sneaky:hunter2@host/dav',
+      username: 'alice',
+      password: 'pw'
+    });
+
+    const scope = provider.getStatus().accountScope;
+    expect(scope).not.toContain('hunter2');
+    expect(scope).not.toContain('sneaky');
+    expect(scope).toBe('webdav:https://host/dav|alice');
   });
 });
 
@@ -420,6 +496,9 @@ describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
     expect(result.path).toBe('New Series/Volume 1.cbz');
     expect(mockClient.moveFile).not.toHaveBeenCalled();
     expect(mockClient.stat).toHaveBeenCalledWith(DEST);
+    // The idempotent-retry branch is a second fabrication site: it must also
+    // carry the ORIGINAL file's real modifiedTime, not the wall clock.
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
   });
 
   it('throws TARGET_EXISTS when the source is gone but the occupant has a different size', async () => {
@@ -466,5 +545,31 @@ describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
 
     await expect(provider.deleteFile(sourceFile)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(provider.isReadOnly).toBe(false); // 404 is not a permission signal
+  });
+
+  it('preserves the source file’s real modifiedTime through a normal rename (never fabricates from the client clock)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false); // no collision anywhere along the path
+    mockClient.moveFile.mockResolvedValue(undefined);
+
+    const result = await provider.renameFile(sourceFile, 'New Series/Volume 1.cbz');
+
+    expect(mockClient.moveFile).toHaveBeenCalled();
+    expect(result.path).toBe('New Series/Volume 1.cbz');
+    // MUST equal the ORIGINAL exactly — not "close to now".
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBeUndefined();
+  });
+
+  it('keeps modifiedTimeProvisional through a rename when the source was only ever a client-clock guess', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false);
+    mockClient.moveFile.mockResolvedValue(undefined);
+    const provisionalSource = { ...sourceFile, modifiedTimeProvisional: true };
+
+    const result = await provider.renameFile(provisionalSource, 'New Series/Volume 1.cbz');
+
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBe(true);
   });
 });

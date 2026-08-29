@@ -5,18 +5,48 @@ import {
   profiles,
   profilesWithTrash,
   parseVolumesFromJson,
-  migrateProfiles
+  migrateProfiles,
+  parseSeriesSection,
+  mergeSeriesSections,
+  detectBogusSeriesKeys,
+  seriesReadingState,
+  setSeriesReadingStates,
+  SERIES_SECTION_KEY,
+  type SeriesReadingStates,
+  type VolumeData
 } from '$lib/settings';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
+import { uploadCacheEntry } from './cloud-cache-interface';
+import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+
+/**
+ * Deep-sorts object keys before `JSON.stringify` so two values that differ
+ * only in key order compare equal. Used to decide whether `volume-data.json`
+ * needs to be re-uploaded without false positives from key ordering alone.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    );
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of entries) out[key] = sortKeysDeep(v);
+    return out;
+  }
+  return value;
+}
 
 export interface SyncOptions {
   /** If true, suppress snackbar notifications */
   silent?: boolean;
-  /** If true, sync profiles in addition to volume data */
-  syncProfiles?: boolean;
 }
 
 export interface ProviderSyncResult {
@@ -33,10 +63,48 @@ export interface SyncResult {
 }
 
 /**
+ * `volume-data.json` as it comes off the cloud: the volume map plus the
+ * reserved `series` section (series-level reading state). Two independently
+ * merged halves of one file — volumes by `lastProgressUpdate`, series by
+ * `lastUpdated`.
+ */
+export interface CloudVolumeDataFile {
+  volumes: Record<string, VolumeData>;
+  series: SeriesReadingStates;
+  /**
+   * The `series` section exactly as the surviving cloud copy holds it —
+   * unparsed, unsanitized, undefined when the file has no section.
+   *
+   * The upload decision compares against THIS, never against `series`.
+   * `parseSeriesSection` rewrites what it reads: a `lastUpdated` more than five
+   * minutes in the future is clamped to the reading device's `now`. Comparing
+   * the merge against the parsed section would make the clamped value look
+   * identical to what the cloud already holds, so the poison would never be
+   * written back — and every device would re-clamp it to a fresher `now` on
+   * every sync, silently reverting every honest edit to that series, forever.
+   * Comparing against the raw section makes the first sync upload the healed
+   * value and converge — the same rule, for the same reason, that the retired
+   * root series-metadata sync followed before this file absorbed its job.
+   */
+  rawSeries?: unknown;
+  /**
+   * Series keys whose RAW `lastUpdated` needed clamping, UNIONED across every
+   * readable copy inspected — not only the one that survives the delete
+   * sweep (`rawSeries` above). A duplicate `volume-data.json` that gets
+   * deleted after the fold is exactly as real a source of poison as the
+   * survivor; deriving this only from `rawSeries` would let a bogus stamp on
+   * a non-surviving copy escape detection entirely once that copy is gone.
+   * Drives FORFEIT-ON-BOGUS in `syncVolumeData`'s cloud-vs-local merge.
+   */
+  bogusSeriesKeys?: ReadonlySet<string>;
+}
+
+/**
  * Unified Sync Service
  *
- * Syncs read progress and profiles across all authenticated cloud providers.
- * Works with the SyncProvider interface, making it provider-agnostic.
+ * Syncs read progress, series reading state and settings profiles across all
+ * authenticated cloud providers. Works with the SyncProvider interface,
+ * making it provider-agnostic.
  */
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
@@ -201,19 +269,17 @@ class UnifiedSyncService {
         }
       }
 
-      // Sync volume data (read progress)
+      // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
-      // Optionally sync profiles
-      if (options.syncProfiles) {
-        console.log('🔄 options.syncProfiles is true, calling syncProfiles...');
-        await this.syncProfiles(provider);
-        console.log('✅ syncProfiles completed');
-      } else {
-        console.log('⏭️ Skipping profile sync (options.syncProfiles is false)');
-      }
+      // Profiles get the same treatment: read → merge (newest `lastUpdated` per
+      // profile, tombstones honoured) → push. It used to be a button nobody
+      // pressed, which is how devices ended up with divergent settings.
+      console.log('🔄 Syncing profiles...');
+      await this.syncProfiles(provider);
+      console.log('✅ Profiles synced');
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -288,11 +354,16 @@ class UnifiedSyncService {
   /**
    * Download volume-data.json file from provider using generic file operations
    * Handles duplicate files by merging them (Google Drive specific)
+   *
+   * Returns both halves of the file: the volume map and the reserved `series`
+   * section. `parseVolumesFromJson` drops the section, so every path that
+   * parses a copy has to lift it out separately — the single-file path and the
+   * duplicate-merge path alike.
    */
   private async downloadVolumeDataFile(
     provider: SyncProvider,
     reloadCacheOnFileNotFound = true
-  ): Promise<any | null> {
+  ): Promise<CloudVolumeDataFile | null> {
     try {
       const volumeDataFiles = await this.findVolumeDataFiles(provider);
 
@@ -310,10 +381,14 @@ class UnifiedSyncService {
         // server-side but still present in a stale provider cache — so a
         // not-found copy must not discard the readable copies with it.
         const downloads = await Promise.allSettled(
-          volumeDataFiles.map(async (file) => {
+          volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> => {
             const blob = await provider.downloadFile(file);
             const data = await this.blobToJson(blob);
-            return parseVolumesFromJson(JSON.stringify(data));
+            return {
+              volumes: parseVolumesFromJson(JSON.stringify(data)),
+              series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
+              rawSeries: data?.[SERIES_SECTION_KEY]
+            };
           })
         );
 
@@ -328,7 +403,9 @@ class UnifiedSyncService {
         const readable = downloads
           .map((result, index) => ({ result, index }))
           .filter(
-            (entry): entry is { result: PromiseFulfilledResult<any>; index: number } =>
+            (
+              entry
+            ): entry is { result: PromiseFulfilledResult<CloudVolumeDataFile>; index: number } =>
               entry.result.status === 'fulfilled'
           );
 
@@ -338,22 +415,59 @@ class UnifiedSyncService {
           throw (downloads[0] as PromiseRejectedResult).reason;
         }
 
+        // Per-copy bogus-key detection (on each copy's OWN raw section), and
+        // the UNION across every readable copy — not only the one that ends
+        // up surviving the delete sweep below. A poisoned stamp on a copy
+        // that gets deleted is exactly as real a poison as one on the
+        // survivor; deriving this from only one copy's raw section would let
+        // it escape detection entirely once that copy is gone.
+        const perCopyBogusKeys = readable.map((entry) =>
+          detectBogusSeriesKeys(entry.result.value.rawSeries)
+        );
+        const bogusSeriesKeys = new Set<string>();
+        for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
         // Merge all readable copies (newest lastProgressUpdate wins per volume)
-        const merged: any = {};
-        for (const entry of readable) {
-          for (const [volumeId, volumeData] of Object.entries(entry.result.value)) {
+        const merged: Record<string, VolumeData> = {};
+        let mergedSeries: SeriesReadingStates = {};
+        for (let i = 0; i < readable.length; i++) {
+          const entry = readable[i];
+          for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
             const existing = merged[volumeId];
             if (!existing) {
               merged[volumeId] = volumeData;
             } else {
               // Keep the volume with the most recent progress update
               const existingTime = new Date(existing.lastProgressUpdate || 0).getTime();
-              const newTime = new Date((volumeData as any).lastProgressUpdate || 0).getTime();
+              const newTime = new Date(volumeData.lastProgressUpdate || 0).getTime();
               if (newTime > existingTime) {
                 merged[volumeId] = volumeData;
               }
             }
           }
+
+          // The series section folds by its own key, newest `lastUpdated`
+          // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
+          // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
+          // must not clobber an honest entry from ANOTHER copy, regardless of
+          // fold order. Such a key is excluded from this copy's contribution
+          // whenever some other readable copy holds it honestly — that other
+          // copy's own turn in this loop supplies it instead. Only when NO
+          // readable copy holds the key honestly does the bogus (clamped)
+          // value get folded in at all, as the best available answer.
+          const entryBogus = perCopyBogusKeys[i];
+          const foldable: SeriesReadingStates = {};
+          for (const [key, state] of Object.entries(entry.result.value.series)) {
+            const honestElsewhere =
+              entryBogus.has(key) &&
+              readable.some(
+                (_other, j) =>
+                  j !== i && key in readable[j].result.value.series && !perCopyBogusKeys[j].has(key)
+              );
+            if (honestElsewhere) continue;
+            foldable[key] = state;
+          }
+          mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
         }
 
         // Keep the first readable copy; delete every other listed copy.
@@ -370,13 +484,29 @@ class UnifiedSyncService {
         }
 
         console.log(`✅ Merged ${readable.length} readable copies into 1`);
-        return merged;
+        // The raw section comes from the copy that SURVIVES the delete sweep —
+        // the fold is only durable once it is written back over that copy, so
+        // that copy is what the upload decision has to be measured against.
+        // `bogusSeriesKeys`, unlike `rawSeries`, is the UNION across every
+        // copy inspected — see the field doc on `CloudVolumeDataFile`.
+        return {
+          volumes: merged,
+          series: mergedSeries,
+          rawSeries: readable[0].result.value.rawSeries,
+          bogusSeriesKeys
+        };
       }
 
       // Single file - download normally
       const blob = await provider.downloadFile(volumeDataFiles[0]);
       const data = await this.blobToJson(blob);
-      return parseVolumesFromJson(JSON.stringify(data));
+      const rawSeries = data?.[SERIES_SECTION_KEY];
+      return {
+        volumes: parseVolumesFromJson(JSON.stringify(data)),
+        series: parseSeriesSection(rawSeries),
+        rawSeries,
+        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
+      };
     } catch (error) {
       // File not found is not an error
       if (this.isFileNotFoundError(error)) {
@@ -413,34 +543,74 @@ class UnifiedSyncService {
   private async uploadVolumeDataFile(provider: SyncProvider, data: any): Promise<void> {
     const blob = this.jsonToBlob(data);
     const path = 'volume-data.json';
-    await provider.uploadFile(path, blob);
+    const uploaded = await provider.uploadFile(path, blob);
+    // Targeted cache add, so `findVolumeDataFiles` (which reads the CACHE)
+    // sees a first-ever upload without waiting for the next full listing —
+    // maintenance only Drive's in-provider refetch used to provide, by brute
+    // force; other providers never provided it at all.
+    cacheManager
+      .getCache(provider.type)
+      ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+  }
+
+  /**
+   * The bytes of `volume-data.json`: the volume map, plus the `series` section
+   * when there is any. Omitted when empty so a library that has never had
+   * series-level state produces byte-identical files to before this existed —
+   * no spurious upload, no mtime churn on every other device.
+   */
+  private composeVolumeDataFile(volumes: any, series: SeriesReadingStates): any {
+    return Object.keys(series).length > 0
+      ? { ...volumes, [SERIES_SECTION_KEY]: series }
+      : { ...volumes };
   }
 
   /**
    * Sync volume data (read progress) with a provider
    */
   private async syncVolumeData(provider: SyncProvider): Promise<void> {
-    // Step 1: Download cloud data
-    const cloudVolumes = await this.downloadVolumeDataFile(provider);
+    // Step 1: Download cloud data (volumes + the series section)
+    const cloud = await this.downloadVolumeDataFile(provider);
 
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
-    // Step 3: Merge data (handles deletedOn/addedOn timestamps)
-    const mergedVolumes = this.mergeVolumeData(localVolumes, cloudVolumes || {});
+    // Step 3: Merge each half by its own key. FORFEIT-ON-BOGUS: a series key
+    // whose RAW cloud stamp needed clamping must not out-rank a pending local
+    // edit — `bogusSeriesKeys` is computed by `downloadVolumeDataFile` itself
+    // (unioned across every readable copy when duplicates existed; see the
+    // field doc on `CloudVolumeDataFile`), never re-derived from `rawSeries`
+    // here, since `rawSeries` alone only ever reflects the ONE copy that
+    // happens to survive the delete sweep.
+    const mergedVolumes = this.mergeVolumeData(localVolumes, cloud?.volumes || {});
+    const mergedSeries = mergeSeriesSections(
+      get(seriesReadingState),
+      cloud?.series ?? {},
+      cloud?.bogusSeriesKeys ?? new Set()
+    );
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
 
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);
+    setSeriesReadingStates(mergedSeries);
 
-    // Step 6: Upload purged data if changed
-    const purgedJson = JSON.stringify(purgedVolumes);
-    const cloudJson = JSON.stringify(cloudVolumes || {});
+    // Step 6: Upload if anything differs from what the cloud actually holds.
+    //
+    // The series half is compared against the RAW cloud section, not the parsed
+    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
+    // sanitized value looks like a match and never heals. `stableStringify`
+    // sorts keys, so two devices whose maps hold identical state in different
+    // insertion orders stop re-uploading the same bytes at each other.
+    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const cloudFile = this.composeVolumeDataFile(
+      cloud?.volumes ?? {},
+      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+    );
 
-    if (purgedJson !== cloudJson) {
-      await this.uploadVolumeDataFile(provider, purgedVolumes);
+    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
+      await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
 
@@ -503,7 +673,12 @@ class UnifiedSyncService {
   private async uploadProfilesFile(provider: SyncProvider, data: any): Promise<void> {
     const blob = this.jsonToBlob(data);
     const path = 'profiles.json';
-    await provider.uploadFile(path, blob);
+    const uploaded = await provider.uploadFile(path, blob);
+    // Same targeted add as `uploadVolumeDataFile` — `findProfilesFiles` reads
+    // the cache too.
+    cacheManager
+      .getCache(provider.type)
+      ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
   }
 
   /**
@@ -532,11 +707,11 @@ class UnifiedSyncService {
     // Step 5: Update local storage (including tombstones)
     profilesWithTrash.set(purgedProfiles);
 
-    // Step 6: Upload purged profiles if changed
-    const mergedJson = JSON.stringify(purgedProfiles);
-    const cloudJson = JSON.stringify(cloudProfiles || {});
-
-    if (mergedJson !== cloudJson) {
+    // Step 6: Upload purged profiles if changed. `stableStringify` sorts keys
+    // first, the same way the volume-data half does, so two devices whose
+    // profile maps hold identical state in different insertion orders don't
+    // re-upload the same bytes at each other forever.
+    if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
       await this.uploadProfilesFile(provider, purgedProfiles);
     }
   }
@@ -665,6 +840,61 @@ class UnifiedSyncService {
   }
 
   /**
+   * Clamp a cloud profile's untrusted timestamps the way `normalizeUpdatedAt`
+   * clamps the series section's `lastUpdated` (see `series-data.ts`): a
+   * `lastUpdated` or `deletedOn` more than five minutes in the future — clock
+   * skew on another device, a hand-edited cloud file — is clamped to `now`.
+   *
+   * `touchProfile`/`deleteProfile` stamp the writing device's raw clock with
+   * no ceiling, so without this a single fast-clock edit would permanently
+   * outrank every honest later edit (`Math.max` can never let a real
+   * timestamp catch up to one that is already in the future). Only the CLOUD
+   * side is clamped — this device's own edits are trusted at the point they
+   * are made; it is what comes back from elsewhere that is untrusted input.
+   *
+   * The upload decision in `syncProfiles` already compares against the RAW
+   * cloud bytes, never a migrated/clamped copy, so a clamped merge that
+   * differs from that raw file uploads the healed profile and the poison is
+   * gone after one sync — the same mechanism `rawSeries` uses for the series
+   * section.
+   *
+   * Clamping alone is not the whole fix: see `isBogusCloudProfile` and the
+   * FORFEIT-ON-BOGUS branch in `mergeProfiles` for the race this leaves open.
+   */
+  private clampCloudProfileStamps(profile: any, now: number): any {
+    if (!profile || typeof profile !== 'object') return profile;
+    const clamped = { ...profile };
+    if (profile.lastUpdated !== undefined) {
+      clamped.lastUpdated = normalizeUpdatedAt(profile.lastUpdated, now) ?? profile.lastUpdated;
+    }
+    if (profile.deletedOn !== undefined) {
+      clamped.deletedOn = normalizeUpdatedAt(profile.deletedOn, now) ?? profile.deletedOn;
+    }
+    return clamped;
+  }
+
+  /**
+   * True when a cloud profile's RAW `lastUpdated` or `deletedOn` is more than
+   * `FUTURE_TOLERANCE_MS` ahead of `now` — checked on the PRE-clamp value,
+   * since that is what triggers FORFEIT-ON-BOGUS in `mergeProfiles`.
+   *
+   * Clamping a bogus stamp sets it to exactly this device's own `now`, which
+   * always ties-or-beats any local stamp (a local edit is, by definition,
+   * timestamped at or before `now`). Without this check, a poisoned cloud
+   * profile would silently discard a pending honest local edit — once per
+   * poisoning, under a stamp that now looks perfectly healthy.
+   */
+  private isBogusCloudProfile(profile: any, now: number): boolean {
+    if (!profile || typeof profile !== 'object') return false;
+    return (['lastUpdated', 'deletedOn'] as const).some((key) => {
+      const raw = profile[key];
+      if (typeof raw !== 'string') return false;
+      const parsed = Date.parse(raw);
+      return !Number.isNaN(parsed) && parsed > now + FUTURE_TOLERANCE_MS;
+    });
+  }
+
+  /**
    * Merge profiles using timestamp-based conflict resolution
    * Handles deletedOn timestamps to properly sync deletions across devices
    * Migrates profiles to ensure all settings fields exist with defaults
@@ -680,6 +910,7 @@ class UnifiedSyncService {
     // Migrate both local and cloud profiles to ensure all fields exist
     const migratedLocal = migrateProfiles(local || {});
     const migratedCloud = migrateProfiles(cloud || {});
+    const now = Date.now();
 
     const merged: any = {};
     const allProfileNames = new Set([
@@ -689,13 +920,21 @@ class UnifiedSyncService {
 
     allProfileNames.forEach((profileName) => {
       const localProfile = migratedLocal?.[profileName];
-      const cloudProfile = migratedCloud?.[profileName];
+      const rawCloudProfile = migratedCloud?.[profileName];
+      const cloudProfile = this.clampCloudProfileStamps(rawCloudProfile, now);
 
       if (!localProfile) {
-        // Only in cloud - use cloud version (already migrated)
+        // No local content to protect — adopt the cloud entry (healed if bogus).
         merged[profileName] = cloudProfile;
       } else if (!cloudProfile) {
         // Only in local - use local version (already migrated)
+        merged[profileName] = localProfile;
+      } else if (this.isBogusCloudProfile(rawCloudProfile, now)) {
+        // FORFEIT-ON-BOGUS: the cloud entry's raw stamp needed clamping, and
+        // local content exists — local wins outright regardless of stamps.
+        // The upload below then carries the honest local content and its
+        // real timestamp, which is what actually heals the cloud copy.
+        console.log(`  🚫 Cloud forfeits [${profileName}] — raw stamp was bogus, local exists`);
         merged[profileName] = localProfile;
       } else {
         // In both - determine which has the most recent user action

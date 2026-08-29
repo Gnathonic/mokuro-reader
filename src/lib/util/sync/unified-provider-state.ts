@@ -26,6 +26,8 @@ export interface UnifiedProviderState {
   statusMessage: string;
   /** Whether the provider is in read-only mode (e.g., WebDAV without write permissions) */
   isReadOnly: boolean;
+  /** Whether the server compiles series.json/catalog.json itself (mokuro-bunko) */
+  serverCompilesMetadata: boolean;
 }
 
 /**
@@ -60,7 +62,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
           isFullyConnected: false,
           needsAttention: false,
           statusMessage: 'No provider connected',
-          isReadOnly: false
+          isReadOnly: false,
+          serverCompilesMetadata: false
         };
       }
 
@@ -77,7 +80,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
           isFullyConnected: false,
           needsAttention: false,
           statusMessage: 'Initializing...',
-          isReadOnly: false
+          isReadOnly: false,
+          serverCompilesMetadata: false
         };
       }
 
@@ -91,7 +95,8 @@ function createUnifiedProviderState(): Readable<UnifiedProviderState> {
         isFullyConnected,
         needsAttention: status.needsAttention,
         statusMessage: status.statusMessage,
-        isReadOnly: status.isReadOnly ?? false
+        isReadOnly: status.isReadOnly ?? false,
+        serverCompilesMetadata: status.serverCompilesMetadata ?? false
       };
     }
   );

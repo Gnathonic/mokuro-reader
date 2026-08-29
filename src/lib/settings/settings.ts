@@ -1,7 +1,9 @@
 import { browser } from '$app/environment';
-import { derived, get, readable, writable } from 'svelte/store';
+import { derived, get, readable, writable, type Readable } from 'svelte/store';
 import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
+import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
+import type { DisplayTitleLanguage } from '$lib/metadata/types';
 
 export type FontSize =
   | 'auto'
@@ -114,6 +116,17 @@ export type VolumeDefaults = {
 
 export type CatalogStackingPreset = 'compact' | 'default' | 'spine' | 'custom';
 
+/**
+ * Where volumes and series whose pages are NOT on this device are drawn.
+ *
+ * - `mixed` — in place, among the library (what the catalog has always done).
+ * - `cloud-section` — grouped into the "Available in <provider>" section instead, so the
+ *   library reads as "what is actually here".
+ *
+ * Display only: it moves nothing, downloads nothing and deletes nothing. The rows keep
+ * their real data and actions wherever they are drawn.
+ */
+
 export type CatalogSettings = {
   stackingPreset: CatalogStackingPreset;
   horizontalStep: number;
@@ -124,6 +137,10 @@ export type CatalogSettings = {
   centerVertical: boolean;
   compactCloudSeries: boolean;
   dropShadow: boolean;
+  /** Which series title to display in the catalog/series pages. Folder name is untouched. */
+  preferredTitleLanguage: DisplayTitleLanguage;
+  /** Master switch for pushing completions to AniList (per-series tracking must also be on). */
+  pushProgressToAniList: boolean;
 };
 
 export type Settings = {
@@ -346,7 +363,9 @@ const defaultSettings: Settings = {
     centerHorizontal: true,
     centerVertical: false,
     compactCloudSeries: false,
-    dropShadow: true
+    dropShadow: true,
+    preferredTitleLanguage: 'native',
+    pushProgressToAniList: true
   }
 };
 
@@ -473,6 +492,23 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...(profile.catalogSettings || {})
     };
 
+    // Validate preferredTitleLanguage (added 2026-08 with series metadata linking).
+    // Same guard the cloud-metadata boundary uses, so one list defines the languages.
+    if (!isDisplayTitleLanguage(migratedProfile.catalogSettings.preferredTitleLanguage)) {
+      migratedProfile.catalogSettings.preferredTitleLanguage = 'native';
+    }
+
+    // The not-on-device display mode was removed 2026-08-24 (cloud content is
+    // always its own section now); strip the stored key so profiles converge.
+    delete (migratedProfile.catalogSettings as { notOnDeviceDisplay?: unknown }).notOnDeviceDisplay;
+
+    // Validate pushProgressToAniList (added 2026-08 with series metadata tracking).
+    // A malformed/legacy stored value (e.g. a stringified boolean) must not
+    // silently disable the master switch.
+    if (typeof migratedProfile.catalogSettings.pushProgressToAniList !== 'boolean') {
+      migratedProfile.catalogSettings.pushProgressToAniList = true;
+    }
+
     // Theme migration. The `...defaultSettings, ...profile` spread above already
     // applies `theme`/`customTheme` defaults or carries existing values forward.
     migratedProfile.customTheme = {
@@ -595,6 +631,20 @@ export const activeTheme = derived(settings, ($settings): ResolvedTheme => {
 
 // Derived store for easy access to catalog settings
 export const catalogSettings = derived(settings, ($settings) => $settings?.catalogSettings);
+
+/**
+ * The preferred series title language on its own.
+ *
+ * `catalogSettings` (like `settings`) emits a fresh OBJECT on every settings write —
+ * including per-wheel-tick ones such as `pagedGap` — so anything joined on it recomputes
+ * constantly. Deriving a primitive means Svelte's `safe_not_equal` dedupes by string
+ * value, and subscribers (the `catalog` store's display-title pass above all) only rerun
+ * when the language actually changes.
+ */
+export const preferredTitleLanguage: Readable<DisplayTitleLanguage> = derived(
+  settings,
+  ($settings) => $settings?.catalogSettings?.preferredTitleLanguage ?? 'native'
+);
 
 // A store that updates every minute to trigger schedule checks
 const currentMinute = readable(Date.now(), (set) => {

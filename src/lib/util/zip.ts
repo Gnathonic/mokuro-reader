@@ -1,10 +1,14 @@
 import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
-import { compressVolume, type MokuroMetadata } from './compress-volume';
+import { compressVolume } from './compress-volume';
+import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
-import { loadVolumeSidecars } from './volume-sidecars';
+import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
+import { SERIES_FILE_NAME, stringifySeriesFile } from '$lib/metadata/series-file';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { showSnackbar } from './snackbar';
 
 export interface ExportSidecarOptions {
   includeSidecars: boolean;
@@ -22,6 +26,21 @@ export async function zipManga(
   }
 ) {
   const extension = asCbz ? 'cbz' : 'zip';
+
+  // Metadata-only volumes have no pages to write. Dropped here rather than
+  // failing per volume deep inside the writer, so exporting a part-installed
+  // series still produces the archives it can — but never silently: a missing
+  // volume in an export is exactly the kind of thing noticed months later.
+  const requested = manga.length;
+  manga = manga.filter(isVolumeInstalled);
+  const skipped = requested - manga.length;
+  if (manga.length === 0) {
+    if (skipped > 0) showSnackbar('Download those volumes to this device before exporting them');
+    return false;
+  }
+  if (skipped > 0) {
+    showSnackbar(`Skipped ${skipped} volume(s) that are not on this device`);
+  }
 
   if (individualVolumes) {
     // Queue each volume for export (non-blocking with progress tracking)
@@ -79,15 +98,7 @@ export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): 
   // Create mokuro metadata only for volumes that had mokuro data
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : {
-        version: volume.mokuro_version,
-        title: volume.series_title,
-        title_uuid: volume.series_uuid,
-        volume: volume.volume_title,
-        volume_uuid: volume.volume_uuid,
-        pages: volumeOcr.pages,
-        chars: volume.character_count
-      };
+    : buildMokuroMetadata(volume, volumeOcr.pages);
 
   // Get set of placeholder page paths to exclude from export
   const placeholderPaths = new Set(volume.missing_page_paths || []);
@@ -174,16 +185,8 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
     return [folderPromise, ...imagePromises];
   }
 
-  // Create mokuro data in the old format for compatibility
-  const mokuroData = {
-    version: volume.mokuro_version,
-    title: volume.series_title,
-    title_uuid: volume.series_uuid,
-    volume: volume.volume_title,
-    volume_uuid: volume.volume_uuid,
-    pages: volumeOcr.pages,
-    chars: volume.character_count
-  };
+  // Mokuro sidecar at the archive root (ZIP and CBZ), built by the shared writer
+  const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages);
 
   // Add mokuro data file in the root directory (for both ZIP and CBZ)
   return [
@@ -235,15 +238,7 @@ async function addVolumeToArchiveWithProgress(
 
   // Add mokuro file if not image-only
   if (!isImageOnly) {
-    const mokuroData = {
-      version: volume.mokuro_version,
-      title: volume.series_title,
-      title_uuid: volume.series_uuid,
-      volume: volume.volume_title,
-      volume_uuid: volume.volume_uuid,
-      pages: volumeOcr.pages,
-      chars: volume.character_count
-    };
+    const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages);
     await zipWriter.add(
       `${volume.volume_title}.mokuro`,
       new TextReader(JSON.stringify(mokuroData))
@@ -274,7 +269,12 @@ export async function createArchiveBlob(
   // For single volume, use shared compression function (returns Blob directly)
   if (volumes.length === 1) {
     const { metadata, filesData } = await prepareVolumeData(volumes[0]);
-    return await compressVolume(volumes[0].volume_title, metadata, filesData);
+    // The archive travels on its own, so it carries the series sidecar too:
+    // re-importing it restores the series facts and the volume index.
+    const seriesFile = await buildSeriesFileForExport(volumes[0].series_title);
+    return await compressVolume(volumes[0].volume_title, metadata, filesData, undefined, {
+      seriesFile
+    });
   }
 
   // For multiple volumes, create a single ZIP containing all volumes
@@ -314,6 +314,15 @@ export async function createArchiveBlob(
         },
         sidecarOptions
       );
+    }
+
+    // One `series.json` at the archive root for the whole series (never one per
+    // volume): the facts plus the index of every local volume of that series.
+    const seriesFile = await buildSeriesFileForExport(
+      seriesTitle ?? volumes[0]?.series_title ?? ''
+    );
+    if (seriesFile) {
+      await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(seriesFile)));
     }
 
     // Close the archive and get the Blob directly

@@ -30,6 +30,7 @@ vi.mock('../token-manager', () => ({
     isAuthenticated: vi.fn().mockReturnValue(false),
     hasStoredCredentials: vi.fn().mockReturnValue(false),
     getActiveAccountName: vi.fn().mockReturnValue(null),
+    getActiveAccountId: vi.fn().mockReturnValue(null),
     getAccessToken: vi.fn(async () => 'TOKEN'),
     markNeedsAttention: vi.fn(),
     needsAttention: {
@@ -56,6 +57,7 @@ vi.mock('../graph-client', () => ({
 }));
 
 import { OneDriveProvider } from '../onedrive-provider';
+import { onedriveTokenManager } from '../token-manager';
 
 describe('OneDriveProvider lifecycle', () => {
   beforeEach(() => {
@@ -71,6 +73,25 @@ describe('OneDriveProvider lifecycle', () => {
       await provider.logout();
 
       expect(h.order).toEqual(['clearActiveProviderKey', 'tokenManager.logout']);
+    });
+  });
+
+  describe('getStatus().accountScope', () => {
+    it('is undefined when there is no active account id', async () => {
+      const provider = new OneDriveProvider();
+      await provider.whenReady();
+
+      expect(provider.getStatus().accountScope).toBeUndefined();
+    });
+
+    it('is `onedrive:<homeAccountId>` once MSAL reports an active account', async () => {
+      vi.mocked(onedriveTokenManager.isAuthenticated).mockReturnValue(true);
+      vi.mocked(onedriveTokenManager.getActiveAccountId).mockReturnValue('AAID.TID');
+
+      const provider = new OneDriveProvider();
+      await provider.whenReady();
+
+      expect(provider.getStatus().accountScope).toBe('onedrive:AAID.TID');
     });
   });
 

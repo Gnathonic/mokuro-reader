@@ -110,6 +110,14 @@ class OneDriveTokenManager {
   }
 
   /**
+   * MSAL's stable per-account cache key (not a token or secret — safe to
+   * persist). Used to scope the cloud metadata cache to this account.
+   */
+  getActiveAccountId(): string | null {
+    return this.account?.homeAccountId ?? null;
+  }
+
+  /**
    * Start the redirect-based login flow. The whole window navigates to
    * Microsoft's login page; after auth the user lands back on the app's
    * origin and `initialize()` calls `handleRedirectPromise()` to complete

@@ -4,16 +4,24 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   DriveFileMetadata,
-  StorageQuota
+  StorageQuota,
+  UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
+import {
+  driveApiClient,
+  escapeNameForDriveQuery
+} from '$lib/util/sync/providers/google-drive/api-client';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
-import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
+import {
+  GOOGLE_DRIVE_CONFIG,
+  type DriveFile
+} from '$lib/util/sync/providers/google-drive/constants';
 import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
+import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
@@ -48,6 +56,36 @@ class GoogleDriveProvider implements SyncProvider {
   private initializePromise: Promise<void> | null = null;
   private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
   private cloudCore = getCloudProviderCore('google-drive');
+
+  /**
+   * Assign the reader-folder id AND tell the status store about it.
+   *
+   * `getStatus().accountScope` is a function of this field, and the app has
+   * TWO readers of that scope: `cloud-cache-key.ts`'s `activeAccountScope()`,
+   * which calls `getStatus()` live, and `account-scope-store.ts`'s
+   * `activeAccountScopeStore`, which is derived from the status STORE. Every
+   * cover-drawing surface joins the store into its claim key, while
+   * `acquireCover`, `refreshCoverKeys` and `cover-persist.ts` all use the live
+   * read.
+   *
+   * Setting this field silently makes the two disagree: the live read starts
+   * saying `google-drive:<folderId>` while the store still says
+   * `google-drive:default`, so covers are WRITTEN and REFRESHED under the new
+   * scope while every already-mounted card is still holding a handle under
+   * the old one — a permanently blank cover that no re-request can repair,
+   * because `refreshCoverKeys` cannot even find the holder's entry. Drive is
+   * the only provider whose scope resolves lazily like this; every other one
+   * has its discriminator at login.
+   *
+   * So the field is never assigned directly. Notifying only on a real change
+   * keeps this off the hot path — `ensureReaderFolder` short-circuits on the
+   * cached id long before it gets here.
+   */
+  private setReaderFolderId(folderId: string | null): void {
+    if (this.readerFolderId === folderId) return;
+    this.readerFolderId = folderId;
+    providerManager.updateStatus();
+  }
 
   private getAccessToken(): string {
     let token = '';
@@ -125,7 +163,20 @@ class GoogleDriveProvider implements SyncProvider {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
-      statusMessage
+      statusMessage,
+      // this.readerFolderId is per-account (the mokuro-reader folder Drive
+      // resolves/creates for the connected account) and non-secret, so it's a
+      // real per-account discriminator once ensureReaderFolder() has resolved
+      // it at least once. Before that first resolution (e.g. immediately
+      // after login, before any operation has called ensureReaderFolder()),
+      // there is nothing to key on yet, so this narrow window falls back to
+      // the coarse 'default' scope — which does NOT distinguish between two
+      // different Google accounts used in sequence in that window.
+      accountScope: authenticated
+        ? this.readerFolderId
+          ? `google-drive:${this.readerFolderId}`
+          : 'google-drive:default'
+        : undefined
     };
   }
 
@@ -134,6 +185,23 @@ class GoogleDriveProvider implements SyncProvider {
       if (!browser) {
         throw new Error('Google Drive auth only works in browser');
       }
+
+      // The consent-screen OAuth flow below lets the user pick a DIFFERENT
+      // Google account without an explicit logout first. Drop any previous
+      // account's cached reader-folder id up front — on both this instance
+      // and driveFilesCache — so a fresh authorization always re-resolves
+      // the folder for whichever account just authorized, and getStatus()
+      // never reports a stale account's folder id as this account's scope.
+      // driveFilesCache.clear() is the same reset logout's cacheManager.clearAll()
+      // performs on this cache; reused directly here rather than adding a
+      // second way to clear the same state. readerFolderPromise is cleared
+      // too: otherwise a resolution still in flight from the previous
+      // account is handed straight to the next ensureReaderFolder() caller
+      // via the mutex check below (a resolution issued right after login()
+      // routinely races this).
+      this.setReaderFolderId(null);
+      driveFilesCache.clear();
+      this.readerFolderPromise = null;
 
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();
@@ -172,7 +240,7 @@ class GoogleDriveProvider implements SyncProvider {
   async logout(): Promise<void> {
     // Use full logout (clears token + auth history) not just clearToken
     await tokenManager.logout();
-    this.readerFolderId = null;
+    this.setReaderFolderId(null);
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
@@ -203,6 +271,7 @@ class GoogleDriveProvider implements SyncProvider {
       );
 
       // Build folder map (folder ID -> folder name)
+      const READER_FOLDER_NAME = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
       const folderNames = new Map<string, string>();
       const cbzFiles: any[] = [];
       const sidecarFiles: any[] = [];
@@ -267,16 +336,24 @@ class GoogleDriveProvider implements SyncProvider {
         });
       }
 
-      // Add JSON files (no parent folder in path, just filename)
+      // Add JSON files. Root config files are keyed by BASENAME alone, so one
+      // living in a SERIES folder (a nested catalog.json, say) must keep its
+      // full path — cached at the bare name it would shadow the real root file
+      // and readers would fetch the wrong one. Matches MEGA's
+      // `isJson && pathParts.length === 0` guard.
       for (const file of jsonFiles) {
+        const parentId = file.parents?.[0];
+        const parentName = parentId ? folderNames.get(parentId) : undefined;
+        const isInSeriesFolder = !!parentName && parentName !== READER_FOLDER_NAME;
+
         cloudVolumes.push({
           provider: 'google-drive',
           fileId: file.id,
-          path: file.name, // Just the filename for JSON files
+          path: isInSeriesFolder ? `${parentName}/${file.name}` : file.name,
           modifiedTime: file.modifiedTime || new Date().toISOString(),
           size: file.size ? parseInt(file.size) : 0,
           description: file.description,
-          parentId: file.parents?.[0],
+          parentId,
           name: file.name
         });
       }
@@ -301,7 +378,36 @@ class GoogleDriveProvider implements SyncProvider {
     blob: Blob,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
+    // Legacy contract: a full cache refetch rides every ordinary upload (see
+    // `performUpload`). Callers that don't need to read anything back use
+    // `blindUploadFile` instead.
+    return this.performUpload(path, blob, description, onProgress, true);
+  }
+
+  /**
+   * The write-and-forget upload (`SyncProvider.blindUploadFile`): identical to
+   * `uploadFile` minus the whole-account cache refetch — a full paged
+   * `files.list` walk (13+ round trips on a 12,500-file library) that a caller
+   * like the sidecar backfill, which converges through the unified layer's
+   * targeted cache add, has no use for.
+   */
+  async blindUploadFile(
+    path: string,
+    blob: Blob,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<UploadFileResult> {
+    return this.performUpload(path, blob, description, onProgress, false);
+  }
+
+  private async performUpload(
+    path: string,
+    blob: Blob,
+    description: string | undefined,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    refreshCache: boolean
+  ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
     }
@@ -341,7 +447,7 @@ class GoogleDriveProvider implements SyncProvider {
       if (!token) {
         throw new Error('No access token available');
       }
-      const uploadedFileId = await this.cloudCore.uploadFile({
+      const uploaded = await this.cloudCore.uploadFile({
         seriesTitle,
         filename: fileName,
         blob,
@@ -354,16 +460,21 @@ class GoogleDriveProvider implements SyncProvider {
         onProgress
       });
 
-      // Update cache
-      await driveFilesCache.fetch();
+      // The legacy whole-account refetch — `uploadFile` only. A blind upload
+      // skips it: the unified layer records the upload in the cache with a
+      // TARGETED add built from this upload's own response metadata
+      // (`uploadCacheEntry`), which is all convergence needs.
+      if (refreshCache) {
+        await driveFilesCache.fetch();
+      }
 
       // Update file description if provided
       if (description) {
-        await driveApiClient.updateFileDescription(uploadedFileId, description);
+        await driveApiClient.updateFileDescription(uploaded.fileId, description);
       }
 
-      console.log(`✅ Uploaded ${fileName} to Google Drive (${uploadedFileId})`);
-      return uploadedFileId;
+      console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
+      return uploaded;
     } catch (error) {
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -502,7 +613,12 @@ class GoogleDriveProvider implements SyncProvider {
         provider: 'google-drive',
         fileId: updated.id || file.fileId,
         path: normalizedNewPath,
-        modifiedTime: updated.modifiedTime || new Date().toISOString(),
+        // `fields=` above asks for modifiedTime explicitly, so the fallback is
+        // near-unreachable — but a fallback that fabricates a client time MUST
+        // carry the provisional flag, or a stamp built from it would publish a
+        // clock we invented (the exact defect the rename door closed).
+        modifiedTime: updated.modifiedTime || file.modifiedTime || new Date().toISOString(),
+        ...(updated.modifiedTime || file.modifiedTime ? {} : { modifiedTimeProvisional: true }),
         size: updated.size ? parseInt(updated.size, 10) : file.size,
         description: updated.description ?? file.description,
         parentId: updated.parents?.[0] || targetFolderId,
@@ -945,14 +1061,7 @@ class GoogleDriveProvider implements SyncProvider {
 
     await this.ensureInitialized();
 
-    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
-
-    // Query for folders with this name in the parent
-    const folders = await driveApiClient.listFiles(
-      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
-      'files(id,name,createdTime)'
-    );
+    const folders = await this.listFoldersNamed(parentId, folderName, 'files(id,name,createdTime)');
 
     if (folders.length === 0) {
       // No folder exists - create one
@@ -978,15 +1087,70 @@ class GoogleDriveProvider implements SyncProvider {
     return folders[0].id;
   }
 
+  /**
+   * Every folder in `parentId` whose name IS `folderName` — with "is"
+   * meaning the same unicode text, not the same bytes.
+   *
+   * THIS IS THE DUPLICATE-FOLDER FAUCET, so it is worth being explicit about.
+   * Its only caller that can write is `findOrCreateFolder`, which CREATES a
+   * folder when this returns nothing. A name query that misses a folder which
+   * really is there therefore does not fail — it silently forks the series
+   * into two folders, and everything downstream that keys on the folder name
+   * (the reconcile pass's `hasSidecar`, the series index, the cover
+   * resolution) then sees a folder full of archives with no `series.json`
+   * next to an empty folder holding only the `series.json`, forever, because
+   * the writes keep landing in the wrong one.
+   *
+   * Two ways the old inline query could miss:
+   *
+   * 1. ESCAPING. It hand-rolled the quote/backslash escape that
+   *    `escapeNameForDriveQuery` exists for (and that `util/backup.ts` uses).
+   *    Now it calls the shared helper — one definition, not three.
+   * 2. UNICODE FORM, which the escape never covered. `name='…'` is a
+   *    byte-wise comparison, and a folder name that has been through a
+   *    decomposing filesystem comes back NFD while the local title stays NFC.
+   *    Japanese titles with dakuten/handakuten are the common case: が is one
+   *    code point in NFC and two in NFD, and the two never match each other.
+   *
+   * So the exact query stays as the FAST path — one cheap indexed query, the
+   * normal answer — and a miss falls back to listing the parent's folders and
+   * comparing NFC-folded. That fallback costs one query per parent and only
+   * runs when the alternative was to create a duplicate. Case is deliberately
+   * NOT folded: cloud storage is case-sensitive, and `Berserk/` and
+   * `berserk/` really are two folders.
+   */
+  private async listFoldersNamed(
+    parentId: string,
+    folderName: string,
+    fields: string
+  ): Promise<DriveFile[]> {
+    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const folderClause = `${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`;
+
+    const exact = await driveApiClient.listFiles(
+      `name='${escapeNameForDriveQuery(folderName)}' and ${folderClause}`,
+      fields
+    );
+    if (exact.length > 0) return exact;
+
+    const wanted = folderName.normalize('NFC');
+    const all = await driveApiClient.listFiles(folderClause, fields);
+    const matches = all.filter((folder) => (folder.name ?? '').normalize('NFC') === wanted);
+    if (matches.length > 0) {
+      console.log(
+        `[GoogleDrive] '${folderName}' is stored under a different unicode form; reusing the existing folder`
+      );
+    }
+    return matches;
+  }
+
   private async findFolder(
     parentId: string,
     folderName: string
   ): Promise<{ id: string; parentId: string | null; name: string } | null> {
-    const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const parentClause = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
-
-    const folders = await driveApiClient.listFiles(
-      `name='${escapedName}' and ${parentClause} and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+    const folders = await this.listFoldersNamed(
+      parentId,
+      folderName,
       'files(id,name,parents,createdTime)'
     );
 
@@ -1104,7 +1268,7 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       onRootFolderConfirmed: (folderId: string): void => {
-        this.readerFolderId = folderId;
+        this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }
     };
@@ -1126,7 +1290,7 @@ class GoogleDriveProvider implements SyncProvider {
 
     if (cachedFolderId) {
       // Found in cache
-      this.readerFolderId = cachedFolderId;
+      this.setReaderFolderId(cachedFolderId);
       return cachedFolderId;
     }
 
@@ -1140,7 +1304,7 @@ class GoogleDriveProvider implements SyncProvider {
       // Double-check cache after acquiring "lock" (another call might have finished)
       const recheckFolderId = await driveFilesCache.getReaderFolderId();
       if (recheckFolderId) {
-        this.readerFolderId = recheckFolderId;
+        this.setReaderFolderId(recheckFolderId);
         return recheckFolderId;
       }
 
@@ -1151,7 +1315,7 @@ class GoogleDriveProvider implements SyncProvider {
       );
 
       // Store in both caches
-      this.readerFolderId = folderId;
+      this.setReaderFolderId(folderId);
       driveFilesCache.setReaderFolderId(folderId);
 
       return folderId;
