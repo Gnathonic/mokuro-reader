@@ -13,7 +13,11 @@ import {
   normalizeWheelDelta,
   WheelAccumulator,
   pinchDistance,
-  pinchMidpoint
+  pinchMidpoint,
+  isFineWheelEvent,
+  WheelStreamClassifier,
+  wheelZoomRatio,
+  WHEEL_ZOOM_SENSITIVITY
 } from './zoom-math';
 
 describe('anchorFraction', () => {
@@ -151,6 +155,16 @@ describe('wheelIntentIsZoom', () => {
     expect(wheelIntentIsZoom(false, true)).toBe(true);
     expect(wheelIntentIsZoom(true, true)).toBe(false);
   });
+
+  it('treats a fine ctrl+wheel as a trackpad pinch, whatever the swap setting', () => {
+    expect(wheelIntentIsZoom(true, true, true)).toBe(true);
+    expect(wheelIntentIsZoom(true, false, true)).toBe(true);
+  });
+
+  it('leaves a fine bare wheel to the swap setting', () => {
+    expect(wheelIntentIsZoom(false, true, true)).toBe(true);
+    expect(wheelIntentIsZoom(false, false, true)).toBe(false);
+  });
 });
 
 describe('normalizeWheelDelta', () => {
@@ -279,5 +293,80 @@ describe('gapWheelSteps', () => {
     const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
     const px = gapWheelSteps({ deltaX: 0, deltaY: -3, deltaMode: 1, timeStamp: 1000 }, acc);
     expect(px).toBe(6); // 3 lines * 40px = 120 wheel px -> six 20px steps
+  });
+});
+
+describe('isFineWheelEvent', () => {
+  const ev = (deltaY: number, deltaX = 0, deltaMode = 0) => ({ deltaX, deltaY, deltaMode });
+
+  it('rejects classic notches', () => {
+    expect(isFineWheelEvent(ev(-100))).toBe(false);
+    expect(isFineWheelEvent(ev(120))).toBe(false);
+  });
+
+  it('rejects line and page deltas — only a notched wheel reports them', () => {
+    expect(isFineWheelEvent(ev(-3, 0, 1))).toBe(false);
+    expect(isFineWheelEvent(ev(-1, 0, 2))).toBe(false);
+  });
+
+  it('accepts fractional deltas', () => {
+    expect(isFineWheelEvent(ev(-4.5))).toBe(true);
+    expect(isFineWheelEvent(ev(-133.75))).toBe(true);
+  });
+
+  it('accepts sub-notch magnitudes', () => {
+    expect(isFineWheelEvent(ev(-8))).toBe(true);
+    expect(isFineWheelEvent(ev(2))).toBe(true);
+  });
+
+  it('accepts simultaneous two-axis deltas — no mouse steers both at once', () => {
+    expect(isFineWheelEvent(ev(-110, 3))).toBe(true);
+  });
+
+  it('reads no evidence from an empty delta', () => {
+    expect(isFineWheelEvent(ev(0))).toBe(false);
+  });
+});
+
+describe('WheelStreamClassifier', () => {
+  it('stays coarse for a notched-wheel stream', () => {
+    const c = new WheelStreamClassifier();
+    expect(c.classify({ deltaX: 0, deltaY: -100, deltaMode: 0, timeStamp: 1000 })).toBe(false);
+    expect(c.classify({ deltaX: 0, deltaY: -100, deltaMode: 0, timeStamp: 1050 })).toBe(false);
+  });
+
+  it('holds the fine verdict through momentum spikes later in the stream', () => {
+    const c = new WheelStreamClassifier();
+    expect(c.classify({ deltaX: 0, deltaY: -3, deltaMode: 0, timeStamp: 1000 })).toBe(true);
+    // macOS momentum turns a flick into large round deltas mid-gesture.
+    expect(c.classify({ deltaX: 0, deltaY: -240, deltaMode: 0, timeStamp: 1016 })).toBe(true);
+  });
+
+  it('re-classifies after the stream goes idle', () => {
+    const c = new WheelStreamClassifier();
+    c.classify({ deltaX: 0, deltaY: -3, deltaMode: 0, timeStamp: 1000 });
+    expect(c.classify({ deltaX: 0, deltaY: -120, deltaMode: 0, timeStamp: 2000 })).toBe(false);
+  });
+});
+
+describe('wheelZoomRatio', () => {
+  it('zooms in on wheel-up and out on wheel-down', () => {
+    expect(wheelZoomRatio(-100)).toBeGreaterThan(1);
+    expect(wheelZoomRatio(100)).toBeLessThan(1);
+    expect(wheelZoomRatio(0)).toBe(1);
+  });
+
+  it('is exponential, so a split gesture equals the whole one', () => {
+    const whole = wheelZoomRatio(-90);
+    const split = wheelZoomRatio(-30) * wheelZoomRatio(-60);
+    expect(split).toBeCloseTo(whole, 10);
+  });
+
+  it('is symmetric — scrolling back undoes the zoom exactly', () => {
+    expect(wheelZoomRatio(-40) * wheelZoomRatio(40)).toBeCloseTo(1, 10);
+  });
+
+  it('moves immediately for a small nudge', () => {
+    expect(wheelZoomRatio(-10)).toBeCloseTo(Math.exp(10 * WHEEL_ZOOM_SENSITIVITY), 10);
   });
 });
