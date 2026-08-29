@@ -38,10 +38,11 @@
   } from '$lib/views/progress-tracker-helpers';
 
   // Check if volumes is empty
-  let hasVolumes = $derived($volumes && Object.keys($volumes).length > 0);
+  let hasVolumes = $derived(Object.keys($volumes ?? {}).length > 0);
 
   // Create typed entries for iteration
-  let volumeEntries = $derived(Object.entries($volumes) as [string, VolumeData][]);
+  let volumeEntries = $derived(Object.entries($volumes ?? {}) as [string, VolumeData][]);
+  let catalogVolumeMap = $derived($catalogVolumes ?? {});
 
   // Settings modal state
   let settingsModalOpen = $state(false);
@@ -106,9 +107,10 @@
         totalPages: number;
       }
     > = {};
+    const catalog = catalogVolumeMap;
 
     for (const [volume_uuid, _volumeData] of volumeEntries) {
-      const totalPages = $catalogVolumes[volume_uuid]?.page_count ?? 0;
+      const totalPages = catalog[volume_uuid]?.page_count ?? 0;
       let currentPage = $progress[volume_uuid] ?? 0;
       // Typically a user won't stop reading on the first page, so count this as 0% progress
       if (currentPage === 1) {
@@ -291,10 +293,11 @@
     const deadlines = $volumeDeadlines;
     const mode = $miscSettings.progressTargetMode ?? 'daily';
     const periodStart = currentPeriodStart;
+    const catalog = catalogVolumeMap;
 
     for (const [volumeId, volumeData] of volumeEntries) {
       const currentPage = $progress[volumeId] ?? 0;
-      const totalPages = $catalogVolumes[volumeId]?.page_count ?? 0;
+      const totalPages = catalog[volumeId]?.page_count ?? 0;
 
       const isCompletedByProgress = currentPage >= totalPages && totalPages > 0;
 
@@ -455,7 +458,7 @@
               {volumeId}
               seriesId={volumeData.series_uuid}
               volumeTitle={volumeData.volume_title}
-              thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
+              thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
               progressPercentString={stats.progressPercentString}
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
@@ -484,7 +487,7 @@
                 {volumeId}
                 seriesId={volumeData.series_uuid}
                 volumeTitle={volumeData.volume_title}
-                thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
+                thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
                 progressPercentString={stats.progressPercentString}
                 remainingPages={stats.remainingPages}
                 isHovered={hoveredVolume === volumeId}
@@ -528,7 +531,7 @@
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ??
+                  thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ??
                     undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
@@ -546,7 +549,7 @@
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnail={($catalogVolumes[volumeId]?.thumbnail as Blob | undefined) ??
+                  thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ??
                     undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}

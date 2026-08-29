@@ -80,6 +80,7 @@ export const activeGoalProgress = derived(
     let inProgressVolumes = 0;
     let totalPartialProgress = 0;
     let totalRemainingPages = 0;
+    const catalog = $catalog ?? {};
 
     if (snapshot) {
       completedVolumes = Object.keys(snapshot.completed).length;
@@ -91,7 +92,7 @@ export const activeGoalProgress = derived(
       );
     } else if ($volumes) {
       Object.entries($volumes).forEach(([volumeId, volumeData]) => {
-        const catalogVolume = $catalog[volumeId];
+        const catalogVolume = catalog[volumeId];
         const totalPages = catalogVolume?.page_count ?? 0;
         const currentPage = volumeData.progress ?? 0;
         const completedAt = $completedAtMap[volumeId];

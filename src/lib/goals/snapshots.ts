@@ -117,7 +117,7 @@ export function createSnapshotForPeriod(
   const partialProgress: Record<string, number> = {};
   const completedAtMap = get(_completedAtMap);
   const allVolumes = get(volumes);
-  const catalog = get(catalogVolumes);
+  const catalog = get(catalogVolumes) ?? {};
 
   Object.entries(completedAtMap).forEach(([volumeId, completedAt]) => {
     if (completedAt && isDateWithinRange(completedAt, start, end)) {
