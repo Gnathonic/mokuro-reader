@@ -92,6 +92,7 @@ export function isBackupRunActive(): boolean {
 let queueLock = Promise.resolve();
 
 // Subscribe to queue changes and update progress tracker
+let lastQueueCount = 0;
 queueStore.subscribe((queue) => {
   const totalCount = queue.length;
 
@@ -104,7 +105,15 @@ queueStore.subscribe((queue) => {
     );
   } else {
     getBackupUiBridge().removeProgress('backup-queue-overall');
+    if (lastQueueCount > 0) {
+      // Drain: the uploads may have changed what this account owns server-side
+      // (mokuro-bunko grants series ownership from archive uploads), so re-ask
+      // the identity endpoint — otherwise the edit/delete gates keep judging by
+      // the connect-time snapshot and wrongly block series just uploaded.
+      void unifiedCloudManager.getActiveProvider()?.refreshIdentity?.();
+    }
   }
+  lastQueueCount = totalCount;
 });
 
 /**

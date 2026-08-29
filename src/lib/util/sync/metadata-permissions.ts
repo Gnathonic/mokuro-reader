@@ -42,6 +42,7 @@ export const activeMetadataPermissions: Readable<SeriesMetadataPermissions | und
 
 const CANNOT_EDIT_REASON = "This account can't edit series details on this server";
 const NOT_OWNED_REASON = 'Editing this series requires ownership on this server';
+const CANNOT_DELETE_REASON = "This account can't delete this series on this server";
 
 /**
  * Folded `ownedSeries` set, memoized on the permissions OBJECT's identity so a fresh
@@ -65,6 +66,29 @@ function ownedKeysFor(permissions: SeriesMetadataPermissions): Set<string> {
  * lists) — both sides are folded through `normalizeVolumeTitleKey` before comparing, so a
  * folder name that arrived NFD-decomposed still matches an NFC-composed entry.
  */
+/**
+ * Can the signed-in account delete `seriesTitle`'s files on the currently active
+ * provider? Mirrors the server's DELETE rules: a modify/delete role may delete
+ * anything; an uploader-style account (canModifyDelete: false) only what it owns —
+ * the server grants per-volume ownership deletes, approximated here at series
+ * granularity via the same `ownedSeries` list the edit gate uses. A provider that
+ * reports no `canModifyDelete` at all (plain WebDAV, other providers) reads as
+ * unrestricted, like every absent permission field.
+ */
+export function canDeleteSeriesOnServer(seriesTitle: string): SeriesMetadataEditCheck {
+  const status = get(providerManager.status);
+  const type = status.currentProviderType;
+  const provider = type ? status.providers[type] : undefined;
+  if (!provider || provider.canModifyDelete !== false) return { allowed: true };
+
+  const permissions = provider.metadataPermissions;
+  if (permissions?.scope === 'owned') {
+    const owned = ownedKeysFor(permissions);
+    if (owned.has(normalizeVolumeTitleKey(seriesTitle))) return { allowed: true };
+  }
+  return { allowed: false, reason: CANNOT_DELETE_REASON };
+}
+
 export function canEditSeriesMetadata(seriesTitle: string): SeriesMetadataEditCheck {
   const permissions = get(activeMetadataPermissions);
   if (!permissions) return { allowed: true };

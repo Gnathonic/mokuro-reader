@@ -65,6 +65,7 @@
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
@@ -549,8 +550,10 @@
             storageKey: 'forgetVolumePreference',
             defaultValue: false
           },
-      // Don't show cloud delete option in read-only mode
-      hasCloudBackup && !isReadOnlyMode
+      // Don't show cloud delete option in read-only mode, or when the server's
+      // permission rules would refuse this account (uploader on a series it
+      // doesn't own — the per-file DELETEs would just 403).
+      hasCloudBackup && !isReadOnlyMode && canDeleteSeriesOnServer(volume.series_title).allowed
         ? {
             label: `Also delete from ${providerDisplayName}?`,
             storageKey: 'deleteCloudPreference',
@@ -607,6 +610,11 @@
     const target = deletableCloudFile;
     if (!target || isReadOnlyMode) {
       showSnackbar('Volume is not backed up to cloud');
+      return;
+    }
+    const permitted = canDeleteSeriesOnServer(volume.series_title);
+    if (!permitted.allowed) {
+      showSnackbar(permitted.reason ?? "This account can't delete this on this server");
       return;
     }
     const providerName =

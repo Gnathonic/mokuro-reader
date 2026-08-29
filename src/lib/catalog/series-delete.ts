@@ -32,6 +32,8 @@ interface CloudContext {
   hasAnyProvider: boolean;
   isReadOnlyMode: boolean;
   hasCloudBackups: boolean;
+  /** Server-side delete permission for THIS series (mirrors the server's rules). */
+  canDeleteFromServer: boolean;
 }
 
 async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
@@ -42,6 +44,7 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
   ]);
 
   const status = get(providerManager.status);
+  const { canDeleteSeriesOnServer } = await import('$lib/util/sync/metadata-permissions');
   return {
     providerDisplayName: unifiedCloudManager.getActiveProvider()?.name || 'cloud',
     hasAnyProvider: status.hasAnyAuthenticated,
@@ -51,7 +54,8 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
       status.currentProviderType === 'webdav' && status.providers['webdav']?.isReadOnly === true,
     hasCloudBackups: rows.some((vol) =>
       unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
-    )
+    ),
+    canDeleteFromServer: rows.length > 0 && canDeleteSeriesOnServer(rows[0].series_title).allowed
   };
 }
 
@@ -62,6 +66,15 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
  */
 export async function deleteSeriesFromCloudByTitle(seriesTitle: string): Promise<void> {
   if (!seriesTitle) return;
+
+  // Server rules, checked up front so every entry point (dialog checkbox, series
+  // page menu) gets the same block instead of a pile of per-file 403s.
+  const { canDeleteSeriesOnServer } = await import('$lib/util/sync/metadata-permissions');
+  const permitted = canDeleteSeriesOnServer(seriesTitle);
+  if (!permitted.allowed) {
+    showSnackbar(permitted.reason ?? "This account can't delete this series on this server");
+    return;
+  }
 
   const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
   const providerDisplayName = unifiedCloudManager.getActiveProvider()?.name || 'cloud';
@@ -164,7 +177,7 @@ async function raisePrompt(
           storageKey: 'forgetVolumePreference',
           defaultValue: false
         },
-    cloud.hasCloudBackups && !cloud.isReadOnlyMode
+    cloud.hasCloudBackups && !cloud.isReadOnlyMode && cloud.canDeleteFromServer
       ? {
           label: `Also delete from ${cloud.providerDisplayName}?`,
           storageKey: 'deleteCloudPreference',

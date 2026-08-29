@@ -103,6 +103,38 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /**
+   * Re-fetch the identity endpoint and publish the fresh permissions.
+   *
+   * Server-side permissions move mid-session: `ownedSeries` grows as this
+   * account uploads new series, so a snapshot taken at connect goes stale and
+   * wrongly gates edits on series the account now owns. Called after the
+   * backup queue drains; fails quietly — the connect-time snapshot stays.
+   */
+  async refreshIdentity(): Promise<void> {
+    if (!browser || !this.client) return;
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    if (!serverUrl) return;
+    try {
+      const identity = await fetchServerIdentity(
+        serverUrl,
+        username ?? undefined,
+        password ?? undefined
+      );
+      if (identity.kind === 'authenticated') {
+        this._capabilities = identity.permissions;
+        this._isReadOnly = !(
+          identity.permissions.canWriteProgress || identity.permissions.canAddFiles
+        );
+        this.notifyStatusChanged();
+      }
+    } catch (error) {
+      console.warn('[WebDAV] identity refresh failed (keeping last known):', error);
+    }
+  }
+
+  /**
    * Mark the provider as read-only (called when a write operation fails with permission error)
    * Also triggers a status update to refresh the UI
    */
@@ -159,6 +191,7 @@ export class WebDAVProvider implements SyncProvider {
       isReadOnly: this._isReadOnly,
       serverCompilesMetadata: this._serverCompilesMetadata,
       metadataPermissions: this._capabilities?.metadata,
+      canModifyDelete: this._capabilities?.canModifyDelete,
       // username is optional (some servers support password-only or no auth),
       // so it's an extra discriminator on top of the required serverUrl, not
       // a requirement in its own right.

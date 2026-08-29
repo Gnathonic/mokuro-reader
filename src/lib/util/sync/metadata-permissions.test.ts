@@ -18,7 +18,10 @@ const h = vi.hoisted(() => {
   }
   return {
     status: createStore<{
-      providers: Record<string, { metadataPermissions?: unknown } | null>;
+      providers: Record<
+        string,
+        { metadataPermissions?: unknown; canModifyDelete?: boolean } | null
+      >;
       currentProviderType: string | null;
     }>({ providers: {}, currentProviderType: null })
   };
@@ -26,15 +29,16 @@ const h = vi.hoisted(() => {
 
 vi.mock('$lib/util/sync', () => ({ providerManager: { status: h.status } }));
 
-import { canEditSeriesMetadata } from './metadata-permissions';
+import { canDeleteSeriesOnServer, canEditSeriesMetadata } from './metadata-permissions';
 
 function setPermissions(
   providerType: string | null,
-  metadataPermissions?: { scope: 'all' | 'owned' | 'none'; ownedSeries?: string[] }
+  metadataPermissions?: { scope: 'all' | 'owned' | 'none'; ownedSeries?: string[] },
+  canModifyDelete?: boolean
 ) {
   h.status.set({
     currentProviderType: providerType,
-    providers: providerType ? { [providerType]: { metadataPermissions } } : {}
+    providers: providerType ? { [providerType]: { metadataPermissions, canModifyDelete } } : {}
   });
 }
 
@@ -101,5 +105,50 @@ describe('canEditSeriesMetadata', () => {
       }
     });
     expect(canEditSeriesMetadata('One Piece').allowed).toBe(false);
+  });
+});
+
+describe('canDeleteSeriesOnServer', () => {
+  beforeEach(() => {
+    h.status.set({ providers: {}, currentProviderType: null });
+  });
+
+  it('allows everything when there is no active provider', () => {
+    expect(canDeleteSeriesOnServer('One Piece')).toEqual({ allowed: true });
+  });
+
+  it('allows everything when the server does not report canModifyDelete', () => {
+    // A plain WebDAV server, or a provider with no permission concept.
+    setPermissions('webdav', undefined, undefined);
+    expect(canDeleteSeriesOnServer('One Piece')).toEqual({ allowed: true });
+  });
+
+  it('allows everything for a modify/delete role', () => {
+    setPermissions('webdav', { scope: 'all' }, true);
+    expect(canDeleteSeriesOnServer('One Piece')).toEqual({ allowed: true });
+  });
+
+  it('allows an uploader to delete a series it owns — the server permits it', () => {
+    setPermissions('webdav', { scope: 'owned', ownedSeries: ['One Piece'] }, false);
+    expect(canDeleteSeriesOnServer('One Piece').allowed).toBe(true);
+  });
+
+  it('blocks an uploader from deleting a series it does not own, with a reason', () => {
+    setPermissions('webdav', { scope: 'owned', ownedSeries: ['One Piece'] }, false);
+    const check = canDeleteSeriesOnServer('Berserk');
+    expect(check.allowed).toBe(false);
+    expect(check.reason).toBeTruthy();
+  });
+
+  it('blocks a registered account everywhere, with a reason', () => {
+    setPermissions('webdav', { scope: 'none' }, false);
+    const check = canDeleteSeriesOnServer('One Piece');
+    expect(check.allowed).toBe(false);
+    expect(check.reason).toBeTruthy();
+  });
+
+  it('matches owned series across Unicode composition, like the edit gate', () => {
+    setPermissions('webdav', { scope: 'owned', ownedSeries: ['Pok\u00e9mon'] }, false);
+    expect(canDeleteSeriesOnServer('Poke\u0301mon').allowed).toBe(true);
   });
 });

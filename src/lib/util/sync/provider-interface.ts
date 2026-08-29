@@ -131,6 +131,12 @@ export interface ProviderStatus {
    */
   metadataPermissions?: SeriesMetadataPermissions;
   /**
+   * Whether this account may modify/delete existing server files, as reported by a
+   * provider capable of restricting it (mokuro-bunko's identity endpoint). Absent =
+   * no restriction — a server or provider without the concept.
+   */
+  canModifyDelete?: boolean;
+  /**
    * Stable, non-secret identifier for the connected account, used to scope the
    * cloud metadata cache so switching accounts cannot cross-contaminate it.
    * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
@@ -421,6 +427,14 @@ export interface SyncProvider {
    * Implementations may fall back to deleting files individually.
    */
   deleteSeriesFolder?(seriesTitle: string): Promise<void>;
+
+  /**
+   * Re-run the provider's identity/permission check and publish the result via a
+   * status update. Providers whose permissions can change server-side mid-session
+   * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
+   * the UI's gates track reality without a reconnect. Must fail quietly.
+   */
+  refreshIdentity?(): Promise<void>;
 
   /**
    * Optionally remove a directory ONLY if the provider confirms (server-side)
