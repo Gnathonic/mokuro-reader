@@ -1,6 +1,5 @@
 import { VolumeData, calculatePagesReadInPeriod } from '$lib/settings/volume-data';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { dateUtils } from '$lib/goals/date-utils';
 import { completionsInPeriod, isFinished } from '$lib/goals/goal-counting';
 import { calculatePeriodPageTargetTotal } from '$lib/goals/progress-targets';
 import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';

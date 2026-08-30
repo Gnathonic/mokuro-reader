@@ -11,7 +11,6 @@
     miscSettings,
     updateMiscSetting,
     type ProgressTrackerSorting,
-    type ProgressTargetMode,
     type CompletedVolumesViewMode
   } from '$lib/settings';
   import {
