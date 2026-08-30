@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Button, Card, Input, Label } from 'flowbite-svelte';
   import { nav } from '$lib/util/hash-router';
   import {
@@ -14,7 +15,8 @@
     type GoalType,
     type GoalTarget,
     type CustomGoal,
-    getCurrentPeriodKey
+    getCurrentPeriodKey,
+    ensureCurrentYearTarget
   } from '$lib/goals';
 
   const goalTypes: Exclude<GoalType, 'custom'>[] = ['year', 'season', 'month', 'today'];
@@ -74,6 +76,11 @@
 
     return `${target.goalType.toUpperCase()} • ${target.periodKey}`;
   }
+
+  // Mint this year's goal the first time the tracker is opened. Deliberately
+  // not at app start: a persisted default would put a goals.json in the cloud
+  // folder of every user who never opens this page.
+  onMount(() => ensureCurrentYearTarget());
 </script>
 
 <svelte:head>

@@ -598,3 +598,47 @@ describe('driveFilesCache dedup refetch', () => {
     expect(fetches).toBeGreaterThan(1);
   });
 });
+
+describe('add() for ROOT config files', () => {
+  // This branch was missing entirely: `add()` only handled paths with a slash,
+  // so every targeted post-upload add for a root file was a silent no-op on
+  // Drive. A first-ever upload stayed invisible to get()/getAll() until the
+  // next full account listing, and every sync in between re-uploaded identical
+  // bytes because the cloud read as absent.
+  it.each(['goals.json', 'volume-data.json', 'profiles.json'])(
+    'makes a freshly uploaded %s visible without a listing',
+    (name) => {
+      driveFilesCache.clear();
+      const cache = driveFilesCache;
+
+      cache.add(name, {
+        provider: 'google-drive',
+        fileId: `${name}-1`,
+        name,
+        path: name,
+        modifiedTime: '2026-08-30T00:00:00.000Z',
+        size: 12
+      } as never);
+
+      expect(cache.get(name)?.fileId).toBe(`${name}-1`);
+      expect(cache.getAll(name).map((f) => f.fileId)).toEqual([`${name}-1`]);
+    }
+  );
+
+  it('still groups a path with a folder under its series', () => {
+    driveFilesCache.clear();
+    const cache = driveFilesCache;
+
+    cache.add('Berserk/Vol 1.cbz', {
+      provider: 'google-drive',
+      fileId: 'cbz-1',
+      name: 'Vol 1.cbz',
+      path: 'Berserk/Vol 1.cbz',
+      modifiedTime: '2026-08-30T00:00:00.000Z',
+      size: 12
+    } as never);
+
+    expect(cache.get('Berserk/Vol 1.cbz')?.fileId).toBe('cbz-1');
+    expect(cache.get('Vol 1.cbz')).toBeNull();
+  });
+});

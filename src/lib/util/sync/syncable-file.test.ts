@@ -31,6 +31,7 @@ describe('syncable-file', () => {
   it('accepts the root config files', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
+    expect(isSyncableFile('goals.json')).toBe(true);
   });
 
   it('no longer treats series-metadata.json as a root config file', () => {
@@ -70,6 +71,8 @@ describe('syncable-file', () => {
     expect(isSidecarFile('v.jpeg')).toBe(true);
     expect(isSidecarFile('v.cbz')).toBe(false);
     expect(isRootConfigFile('profiles.json')).toBe(true);
+    expect(isRootConfigFile('goals.json')).toBe(true);
+    expect(isRootConfigFile('GOALS.JSON')).toBe(true);
     expect(isRootConfigFile('v.cbz')).toBe(false);
   });
 });
@@ -93,6 +96,10 @@ describe('isBestEffortMetadataPath', () => {
   it('does NOT cover progress, profiles or archives', () => {
     expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
     expect(isBestEffortMetadataPath('profiles.json')).toBe(false);
+    // goals.json is the USER'S OWN state. No server compiles it, so there is
+    // nothing for a server to reject by design — a failed write is a real
+    // failure and must surface, exactly like a failed progress write.
+    expect(isBestEffortMetadataPath('goals.json')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
   });

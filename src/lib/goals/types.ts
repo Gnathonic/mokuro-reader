@@ -37,6 +37,8 @@ export type GoalSnapshot = {
   closedAt: string;
   completed: Record<string, string>;
   partialProgress: Record<string, number>;
+  /** ISO merge stamp. Snapshots merge by UNION; see `mergeSnapshotEntries`. */
+  lastUpdated: string;
 };
 
 export type VolumeDeadline = {

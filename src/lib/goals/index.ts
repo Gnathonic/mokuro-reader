@@ -42,10 +42,13 @@ export {
 } from './progress-targets';
 
 export {
+  deadlinesWithTrash,
   goalSettings,
   getVolumeDeadline,
+  pruneDeadlinesForMissingVolumes,
   removeVolumeDeadline,
   setVolumeDeadline,
+  setVolumeDeadlineEntries,
   volumeDeadlines
 } from './goal-settings';
 
@@ -53,9 +56,11 @@ export {
   activeGoalSelection,
   createCustomGoal,
   customGoals,
+  ensureCurrentYearTarget,
   goalTargets,
-  goalsData,
+  goalsWithTrash,
   removeCustomGoal,
+  setGoalSections,
   removeGoalTarget,
   setActiveGoalSelection,
   setGoalTarget,
@@ -66,14 +71,27 @@ export { completedAtMap, completionEvents, completionEventsFor } from './complet
 
 export { backfillCompletedAt } from './completed-at-backfill';
 
+export { createSnapshotForPeriod, finalizeGoalSnapshot } from './snapshots';
+
 export {
   buildGoalSnapshotKey,
-  createSnapshotForPeriod,
-  finalizeGoalSnapshot,
   goalSnapshots,
-  isCustomGoalDateRangeLocked
-} from './snapshots';
+  isCustomGoalDateRangeLocked,
+  setGoalSnapshots
+} from './snapshots-store';
 
 export { finalizeClosedGoalSnapshots, initGoalsLifecycle } from './lifecycle';
+
+export {
+  GOALS_FILE_NAME,
+  composeGoalsFile,
+  detectBogusGoalKeys,
+  emptySections,
+  mergeGoalsSections,
+  parseGoalsFile,
+  purgeGoalTombstones,
+  type GoalsFile,
+  type GoalsFileSections
+} from './goals-file';
 
 export { activeGoalPeriod, activeGoalProgress, activeGoalSnapshot } from './active-progress';

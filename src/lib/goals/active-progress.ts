@@ -9,7 +9,7 @@ import {
   getExpectedProgressPercent
 } from './goal-math';
 import { getCustomPeriod, getPeriodForSelection, isDateWithinRange } from './periods';
-import { buildGoalSnapshotKey, goalSnapshots } from './snapshots';
+import { buildGoalSnapshotKey, goalSnapshots } from './snapshots-store';
 import type { CustomGoal, GoalProgress, GoalSelection, GoalTarget } from './types';
 
 function getTargetForSelection(

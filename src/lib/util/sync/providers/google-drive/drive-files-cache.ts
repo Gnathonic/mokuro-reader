@@ -714,6 +714,21 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const seriesTitle = parts.slice(0, -1).join('/');
       const volumeTitle = parts[parts.length - 1]?.replace('.cbz', '') || '';
       this.addDriveFile(seriesTitle, volumeTitle, metadata);
+      return;
+    }
+
+    // A ROOT config file (`volume-data.json`, `profiles.json`, `goals.json`,
+    // `catalog.json`). This branch used to be missing entirely, so every
+    // targeted post-upload `add()` for a root file was a silent no-op on Drive
+    // alone — a first-ever upload stayed invisible to `get()`/`getAll()` until
+    // the next full account listing, and every sync in between saw the cloud as
+    // absent and re-uploaded identical bytes.
+    //
+    // Keyed by the LOWERCASED basename, matching how the fetch keys root config
+    // files (`file.name.toLowerCase()`); `get()` keys off `path.split('/')[0]`,
+    // and callers pass the already-lowercase literal basename.
+    if (parts.length === 1 && parts[0]) {
+      this.addDriveFile(parts[0].toLowerCase(), parts[0], metadata);
     }
   }
 

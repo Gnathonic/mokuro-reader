@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Button, Card } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
   import {
@@ -25,7 +26,8 @@
     activeGoalPeriod,
     activeGoalSnapshot,
     completedAtMap,
-    isDateWithinRange
+    isDateWithinRange,
+    ensureCurrentYearTarget
   } from '$lib/goals';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
@@ -389,6 +391,11 @@
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return period.end.getTime() <= startOfToday.getTime();
   });
+
+  // Mint this year's goal the first time the tracker is opened. Deliberately
+  // not at app start: a persisted default would put a goals.json in the cloud
+  // folder of every user who never opens this page.
+  onMount(() => ensureCurrentYearTarget());
 </script>
 
 <svelte:head>

@@ -3,9 +3,10 @@ import { get } from 'svelte/store';
 import { volumes as catalogVolumes } from '$lib/catalog';
 import { currentView, type View } from '$lib/util/hash-router';
 import { backfillCompletedAt } from './completed-at-backfill';
-import { _goalsData } from './goals-data';
+import { customGoals, goalTargets } from './goals-data';
 import { getCustomPeriod, getPeriodForSelection } from './periods';
-import { _goalSnapshots, buildGoalSnapshotKey, finalizeGoalSnapshot } from './snapshots';
+import { finalizeGoalSnapshot } from './snapshots';
+import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
 import type { GoalSelection } from './types';
 
 function isVolumeView(view: View) {
@@ -41,7 +42,8 @@ export function finalizeClosedGoalSnapshots() {
   if (!catalogLoaded()) return;
 
   const now = new Date();
-  const { targets, customGoals: custom } = get(_goalsData);
+  const targets = get(goalTargets);
+  const custom = get(customGoals);
   const snapshots = get(_goalSnapshots);
 
   targets.forEach((target) => {
