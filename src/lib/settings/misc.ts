@@ -52,9 +52,35 @@ const defaultSettings: MiscSettings = {
   gdriveAutoReAuth: true // Keep users synced during long reading sessions
 };
 
-const stored = browser ? window.localStorage.getItem('miscSettings') : undefined;
+/**
+ * Stored settings are MERGED OVER the defaults, never used raw.
+ *
+ * A raw `JSON.parse(stored)` returns whatever shape that key had when it was
+ * last written, so every key added after a user's first visit reads back
+ * `undefined` for them forever — they never wrote the new key, so it is never
+ * in their stored blob. The five progress-tracker keys are the newest example;
+ * `deviceRamGB` and `gdriveAutoReAuth` had the same latent hole.
+ *
+ * The parse is guarded for the same reason the other stores guard theirs: this
+ * runs in the module body, so a truncated key would white-screen the app on
+ * every load with no way out but clearing site data.
+ */
+function loadMiscSettings(): MiscSettings {
+  if (!browser) return defaultSettings;
 
-export const miscSettings = writable<MiscSettings>(stored ? JSON.parse(stored) : defaultSettings);
+  const stored = window.localStorage.getItem('miscSettings');
+  if (!stored) return defaultSettings;
+
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== 'object') return defaultSettings;
+    return { ...defaultSettings, ...(parsed as Partial<MiscSettings>) };
+  } catch {
+    return defaultSettings;
+  }
+}
+
+export const miscSettings = writable<MiscSettings>(loadMiscSettings());
 
 miscSettings.subscribe((miscSettings) => {
   if (browser) {

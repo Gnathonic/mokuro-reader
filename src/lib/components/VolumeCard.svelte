@@ -3,6 +3,7 @@
   import { nav } from '$lib/util/hash-router';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
+  import PlaceholderThumbnail from '$lib/components/PlaceholderThumbnail.svelte';
 
   interface Props {
     volumeId: string;
@@ -58,6 +59,7 @@
 </script>
 
 <div
+  class="volume-card"
   role="group"
   title={volumeTitle || 'Unknown Title'}
   onmouseenter={() => onHover(volumeId)}
@@ -71,14 +73,21 @@
         if (seriesId) nav.toReader(seriesId, volumeId);
       }}
     >
-      <img
-        alt={volumeTitle || 'Volume Cover'}
-        class="mb-3 rounded"
-        style="max-width: 125px; max-height: 180px; height: auto;"
-        {@attach thumbnailAttachment(thumbnail)}
-      />
+      {#if thumbnail}
+        <img
+          alt={volumeTitle || 'Volume Cover'}
+          class="mb-3 rounded"
+          style="max-width: 125px; max-height: 180px; height: auto;"
+          {@attach thumbnailAttachment(thumbnail)}
+        />
+      {:else}
+        <!-- A metadata-only or cloud-only volume has no local thumbnail blob.
+             A src-less <img> renders the broken-image glyph; the house pattern
+             (VolumeItem.svelte) is PlaceholderThumbnail. -->
+        <PlaceholderThumbnail message={volumeTitle || 'Volume Cover'} />
+      {/if}
     </a>
-    <div class="pending" style:--progress={progressPercentString}></div>
+    <div class="pending bg-gray-950/55" style:--progress={progressPercentString}></div>
   </div>
 
   {#if showProgressBar}
@@ -95,18 +104,26 @@
 </div>
 
 <style>
-  :root {
+  /*
+   * Scoped to the card, NEVER `:root`. Svelte does not scope `:root`, so a
+   * component-level `:root` block escapes into the document — and Tailwind v4
+   * compiles every numeric spacing utility to `calc(var(--spacing) * N)`, so a
+   * stray `--spacing: 5px` here silently rescaled the whole app's padding,
+   * margins and icon sizes the moment this lazy chunk loaded. `--spacing` was
+   * never read by any rule in this PR; it is gone rather than renamed.
+   *
+   * The children (VolumeProgressBar, VolumeDeadline) inherit these.
+   */
+  .volume-card {
     --box-width: 125px;
     --box-height: 180px;
     --border-radius: 5px;
-    --spacing: 5px;
     --transition-duration: 0.3s;
     --hover-scale: 1.1;
   }
 
   .imagebox {
     position: relative;
-    border: var(--border-style);
     width: var(--box-width);
     height: var(--box-height);
     overflow: hidden;
@@ -142,8 +159,6 @@
     right: 0;
     bottom: 0;
     width: calc(100% - var(--progress));
-    background-color: #333;
-    opacity: 0.55;
     pointer-events: none;
   }
 </style>

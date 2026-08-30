@@ -570,14 +570,3 @@
 
 <!-- Progress Target Settings Modal -->
 <ProgressTargetSettingsModal bind:open={settingsModalOpen} />
-
-<style>
-  :root {
-    --box-width: 125px;
-    --box-height: 180px;
-    --border-radius: 5px;
-    --spacing: 5px;
-    --transition-duration: 0.3s;
-    --hover-scale: 1.1;
-  }
-</style>
