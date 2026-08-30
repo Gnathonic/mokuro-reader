@@ -74,10 +74,24 @@ function loadMiscSettings(): MiscSettings {
   try {
     const parsed: unknown = JSON.parse(stored);
     if (!parsed || typeof parsed !== 'object') return defaultSettings;
-    return { ...defaultSettings, ...(parsed as Partial<MiscSettings>) };
+
+    const merged = { ...defaultSettings, ...(parsed as Partial<MiscSettings>) };
+
+    // Clamp the two numeric keys. They index into date arithmetic, so an
+    // out-of-range value from a hand edit or an older build produces an
+    // Invalid Date period rather than a wrong-but-usable one.
+    merged.progressResetHour = clampInt(merged.progressResetHour, 0, 23, 0);
+    merged.progressResetDay = clampInt(merged.progressResetDay, 0, 6, 1);
+
+    return merged;
   } catch {
     return defaultSettings;
   }
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 export const miscSettings = writable<MiscSettings>(loadMiscSettings());

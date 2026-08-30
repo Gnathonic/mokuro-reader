@@ -188,6 +188,7 @@ export const nav = {
  * - upload -> catalog
  * - merge-series -> catalog
  * - progress-tracker -> catalog
+ * - manage-goals -> progress-tracker
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -206,12 +207,17 @@ export function navigateBack(): void {
     case 'series':
       nav.toCatalog();
       break;
+    case 'manage-goals':
+      // Manage Goals is only ever reached from the tracker, and its own button
+      // says "Back to Progress" — sending Escape to the catalog instead would
+      // make the two disagree and drop the user a level further than the UI says.
+      nav.toProgressTracker();
+      break;
     case 'cloud':
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
     case 'progress-tracker':
-    case 'manage-goals':
       nav.toCatalog();
       break;
     case 'catalog':

@@ -24,21 +24,6 @@ export const dateUtils = {
     return Math.max(0, Math.round(diffInDays));
   },
 
-  daysIntoYear: (date: Date = new Date()): number => {
-    const startOfYear = new Date(date.getFullYear(), 0, 1);
-    const dateMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    return Math.floor((dateMidnight.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-  },
-
-  daysInYear: (date: Date = new Date()): number => {
-    const year = date.getFullYear();
-    return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 366 : 365;
-  },
-
-  endOfYear: (year: number = new Date().getFullYear()): string => {
-    return `${year}-12-31`;
-  },
-
   formatDate: (date: Date): string => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -99,23 +84,38 @@ export function buildTodayKey(date: Date = new Date()): string {
   return dateUtils.formatDate(date);
 }
 
+/**
+ * Period keys are matched WHOLE, never split on '-' and coerced.
+ *
+ * The four key shapes share a separator, so a loose parser silently accepts
+ * another shape's key: `parseMonthKey('2026-Winter')` used to return
+ * `monthIndex: NaN` (`Number('Winter')` is NaN, and NaN fails BOTH `< 0` and
+ * `> 11`, so the range guard waved it through), and `parseMonthKey('2026-08-30')`
+ * read a today key as August. The caller then built a `GoalPeriod` around an
+ * Invalid Date and every comparison against it came out false — a goal that
+ * silently counted nothing rather than one that failed to load.
+ */
+const SEASON_KEY_PATTERN = new RegExp(`^(\\d{4})-(${seasonNames.join('|')})$`);
+const MONTH_KEY_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const YEAR_KEY_PATTERN = /^\d{4}$/;
+
 export function parseSeasonKey(periodKey: string): { year: number; seasonIndex: number } | null {
-  const [yearPart, seasonPart] = periodKey.split('-');
-  const year = Number(yearPart);
-  const seasonIndex = dateUtils.seasonNames.indexOf(seasonPart as (typeof seasonNames)[number]);
-  if (!Number.isFinite(year) || seasonIndex < 0) return null;
-  return { year, seasonIndex };
+  const match = SEASON_KEY_PATTERN.exec(periodKey);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    seasonIndex: seasonNames.indexOf(match[2] as (typeof seasonNames)[number])
+  };
 }
 
 export function parseMonthKey(periodKey: string): { year: number; monthIndex: number } | null {
-  const [yearPart, monthPart] = periodKey.split('-');
-  const year = Number(yearPart);
-  const monthIndex = Number(monthPart) - 1;
-  if (!Number.isFinite(year) || monthIndex < 0 || monthIndex > 11) return null;
-  return { year, monthIndex };
+  const match = MONTH_KEY_PATTERN.exec(periodKey);
+  if (!match) return null;
+  return { year: Number(match[1]), monthIndex: Number(match[2]) - 1 };
 }
 
 export function parseYearKey(periodKey: string): number | null {
-  const year = Number(periodKey);
-  return Number.isFinite(year) ? year : null;
+  // `Number('')` and `Number('  ')` are 0, not NaN, so the old `Number.isFinite`
+  // guard turned an empty key into the year 0 and a period starting in 1900.
+  return YEAR_KEY_PATTERN.test(periodKey) ? Number(periodKey) : null;
 }

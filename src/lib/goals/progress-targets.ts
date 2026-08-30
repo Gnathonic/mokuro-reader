@@ -145,14 +145,33 @@ export function calculatePeriodPageTargetTotal(
     deadlineParts[2] + 1
   );
 
-  const msPerPeriod = mode === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
-  const msUntilDeadlineInclusive = deadlineInclusiveEnd.getTime() - periodStart.getTime();
+  // Count CALENDAR periods, not elapsed milliseconds. Reset boundaries land on
+  // the same wall-clock hour each day, so a 25-hour autumn fall-back day pushed
+  // `(end - start) / 86400000` just over a whole number and `Math.ceil` invented
+  // a period that does not exist: with resetHour 0, a deadline two days out read
+  // as 49 hours -> 3 daily periods, and the reader was told to read two thirds
+  // of what the deadline actually demands.
+  const daysUntilDeadlineInclusive = calendarDaysBetween(periodStart, deadlineInclusiveEnd);
   const periodsRemainingIncludingCurrent = Math.max(
     1,
-    Math.ceil(msUntilDeadlineInclusive / msPerPeriod)
+    mode === 'daily' ? daysUntilDeadlineInclusive : Math.ceil(daysUntilDeadlineInclusive / 7)
   );
 
   return Math.ceil(
     (pagesReadInCurrentPeriod + pagesStillNeeded) / periodsRemainingIncludingCurrent
   );
+}
+
+/**
+ * Whole calendar days from `from`'s local day to `to`'s local day.
+ *
+ * Both ends are collapsed to local midnight first, so the difference is an
+ * exact multiple of 24h in every zone except across a DST shift — where the
+ * `Math.round` absorbs the stray ±1 hour. `dateUtils.calculateDaysRemaining`
+ * and `getDaysRemainingInPeriod` count the same way for the same reason.
+ */
+function calendarDaysBetween(from: Date, to: Date): number {
+  const fromMidnight = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const toMidnight = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  return Math.round((toMidnight.getTime() - fromMidnight.getTime()) / (1000 * 60 * 60 * 24));
 }

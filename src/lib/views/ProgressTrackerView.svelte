@@ -1,14 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Button, Card } from 'flowbite-svelte';
+  import { Button, Card, Spinner } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
-  import {
-    volumes,
-    VolumeData,
-    progress,
-    calculatePagesReadInPeriod
-  } from '$lib/settings/volume-data';
-  import { volumes as catalogVolumes } from '$lib/catalog';
+  import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
+  // Placeholders included: a volume read on another device and never downloaded
+  // here has no catalog row, so the plain store gave it page_count 0 and the
+  // tracker dropped it from every section.
+  import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
   import {
     miscSettings,
     updateMiscSetting,
@@ -18,56 +16,77 @@
   } from '$lib/settings';
   import {
     volumeDeadlines,
-    calculatePeriodPageTargetTotal,
     getCurrentPeriodStart,
     getNextResetTime,
     formatRelativeResetTime,
-    dateUtils,
     activeGoalPeriod,
     activeGoalSnapshot,
     completedAtMap,
-    isDateWithinRange,
     ensureCurrentYearTarget
   } from '$lib/goals';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
   import ProgressTargetSettingsModal from '$lib/components/ProgressTargetSettingsModal.svelte';
   import {
+    bucketVolumes,
+    computeVolumeStats,
+    createEntriesWithSortData,
     groupCompletedEntriesBySeries,
+    pickNextPerSeries,
     sortByAddedDate,
     sortByCompletionDate,
-    type TrackerEntryWithSortData
+    sortEntries
   } from '$lib/views/progress-tracker-helpers';
 
-  // Check if volumes is empty
-  let hasVolumes = $derived(Object.keys($volumes ?? {}).length > 0);
-
-  // Create typed entries for iteration
-  let volumeEntries = $derived(Object.entries($volumes ?? {}) as [string, VolumeData][]);
+  // The catalog store is `undefined` until its first read resolves. Collapsing
+  // that into `{}` made every page count 0 for one coalesce window, which put
+  // the whole library into Future Reads and then re-flowed a moment later.
+  let catalogLoading = $derived($catalogVolumes === undefined);
   let catalogVolumeMap = $derived($catalogVolumes ?? {});
+
+  let hasVolumes = $derived(Object.keys($volumes ?? {}).length > 0);
+  let volumeEntries = $derived(Object.entries($volumes ?? {}) as [string, VolumeData][]);
 
   // Settings modal state
   let settingsModalOpen = $state(false);
 
-  // Calculate current period start for progress tracking
-  let currentPeriodStart = $derived(
-    getCurrentPeriodStart(
-      $miscSettings.progressTargetMode ?? 'daily',
-      $miscSettings.progressResetHour ?? 0,
-      $miscSettings.progressResetDay ?? 1
-    )
-  );
+  /*
+   * A ticking clock, so everything derived from "now" actually advances.
+   *
+   * The period start, the reset countdown and the closed-goal test were derived
+   * only from `miscSettings`, so they were computed once at mount and then
+   * frozen: a tracker left open past the daily reset kept showing the old
+   * period's pages-read counts and a countdown stuck at "0m".
+   */
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (nowTick = Date.now()), 60 * 1000);
+    return () => clearInterval(timer);
+  });
+
+  let currentPeriodStart = $derived.by(() => {
+    void nowTick; // re-derive when the clock ticks past a reset boundary
+    return getCurrentPeriodStart(
+      $miscSettings.progressTargetMode,
+      $miscSettings.progressResetHour,
+      $miscSettings.progressResetDay
+    );
+  });
 
   // Calculate next reset time and format for display
-  let nextResetTimestamp = $derived(
-    getNextResetTime(
-      $miscSettings.progressTargetMode ?? 'daily',
-      $miscSettings.progressResetHour ?? 0,
-      $miscSettings.progressResetDay ?? 1
-    )
-  );
+  let nextResetTimestamp = $derived.by(() => {
+    void nowTick;
+    return getNextResetTime(
+      $miscSettings.progressTargetMode,
+      $miscSettings.progressResetHour,
+      $miscSettings.progressResetDay
+    );
+  });
 
-  let relativeResetTime = $derived(formatRelativeResetTime(nextResetTimestamp));
+  let relativeResetTime = $derived.by(() => {
+    void nowTick;
+    return formatRelativeResetTime(nextResetTimestamp);
+  });
 
   // Format reset display with day name for weekly mode
   let resetTimeDisplay = $derived.by(() => {
@@ -81,7 +100,7 @@
     const period = resetDate.getHours() < 12 ? 'AM' : 'PM';
     const timeStr = `${hour12}:00 ${period}`;
 
-    if (($miscSettings.progressTargetMode ?? 'daily') === 'weekly') {
+    if ($miscSettings.progressTargetMode === 'weekly') {
       const dayNames = [
         'Sunday',
         'Monday',
@@ -97,41 +116,7 @@
     return `Resets in ${relativeResetTime}`;
   });
 
-  // Precompute progress stats for each volume
-  let volumeStats = $derived.by(() => {
-    const stats: Record<
-      string,
-      {
-        progressPercent: number;
-        progressPercentString: string;
-        remainingPages: number;
-        currentPage: number;
-        totalPages: number;
-      }
-    > = {};
-    const catalog = catalogVolumeMap;
-
-    for (const [volume_uuid, _volumeData] of volumeEntries) {
-      const totalPages = catalog[volume_uuid]?.page_count ?? 0;
-      let currentPage = $progress[volume_uuid] ?? 0;
-      // Typically a user won't stop reading on the first page, so count this as 0% progress
-      if (currentPage === 1) {
-        currentPage = 0;
-      }
-
-      const progressPercent = totalPages > 0 ? (currentPage / totalPages) * 100 : 0;
-
-      stats[volume_uuid] = {
-        progressPercent,
-        progressPercentString: progressPercent.toFixed(0) + '%',
-        remainingPages: totalPages - currentPage,
-        currentPage,
-        totalPages
-      };
-    }
-
-    return stats;
-  });
+  let volumeStats = $derived(computeVolumeStats(volumeEntries, catalogVolumeMap, $progress));
 
   // Track hover state for each volume
   let hoveredVolume = $state<string | null>(null);
@@ -187,195 +172,36 @@
     settingsModalOpen = true;
   }
 
-  // Helper function to create entries with sort data
-  function createEntriesWithSortData(
-    entries: [string, VolumeData][],
-    deadlines: Record<string, string>,
-    mode: ProgressTargetMode,
-    periodStart: number
-  ): TrackerEntryWithSortData[] {
-    return entries.map(([volumeId, volumeData]) => {
-      const stats = volumeStats[volumeId];
-      const remainingPages = stats?.remainingPages ?? 0;
-      const deadline = deadlines[volumeId] || null;
-
-      // Calculate pages read in current period
-      const pagesReadInPeriod = calculatePagesReadInPeriod(volumeData.recentPageTurns, periodStart);
-
-      // Fixed total target for this period. This value includes pages already
-      // read this period; subtract `pagesReadInPeriod` to get the remainder.
-      const targetPagesPerPeriod = calculatePeriodPageTargetTotal(
-        remainingPages,
-        deadline,
-        mode,
-        pagesReadInPeriod,
-        periodStart
-      );
-      const pagesToGoal =
-        targetPagesPerPeriod !== null ? targetPagesPerPeriod - pagesReadInPeriod : null;
-      const daysUntilDeadline = deadline ? dateUtils.calculateDaysRemaining(deadline) : null;
-      const lastProgressUpdate = new Date(volumeData.lastProgressUpdate || 0).getTime();
-
-      return {
-        volumeId,
-        volumeData,
-        remainingPages,
-        targetPagesPerPeriod,
-        pagesReadInPeriod,
-        pagesToGoal,
-        daysUntilDeadline,
-        lastProgressUpdate,
-        hasDeadline: deadline !== null
-      };
-    });
-  }
-
-  // Helper function to sort Future Reads by added date (newest first)
-  // Helper function to sort entries
-  function sortEntries(entriesWithSortData: TrackerEntryWithSortData[]) {
-    const sorting = $miscSettings.progressTrackerSorting;
-
-    return [...entriesWithSortData].sort((a, b) => {
-      switch (sorting) {
-        case 'last-read':
-          // Most recently read first
-          return b.lastProgressUpdate - a.lastProgressUpdate;
-
-        case 'pages-per-period':
-          // Highest target per period first (most urgent)
-          // Volumes without deadlines go to the end
-          if (a.targetPagesPerPeriod === null && b.targetPagesPerPeriod === null) {
-            return b.lastProgressUpdate - a.lastProgressUpdate;
-          }
-          if (a.targetPagesPerPeriod === null) return 1;
-          if (b.targetPagesPerPeriod === null) return -1;
-          return b.targetPagesPerPeriod - a.targetPagesPerPeriod;
-
-        case 'pages-to-goal':
-          // Highest pages remaining to reach goal first (most behind)
-          // Volumes without targets go to the end
-          if (a.pagesToGoal === null && b.pagesToGoal === null) {
-            return b.lastProgressUpdate - a.lastProgressUpdate;
-          }
-          if (a.pagesToGoal === null) return 1;
-          if (b.pagesToGoal === null) return -1;
-          return b.pagesToGoal - a.pagesToGoal;
-
-        case 'fewest-pages':
-          // Fewest remaining pages first (closest to completion)
-          return a.remainingPages - b.remainingPages;
-
-        case 'deadline':
-          // Soonest deadline first
-          // Volumes without deadlines go to the end
-          if (!a.hasDeadline && !b.hasDeadline) {
-            return b.lastProgressUpdate - a.lastProgressUpdate;
-          }
-          if (!a.hasDeadline) return 1;
-          if (!b.hasDeadline) return -1;
-          return (a.daysUntilDeadline ?? 0) - (b.daysUntilDeadline ?? 0);
-
-        default:
-          return 0;
-      }
-    });
-  }
-
-  // Split volumes into reading status categories
+  // Split volumes into reading status categories. The bucketing, sorting and
+  // per-series pick are pure functions in `progress-tracker-helpers.ts` so they
+  // can be tested; this only wires the stores into them.
   let volumeSections = $derived.by(() => {
-    const currentlyReading: [string, VolumeData][] = [];
-    const futureReads: [string, VolumeData][] = [];
-    const completedVolumes: [string, VolumeData][] = [];
-
-    const activePeriod = $activeGoalPeriod;
-    const snapshot = $activeGoalSnapshot;
-    const completedMap = $completedAtMap;
-
-    // Explicitly track deadline changes to ensure reactivity
     const deadlines = $volumeDeadlines;
-    const mode = $miscSettings.progressTargetMode ?? 'daily';
+    const mode = $miscSettings.progressTargetMode;
     const periodStart = currentPeriodStart;
-    const catalog = catalogVolumeMap;
 
-    for (const [volumeId, volumeData] of volumeEntries) {
-      const currentPage = $progress[volumeId] ?? 0;
-      const totalPages = catalog[volumeId]?.page_count ?? 0;
+    const buckets = bucketVolumes(
+      volumeEntries,
+      volumeStats,
+      $activeGoalPeriod,
+      $activeGoalSnapshot,
+      nowTick
+    );
 
-      const isCompletedByProgress = currentPage >= totalPages && totalPages > 0;
-
-      const isCompletedInActiveGoal = () => {
-        if (!activePeriod) return isCompletedByProgress;
-
-        if (snapshot) {
-          return Object.prototype.hasOwnProperty.call(snapshot.completed, volumeId);
-        }
-
-        const completedAt = completedMap[volumeId];
-        if (!completedAt) return false;
-        return isDateWithinRange(completedAt, activePeriod.start, activePeriod.end);
-      };
-
-      if (isCompletedByProgress) {
-        if (isCompletedInActiveGoal()) {
-          // Completed: progress equals total pages
-          completedVolumes.push([volumeId, volumeData]);
-        }
-        continue;
-      }
-
-      if (currentPage > 1) {
-        // Currently Reading: progress > 1 but not at final page.
-        // Skip volumes with no remaining pages (e.g. missing catalog metadata).
-        if (totalPages - currentPage >= 1) {
-          currentlyReading.push([volumeId, volumeData]);
-        }
-      } else {
-        // Future Reads: no progress or progress = 1
-        futureReads.push([volumeId, volumeData]);
-      }
-    }
-
-    // Collect series that are currently being read
-    const currentlyReadingSeries: Record<string, true> = {};
-    for (const [, volumeData] of currentlyReading) {
-      if (volumeData.series_uuid) {
-        currentlyReadingSeries[volumeData.series_uuid] = true;
-      }
-    }
-
-    // Filter future reads to show only one volume per series, excluding series that are currently being read
-    // TODO: Replace simple title sort with sortVolumes function when available on "natural sorting" branch
-    const filteredFutureReads: [string, VolumeData][] = [];
-    const seenSeries: Record<string, true> = {};
-
-    // Sort all future reads by volume title to get consistent ordering within series
-    const sortedFutureReads = [...futureReads].sort(([, a], [, b]) => {
-      const titleA = a.volume_title || '';
-      const titleB = b.volume_title || '';
-      return titleA.localeCompare(titleB, undefined, { numeric: true, sensitivity: 'base' });
-    });
-
-    for (const [volumeId, volumeData] of sortedFutureReads) {
-      const seriesUuid = volumeData.series_uuid;
-      if (seriesUuid && !currentlyReadingSeries[seriesUuid] && !seenSeries[seriesUuid]) {
-        seenSeries[seriesUuid] = true;
-        filteredFutureReads.push([volumeId, volumeData]);
-      } else if (!seriesUuid) {
-        // Include volumes without series_uuid (shouldn't happen in normal usage)
-        filteredFutureReads.push([volumeId, volumeData]);
-      }
-    }
+    const withSortData = (entries: [string, VolumeData][]) =>
+      createEntriesWithSortData(entries, volumeStats, deadlines, mode, periodStart);
 
     return {
       currentlyReading: sortEntries(
-        createEntriesWithSortData(currentlyReading, deadlines, mode, periodStart)
+        withSortData(buckets.currentlyReading),
+        $miscSettings.progressTrackerSorting
       ),
       futureReads: sortByAddedDate(
-        createEntriesWithSortData(filteredFutureReads, deadlines, mode, periodStart)
+        withSortData(pickNextPerSeries(buckets.futureReads, buckets.currentlyReading))
       ),
       completedVolumes: sortByCompletionDate(
-        createEntriesWithSortData(completedVolumes, deadlines, mode, periodStart),
-        completedMap
+        withSortData(buckets.completedVolumes),
+        $completedAtMap
       )
     };
   });
@@ -387,7 +213,7 @@
   let isGoalClosed = $derived.by(() => {
     const period = $activeGoalPeriod;
     if (!period) return false;
-    const now = new Date();
+    const now = new Date(nowTick);
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return period.end.getTime() <= startOfToday.getTime();
   });
@@ -410,7 +236,14 @@
   <!-- Annual Goal Progress -->
   <AnnualGoalProgress />
 
-  {#if !hasVolumes}
+  {#if catalogLoading}
+    <!-- Not the same thing as an empty library: every page count is unknown
+         until the catalog resolves, so sectioning now would show the whole
+         library as Future Reads and then re-flow. -->
+    <div class="flex items-center justify-center p-16">
+      <Spinner size="12" />
+    </div>
+  {:else if !hasVolumes}
     <Card class="mb-6 py-8 text-center">
       <BookSolid size="lg" class="mx-auto mb-3 text-gray-500" />
       <h2 class="mb-2 text-lg font-semibold text-gray-300">No Volumes Started Yet</h2>

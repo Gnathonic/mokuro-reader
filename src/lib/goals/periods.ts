@@ -105,10 +105,14 @@ export function getPeriodForSelection(selection: GoalSelection): GoalPeriod | nu
   }
 
   if (selection.goalType === 'today') {
-    const [yearPart, monthPart, dayPart] = selection.periodKey.split('-').map(Number);
-    if (!yearPart || !monthPart || !dayPart) return null;
-    const start = new Date(yearPart, monthPart - 1, dayPart);
-    const end = new Date(yearPart, monthPart - 1, dayPart + 1);
+    // `parseLocalDateString`, not a bare split: it round-trips the parsed date
+    // back through the calendar, so '2026-13-45' is rejected here instead of
+    // rolling over into a period silently labelled February 2027. The other
+    // three branches get the same guarantee from the strict key patterns in
+    // `date-utils`, which is why nothing below can hold an Invalid Date.
+    const start = parseLocalDateString(selection.periodKey);
+    if (!start) return null;
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
     const label = start.toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',

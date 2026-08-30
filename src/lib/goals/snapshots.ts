@@ -1,13 +1,26 @@
 import { get } from 'svelte/store';
 import { volumes } from '../settings/volume-data';
-import { volumes as catalogVolumes } from '$lib/catalog';
-import { _completedAtMap } from './completed-at';
+// Placeholders included, for the same reason `active-progress` uses them: a
+// volume read on another device and never downloaded here has no catalog row,
+// and a snapshot is permanent — undercounting one is not recoverable.
+import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { completionEventsFor } from './completed-at';
 import { dateUtils } from './date-utils';
-import { calculatePartialVolumeProgressInPeriod } from './goal-math';
+import { partialProgressInPeriod } from './goal-counting';
 import { isDateWithinRange } from './periods';
 import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
 import type { GoalSnapshot, GoalType } from './types';
 
+/**
+ * Freeze what a closed period counted.
+ *
+ * Uses the SAME rules as the live total (`goal-counting.ts`), so a period's
+ * number does not change the moment it closes and the UI switches from the
+ * live branch to this snapshot. The two used to differ — the live branch
+ * additionally required `currentPage > 1` before granting partial credit — and
+ * the discrepancy was baked in permanently, because nothing ever rewrites a
+ * snapshot.
+ */
 export function createSnapshotForPeriod(
   goalType: GoalType,
   periodKey: string,
@@ -16,32 +29,31 @@ export function createSnapshotForPeriod(
 ): GoalSnapshot {
   const completed: Record<string, string> = {};
   const partialProgress: Record<string, number> = {};
-  const completedAtMap = get(_completedAtMap);
-  const allVolumes = get(volumes);
+  const allVolumes = get(volumes) ?? {};
   const catalog = get(catalogVolumes) ?? {};
+  const now = Date.now();
 
-  Object.entries(completedAtMap).forEach(([volumeId, completedAt]) => {
-    if (completedAt && isDateWithinRange(completedAt, start, end)) {
-      completed[volumeId] = completedAt;
+  Object.entries(allVolumes).forEach(([volumeId, volumeData]) => {
+    // Archived passes count too, dated when the pass finished. The record is
+    // one stamp per volume, so a volume finished twice in the period keeps the
+    // FIRST — the snapshot's `completed` map is "which volumes were finished
+    // here", and its size is the count the header shows.
+    const inPeriod = completionEventsFor(volumeData, now)
+      .filter((stamp) => isDateWithinRange(stamp, start, end))
+      .sort();
+
+    if (inPeriod.length > 0) {
+      completed[volumeId] = inPeriod[0];
+      return;
     }
-  });
 
-  Object.entries(allVolumes ?? {}).forEach(([volumeId, volumeData]) => {
-    if (completed[volumeId]) return;
-
-    const totalPages = catalog[volumeId]?.page_count ?? 0;
-    if (totalPages <= 0) return;
-
-    const partial = calculatePartialVolumeProgressInPeriod(
-      volumeData.recentPageTurns,
+    const partial = partialProgressInPeriod(
+      volumeData,
+      catalog[volumeId]?.page_count ?? 0,
       start,
-      end,
-      totalPages
+      end
     );
-
-    if (partial > 0) {
-      partialProgress[volumeId] = partial;
-    }
+    if (partial > 0) partialProgress[volumeId] = partial;
   });
 
   const closedAt = new Date().toISOString();

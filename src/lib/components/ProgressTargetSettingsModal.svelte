@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Modal, Label, Select, Helper } from 'flowbite-svelte';
+  import { Button, Modal, Label, Select, Helper } from 'flowbite-svelte';
   import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
   import { getNextResetTime, formatRelativeResetTime } from '$lib/goals';
 
@@ -68,8 +68,10 @@
   }
 </script>
 
-<Modal bind:open size="md" title="Progress Target Settings">
-  <div class="flex flex-col gap-4">
+<Modal bind:open size="md" outsideclose title="Progress Target Settings">
+  <!-- relative z-10: night mode filters the <dialog>, which creates a stacking context
+       and lets a scrollable sibling swallow clicks meant for the controls below. -->
+  <div class="relative z-10 flex flex-col gap-4">
     <!-- Explanation of feature -->
     <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
       <p class="text-sm text-gray-700 dark:text-gray-300">
@@ -104,11 +106,26 @@
     <div class="rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Next reset:</span>
-        <span class="text-sm text-gray-900 dark:text-white">
-          {nextResetDisplay}
-          <span class="ml-1 text-xs text-gray-500">in {relativeResetTime}</span>
-        </span>
+        <!-- Keyed: Migaku/Yomitan rewrite this readout in place and then keep showing the
+             old reset time after the hour or day is changed (CLAUDE.md). -->
+        {#key `${nextResetDisplay}|${relativeResetTime}`}
+          <span class="text-sm text-gray-900 dark:text-white">
+            {nextResetDisplay}
+            <span class="ml-1 text-xs text-gray-500">in {relativeResetTime}</span>
+          </span>
+        {/key}
       </div>
+    </div>
+
+    <!-- Every control above writes through on change, so Close is the only action — but
+         without it the only ways out are Escape and the header X. relative z-10 for the
+         same night-mode stacking context as the wrapper.
+         data-autofocus: otherwise the dialog focuses the first control it finds, which is
+         the reset-hour Select — an arrow key away from silently changing the setting. -->
+    <div
+      class="relative z-10 flex justify-end gap-2 border-t border-gray-200 pt-4 dark:border-gray-700"
+    >
+      <Button color="alternative" onclick={() => (open = false)} data-autofocus>Close</Button>
     </div>
   </div>
 </Modal>

@@ -38,6 +38,11 @@
 
   function handleDateChange(e: Event) {
     const target = e.target as HTMLInputElement;
+    // setVolumeDeadline takes a real YYYY-MM-DD and drops anything else without a word,
+    // which would close this editor looking like the deadline saved. A date input
+    // sanitizes its own value to '' or exactly that shape; `max` below caps the year at
+    // four digits, the one value its spinner could otherwise hand back that the store
+    // refuses.
     const newDeadline = target.value;
 
     if (newDeadline) {
@@ -111,12 +116,19 @@
       title={deadline ? `Deadline: ${deadline}` : 'Click to set a deadline'}
     >
       {#if showDeadlineDisplay}
-        <div class={urgencyClass}>
-          {pagesReadInPeriod}/{targetPagesPerPeriod} pages
-        </div>
-        <div class="ml-1 text-gray-500">
-          ({deadlineDisplay})
-        </div>
+        <!-- Both readouts are keyed: a page count and a countdown are precisely the text
+             Migaku/Yomitan rewrite in place, and they then keep showing yesterday's
+             figure across a page turn or a date change (CLAUDE.md). -->
+        {#key `${pagesReadInPeriod}/${targetPagesPerPeriod}`}
+          <div class={urgencyClass}>
+            {pagesReadInPeriod}/{targetPagesPerPeriod} pages
+          </div>
+        {/key}
+        {#key deadlineDisplay}
+          <div class="ml-1 text-gray-500">
+            ({deadlineDisplay})
+          </div>
+        {/key}
       {:else}
         <div class="text-gray-500 italic">Set deadline</div>
       {/if}
@@ -130,6 +142,7 @@
         value={dateInputValue}
         class="box-border w-full rounded border-none bg-gray-600 p-1 text-xs text-white"
         min={dateUtils.formatDate(new Date())}
+        max="9999-12-31"
         onchange={handleDateChange}
         onkeydown={handleKeydown}
         onblur={handleBlur}

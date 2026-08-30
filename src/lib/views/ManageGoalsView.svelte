@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Button, Card, Input, Label } from 'flowbite-svelte';
+  import { Button, Card, Input, Label, Select } from 'flowbite-svelte';
+  import { ArrowLeftOutline } from 'flowbite-svelte-icons';
   import { nav } from '$lib/util/hash-router';
+  import { promptConfirmation } from '$lib/util';
   import {
     goalTargets,
     customGoals,
@@ -20,10 +22,18 @@
   } from '$lib/goals';
 
   const goalTypes: Exclude<GoalType, 'custom'>[] = ['year', 'season', 'month', 'today'];
+  const goalTypeOptions = goalTypes.map((type) => ({ value: type, name: type }));
 
   let selectedGoalType = $state<Exclude<GoalType, 'custom'>>('year');
   let selectedPeriodKey = $state(getCurrentPeriodKey('year'));
   let targetValue = $state(52);
+
+  let periodOptions = $derived(
+    getRecentPeriods(selectedGoalType, 8).map((period) => ({
+      value: period.periodKey,
+      name: period.label
+    }))
+  );
 
   let customEdits = $state<Record<string, CustomGoal>>({});
 
@@ -68,6 +78,22 @@
     cancelCustom(goalId);
   }
 
+  // Both removals are tombstoned and sync outwards — there is no undo and no snackbar to
+  // undo from, so neither fires straight off its button. A custom goal takes its saved
+  // progress history out of reach with it, which is what the wording has to say.
+  function confirmRemoveTarget(target: GoalTarget) {
+    promptConfirmation(`Remove the ${getTargetLabel(target)} target?`, () =>
+      removeGoalTarget(target.goalType, target.periodKey)
+    );
+  }
+
+  function confirmRemoveCustom(goal: CustomGoal) {
+    promptConfirmation(
+      `Remove the custom goal "${goal.name}"? Its saved progress history goes with it.`,
+      () => removeCustom(goal.id)
+    );
+  }
+
   function getTargetLabel(target: GoalTarget): string {
     const period = getRecentPeriods(target.goalType, 1).find(
       (entry) => entry.periodKey === target.periodKey
@@ -91,6 +117,7 @@
   <div class="mb-6 flex items-center justify-between">
     <h1 class="text-3xl font-bold">Manage Goals</h1>
     <Button size="sm" color="alternative" onclick={() => nav.toProgressTracker()}>
+      <ArrowLeftOutline class="mr-2 h-3.5 w-3.5" />
       Back to Progress
     </Button>
   </div>
@@ -100,30 +127,26 @@
     <div class="grid gap-3 sm:grid-cols-4">
       <div>
         <Label class="text-xs text-gray-400">Goal type</Label>
-        <select
-          class="h-9 w-full rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+        <Select
+          size="sm"
+          items={goalTypeOptions}
+          placeholder=""
           value={selectedGoalType}
+          aria-label="Goal type"
           onchange={(e) =>
-            handleGoalTypeChange(
-              (e.target as HTMLSelectElement).value as Exclude<GoalType, 'custom'>
-            )}
-        >
-          {#each goalTypes as type}
-            <option value={type}>{type}</option>
-          {/each}
-        </select>
+            handleGoalTypeChange(e.currentTarget.value as Exclude<GoalType, 'custom'>)}
+        />
       </div>
       <div>
         <Label class="text-xs text-gray-400">Period</Label>
-        <select
-          class="h-9 w-full rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+        <Select
+          size="sm"
+          items={periodOptions}
+          placeholder=""
           value={selectedPeriodKey}
-          onchange={(e) => (selectedPeriodKey = (e.target as HTMLSelectElement).value)}
-        >
-          {#each getRecentPeriods(selectedGoalType, 8) as period}
-            <option value={period.periodKey}>{period.label}</option>
-          {/each}
-        </select>
+          aria-label="Period"
+          onchange={(e) => (selectedPeriodKey = e.currentTarget.value)}
+        />
       </div>
       <div>
         <Label class="text-xs text-gray-400">Target volumes</Label>
@@ -140,15 +163,13 @@
         <p class="text-sm text-gray-400">No period targets yet.</p>
       {:else}
         <div class="flex flex-wrap gap-2">
-          {#each $goalTargets as target}
+          <!-- Keyed on the target's own identity: removing one shifts every later index,
+               so index-keyed chips would each re-render into their neighbour's slot. -->
+          {#each $goalTargets as target (`${target.goalType}:${target.periodKey}`)}
             <div class="flex items-center gap-2 rounded-lg bg-gray-800 px-3 py-2 text-sm">
               <span>{getTargetLabel(target)}</span>
               <span class="text-primary-300">{target.targetVolumes}</span>
-              <Button
-                size="xs"
-                color="alternative"
-                onclick={() => removeGoalTarget(target.goalType, target.periodKey)}
-              >
+              <Button size="xs" color="red" onclick={() => confirmRemoveTarget(target)}>
                 Remove
               </Button>
             </div>
@@ -164,7 +185,10 @@
       <p class="text-sm text-gray-400">No custom goals yet. Create one from the goal card.</p>
     {:else}
       <div class="space-y-3">
-        {#each $customGoals as goal}
+        <!-- Keyed on the goal id: the edit rows below feed one-way `value={...}` into their
+             Inputs, so an unkeyed remove would leave the surviving row wearing the removed
+             goal's rendered name and dates until the next keystroke. -->
+        {#each $customGoals as goal (goal.id)}
           {#if customEdits[goal.id]}
             {@const edit = customEdits[goal.id]}
             {@const isDateRangeLocked = isCustomGoalDateRangeLocked(goal)}
@@ -232,7 +256,7 @@
                 <Button size="xs" color="alternative" onclick={() => cancelCustom(goal.id)}>
                   Cancel
                 </Button>
-                <Button size="xs" color="alternative" onclick={() => removeCustom(goal.id)}>
+                <Button size="xs" color="red" onclick={() => confirmRemoveCustom(goal)}>
                   Remove
                 </Button>
               </div>
@@ -251,7 +275,7 @@
                 <Button size="xs" color="alternative" onclick={() => startCustomEdit(goal)}>
                   Edit
                 </Button>
-                <Button size="xs" color="alternative" onclick={() => removeCustom(goal.id)}>
+                <Button size="xs" color="red" onclick={() => confirmRemoveCustom(goal)}>
                   Remove
                 </Button>
               </div>

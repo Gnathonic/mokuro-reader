@@ -1,14 +1,14 @@
 import { derived } from 'svelte/store';
 import { volumes } from '../settings/volume-data';
-import { volumes as catalogVolumes } from '$lib/catalog';
-import { completedAtMap } from './completed-at';
+// `volumesWithPlaceholders`, not `volumes`: the plain catalog store holds only
+// rows this device has. A volume read to the end on the phone and never
+// downloaded here has no row, so its page count read as 0 and it earned no
+// goal credit at all. Placeholders carry the page counts from `series.json`.
+import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { completionsInPeriod, partialProgressInPeriod } from './goal-counting';
 import { customGoals, activeGoalSelection, goalTargets } from './goals-data';
-import {
-  calculatePartialVolumeProgressInPeriod,
-  getDaysRemainingInPeriod,
-  getExpectedProgressPercent
-} from './goal-math';
-import { getCustomPeriod, getPeriodForSelection, isDateWithinRange } from './periods';
+import { getDaysRemainingInPeriod, getExpectedProgressPercent } from './goal-math';
+import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { buildGoalSnapshotKey, goalSnapshots } from './snapshots-store';
 import type { CustomGoal, GoalProgress, GoalSelection, GoalTarget } from './types';
 
@@ -29,24 +29,8 @@ function getTargetForSelection(
 }
 
 export const activeGoalProgress = derived(
-  [
-    activeGoalSelection,
-    goalTargets,
-    customGoals,
-    volumes,
-    catalogVolumes,
-    goalSnapshots,
-    completedAtMap
-  ],
-  ([
-    $selection,
-    $targets,
-    $customGoals,
-    $volumes,
-    $catalog,
-    $snapshots,
-    $completedAtMap
-  ]): GoalProgress => {
+  [activeGoalSelection, goalTargets, customGoals, volumes, catalogVolumes, goalSnapshots],
+  ([$selection, $targets, $customGoals, $volumes, $catalog, $snapshots]): GoalProgress => {
     const now = new Date();
     const period =
       $selection.goalType === 'custom'
@@ -91,30 +75,32 @@ export const activeGoalProgress = derived(
         0
       );
     } else if ($volumes) {
-      Object.entries($volumes).forEach(([volumeId, volumeData]) => {
-        const catalogVolume = catalog[volumeId];
-        const totalPages = catalogVolume?.page_count ?? 0;
-        const currentPage = volumeData.progress ?? 0;
-        const completedAt = $completedAtMap[volumeId];
+      const nowMs = now.getTime();
 
-        if (completedAt && isDateWithinRange(completedAt, period.start, period.end)) {
-          completedVolumes += 1;
+      Object.entries($volumes).forEach(([volumeId, volumeData]) => {
+        const totalPages = catalog[volumeId]?.page_count ?? 0;
+        const currentPage = volumeData.progress ?? 0;
+
+        // A volume finished more than once in the period (read, restarted,
+        // read again) counts once per pass — that is what "volumes read this
+        // year" means.
+        const completions = completionsInPeriod(volumeData, period.start, period.end, nowMs);
+        if (completions > 0) {
+          completedVolumes += completions;
           return;
         }
 
-        if (currentPage > 1 && totalPages > 0) {
-          const partialProgress = calculatePartialVolumeProgressInPeriod(
-            volumeData.recentPageTurns,
-            period.start,
-            period.end,
-            totalPages
-          );
+        const partialProgress = partialProgressInPeriod(
+          volumeData,
+          totalPages,
+          period.start,
+          period.end
+        );
 
-          if (partialProgress > 0) {
-            inProgressVolumes += 1;
-            totalPartialProgress += partialProgress;
-            totalRemainingPages += totalPages - currentPage;
-          }
+        if (partialProgress > 0) {
+          inProgressVolumes += 1;
+          totalPartialProgress += partialProgress;
+          totalRemainingPages += Math.max(0, totalPages - currentPage);
         }
       });
     }
@@ -125,6 +111,11 @@ export const activeGoalProgress = derived(
     const expectedProgressPercent = getExpectedProgressPercent(period.start, period.end, now);
     const daysRemaining = getDaysRemainingInPeriod(period.end, now);
 
+    // `pagesPerDayForGoal`: volumes still needed, times the average length of
+    // what is actually in progress. The 200-page fallback is a guess, and this
+    // is not rendered anywhere today — it stays because the type is public, but
+    // do not put it on screen without replacing the fallback with a real
+    // catalog-wide average.
     const remainingVolumeEquivalent = Math.max(0, targetVolumes - totalProgress);
     const avgPagesPerVolume =
       totalRemainingPages > 0 && inProgressVolumes > 0

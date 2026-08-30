@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Card, Button, Input, Label } from 'flowbite-svelte';
+  import { Card, Button, Input, Label, Select } from 'flowbite-svelte';
   import { ChartPieSolid, CheckCircleSolid, ExclamationCircleSolid } from 'flowbite-svelte-icons';
   import { nav } from '$lib/util/hash-router';
   import {
@@ -17,6 +17,14 @@
     type GoalProgress,
     type GoalType
   } from '$lib/goals';
+
+  const goalTypeOptions: { value: GoalType; name: string }[] = [
+    { value: 'year', name: 'Year' },
+    { value: 'season', name: 'Season' },
+    { value: 'month', name: 'Month' },
+    { value: 'today', name: 'Today' },
+    { value: 'custom', name: 'Custom' }
+  ];
 
   // Local state for editing the goal
   let isEditing = $state(false);
@@ -46,6 +54,18 @@
       return snapshotKeys.has(key);
     });
   });
+
+  let periodOptions = $derived(
+    availablePeriods.map((period) => ({ value: period.periodKey, name: period.label }))
+  );
+
+  // "Custom" with nothing created still needs one entry saying so — an empty Select is a
+  // blank box with nothing to explain itself.
+  let customGoalOptions = $derived(
+    $customGoals.length === 0
+      ? [{ value: 'none', name: 'No custom goals' }]
+      : $customGoals.map((goal) => ({ value: goal.id, name: goal.name }))
+  );
 
   // Status colors and icons
   const statusConfig = {
@@ -164,42 +184,35 @@
       <div>
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-xl font-semibold text-gray-200">Reading Goal</h2>
-          <select
-            class="h-9 w-36 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+          <Select
+            size="sm"
+            class="w-36"
+            items={goalTypeOptions}
+            placeholder=""
             value={selection.goalType}
-            onchange={(e) =>
-              handleGoalTypeChange((e.target as HTMLSelectElement).value as GoalType)}
-          >
-            <option value="year">Year</option>
-            <option value="season">Season</option>
-            <option value="month">Month</option>
-            <option value="today">Today</option>
-            <option value="custom">Custom</option>
-          </select>
+            aria-label="Goal period type"
+            onchange={(e) => handleGoalTypeChange(e.currentTarget.value as GoalType)}
+          />
           {#if selection.goalType !== 'custom'}
-            <select
-              class="h-9 w-44 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+            <Select
+              size="sm"
+              class="w-44"
+              items={periodOptions}
+              placeholder=""
               value={selection.periodKey}
-              onchange={(e) => handlePeriodChange((e.target as HTMLSelectElement).value)}
-            >
-              {#each availablePeriods as period (period.periodKey)}
-                <option value={period.periodKey}>{period.label}</option>
-              {/each}
-            </select>
+              aria-label="Goal period"
+              onchange={(e) => handlePeriodChange(e.currentTarget.value)}
+            />
           {:else}
-            <select
-              class="h-9 w-48 rounded-lg border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200"
+            <Select
+              size="sm"
+              class="w-48"
+              items={customGoalOptions}
+              placeholder=""
               value={selection.customId}
-              onchange={(e) => handleCustomSelection((e.target as HTMLSelectElement).value)}
-            >
-              {#if $customGoals.length === 0}
-                <option value="none">No custom goals</option>
-              {:else}
-                {#each $customGoals as goal (goal.id)}
-                  <option value={goal.id}>{goal.name}</option>
-                {/each}
-              {/if}
-            </select>
+              aria-label="Custom goal"
+              onchange={(e) => handleCustomSelection(e.currentTarget.value)}
+            />
             <Button size="xs" color="alternative" onclick={toggleCustomForm}>
               {isCreatingCustom ? 'Cancel' : 'New'}
             </Button>
@@ -221,7 +234,10 @@
             </div>
           {:else}
             <p class="text-sm text-gray-400">
-              Read {progress.targetVolumes} volumes in {progress.periodLabel}
+              <!-- Keyed: the target is rewritten in place by Migaku/Yomitan, which then holds
+                   the old number after an edit or a period switch (CLAUDE.md). -->
+              Read {#key progress.targetVolumes}<span>{progress.targetVolumes}</span>{/key} volumes in
+              {progress.periodLabel}
               <button
                 class="ml-2 text-primary-400 hover:text-primary-300 hover:underline"
                 onclick={startEditing}
@@ -259,31 +275,45 @@
     </div>
   </div>
 
-  <!-- Stats row -->
+  <!-- Stats row. Every figure is keyed on its own value: these counters are exactly the
+       text Migaku/Yomitan rewrite in place and then hold stale (CLAUDE.md), and one
+       number changing must not rebuild the other four. -->
   <div class="mt-4 grid grid-cols-2 gap-4 text-center sm:grid-cols-5">
     <div>
-      <p class="text-2xl font-bold text-gray-200">{progress.completedVolumes}</p>
+      {#key progress.completedVolumes}
+        <p class="text-2xl font-bold text-gray-200">{progress.completedVolumes}</p>
+      {/key}
       <p class="text-xs text-gray-500">Volumes Completed</p>
     </div>
     <div>
-      <p class="text-2xl font-bold text-gray-200">{progress.inProgressVolumes}</p>
+      {#key progress.inProgressVolumes}
+        <p class="text-2xl font-bold text-gray-200">{progress.inProgressVolumes}</p>
+      {/key}
       <p class="text-xs text-gray-500">In Progress</p>
     </div>
     <div>
-      <p class="text-2xl font-bold text-gray-200">{progress.totalProgress.toFixed(1)}</p>
+      {#key progress.totalProgress}
+        <p class="text-2xl font-bold text-gray-200">{progress.totalProgress.toFixed(1)}</p>
+      {/key}
       <p class="text-xs text-gray-500">Total Progress</p>
     </div>
     <div>
-      <p class="text-2xl font-bold text-gray-200">{progress.daysRemaining}</p>
+      {#key progress.daysRemaining}
+        <p class="text-2xl font-bold text-gray-200">{progress.daysRemaining}</p>
+      {/key}
       <p class="text-xs text-gray-500">Days Left</p>
     </div>
     <div>
-      <span class="text-2xl font-bold {config.color}">
-        {progress.progressPercent.toFixed(1)}%
-      </span>
-      <p class="text-xs text-gray-500">
-        of {progress.expectedProgressPercent.toFixed(1)}% expected
-      </p>
+      {#key progress.progressPercent}
+        <span class="text-2xl font-bold {config.color}">
+          {progress.progressPercent.toFixed(1)}%
+        </span>
+      {/key}
+      {#key progress.expectedProgressPercent}
+        <p class="text-xs text-gray-500">
+          of {progress.expectedProgressPercent.toFixed(1)}% expected
+        </p>
+      {/key}
     </div>
   </div>
 

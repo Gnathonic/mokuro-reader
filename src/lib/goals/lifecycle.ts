@@ -1,6 +1,6 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { volumes as catalogVolumes } from '$lib/catalog';
+import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
 import { currentView, type View } from '$lib/util/hash-router';
 import { backfillCompletedAt } from './completed-at-backfill';
 import { customGoals, goalTargets } from './goals-data';

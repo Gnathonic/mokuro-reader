@@ -30,9 +30,9 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 
 ### 📈 Progress Tracking
 
-- **Annual Reading Goal** - Set a number of volumes to complete by the end of the year and track your progress
-- **Per-Volume Goal** - Set per-volume deadlines to track how many pages per day to read to keep on schedule
-- **Advanced Sorting** - Quickly find which volumes to read next to stay on top of your goals
+- **Volume Goals** - Set a number of volumes to finish in a year, season, month, day, or custom date range, and track completions against the pace needed to reach it
+- **Per-Volume Deadlines** - Give a volume a finish-by date and see the pages per day (or per week) needed to stay on schedule
+- **Read-Next Ordering** - Order the tracker by deadline, pages remaining, or pages needed per period, so the volume to pick up next is at the front
 
 ### ☁️ Cloud Integration
 

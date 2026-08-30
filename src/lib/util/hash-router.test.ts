@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { currentView, initRouter, nav, parseHash, viewToHash } from '$lib/util/hash-router';
+import {
+  currentView,
+  initRouter,
+  nav,
+  navigateBack,
+  parseHash,
+  viewToHash
+} from '$lib/util/hash-router';
 import { get } from 'svelte/store';
 
 vi.mock('$lib/metadata/providers/anilist', () => ({
@@ -10,6 +17,23 @@ describe('parseHash', () => {
   test('handles merge-series route', () => {
     const result = parseHash('#/merge-series');
     expect(result).toEqual({ type: 'merge-series' });
+  });
+
+  test('handles progress-tracker route', () => {
+    const result = parseHash('#/progress-tracker');
+    expect(result).toEqual({ type: 'progress-tracker' });
+  });
+
+  test('handles manage-goals route', () => {
+    const result = parseHash('#/manage-goals');
+    expect(result).toEqual({ type: 'manage-goals' });
+  });
+
+  test('ignores trailing segments on the parameterless tracker route', () => {
+    // The tracker takes no params, so a stale deep link must still land on the
+    // tracker rather than falling through to the catalog.
+    expect(parseHash('#/progress-tracker/anything')).toEqual({ type: 'progress-tracker' });
+    expect(parseHash('#/manage-goals/anything')).toEqual({ type: 'manage-goals' });
   });
 
   test('routes libraries path to catalog while feature is hidden', () => {
@@ -40,6 +64,23 @@ describe('viewToHash', () => {
     const result = viewToHash({ type: 'merge-series' });
     expect(result).toBe('#/merge-series');
   });
+
+  test('generates progress-tracker hash', () => {
+    const result = viewToHash({ type: 'progress-tracker' });
+    expect(result).toBe('#/progress-tracker');
+  });
+
+  test('generates manage-goals hash', () => {
+    const result = viewToHash({ type: 'manage-goals' });
+    expect(result).toBe('#/manage-goals');
+  });
+
+  test('the tracker views survive a hash round trip', () => {
+    // A bookmarked or reloaded tracker URL has to come back as the same view.
+    for (const view of [{ type: 'progress-tracker' }, { type: 'manage-goals' }] as const) {
+      expect(parseHash(viewToHash(view))).toEqual(view);
+    }
+  });
 });
 
 describe('removed libraries routes', () => {
@@ -52,6 +93,22 @@ describe('removed libraries routes', () => {
 describe('nav helpers', () => {
   test('nav.toMergeSeries exists and is callable', () => {
     expect(typeof nav.toMergeSeries).toBe('function');
+  });
+});
+
+describe('navigateBack', () => {
+  test('manage-goals goes up to the tracker, matching its own "Back to Progress" button', () => {
+    // Escape and the on-screen button must land in the same place; sending
+    // Escape to the catalog would skip the level the button returns to.
+    currentView.set({ type: 'manage-goals' });
+    navigateBack();
+    expect(get(currentView)).toEqual({ type: 'progress-tracker' });
+  });
+
+  test('progress-tracker goes up to the catalog', () => {
+    currentView.set({ type: 'progress-tracker' });
+    navigateBack();
+    expect(get(currentView)).toEqual({ type: 'catalog' });
   });
 });
 
