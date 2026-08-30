@@ -107,8 +107,21 @@ export function nextZoomLevel(levels: readonly number[], zoom: number, direction
  * Whether a wheel event means zoom, matching paged-mode semantics:
  * ctrl/meta+wheel zooms by default; swapWheelBehavior inverts so bare wheel
  * zooms and ctrl/meta+wheel scrolls.
+ *
+ * `fine` (a trackpad stream — see WheelStreamClassifier) overrides the swap
+ * for ctrl/meta: Chrome and Firefox deliver a trackpad PINCH as a synthetic
+ * ctrl+wheel, and a pinch means zoom on every surface regardless of what the
+ * user chose for their mouse wheel. Only Safari has real pinch events
+ * (gesturestart/change/end — see pointer-tracker.ts), so without this a
+ * Mac user with the swap on has no working pinch at all (#259). A coarse
+ * ctrl+wheel is a genuine keyboard chord and keeps the swap semantics.
  */
-export function wheelIntentIsZoom(ctrlOrMeta: boolean, swapWheelBehavior: boolean): boolean {
+export function wheelIntentIsZoom(
+  ctrlOrMeta: boolean,
+  swapWheelBehavior: boolean,
+  fine = false
+): boolean {
+  if (fine && ctrlOrMeta) return true;
   return swapWheelBehavior ? !ctrlOrMeta : ctrlOrMeta;
 }
 
@@ -180,6 +193,80 @@ export class WheelAccumulator {
     this.acc -= steps * this.stepSize;
     return steps === 0 ? 0 : -steps;
   }
+}
+
+/**
+ * Largest per-event delta (px) that still reads as fine-grained. A notched
+ * wheel reports a whole notch at once — 100 in Chromium, 120 on Windows,
+ * ~102 for Firefox's pixel mode — so anything well below that came from a
+ * device reporting continuous travel.
+ */
+export const FINE_WHEEL_MAX_DELTA = 50;
+
+/** Idle gap (ms) that ends a wheel stream for classification purposes. */
+export const WHEEL_STREAM_IDLE_MS = 250;
+
+/**
+ * Whether one wheel event carries positive evidence of a fine-grained
+ * (trackpad, precision wheel, synthetic pinch) source rather than a notched
+ * mouse wheel. Absence of evidence is not evidence of a mouse — see
+ * WheelStreamClassifier, which is what callers should use.
+ */
+export function isFineWheelEvent(e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode'>): boolean {
+  // Line and page deltas are a notched wheel by construction: a precision
+  // device has sub-line travel to report and never picks those units.
+  if (e.deltaMode !== 0) return false;
+  const { deltaX, deltaY } = e;
+  if (!Number.isInteger(deltaX) || !Number.isInteger(deltaY)) return true;
+  // No mouse drives both axes at once; a trackpad barely avoids it.
+  if (deltaX !== 0 && deltaY !== 0) return true;
+  const magnitude = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+  return magnitude > 0 && magnitude < FINE_WHEEL_MAX_DELTA;
+}
+
+/**
+ * Classifies a wheel STREAM as fine-grained or notched, sticky until the
+ * stream goes idle.
+ *
+ * Sticky because the evidence is one-sided. A trackpad flick starts with
+ * small deltas and then hands off to momentum, which reports large round
+ * numbers indistinguishable from notches; a mouse never reports the small
+ * ones. So evidence only ever upgrades a stream to fine, and the verdict
+ * holds for the rest of the gesture.
+ *
+ * Erring toward fine is the safe direction: a precision wheel misread as a
+ * trackpad gets smooth zoom, which is what its owner wanted anyway. The
+ * reverse is the #259 bug.
+ */
+export class WheelStreamClassifier {
+  private fine = false;
+  private lastTime = -Infinity;
+
+  constructor(private idleResetMs = WHEEL_STREAM_IDLE_MS) {}
+
+  classify(e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode' | 'timeStamp'>): boolean {
+    if (e.timeStamp - this.lastTime > this.idleResetMs) this.fine = false;
+    this.lastTime = e.timeStamp;
+    if (!this.fine && isFineWheelEvent(e)) this.fine = true;
+    return this.fine;
+  }
+}
+
+/**
+ * Zoom ratio per pixel of fine wheel travel. 100px of travel is ~1.65x,
+ * a shade faster than the level ladder's ~1.4x per notch — a trackpad user
+ * asks for the same zoom range with less finger travel (#259).
+ */
+export const WHEEL_ZOOM_SENSITIVITY = 0.005;
+
+/**
+ * Continuous zoom multiplier for one fine wheel event: scale-invariant
+ * (exponential), so the same finger travel covers the same ratio at any
+ * zoom, splitting a gesture across events changes nothing, and scrolling
+ * back lands exactly where it started.
+ */
+export function wheelZoomRatio(deltaPx: number, sensitivity = WHEEL_ZOOM_SENSITIVITY): number {
+  return Math.exp(-deltaPx * sensitivity);
 }
 
 /** Distance between the first two points; 0 when fewer than two. */

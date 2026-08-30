@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1] - 2026-08-30
+
+### Fixed
+
+- Trackpad zoom is now smooth instead of lurching (#259)
+- Trackpad pinch zooms even with wheel swap on (#259)
+- Night mode tints extension popups and menus again
+
 ## [1.9.0] - 2026-08-29
 
 ### Added

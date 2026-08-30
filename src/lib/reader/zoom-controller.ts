@@ -26,6 +26,7 @@ import {
   pinchDistance,
   pinchMidpoint,
   WheelAccumulator,
+  wheelZoomRatio,
   zoomProgress,
   type Point,
   type RectLike
@@ -39,6 +40,13 @@ const SNAP_TO_ONE_BELOW = 1.05;
 const DOUBLE_TAP_ZOOM = 2;
 
 const CONTINUOUS_ZOOM_LEVELS: readonly number[] = [1, 1.5, 2, 3];
+
+/**
+ * Idle gap (ms) that ends a continuous wheel-zoom stream. Wheels have no
+ * release event, so the settle — which clamps the paged camera into bounds
+ * and reports reading progress — has to be timed out.
+ */
+export const WHEEL_ZOOM_SETTLE_MS = 250;
 
 /** Structural subset of HTMLElement the controller scrolls. */
 export interface ZoomContainer {
@@ -161,6 +169,9 @@ export class ContinuousZoomController {
   private anchorFy = 0;
 
   private pinching = false;
+  private wheelZooming = false;
+  private wheelSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  private wheelAnchor: Point | null = null;
   private pinchStartDist = 0;
   private pinchStartZoom = 1;
   private gestureBaseZoom = 1;
@@ -189,7 +200,7 @@ export class ContinuousZoomController {
   }
 
   get isActive(): boolean {
-    return this.pinching || this.animator.isAnimating;
+    return this.pinching || this.wheelZooming || this.animator.isAnimating;
   }
 
   /** True when the view is visibly zoomed in. */
@@ -201,9 +212,22 @@ export class ContinuousZoomController {
   // Gestures
   // ============================================================
 
-  /** Wheel event already classified as zoom intent by the caller. */
-  wheelZoom(e: ZoomWheelEventLike): void {
-    const steps = this.wheelAcc.add(normalizeWheelDelta(e.deltaY, e.deltaMode), e.timeStamp);
+  /**
+   * Wheel event already classified as zoom intent by the caller.
+   *
+   * `fine` marks a trackpad-grade stream (WheelStreamClassifier): those zoom
+   * continuously at the cursor, because a device reporting every millimetre
+   * of travel through a ladder of discrete levels is the #259 complaint —
+   * nothing, nothing, nothing, lurch. Notched wheels keep the ladder, where
+   * one notch is one deliberate step.
+   */
+  wheelZoom(e: ZoomWheelEventLike, fine = false): void {
+    const deltaPx = normalizeWheelDelta(e.deltaY, e.deltaMode);
+    if (fine) {
+      this.continuousWheelZoom(deltaPx, { x: e.clientX, y: e.clientY });
+      return;
+    }
+    const steps = this.wheelAcc.add(deltaPx, e.timeStamp);
     if (steps === 0) return;
     const direction = steps > 0 ? 1 : -1;
     let next = this.target;
@@ -211,6 +235,53 @@ export class ContinuousZoomController {
       next = nextZoomLevel(this.levels, next, direction);
     }
     this.stepTo(next, { x: e.clientX, y: e.clientY });
+  }
+
+  /**
+   * One event of a fine wheel stream: multiply the live zoom and pin the
+   * content under the cursor, exactly as a pinch move does.
+   *
+   * The anchor is re-captured only when the cursor moves. A wheel stream
+   * usually holds still, and capture measures every page element.
+   */
+  private continuousWheelZoom(deltaPx: number, cursor: Point): void {
+    if (deltaPx === 0) return;
+    if (!this.wheelZooming) {
+      // A level animation still converging would fight the stream's own
+      // frame writes; land it before taking over.
+      if (this.animator.isAnimating) this.finishNow();
+      this.wheelZooming = true;
+      this.wheelAnchor = null;
+    }
+    if (!this.wheelAnchor || this.wheelAnchor.x !== cursor.x || this.wheelAnchor.y !== cursor.y) {
+      if (!this.captureAnchor(cursor.x, cursor.y)) return;
+      this.wheelAnchor = cursor;
+    }
+    this.startZoom = this.animator.current;
+    this.applyPinchZoom(this.animator.current * wheelZoomRatio(deltaPx), cursor);
+    this.scheduleWheelSettle();
+  }
+
+  private scheduleWheelSettle(): void {
+    if (this.wheelSettleTimer !== null) clearTimeout(this.wheelSettleTimer);
+    this.wheelSettleTimer = setTimeout(() => {
+      this.wheelSettleTimer = null;
+      this.endWheelStream();
+      this.settle('gesture');
+    }, WHEEL_ZOOM_SETTLE_MS);
+  }
+
+  /** Drop the stream's bookkeeping without settling. */
+  private endWheelStream(): void {
+    if (this.wheelSettleTimer !== null) {
+      clearTimeout(this.wheelSettleTimer);
+      this.wheelSettleTimer = null;
+    }
+    this.wheelZooming = false;
+    this.wheelAnchor = null;
+    // Leave the zoom where the gesture left it; the target follows so the
+    // next notch steps from here, the same way pinchEnd hands off.
+    this.target = this.animator.current;
   }
 
   /**
@@ -265,7 +336,7 @@ export class ContinuousZoomController {
    * re-baselines distance/zoom/anchor so the gesture stays continuous.
    */
   pinchStart(points: readonly Point[]): void {
-    if (!this.pinching && this.animator.isAnimating) this.finishNow();
+    if (!this.pinching && this.isActive) this.finishNow();
     const mid = pinchMidpoint(points);
     if (!this.captureAnchor(mid.x, mid.y)) return;
     this.pinching = true;
@@ -300,7 +371,7 @@ export class ContinuousZoomController {
 
   // Safari desktop trackpad pinch (proprietary gesture events).
   gestureStart(x: number, y: number): void {
-    if (!this.pinching && this.animator.isAnimating) this.finishNow();
+    if (!this.pinching && this.isActive) this.finishNow();
     if (!this.captureAnchor(x, y)) return;
     this.pinching = true;
     this.pinchStartDist = 0; // pointer-pair distance unused for gesture events
@@ -348,6 +419,11 @@ export class ContinuousZoomController {
       this.settle(reason);
       return;
     }
+    if (this.wheelZooming) {
+      this.endWheelStream();
+      this.settle(reason);
+      return;
+    }
     if (this.animator.isAnimating) {
       this.animator.snapTo(this.target);
       this.settle(reason);
@@ -356,7 +432,7 @@ export class ContinuousZoomController {
 
   /** Instantly return to 1× (zoom-mode change, viewport resize). */
   reset(): void {
-    if (this.animator.current === 1 && !this.animator.isAnimating && !this.pinching) {
+    if (this.animator.current === 1 && !this.isActive) {
       this.target = 1;
       return;
     }
@@ -371,6 +447,7 @@ export class ContinuousZoomController {
    */
   snapToLevel(level: number): void {
     this.pinching = false;
+    this.endWheelStream();
     this.target = level;
     this.anchorEl = null; // skip anchor correction; layout placement only
     this.animator.snapTo(level);
@@ -378,6 +455,7 @@ export class ContinuousZoomController {
   }
 
   destroy(): void {
+    this.endWheelStream();
     this.animator.destroy();
   }
 

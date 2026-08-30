@@ -3,163 +3,69 @@
   import { browser } from '$app/environment';
   import { onDestroy } from 'svelte';
 
-  // Elements for Firefox overlay approach
-  let grayscaleLayer: HTMLDivElement | null = null;
-  let redOverlay: HTMLDivElement | null = null;
-  let dialogObserver: MutationObserver | null = null;
-  let isFirefox = browser && navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+  // The colour maths lives in the <style> block in src/app.html, which explains
+  // why night mode is a blend-layer pair plus a top-layer filter rather than one
+  // filter on the root. This component owns the two layer elements.
+  //
+  // Both engines take the same path now: the Firefox-specific overlay branch is
+  // gone, because the layers it used are what every browser uses.
 
-  // Firefox: Apply overlays inside a dialog for top-layer support
-  function applyFirefoxOverlaysToDialog(dialog: HTMLDialogElement, active: boolean) {
-    const existingGrayscale = dialog.querySelector('#dialog-grayscale-layer');
-    const existingRed = dialog.querySelector('#dialog-red-overlay');
+  let desaturate: HTMLDivElement | null = null;
+  let redden: HTMLDivElement | null = null;
+  let observer: MutationObserver | null = null;
 
-    if (active) {
-      if (!existingGrayscale) {
-        const grayscale = document.createElement('div');
-        grayscale.id = 'dialog-grayscale-layer';
-        grayscale.style.position = 'fixed';
-        grayscale.style.top = '0';
-        grayscale.style.left = '0';
-        grayscale.style.width = '100vw';
-        grayscale.style.height = '100vh';
-        grayscale.style.backgroundColor = 'rgba(0, 0, 0, 1)';
-        grayscale.style.pointerEvents = 'none';
-        grayscale.style.zIndex = '999998';
-        grayscale.style.mixBlendMode = 'saturation';
-        dialog.appendChild(grayscale);
-      }
-      if (!existingRed) {
-        const red = document.createElement('div');
-        red.id = 'dialog-red-overlay';
-        red.style.position = 'fixed';
-        red.style.top = '0';
-        red.style.left = '0';
-        red.style.width = '100vw';
-        red.style.height = '100vh';
-        red.style.backgroundColor = 'rgba(255, 0, 0, 1)';
-        red.style.pointerEvents = 'none';
-        red.style.zIndex = '999999';
-        red.style.mixBlendMode = 'multiply';
-        dialog.appendChild(red);
-      }
-    } else {
-      existingGrayscale?.remove();
-      existingRed?.remove();
-    }
+  function makeLayer(kind: 'desaturate' | 'redden') {
+    const el = document.createElement('div');
+    el.className = `night-mode-layer night-mode-${kind}`;
+    el.setAttribute('aria-hidden', 'true');
+    return el;
   }
 
-  // Firefox: Update all open dialogs
-  function updateFirefoxDialogs(active: boolean) {
-    document.querySelectorAll('dialog[open]').forEach((dialog) => {
-      applyFirefoxOverlaysToDialog(dialog as HTMLDialogElement, active);
-    });
+  /**
+   * Keep the pair as the last two children of <html>, in this order.
+   *
+   * Both layers sit at the maximum z-index, so paint order against an extension
+   * that injects at the same z-index is decided by tree order. If an extension
+   * appends its popup after us, it would land above the desaturation layer and
+   * render with its colour channels crushed instead of tinted, so we move back
+   * on top whenever the root's children change.
+   */
+  function ensureOnTop() {
+    const root = document.documentElement;
+    if (!desaturate || !redden) return;
+    if (root.lastElementChild === redden && redden.previousElementSibling === desaturate) return;
+    root.appendChild(desaturate);
+    root.appendChild(redden);
   }
 
-  // Firefox: Set up observer to watch for dialog open/close
-  function setupDialogObserver(active: boolean) {
-    if (!isFirefox || !browser) return;
-
-    // Clean up existing observer
-    dialogObserver?.disconnect();
-
-    if (active) {
-      dialogObserver = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          if (mutation.type === 'attributes' && mutation.attributeName === 'open') {
-            const dialog = mutation.target as HTMLDialogElement;
-            if (dialog.tagName === 'DIALOG') {
-              applyFirefoxOverlaysToDialog(dialog, dialog.hasAttribute('open'));
-            }
-          }
-          // Also check for new dialogs being added to the DOM
-          mutation.addedNodes.forEach((node) => {
-            if (node instanceof HTMLDialogElement && node.hasAttribute('open')) {
-              applyFirefoxOverlaysToDialog(node, true);
-            }
-          });
-        });
-      });
-
-      dialogObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['open']
-      });
-
-      // Apply to any already-open dialogs
-      updateFirefoxDialogs(true);
-    } else {
-      // Remove overlays from all dialogs
-      updateFirefoxDialogs(false);
-    }
-  }
-
-  // Function to apply the night mode filter
   function applyNightModeFilter(active: boolean) {
     if (!browser) return;
+    const root = document.documentElement;
 
-    if (isFirefox) {
-      // Firefox approach: Use overlays with blend modes
-      if (active) {
-        // Create grayscale layer if it doesn't exist
-        if (!grayscaleLayer) {
-          grayscaleLayer = document.createElement('div');
-          grayscaleLayer.id = 'grayscale-saturation-layer';
-          grayscaleLayer.style.position = 'fixed';
-          grayscaleLayer.style.top = '0';
-          grayscaleLayer.style.left = '0';
-          grayscaleLayer.style.width = '100%';
-          grayscaleLayer.style.height = '100%';
-          grayscaleLayer.style.backgroundColor = 'rgba(0, 0, 0, 1)';
-          grayscaleLayer.style.pointerEvents = 'none';
-          grayscaleLayer.style.zIndex = '999998';
-          grayscaleLayer.style.mixBlendMode = 'saturation'; // Removes color saturation
-          grayscaleLayer.style.display = 'block';
-          document.body.appendChild(grayscaleLayer);
-        }
+    if (active) {
+      desaturate ??= makeLayer('desaturate');
+      redden ??= makeLayer('redden');
+      ensureOnTop();
 
-        // Create red overlay if it doesn't exist
-        if (!redOverlay) {
-          redOverlay = document.createElement('div');
-          redOverlay.id = 'red-overlay';
-          redOverlay.style.position = 'fixed';
-          redOverlay.style.top = '0';
-          redOverlay.style.left = '0';
-          redOverlay.style.width = '100%';
-          redOverlay.style.height = '100%';
-          redOverlay.style.backgroundColor = 'rgba(255, 0, 0, 1)';
-          redOverlay.style.pointerEvents = 'none';
-          redOverlay.style.zIndex = '999999'; // Higher than grayscale
-          redOverlay.style.mixBlendMode = 'multiply';
-          redOverlay.style.display = 'block';
-          document.body.appendChild(redOverlay);
-        }
-      } else {
-        // Remove overlays if night mode is off
-        if (grayscaleLayer) {
-          grayscaleLayer.remove();
-          grayscaleLayer = null;
-        }
-        if (redOverlay) {
-          redOverlay.remove();
-          redOverlay = null;
-        }
-      }
-
-      // Also handle dialogs in top layer for Firefox
-      setupDialogObserver(active);
+      // Only observe the root's own child list — this fires on extension
+      // injection, not on anything the app renders inside <body>.
+      observer ??= new MutationObserver(ensureOnTop);
+      observer.observe(root, { childList: true });
     } else {
-      // Non-Firefox approach: Use CSS variables with SVG filter
-      const rootElement = document.documentElement;
-
-      if (active) {
-        rootElement.style.setProperty('--night-mode-filter', 'url(#night-mode-filter)');
-      } else {
-        rootElement.style.setProperty('--night-mode-filter', 'none');
-      }
+      observer?.disconnect();
+      observer = null;
+      desaturate?.remove();
+      redden?.remove();
+      desaturate = null;
+      redden = null;
     }
+
+    // Gates the layer styles.
+    root.classList.toggle('night-mode', active);
+
+    // Drives the top-layer rules (modal dialogs, popovers, fullscreen,
+    // ::backdrop) — those paint above the layers, so they filter themselves.
+    root.style.setProperty('--night-mode-filter', active ? 'url(#night-mode-filter)' : 'none');
   }
 
   // React to nightModeActive store changes (includes schedule-based activation)
@@ -167,22 +73,9 @@
     applyNightModeFilter($nightModeActive);
   }
 
-  // Clean up
   onDestroy(() => {
-    if (browser) {
-      if (grayscaleLayer) {
-        grayscaleLayer.remove();
-      }
-      if (redOverlay) {
-        redOverlay.remove();
-      }
-      dialogObserver?.disconnect();
-      // Clean up dialog overlays
-      document.querySelectorAll('#dialog-grayscale-layer, #dialog-red-overlay').forEach((el) => {
-        el.remove();
-      });
-    }
+    if (browser) applyNightModeFilter(false);
   });
 </script>
 
-<!-- No visible elements - just applies the filter via CSS variables or overlays -->
+<!-- No markup: the two blend layers are appended to <html>, above everything. -->
