@@ -34,10 +34,11 @@ export function createSnapshotForPeriod(
   const now = Date.now();
 
   Object.entries(allVolumes).forEach(([volumeId, volumeData]) => {
-    // Archived passes count too, dated when the pass finished. The record is
-    // one stamp per volume, so a volume finished twice in the period keeps the
-    // FIRST — the snapshot's `completed` map is "which volumes were finished
-    // here", and its size is the count the header shows.
+    // Archived passes count too, dated when the pass finished. One stamp per
+    // volume: a volume finished twice in the period keeps the FIRST. The map is
+    // "which volumes were finished here", and its size is exactly what the live
+    // header counts (`isCompletedInPeriod`, one per volume) — the two units
+    // have to match or the number changes when the period closes.
     const inPeriod = completionEventsFor(volumeData, now)
       .filter((stamp) => isDateWithinRange(stamp, start, end))
       .sort();

@@ -37,7 +37,11 @@ import {
 // BUILDER and `active-progress`, which reach `$lib/catalog` and so drag Dexie
 // and the cloud manager into the sync layer — and into every sync test.
 import { deadlinesWithTrash, setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
-import { goalsWithTrash, setGoalSections } from '$lib/goals/goals-data';
+import {
+  dropDanglingCustomSelection,
+  goalsWithTrash,
+  setGoalSections
+} from '$lib/goals/goals-data';
 import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
 
 /**
@@ -723,10 +727,13 @@ class UnifiedSyncService {
     }
 
     // Fold duplicate copies into one, by the same union/newest-wins rules the
-    // cloud-vs-local merge uses, so no copy's content is lost before we start.
+    // cloud-vs-local merge uses, so no copy's content is lost before we start —
+    // and honouring `bogusKeys`, so a poisoned stamp on one copy cannot clobber
+    // an honest entry on another regardless of fold order. (The volume-data
+    // fold next door calls this the `honestElsewhere` guard.)
     let sections = parseGoalsFile(readable[0]);
     for (const raw of readable.slice(1)) {
-      sections = mergeGoalsSections(sections, parseGoalsFile(raw));
+      sections = mergeGoalsSections(sections, parseGoalsFile(raw), bogusKeys);
     }
 
     // Compare the upload against what the cloud LITERALLY holds, never against
@@ -770,6 +777,11 @@ class UnifiedSyncService {
     setGoalSections(merged.targets, merged.customGoals);
     setGoalSnapshots(merged.snapshots);
     setVolumeDeadlineEntries(merged.volumeDeadlines);
+    // A custom goal deleted on another device arrives here as a tombstone. The
+    // selection is per-device and was not part of the merge, so without this
+    // the goal card reads "Read 0 volumes in Unknown period" until the user
+    // works out they have to pick something else.
+    dropDanglingCustomSelection();
 
     // A library that has never used goals must not mint a file: an empty
     // goals.json in every user's folder is pure churn.

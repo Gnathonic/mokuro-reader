@@ -39,12 +39,19 @@ export function backfillCompletedAt(pageCounts: Record<string, number>): void {
 
   volumesWithTrash.update((prev) => {
     let changed = false;
+    let deferred = false;
     const updated = { ...prev };
 
     for (const [volumeId, volumeData] of Object.entries(prev)) {
       if (volumeData.deletedOn || volumeData.completedAt) continue;
 
       const pageCount = pageCounts[volumeId] ?? 0;
+      // A volume with progress but no known length cannot be judged yet — the
+      // catalog may simply not have its cloud row. Come back next boot.
+      if (pageCount <= 0 && !volumeData.completed && volumeData.progress > 0) {
+        deferred = true;
+        continue;
+      }
       // The app's union predicate, not the bare flag: this is precisely the
       // population whose flag an older client's `toggleHasCover` clobbered.
       if (!volumeData.completed && !isVolumeComplete(volumeData.progress, pageCount)) continue;
@@ -66,7 +73,15 @@ export function backfillCompletedAt(pageCounts: Record<string, number>): void {
       changed = true;
     }
 
-    window.localStorage.setItem(BACKFILL_KEY, new Date().toISOString());
+    // Only declare the backfill done once every finished volume had a page
+    // count to judge it by. The catalog gains its cloud placeholders after the
+    // first remote listing, so an early run sees a local-only catalog: marking
+    // it done there would permanently strand the completion dates of every
+    // volume this device has never downloaded.
+    if (!deferred) {
+      window.localStorage.setItem(BACKFILL_KEY, new Date().toISOString());
+    }
+
     return changed ? updated : prev;
   });
 }

@@ -11,7 +11,7 @@ import {
   type GoalTargetEntry,
   type GoalTypeKey
 } from './goals-file';
-import { getCurrentPeriodKey, hasValidCustomGoalDateRange } from './periods';
+import { getCurrentPeriodKey, getPeriodForSelection, hasValidCustomGoalDateRange } from './periods';
 import { isCustomGoalDateRangeLocked } from './snapshots-store';
 import type { CustomGoal, GoalSelection, GoalTarget, GoalType } from './types';
 
@@ -250,10 +250,20 @@ export function setActiveGoalSelection(selection: GoalSelection) {
   _goalsStore.update((state) => ({ ...state, activeSelection: selection }));
 }
 
-export function createCustomGoal(goal: Omit<CustomGoal, 'id' | 'createdAt'>) {
-  if (!hasValidCustomGoalDateRange(goal.startDate, goal.endDate)) return;
-  if (!Number.isInteger(goal.targetVolumes) || goal.targetVolumes <= 0) return;
-  if (!goal.name.trim()) return;
+/**
+ * Why a goal was rejected, or `null` when it was accepted.
+ *
+ * These used to be bare `return`s. The caller cleared and closed the form
+ * unconditionally, so transposing the start and end dates — or typing a
+ * fractional target — silently discarded everything the user had entered, with
+ * no message and nothing to retry from.
+ */
+export type GoalRejection = 'name' | 'target' | 'range' | 'missing' | 'locked';
+
+export function createCustomGoal(goal: Omit<CustomGoal, 'id' | 'createdAt'>): GoalRejection | null {
+  if (!goal.name.trim()) return 'name';
+  if (!Number.isInteger(goal.targetVolumes) || goal.targetVolumes <= 0) return 'target';
+  if (!hasValidCustomGoalDateRange(goal.startDate, goal.endDate)) return 'range';
 
   _goalsStore.update((state) => {
     const id = generateUUID();
@@ -267,12 +277,19 @@ export function createCustomGoal(goal: Omit<CustomGoal, 'id' | 'createdAt'>) {
       activeSelection: { goalType: 'custom', customId: id }
     };
   });
+
+  return null;
 }
 
-export function updateCustomGoal(updatedGoal: CustomGoal) {
-  if (!hasValidCustomGoalDateRange(updatedGoal.startDate, updatedGoal.endDate)) return;
-  if (!Number.isInteger(updatedGoal.targetVolumes) || updatedGoal.targetVolumes <= 0) return;
-  if (!updatedGoal.name.trim()) return;
+export function updateCustomGoal(updatedGoal: CustomGoal): GoalRejection | null {
+  if (!updatedGoal.name.trim()) return 'name';
+  if (!Number.isInteger(updatedGoal.targetVolumes) || updatedGoal.targetVolumes <= 0) {
+    return 'target';
+  }
+  if (!hasValidCustomGoalDateRange(updatedGoal.startDate, updatedGoal.endDate)) return 'range';
+
+  const current = get(_goalsStore).customGoals[updatedGoal.id];
+  if (!current || current.deletedOn) return 'missing';
 
   _goalsStore.update((state) => {
     const existing = state.customGoals[updatedGoal.id];
@@ -299,6 +316,8 @@ export function updateCustomGoal(updatedGoal: CustomGoal) {
       }
     };
   });
+
+  return null;
 }
 
 export function removeCustomGoal(customId: string) {
@@ -324,6 +343,52 @@ export function removeCustomGoal(customId: string) {
 }
 
 /**
+ * Reset the selection when it names a custom goal that no longer exists.
+ *
+ * The selection is per-device and deliberately outside `goals.json`, so a
+ * custom goal deleted on another device leaves this device pointing at nothing:
+ * `getCustomPeriod` returns null and the card renders "Read 0 volumes in
+ * Unknown period" with no hint that the goal is gone.
+ */
+export function dropDanglingCustomSelection() {
+  const state = get(_goalsStore);
+  const selection = state.activeSelection;
+  if (selection.goalType !== 'custom') return;
+
+  const goal = state.customGoals[selection.customId];
+  if (goal && !goal.deletedOn) return;
+
+  setActiveGoalSelection({ goalType: 'year', periodKey: getCurrentPeriodKey('year') });
+}
+
+/**
+ * If the stored selection points at a period that has already ended, move it to
+ * the current one of the same kind.
+ *
+ * `activeSelection` is per-device and persisted, and nothing ever advanced it.
+ * A user whose selection was `{year, 2026}` opened the tracker on 1 Jan 2027 to
+ * a page with Currently Reading and Future Reads simply GONE — both are gated
+ * on the goal not being closed — and no explanation. Picking "Today" once made
+ * it happen every following day, and "Month" from the 1st of the next month.
+ *
+ * Custom goals are left alone: a custom range is a deliberate, named thing, and
+ * there is no "current" one to roll to.
+ */
+export function rollForwardStaleSelection(now = new Date()) {
+  const state = get(_goalsStore);
+  const selection = state.activeSelection;
+  if (selection.goalType === 'custom') return;
+
+  const period = getPeriodForSelection(selection);
+  if (period && period.end.getTime() > now.getTime()) return;
+
+  const periodKey = getCurrentPeriodKey(selection.goalType);
+  if (periodKey === selection.periodKey) return;
+
+  setActiveGoalSelection({ goalType: selection.goalType, periodKey });
+}
+
+/**
  * Mint this year's target if the user has none — called when they OPEN the
  * tracker, never at app start.
  *
@@ -334,9 +399,40 @@ export function removeCustomGoal(customId: string) {
  */
 export function ensureCurrentYearTarget(defaultTarget = 52) {
   const periodKey = getCurrentPeriodKey('year');
-  const state = get(_goalsStore);
-  const existing = state.targets[buildGoalKey('year', periodKey)];
-  if (existing && !existing.deletedOn) return;
-  if (existing?.deletedOn) return; // deliberately removed; do not resurrect
-  setGoalTarget('year', periodKey, defaultTarget);
+  const key = buildGoalKey('year', periodKey);
+
+  _goalsStore.update((state) => {
+    const existing = state.targets[key];
+    // Present, or deliberately removed — either way, leave it alone.
+    if (existing) return state;
+
+    /*
+     * STAMPED AT THE EPOCH, not `now`, because this is a placeholder rather
+     * than a user's edit.
+     *
+     * `setGoalTarget` would stamp it `Date.now()`, and the merge is
+     * newest-wins: a device that opens the tracker before its first goals sync
+     * lands — trivially reachable, since the startup sync is skipped entirely
+     * while a Drive token is expired — would mint 52, out-rank the 100 the
+     * user actually set on their laptop last month, and upload it. The real
+     * goal would be silently replaced everywhere with no error and no way back.
+     *
+     * At the epoch it loses to any real edit from any device, and the
+     * keep-local tie-break means two untouched devices still agree.
+     */
+    const epoch = new Date(0).toISOString();
+    return {
+      ...state,
+      targets: {
+        ...state.targets,
+        [key]: {
+          goalType: 'year',
+          periodKey,
+          targetVolumes: defaultTarget,
+          createdAt: epoch,
+          lastUpdated: epoch
+        }
+      }
+    };
+  });
 }

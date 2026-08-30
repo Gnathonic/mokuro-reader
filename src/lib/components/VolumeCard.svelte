@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Attachment } from 'svelte/attachments';
   import { nav } from '$lib/util/hash-router';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
@@ -19,6 +18,8 @@
     pagesReadInPeriod?: number | null;
     targetPagesPerPeriod?: number | null;
     subtitle?: string | null;
+    /** The view's clock, so the deadline countdown rolls over. */
+    now?: number;
   }
 
   let {
@@ -34,28 +35,41 @@
     showDeadline = true,
     pagesReadInPeriod = null,
     targetPagesPerPeriod = null,
-    subtitle = null
+    subtitle = null,
+    now = Date.now()
   }: Props = $props();
 
-  function thumbnailAttachment(
-    thumbnail: Blob | undefined
-  ): Attachment<HTMLImageElement> | undefined {
+  /*
+   * Object URLs are keyed on CONTENT identity, not on the Blob object.
+   *
+   * The catalog store hands out fresh File objects on every re-read, so an
+   * attachment that depends on the blob itself revoked and recreated a URL for
+   * every card on screen each time the catalog changed — a page turn is enough.
+   * The rest of the app (VolumeItem, CatalogListItem) keys on
+   * `uuid:size:lastModified`; this matches.
+   */
+  let thumbnailKey = $derived(
+    thumbnail ? `${volumeId}:${thumbnail.size}:${(thumbnail as File).lastModified ?? 0}` : undefined
+  );
+
+  let thumbnailUrl = $state<string | undefined>(undefined);
+
+  $effect(() => {
+    // Read the key so the effect re-runs only when the CONTENT changes.
+    void thumbnailKey;
     if (!thumbnail) {
-      return undefined;
+      thumbnailUrl = undefined;
+      return;
     }
 
-    return (element) => {
-      const url = URL.createObjectURL(thumbnail);
-      element.src = url;
+    const url = URL.createObjectURL(thumbnail);
+    thumbnailUrl = url;
 
-      return () => {
-        if (element.src === url) {
-          element.removeAttribute('src');
-        }
-        URL.revokeObjectURL(url);
-      };
+    return () => {
+      thumbnailUrl = undefined;
+      URL.revokeObjectURL(url);
     };
-  }
+  });
 </script>
 
 <div
@@ -73,12 +87,12 @@
         if (seriesId) nav.toReader(seriesId, volumeId);
       }}
     >
-      {#if thumbnail}
+      {#if thumbnailUrl}
         <img
           alt={volumeTitle || 'Volume Cover'}
           class="mb-3 rounded"
           style="max-width: 125px; max-height: 180px; height: auto;"
-          {@attach thumbnailAttachment(thumbnail)}
+          src={thumbnailUrl}
         />
       {:else}
         <!-- A metadata-only or cloud-only volume has no local thumbnail blob.
@@ -95,7 +109,7 @@
   {/if}
 
   {#if showDeadline}
-    <VolumeDeadline {volumeId} {pagesReadInPeriod} {targetPagesPerPeriod} />
+    <VolumeDeadline {volumeId} {pagesReadInPeriod} {targetPagesPerPeriod} {now} />
   {/if}
 
   {#if subtitle}

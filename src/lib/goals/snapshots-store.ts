@@ -8,7 +8,6 @@
  */
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
-import { isCustomGoalClosed } from './periods';
 import { parseSnapshots } from './goals-file';
 import type { CustomGoal, GoalSnapshot, GoalType } from './types';
 
@@ -78,12 +77,21 @@ export function buildGoalSnapshotKey(goalType: GoalType, periodKey: string): str
   return `${goalType}:${periodKey}`;
 }
 
+/**
+ * Are this custom goal's dates frozen?
+ *
+ * ONLY when a snapshot exists for it. A snapshot is a permanent record computed
+ * over a specific range, so moving the range afterwards would make the frozen
+ * number describe a period it was never computed over.
+ *
+ * Deliberately NOT "the end date is in the past": a user who typos the year
+ * when creating a goal ("2025" for "2026") produced an already-closed goal that
+ * was date-locked the instant it was created, so the typo could never be
+ * corrected — only deleted and retyped. Nothing has been frozen yet in that
+ * case, so there is nothing to protect.
+ */
 export function isCustomGoalDateRangeLocked(
-  goal: Pick<CustomGoal, 'id' | 'startDate' | 'endDate'>,
-  now = new Date()
+  goal: Pick<CustomGoal, 'id' | 'startDate' | 'endDate'>
 ): boolean {
-  if (isCustomGoalClosed(goal, now)) return true;
-
-  const snapshotKey = buildGoalSnapshotKey('custom', goal.id);
-  return Boolean(get(_goalSnapshots)[snapshotKey]);
+  return Boolean(get(_goalSnapshots)[buildGoalSnapshotKey('custom', goal.id)]);
 }

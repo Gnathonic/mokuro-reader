@@ -377,10 +377,26 @@ export function mergeSnapshotEntries(
     partialProgress[volumeId] = Math.max(partialProgress[volumeId] ?? 0, fraction);
   }
 
+  // A volume is EITHER finished in the period or partway through it — never
+  // both. `createSnapshotForPeriod` enforces that locally by returning early,
+  // but the union can pair one device's completion with another's fraction for
+  // the same volume: the laptop last synced in December has the volume at 40%,
+  // the phone finished it on the 28th, and the merged snapshot counted it as
+  // 1.4 volumes forever. Completion wins, the same precedence the live branch
+  // uses. Order-independent, because the completed set is itself a union.
+  for (const volumeId of Object.keys(completed)) delete partialProgress[volumeId];
+
+  // #9: taking these from `local` unconditionally makes the merge asymmetric,
+  // so two devices with differently-formatted bounds re-upload at each other
+  // forever. Same period key means the same period, so any deterministic pick
+  // works — take the lexicographically smaller, which both devices agree on.
+  const startDate = local.startDate < cloud.startDate ? local.startDate : cloud.startDate;
+  const endDate = local.endDate < cloud.endDate ? local.endDate : cloud.endDate;
+
   const closedAt = local.closedAt < cloud.closedAt ? local.closedAt : cloud.closedAt;
   const lastUpdated = local.lastUpdated > cloud.lastUpdated ? local.lastUpdated : cloud.lastUpdated;
 
-  return { ...local, closedAt, completed, partialProgress, lastUpdated };
+  return { ...local, startDate, endDate, closedAt, completed, partialProgress, lastUpdated };
 }
 
 export function mergeSnapshotSections(

@@ -5,7 +5,7 @@ import { volumes } from '../settings/volume-data';
 // downloaded here has no row, so its page count read as 0 and it earned no
 // goal credit at all. Placeholders carry the page counts from `series.json`.
 import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
-import { completionsInPeriod, partialProgressInPeriod } from './goal-counting';
+import { isCompletedInPeriod, partialProgressInPeriod } from './goal-counting';
 import { customGoals, activeGoalSelection, goalTargets } from './goals-data';
 import { getDaysRemainingInPeriod, getExpectedProgressPercent } from './goal-math';
 import { getCustomPeriod, getPeriodForSelection } from './periods';
@@ -81,12 +81,10 @@ export const activeGoalProgress = derived(
         const totalPages = catalog[volumeId]?.page_count ?? 0;
         const currentPage = volumeData.progress ?? 0;
 
-        // A volume finished more than once in the period (read, restarted,
-        // read again) counts once per pass — that is what "volumes read this
-        // year" means.
-        const completions = completionsInPeriod(volumeData, period.start, period.end, nowMs);
-        if (completions > 0) {
-          completedVolumes += completions;
+        // One volume, counted once — the same unit the snapshot and the
+        // Completed list use.
+        if (isCompletedInPeriod(volumeData, period.start, period.end, nowMs)) {
+          completedVolumes += 1;
           return;
         }
 
@@ -169,10 +167,22 @@ export const activeGoalPeriod = derived(
   }
 );
 
+/**
+ * The frozen record for the active period — but ONLY once that period has
+ * actually closed.
+ *
+ * The `isClosed` test has to be here too, not just in the header's branch. A
+ * snapshot can exist for a period that is still running (a device with a fast
+ * clock finalized it, or the user reopened a custom goal's end date), and
+ * without this gate the Completed list read the frozen record while the header
+ * read live state — the two disagreeing on the same screen, which is the bug
+ * this whole area exists to prevent.
+ */
 export const activeGoalSnapshot = derived(
   [activeGoalPeriod, goalSnapshots],
   ([$period, $snapshots]) => {
     if (!$period) return null;
+    if ($period.end.getTime() > Date.now()) return null;
     const key = buildGoalSnapshotKey($period.goalType, $period.periodKey);
     return $snapshots[key] ?? null;
   }

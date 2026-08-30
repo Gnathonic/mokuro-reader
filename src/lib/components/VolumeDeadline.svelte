@@ -5,9 +5,20 @@
     volumeId: string;
     pagesReadInPeriod?: number | null;
     targetPagesPerPeriod?: number | null;
+    /**
+     * The view's clock. Threaded in rather than read from `Date.now()` inside
+     * the deriveds so the countdown actually rolls over: "Due tomorrow" left on
+     * screen across midnight used to stay "Due tomorrow" until a reload.
+     */
+    now?: number;
   }
 
-  let { volumeId, pagesReadInPeriod = null, targetPagesPerPeriod = null }: Props = $props();
+  let {
+    volumeId,
+    pagesReadInPeriod = null,
+    targetPagesPerPeriod = null,
+    now = Date.now()
+  }: Props = $props();
 
   // Get the deadline for this volume from the store
   let deadline = $derived($volumeDeadlines[volumeId] || null);
@@ -68,7 +79,7 @@
     if (!deadline) return null;
 
     // Calculate days remaining
-    const daysRemaining = dateUtils.calculateDaysRemaining(deadline) - 1;
+    const daysRemaining = dateUtils.calculateDaysRemaining(deadline, new Date(now)) - 1;
 
     if (daysRemaining < 0) {
       return 'Past due';
@@ -86,7 +97,7 @@
   let urgencyClass = $derived.by(() => {
     if (!deadline || !targetPagesPerPeriod || pagesReadInPeriod === null) return 'text-gray-400';
 
-    const daysRemaining = dateUtils.calculateDaysRemaining(deadline);
+    const daysRemaining = dateUtils.calculateDaysRemaining(deadline, new Date(now));
 
     // If deadline has passed, always show as urgent
     if (daysRemaining <= 0) return 'text-red-500 font-bold';
@@ -101,10 +112,16 @@
     return 'text-red-400'; // Falling behind
   });
 
-  // Show the deadline display when deadline is set and progress data is available
-  let showDeadlineDisplay = $derived(
-    pagesReadInPeriod !== null && targetPagesPerPeriod !== null && deadline !== null
-  );
+  /*
+   * The two readouts are independent.
+   *
+   * They used to share one gate, so a volume with a deadline but no page target
+   * — every volume whose pages are not on this device, since the target needs a
+   * page count — rendered "Set deadline" over the deadline the user had already
+   * set. Clicking it then reopened the picker as though there were none.
+   */
+  let showDeadline = $derived(deadline !== null);
+  let showPageTarget = $derived(pagesReadInPeriod !== null && targetPagesPerPeriod !== null);
 </script>
 
 <div class="goal deadline-controls relative mt-1 text-center">
@@ -115,21 +132,23 @@
       onclick={showDatePicker}
       title={deadline ? `Deadline: ${deadline}` : 'Click to set a deadline'}
     >
-      {#if showDeadlineDisplay}
-        <!-- Both readouts are keyed: a page count and a countdown are precisely the text
-             Migaku/Yomitan rewrite in place, and they then keep showing yesterday's
-             figure across a page turn or a date change (CLAUDE.md). -->
+      <!-- Both readouts are keyed: a page count and a countdown are precisely the text
+           Migaku/Yomitan rewrite in place, and they then keep showing yesterday's
+           figure across a page turn or a date change (CLAUDE.md). -->
+      {#if showPageTarget}
         {#key `${pagesReadInPeriod}/${targetPagesPerPeriod}`}
           <div class={urgencyClass}>
             {pagesReadInPeriod}/{targetPagesPerPeriod} pages
           </div>
         {/key}
+      {/if}
+      {#if showDeadline}
         {#key deadlineDisplay}
           <div class="ml-1 text-gray-500">
             ({deadlineDisplay})
           </div>
         {/key}
-      {:else}
+      {:else if !showPageTarget}
         <div class="text-gray-500 italic">Set deadline</div>
       {/if}
     </button>

@@ -17,6 +17,8 @@
     type GoalProgress,
     type GoalType
   } from '$lib/goals';
+  import type { GoalRejection } from '$lib/goals/goals-data';
+  import { showSnackbar } from '$lib/util/snackbar';
 
   const goalTypeOptions: { value: GoalType; name: string }[] = [
     { value: 'year', name: 'Year' },
@@ -152,6 +154,15 @@
     setActiveGoalSelection({ goalType: selection.goalType, periodKey });
   }
 
+  /** Why a save was refused, in the user's words. */
+  const rejectionMessage: Record<GoalRejection, string> = {
+    name: 'Give the goal a name.',
+    target: 'The target must be a whole number of volumes, at least 1.',
+    range: 'The end date must not be before the start date.',
+    missing: 'That goal no longer exists.',
+    locked: 'This period is already closed, so its dates cannot change.'
+  };
+
   function handleCustomSelection(customId: string) {
     setActiveGoalSelection({ goalType: 'custom', customId });
   }
@@ -161,14 +172,22 @@
   }
 
   function saveCustomGoal() {
-    if (!customName || !customStart || !customEnd || customTarget <= 0) return;
-    createCustomGoal({
+    // Only clear and close on SUCCESS. This used to reset every field
+    // unconditionally, so transposing the start and end dates — or typing a
+    // fractional target — silently threw the whole entry away with no message.
+    const rejection = createCustomGoal({
       name: customName,
       startDate: customStart,
       endDate: customEnd,
       targetVolumes: customTarget,
       enabled: true
     });
+
+    if (rejection) {
+      showSnackbar(rejectionMessage[rejection]);
+      return;
+    }
+
     customName = '';
     customStart = '';
     customEnd = '';

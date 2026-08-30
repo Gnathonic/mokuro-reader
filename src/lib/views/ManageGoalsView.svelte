@@ -20,6 +20,8 @@
     getCurrentPeriodKey,
     ensureCurrentYearTarget
   } from '$lib/goals';
+  import type { GoalRejection } from '$lib/goals/goals-data';
+  import { showSnackbar } from '$lib/util/snackbar';
 
   const goalTypes: Exclude<GoalType, 'custom'>[] = ['year', 'season', 'month', 'today'];
   const goalTypeOptions = goalTypes.map((type) => ({ value: type, name: type }));
@@ -48,6 +50,15 @@
     setActiveGoalSelection({ goalType: selectedGoalType, periodKey: selectedPeriodKey });
   }
 
+  /** Why a save was refused, in the user's words. */
+  const rejectionMessage: Record<GoalRejection, string> = {
+    name: 'Give the goal a name.',
+    target: 'The target must be a whole number of volumes, at least 1.',
+    range: 'The end date must not be before the start date.',
+    missing: 'That goal no longer exists.',
+    locked: 'This period is already closed, so its dates cannot change.'
+  };
+
   function startCustomEdit(goal: CustomGoal) {
     customEdits = { ...customEdits, [goal.id]: { ...goal } };
   }
@@ -61,9 +72,15 @@
   function saveCustom(goalId: string) {
     const updated = customEdits[goalId];
     if (!updated) return;
-    if (!updated.name || !updated.startDate || !updated.endDate || updated.targetVolumes <= 0)
+
+    // Keep the row open when the save is refused: closing it reverted the
+    // user's typing as though the edit had never happened.
+    const rejection = updateCustomGoal(updated);
+    if (rejection) {
+      showSnackbar(rejectionMessage[rejection]);
       return;
-    updateCustomGoal(updated);
+    }
+
     const { [goalId]: _, ...rest } = customEdits;
     customEdits = rest;
   }

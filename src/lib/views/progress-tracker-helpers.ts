@@ -1,6 +1,6 @@
 import { VolumeData, calculatePagesReadInPeriod } from '$lib/settings/volume-data';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { completionsInPeriod, isFinished } from '$lib/goals/goal-counting';
+import { isCompletedInPeriod, isFinished } from '$lib/goals/goal-counting';
 import { calculatePeriodPageTargetTotal } from '$lib/goals/progress-targets';
 import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';
 import type { ProgressTargetMode, ProgressTrackerSorting } from '$lib/settings/misc';
@@ -363,7 +363,7 @@ export function bucketVolumes(
     const countedByActiveGoal = activePeriod
       ? snapshot
         ? Object.prototype.hasOwnProperty.call(snapshot.completed, volumeId)
-        : completionsInPeriod(volumeData, activePeriod.start, activePeriod.end, now) > 0
+        : isCompletedInPeriod(volumeData, activePeriod.start, activePeriod.end, now)
       : finished;
 
     if (countedByActiveGoal) {

@@ -622,19 +622,32 @@ export function updateProgress(
         chars: chars ?? currentVolume.chars,
         completed,
         /*
-         * Stamped once, at the first update that says "completed" — `?? nowIso`
-         * so paging back and forth across the last page does not walk the date
-         * forward.
+         * Stamped on the false->true EDGE — the same edge `becameCompleted`
+         * already computes for `notifyCompletion`.
          *
-         * `completed: false` NEVER clears it here. `updateProgress`'s `completed`
-         * parameter defaults to false and two callers pass only three arguments
-         * — `toggleHasCover` in Reader.svelte and the page-number input in
-         * ReaderSettings.svelte — so a false here frequently means "the caller
-         * said nothing", not "the user un-read this". Clearing on it would drop
-         * a volume out of the year's goal because somebody toggled a cover.
-         * The three paths that genuinely un-read a volume clear it explicitly.
+         * Not `?? nowIso`: that is write-once, so a volume finished in 2025,
+         * paged back to the start and read cover to cover again in 2026 kept
+         * its 2025 date and the 2026 goal never counted it — while
+         * `bucketVolumes` also dropped it from every section, because it IS
+         * finished, just not in this period. A second reading is a second
+         * completion and gets its own date.
+         *
+         * Paging back and forth across the last page still cannot walk the
+         * date forward: the flag has to actually fall to false and rise again,
+         * and the intermediate `completed: false` writes leave the date alone.
+         *
+         * `completed: false` NEVER clears it here. `updateProgress`'s
+         * `completed` parameter defaults to false and two callers pass only
+         * three arguments — `toggleHasCover` in Reader.svelte and the
+         * page-number input in ReaderSettings.svelte — so a false here
+         * frequently means "the caller said nothing", not "the user un-read
+         * this". The three paths that genuinely un-read a volume clear it.
          */
-        completedAt: completed ? (currentVolume.completedAt ?? nowIso) : currentVolume.completedAt,
+        completedAt: completed
+          ? becameCompleted || !currentVolume.completedAt
+            ? nowIso
+            : currentVolume.completedAt
+          : currentVolume.completedAt,
         lastProgressUpdate: nowIso,
         recentPageTurns
       })

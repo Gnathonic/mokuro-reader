@@ -3,7 +3,8 @@ import { get } from 'svelte/store';
 import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
 import { currentView, type View } from '$lib/util/hash-router';
 import { backfillCompletedAt } from './completed-at-backfill';
-import { customGoals, goalTargets } from './goals-data';
+import { customGoals, goalTargets, rollForwardStaleSelection } from './goals-data';
+import { pruneDeadlinesForMissingVolumes } from './goal-settings';
 import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { finalizeGoalSnapshot } from './snapshots';
 import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
@@ -81,6 +82,14 @@ export function initGoalsLifecycle() {
     // in the same tick sees them.
     backfillCompletedAt(pageCounts());
     finalizeClosedGoalSnapshots();
+    // A stored selection pointing at a period that has already ended blanks the
+    // tracker's two main sections with no explanation — every returning user
+    // hits it on 1 January.
+    rollForwardStaleSelection();
+    // Deadlines outlive their volumes, and now that they sync they would grow
+    // in every device's goals.json forever. The catalog is loaded here, so
+    // "not in the catalog" is a real answer rather than a startup race.
+    pruneDeadlinesForMissingVolumes(new Set(Object.keys(get(catalogVolumes) ?? {})));
   };
 
   // The catalog resolves asynchronously and usually AFTER mount, so a one-shot

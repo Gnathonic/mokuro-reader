@@ -271,6 +271,32 @@ describe('VolumeData.completedAt', () => {
     expect(new VolumeData({ completedAt: 42 as unknown as string }).completedAt).toBeUndefined();
   });
 
+  it('dates a SECOND reading, so a re-read counts toward the new period', () => {
+    vi.useFakeTimers();
+    try {
+      // Write-once meant a volume finished in 2025, paged back to the start and
+      // read cover to cover again in 2026 kept its 2025 date: the 2026 goal never
+      // counted it, and `bucketVolumes` dropped it from every section too,
+      // because it IS finished — just not in this period.
+      vi.setSystemTime(new Date('2025-06-01T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 5000, true);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
+
+      // Page back to the start: the flag falls, the date stays.
+      vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
+      updateProgress('vol-1', 1, 5000);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
+
+      // Read it through again: a second completion gets its own date, in the
+      // period it actually happened in.
+      vi.setSystemTime(new Date('2026-03-20T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 6000, true);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2026-03-20T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is stamped once at the false->true edge and does not move afterwards', () => {
     updateProgress('vol-1', 100, 5000, true);
     const first = get(volumes)['vol-1'].completedAt;

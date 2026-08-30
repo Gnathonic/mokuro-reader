@@ -302,6 +302,7 @@
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
               onHover={(id) => (hoveredVolume = id)}
+              now={nowTick}
               showProgressBar={true}
               showDeadline={true}
               {pagesReadInPeriod}
@@ -331,6 +332,7 @@
                 remainingPages={stats.remainingPages}
                 isHovered={hoveredVolume === volumeId}
                 onHover={(id) => (hoveredVolume = id)}
+                now={nowTick}
                 showProgressBar={false}
                 showDeadline={false}
               />
@@ -376,6 +378,7 @@
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
                   onHover={(id) => (hoveredVolume = id)}
+                  now={nowTick}
                   showProgressBar={false}
                   showDeadline={false}
                 />
@@ -394,6 +397,7 @@
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
                   onHover={(id) => (hoveredVolume = id)}
+                  now={nowTick}
                   showProgressBar={false}
                   showDeadline={false}
                   subtitle={completedLabel}

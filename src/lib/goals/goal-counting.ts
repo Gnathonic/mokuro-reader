@@ -30,35 +30,49 @@ export function isFinished(volumeId: string, volumeData: VolumeData, pageCount: 
 }
 
 /**
- * How many times this volume was FINISHED inside the period.
+ * Was this volume finished inside the period?
  *
- * Counts archived passes too, each dated when that pass actually finished, so
- * a series read twice in a year counts twice — and a volume finished in March
- * and restarted in December still counts for March.
+ * Reads archived passes too, each dated when that pass actually finished, so a
+ * volume finished in March and restarted in December still counts for March.
+ *
+ * ONE VOLUME COUNTS ONCE, however many times it was finished in the period.
+ * The unit has to match everywhere: the frozen snapshot stores
+ * `completed: Record<volumeId, string>` and the Completed list renders one card
+ * per volume, so counting EVENTS in the live branch made the header read 20
+ * while the list below it showed 10 cards — and then the header dropped to 10
+ * the moment the period closed and switched to the snapshot, permanently,
+ * because nothing rewrites a snapshot.
  */
-export function completionsInPeriod(
+export function isCompletedInPeriod(
   volumeData: VolumeData,
   start: Date,
   end: Date,
   now = Date.now()
-): number {
-  return completionEventsFor(volumeData, now).filter((stamp) =>
-    isDateWithinRange(stamp, start, end)
-  ).length;
+): boolean {
+  return completionEventsFor(volumeData, now).some((stamp) => isDateWithinRange(stamp, start, end));
 }
 
 /**
  * Fractional volume credit for reading inside the period, for a volume that was
  * NOT finished in it.
  *
- * One implementation, called by both the live total and the snapshot builder.
- * They used to differ — the live branch additionally required `currentPage > 1`
- * — so a period's number jumped the moment it closed.
+ * One implementation, called by the live total, the snapshot builder and the
+ * section split alike. They used to differ — the live branch additionally
+ * required `currentPage > 1` — so a period's number jumped the moment it closed.
  *
- * Returns 0 when the page count is unknown (a volume whose pages are not on
- * this device and whose length no index has supplied): a fraction of an unknown
- * total is not a number we can stand behind, and inventing one would silently
- * inflate the goal.
+ * Returns 0 in two cases:
+ *
+ * - The page count is unknown (a volume whose pages are not on this device and
+ *   whose length no index has supplied). A fraction of an unknown total is not
+ *   a number we can stand behind, and inventing one would silently inflate the
+ *   goal.
+ * - The volume is ALREADY FINISHED, and finished outside this period. Paging
+ *   back through a volume you completed last year is re-reading, not progress
+ *   toward this year's goal — and crucially `bucketVolumes` puts such a volume
+ *   in no section at all, so credit granted here would show up in the header
+ *   with nothing on screen to account for it. A volume finished INSIDE the
+ *   period never reaches this function: the caller counts it as a completion
+ *   and returns first.
  */
 export function partialProgressInPeriod(
   volumeData: VolumeData,
@@ -67,5 +81,6 @@ export function partialProgressInPeriod(
   end: Date
 ): number {
   if (pageCount <= 0) return 0;
+  if (isVolumeFinished({ volume_uuid: '', page_count: pageCount }, volumeData)) return 0;
   return calculatePartialVolumeProgressInPeriod(volumeData.recentPageTurns, start, end, pageCount);
 }
