@@ -45,7 +45,23 @@ export type AggregateSession = {
 
 // One archived read pass, appended by "restart series". `pages`/`chars` are the
 // values at the moment of the restart; `completed` says whether that pass finished.
-export type ArchivedRead = { at: number; pages: number; chars: number; completed: boolean };
+export type ArchivedRead = {
+  at: number;
+  pages: number;
+  chars: number;
+  completed: boolean;
+  /**
+   * The volume's `completedAt` at the moment of the restart, when it had one.
+   *
+   * `at` is when RESTART WAS PRESSED, which is not when the pass finished.
+   * Dating a goal period from `at` credits the restart month: finish a
+   * ten-volume series in March, restart it in December, and December collects
+   * ten completions that never happened while March shows none. So the real
+   * date rides along, and anything counting completions per period reads this,
+   * never `at`.
+   */
+  completedAt?: string;
+};
 
 function isArchivedRead(value: unknown): value is ArchivedRead {
   if (!value || typeof value !== 'object') return false;
@@ -54,7 +70,8 @@ function isArchivedRead(value: unknown): value is ArchivedRead {
     typeof v.at === 'number' &&
     typeof v.pages === 'number' &&
     typeof v.chars === 'number' &&
-    typeof v.completed === 'boolean'
+    typeof v.completed === 'boolean' &&
+    (v.completedAt === undefined || typeof v.completedAt === 'string')
   );
 }
 
@@ -63,6 +80,8 @@ type VolumeDataJSON = {
   progress?: number;
   chars?: number;
   completed?: boolean;
+  /** ISO stamp of the moment this volume was first finished. See the class field. */
+  completedAt?: string;
   timeReadInMinutes?: number;
   settings?: VolumeSettings;
   lastProgressUpdate?: string;
@@ -85,6 +104,20 @@ export class VolumeData implements VolumeDataJSON {
   progress: number;
   chars: number;
   completed: boolean;
+  /**
+   * WHEN this volume was finished, as opposed to `completed`, which only says
+   * THAT it was. Reading goals count completions into calendar periods, so the
+   * date has to be durable per-volume state that syncs — it cannot be
+   * re-derived, because `lastProgressUpdate` moves on every page turn and a
+   * single page flipped through an old volume would re-date a two-year-old
+   * completion to today.
+   *
+   * Stamped once, at the false->true edge in `updateProgress`, and cleared only
+   * by the three paths that genuinely un-read a volume. Absent means "finished,
+   * but before this field existed, and no evidence survived to date it" — never
+   * "not finished", which is what `completed` and the page count are for.
+   */
+  completedAt?: string;
   timeReadInMinutes: number;
   settings: VolumeSettings;
   lastProgressUpdate: string;
@@ -101,6 +134,13 @@ export class VolumeData implements VolumeDataJSON {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
     this.chars = typeof data.chars === 'number' ? data.chars : 0;
     this.completed = !!data.completed;
+    // Untrusted (cloud JSON, hand-edited localStorage): keep only a parseable
+    // ISO stamp. A junk value becomes absent rather than poisoning a goal
+    // period with an Invalid Date.
+    this.completedAt =
+      typeof data.completedAt === 'string' && !Number.isNaN(Date.parse(data.completedAt))
+        ? data.completedAt
+        : undefined;
     this.timeReadInMinutes =
       typeof data.timeReadInMinutes === 'number' ? data.timeReadInMinutes : 0;
     this.lastProgressUpdate = data.lastProgressUpdate || new Date(0).toISOString();
@@ -154,6 +194,7 @@ export class VolumeData implements VolumeDataJSON {
     if (this.progress > 0) result.progress = this.progress;
     if (this.chars > 0) result.chars = this.chars;
     if (this.completed) result.completed = this.completed;
+    if (this.completedAt) result.completedAt = this.completedAt;
     if (this.timeReadInMinutes > 0) result.timeReadInMinutes = this.timeReadInMinutes;
 
     // Only include lastProgressUpdate if it's not epoch
@@ -434,7 +475,13 @@ export function deleteVolume(volume: string) {
     const existing = prev[volume];
     if (!existing) return prev; // Already gone or never existed
 
-    // Create tombstone with deletion timestamp
+    // Create tombstone with deletion timestamp.
+    //
+    // Deliberately WITHOUT `completedAt`: the tombstone is the user saying
+    // "forget this volume's stats", and it syncs. Carrying a completion date on
+    // it would resurrect the volume into every device's goal counts forever.
+    // Past periods keep their number through the closed-period goal snapshots,
+    // which freeze `completed` per period. Do not "fix" this by adding it.
     const tombstone = new VolumeData({
       deletedOn: new Date().toISOString(),
       // Keep metadata for sync identification
@@ -534,6 +581,9 @@ export function updateProgress(
     const currentVolume = prev[volume] || new VolumeData();
     becameCompleted = completed && !currentVolume.completed;
     const now = Date.now();
+    // One stamp shared by the page turn and the completion, so a backfill can
+    // rely on them lining up.
+    const nowIso = new Date(now).toISOString();
 
     // Add new turn with cumulative character count
     // Page turns accumulate indefinitely - idle gaps are filtered during time calculation
@@ -571,7 +621,21 @@ export function updateProgress(
         progress,
         chars: chars ?? currentVolume.chars,
         completed,
-        lastProgressUpdate: new Date().toISOString(),
+        /*
+         * Stamped once, at the first update that says "completed" — `?? nowIso`
+         * so paging back and forth across the last page does not walk the date
+         * forward.
+         *
+         * `completed: false` NEVER clears it here. `updateProgress`'s `completed`
+         * parameter defaults to false and two callers pass only three arguments
+         * — `toggleHasCover` in Reader.svelte and the page-number input in
+         * ReaderSettings.svelte — so a false here frequently means "the caller
+         * said nothing", not "the user un-read this". Clearing on it would drop
+         * a volume out of the year's goal because somebody toggled a cover.
+         * The three paths that genuinely un-read a volume clear it explicitly.
+         */
+        completedAt: completed ? (currentVolume.completedAt ?? nowIso) : currentVolume.completedAt,
+        lastProgressUpdate: nowIso,
         recentPageTurns
       })
     };
@@ -587,7 +651,19 @@ export function markVolumeAsComplete(volumeUuid: string, pageCount: number, tota
 }
 
 export function markVolumeAsUnread(volumeUuid: string) {
+  // `updateProgress` deliberately preserves `completedAt` on a false flag (see
+  // the comment there). This is the explicit un-read, so it clears the date —
+  // and rides the fresh `lastProgressUpdate` that call just wrote, so the
+  // clear wins the next merge.
   updateProgress(volumeUuid, 0, 0, false);
+  _volumesInternal.update((prev) => {
+    const current = prev[volumeUuid];
+    if (!current?.completedAt) return prev;
+    return {
+      ...prev,
+      [volumeUuid]: new VolumeData({ ...current, completedAt: undefined })
+    };
+  });
 }
 
 /**
@@ -613,12 +689,16 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
             at: now,
             pages: existing.progress,
             chars: existing.chars,
-            completed: existing.completed
+            completed: existing.completed,
+            // The pass keeps the date it was actually finished on, so a period
+            // that already counted it goes on counting it after the restart.
+            ...(existing.completedAt ? { completedAt: existing.completedAt } : {})
           }
         ],
         progress: 0,
         chars: 0,
         completed: false,
+        completedAt: undefined,
         lastProgressUpdate: nowIso
       });
     }

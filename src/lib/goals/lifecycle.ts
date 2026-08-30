@@ -1,6 +1,8 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
+import { volumes as catalogVolumes } from '$lib/catalog';
 import { currentView, type View } from '$lib/util/hash-router';
+import { backfillCompletedAt } from './completed-at-backfill';
 import { _goalsData } from './goals-data';
 import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { _goalSnapshots, buildGoalSnapshotKey, finalizeGoalSnapshot } from './snapshots';
@@ -10,7 +12,34 @@ function isVolumeView(view: View) {
   return view.type === 'reader' || view.type === 'volume-text';
 }
 
+/**
+ * A goal snapshot freezes a closed period's numbers PERMANENTLY — nothing
+ * rewrites one once it exists. So it must never be built from a half-loaded
+ * app.
+ *
+ * The catalog store is `undefined` until its first Dexie read resolves, and
+ * every page count comes from it. Finalizing before then wrote snapshots whose
+ * `partialProgress` was empty by construction (`totalPages <= 0` skips every
+ * volume) and whose completions were whatever the boot happened to have — and
+ * the first-writer-wins guard in `finalizeGoalSnapshot` then made that the
+ * permanent record.
+ */
+function catalogLoaded(): boolean {
+  return get(catalogVolumes) !== undefined;
+}
+
+function pageCounts(): Record<string, number> {
+  const catalog = get(catalogVolumes) ?? {};
+  const counts: Record<string, number> = {};
+  for (const [volumeId, metadata] of Object.entries(catalog)) {
+    if (typeof metadata?.page_count === 'number') counts[volumeId] = metadata.page_count;
+  }
+  return counts;
+}
+
 export function finalizeClosedGoalSnapshots() {
+  if (!catalogLoaded()) return;
+
   const now = new Date();
   const { targets, customGoals: custom } = get(_goalsData);
   const snapshots = get(_goalSnapshots);
@@ -44,33 +73,55 @@ export function initGoalsLifecycle() {
     return () => {};
   }
 
-  const runSnapshotFinalization = () => {
+  const runMaintenance = () => {
+    if (!catalogLoaded()) return;
+    // Order matters: dating legacy completions first means the snapshot built
+    // in the same tick sees them.
+    backfillCompletedAt(pageCounts());
     finalizeClosedGoalSnapshots();
   };
 
+  // The catalog resolves asynchronously and usually AFTER mount, so a one-shot
+  // call here would always run too early. Wait for it, then stop watching.
+  let unsubscribeCatalog: (() => void) | null = null;
+  unsubscribeCatalog = catalogVolumes.subscribe((catalog) => {
+    if (catalog === undefined) return;
+    runMaintenance();
+    // Svelte calls the subscriber synchronously on subscribe, so the handle may
+    // not be assigned yet; defer the teardown in that case.
+    if (unsubscribeCatalog) {
+      unsubscribeCatalog();
+      unsubscribeCatalog = null;
+    } else {
+      queueMicrotask(() => {
+        unsubscribeCatalog?.();
+        unsubscribeCatalog = null;
+      });
+    }
+  });
+
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') {
-      runSnapshotFinalization();
+      runMaintenance();
     }
   };
 
   let previousView = get(currentView);
-  const unsubscribe = currentView.subscribe((view) => {
+  const unsubscribeView = currentView.subscribe((view) => {
     if (isVolumeView(previousView) && !isVolumeView(view)) {
-      runSnapshotFinalization();
+      runMaintenance();
     }
 
     previousView = view;
   });
 
-  runSnapshotFinalization();
-
-  window.addEventListener('focus', runSnapshotFinalization);
+  window.addEventListener('focus', runMaintenance);
   document.addEventListener('visibilitychange', handleVisibilityChange);
 
   return () => {
-    unsubscribe();
-    window.removeEventListener('focus', runSnapshotFinalization);
+    unsubscribeCatalog?.();
+    unsubscribeView();
+    window.removeEventListener('focus', runMaintenance);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
   };
 }
