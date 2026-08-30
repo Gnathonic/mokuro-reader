@@ -22,7 +22,9 @@ export type View =
   | { type: 'cloud' }
   | { type: 'upload' }
   | { type: 'reading-speed' }
-  | { type: 'merge-series' };
+  | { type: 'merge-series' }
+  | { type: 'progress-tracker' }
+  | { type: 'manage-goals' };
 
 function getInitialView(): View {
   if (typeof window !== 'undefined') {
@@ -50,6 +52,8 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'upload') return { type: 'upload' };
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
+    if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
+    if (segments[0] === 'manage-goals') return { type: 'manage-goals' };
     // Removed libraries feature: send stale bookmarks to the catalog
     if (segments[0] === 'libraries' || segments[0] === 'add-library') return { type: 'catalog' };
 
@@ -98,6 +102,10 @@ export function viewToHash(view: View): string {
       return '#/reading-speed';
     case 'merge-series':
       return '#/merge-series';
+    case 'progress-tracker':
+      return '#/progress-tracker';
+    case 'manage-goals':
+      return '#/manage-goals';
   }
 }
 
@@ -157,7 +165,13 @@ export const nav = {
   toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options),
 
   /** Navigate to merge series page */
-  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options)
+  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
+
+  /** Navigate to progress tracker page */
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options),
+
+  /** Navigate to manage goals page */
+  toManageGoals: (options?: NavigateOptions) => navigate({ type: 'manage-goals' }, options)
 };
 
 /**
@@ -173,6 +187,7 @@ export const nav = {
  * - reading-speed -> catalog
  * - upload -> catalog
  * - merge-series -> catalog
+ * - progress-tracker -> catalog
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -195,6 +210,8 @@ export function navigateBack(): void {
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
+    case 'progress-tracker':
+    case 'manage-goals':
       nav.toCatalog();
       break;
     case 'catalog':
