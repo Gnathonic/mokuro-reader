@@ -40,6 +40,15 @@ export interface GoalsStoreState {
    * the laptop, and every such tap would dirty the file and force an upload.
    */
   activeSelection: GoalSelection;
+  /**
+   * The user chose a period that had ALREADY ENDED when they chose it — the
+   * period dropdown offers past ones deliberately.
+   *
+   * Without this, roll-forward cannot tell "left over from last year" from
+   * "just picked, on purpose", and snatched the page back to the present the
+   * moment the user alt-tabbed away and returned.
+   */
+  selectionPinned?: boolean;
 }
 
 /**
@@ -141,7 +150,8 @@ function loadGoalsState(): GoalsStoreState {
       customGoals: parseCustomGoals(record.customGoals, now),
       activeSelection: isGoalSelection(record.activeSelection)
         ? record.activeSelection
-        : defaultState().activeSelection
+        : defaultState().activeSelection,
+      selectionPinned: record.selectionPinned === true
     };
   } catch {
     return defaultState();
@@ -243,7 +253,17 @@ export function removeGoalTarget(goalType: Exclude<GoalType, 'custom'>, periodKe
 }
 
 export function setActiveGoalSelection(selection: GoalSelection) {
-  _goalsStore.update((state) => ({ ...state, activeSelection: selection }));
+  // Pinned when it is already in the past at the moment of choosing. A custom
+  // goal is always deliberate, and has no "current" counterpart to roll to.
+  const pinned =
+    selection.goalType === 'custom' ||
+    selection.periodKey !== getCurrentPeriodKey(selection.goalType);
+
+  _goalsStore.update((state) => ({
+    ...state,
+    activeSelection: selection,
+    selectionPinned: pinned
+  }));
 }
 
 /**
@@ -374,12 +394,15 @@ export function dropDanglingCustomSelection() {
  * on the goal not being closed — and no explanation. Picking "Today" once made
  * it happen every following day, and "Month" from the 1st of the next month.
  *
- * Custom goals are left alone: a custom range is a deliberate, named thing, and
- * there is no "current" one to roll to.
+ * Runs on every maintenance pass, so a tab left open across midnight or New
+ * Year rolls over rather than going blank. It never moves a PINNED selection —
+ * one the user chose from the dropdown when it was already past — which is what
+ * makes deliberately reviewing a closed period possible at all.
  */
 export function rollForwardStaleSelection(now = new Date()) {
   const state = get(_goalsStore);
   const selection = state.activeSelection;
+  if (state.selectionPinned) return;
   if (selection.goalType === 'custom') return;
 
   const period = getPeriodForSelection(selection);

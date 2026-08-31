@@ -97,9 +97,10 @@ export function initGoalsLifecycle() {
 
   const runMaintenanceUnguarded = () => {
     if (!catalogLoaded()) return;
-    // Order matters: dating legacy completions first means the snapshot built
-    // in the same tick sees them.
-    backfillCompletedAt(pageCounts());
+    // Recurring, so a tab left open across midnight or New Year rolls over —
+    // but it never moves a period the user pinned by choosing it from the
+    // dropdown. See `rollForwardStaleSelection`.
+    rollForwardStaleSelection();
     finalizeClosedGoalSnapshots();
     // Deadlines outlive their volumes, and now that they sync they would grow
     // in every device's goals.json forever. Driven off the reading records'
@@ -108,19 +109,17 @@ export function initGoalsLifecycle() {
     pruneDeadlinesForDeletedVolumes(get(volumesWithTrash));
   };
 
-  /*
-   * BOOT ONLY. A stored selection pointing at a period that has already ended
-   * blanks the tracker's two main sections with no explanation — every
-   * returning user hits it on 1 January. But it must NOT run on every focus:
-   * the period dropdown lets the user deliberately look back at a closed
-   * period, and rolling forward there snatched the page back to the present
-   * the moment they alt-tabbed away and returned.
-   */
   const runBootMaintenance = () => {
     try {
-      rollForwardStaleSelection();
+      // A one-time migration, so it runs on the boot pass only. Its deferral
+      // budget is counted in boots; spending it on every focus and visibility
+      // change exhausted it in a few tab switches.
+      //
+      // Before the snapshot pass, so a period closing in this same tick is
+      // frozen with the legacy completions already dated.
+      backfillCompletedAt(pageCounts());
     } catch (error) {
-      console.warn('[goals] selection roll-forward failed:', error);
+      console.warn('[goals] completedAt backfill failed:', error);
     }
     runMaintenance();
   };

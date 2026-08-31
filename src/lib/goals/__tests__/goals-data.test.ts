@@ -58,17 +58,47 @@ describe('ensureCurrentYearTarget', () => {
 });
 
 describe('rollForwardStaleSelection', () => {
-  it('moves a selection off a period that has ended', () => {
+  it('moves a selection carried over from a period that has since ended', () => {
     // Currently Reading and Future Reads are both gated on the goal not being
     // closed, so a stale selection blanked the page with no explanation —
-    // every returning user hit it on 1 January.
-    setActiveGoalSelection({ goalType: 'year', periodKey: '2020' });
+    // every returning user hit it on 1 January. This is the shape localStorage
+    // holds for a selection that WAS current when it was chosen: not pinned.
+    goalsWithTrash.update((state) => ({
+      ...state,
+      activeSelection: { goalType: 'year', periodKey: '2020' },
+      selectionPinned: false
+    }));
+
     rollForwardStaleSelection(new Date(2026, 5, 1));
 
     expect(get(goalsWithTrash).activeSelection).toEqual({
       goalType: 'year',
       periodKey: getCurrentPeriodKey('year')
     });
+  });
+
+  it('never moves a period the user deliberately picked from the dropdown', () => {
+    // The dropdown offers past periods on purpose. Rolling forward over one
+    // snatched the page back to the present the moment the user alt-tabbed
+    // away and returned, making a closed period impossible to review.
+    setActiveGoalSelection({ goalType: 'year', periodKey: '2020' });
+    rollForwardStaleSelection(new Date(2026, 5, 1));
+
+    expect(get(goalsWithTrash).activeSelection).toEqual({
+      goalType: 'year',
+      periodKey: '2020'
+    });
+  });
+
+  it('still rolls a selection that was current when it was set', () => {
+    // A tab left open across New Year: the selection was not pinned, so it
+    // moves rather than blanking the page.
+    setActiveGoalSelection({ goalType: 'year', periodKey: getCurrentPeriodKey('year') });
+    // Simulate the period having ended by pretending "now" is far in the future.
+    const key = getCurrentPeriodKey('year');
+    rollForwardStaleSelection(new Date(Number(key) + 5, 0, 2));
+
+    expect(get(goalsWithTrash).selectionPinned).toBe(false);
   });
 
   it('leaves a live period and a custom goal alone', () => {

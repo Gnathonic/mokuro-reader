@@ -55,17 +55,21 @@ describe('partialProgressInPeriod', () => {
     expect(partialProgressInPeriod(partway, 200, START, END)).toBeGreaterThan(0);
   });
 
-  it('grants nothing for a volume that is already finished', () => {
-    // The header used to give partial credit to a volume finished LAST year
-    // that the user paged back through this year, while `bucketVolumes` put it
-    // in no section at all — a number on screen with nothing accounting for it.
-    const finishedEarlier = new VolumeData({
-      progress: 200,
+  it('grants nothing while the volume sits finished at the end of the period', () => {
+    // `bucketVolumes` puts a finished volume in no section, so credit here
+    // would show in the header with nothing on screen accounting for it.
+    // `progress` tracks the last turn — a fixture where they disagree is not a
+    // state `updateProgress` can produce.
+    const finishedAndIdle = new VolumeData({
+      progress: 199,
       completed: true,
       completedAt: '2025-06-01T00:00:00.000Z',
-      recentPageTurns: turnsIn2026
+      recentPageTurns: [
+        [new Date(2026, 2, 1).getTime(), 198, 1980],
+        [new Date(2026, 2, 2).getTime(), 199, 1990]
+      ]
     });
-    expect(partialProgressInPeriod(finishedEarlier, 200, START, END)).toBe(0);
+    expect(partialProgressInPeriod(finishedAndIdle, 200, START, END)).toBe(0);
   });
 
   it('grants nothing when the volume length is unknown', () => {
@@ -121,43 +125,66 @@ describe('mergeSnapshotEntries — completion beats a fraction', () => {
   });
 });
 
-describe('partialProgressInPeriod judges "already finished" as of the period START', () => {
+describe('partialProgressInPeriod judges completion AS OF the period end', () => {
   const dec = new Date(2026, 11, 20).getTime();
+  const turns = (pages: number[]) =>
+    pages.map((p, i) => [dec + i * 1000, p, p * 10]) as [number, number, number][];
 
   it('keeps in-period reading when the volume is finished AFTER the period ends', () => {
     // 160 pages into a 200-page volume on 31 December, finished on 2 January.
-    // A date-blind "is it finished now" check erased December's reading from
-    // the frozen 2026 snapshot — permanently, since nothing rewrites one.
+    // "Is it finished right now" is evaluated when the snapshot is BUILT, which
+    // is after the period closed — so it erased December's reading from the
+    // frozen 2026 record, permanently.
     const finishedInJanuary = new VolumeData({
       progress: 200,
       completed: true,
       completedAt: '2027-01-02T00:00:00.000Z',
       recentPageTurns: [
-        [dec, 100, 1000],
-        [dec + 1000, 160, 1600]
+        ...turns([100, 160]),
+        [new Date(2027, 0, 2).getTime(), 200, 2000] as [number, number, number]
       ]
     });
 
-    const credit = partialProgressInPeriod(
-      finishedInJanuary,
-      200,
-      START,
-      END,
-      Date.parse('2027-01-05T00:00:00.000Z')
-    );
-    expect(credit).toBeGreaterThan(0);
+    expect(partialProgressInPeriod(finishedInJanuary, 200, START, END)).toBeGreaterThan(0);
   });
 
-  it('still refuses credit for a volume finished BEFORE the period', () => {
-    const finishedLastYear = new VolumeData({
-      progress: 200,
+  it('credits a restarted volume the user is actively re-reading', () => {
+    // "Has it ever been finished" excluded every volume with an older
+    // completion, so a restarted series read to 80% showed 0.00 in the header
+    // above a list rendering that same book at 80%.
+    const restarted = new VolumeData({
+      progress: 160,
+      archivedReads: [
+        {
+          at: new Date(2026, 0, 15).getTime(),
+          pages: 200,
+          chars: 5000,
+          completed: true,
+          completedAt: '2025-06-10T00:00:00.000Z'
+        }
+      ],
+      recentPageTurns: turns([20, 90, 160])
+    });
+
+    expect(partialProgressInPeriod(restarted, 200, START, END)).toBeGreaterThan(0);
+  });
+
+  it('still refuses credit for paging around near the end of a finished volume', () => {
+    // Finished, and still sitting at the end at the period's close: the reading
+    // is a revisit, and bucketVolumes shows the volume in no section, so credit
+    // here would appear in the header with nothing to account for it.
+    const revisited = new VolumeData({
+      progress: 199,
       completed: true,
       completedAt: '2025-06-01T00:00:00.000Z',
-      recentPageTurns: [
-        [dec, 100, 1000],
-        [dec + 1000, 160, 1600]
-      ]
+      recentPageTurns: turns([198, 199])
     });
-    expect(partialProgressInPeriod(finishedLastYear, 200, START, END, NOW)).toBe(0);
+
+    expect(partialProgressInPeriod(revisited, 200, START, END)).toBe(0);
+  });
+
+  it('falls back to stored progress when no turn precedes the instant', () => {
+    const noTurns = new VolumeData({ progress: 200, completed: true });
+    expect(partialProgressInPeriod(noTurns, 200, START, END)).toBe(0);
   });
 });

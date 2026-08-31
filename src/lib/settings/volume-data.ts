@@ -571,31 +571,32 @@ function notifyCompletion(volumeUuid: string) {
 }
 
 /**
- * A page turn at or before this page counts as "went back to the beginning".
- * Page 1 is the cover in a volume with one; 2 keeps the signal honest for
- * volumes without.
- */
-const REREAD_START_PAGE = 2;
-
-/**
  * Has the reader started a FRESH PASS since this volume was last finished?
  *
- * The `completed` flag is a poor signal for "the user re-read this": it falls
- * on any page below the last-page window, on the reader-settings page input and
- * on `toggleHasCover`, so a bare false->true edge re-dated a volume finished in
- * 2025 the moment somebody paged back two pages and forward one in 2026 — and
- * that date is what decides which year's goal the volume counts toward.
+ * The `completed` flag alone is a poor signal for "the user re-read this": it
+ * falls on any page below the last-page window, on the reader-settings page
+ * input and on `toggleHasCover`, so a bare false->true edge re-dated a volume
+ * finished in 2025 the moment somebody paged back two pages and forward one in
+ * 2026 — and that date decides which year's goal the volume counts toward.
  *
- * Going back to the START is the honest signal, and a real re-read always
- * produces one. Anything short of it leaves the original date alone.
+ * The signal is how FAR BACK they went, measured against the page they have now
+ * finished on, so it needs no page count: a turn at or before the halfway mark
+ * is a new pass, anything nearer the end is a revisit. That covers re-reading
+ * from a later chapter (a normal "refresh before the next volume" gesture),
+ * which a fixed "did they touch page 1" test missed entirely — leaving a
+ * hundred pages of real reading counted as nothing, in no section of the page.
  */
-function startedFreshPassSince(volumeData: VolumeData, sinceIso: string | undefined): boolean {
+function startedFreshPassSince(
+  volumeData: VolumeData,
+  sinceIso: string | undefined,
+  completingPage: number
+): boolean {
   if (!sinceIso) return true; // never finished before — this IS the first pass
   const since = Date.parse(sinceIso);
   if (Number.isNaN(since)) return true;
 
   return volumeData.recentPageTurns.some(
-    ([timestamp, page]) => timestamp > since && page <= REREAD_START_PAGE
+    ([timestamp, page]) => timestamp > since && page * 2 <= completingPage
   );
 }
 
@@ -671,7 +672,8 @@ export function updateProgress(
          * this". The three paths that genuinely un-read a volume clear it.
          */
         completedAt: completed
-          ? becameCompleted && startedFreshPassSince(currentVolume, currentVolume.completedAt)
+          ? becameCompleted &&
+            startedFreshPassSince(currentVolume, currentVolume.completedAt, progress)
             ? nowIso
             : (currentVolume.completedAt ?? nowIso)
           : currentVolume.completedAt,
