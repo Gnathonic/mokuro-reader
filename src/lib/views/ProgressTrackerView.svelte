@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { patchProgressHolesWhenListingReady } from '$lib/metadata/hole-patch';
   import { Button, Card, Spinner } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
@@ -234,10 +235,26 @@
     });
   }
 
-  // Mint this year's goal the first time the tracker is opened. Deliberately
-  // not at app start: a persisted default would put a goals.json in the cloud
-  // folder of every user who never opens this page.
-  onMount(() => ensureCurrentYearTarget());
+  onMount(() => {
+    // Mint this year's goal the first time the tracker is opened. Deliberately
+    // not at app start: a persisted default would put a goals.json in the cloud
+    // folder of every user who never opens this page.
+    ensureCurrentYearTarget();
+
+    /*
+     * Patch the holes synced progress leaves behind — the same sweep
+     * CatalogView and ReadingSpeedView run on mount.
+     *
+     * This view is a stats surface: it iterates EVERY progress record, so on a
+     * device that has synced progress but never opened those series it was
+     * rendering a card per volume with no page count, no cover and no counts —
+     * a wall of "0% (0p)". The rows exist to be minted (the local phase resolves
+     * them by uuid against the cached series.json indexes, with no network at
+     * all); nothing was asking for them here, because the sweep was wired into
+     * the two stats views that predate this one and never into this one.
+     */
+    return patchProgressHolesWhenListingReady();
+  });
 </script>
 
 <svelte:head>

@@ -305,6 +305,51 @@ test.describe('progress tracker', () => {
     expect(errors).toEqual([]);
   });
 
+  test('synced progress with no catalog row does not become a wall of empty cards', async ({
+    page
+  }) => {
+    // The shape a fresh device is in after a sync: hundreds of reading records
+    // for series it has never opened, so no rows, no page counts, no covers.
+    // Each one used to render a card reading "0% (0p)" in Currently Reading.
+    const errors = watchConsole(page);
+    await page.goto('/');
+    await page.waitForTimeout(1500);
+
+    // One volume WITH a row, to prove the lists still work.
+    await seedVolumes(page, [{ uuid: 'known', series: 'Known', title: 'Volume 1' }]);
+
+    const records: Record<string, unknown> = {
+      known: {
+        progress: 90,
+        lastProgressUpdate: inThisYear(6),
+        series_title: 'Known',
+        volume_title: 'Volume 1'
+      }
+    };
+    for (let i = 0; i < 40; i += 1) {
+      records[`ghost-${i}`] = {
+        progress: 12,
+        lastProgressUpdate: inThisYear(5),
+        series_title: `Never Opened ${i}`,
+        volume_title: 'Volume 1'
+      };
+    }
+    await seedReadingState(page, records);
+
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await goHash(page, '#/progress-tracker');
+
+    const cards = await page.locator('.volume-card').count();
+    expect(cards, 'a card was rendered for every unresolvable progress record').toBeLessThan(5);
+
+    const body = await page.locator('body').innerText();
+    expect(body).toContain('Volume 1');
+    expect(body).not.toContain('Never Opened 0');
+
+    expect(errors).toEqual([]);
+  });
+
   test('completedAt survives a reload and serializes into the sync shape', async ({ page }) => {
     // The old implementation side-wrote this key behind the volumes store's
     // back and it was stripped by the very next write, so nothing survived a

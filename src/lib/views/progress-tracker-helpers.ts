@@ -374,10 +374,29 @@ export function bucketVolumes(
     // Finished, but not in this period: done, and not something to start.
     if (finished) continue;
 
-    // Unknown length still belongs somewhere: bucket on read state alone. Only
-    // the deadline/target maths needs a page count, and that already returns
-    // null without one.
-    if (currentPage > 0 && (lengthUnknown || totalPages - currentPage >= 1)) {
+    /*
+     * CURRENTLY READING and FUTURE READS are actionable lists — "what am I in
+     * the middle of", "what should I start next" — so they require a known
+     * length. Without one there is no progress bar, no page target, no cover
+     * and nothing to open or download: a card that can only say "0% (0p)".
+     *
+     * A device holding synced progress for series it has never opened has one
+     * of these per volume, which is a wall of empty cards. The rows exist to be
+     * minted — `patchProgressHolesWhenListingReady`, which this view now runs
+     * on mount, resolves them by uuid against the cached `series.json` indexes
+     * — so the honest thing while a volume is unresolved is to leave it out of
+     * the lists that imply you can act on it, and let it appear the moment its
+     * row lands.
+     *
+     * COMPLETED is deliberately not gated this way (above): a finished volume
+     * is a record of something you did, and a title alone is enough to show it.
+     * Nor is anything gated out of the goal COUNTS — progress belongs to the
+     * volume, not to the files, and a volume with no page count contributes no
+     * fractional credit anyway.
+     */
+    if (lengthUnknown) continue;
+
+    if (currentPage > 0 && totalPages - currentPage >= 1) {
       currentlyReading.push([volumeId, volumeData]);
     } else {
       futureReads.push([volumeId, volumeData]);

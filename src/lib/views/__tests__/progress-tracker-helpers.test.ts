@@ -92,18 +92,52 @@ describe('bucketVolumes', () => {
     expect(buckets.currentlyReading).toEqual([]);
   });
 
-  it('keeps an in-progress volume of unknown length in Currently Reading', () => {
-    // The old `totalPages - currentPage >= 1` test is false when totalPages is
-    // 0, so these vanished from every section instead of appearing anywhere.
+  it('keeps a NOT-ON-DEVICE volume in Currently Reading when its length is known', () => {
+    // The pages are elsewhere, but a metadata-only row or a series.json index
+    // supplies the count — so there is a real progress bar and a real target,
+    // and the volume belongs in the list.
     const buckets = bucketVolumes(
       [['v', vol({ progress: 40 })]],
-      { v: stats({ currentPage: 40 }) },
+      { v: stats({ currentPage: 40, totalPages: 200, lengthUnknown: false }) },
       PERIOD,
       null,
       NOW
     );
 
     expect(buckets.currentlyReading.map(([id]) => id)).toEqual(['v']);
+  });
+
+  it('leaves a volume of UNKNOWN length out of both actionable lists', () => {
+    // Synced progress for a series this device has never opened: no row, so no
+    // page count, no cover and nothing to open or download. Rendering one card
+    // per volume produced a wall of "0% (0p)". They come back the moment
+    // `patchProgressHolesWhenListingReady` mints their rows.
+    const buckets = bucketVolumes(
+      [
+        ['reading', vol({ progress: 40 })],
+        ['untouched', vol()]
+      ],
+      { reading: stats({ currentPage: 40 }), untouched: stats() },
+      PERIOD,
+      null,
+      NOW
+    );
+
+    expect(buckets.currentlyReading).toEqual([]);
+    expect(buckets.futureReads).toEqual([]);
+  });
+
+  it('still lists a COMPLETED volume of unknown length — a title is enough', () => {
+    const finished = vol({ completed: true, completedAt: '2026-03-01T00:00:00.000Z' });
+    const buckets = bucketVolumes(
+      [['v', finished]],
+      { v: stats({ currentPage: 180 }) },
+      PERIOD,
+      null,
+      NOW
+    );
+
+    expect(buckets.completedVolumes.map(([id]) => id)).toEqual(['v']);
   });
 
   it('does not count a completion that falls outside the active period', () => {
@@ -179,8 +213,14 @@ describe('bucketVolumes', () => {
     expect(buckets.completedVolumes.map(([id]) => id)).toEqual(['recorded']);
   });
 
-  it('puts an untouched volume in Future Reads', () => {
-    const buckets = bucketVolumes([['v', vol()]], { v: stats() }, PERIOD, null, NOW);
+  it('puts an untouched volume of known length in Future Reads', () => {
+    const buckets = bucketVolumes(
+      [['v', vol()]],
+      { v: stats({ totalPages: 200, lengthUnknown: false }) },
+      PERIOD,
+      null,
+      NOW
+    );
     expect(buckets.futureReads.map(([id]) => id)).toEqual(['v']);
   });
 });
