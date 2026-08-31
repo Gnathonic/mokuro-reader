@@ -200,7 +200,7 @@
         $miscSettings.progressTrackerSorting
       ),
       futureReads: sortByAddedDate(
-        withSortData(pickNextPerSeries(buckets.futureReads, buckets.currentlyReading))
+        withSortData(pickNextPerSeries(buckets.futureReads, buckets.currentlyReading, volumeStats))
       ),
       completedVolumes: sortByCompletionDate(
         withSortData(buckets.completedVolumes),

@@ -107,24 +107,35 @@ describe('bucketVolumes', () => {
     expect(buckets.currentlyReading.map(([id]) => id)).toEqual(['v']);
   });
 
-  it('leaves a volume of UNKNOWN length out of both actionable lists', () => {
+  it('keeps an UNKNOWN-length volume out of Currently Reading', () => {
     // Synced progress for a series this device has never opened: no row, so no
-    // page count, no cover and nothing to open or download. Rendering one card
-    // per volume produced a wall of "0% (0p)". They come back the moment
-    // `patchProgressHolesWhenListingReady` mints their rows.
+    // page count and no cover. A card here could only say "0% (0p)", and a
+    // device in that state has one per volume — a wall of them.
     const buckets = bucketVolumes(
-      [
-        ['reading', vol({ progress: 40 })],
-        ['untouched', vol()]
-      ],
-      { reading: stats({ currentPage: 40 }), untouched: stats() },
+      [['reading', vol({ progress: 40 })]],
+      { reading: stats({ currentPage: 40 }) },
       PERIOD,
       null,
       NOW
     );
 
     expect(buckets.currentlyReading).toEqual([]);
-    expect(buckets.futureReads).toEqual([]);
+  });
+
+  it('keeps an UNKNOWN-length volume as a Future Reads CANDIDATE, for ordering', () => {
+    // It must reach `pickNextPerSeries` so the per-series winner is chosen from
+    // the whole series; that function withholds it if it wins. Dropping it here
+    // instead made a series recommend a later volume than the one to read next.
+    const buckets = bucketVolumes(
+      [['untouched', vol()]],
+      { untouched: stats() },
+      PERIOD,
+      null,
+      NOW
+    );
+
+    expect(buckets.futureReads.map(([id]) => id)).toEqual(['untouched']);
+    expect(pickNextPerSeries(buckets.futureReads, [], { untouched: stats() as never })).toEqual([]);
   });
 
   it('still lists a COMPLETED volume of unknown length — a title is enough', () => {
@@ -236,6 +247,39 @@ describe('pickNextPerSeries', () => {
 
     // Lowest volume title wins within a series; B is excluded entirely.
     expect(pickNextPerSeries(future, reading).map(([id]) => id)).toEqual(['a1']);
+  });
+
+  it('never skips over an unresolved volume to recommend a later one', () => {
+    // Volumes 1-5 have no row yet (no page count); 6 does. Filtering by length
+    // BEFORE the pick offered volume 6 as the next thing to read, which is the
+    // one thing this list must never get wrong. The pick sees the whole series
+    // and volume 1 wins; because it is unresolved the card is withheld, so the
+    // series shows nothing rather than the wrong volume.
+    const future: [string, VolumeData][] = [
+      ['v6', vol({ series_uuid: 'S', volume_title: 'Sleepy Princess 06' })],
+      ['v1', vol({ series_uuid: 'S', volume_title: 'Sleepy Princess 01' })],
+      ['v3', vol({ series_uuid: 'S', volume_title: 'Sleepy Princess 03' })]
+    ];
+    const stats = {
+      v1: { lengthUnknown: true } as never,
+      v3: { lengthUnknown: true } as never,
+      v6: { lengthUnknown: false } as never
+    };
+
+    expect(pickNextPerSeries(future, [], stats)).toEqual([]);
+  });
+
+  it('offers the next volume once it resolves', () => {
+    const future: [string, VolumeData][] = [
+      ['v6', vol({ series_uuid: 'S', volume_title: 'Sleepy Princess 06' })],
+      ['v1', vol({ series_uuid: 'S', volume_title: 'Sleepy Princess 01' })]
+    ];
+    const stats = {
+      v1: { lengthUnknown: false } as never,
+      v6: { lengthUnknown: false } as never
+    };
+
+    expect(pickNextPerSeries(future, [], stats).map(([id]) => id)).toEqual(['v1']);
   });
 
   it('keeps every volume that has no series', () => {

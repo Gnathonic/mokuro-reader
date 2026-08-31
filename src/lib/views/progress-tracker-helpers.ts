@@ -375,30 +375,27 @@ export function bucketVolumes(
     if (finished) continue;
 
     /*
-     * CURRENTLY READING and FUTURE READS are actionable lists — "what am I in
-     * the middle of", "what should I start next" — so they require a known
-     * length. Without one there is no progress bar, no page target, no cover
-     * and nothing to open or download: a card that can only say "0% (0p)".
+     * CURRENTLY READING requires a known length: without one there is no
+     * progress bar and no page target, only a card that can say "0% (0p)". A
+     * device holding synced progress for series it has never opened has one of
+     * those per volume, which is a wall of empty cards.
      *
-     * A device holding synced progress for series it has never opened has one
-     * of these per volume, which is a wall of empty cards. The rows exist to be
-     * minted — `patchProgressHolesWhenListingReady`, which this view now runs
-     * on mount, resolves them by uuid against the cached `series.json` indexes
-     * — so the honest thing while a volume is unresolved is to leave it out of
-     * the lists that imply you can act on it, and let it appear the moment its
-     * row lands.
+     * FUTURE READS keeps them, because that list is picked down to ONE VOLUME
+     * PER SERIES and dropping candidates here silently changes WHICH one: a
+     * series whose volumes 1-5 are unresolved and whose 6 has a row offered
+     * volume 6 as the thing to read next. The pick has to see the whole series
+     * to be right; `pickNextPerSeries` drops an unresolved winner afterwards,
+     * so at most one card per series is ever withheld instead of the series
+     * quietly recommending the wrong volume.
      *
-     * COMPLETED is deliberately not gated this way (above): a finished volume
-     * is a record of something you did, and a title alone is enough to show it.
-     * Nor is anything gated out of the goal COUNTS — progress belongs to the
-     * volume, not to the files, and a volume with no page count contributes no
-     * fractional credit anyway.
+     * COMPLETED is not gated either (above): a finished volume is a record of
+     * something you did, and a title alone is enough to show it. Nor are the
+     * goal COUNTS — progress belongs to the volume rather than the files, and a
+     * volume with no page count contributes no fractional credit anyway.
      */
-    if (lengthUnknown) continue;
-
-    if (currentPage > 0 && totalPages - currentPage >= 1) {
+    if (currentPage > 0 && !lengthUnknown && totalPages - currentPage >= 1) {
       currentlyReading.push([volumeId, volumeData]);
-    } else {
+    } else if (currentPage === 0) {
       futureReads.push([volumeId, volumeData]);
     }
   }
@@ -412,7 +409,8 @@ export function bucketVolumes(
  */
 export function pickNextPerSeries(
   futureReads: [string, VolumeData][],
-  currentlyReading: [string, VolumeData][]
+  currentlyReading: [string, VolumeData][],
+  stats?: Record<string, TrackerVolumeStats>
 ): [string, VolumeData][] {
   const readingSeries = new Set<string>();
   for (const [, volumeData] of currentlyReading) {
@@ -436,9 +434,14 @@ export function pickNextPerSeries(
       continue;
     }
     if (readingSeries.has(seriesUuid) || seen.has(seriesUuid)) continue;
+    // Claimed even when the winner is then withheld below: the next volume of
+    // this series IS this one, and letting the runner-up through would offer a
+    // volume the reader should not start yet.
     seen.add(seriesUuid);
     picked.push([volumeId, volumeData]);
   }
 
-  return picked;
+  // The length filter runs AFTER the pick, never before it — see `bucketVolumes`.
+  if (!stats) return picked;
+  return picked.filter(([volumeId]) => !(stats[volumeId]?.lengthUnknown ?? false));
 }

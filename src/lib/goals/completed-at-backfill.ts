@@ -62,6 +62,19 @@ export function backfillCompletedAt(
    * on every focus, every visibility change and every reader exit.
    */
   const prev = get(volumesWithTrash);
+
+  /*
+   * NOTHING TO EXAMINE IS NOT SUCCESS.
+   *
+   * The reading records load from localStorage, but on a device whose progress
+   * arrives by SYNC the store is legitimately empty for the first moments of a
+   * session — and a pass that runs then finds no volume to stamp and none to
+   * defer, so it recorded the migration as complete and never ran again. The
+   * 503 finished volumes that synced in a second later stayed undated forever:
+   * counted toward no goal, listed in no section, with no way to recover.
+   */
+  if (Object.keys(prev).length === 0) return;
+
   const stamps: Record<string, string> = {};
   let deferred = false;
 
