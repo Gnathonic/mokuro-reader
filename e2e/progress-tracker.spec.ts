@@ -134,6 +134,46 @@ test.describe('progress tracker', () => {
     expect(errors).toEqual([]);
   });
 
+  test('a user who never opens the tracker gets no goals state at all', async ({ page }) => {
+    // The three goals stores evaluate at boot (+layout.svelte imports the barrel
+    // for initGoalsLifecycle) and each used to write its just-loaded value
+    // straight back, because Svelte calls a subscriber synchronously on
+    // subscribe. That is a JSON.stringify plus a synchronous localStorage write
+    // per store, on the boot path, for everyone — and it minted goals state for
+    // users who have no goals.
+    const errors = watchConsole(page);
+    await page.goto('/');
+    await page.waitForTimeout(2000);
+
+    const keys = await page.evaluate(() =>
+      ['goalsData', 'goalSettings', 'goalSnapshots'].filter(
+        (k) => window.localStorage.getItem(k) !== null
+      )
+    );
+    expect(keys, 'boot wrote goals keys for a user with no goals').toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('opening the tracker is what creates the goal, and it persists', async ({ page }) => {
+    const errors = watchConsole(page);
+    await page.goto('/');
+    await page.waitForTimeout(1500);
+    await goHash(page, '#/progress-tracker');
+
+    const stored = await page.evaluate(() =>
+      JSON.parse(window.localStorage.getItem('goalsData') || 'null')
+    );
+    expect(stored, 'opening the tracker did not mint the default goal').toBeTruthy();
+
+    const target = stored.targets[Object.keys(stored.targets)[0]];
+    expect(target.targetVolumes).toBe(52);
+    // Stamped at the epoch: a placeholder must lose to a real goal set on any
+    // other device, or the first sync silently overwrites it.
+    expect(target.lastUpdated).toBe('1970-01-01T00:00:00.000Z');
+
+    expect(errors).toEqual([]);
+  });
+
   test('a volume finished on another device is both counted and listed', async ({ page }) => {
     const errors = watchConsole(page);
     await page.goto('/');
@@ -216,6 +256,52 @@ test.describe('progress tracker', () => {
     });
 
     expect(listed.completed).toEqual(['cloud-only', 'local-done']);
+    expect(errors).toEqual([]);
+  });
+
+  test('a not-on-device volume is listed but does not link into the reader', async ({ page }) => {
+    // It has progress and it counts toward the goal, so it belongs on the page.
+    // What it cannot do is open — the reader has no pages for it. The card used
+    // to link straight into the reader and dead-end.
+    const errors = watchConsole(page);
+    await page.goto('/');
+    await page.waitForTimeout(1500);
+
+    await page.evaluate(async () => {
+      const { db } = await import('/src/lib/catalog/db.ts');
+      const { generateDeterministicUUID } = await import('/src/lib/util/series-extraction.ts');
+      await db.volumes.put({
+        volume_uuid: 'removed-1',
+        series_uuid: generateDeterministicUUID('Removed Series'),
+        series_title: 'Removed Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 180,
+        character_count: 4000,
+        page_char_counts: [],
+        // "Remove from device": the row survives for its history.
+        metadata_only: true
+      });
+    });
+    await seedReadingState(page, {
+      'removed-1': {
+        progress: 90,
+        lastProgressUpdate: inThisYear(6),
+        series_title: 'Removed Series',
+        volume_title: 'Volume 1'
+      }
+    });
+
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await goHash(page, '#/progress-tracker');
+
+    const card = page.locator('.volume-card', { hasText: 'Not on device' });
+    await expect(card).toHaveCount(1);
+
+    const href = await card.locator('a').first().getAttribute('href');
+    expect(href, 'a not-on-device volume still linked into the reader').not.toContain('#/reader/');
+
     expect(errors).toEqual([]);
   });
 

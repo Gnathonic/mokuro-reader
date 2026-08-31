@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { derived, get, writable } from 'svelte/store';
 import { generateUUID } from '$lib/util/uuid';
+import { persistToLocalStorage } from './persist';
 import { buildYearKey } from './date-utils';
 import {
   buildGoalKey,
@@ -149,14 +150,9 @@ function loadGoalsState(): GoalsStoreState {
 
 const _goalsStore = writable<GoalsStoreState>(loadGoalsState());
 
-_goalsStore.subscribe((state) => {
-  if (browser) {
-    window.localStorage.setItem(
-      GOALS_STORAGE_KEY,
-      JSON.stringify({ version: GOALS_STORAGE_VERSION, ...state })
-    );
-  }
-});
+persistToLocalStorage(_goalsStore, GOALS_STORAGE_KEY, (state) =>
+  JSON.stringify({ version: GOALS_STORAGE_VERSION, ...state })
+);
 
 /** Internal: includes tombstones. Sync and the lifecycle read this. */
 export const goalsWithTrash = _goalsStore;

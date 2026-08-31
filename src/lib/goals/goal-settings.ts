@@ -6,6 +6,7 @@ import {
   parseVolumeDeadlines,
   type VolumeDeadlineEntry
 } from './goals-file';
+import { persistToLocalStorage } from './persist';
 
 /**
  * Per-volume reading deadlines. Keyed by volume uuid — the same key space as
@@ -65,17 +66,12 @@ function loadDeadlines(): DeadlineEntries {
 
 const _deadlines = writable<DeadlineEntries>(loadDeadlines());
 
-_deadlines.subscribe((volumeDeadlineEntries) => {
-  if (browser) {
-    window.localStorage.setItem(
-      GOAL_SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        version: GOAL_SETTINGS_STORAGE_VERSION,
-        volumeDeadlines: volumeDeadlineEntries
-      })
-    );
-  }
-});
+persistToLocalStorage(_deadlines, GOAL_SETTINGS_STORAGE_KEY, (volumeDeadlineEntries) =>
+  JSON.stringify({
+    version: GOAL_SETTINGS_STORAGE_VERSION,
+    volumeDeadlines: volumeDeadlineEntries
+  })
+);
 
 /** Internal: includes tombstones. Sync reads this. */
 export const deadlinesWithTrash = _deadlines;

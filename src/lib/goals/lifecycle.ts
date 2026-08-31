@@ -76,7 +76,25 @@ export function initGoalsLifecycle() {
     return () => {};
   }
 
+  /*
+   * Never throws.
+   *
+   * This runs synchronously inside two store subscribers and two DOM listeners.
+   * An exception escaping a Svelte store drain aborts the drain, so the
+   * subscribers queued behind it never run — a fault in goals bookkeeping would
+   * take out reactivity elsewhere in the app, which is wildly out of proportion
+   * to what this does. Nothing here is load-bearing enough to be worth that:
+   * every step is idempotent and retried on the next focus.
+   */
   const runMaintenance = () => {
+    try {
+      runMaintenanceUnguarded();
+    } catch (error) {
+      console.warn('[goals] maintenance pass failed; will retry on next focus:', error);
+    }
+  };
+
+  const runMaintenanceUnguarded = () => {
     if (!catalogLoaded()) return;
     // Order matters: dating legacy completions first means the snapshot built
     // in the same tick sees them.

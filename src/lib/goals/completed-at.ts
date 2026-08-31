@@ -62,8 +62,8 @@ export function completionEventsFor(volumeData: VolumeData, now: number): string
  * volume uuid -> the CURRENT pass's completion date.
  *
  * For "is this volume, as it stands, finished and when" — the completed list,
- * the per-volume badge. Goal totals want `completionEvents` instead, which also
- * counts finished passes that have since been restarted.
+ * the per-volume badge. Goal totals go through `completionEventsFor` instead,
+ * which also sees finished passes that have since been restarted.
  */
 export const completedAtMap = derived(volumes, ($volumes): CompletedAtMap => {
   const now = Date.now();
@@ -73,19 +73,6 @@ export const completedAtMap = derived(volumes, ($volumes): CompletedAtMap => {
     if (isUsableStamp(volumeData.completedAt, now)) {
       map[volumeId] = volumeData.completedAt;
     }
-  }
-
-  return map;
-});
-
-/** volume uuid -> every dated completion, newest last. */
-export const completionEvents = derived(volumes, ($volumes): Record<string, string[]> => {
-  const now = Date.now();
-  const map: Record<string, string[]> = {};
-
-  for (const [volumeId, volumeData] of Object.entries($volumes ?? {})) {
-    const events = completionEventsFor(volumeData, now);
-    if (events.length > 0) map[volumeId] = events;
   }
 
   return map;

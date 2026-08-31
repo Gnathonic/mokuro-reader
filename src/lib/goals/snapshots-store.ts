@@ -9,6 +9,7 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 import { parseSnapshots } from './goals-file';
+import { persistToLocalStorage } from './persist';
 import type { CustomGoal, GoalSnapshot, GoalType } from './types';
 
 type GoalSnapshots = Record<string, GoalSnapshot>;
@@ -57,14 +58,9 @@ function loadGoalSnapshots(): GoalSnapshots {
 
 export const _goalSnapshots = writable<GoalSnapshots>(loadGoalSnapshots());
 
-_goalSnapshots.subscribe((snapshots) => {
-  if (browser) {
-    window.localStorage.setItem(
-      GOAL_SNAPSHOTS_STORAGE_KEY,
-      JSON.stringify({ version: GOAL_SNAPSHOTS_STORAGE_VERSION, snapshots })
-    );
-  }
-});
+persistToLocalStorage(_goalSnapshots, GOAL_SNAPSHOTS_STORAGE_KEY, (snapshots) =>
+  JSON.stringify({ version: GOAL_SNAPSHOTS_STORAGE_VERSION, snapshots })
+);
 
 export const goalSnapshots = _goalSnapshots;
 

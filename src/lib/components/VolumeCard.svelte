@@ -1,5 +1,8 @@
 <script lang="ts">
   import { nav } from '$lib/util/hash-router';
+  import { downloadQueue } from '$lib/util/download-queue';
+  import { needsDownload } from '$lib/catalog/volume-state';
+  import type { VolumeMetadata } from '$lib/types';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
   import PlaceholderThumbnail from '$lib/components/PlaceholderThumbnail.svelte';
@@ -18,6 +21,13 @@
     pagesReadInPeriod?: number | null;
     targetPagesPerPeriod?: number | null;
     subtitle?: string | null;
+    /**
+     * The catalog row, when there is one. Needed to tell an installed volume
+     * from one whose pages are not on this device — the tracker lists and
+     * counts both (progress is the volume's, not the file's), but only one of
+     * them can be opened.
+     */
+    volume?: VolumeMetadata;
     /** The view's clock, so the deadline countdown rolls over. */
     now?: number;
   }
@@ -36,8 +46,27 @@
     pagesReadInPeriod = null,
     targetPagesPerPeriod = null,
     subtitle = null,
+    volume,
     now = Date.now()
   }: Props = $props();
+
+  /*
+   * A volume read on another device and never downloaded here still belongs on
+   * this page — it has progress, and it counts toward the goal. What it cannot
+   * do is open: the reader has no pages to show. Clicking one used to navigate
+   * into a dead end. It queues the download instead, the same thing clicking a
+   * not-installed volume does everywhere else in the app.
+   */
+  let isNotInstalled = $derived(volume ? needsDownload(volume) : false);
+
+  function openOrDownload(event: MouseEvent) {
+    event.preventDefault();
+    if (isNotInstalled) {
+      if (volume) downloadQueue.queueVolume(volume);
+      return;
+    }
+    if (seriesId) nav.toReader(seriesId, volumeId);
+  }
 
   /*
    * Object URLs are keyed on CONTENT identity, not on the Blob object.
@@ -81,11 +110,11 @@
 >
   <div class="imagebox">
     <a
-      href="#/reader/{seriesId}/{volumeId}"
-      onclick={(e) => {
-        e.preventDefault();
-        if (seriesId) nav.toReader(seriesId, volumeId);
-      }}
+      href={isNotInstalled
+        ? `#/series/${seriesId ?? ''}`
+        : `#/reader/${seriesId ?? ''}/${volumeId}`}
+      title={isNotInstalled ? 'Not on this device — click to download' : undefined}
+      onclick={openOrDownload}
     >
       {#if thumbnailUrl}
         <img
@@ -102,6 +131,13 @@
       {/if}
     </a>
     <div class="pending bg-gray-950/55" style:--progress={progressPercentString}></div>
+    {#if isNotInstalled}
+      <div
+        class="absolute right-1 bottom-1 rounded bg-gray-950/75 px-1 py-0.5 text-[10px] text-gray-200"
+      >
+        Not on device
+      </div>
+    {/if}
   </div>
 
   {#if showProgressBar}

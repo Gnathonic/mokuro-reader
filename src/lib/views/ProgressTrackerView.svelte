@@ -19,9 +19,12 @@
     getNextResetTime,
     formatRelativeResetTime,
     activeGoalPeriod,
+    activeGoalSelection,
     activeGoalSnapshot,
     completedAtMap,
-    ensureCurrentYearTarget
+    ensureCurrentYearTarget,
+    getCurrentPeriodKey,
+    setActiveGoalSelection
   } from '$lib/goals';
   import AnnualGoalProgress from '$lib/components/AnnualGoalProgress.svelte';
   import VolumeCard from '$lib/components/VolumeCard.svelte';
@@ -217,6 +220,20 @@
     return period.end.getTime() <= startOfToday.getTime();
   });
 
+  let activeGoalPeriodLabel = $derived($activeGoalPeriod?.label ?? null);
+
+  function returnToCurrentPeriod() {
+    const selection = $activeGoalSelection;
+    if (selection.goalType === 'custom') {
+      setActiveGoalSelection({ goalType: 'year', periodKey: getCurrentPeriodKey('year') });
+      return;
+    }
+    setActiveGoalSelection({
+      goalType: selection.goalType,
+      periodKey: getCurrentPeriodKey(selection.goalType)
+    });
+  }
+
   // Mint this year's goal the first time the tracker is opened. Deliberately
   // not at app start: a persisted default would put a goals.json in the cloud
   // folder of every user who never opens this page.
@@ -249,6 +266,25 @@
       <p class="text-sm text-gray-400">Start reading to track your progress!</p>
     </Card>
   {:else}
+    <!-- A period the user chose to look back at. `rollForwardStaleSelection`
+         handles the accidental case at mount, so reaching here means they
+         picked a past period deliberately — say so and offer the way back,
+         rather than rendering two missing sections and no explanation. -->
+    {#if isGoalClosed}
+      <Card class="mb-6 py-6 text-center">
+        <h2 class="mb-2 text-lg font-semibold text-gray-300">
+          Viewing a closed period{activeGoalPeriodLabel ? `: ${activeGoalPeriodLabel}` : ''}
+        </h2>
+        <p class="mb-4 text-sm text-gray-400">
+          Currently Reading and Future Reads are about what to read next, so they are hidden while
+          you are looking at a period that has ended.
+        </p>
+        <div class="relative z-10 flex justify-center">
+          <Button size="sm" onclick={returnToCurrentPeriod}>Back to the current period</Button>
+        </div>
+      </Card>
+    {/if}
+
     <!-- Currently Reading Section -->
     {#if !isGoalClosed && volumeSections.currentlyReading.length > 0}
       <Card class="mb-6 w-full max-w-none p-6">
@@ -303,6 +339,7 @@
               isHovered={hoveredVolume === volumeId}
               onHover={(id) => (hoveredVolume = id)}
               now={nowTick}
+              volume={catalogVolumeMap[volumeId]}
               showProgressBar={true}
               showDeadline={true}
               {pagesReadInPeriod}
@@ -333,6 +370,7 @@
                 isHovered={hoveredVolume === volumeId}
                 onHover={(id) => (hoveredVolume = id)}
                 now={nowTick}
+                volume={catalogVolumeMap[volumeId]}
                 showProgressBar={false}
                 showDeadline={false}
               />
@@ -379,6 +417,7 @@
                   isHovered={hoveredVolume === volumeId}
                   onHover={(id) => (hoveredVolume = id)}
                   now={nowTick}
+                  volume={catalogVolumeMap[volumeId]}
                   showProgressBar={false}
                   showDeadline={false}
                 />
@@ -398,6 +437,7 @@
                   isHovered={hoveredVolume === volumeId}
                   onHover={(id) => (hoveredVolume = id)}
                   now={nowTick}
+                  volume={catalogVolumeMap[volumeId]}
                   showProgressBar={false}
                   showDeadline={false}
                   subtitle={completedLabel}

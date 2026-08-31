@@ -67,7 +67,7 @@ export {
   updateCustomGoal
 } from './goals-data';
 
-export { completedAtMap, completionEvents, completionEventsFor } from './completed-at';
+export { completedAtMap, completionEventsFor } from './completed-at';
 
 export { backfillCompletedAt } from './completed-at-backfill';
 
