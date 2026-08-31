@@ -4,6 +4,7 @@ import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
 
 // Deep equality check for settings objects
@@ -571,20 +572,16 @@ function notifyCompletion(volumeUuid: string) {
 }
 
 /**
- * Has the reader started a FRESH PASS since this volume was last finished?
+ * Has the reader started a fresh pass since this volume was last finished?
  *
- * The `completed` flag alone is a poor signal for "the user re-read this": it
- * falls on any page below the last-page window, on the reader-settings page
- * input and on `toggleHasCover`, so a bare false->true edge re-dated a volume
- * finished in 2025 the moment somebody paged back two pages and forward one in
- * 2026 — and that date decides which year's goal the volume counts toward.
+ * The `completed` flag alone is a poor signal: it falls on any page below the
+ * last-page window, on the reader-settings page input and on `toggleHasCover`,
+ * so a bare false->true edge re-dated a volume finished in 2025 the moment
+ * somebody paged back two pages and forward one in 2026 — and that date decides
+ * which year's goal the volume counts toward.
  *
- * The signal is how FAR BACK they went, measured against the page they have now
- * finished on, so it needs no page count: a turn at or before the halfway mark
- * is a new pass, anything nearer the end is a revisit. That covers re-reading
- * from a later chapter (a normal "refresh before the next volume" gesture),
- * which a fixed "did they touch page 1" test missed entirely — leaving a
- * hundred pages of real reading counted as nothing, in no section of the page.
+ * `hasFreshPassSince` is shared with the goals module's partial-credit rule on
+ * purpose; see its doc comment for why the two must answer alike.
  */
 function startedFreshPassSince(
   volumeData: VolumeData,
@@ -595,9 +592,7 @@ function startedFreshPassSince(
   const since = Date.parse(sinceIso);
   if (Number.isNaN(since)) return true;
 
-  return volumeData.recentPageTurns.some(
-    ([timestamp, page]) => timestamp > since && page * 2 <= completingPage
-  );
+  return hasFreshPassSince(volumeData.recentPageTurns, since, completingPage);
 }
 
 export function updateProgress(

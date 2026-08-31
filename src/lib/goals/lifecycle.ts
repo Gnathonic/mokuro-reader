@@ -97,6 +97,12 @@ export function initGoalsLifecycle() {
 
   const runMaintenanceUnguarded = () => {
     if (!catalogLoaded()) return;
+    // Recurring, because this is the only pass that ever runs AFTER the cloud
+    // listing lands — the boot pass fires the moment the local Dexie catalog
+    // resolves, which is always before it. Cheap when there is nothing to do:
+    // it early-returns on its completion key and never touches the store
+    // unless it has a stamp to write.
+    backfillCompletedAt(pageCounts());
     // Recurring, so a tab left open across midnight or New Year rolls over —
     // but it never moves a period the user pinned by choosing it from the
     // dropdown. See `rollForwardStaleSelection`.
@@ -111,13 +117,11 @@ export function initGoalsLifecycle() {
 
   const runBootMaintenance = () => {
     try {
-      // A one-time migration, so it runs on the boot pass only. Its deferral
-      // budget is counted in boots; spending it on every focus and visibility
-      // change exhausted it in a few tab switches.
-      //
-      // Before the snapshot pass, so a period closing in this same tick is
-      // frozen with the legacy completions already dated.
-      backfillCompletedAt(pageCounts());
+      // The boot pass is the one that SPENDS a deferral. See the note in
+      // `backfillCompletedAt`: counting on every focus exhausted the budget in
+      // a few tab switches, and counting only here would expire it having never
+      // seen a cloud page count.
+      backfillCompletedAt(pageCounts(), { countDeferral: true });
     } catch (error) {
       console.warn('[goals] completedAt backfill failed:', error);
     }

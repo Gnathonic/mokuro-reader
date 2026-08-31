@@ -38,7 +38,10 @@ const MAX_DEFERRALS = 5;
  * user action, and bumping it would make whichever device upgraded last win
  * every volume merge.
  */
-export function backfillCompletedAt(pageCounts: Record<string, number>): void {
+export function backfillCompletedAt(
+  pageCounts: Record<string, number>,
+  { countDeferral = false }: { countDeferral?: boolean } = {}
+): void {
   if (!browser) return;
   if (window.localStorage.getItem(BACKFILL_KEY)) return;
   // The catalog has not loaded yet. Returning without marking the key done
@@ -105,7 +108,15 @@ export function backfillCompletedAt(pageCounts: Record<string, number>): void {
    * forever.
    */
   if (deferred && attempts < MAX_DEFERRALS) {
-    window.localStorage.setItem(BACKFILL_ATTEMPTS_KEY, String(attempts + 1));
+    // Counted once per BOOT, by the boot pass alone. The recurring passes still
+    // RUN — they are the only ones that ever see the cloud listing, which
+    // arrives long after the local catalog resolves — but if they also spent
+    // the budget, a few tab switches would exhaust it. And if only the boot
+    // pass ran, the budget would expire having never once observed a cloud
+    // page count, which is exactly what it is waiting for.
+    if (countDeferral) {
+      window.localStorage.setItem(BACKFILL_ATTEMPTS_KEY, String(attempts + 1));
+    }
   } else {
     window.localStorage.setItem(BACKFILL_KEY, new Date().toISOString());
     window.localStorage.removeItem(BACKFILL_ATTEMPTS_KEY);

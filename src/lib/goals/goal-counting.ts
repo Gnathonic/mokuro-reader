@@ -9,7 +9,7 @@
  * snapshot.
  */
 
-import { isVolumeComplete, isVolumeFinished } from '$lib/util/volume-helpers';
+import { hasFreshPassSince, isVolumeFinished } from '$lib/util/volume-helpers';
 import type { VolumeData } from '$lib/settings/volume-data';
 import { completionEventsFor } from './completed-at';
 import { calculatePartialVolumeProgressInPeriod } from './goal-math';
@@ -53,31 +53,6 @@ export function isCompletedInPeriod(
 }
 
 /**
- * The page the reader was on at a given instant, from the turn history.
- *
- * Falls back to the volume's current page when no turn precedes the instant
- * (nothing recorded yet) or when the instant is in the future (the period is
- * still running, so "then" is "now").
- */
-export function pageAsOf(volumeData: VolumeData, at: Date): number {
-  const atMs = at.getTime();
-  let page: number | null = null;
-  let latest = -Infinity;
-
-  for (const [timestamp, pageNumber] of volumeData.recentPageTurns) {
-    if (timestamp < atMs && timestamp > latest) {
-      latest = timestamp;
-      page = pageNumber;
-    }
-  }
-
-  // No turn before the instant: either nothing was recorded, or every turn came
-  // after. The stored progress is the best available answer for the former and
-  // is what the live view uses for the latter.
-  return page ?? volumeData.progress ?? 0;
-}
-
-/**
  * Fractional volume credit for reading inside the period, for a volume that was
  * NOT finished in it.
  *
@@ -91,32 +66,44 @@ export function pageAsOf(volumeData: VolumeData, at: Date): number {
  *   whose length no index has supplied). A fraction of an unknown total is not
  *   a number we can stand behind, and inventing one would silently inflate the
  *   goal.
- * - The volume was ALREADY READ THROUGH AS OF THE END OF THIS PERIOD. Paging
- *   back and forth near the end of a book you have finished is not progress,
- *   and `bucketVolumes` puts such a volume in no section at all, so credit
- *   granted here would show in the header with nothing on screen to account
- *   for it.
+ * - The volume was already read through BEFORE this period and the reading
+ *   since is a revisit rather than a fresh pass. Paging back through the last
+ *   chapter of a book you finished last year is not progress toward this year's
+ *   goal.
  *
- * "As of the period end", not "right now" and not "has it ever been finished".
- * Both of those were tried and both were wrong:
+ * MONOTONE IN PAGES READ, which took three attempts to get right. Rules keyed
+ * to where the reader is STANDING — "is it finished now", "was it read through
+ * as of the period end" — give two different answers about the same reading
+ * depending on position, so finishing a re-read subtracted credit that was
+ * already on screen: 89 more pages read, and the goal went down. Keyed instead
+ * to whether a fresh pass began after the last pre-period completion, the
+ * answer cannot change as the reader advances.
  *
- * - "Right now" is evaluated when the SNAPSHOT is built, which is after the
- *   period closed. A volume the user was 160 pages into on 31 December and
- *   finished on 2 January had December's reading erased from the frozen record.
- * - "Has it ever been finished" excluded every volume with an older completion,
- *   including one the user restarted and is actively re-reading — the header
- *   read 0.00 over a list showing that same book at 80%.
+ * `hasFreshPassSince` is the same classifier `updateProgress` uses to decide
+ * whether a completion earns a new date, so "this counts" and "this gets dated"
+ * can never disagree.
  *
- * The page the reader was on at the period's end answers the question directly,
- * out of data we already keep.
+ * A volume finished INSIDE the period never reaches here: the caller counts it
+ * as a completion and returns first.
  */
 export function partialProgressInPeriod(
   volumeData: VolumeData,
   pageCount: number,
   start: Date,
-  end: Date
+  end: Date,
+  now = Date.now()
 ): number {
   if (pageCount <= 0) return 0;
-  if (isVolumeComplete(pageAsOf(volumeData, end), pageCount)) return 0;
+
+  const startMs = start.getTime();
+  const completionsBefore = completionEventsFor(volumeData, now)
+    .map((stamp) => Date.parse(stamp))
+    .filter((ms) => !Number.isNaN(ms) && ms < startMs);
+
+  if (completionsBefore.length > 0) {
+    const lastBefore = Math.max(...completionsBefore);
+    if (!hasFreshPassSince(volumeData.recentPageTurns, lastBefore, pageCount)) return 0;
+  }
+
   return calculatePartialVolumeProgressInPeriod(volumeData.recentPageTurns, start, end, pageCount);
 }

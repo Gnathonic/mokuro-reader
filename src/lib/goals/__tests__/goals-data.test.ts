@@ -8,6 +8,7 @@ import {
   customGoals,
   ensureCurrentYearTarget,
   goalsWithTrash,
+  removeCustomGoal,
   rollForwardStaleSelection,
   setActiveGoalSelection,
   setGoalSections,
@@ -98,6 +99,32 @@ describe('rollForwardStaleSelection', () => {
     const key = getCurrentPeriodKey('year');
     rollForwardStaleSelection(new Date(Number(key) + 5, 0, 2));
 
+    expect(get(goalsWithTrash).selectionPinned).toBe(false);
+  });
+
+  it('clears the pin when a deleted custom goal drops the selection to this year', () => {
+    // A custom goal always pins. Falling back to the current year is not a
+    // deliberate look at the past, so leaving the pin on would stop the
+    // selection rolling forward when this year ends — blanking the page.
+    expect(
+      createCustomGoal({
+        name: 'Sprint',
+        startDate: '2026-06-01',
+        endDate: '2026-08-31',
+        targetVolumes: 5,
+        enabled: true
+      })
+    ).toBeNull();
+    const goal = get(customGoals)[0];
+    setActiveGoalSelection({ goalType: 'custom', customId: goal.id });
+    expect(get(goalsWithTrash).selectionPinned).toBe(true);
+
+    removeCustomGoal(goal.id);
+
+    expect(get(goalsWithTrash).activeSelection).toEqual({
+      goalType: 'year',
+      periodKey: getCurrentPeriodKey('year')
+    });
     expect(get(goalsWithTrash).selectionPinned).toBe(false);
   });
 

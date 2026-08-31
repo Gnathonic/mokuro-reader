@@ -125,6 +125,55 @@ describe('mergeSnapshotEntries — completion beats a fraction', () => {
   });
 });
 
+describe('partial credit is MONOTONE in pages read', () => {
+  const pageCount = 200;
+  const feb = new Date(2026, 1, 1).getTime();
+
+  /** A volume finished last year, re-read this year from `from` up to `to`. */
+  const reread = (from: number, to: number) =>
+    new VolumeData({
+      progress: to,
+      completed: to >= pageCount - 1,
+      completedAt: '2025-06-01T00:00:00.000Z',
+      recentPageTurns: Array.from({ length: to - from + 1 }, (_, i) => [
+        feb + i * 1000,
+        from + i,
+        (from + i) * 10
+      ]) as [number, number, number][]
+    });
+
+  it('never lets reading more pages lower the credit', () => {
+    // Rules keyed to where the reader is STANDING gave two different answers
+    // about the same reading: a re-read begun past the halfway mark accrued
+    // credit while in progress and lost all of it at the final page turn.
+    // 89 more pages read, and the goal went down.
+    for (const from of [10, 60, 110, 170]) {
+      let previous = -1;
+      for (const to of [from + 5, 120, 150, 180, 199]) {
+        if (to <= from) continue;
+        const credit = partialProgressInPeriod(reread(from, to), pageCount, START, END);
+        if (previous >= 0) {
+          expect(
+            credit,
+            `credit fell reading from page ${from} onward, at page ${to}`
+          ).toBeGreaterThanOrEqual(previous);
+        }
+        previous = credit;
+      }
+    }
+  });
+
+  it('credits a re-read that started at the beginning, at every point', () => {
+    expect(partialProgressInPeriod(reread(5, 100), pageCount, START, END)).toBeGreaterThan(0);
+    expect(partialProgressInPeriod(reread(5, 199), pageCount, START, END)).toBeGreaterThan(0);
+  });
+
+  it('credits a revisit near the end nothing, at every point', () => {
+    expect(partialProgressInPeriod(reread(170, 180), pageCount, START, END)).toBe(0);
+    expect(partialProgressInPeriod(reread(170, 199), pageCount, START, END)).toBe(0);
+  });
+});
+
 describe('partialProgressInPeriod judges completion AS OF the period end', () => {
   const dec = new Date(2026, 11, 20).getTime();
   const turns = (pages: number[]) =>

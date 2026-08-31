@@ -349,10 +349,11 @@ export function removeCustomGoal(customId: string) {
     if (!existing) return state;
 
     const stamp = nextGoalTimestamp(existing.lastUpdated);
-    const nextSelection: GoalSelection =
-      state.activeSelection.goalType === 'custom' && state.activeSelection.customId === customId
-        ? { goalType: 'year', periodKey: getCurrentPeriodKey('year') }
-        : state.activeSelection;
+    const wasSelected =
+      state.activeSelection.goalType === 'custom' && state.activeSelection.customId === customId;
+    const nextSelection: GoalSelection = wasSelected
+      ? { goalType: 'year', periodKey: getCurrentPeriodKey('year') }
+      : state.activeSelection;
 
     return {
       ...state,
@@ -360,7 +361,12 @@ export function removeCustomGoal(customId: string) {
         ...state.customGoals,
         [customId]: { ...existing, lastUpdated: stamp, deletedOn: stamp }
       },
-      activeSelection: nextSelection
+      activeSelection: nextSelection,
+      // Falling back to the CURRENT year is not a deliberate look at the past,
+      // so the pin a custom goal always carries has to come off with it —
+      // otherwise the selection sits pinned on this year and refuses to roll
+      // forward when the year ends, blanking the page.
+      selectionPinned: wasSelected ? false : state.selectionPinned
     };
   });
 }
