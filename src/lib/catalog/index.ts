@@ -9,6 +9,7 @@ import {
 } from '$lib/util/sync/unified-cloud-manager';
 import {
   cloudFieldsForRemovedVolume,
+  indexCloudFilesByUuid,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCoverFilesByArchiveKey
@@ -310,6 +311,11 @@ let lastPlaceholders: VolumeMetadata[] = [];
 let lastCloudFiles: unknown = null;
 let lastCloudIndex = new Map<string, CloudVolumeWithProvider>();
 let lastCoverIndex = new Map<string, CloudVolumeWithProvider>();
+// The uuid index additionally depends on the series indexes, so it carries its
+// own input stamp: the listing can be unchanged while a background
+// `series.json` refresh lands the very record that makes a volume resolvable.
+let lastUuidIndexInputs: { files: unknown; indexes: unknown } | null = null;
+let lastUuidIndex = new Map<string, CloudVolumeWithProvider>();
 
 /**
  * Merge local volumes with cloud placeholders.
@@ -393,9 +399,21 @@ export const volumesWithPlaceholders = derived(
           lastCoverIndex = indexCoverFilesByArchiveKey($cloudFiles);
           lastCloudFiles = $cloudFiles;
         }
+        if (
+          lastUuidIndexInputs?.files !== $cloudFiles ||
+          lastUuidIndexInputs?.indexes !== $seriesIndexMap
+        ) {
+          lastUuidIndex = indexCloudFilesByUuid($cloudFiles, $seriesIndexMap);
+          lastUuidIndexInputs = { files: $cloudFiles, indexes: $seriesIndexMap };
+        }
         for (const vol of localVolumes) {
           if (!isMetadataOnly(vol)) continue;
-          const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol, lastCoverIndex);
+          const cloudFields = cloudFieldsForRemovedVolume(
+            lastCloudIndex,
+            vol,
+            lastCoverIndex,
+            lastUuidIndex
+          );
           if (!cloudFields) continue;
           combined[vol.volume_uuid] = { ...vol, ...cloudFields };
         }
