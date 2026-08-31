@@ -287,6 +287,13 @@ export function updateCustomGoal(updatedGoal: CustomGoal): GoalRejection | null 
   const current = get(_goalsStore).customGoals[updatedGoal.id];
   if (!current || current.deletedOn) return 'missing';
 
+  // A snapshot froze a number over this exact range, so the range cannot move —
+  // say so rather than accepting the edit and silently reverting the dates,
+  // which looked to the user as though their typing had been lost.
+  const movingDates =
+    updatedGoal.startDate !== current.startDate || updatedGoal.endDate !== current.endDate;
+  if (movingDates && isCustomGoalDateRangeLocked(current)) return 'locked';
+
   _goalsStore.update((state) => {
     const existing = state.customGoals[updatedGoal.id];
     if (!existing || existing.deletedOn) return state;

@@ -570,6 +570,35 @@ function notifyCompletion(volumeUuid: string) {
   }
 }
 
+/**
+ * A page turn at or before this page counts as "went back to the beginning".
+ * Page 1 is the cover in a volume with one; 2 keeps the signal honest for
+ * volumes without.
+ */
+const REREAD_START_PAGE = 2;
+
+/**
+ * Has the reader started a FRESH PASS since this volume was last finished?
+ *
+ * The `completed` flag is a poor signal for "the user re-read this": it falls
+ * on any page below the last-page window, on the reader-settings page input and
+ * on `toggleHasCover`, so a bare false->true edge re-dated a volume finished in
+ * 2025 the moment somebody paged back two pages and forward one in 2026 — and
+ * that date is what decides which year's goal the volume counts toward.
+ *
+ * Going back to the START is the honest signal, and a real re-read always
+ * produces one. Anything short of it leaves the original date alone.
+ */
+function startedFreshPassSince(volumeData: VolumeData, sinceIso: string | undefined): boolean {
+  if (!sinceIso) return true; // never finished before — this IS the first pass
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) return true;
+
+  return volumeData.recentPageTurns.some(
+    ([timestamp, page]) => timestamp > since && page <= REREAD_START_PAGE
+  );
+}
+
 export function updateProgress(
   volume: string,
   progress: number,
@@ -622,19 +651,17 @@ export function updateProgress(
         chars: chars ?? currentVolume.chars,
         completed,
         /*
-         * Stamped on the false->true EDGE — the same edge `becameCompleted`
-         * already computes for `notifyCompletion`.
+         * Re-dated only for a GENUINE second reading — the flag rising again
+         * AND a page turn back at the start since the last completion.
          *
-         * Not `?? nowIso`: that is write-once, so a volume finished in 2025,
-         * paged back to the start and read cover to cover again in 2026 kept
-         * its 2025 date and the 2026 goal never counted it — while
-         * `bucketVolumes` also dropped it from every section, because it IS
-         * finished, just not in this period. A second reading is a second
-         * completion and gets its own date.
-         *
-         * Paging back and forth across the last page still cannot walk the
-         * date forward: the flag has to actually fall to false and rise again,
-         * and the intermediate `completed: false` writes leave the date alone.
+         * The bare false->true edge is not enough. The flag falls on any page
+         * below the last-page window, on the reader-settings page input and on
+         * `toggleHasCover`, so "tap back twice, forward once" in a volume
+         * finished last year re-dated it into this year's goal — a book the
+         * user did not read this year inflating the count, and the original
+         * date gone from every device after the next sync. Write-once was no
+         * better in the other direction: a real cover-to-cover re-read kept its
+         * old date and counted for nothing.
          *
          * `completed: false` NEVER clears it here. `updateProgress`'s
          * `completed` parameter defaults to false and two callers pass only
@@ -644,9 +671,9 @@ export function updateProgress(
          * this". The three paths that genuinely un-read a volume clear it.
          */
         completedAt: completed
-          ? becameCompleted || !currentVolume.completedAt
+          ? becameCompleted && startedFreshPassSince(currentVolume, currentVolume.completedAt)
             ? nowIso
-            : currentVolume.completedAt
+            : (currentVolume.completedAt ?? nowIso)
           : currentVolume.completedAt,
         lastProgressUpdate: nowIso,
         recentPageTurns

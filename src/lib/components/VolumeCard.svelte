@@ -2,6 +2,8 @@
   import { nav } from '$lib/util/hash-router';
   import { downloadQueue } from '$lib/util/download-queue';
   import { needsDownload } from '$lib/catalog/volume-state';
+  import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
+  import { showSnackbar } from '$lib/util/snackbar';
   import type { VolumeMetadata } from '$lib/types';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
@@ -59,13 +61,31 @@
    */
   let isNotInstalled = $derived(volume ? needsDownload(volume) : false);
 
+  /** Can this not-installed volume actually be fetched from somewhere? */
+  let downloadable = $derived(!!volume && !!getCloudFileId(volume) && !!getCloudProvider(volume));
+
   function openOrDownload(event: MouseEvent) {
     event.preventDefault();
-    if (isNotInstalled) {
-      if (volume) downloadQueue.queueVolume(volume);
+
+    if (!isNotInstalled) {
+      if (seriesId) nav.toReader(seriesId, volumeId);
       return;
     }
-    if (seriesId) nav.toReader(seriesId, volumeId);
+
+    /*
+     * A not-installed volume is only downloadable when the cloud listing has
+     * decorated it with a file id — which it has not while the user is signed
+     * out, offline, or simply during the window before the first listing
+     * lands. `queueVolume` returns silently in that case, so clicking did
+     * literally nothing while the tooltip promised a download. Say what is
+     * actually going on instead.
+     */
+    if (!downloadable) {
+      showSnackbar('This volume is not on this device, and no cloud copy is available yet.');
+      return;
+    }
+
+    downloadQueue.queueVolume(volume!);
   }
 
   /*
@@ -113,7 +133,11 @@
       href={isNotInstalled
         ? `#/series/${seriesId ?? ''}`
         : `#/reader/${seriesId ?? ''}/${volumeId}`}
-      title={isNotInstalled ? 'Not on this device — click to download' : undefined}
+      title={isNotInstalled
+        ? downloadable
+          ? 'Not on this device — click to download'
+          : 'Not on this device, and no cloud copy is available'
+        : undefined}
       onclick={openOrDownload}
     >
       {#if thumbnailUrl}

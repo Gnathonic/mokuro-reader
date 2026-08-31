@@ -120,3 +120,44 @@ describe('mergeSnapshotEntries — completion beats a fraction', () => {
     expect(ab.endDate).toBe(ba.endDate);
   });
 });
+
+describe('partialProgressInPeriod judges "already finished" as of the period START', () => {
+  const dec = new Date(2026, 11, 20).getTime();
+
+  it('keeps in-period reading when the volume is finished AFTER the period ends', () => {
+    // 160 pages into a 200-page volume on 31 December, finished on 2 January.
+    // A date-blind "is it finished now" check erased December's reading from
+    // the frozen 2026 snapshot — permanently, since nothing rewrites one.
+    const finishedInJanuary = new VolumeData({
+      progress: 200,
+      completed: true,
+      completedAt: '2027-01-02T00:00:00.000Z',
+      recentPageTurns: [
+        [dec, 100, 1000],
+        [dec + 1000, 160, 1600]
+      ]
+    });
+
+    const credit = partialProgressInPeriod(
+      finishedInJanuary,
+      200,
+      START,
+      END,
+      Date.parse('2027-01-05T00:00:00.000Z')
+    );
+    expect(credit).toBeGreaterThan(0);
+  });
+
+  it('still refuses credit for a volume finished BEFORE the period', () => {
+    const finishedLastYear = new VolumeData({
+      progress: 200,
+      completed: true,
+      completedAt: '2025-06-01T00:00:00.000Z',
+      recentPageTurns: [
+        [dec, 100, 1000],
+        [dec + 1000, 160, 1600]
+      ]
+    });
+    expect(partialProgressInPeriod(finishedLastYear, 200, START, END, NOW)).toBe(0);
+  });
+});

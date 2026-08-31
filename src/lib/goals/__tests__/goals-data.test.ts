@@ -110,6 +110,31 @@ describe('custom goal validation reports why it refused', () => {
     expect(get(customGoals)).toHaveLength(0);
   });
 
+  it('refuses a date move on a snapshotted goal, and says so', () => {
+    expect(createCustomGoal(valid)).toBeNull();
+    const goal = get(customGoals)[0];
+
+    setGoalSnapshots({
+      [`custom:${goal.id}`]: {
+        goalType: 'custom',
+        periodKey: goal.id,
+        startDate: goal.startDate,
+        endDate: goal.endDate,
+        closedAt: '2026-09-01T00:00:00.000Z',
+        completed: {},
+        partialProgress: {},
+        lastUpdated: '2026-09-01T00:00:00.000Z'
+      }
+    });
+
+    // Moving the range would make the frozen number describe a period it was
+    // never computed over.
+    expect(updateCustomGoal({ ...goal, endDate: '2026-09-30' })).toBe('locked');
+    // Everything else about it is still editable.
+    expect(updateCustomGoal({ ...goal, targetVolumes: 20 })).toBeNull();
+    expect(get(customGoals)[0].targetVolumes).toBe(20);
+  });
+
   it('reports a missing goal on the edit path rather than doing nothing', () => {
     expect(updateCustomGoal({ ...valid, id: 'nope', createdAt: '2026-06-01T00:00:00.000Z' })).toBe(
       'missing'

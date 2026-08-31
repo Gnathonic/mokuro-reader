@@ -1,8 +1,18 @@
 import { browser } from '$app/environment';
 import { isVolumeComplete } from '$lib/util/volume-helpers';
+import { get } from 'svelte/store';
 import { VolumeData, volumesWithTrash } from '../settings/volume-data';
 
 const BACKFILL_KEY = 'volumes.completedAtBackfill.v1';
+const BACKFILL_ATTEMPTS_KEY = 'volumes.completedAtBackfill.attempts';
+
+/**
+ * How many boots to keep waiting for page counts before settling for what we
+ * have. Some volumes never get one — a cloud volume with no `series.json`
+ * entry keeps `page_count: 0` forever — so an unbounded wait means the flag is
+ * never written and the whole pass re-runs on every focus, for good.
+ */
+const MAX_DEFERRALS = 5;
 
 /**
  * Date the completions that predate the `completedAt` field.
@@ -36,12 +46,23 @@ export function backfillCompletedAt(pageCounts: Record<string, number>): void {
   if (Object.keys(pageCounts).length === 0) return;
 
   const epoch = new Date(0).toISOString();
+  const attempts = Number(window.localStorage.getItem(BACKFILL_ATTEMPTS_KEY) ?? '0') || 0;
 
-  volumesWithTrash.update((prev) => {
-    let changed = false;
-    let deferred = false;
-    const updated = { ...prev };
+  /*
+   * Scanned OUTSIDE `update()`, and the store is written only when something
+   * actually changed.
+   *
+   * `_volumesInternal` is a plain writable and Svelte's `safe_not_equal`
+   * reports every object as changed, so calling `update()` to return `prev`
+   * unchanged still fires the persist subscriber — re-serializing the whole
+   * library and writing it to localStorage. On the deferral path that happened
+   * on every focus, every visibility change and every reader exit.
+   */
+  const prev = get(volumesWithTrash);
+  const stamps: Record<string, string> = {};
+  let deferred = false;
 
+  {
     for (const [volumeId, volumeData] of Object.entries(prev)) {
       if (volumeData.deletedOn || volumeData.completedAt) continue;
 
@@ -69,19 +90,37 @@ export function backfillCompletedAt(pageCounts: Record<string, number>): void {
       }
       if (!stamp) continue;
 
+      stamps[volumeId] = stamp;
+    }
+  }
+
+  /*
+   * Hold the flag back while a volume still has no page count to judge it by —
+   * the catalog gains its cloud placeholders only after the first remote
+   * listing, and marking the pass done before then would permanently strand
+   * the completion dates of every volume this device has never downloaded.
+   *
+   * BOUNDED, because some volumes never get a page count at all. After
+   * MAX_DEFERRALS boots we settle for what we have rather than re-scanning
+   * forever.
+   */
+  if (deferred && attempts < MAX_DEFERRALS) {
+    window.localStorage.setItem(BACKFILL_ATTEMPTS_KEY, String(attempts + 1));
+  } else {
+    window.localStorage.setItem(BACKFILL_KEY, new Date().toISOString());
+    window.localStorage.removeItem(BACKFILL_ATTEMPTS_KEY);
+  }
+
+  if (Object.keys(stamps).length === 0) return;
+
+  volumesWithTrash.update((current) => {
+    const updated = { ...current };
+    for (const [volumeId, stamp] of Object.entries(stamps)) {
+      const volumeData = current[volumeId];
+      // Re-checked against the CURRENT store: the scan above read a snapshot.
+      if (!volumeData || volumeData.completedAt) continue;
       updated[volumeId] = new VolumeData({ ...volumeData, completedAt: stamp });
-      changed = true;
     }
-
-    // Only declare the backfill done once every finished volume had a page
-    // count to judge it by. The catalog gains its cloud placeholders after the
-    // first remote listing, so an early run sees a local-only catalog: marking
-    // it done there would permanently strand the completion dates of every
-    // volume this device has never downloaded.
-    if (!deferred) {
-      window.localStorage.setItem(BACKFILL_KEY, new Date().toISOString());
-    }
-
-    return changed ? updated : prev;
+    return updated;
   });
 }

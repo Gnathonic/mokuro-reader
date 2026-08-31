@@ -1,10 +1,11 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
 import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { volumesWithTrash } from '../settings/volume-data';
 import { currentView, type View } from '$lib/util/hash-router';
 import { backfillCompletedAt } from './completed-at-backfill';
 import { customGoals, goalTargets, rollForwardStaleSelection } from './goals-data';
-import { pruneDeadlinesForMissingVolumes } from './goal-settings';
+import { pruneDeadlinesForDeletedVolumes } from './goal-settings';
 import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { finalizeGoalSnapshot } from './snapshots';
 import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
@@ -100,14 +101,28 @@ export function initGoalsLifecycle() {
     // in the same tick sees them.
     backfillCompletedAt(pageCounts());
     finalizeClosedGoalSnapshots();
-    // A stored selection pointing at a period that has already ended blanks the
-    // tracker's two main sections with no explanation — every returning user
-    // hits it on 1 January.
-    rollForwardStaleSelection();
     // Deadlines outlive their volumes, and now that they sync they would grow
-    // in every device's goals.json forever. The catalog is loaded here, so
-    // "not in the catalog" is a real answer rather than a startup race.
-    pruneDeadlinesForMissingVolumes(new Set(Object.keys(get(catalogVolumes) ?? {})));
+    // in every device's goals.json forever. Driven off the reading records'
+    // own tombstones — see the note on the prune for why catalog absence is
+    // NOT a safe signal here.
+    pruneDeadlinesForDeletedVolumes(get(volumesWithTrash));
+  };
+
+  /*
+   * BOOT ONLY. A stored selection pointing at a period that has already ended
+   * blanks the tracker's two main sections with no explanation — every
+   * returning user hits it on 1 January. But it must NOT run on every focus:
+   * the period dropdown lets the user deliberately look back at a closed
+   * period, and rolling forward there snatched the page back to the present
+   * the moment they alt-tabbed away and returned.
+   */
+  const runBootMaintenance = () => {
+    try {
+      rollForwardStaleSelection();
+    } catch (error) {
+      console.warn('[goals] selection roll-forward failed:', error);
+    }
+    runMaintenance();
   };
 
   // The catalog resolves asynchronously and usually AFTER mount, so a one-shot
@@ -115,7 +130,7 @@ export function initGoalsLifecycle() {
   let unsubscribeCatalog: (() => void) | null = null;
   unsubscribeCatalog = catalogVolumes.subscribe((catalog) => {
     if (catalog === undefined) return;
-    runMaintenance();
+    runBootMaintenance();
     // Svelte calls the subscriber synchronously on subscribe, so the handle may
     // not be assigned yet; defer the teardown in that case.
     if (unsubscribeCatalog) {

@@ -45,7 +45,7 @@ export {
   deadlinesWithTrash,
   goalSettings,
   getVolumeDeadline,
-  pruneDeadlinesForMissingVolumes,
+  pruneDeadlinesForDeletedVolumes,
   removeVolumeDeadline,
   setVolumeDeadline,
   setVolumeDeadlineEntries,

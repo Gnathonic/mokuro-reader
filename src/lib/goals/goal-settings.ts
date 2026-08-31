@@ -123,26 +123,44 @@ export function setVolumeDeadlineEntries(entries: DeadlineEntries) {
 }
 
 /**
- * Tombstone deadlines whose volume no longer exists anywhere.
+ * Tombstone the deadlines of volumes the user has explicitly deleted.
  *
- * Without this the map grows forever — and now that it syncs, it would grow
- * forever in every device's `goals.json` too. Tombstoned rather than dropped so
- * the removal propagates instead of being undone by the next sync.
+ * Keyed on the READING RECORD'S TOMBSTONE, not on absence from the catalog.
+ * Absence is ambiguous and dangerously so: `volumesWithPlaceholders` becomes
+ * defined the moment the local Dexie read resolves, which is BEFORE the cloud
+ * listing populates it, so every cloud-only volume looks missing for a window
+ * on every boot. Pruning on absence there would tombstone their deadlines —
+ * and tombstones sync, so the deletion would propagate to every device the
+ * user owns. An explicit `deletedOn` is the one unambiguous signal that the
+ * volume is gone on purpose.
+ *
+ * This is narrower than "clean up anything unreferenced", and deliberately so:
+ * a deadline is a handful of bytes, and the cost of keeping a stale one is
+ * nothing next to the cost of deleting a live one.
  */
-export function pruneDeadlinesForMissingVolumes(knownVolumeIds: ReadonlySet<string>) {
-  if (knownVolumeIds.size === 0) return; // nothing loaded yet — never prune blind
+export function pruneDeadlinesForDeletedVolumes(
+  readingRecords: Record<string, { deletedOn?: string }>
+) {
+  const entries = get(_deadlines);
 
-  _deadlines.update((entries) => {
-    let changed = false;
-    const next = { ...entries };
+  // Decided BEFORE touching the store. `update()` fires the persist subscriber
+  // even when the callback returns the value unchanged — Svelte's
+  // `safe_not_equal` reports every object as changed — so an unconditional
+  // update here wrote the goalSettings key on every boot, for every user,
+  // including everyone who has never set a deadline.
+  const doomed = Object.entries(entries).filter(
+    ([volumeId, entry]) => !entry.deletedOn && readingRecords[volumeId]?.deletedOn
+  );
+  if (doomed.length === 0) return;
 
-    for (const [volumeId, entry] of Object.entries(entries)) {
-      if (entry.deletedOn || knownVolumeIds.has(volumeId)) continue;
+  _deadlines.update((current) => {
+    const next = { ...current };
+    for (const [volumeId] of doomed) {
+      const entry = next[volumeId];
+      if (!entry || entry.deletedOn) continue;
       const stamp = nextGoalTimestamp(entry.lastUpdated);
       next[volumeId] = { ...entry, lastUpdated: stamp, deletedOn: stamp };
-      changed = true;
     }
-
-    return changed ? next : entries;
+    return next;
   });
 }

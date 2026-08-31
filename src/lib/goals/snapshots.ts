@@ -78,12 +78,13 @@ export function finalizeGoalSnapshot(
 ) {
   const snapshotKey = buildGoalSnapshotKey(goalType, periodKey);
 
-  _goalSnapshots.update((snapshots) => {
-    if (snapshots[snapshotKey]) return snapshots;
+  // Checked before the update: returning the value unchanged from inside
+  // `update()` still fires the persist subscriber, because Svelte reports every
+  // object as changed.
+  if (get(_goalSnapshots)[snapshotKey]) return;
 
-    return {
-      ...snapshots,
-      [snapshotKey]: createSnapshotForPeriod(goalType, periodKey, start, end)
-    };
-  });
+  const snapshot = createSnapshotForPeriod(goalType, periodKey, start, end);
+  _goalSnapshots.update((snapshots) =>
+    snapshots[snapshotKey] ? snapshots : { ...snapshots, [snapshotKey]: snapshot }
+  );
 }

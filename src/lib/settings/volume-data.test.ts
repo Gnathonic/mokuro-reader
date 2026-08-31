@@ -297,6 +297,28 @@ describe('VolumeData.completedAt', () => {
     }
   });
 
+  it('does NOT re-date when the flag merely dips and rises near the end', () => {
+    // The flag falls on any page below the last-page window, on the
+    // reader-settings page input and on toggleHasCover. Treating a bare
+    // false->true edge as a new completion meant "tap back twice, forward
+    // once" in a volume finished last year re-dated it into this year's goal.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2025-06-01T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 5000, true);
+      const original = get(volumes)['vol-1'].completedAt;
+
+      vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
+      updateProgress('vol-1', 99, 5000, true); // still inside the last-page window
+      updateProgress('vol-1', 98, 5000); // flag falls
+      updateProgress('vol-1', 99, 5000, true); // and rises again
+
+      expect(get(volumes)['vol-1'].completedAt).toBe(original);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is stamped once at the false->true edge and does not move afterwards', () => {
     updateProgress('vol-1', 100, 5000, true);
     const first = get(volumes)['vol-1'].completedAt;

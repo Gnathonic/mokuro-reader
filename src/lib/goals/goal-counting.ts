@@ -66,21 +66,37 @@ export function isCompletedInPeriod(
  *   whose length no index has supplied). A fraction of an unknown total is not
  *   a number we can stand behind, and inventing one would silently inflate the
  *   goal.
- * - The volume is ALREADY FINISHED, and finished outside this period. Paging
- *   back through a volume you completed last year is re-reading, not progress
- *   toward this year's goal — and crucially `bucketVolumes` puts such a volume
- *   in no section at all, so credit granted here would show up in the header
- *   with nothing on screen to account for it. A volume finished INSIDE the
- *   period never reaches this function: the caller counts it as a completion
- *   and returns first.
+ * - The volume was ALREADY FINISHED BEFORE the period began. Paging back
+ *   through a volume you completed last year is re-reading, not progress
+ *   toward this year's goal — and `bucketVolumes` puts such a volume in no
+ *   section at all, so credit granted here would show in the header with
+ *   nothing on screen to account for it.
+ *
+ * The cutoff is the period's START, not "is it finished right now". A
+ * date-blind check reads the volume's state at CALL time, and a snapshot is
+ * built after its period has closed: a volume the user was 160 pages into on
+ * 31 December and finished on 2 January would have had its December reading
+ * erased from the frozen 2026 record — permanently, since nothing rewrites a
+ * snapshot. A completion that happens after the period ended cannot
+ * retroactively undo reading that happened inside it.
+ *
+ * A volume finished INSIDE the period never reaches here: the caller counts it
+ * as a completion and returns first.
  */
 export function partialProgressInPeriod(
   volumeData: VolumeData,
   pageCount: number,
   start: Date,
-  end: Date
+  end: Date,
+  now = Date.now()
 ): number {
   if (pageCount <= 0) return 0;
-  if (isVolumeFinished({ volume_uuid: '', page_count: pageCount }, volumeData)) return 0;
+
+  const startMs = start.getTime();
+  const finishedBefore = completionEventsFor(volumeData, now).some(
+    (stamp) => Date.parse(stamp) < startMs
+  );
+  if (finishedBefore) return 0;
+
   return calculatePartialVolumeProgressInPeriod(volumeData.recentPageTurns, start, end, pageCount);
 }
