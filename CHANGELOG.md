@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Firefox mouse-wheel zoom stepped far too far per notch (#272) — a 1.9.1 regression
+
 ## [1.9.1] - 2026-08-30
 
 ### Fixed

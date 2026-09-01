@@ -197,9 +197,10 @@ export class WheelAccumulator {
 
 /**
  * Largest per-event delta (px) that still reads as fine-grained. A notched
- * wheel reports a whole notch at once — 100 in Chromium, 120 on Windows,
- * ~102 for Firefox's pixel mode — so anything well below that came from a
- * device reporting continuous travel.
+ * wheel reports a whole notch at once — 100 in Chromium, 120 on Windows, and
+ * a line-height multiple in Firefox's pixel mode (~102 unscaled, ~205 at 200%
+ * display scaling) — so anything well below that came from a device reporting
+ * continuous travel.
  */
 export const FINE_WHEEL_MAX_DELTA = 50;
 
@@ -211,13 +212,20 @@ export const WHEEL_STREAM_IDLE_MS = 250;
  * (trackpad, precision wheel, synthetic pinch) source rather than a notched
  * mouse wheel. Absence of evidence is not evidence of a mouse — see
  * WheelStreamClassifier, which is what callers should use.
+ *
+ * Sub-notch travel is the evidence. A *fractional* delta is not: Firefox
+ * derives its pixel deltas from the line height and the display scale, so one
+ * detent of an ordinary notched wheel arrives as -102.4 or -204.8 where
+ * Chromium sends a round -100. Whether a notch lands on a whole number is an
+ * accident of the reader's font size, not a property of the device, and
+ * reading it as trackpad evidence put every Firefox mouse wheel on the
+ * continuous path — a whole zoom range in one or two notches (#272).
  */
 export function isFineWheelEvent(e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode'>): boolean {
   // Line and page deltas are a notched wheel by construction: a precision
   // device has sub-line travel to report and never picks those units.
   if (e.deltaMode !== 0) return false;
   const { deltaX, deltaY } = e;
-  if (!Number.isInteger(deltaX) || !Number.isInteger(deltaY)) return true;
   // No mouse drives both axes at once; a trackpad barely avoids it.
   if (deltaX !== 0 && deltaY !== 0) return true;
   const magnitude = Math.max(Math.abs(deltaX), Math.abs(deltaY));

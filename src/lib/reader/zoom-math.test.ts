@@ -309,9 +309,21 @@ describe('isFineWheelEvent', () => {
     expect(isFineWheelEvent(ev(-1, 0, 2))).toBe(false);
   });
 
-  it('accepts fractional deltas', () => {
+  it('accepts fractional sub-notch deltas', () => {
     expect(isFineWheelEvent(ev(-4.5))).toBe(true);
-    expect(isFineWheelEvent(ev(-133.75))).toBe(true);
+    expect(isFineWheelEvent(ev(-12.8))).toBe(true);
+  });
+
+  it('rejects a notch-sized delta just because it is fractional (#272)', () => {
+    // Firefox derives its pixel deltas from the line height (and OS display
+    // scaling), so one detent of a plain notched wheel arrives as -102.4 or
+    // -204.8 rather than Chromium's round -100. Whether a notch lands on a
+    // whole number is an accident of the user's font size, not a property of
+    // the device — treating it as trackpad evidence put every Firefox mouse
+    // wheel on the continuous path.
+    expect(isFineWheelEvent(ev(-102.4))).toBe(false);
+    expect(isFineWheelEvent(ev(-133.75))).toBe(false);
+    expect(isFineWheelEvent(ev(204.8))).toBe(false);
   });
 
   it('accepts sub-notch magnitudes', () => {
@@ -329,6 +341,14 @@ describe('isFineWheelEvent', () => {
 });
 
 describe('WheelStreamClassifier', () => {
+  it('stays coarse for a Firefox notched wheel reporting fractional pixels (#272)', () => {
+    const c = new WheelStreamClassifier();
+    // Three detents, Firefox pixel mode on a scaled display.
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1000 })).toBe(false);
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1120 })).toBe(false);
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1240 })).toBe(false);
+  });
+
   it('stays coarse for a notched-wheel stream', () => {
     const c = new WheelStreamClassifier();
     expect(c.classify({ deltaX: 0, deltaY: -100, deltaMode: 0, timeStamp: 1000 })).toBe(false);

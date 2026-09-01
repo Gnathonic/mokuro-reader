@@ -105,6 +105,15 @@ the zoom so the stateful classifier is never asked twice.
   notches, while a mouse never reports the small ones. Erring toward fine
   costs a precision-wheel owner a smooth zoom, which is what they wanted;
   erring the other way is the bug.
+- The evidence is **sub-notch travel**, never a fractional delta (#272).
+  Firefox builds its pixel deltas from the line height and the display
+  scale, so one detent of an ordinary notched wheel arrives as `-102.4`, or
+  `-204.8` at 200% scaling, where Chromium sends a round `-100`. Reading
+  "not a whole number" as trackpad evidence put every Firefox mouse wheel on
+  the continuous path, where a single notch covered most of the 1x–3x range.
+  Firefox on Linux never reaches this rule at all — it reports
+  `deltaMode: DOM_DELTA_LINE` (measured: `-0.75` per fragment on a
+  high-resolution wheel, `-6` per detent on a low-resolution one).
 
 Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
