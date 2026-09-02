@@ -4,6 +4,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
 import type { ReadingHistoryEntry } from '$lib/settings/reading-activity';
 import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
+import { needsDownload } from '$lib/catalog/volume-state';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
 import {
   groupSeriesSidecarFiles,
@@ -149,8 +150,13 @@ import { coverBelongsOnRow, installCover } from './cover-persist';
  * burst, few enough that a provider which is down is not asked four times
  * for every cover on screen.
  */
-const RETRY_DELAYS_MS = [2000, 8000];
+let RETRY_DELAYS_MS = [2000, 8000];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Test hook: shorten (or lengthen) the retry schedule for a suite that awaits batch outcomes. */
+export function _setRetryDelaysForTests(delays: number[] | null): void {
+  RETRY_DELAYS_MS = delays ?? [2000, 8000];
+}
 
 /**
  * How long a case-3/4 batch collects before it materializes.
@@ -760,6 +766,13 @@ async function resolveAndDeliver(
       stillNear
     );
     if (!result) return 'retry'; // transient: worth another attempt
+    // A download can finish during the fetch (up to 15s) and INSTALL the
+    // volume with a thumbnail measured from its own pages. The queue's own
+    // transactional re-read is the guard that keeps that from being
+    // clobbered; this keyed re-read only keeps the OUTCOME honest — nothing
+    // is delivered for a row that no longer wants a cloud cover.
+    const fresh = (await db.volumes.get(vol.volume_uuid)) as VolumeMetadata | undefined;
+    if (fresh && !needsDownload(fresh)) return 'none';
     deliverToRow(
       vol.volume_uuid,
       // The catalog decorates a metadata-only row's copy with the listing's

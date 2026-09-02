@@ -381,6 +381,12 @@ async function flushOneBatch(): Promise<void> {
         // download that finished mid-flight — which installs the volume and
         // makes `needsDownload` false — from having its own page-measured
         // thumbnail clobbered by a stale cloud guess.
+        // An INSTALLED row (a download finished while this cover was in
+        // flight) has a thumbnail measured from its own pages: nothing to
+        // write, and nothing worth caching either — the cache exists for
+        // volumes whose pages are NOT here.
+        if (fresh && !needsDownload(fresh)) continue;
+
         if (fresh && coverBelongsOnRow(fresh, readingHistory[volumeUuid])) {
           if (mode === 'fill' && fresh.thumbnail) continue;
 
