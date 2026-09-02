@@ -22,7 +22,9 @@ export type View =
   | { type: 'cloud' }
   | { type: 'upload' }
   | { type: 'reading-speed' }
-  | { type: 'merge-series' };
+  | { type: 'merge-series' }
+  | { type: 'progress-tracker' }
+  | { type: 'manage-goals' };
 
 function getInitialView(): View {
   if (typeof window !== 'undefined') {
@@ -50,6 +52,8 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'upload') return { type: 'upload' };
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
+    if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
+    if (segments[0] === 'manage-goals') return { type: 'manage-goals' };
     // Removed libraries feature: send stale bookmarks to the catalog
     if (segments[0] === 'libraries' || segments[0] === 'add-library') return { type: 'catalog' };
 
@@ -98,6 +102,10 @@ export function viewToHash(view: View): string {
       return '#/reading-speed';
     case 'merge-series':
       return '#/merge-series';
+    case 'progress-tracker':
+      return '#/progress-tracker';
+    case 'manage-goals':
+      return '#/manage-goals';
   }
 }
 
@@ -157,7 +165,13 @@ export const nav = {
   toReadingSpeed: (options?: NavigateOptions) => navigate({ type: 'reading-speed' }, options),
 
   /** Navigate to merge series page */
-  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options)
+  toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
+
+  /** Navigate to progress tracker page */
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options),
+
+  /** Navigate to manage goals page */
+  toManageGoals: (options?: NavigateOptions) => navigate({ type: 'manage-goals' }, options)
 };
 
 /**
@@ -173,6 +187,8 @@ export const nav = {
  * - reading-speed -> catalog
  * - upload -> catalog
  * - merge-series -> catalog
+ * - progress-tracker -> catalog
+ * - manage-goals -> progress-tracker
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -191,10 +207,17 @@ export function navigateBack(): void {
     case 'series':
       nav.toCatalog();
       break;
+    case 'manage-goals':
+      // Manage Goals is only ever reached from the tracker, and its own button
+      // says "Back to Progress" — sending Escape to the catalog instead would
+      // make the two disagree and drop the user a level further than the UI says.
+      nav.toProgressTracker();
+      break;
     case 'cloud':
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
+    case 'progress-tracker':
       nav.toCatalog();
       break;
     case 'catalog':

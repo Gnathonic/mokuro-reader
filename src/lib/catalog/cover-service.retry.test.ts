@@ -70,7 +70,9 @@ vi.mock('$lib/catalog/db', () => ({
         if (r) Object.assign(r, patch);
       }
     },
-    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
+    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body(),
+    // The cache short-circuit consults this table; nothing here is ever cached.
+    cloud_covers: { get: async () => undefined }
   }
 }));
 
@@ -192,5 +194,35 @@ describe('retry: a fetch that produces nothing is never permanently settled', ()
     await flushPendingCoverPersists();
     const persisted = (await db.volumes.get('v-1')) as VolumeMetadata;
     expect(persisted.thumbnail_width).toBe(210);
+  });
+});
+
+describe('outcomes: what the returned promise says', () => {
+  it("reports 'unresolved' after the schedule is spent, and a LATER request is not skipped", async () => {
+    await db.volumes.put(row('v-1'));
+    fetchCloudThumbnailMock.mockResolvedValue(null);
+
+    vi.useFakeTimers();
+    const first = requestCover(row('v-1'));
+    await vi.advanceTimersByTimeAsync(11000);
+    await expect(first).resolves.toBe('unresolved');
+
+    // `'unresolved'` never writes the ledger: the very next request runs.
+    fetchCloudThumbnailMock.mockResolvedValue(coverResult());
+    const second = requestCover(row('v-1'));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(second).resolves.toBe('row');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports 'skipped' for a uuid that has settled, and for a volume that is not a target", async () => {
+    await db.volumes.put(row('v-1'));
+    await expect(requestCover(row('v-1'))).resolves.toBe('row');
+    await expect(requestCover(row('v-1'))).resolves.toBe('skipped');
+    // A real row the listing shows no sidecar for was never a target.
+    await expect(requestCover(row('v-2', { cloudThumbnailFileId: undefined }))).resolves.toBe(
+      'skipped'
+    );
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
   });
 });

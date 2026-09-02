@@ -173,7 +173,10 @@ vi.mock('$lib/catalog/db', () => ({
     // stand-in is sufficient here because every test drives the race by hand
     // (mutating `volumeRows` directly between a deferred fetch and its
     // release), not by relying on real lock ordering.
-    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body()
+    transaction: async (_mode: string, _table: unknown, body: () => Promise<unknown>) => body(),
+    // The cover service's cache short-circuit reads this; a `refresh` request
+    // skips it, and nothing in this file caches anything.
+    cloud_covers: { get: async () => undefined }
   }
 }));
 
@@ -226,6 +229,7 @@ vi.mock('./write-slot', async (importOriginal) => {
   };
 });
 
+import { _resetCoverServiceForTests, _setRetryDelaysForTests } from '$lib/catalog/cover-service';
 import {
   _resetSeriesBackfillForTests,
   backfillNewlyLinkedSeries,
@@ -290,6 +294,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   _resetSeriesBackfillForTests();
   _resetWriteSlotForTests();
+  // A stale-cover refresh is a request to the REAL cover service (only its
+  // network fetch is mocked above): reset its dedupe between cases, and do
+  // not let a null fetch cost this suite the service's 10 s retry schedule.
+  _resetCoverServiceForTests();
+  _setRetryDelaysForTests([0, 0]);
   status = {
     hasAnyAuthenticated: true,
     currentProviderType: 'webdav',
@@ -316,6 +325,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _setRetryDelaysForTests(null);
   vi.restoreAllMocks();
 });
 

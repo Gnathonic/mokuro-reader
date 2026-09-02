@@ -5,7 +5,8 @@
     UploadSolid,
     UserSettingsSolid,
     RefreshOutline,
-    ChartLineUpOutline
+    ChartLineUpOutline,
+    RectangleListOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
@@ -99,6 +100,10 @@
     nav.toReadingSpeed();
   }
 
+  function navigateToProgressTracker() {
+    nav.toProgressTracker();
+  }
+
   async function handleSync() {
     if (isSyncing) return; // Prevent multiple simultaneous syncs
 
@@ -141,13 +146,23 @@
         <span class="text-xl font-semibold dark:text-white">Mokuro</span>
       </button>
     </NavBrand>
-    <div class="flex gap-5 md:order-2">
+    <!-- The tracker made this a five-icon row (six with cloud sync connected),
+         which wraps onto a second line on phone widths at gap-5 — so keep the
+         roomier spacing for sm and up only. -->
+    <div class="flex gap-3 sm:gap-5 md:order-2">
       <button
         onclick={navigateToReadingSpeed}
         class="flex h-6 w-6 items-center justify-center"
         title="Reading Speed Stats"
       >
         <ChartLineUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
+      </button>
+      <button
+        onclick={navigateToProgressTracker}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Progress Tracker"
+      >
+        <RectangleListOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />

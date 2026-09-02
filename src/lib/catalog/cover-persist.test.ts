@@ -75,6 +75,7 @@ import {
   _resetCoverPersistForTests,
   COVER_PERSIST_MAX_BATCH,
   COVER_PERSIST_MAX_PENDING,
+  coverBelongsOnRow,
   flushPendingCoverPersists,
   installCover
 } from './cover-persist';
@@ -635,5 +636,56 @@ describe('cover installs route by relationship', () => {
     const cached = await _getCloudCoversForTests('mega:a@b.com', ['Dr Stone/Volume 01.cbz']);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.width).toBe(250);
     expect(cached.get('Dr Stone/Volume 01.cbz')?.thumbnail).toBeInstanceOf(File);
+  });
+});
+
+describe('coverBelongsOnRow — the one routing predicate', () => {
+  const base = metadataOnlyRow();
+  const installed = { ...base, metadata_only: undefined } as VolumeMetadata;
+
+  it('is false with no row at all', () => {
+    expect(coverBelongsOnRow(undefined, { progress: 3 })).toBe(false);
+  });
+
+  it('is false for an installed row — its cover comes from its own pages', () => {
+    expect(coverBelongsOnRow(installed, { progress: 3 })).toBe(false);
+  });
+
+  it('is false for a metadata-only row with no reading activity', () => {
+    expect(coverBelongsOnRow(base, undefined)).toBe(false);
+    expect(coverBelongsOnRow(base, { progress: 0 })).toBe(false);
+  });
+
+  it('is true for a metadata-only row the user has read, "marked as finished" included', () => {
+    expect(coverBelongsOnRow(base, { progress: 3 })).toBe(true);
+    expect(coverBelongsOnRow(base, { completed: true })).toBe(true);
+  });
+});
+
+describe('cache rows carry the cover stamp', () => {
+  it('writes cover_size/cover_modified on the cloud_covers row, and omits them when unknown', async () => {
+    installCover(
+      { volume_uuid: 'stamped', cloudPath: 'Dr Stone/Stamped.cbz' } as never,
+      coverResult(),
+      { size: 321, modifiedTime: '2026-01-02T00:00:00.000Z' }
+    );
+    installCover(
+      { volume_uuid: 'unstamped', cloudPath: 'Dr Stone/Unstamped.cbz' } as never,
+      coverResult()
+    );
+    await flushPendingCoverPersists();
+
+    const cached = await _getCloudCoversForTests('mega:a@b.com', [
+      'Dr Stone/Stamped.cbz',
+      'Dr Stone/Unstamped.cbz'
+    ]);
+    expect(cached.get('Dr Stone/Stamped.cbz')).toMatchObject({
+      cover_size: 321,
+      cover_modified: Math.floor(Date.parse('2026-01-02T00:00:00.000Z') / 1000)
+    });
+    const unstamped = cached.get('Dr Stone/Unstamped.cbz')!;
+    expect(unstamped).toBeDefined();
+    expect('cover_size' in unstamped).toBe(false);
+    expect('cover_modified' in unstamped).toBe(false);
   });
 });

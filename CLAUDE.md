@@ -350,20 +350,74 @@ root-config allowlist as `volume-data.json`/`profiles.json`
 syncs it the same way — but for writes it is one of the two best-effort
 compiled files, along with `series.json` (see Best-effort writes below).
 
+### Root `goals.json`
+
+This user's reading goals, the frozen snapshots of closed goal periods, and
+per-volume reading deadlines (`src/lib/goals/goals-file.ts`, `GOALS_FILE_NAME`).
+
+A ROOT CONFIG file, **not** a best-effort compiled one: best-effort exists for
+files a bunko server compiles itself and rejects a scoped user's PUT of by
+design, and no server compiles a user's personal goals. It is the user's own
+state, like progress and profiles, so a failed write must surface. It is
+therefore in `isRootConfigFile` and deliberately NOT in
+`isBestEffortMetadataPath`.
+
+Rules:
+
+- **Keyed records with tombstones.** Every section is
+  `Record<key, entry>` and every entry carries `lastUpdated`; targets, custom
+  goals and deadlines also carry `deletedOn`. Arrays cannot merge per key, and
+  a hard delete resurrects on the next sync with any device that still has the
+  goal. Merge keys: `` `${goalType}:${periodKey}` `` for targets and snapshots,
+  the goal uuid for custom goals, the volume uuid for deadlines.
+- **Merge** is `mergeGoalSection`: newest `max(lastUpdated, deletedOn)` wins, a
+  tie prefers the live record over a tombstone. Parse-time
+  `FUTURE_TOLERANCE_MS` clamping, plus FORFEIT-ON-BOGUS detected on the RAW
+  pre-clamp stamps (`detectBogusGoalKeys`) and unioned across every readable
+  duplicate copy. The upload comparison is against the RAW cloud sections,
+  never the parsed ones — a clamped value compares equal to the poison once
+  parsed, so the file would never heal.
+- **Snapshots merge by UNION, not newest-wins** (`mergeSnapshotEntries`):
+  completions unioned with the earlier claim kept, `partialProgress` per volume
+  by `Math.max`, `closedAt` the earlier. Newest-wins loses a real case — a
+  laptop last synced in November finalizes `year:2026` from the 8 completions
+  it knows on Jan 2, and the phone's honest 20 is erased permanently, because
+  nothing ever rewrites a snapshot. Union makes convergence order-independent.
+  Snapshots have no tombstone: an archived period must not be erasable by a
+  device that merely never saw it.
+- **Not per-device state.** `activeSelection` (which goal card is on screen)
+  and the five `miscSettings` progress keys stay in localStorage. Syncing the
+  selection would mean opening Manage Goals on the phone switches the card on
+  the laptop, and every tap would dirty the file.
+- **No file until there is a goal.** The default 52-volume year target is
+  minted when the user opens the tracker, not at module evaluation — otherwise
+  every user in the world gets a `goals.json` they never asked for on their
+  first sync.
+- **mokuro-bunko** must list `goals.json` in `PathMapper.PER_USER_FILES`.
+  Anything else under `/mokuro-reader/` resolves into the SHARED library, so a
+  goals file left off that set is one file for every account, each overwriting
+  the others, and rejected outright for any account without library write
+  permission.
+
 ### What syncs where
 
-| Data                                                        | File                                      | Merge key                            |
-| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------ |
-| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume      |
-| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`       |
-| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile            |
-| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp       |
-| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value |
+| Data                                                        | File                                      | Merge key                              |
+| ----------------------------------------------------------- | ----------------------------------------- | -------------------------------------- |
+| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
+| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
+| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile              |
+| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
+| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value   |
+| Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
+| Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
+| Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 
-Read progress, the series section and settings profiles all sync automatically
-on every `syncProvider` call — there is no per-file opt-in and no separate
-"Sync profiles" button; `profiles.json` rides along unconditionally, the same
-way `volume-data.json` always has.
+Read progress, the series section, settings profiles and goals all sync
+automatically on every `syncProvider` call — there is no per-file opt-in and no
+separate "Sync profiles" button; `profiles.json` and `goals.json` ride along
+unconditionally, the same way `volume-data.json` always has. Goals sync AFTER
+volume data, because a closed period's snapshot is permanent and must be built
+from the progress that sync just merged.
 
 `series-metadata.json` was retired on 2026-08-23 before it ever shipped. A stale
 copy in an existing cloud folder is inert junk — never listed, never read.
@@ -378,6 +432,14 @@ cloud entry never outranks an existing local entry for that key — the clamped
 value is only adopted when local has no entry at all. See
 `detectBogusSeriesKeys`/`mergeSeriesSections` (`series-data.ts`) and
 `isBogusCloudProfile`/`clampCloudProfileStamps` (`unified-sync-service.ts`).
+`goals.json` gets the same clamp and FORFEIT-ON-BOGUS treatment, on every
+section that has a tombstone. `completedAt` is guarded differently — read-side,
+in the goals module, where a stamp beyond `FUTURE_TOLERANCE_MS` is treated as
+absent. It is not a merge key but it IS a goal-period key, so a fast clock
+would otherwise park a volume in a future period permanently, on every device;
+a merge-side clamp would re-clamp to a fresher `now` per device per sync and
+ping-pong the file forever.
+
 Known and out of scope (pre-existing): only the `series` section of
 `volume-data.json` got the clamp and FORFEIT-ON-BOGUS. The volume half still
 merges on the raw, unclamped stamps (`lastProgressUpdate`/`addedOn`/`deletedOn`),
@@ -470,6 +532,17 @@ must not break. Highlights:
 - `.textBox` is an input-routing protocol: double-tap there is the AnkiConnect capture gesture, mouse/pen drags are text selection (Yomitan/Migaku) — never pans, never zoom
 - Each surface owns its gestures via `PointerGestureTracker` config; Reader owns only keyboard + intent callbacks
 - Before starting any motion, handlers call their surface's `MotionGate` intent method instead of ad-hoc `finishNow()`/`stop()` combinations
+
+### Cloud covers
+
+`requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
+cloud cover: surfaces through `createCoverClaims`, the series-open pass through
+`installCoversForSeries` (a candidate builder), the backfill's stale refresh with
+`{ refresh: true }`. Its ladder: fresh row thumbnail → cached in `cloud_covers` (PROMOTED
+onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. The
+write queue (`cover-persist.ts`) routes by the same predicate. Never fetch or write a cover
+from anywhere else. Synced-progress rows are minted after every progress sync
+(`resolveSyncedProgress`), never from a view mount.
 
 ### Modal Button Z-Index
 

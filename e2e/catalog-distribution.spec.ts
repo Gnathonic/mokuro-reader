@@ -856,7 +856,7 @@ test.describe('Local Folder provider (OPFS)', () => {
     expectCleanConsole(watch);
   });
 
-  test('a progress hole is patched from the cloud series.json after a catalog open', async ({
+  test('a progress hole is patched from the cloud series.json after a progress sync', async ({
     page
   }) => {
     const watch = watchConsole(page);
@@ -894,8 +894,6 @@ test.describe('Local Folder provider (OPFS)', () => {
     await page.evaluate(async () => {
       const { db } = await import('/src/lib/catalog/db.ts');
       await db.series_index.clear();
-      const { resetHolePatchSessionForTests } = await import('/src/lib/metadata/hole-patch.ts');
-      resetHolePatchSessionForTests();
       const { volumesWithTrash, VolumeData } = await import('/src/lib/settings/volume-data.ts');
       volumesWithTrash.set({
         'hole-v1': new VolumeData({
@@ -910,9 +908,15 @@ test.describe('Local Folder provider (OPFS)', () => {
       });
     });
 
-    // The catalog open is what runs the patcher (CatalogView's onMount).
-    await goHash(page, '#/cloud');
-    await goHash(page, '#/');
+    // A progress sync is what runs the resolver — never a view mount. The
+    // same path the sync button, the reader-exit auto-sync and the startup
+    // sync all take; awaited here through the retained promise so the poll
+    // below is about the rows, not about timing.
+    await page.evaluate(async () => {
+      const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
+      await unifiedCloudManager.syncProgress({ silent: true });
+      await unifiedCloudManager.progressResolution;
+    });
 
     await expect
       .poll(
