@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { patchProgressHolesWhenListingReady } from '$lib/metadata/hole-patch';
+  import { enrichAllOrphanedVolumes } from '$lib/settings';
   import { Button, Card, Spinner } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
@@ -242,18 +242,15 @@
     ensureCurrentYearTarget();
 
     /*
-     * Patch the holes synced progress leaves behind — the same sweep
-     * CatalogView and ReadingSpeedView run on mount.
+     * Titles for legacy records that have a local row but no name yet: the
+     * completed-by-series grouping reads them off the reading record.
      *
-     * This view is a stats surface: it iterates EVERY progress record, so on a
-     * device that has synced progress but never opened those series it was
-     * rendering a card per volume with no page count, no cover and no counts —
-     * a wall of "0% (0p)". The rows exist to be minted (the local phase resolves
-     * them by uuid against the cached series.json indexes, with no network at
-     * all); nothing was asking for them here, because the sweep was wired into
-     * the two stats views that predate this one and never into this one.
+     * Rows for progress synced from OTHER devices — the "wall of 0% (0p)"
+     * this view used to render for series it had never opened — are minted
+     * after every progress sync (`resolveSyncedProgress`), never from a view
+     * mount, so there is no sweep here.
      */
-    return patchProgressHolesWhenListingReady();
+    void enrichAllOrphanedVolumes();
   });
 </script>
 
@@ -350,7 +347,6 @@
               {volumeId}
               seriesId={volumeData.series_uuid}
               volumeTitle={volumeData.volume_title}
-              thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
               progressPercentString={stats.progressPercentString}
               remainingPages={stats.remainingPages}
               isHovered={hoveredVolume === volumeId}
@@ -381,7 +377,6 @@
                 {volumeId}
                 seriesId={volumeData.series_uuid}
                 volumeTitle={volumeData.volume_title}
-                thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ?? undefined}
                 progressPercentString={stats.progressPercentString}
                 remainingPages={stats.remainingPages}
                 isHovered={hoveredVolume === volumeId}
@@ -427,8 +422,6 @@
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ??
-                    undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
@@ -447,8 +440,6 @@
                   {volumeId}
                   seriesId={volumeData.series_uuid}
                   volumeTitle={volumeData.volume_title}
-                  thumbnail={(catalogVolumeMap[volumeId]?.thumbnail as Blob | undefined) ??
-                    undefined}
                   progressPercentString={stats.progressPercentString}
                   remainingPages={stats.remainingPages}
                   isHovered={hoveredVolume === volumeId}
