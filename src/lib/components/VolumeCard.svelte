@@ -8,12 +8,13 @@
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
   import PlaceholderThumbnail from '$lib/components/PlaceholderThumbnail.svelte';
+  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { untrack } from 'svelte';
 
   interface Props {
     volumeId: string;
     seriesId: string | undefined;
     volumeTitle: string | undefined;
-    thumbnail: Blob | undefined;
     progressPercentString: string;
     remainingPages: number;
     isHovered: boolean;
@@ -38,7 +39,6 @@
     volumeId,
     seriesId,
     volumeTitle,
-    thumbnail,
     progressPercentString,
     remainingPages,
     isHovered,
@@ -89,16 +89,43 @@
   }
 
   /*
-   * Object URLs are keyed on CONTENT identity, not on the Blob object.
+   * THE SHARED COVER EFFECT (`cover-claims.svelte.ts`) — the same three-part
+   * rule every other cover-drawing surface runs: claim the cached cover for
+   * the row's listing path, ask the one cover service for what is missing
+   * once this card is near the viewport, release on unmount.
+   *
+   * Every volume the tracker lists has reading activity, so a request from
+   * here resolves onto the ROW — promoted from `cloud_covers` if the volume
+   * was browsed before it was read, fetched otherwise — and this card
+   * repaints from `volume.thumbnail` when that write lands. The claim shows
+   * the cached cover in the meantime, so a read-elsewhere volume is never a
+   * blank box for the round trip.
+   *
+   * `volume` is the catalog's copy of the row, decorated with the listing's
+   * `cloudPath`/`cloudThumbnail*` (never persisted); a tracker entry with no
+   * row at all — synced progress whose series has not resolved yet — has no
+   * `volume`, claims nothing and asks for nothing.
+   */
+  const coverClaims = createCoverClaims({
+    claims: () => (volume ? [volume] : []),
+    targets: () => (volume ? [volume] : [])
+  });
+  const { gate } = coverClaims;
+
+  /*
+   * Object URLs are keyed on CONTENT identity, not on the File object.
    *
    * The catalog store hands out fresh File objects on every re-read, so an
-   * attachment that depends on the blob itself revoked and recreated a URL for
+   * attachment that depends on the file itself revoked and recreated a URL for
    * every card on screen each time the catalog changed — a page turn is enough.
    * The rest of the app (VolumeItem, CatalogListItem) keys on
-   * `uuid:size:lastModified`; this matches.
+   * `uuid:size:lastModified`; this matches. The file is read UNTRACKED inside
+   * the effect so a same-content re-emission cannot re-run it.
    */
   let thumbnailKey = $derived(
-    thumbnail ? `${volumeId}:${thumbnail.size}:${(thumbnail as File).lastModified ?? 0}` : undefined
+    volume?.thumbnail
+      ? `${volumeId}:${volume.thumbnail.size}:${volume.thumbnail.lastModified ?? 0}`
+      : undefined
   );
 
   let thumbnailUrl = $state<string | undefined>(undefined);
@@ -106,12 +133,13 @@
   $effect(() => {
     // Read the key so the effect re-runs only when the CONTENT changes.
     void thumbnailKey;
-    if (!thumbnail) {
+    const file = untrack(() => volume?.thumbnail);
+    if (!file) {
       thumbnailUrl = undefined;
       return;
     }
 
-    const url = URL.createObjectURL(thumbnail);
+    const url = URL.createObjectURL(file);
     thumbnailUrl = url;
 
     return () => {
@@ -119,6 +147,9 @@
       URL.revokeObjectURL(url);
     };
   });
+
+  /** Row cover first, resolver cover second — a row that HAS a thumbnail always wins. */
+  let displayUrl = $derived(thumbnailUrl ?? coverClaims.cover?.url);
 </script>
 
 <div
@@ -128,7 +159,8 @@
   onmouseenter={() => onHover(volumeId)}
   onmouseleave={() => onHover(null)}
 >
-  <div class="imagebox">
+  <!-- `use:gate` arms the viewport gate the cover request waits on. -->
+  <div use:gate class="imagebox">
     <a
       href={isNotInstalled
         ? `#/series/${seriesId ?? ''}`
@@ -140,17 +172,19 @@
         : undefined}
       onclick={openOrDownload}
     >
-      {#if thumbnailUrl}
+      {#if displayUrl}
         <img
           alt={volumeTitle || 'Volume Cover'}
           class="mb-3 rounded"
           style="max-width: 125px; max-height: 180px; height: auto;"
-          src={thumbnailUrl}
+          src={displayUrl}
         />
       {:else}
-        <!-- A metadata-only or cloud-only volume has no local thumbnail blob.
-             A src-less <img> renders the broken-image glyph; the house pattern
-             (VolumeItem.svelte) is PlaceholderThumbnail. -->
+        <!-- No cover on the row and none in the cache yet. A src-less <img>
+             renders the broken-image glyph; the house pattern (VolumeItem.svelte)
+             is PlaceholderThumbnail. Deliberately NOT handed `volume`: this card
+             owns the claim, and a second claim set for the same volume would
+             double the reference. -->
         <PlaceholderThumbnail message={volumeTitle || 'Volume Cover'} />
       {/if}
     </a>
