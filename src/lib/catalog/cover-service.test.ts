@@ -647,20 +647,66 @@ describe('concurrency: render-demand mokuro pulls share the backfill semaphore',
 // under `vi.useFakeTimers()`. See `cover-service.retry.test.ts`, which mocks
 // `db` as a plain in-memory stub for exactly that reason.
 
-describe('dedupe: one in-flight/settled request per uuid, whichever surface asks', () => {
-  it('two requestCover calls before settling share ONE fetch, and a call after settling asks nothing further', async () => {
+describe('dedupe: the ledger records what was delivered, keyed by scope + uuid + listing stamp', () => {
+  it('two requests before settling share ONE fetch; a request after settling is skipped', async () => {
     await db.volumes.put(row('v-1'));
     const vol = row('v-1', { cloudThumbnailFileId: 'c-1' });
 
-    requestCover(vol);
-    requestCover(vol); // a second surface's effect, same render pass
-
+    const [a, b] = await Promise.all([requestCover(vol), requestCover(vol)]); // two surfaces, one render pass
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+    expect(a).toBe('row');
+    expect(b).toBe('row');
     await waitForCover('v-1');
-    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
 
-    requestCover(vol); // settled: must not ask again
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await requestCover(vol)).toBe('skipped'); // settled: must not ask again
     expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a changed listing stamp is a fresh request, not a skip', async () => {
+    await db.volumes.put(row('v-1'));
+    const vol = row('v-1', {
+      cloudThumbnailFileId: 'c-1',
+      cloudThumbnailSize: 10,
+      cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+    });
+    expect(await requestCover(vol)).toBe('row');
+    const stored = await waitForCover('v-1');
+
+    // The same card, re-rendered after a listing whose sidecar changed: the
+    // row now carries a thumbnail AND a recorded stamp that mismatches.
+    const rerendered = {
+      ...stored,
+      ...vol,
+      thumbnail: stored.thumbnail,
+      cloudThumbnailSize: 11,
+      cloudThumbnailModifiedTime: '2026-02-01T00:00:00.000Z'
+    } as VolumeMetadata;
+    expect(await requestCover(rerendered)).toBe('row');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refresh: true bypasses the ledger and the target test, and overwrites the row', async () => {
+    await db.volumes.put(row('v-1'));
+    const vol = row('v-1', { cloudThumbnailFileId: 'c-1' });
+    expect(await requestCover(vol)).toBe('row');
+    const stored = await waitForCover('v-1');
+
+    // Same stamp, same uuid: an ordinary request is redundant now...
+    expect(await requestCover(vol)).toBe('skipped');
+    // ...but a caller that KNOWS the cover is stale gets a fetch and an overwrite.
+    const update = vi.spyOn(db.volumes, 'update');
+    const outcome = await requestCover(
+      { ...stored, ...vol, thumbnail: stored.thumbnail } as VolumeMetadata,
+      { refresh: true }
+    );
+    await flushPendingCoverPersists();
+    expect(outcome).toBe('row');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledWith(
+      'v-1',
+      expect.objectContaining({ thumbnail: expect.any(File) })
+    );
+    update.mockRestore();
   });
 });
 

@@ -1,5 +1,8 @@
+import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
+import { volumes as readingHistoryStore } from '$lib/settings/volume-data';
+import type { ReadingHistoryEntry } from '$lib/settings/reading-activity';
 import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
 import {
@@ -26,7 +29,7 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { fetchCloudThumbnail, type CloudThumbnailResult } from './cloud-thumbnails';
-import { installCover } from './cover-persist';
+import { coverBelongsOnRow, installCover } from './cover-persist';
 
 /**
  * THE cover service: every surface that draws a cloud cover — the catalog
@@ -107,14 +110,25 @@ import { installCover } from './cover-persist';
  * through to case 3, whose publish attempt is intercepted/skipped server-side
  * the same way every other client write to that file is.
  *
- * DEDUPE: `requestCover` is idempotent and fire-and-forget. A uuid that has
- * already SETTLED (produced a result, however it was delivered) is never
- * asked again this session; a uuid currently IN FLIGHT shares that same
- * request rather than starting a second one. This is now the ONE ledger for
- * every surface — previously each component kept its own, which is exactly
- * how the same volume could be asked for three times by three different
- * views of it. Both halves are keyed by ACCOUNT SCOPE as well as uuid — see
- * {@link ledgerKey}.
+ * DEDUPE: `requestCover` is idempotent and safe to fire on every re-render.
+ * A uuid currently IN FLIGHT shares that request rather than starting a
+ * second one, and a uuid that has SETTLED is asked again only when something
+ * material changed: the ledger records WHAT was delivered (`'row'`,
+ * `'cache'` or `'none'`) and AGAINST WHICH listing stamp, and a request is
+ * redundant only when the same stamp already reached a target at least as
+ * good as the one this volume needs now — see {@link isRedundant}. That is
+ * what lets a cover settled in the cache while the volume was browsed be
+ * promoted onto the row the moment the volume is rendered as read, and what
+ * lets a changed sidecar be re-fetched by whichever surface notices. This is
+ * the ONE ledger for every surface — previously each component kept its own,
+ * which is exactly how the same volume could be asked for three times by
+ * three different views of it. Both halves are keyed by ACCOUNT SCOPE as
+ * well as uuid — see {@link ledgerKey}.
+ *
+ * Every request resolves to a {@link CoverOutcome}. Surfaces ignore it; the
+ * series-open pass and the backfill (`cover-install.ts`,
+ * `series-backfill.ts`) await it, which is how "installed" there means
+ * landed.
  */
 
 /**
@@ -162,10 +176,40 @@ const MATERIALIZE_BATCH_WINDOW_MS = 100;
  */
 export const MATERIALIZE_BATCH_MAX_ENTRIES = 25;
 
-/** Settled ledger keys (see {@link ledgerKey}): produced a result, whichever path delivered it. */
-const settled = new Set<string>();
+/** What a request delivered — or why it did not run. */
+export type CoverOutcome = 'row' | 'cache' | 'none' | 'skipped' | 'unresolved';
+
+export interface RequestCoverOptions {
+  /**
+   * Liveness probe from the requesting surface ("is my element still near
+   * the viewport?", see `isNearViewport`). It changes fetch ORDER only, never
+   * outcome: `cloud-thumbnails.ts` grants its download slots newest-first
+   * among probes that answer yes, and drains the rest as backlog. A deduped
+   * request keeps the FIRST caller's probe — two surfaces rarely
+   * fetch-target one uuid at once, and the cost of a stale probe is one
+   * mis-ranked grant, not a lost cover.
+   */
+  stillNear?: () => boolean;
+  /**
+   * The caller has already decided the cover on hand is STALE, from a stamp
+   * it computed against the listing (`series-backfill.ts`): skip the target
+   * test, the cache short-circuit and the ledger, fetch, and overwrite
+   * whatever is there — on the row if it carries a thumbnail, in
+   * `cloud_covers` at the same key otherwise.
+   */
+  refresh?: boolean;
+}
+
+/** What a settled request delivered, and against which listing stamp. */
+interface SettledCover {
+  target: 'row' | 'cache' | 'none';
+  stamp: string;
+}
+
+/** Ledger key → what was delivered. See {@link ledgerKey} and {@link isRedundant}. */
+const settled = new Map<string, SettledCover>();
 /** Ledger key → the request currently running for it. */
-const inFlight = new Map<string, Promise<void>>();
+const inFlight = new Map<string, Promise<CoverOutcome>>();
 
 /**
  * How both dedupe ledgers are keyed: ACCOUNT SCOPE, then uuid.
@@ -186,6 +230,37 @@ const inFlight = new Map<string, Promise<void>>();
  */
 function ledgerKey(uuid: string): string {
   return `${activeAccountScope() ?? ''}\u0000${uuid}`;
+}
+
+/** The listing's cover-sidecar stamp this request is made against; `':'` when unknown. */
+function listingStamp(vol: VolumeMetadata): string {
+  return `${vol.cloudThumbnailSize ?? ''}:${vol.cloudThumbnailModifiedTime ?? ''}`;
+}
+
+/**
+ * Request-time view of `coverBelongsOnRow`: the volume as the caller holds
+ * it (a placeholder has no row and never wants one here) plus the reading
+ * store. Synchronous — the store is localStorage-backed — so it can gate the
+ * ledger before any I/O.
+ */
+function wantsRow(vol: VolumeMetadata): boolean {
+  if (vol.isPlaceholder) return false;
+  const history = get(readingHistoryStore) as Record<string, ReadingHistoryEntry>;
+  return coverBelongsOnRow(vol, history[vol.volume_uuid]);
+}
+
+/**
+ * Is there nothing left for a request to do? Only when a request for this
+ * key already settled against the SAME listing stamp, and delivered to a
+ * target at least as good as this volume needs now: a `'row'` or `'none'`
+ * answer is final for that stamp; a `'cache'` answer is final only while the
+ * volume still has no relationship — once it is read, the same cover must be
+ * promoted onto its row, so the request runs again.
+ */
+function isRedundant(vol: VolumeMetadata, entry: SettledCover | undefined): boolean {
+  if (!entry || entry.stamp !== listingStamp(vol)) return false;
+  if (entry.target !== 'cache') return true;
+  return !wantsRow(vol);
 }
 
 /**
@@ -602,32 +677,40 @@ async function isCachedCoverPath(cloudPath: string | undefined): Promise<boolean
 }
 
 /**
- * Resolve and deliver `vol`'s cover, whichever decision-tree case applies.
- * Returns whether a cover was actually DELIVERED (or positively confirmed to
- * not exist, from data already in hand) — `true` — versus an attempt that
- * came back empty-handed for a reason that might well be transient (a
- * saturated provider, a timed-out download, a materialize race) — `false`.
- * `fetchCloudThumbnail` never throws; it swallows every network failure into
- * a `null` return (see `cloud-thumbnails.ts`), so `false` here is the ONLY
- * signal the caller has that this attempt produced nothing. The caller
- * (`requestCover`) treats the two identically to a thrown error for retry
- * purposes, but must NOT mark the uuid `settled` on `false` — a "nothing
- * yet" answer settled forever is exactly the "no covers until I navigate
- * away and back" regression this return value exists to prevent.
+ * Resolve and deliver `vol`'s cover, whichever ladder step applies. Returns
+ * the {@link CoverOutcome} it delivered — a cover on the row (`'row'`), in
+ * the cache (`'cache'`), or positively confirmed not to exist from data
+ * already in hand (`'none'`) — versus `'retry'` for an attempt that came
+ * back empty-handed for a reason that might well be transient (a saturated
+ * provider, a timed-out download, a materialize race). `fetchCloudThumbnail`
+ * never throws; it swallows every network failure into a `null` return (see
+ * `cloud-thumbnails.ts`), so `'retry'` here is the ONLY signal the caller has
+ * that this attempt produced nothing. The caller (`requestCover`) treats it
+ * identically to a thrown error for retry purposes, but must NOT write the
+ * ledger for it — a "nothing yet" answer settled forever is exactly the "no
+ * covers until I navigate away and back" regression this return value exists
+ * to prevent.
  */
-async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean): Promise<boolean> {
+async function resolveAndDeliver(
+  vol: VolumeMetadata,
+  options: RequestCoverOptions
+): Promise<CoverOutcome | 'retry'> {
+  const { stillNear } = options;
+
   // Already on disk for this account: the surface drawing this volume resolves
-  // it by path (`cover-resolver.ts`) and there is nothing to fetch. Settled, so
-  // the uuid is never asked again this session. Checked BEFORE the case split
-  // on purpose — it is also what keeps a cached cover from materializing a row
-  // for a bare placeholder (cases 3/4), which is exactly what the removed
-  // placeholder decoration used to prevent.
-  if (!vol.thumbnail && (await isCachedCoverPath(vol.cloudPath))) return true;
+  // it by path (`cover-resolver.ts`) and there is nothing to fetch. Checked
+  // BEFORE the case split on purpose — it is also what keeps a cached cover
+  // from materializing a row for a bare placeholder (cases 3/4), which is
+  // exactly what the removed placeholder decoration used to prevent. Skipped
+  // on `refresh`: the caller has decided the cached bytes are the stale ones.
+  if (!options.refresh && !vol.thumbnail && (await isCachedCoverPath(vol.cloudPath))) {
+    return 'cache';
+  }
 
   const existingRow = (await db.volumes.get(vol.volume_uuid)) as VolumeMetadata | undefined;
 
   if (existingRow) {
-    if (!vol.cloudThumbnailFileId) return true; // the row itself claims no cover exists
+    if (!vol.cloudThumbnailFileId) return 'none'; // the row itself claims no cover exists
     const result = await fetchCloudThumbnail(
       {
         ...existingRow,
@@ -637,7 +720,7 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
       },
       stillNear
     );
-    if (!result) return false; // transient: worth another attempt
+    if (!result) return 'retry'; // transient: worth another attempt
     deliverToRow(
       vol.volume_uuid,
       // The catalog decorates a metadata-only row's copy with the listing's
@@ -647,12 +730,15 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
       vol.cloudPath ?? existingRow.cloudPath,
       result,
       { size: vol.cloudThumbnailSize, modifiedTime: vol.cloudThumbnailModifiedTime },
-      !!vol.thumbnail
+      !!vol.thumbnail || !!options.refresh
     );
-    return true;
+    // The queue routes by the same predicate, against the row it re-reads
+    // inside its transaction; this is the answer it will give for the row
+    // as the caller holds it.
+    return wantsRow(vol) ? 'row' : 'cache';
   }
 
-  if (!vol.isPlaceholder) return true; // no row, not a placeholder: nothing this service can ever do
+  if (!vol.isPlaceholder) return 'none'; // no row, not a placeholder: nothing this service can ever do
 
   if (isIndexedPlaceholder(vol)) {
     // Deliberately NO materialize here — see the module doc's case 2. Fetch
@@ -661,19 +747,19 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
     // caches it in `cloud_covers` when an account scope is active, or drops
     // it, never minting a `volumes` row just because this placeholder was
     // rendered.
-    if (!vol.cloudThumbnailFileId) return true; // no row, and genuinely no cover to fetch
+    if (!vol.cloudThumbnailFileId) return 'none'; // no row, and genuinely no cover to fetch
     const result = await fetchCloudThumbnail(vol, stillNear);
-    if (!result) return false; // transient: worth another attempt
+    if (!result) return 'retry'; // transient: worth another attempt
     installCover({ volume_uuid: vol.volume_uuid, cloudPath: vol.cloudPath }, result, {
       size: vol.cloudThumbnailSize,
       modifiedTime: vol.cloudThumbnailModifiedTime
     });
-    return true;
+    return 'cache';
   }
 
   // Bare placeholder: cases 3/4.
   const resolved = await resolveBarePlaceholder(vol);
-  if (!resolved) return false; // the pull (if any) may have failed transiently — worth retrying
+  if (!resolved) return 'retry'; // the pull (if any) may have failed transiently — worth retrying
 
   const { entry, folderTitle, archivePath, cover } = resolved;
   // Queued, not written on its own: the batch this joins issues ONE
@@ -690,9 +776,9 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
   // retried — the uuid collision is a fact about the data, not a transient
   // failure, and re-pulling the same sidecar twice more to reach the same
   // verdict is pure waste.
-  if (outcome === 'foreign') return true;
-  if (outcome !== 'materialized') return false;
-  if (!cover) return true; // no cover sidecar anywhere in the listing: genuinely nothing to fetch
+  if (outcome === 'foreign') return 'none';
+  if (outcome !== 'materialized') return 'retry';
+  if (!cover) return 'none'; // no cover sidecar anywhere in the listing: genuinely nothing to fetch
 
   const result = await fetchCloudThumbnail(
     coverFetchTarget(
@@ -704,7 +790,7 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
     ),
     stillNear
   );
-  if (!result) return false;
+  if (!result) return 'retry';
   deliverToRow(
     entry.volume_uuid,
     // The row this just minted exists purely because the volume was browsed:
@@ -716,54 +802,53 @@ async function resolveAndDeliver(vol: VolumeMetadata, stillNear?: () => boolean)
     { size: cover.size, modifiedTime: cover.modifiedTime },
     false
   );
-  return true;
+  return 'cache';
 }
 
 /**
- * Ask for `vol`'s cover, once — idempotent and fire-and-forget. Safe to call
- * from every surface's own effect on every re-render; the dedupe below makes
- * a redundant call free.
+ * Ask for `vol`'s cover — THE entry point, for every caller. Idempotent:
+ * safe to call from every surface's own effect on every re-render, since the
+ * dedupe (see the module doc) makes a redundant call free. Resolves to what
+ * was delivered; surfaces ignore that, batch callers await it. Never rejects.
  */
-/**
- * `stillNear` — optional liveness probe from the requesting surface ("is my
- * element still near the viewport?", see `isNearViewport`). It changes fetch
- * ORDER only, never outcome: `cloud-thumbnails.ts` grants its download slots
- * newest-first among probes that answer yes, and drains the rest as backlog.
- * A deduped request keeps the FIRST caller's probe — two surfaces rarely
- * fetch-target one uuid at once, and the cost of a stale probe is one
- * mis-ranked grant, not a lost cover.
- */
-export function requestCover(vol: VolumeMetadata, stillNear?: () => boolean): void {
+export function requestCover(
+  vol: VolumeMetadata,
+  options: RequestCoverOptions = {}
+): Promise<CoverOutcome> {
   const uuid = vol.volume_uuid;
-  if (!uuid) return;
+  if (!uuid) return Promise.resolve('skipped');
   // Bound to the account the request is being made FOR, once: the same
   // request must not settle under one scope and be looked up under another
   // if the user switches accounts while it is in flight.
   const key = ledgerKey(uuid);
-  if (settled.has(key) || inFlight.has(key)) return;
-  if (!isCoverFetchTarget(vol)) return;
+  const running = inFlight.get(key);
+  if (running) return running;
+  if (!options.refresh) {
+    if (isRedundant(vol, settled.get(key))) return Promise.resolve('skipped');
+    if (!isCoverFetchTarget(vol)) return Promise.resolve('skipped');
+  }
 
-  const run = (async () => {
+  const run = (async (): Promise<CoverOutcome> => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const delivered = await resolveAndDeliver(vol, stillNear);
-        if (delivered) {
-          settled.add(key);
-          return;
+        const outcome = await resolveAndDeliver(vol, options);
+        if (outcome !== 'retry') {
+          settled.set(key, { target: outcome, stamp: listingStamp(vol) });
+          return outcome;
         }
         // Produced nothing, but nothing THREW either — a saturated provider
         // or a materialize race, not a confirmed "no cover exists". Retried
         // on the SAME backoff schedule as a thrown error, but deliberately
-        // never marked `settled`: if the whole schedule is spent with no
-        // luck, the uuid is simply left alone (not blacklisted) so the very
-        // next render's `requestCover` call starts a fresh attempt cycle
+        // never written to the ledger: if the whole schedule is spent with
+        // no luck, the uuid is simply left alone (not blacklisted) so the
+        // very next render's `requestCover` call starts a fresh attempt cycle
         // rather than being permanently silenced for the rest of the session.
-        if (attempt >= RETRY_DELAYS_MS.length) return;
+        if (attempt >= RETRY_DELAYS_MS.length) return 'unresolved';
         await sleep(RETRY_DELAYS_MS[attempt]);
       } catch (error) {
         if (attempt >= RETRY_DELAYS_MS.length) {
           console.warn(`Cover request failed for ${vol.volume_title}:`, error);
-          return;
+          return 'unresolved';
         }
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
@@ -774,6 +859,7 @@ export function requestCover(vol: VolumeMetadata, stillNear?: () => boolean): vo
   void run.finally(() => {
     if (inFlight.get(key) === run) inFlight.delete(key);
   });
+  return run;
 }
 
 export { flushPendingCoverPersists } from './cover-persist';
