@@ -1,7 +1,7 @@
 # Unified cover requests + sync-time metadata resolution — Design
 
 **Date:** 2026-09-02
-**Status:** approved (four decisions taken by the user in session, recorded below)
+**Status:** implemented on `feat/unified-cover-requests` (parts A, B) — part C lands on `feat/progress-tracker`. Four decisions taken by the user in session, recorded below.
 **Follows:** `2026-08-26-catalog-cover-ingest-design.md` (covers out of catalog derivation,
 per-card keyed resolution, `cloud_covers` cache) and the unimplemented plan
 `docs/superpowers/plans/2026-08-31-metadata-resolution-trigger.md` on `feat/progress-tracker`.
