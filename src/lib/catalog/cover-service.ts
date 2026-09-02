@@ -25,7 +25,7 @@ import {
   buildNoMetadataEntry,
   pullMokuroEntry,
   releaseBackfillSlot
-} from '$lib/metadata/series-backfill';
+} from '$lib/metadata/sidecar-pull';
 import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -218,9 +218,12 @@ export interface RequestCoverOptions {
   refresh?: boolean;
 }
 
+/** The outcomes a resolution can actually DELIVER — what the ledger records. */
+type DeliveredOutcome = 'row' | 'cache' | 'none';
+
 /** What a settled request delivered, and against which listing stamp. */
 interface SettledCover {
-  target: 'row' | 'cache' | 'none';
+  target: DeliveredOutcome;
   stamp: string;
 }
 
@@ -707,7 +710,7 @@ async function readCachedCover(cloudPath: string): Promise<CloudCover | undefine
 async function resolveAndDeliver(
   vol: VolumeMetadata,
   options: RequestCoverOptions
-): Promise<CoverOutcome | 'retry'> {
+): Promise<DeliveredOutcome | 'retry'> {
   const { stillNear } = options;
 
   // Ladder step 0 — already on disk for this account. Checked BEFORE the

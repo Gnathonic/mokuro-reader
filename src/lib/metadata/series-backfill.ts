@@ -9,11 +9,8 @@ import { flushPendingCoverPersists } from '$lib/catalog/cover-persist';
 // series-file-sync note below, same reasoning).
 import { requestCover } from '$lib/catalog/cover-service';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
-import { buildPageCharCounts, decodeMokuroSidecar } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
-import { parseMokuroFile } from '$lib/import/processing';
 import type { VolumeMetadata } from '$lib/types';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import { isCbzFile } from '$lib/util/sync/syncable-file';
 import { providerManager } from '$lib/util/sync/provider-manager';
@@ -39,6 +36,13 @@ import { getSeriesIndex } from './series-index';
 // inside function bodies.
 import { scheduleSeriesFileWrite } from './series-file-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
+import {
+  _resetBackfillSlotsForTests,
+  acquireBackfillSlot,
+  buildNoMetadataEntry,
+  pullMokuroEntry,
+  releaseBackfillSlot
+} from './sidecar-pull';
 import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
 
 /**
@@ -72,10 +76,11 @@ import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
  * concurrent PUTs" stampede `series-file-sync.ts`'s own `WRITE_CONCURRENCY`
  * was written to prevent (see `write-slot.ts`):
  *
- * - {@link acquireBackfillSlot} bounds how many series' worth of EXPENSIVE
- *   work (the indexed `volumesForFoldedSeriesTitle` read, the sidecar pulls,
- *   the write) run at once — module-local to this file, since it is
- *   specifically the backfill's own fan-out that needs bounding. A
+ * - `acquireBackfillSlot` (`sidecar-pull.ts`) bounds how many series' worth
+ *   of EXPENSIVE work (the indexed `volumesForFoldedSeriesTitle` read, the
+ *   sidecar pulls, the write) run at once — shared with the cover service's
+ *   render-demand pulls, since fast browsing must not stampede a provider any
+ *   more than a reconcile sweep may. A
  *   CONVERGED series never touches this budget at all: the cheap
  *   listing-only candidate check runs first and returns immediately when
  *   there is nothing to do, so a sweep over N already-converged folders
@@ -88,39 +93,6 @@ import { acquireWriteSlot, releaseWriteSlot } from './write-slot';
 
 /** Sidecar pulls in flight at once, per series. Small on purpose — see `cloud-ocr-upgrade.ts`. */
 const PULL_CONCURRENCY = 2;
-
-/**
- * How many series' worth of expensive backfill work (volumes scan, pulls,
- * write) may run at once, across every series. Mirrors `WRITE_CONCURRENCY` —
- * see the module doc above for why this is a SEPARATE pool from it.
- */
-const BACKFILL_PASS_CONCURRENCY = 2;
-let activeBackfillPasses = 0;
-const waitingBackfillPasses: Array<() => void> = [];
-
-/**
- * Exported so `cover-service.ts`'s render-demand single-archive pulls share
- * this SAME pool: "fast browsing can't stampede a provider" applies to a
- * .mokuro pull triggered by scrolling past a bare placeholder exactly as much
- * as one triggered by a reconcile sweep — one budget, not two.
- */
-export function acquireBackfillSlot(): Promise<void> {
-  if (activeBackfillPasses < BACKFILL_PASS_CONCURRENCY) {
-    activeBackfillPasses += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    waitingBackfillPasses.push(() => {
-      activeBackfillPasses += 1;
-      resolve();
-    });
-  });
-}
-
-export function releaseBackfillSlot(): void {
-  activeBackfillPasses -= 1;
-  waitingBackfillPasses.shift()?.();
-}
 
 /** series_key → the pass currently running for it. */
 const inFlight = new Map<string, Promise<void>>();
@@ -149,89 +121,6 @@ function basename(path: string): string {
 
 function archiveStemOf(path: string): string {
   return basename(path).replace(/\.cbz$/i, '');
-}
-
-/**
- * Zero-count entry for an archive with no `.mokuro` sidecar at all.
- *
- * NOT an image-only claim, despite the empty `mokuro_version`. A sidecar-less
- * archive is most often a LEGACY backup whose mokuro is EMBEDDED in the
- * `.cbz` (the whole reason `sidecar-backfill.ts` exists) — nothing can know
- * which until the archive is downloaded. This entry exists only to carry the
- * archive's identity, size and cover stamps, and to stop the backfill pass
- * re-planning the archive on every listing; its zero-content shape is exactly
- * what `hasMeasuredContent` (series-file.ts) reads as "this entry proves
- * nothing", which keeps merges treating it as the weakest possible claim.
- * Consumers that copy a version onto a row or placeholder go through
- * `entryMokuroVersion`: with no cover stamps either (ALL sidecars missing)
- * this shape surfaces as `'unknown'` — never as the image-only `''` — while
- * cover stamps prove a modern backup wrote sidecars without a mokuro, which
- * IS a genuine image-only signal.
- *
- * Exported for `cover-service.ts`'s render-demand path (decision-tree case
- * 4), which builds an entry for exactly one archive the same way this module
- * does for a whole series — reused, not re-derived.
- */
-export function buildNoMetadataEntry(
-  folderTitle: string,
-  archiveStem: string,
-  archiveFile: CloudFileMetadata
-): SeriesFileVolume {
-  const entry: SeriesFileVolume = {
-    volume_uuid: generateDeterministicUUID(`${folderTitle}/${archiveStem}`),
-    volume_title: archiveStem,
-    page_count: 0,
-    character_count: 0,
-    mokuro_version: ''
-  };
-  if (isArchiveSize(archiveFile.size)) entry.archive_size = archiveFile.size;
-  return entry;
-}
-
-/**
- * Download and parse one `.mokuro`/`.mokuro.gz`, building the entry the ENTRY-
- * BUILDING rules describe: `volume_title` from the ARCHIVE's filename stem
- * (never the mokuro's own `title`/`volume` fields — real files get those
- * wrong), `volume_uuid` from the mokuro's own `volume_uuid`, counts measured
- * with the same char math `cloud-ocr-upgrade.ts` uses for its own upgrade
- * path. `undefined` for anything that fails to parse or lacks a usable uuid —
- * the caller treats that as "skip this one volume", never a hard failure.
- *
- * `sidecarFile` is the snapshot the caller already captured from ONE listing
- * read (`groupSeriesSidecarFiles`); it is used here for BOTH the download and
- * the stamp below, so there is no second listing lookup to race a concurrent
- * re-list — the stamp always describes exactly the bytes that were pulled.
- *
- * Exported for `cover-service.ts`'s render-demand path (decision-tree case
- * 3: a bare placeholder with a real sidecar) — the SAME pull, whether it is
- * triggered by a backfill pass or by a card being scrolled into view.
- */
-export async function pullMokuroEntry(
-  provider: SyncProvider,
-  archiveStem: string,
-  sidecarFile: CloudFileMetadata
-): Promise<SeriesFileVolume | undefined> {
-  const blob = await provider.downloadFile(sidecarFile);
-  const decoded = await decodeMokuroSidecar(sidecarFile.path, blob);
-  if (!decoded) return undefined;
-
-  const parsed = await parseMokuroFile(decoded);
-  if (typeof parsed.volumeUuid !== 'string' || !parsed.volumeUuid.trim()) return undefined;
-
-  const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
-  const { totalChars } = buildPageCharCounts(pages);
-
-  // Base fields only — the caller (`buildEntryForTask`) applies `archive_size`
-  // and the stamp fields through `orderVolumeEntryFields` so every entry this
-  // module produces re-serializes in the pinned wire order regardless of
-  // which fields end up set.
-  return {
-    volume_uuid: parsed.volumeUuid,
-    volume_title: archiveStem,
-    page_count: pages.length,
-    character_count: totalChars,
-    mokuro_version: typeof parsed.version === 'string' ? parsed.version : ''
-  };
 }
 
 /**
@@ -853,6 +742,5 @@ export function backfillNewlyLinkedSeries(seriesTitle: string): Promise<void> {
 /** Test hook: forget in-flight backfill passes and the pass-concurrency bookkeeping. */
 export function _resetSeriesBackfillForTests(): void {
   inFlight.clear();
-  activeBackfillPasses = 0;
-  waitingBackfillPasses.length = 0;
+  _resetBackfillSlotsForTests();
 }

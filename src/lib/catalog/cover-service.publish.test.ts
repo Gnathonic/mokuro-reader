@@ -111,8 +111,8 @@ const { pullMokuroEntryMock } = vi.hoisted(() => ({
         | undefined
   )
 }));
-vi.mock('$lib/metadata/series-backfill', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/metadata/series-backfill')>();
+vi.mock('$lib/metadata/sidecar-pull', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/metadata/sidecar-pull')>();
   return {
     ...actual,
     pullMokuroEntry: (...a: Parameters<typeof pullMokuroEntryMock>) => pullMokuroEntryMock(...a)
