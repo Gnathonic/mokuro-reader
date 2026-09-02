@@ -18,7 +18,7 @@ import {
 } from '$lib/metadata/series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache-key';
-import { cachedCoverPaths } from '$lib/catalog/cloud-covers';
+import type { CloudCover } from '$lib/catalog/cloud-covers';
 import {
   acquireBackfillSlot,
   buildNoMetadataEntry,
@@ -52,8 +52,20 @@ import { coverBelongsOnRow, installCover } from './cover-persist';
  * it does not license minting a `volumes` row for every volume merely
  * scrolled past in a large cloud catalog (a regression measured at 434 → over
  * 11,000 rows browsing a ~1,000-series library, see `installCover`'s ROUTING
- * doc). `requestCover` resolves exactly one of four cases per volume:
+ * doc). `requestCover` first asks the ACCOUNT'S CACHE, then resolves exactly one
+ * of four cases per volume:
  *
+ * 0. The cover is already in `cloud_covers` for this account (one keyed
+ *    read). If the volume is one the user has READ and whose pages are not
+ *    here (`coverBelongsOnRow`), the cached blob is PROMOTED onto the row —
+ *    handed to `installCover` with the stamp the cache row recorded, no
+ *    network — unless that stamp is stale against the listing's current
+ *    sidecar, in which case the ladder continues to a fetch. Otherwise the
+ *    surface drawing the volume resolves the cache by path itself
+ *    (`cover-resolver.ts`) and nothing more is done. This is what lets a
+ *    cover fetched while a volume was merely browsed reach the row that
+ *    volume earns by being read — the progress tracker draws
+ *    `row.thumbnail` and nothing else.
  * 1. A DB row already exists (installed, or metadata-only) → hand the cover
  *    to `installCover` for that row, WITH the listing's cloud path: a
  *    metadata-only row minted by browsing or by a series open has no
@@ -632,47 +644,42 @@ function deliverToRow(
 }
 
 /**
- * Is this path's cover ALREADY in the account's `cloud_covers` cache?
+ * The cached cover row for `cloudPath` under the active account — BLOB
+ * INCLUDED, deliberately: this is the one read in the app that wants the
+ * bytes, because it may be about to copy them onto a `volumes` row
+ * (promotion, ladder step 0). Everything else that asks "is it cached?"
+ * stays keys-only (`cachedCoverPaths`). One keyed `get` on the
+ * `[account_scope+path]` primary key, cost independent of table size.
  *
  * THE RE-DOWNLOAD GUARD. Until covers were cut out of catalog derivation, a
  * cached cover suppressed its own re-fetch by accident: `generatePlaceholders`
  * stamped the cached blob onto the placeholder, so `isCoverFetchTarget` saw a
  * `thumbnail` and said no. With that decoration gone, every cloud volume reads
- * as a fetch target on a cold page load — the `settled` ledger is
- * session-scoped — and a library of ~4,347 covers would re-download the lot
- * from the network on every reload, trading the freeze for a network storm.
+ * as a fetch target on a cold page load — the ledger is session-scoped — and
+ * a library of ~4,347 covers would re-download the lot from the network on
+ * every reload, trading the freeze for a network storm. Asked at REQUEST time
+ * rather than read off the keys-only store: the store fills asynchronously
+ * behind the cloud listing, while cards call `requestCover` the moment that
+ * same listing renders them — a gate read off it would be empty for the first
+ * screenful and let exactly the storm it exists to stop through.
  *
- * KEYS ONLY, and asked at REQUEST time rather than read off the keys-only
- * store. Same primitive `cover-install.ts` filters its own candidates with
- * (`withoutCachedCovers`), so the two paths cannot disagree about what counts
- * as already-cached. The store was the obvious alternative and is the wrong
- * tool here: it fills asynchronously behind the cloud listing, while cards
- * call `requestCover` the moment that same listing renders them — a gate read
- * off it would be empty for the first screenful and let exactly the storm it
- * exists to stop through. This costs one keyed presence read per requested
- * volume, no blobs, independent of table size.
+ * NOT A STALENESS CHECK on its own: for a relationship-less volume the
+ * answer is "cached, done" whatever the stamp says (a stale cache-resident
+ * cover is the backfill's `refresh` request to fix). Only a promotion
+ * compares stamps, because only a promotion writes the blob somewhere new.
  *
- * NOT A STALENESS CHECK, and it must never become one: it is consulted only
- * where the alternative is a FILL (`!vol.thumbnail`). The self-heal branch —
- * a persisted row whose own `cover_size`/`cover_modified` mismatch the
- * listing's current sidecar stamp — carries a `thumbnail` and never reaches
- * here, so an overwrite still fetches. (Nor can the two collide: a row with a
- * thumbnail has its covers routed onto the row itself, never into
- * `cloud_covers` — see `cover-persist.ts`'s ROUTING doc.)
+ * `undefined` = not cached; `'error'` = the cache could not be consulted,
+ * which the caller treats as a miss (fetching is the safe answer, exactly as
+ * the old keys-only guard decided it).
  */
-async function isCachedCoverPath(cloudPath: string | undefined): Promise<boolean> {
-  if (!cloudPath) return false;
+async function readCachedCover(cloudPath: string): Promise<CloudCover | undefined | 'error'> {
   try {
     const scope = activeAccountScope();
-    if (!scope) return false;
-    const normalized = normalizeCachePath(cloudPath);
-    const cached = await cachedCoverPaths(scope, [normalized]);
-    return cached.has(normalized);
+    if (!scope) return undefined;
+    return await db.cloud_covers.get([scope, normalizeCachePath(cloudPath)]);
   } catch (error) {
-    // A cache we cannot read is not a reason to refuse a cover; fetching is
-    // the safe answer, exactly as `withoutCachedCovers` decides it.
     console.debug('[cover-service] could not consult the cover cache:', error);
-    return false;
+    return 'error';
   }
 }
 
@@ -697,14 +704,46 @@ async function resolveAndDeliver(
 ): Promise<CoverOutcome | 'retry'> {
   const { stillNear } = options;
 
-  // Already on disk for this account: the surface drawing this volume resolves
-  // it by path (`cover-resolver.ts`) and there is nothing to fetch. Checked
-  // BEFORE the case split on purpose — it is also what keeps a cached cover
-  // from materializing a row for a bare placeholder (cases 3/4), which is
-  // exactly what the removed placeholder decoration used to prevent. Skipped
-  // on `refresh`: the caller has decided the cached bytes are the stale ones.
-  if (!options.refresh && !vol.thumbnail && (await isCachedCoverPath(vol.cloudPath))) {
-    return 'cache';
+  // Ladder step 0 — already on disk for this account. Checked BEFORE the
+  // case split on purpose: it is also what keeps a cached cover from
+  // materializing a row for a bare placeholder (cases 3/4), which is exactly
+  // what the removed placeholder decoration used to prevent. Skipped on
+  // `refresh`: the caller has decided the cached bytes are the stale ones.
+  if (!options.refresh && !vol.thumbnail && vol.cloudPath) {
+    const cached = await readCachedCover(vol.cloudPath);
+    if (cached && cached !== 'error') {
+      // No relationship: the surface drawing this volume resolves the cache
+      // by path (`cover-resolver.ts`) and there is nothing to fetch.
+      if (!wantsRow(vol)) return 'cache';
+      const cachedStamp = { size: cached.cover_size, modified: cached.cover_modified };
+      const currentStamp = {
+        size: vol.cloudThumbnailSize,
+        modified: isoToEpochSeconds(vol.cloudThumbnailModifiedTime)
+      };
+      if (!isSidecarStale(cachedStamp, currentStamp)) {
+        // PROMOTION: the blob this account already holds, carrying the
+        // freshness it actually has (the cache row's own stamp, never the
+        // listing's current one — a stampless row cached by older code
+        // promotes stampless, the same never-stale inversion as everywhere).
+        // `installCover` takes the stamp as (bytes, ISO); the cached epoch
+        // seconds go back through ISO so the row records the same seconds.
+        installCover(
+          { volume_uuid: vol.volume_uuid, cloudPath: vol.cloudPath },
+          { file: cached.thumbnail, width: cached.width, height: cached.height },
+          {
+            size: cached.cover_size,
+            modifiedTime:
+              cached.cover_modified !== undefined
+                ? new Date(cached.cover_modified * 1000).toISOString()
+                : undefined
+          },
+          'fill'
+        );
+        return 'row';
+      }
+      // Stale: fall through to a fetch, which the queue routes onto the row.
+    }
+    // `'error'` and a miss both fall through: fetching is the safe answer.
   }
 
   const existingRow = (await db.volumes.get(vol.volume_uuid)) as VolumeMetadata | undefined;

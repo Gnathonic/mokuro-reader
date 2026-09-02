@@ -1081,3 +1081,126 @@ describe('settled is scoped to the account it settled under', () => {
     expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * PROMOTION (ladder step 2): a cover this account already holds in
+ * `cloud_covers` — because the volume was browsed as a placeholder — reaches
+ * the `volumes` row the moment the volume is rendered as one the user has
+ * READ, with no network. Before this, the cache short-circuit settled such a
+ * request and the row stayed blank for exactly the volumes the user cares
+ * about (the progress tracker draws `row.thumbnail`).
+ */
+async function cacheCover(
+  path: string,
+  stamp: { cover_size?: number; cover_modified?: number } = {}
+): Promise<void> {
+  await putCloudCovers([
+    {
+      account_scope: 'mega:a@b.com',
+      path,
+      thumbnail: new File(['cached'], 'cached.webp', { type: 'image/webp' }),
+      width: 100,
+      height: 150,
+      cached_at: Date.now(),
+      ...stamp
+    }
+  ]);
+}
+
+describe('promotion: a cached cover is installed onto a row the user has read, with no fetch', () => {
+  const path = 'One Piece/Volume 01.cbz';
+
+  it('copies the cached blob and ITS stamp onto the row', async () => {
+    await db.volumes.put(row('v-1'));
+    await cacheCover(path, { cover_size: 5, cover_modified: 1700000000 });
+    const update = vi.spyOn(db.volumes, 'update');
+
+    const outcome = await requestCover(
+      row('v-1', {
+        cloudProvider: 'webdav',
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 5,
+        cloudThumbnailModifiedTime: '2023-11-14T22:13:20.000Z'
+      })
+    );
+    await flushPendingCoverPersists();
+
+    expect(outcome).toBe('row');
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(
+      'v-1',
+      expect.objectContaining({
+        thumbnail: expect.any(File),
+        thumbnail_width: 100,
+        thumbnail_height: 150,
+        cover_size: 5,
+        cover_modified: 1700000000
+      })
+    );
+    update.mockRestore();
+  });
+
+  it('a cached cover with no relationship stays in the cache and is not fetched', async () => {
+    await cacheCover(path);
+    const outcome = await requestCover(
+      indexedPlaceholder('idx-1', { cloudThumbnailFileId: 'c-1', cloudPath: path })
+    );
+    expect(outcome).toBe('cache');
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+    expect(await db.volumes.count()).toBe(0);
+  });
+
+  it('a STALE cached cover is fetched fresh instead of promoted', async () => {
+    await db.volumes.put(row('v-1'));
+    await cacheCover(path, { cover_size: 5, cover_modified: 1 });
+    const outcome = await requestCover(
+      row('v-1', {
+        cloudProvider: 'webdav',
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 9,
+        cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+      })
+    );
+    expect(outcome).toBe('row');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+    await waitForCover('v-1');
+  });
+
+  it('a STAMPLESS cached cover (cached by older code) is promoted, never treated as stale', async () => {
+    await db.volumes.put(row('v-1'));
+    await cacheCover(path);
+    const outcome = await requestCover(
+      row('v-1', {
+        cloudProvider: 'webdav',
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 9,
+        cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+      })
+    );
+    expect(outcome).toBe('row');
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+  });
+
+  it('settled as cache while browsed, then promoted the first time it is rendered as read', async () => {
+    // Browsed: an indexed placeholder, no row → fetched once, cached.
+    const browsed = indexedPlaceholder('v-1', { cloudThumbnailFileId: 'c-1', cloudPath: path });
+    expect(await requestCover(browsed)).toBe('cache');
+    await drainQueues();
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+
+    // Read elsewhere: the row materialized, the history synced — same uuid,
+    // same listing stamp. The ledger must not call this redundant.
+    await db.volumes.put(row('v-1'));
+    const asRead = row('v-1', {
+      cloudProvider: 'webdav',
+      cloudThumbnailFileId: 'c-1',
+      cloudPath: path
+    });
+    expect(await requestCover(asRead)).toBe('row');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1); // promoted, not re-fetched
+    await waitForCover('v-1');
+  });
+});
