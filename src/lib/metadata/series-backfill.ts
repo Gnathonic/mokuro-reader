@@ -2,8 +2,12 @@ import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { installCoversForSeries } from '$lib/catalog/cover-install';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
-import { flushPendingCoverPersists, installCover } from '$lib/catalog/cover-persist';
+import { flushPendingCoverPersists } from '$lib/catalog/cover-persist';
+// Deferred-use import into the module cycle cover-service → series-file-sync →
+// series-backfill → cover-service: safe because nothing on any side calls
+// across at module-init time, only from inside function bodies (see the
+// series-file-sync note below, same reasoning).
+import { requestCover } from '$lib/catalog/cover-service';
 import { materializeSeriesVolumes } from '$lib/catalog/materialize';
 import { buildPageCharCounts, decodeMokuroSidecar } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
@@ -375,37 +379,38 @@ function excludeInstalledCandidates(
 }
 
 /**
- * Overwrite a materialized/metadata-only row's cover from a stale cover
+ * Refresh a materialized/metadata-only row's cover from a stale cover
  * sidecar. Never touches an installed row — its thumbnail was measured from
  * its own pages, not a cloud guess.
  *
- * `fetchCloudThumbnail` is a network fetch that can take up to 15s
- * (`FETCH_TIMEOUT_MS`), during which a download can finish and INSTALL the
- * volume with a thumbnail measured from its own pages. The snapshot read
- * above is that old by the time the network answers, so the actual write
- * routes through `cover-persist.ts`'s shared queue (`installCover`, `mode:
- * 'overwrite'` — this row already HAS a thumbnail, which is the entire
- * premise of "stale"), whose flush re-reads and re-tests the row inside its
- * own write transaction — the same guard every other cover path relies on.
- * Flushed immediately (not left to the debounce) since this runs inside
- * an already-async backfill pass, not a UI burst — see `flushPendingCoverPersists`.
+ * This is a `refresh: true` REQUEST to the one cover entry point
+ * (`cover-service.ts`'s `requestCover`), not a fetch of its own: the caller
+ * here has already decided, from stamps it computed against the listing,
+ * that whatever is on hand is stale — so the service skips its target test,
+ * its cache short-circuit and its dedupe ledger, fetches, and hands the
+ * result to `cover-persist.ts`'s shared queue with mode `'overwrite'` for a
+ * row that carries a thumbnail. Everything the fetch used to own here — the
+ * up-to-15s download during which a download can INSTALL the volume, the
+ * transactional re-read that keeps a page-measured thumbnail from being
+ * clobbered, the routing of a relationship-less row's cover into
+ * `cloud_covers` — is the service's and the queue's, exactly as for a card.
+ * Flushed here (not left to the queue's own cadence) since this runs inside
+ * an already-async backfill pass whose caller awaits it.
  *
- * Also RESTAMPS the row from `cover` — the same listing record the fetch was
- * made against — with `cover_size`/`cover_modified`, mirroring
- * `cover-service.ts`'s catalog-card path. This is what lets a FUTURE pass
- * (here, or a row-level check elsewhere) decide staleness from the row alone
- * without guessing, whichever path most recently touched it.
+ * The stale sidecar's OWN listing stamp rides as the `cloudThumbnail*`
+ * decoration, so the row (or cache row) is restamped with `cover_size`/
+ * `cover_modified` describing exactly the bytes fetched — what lets a FUTURE
+ * pass decide staleness from the row alone, whichever path last touched it.
  *
  * `archivePath` is the ARCHIVE's own cloud path from the listing this refresh
  * was planned against — the volume's CACHE IDENTITY, and a required argument
  * rather than an optional nicety. A row this device has no RELATIONSHIP with
- * (nothing installed, nothing read) cannot carry a blob at all under
- * `cover-persist.ts`'s routing rule, and such a row is the ordinary outcome of
- * merely OPENING a cloud series (`materializeSeriesVolumes` mints it, and
- * `cover-install.ts` routes its cover into `cloud_covers` rather than onto it).
- * Handing `installCover` a bare uuid gives that cover no `cloud_covers`
- * identity either, so the fetch is made and then silently DROPPED — the exact
- * "stale cover never refreshes" dead end this argument exists to close.
+ * (nothing installed, nothing read) cannot carry a blob at all under the
+ * queue's routing rule, and such a row is the ordinary outcome of merely
+ * OPENING a cloud series. Without a `cloudPath` that cover has no
+ * `cloud_covers` identity either, so the fetch would be made and then silently
+ * DROPPED — the exact "stale cover never refreshes" dead end this argument
+ * exists to close. Decorated on a COPY, never stored.
  */
 async function refreshStaleCover(
   providerType: SyncProvider['type'],
@@ -416,22 +421,21 @@ async function refreshStaleCover(
   const row = (await db.volumes.get(volumeUuid)) as VolumeMetadata | undefined;
   if (!row || !needsDownload(row)) return;
 
-  const result = await fetchCloudThumbnail({
-    ...row,
-    cloudProvider: providerType,
-    cloudThumbnailFileId: cover.fileId,
-    cloudThumbnailPath: cover.path
-  });
-  if (!result) return;
-
-  installCover(
-    // The listing's archive path wins over anything decorated onto the stored
-    // row: it is the same key `catalog/index.ts` reads a cached cover back
-    // under (`cloudFieldsForRemovedVolume` → `normalizeCachePath(cloudPath)`).
-    { volume_uuid: volumeUuid, cloudPath: archivePath ?? row.cloudPath },
-    result,
-    { size: cover.size, modifiedTime: cover.modifiedTime },
-    'overwrite'
+  await requestCover(
+    {
+      ...row,
+      cloudProvider: providerType,
+      // The listing's archive path wins over anything decorated onto the
+      // stored row: it is the same key `catalog/index.ts` reads a cached
+      // cover back under (`cloudFieldsForRemovedVolume` →
+      // `normalizeCachePath(cloudPath)`).
+      cloudPath: archivePath ?? row.cloudPath,
+      cloudThumbnailFileId: cover.fileId,
+      cloudThumbnailPath: cover.path,
+      ...(isArchiveSize(cover.size) ? { cloudThumbnailSize: cover.size } : {}),
+      ...(cover.modifiedTime ? { cloudThumbnailModifiedTime: cover.modifiedTime } : {})
+    },
+    { refresh: true }
   );
   await flushPendingCoverPersists();
 }
