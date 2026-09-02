@@ -286,7 +286,7 @@ export function createCoverClaims(options: CoverClaimsOptions): CoverClaims {
   // nothing, and the list it finally asks for is the one current when it came into view.
   $effect(() => {
     if (!nearViewport) return;
-    for (const vol of fetchTargets) requestCover(vol, stillNear);
+    for (const vol of fetchTargets) void requestCover(vol, { stillNear });
   });
 
   /** Set by {@link gate}. See {@link warnIfUngated} for why this is worth tracking. */

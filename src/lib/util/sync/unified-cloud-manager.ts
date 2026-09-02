@@ -64,6 +64,12 @@ import {
   putCatalogIndex
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
+// Deferred-use import into the module cycle hole-patch → unified-cloud-manager
+// → hole-patch (the resolver reads this manager's listing state). Safe for the
+// same reason the existing unified-cloud-manager ↔ series-file-sync cycle is:
+// nothing on either side calls across at module-init time, only from inside
+// function bodies.
+import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
@@ -179,6 +185,27 @@ function pickSeriesMetadata(
 
 class UnifiedCloudManager {
   /**
+   * The `series.json` refresh the most recent listing started, or `null`.
+   * Retained so a caller that needs the cached indexes to be CURRENT — the
+   * post-sync progress resolution — can await the run already in flight
+   * instead of starting a second one. Always settles without rejecting (the
+   * refresh logs its own failures).
+   */
+  private seriesIndexRefresh: Promise<void> | null = null;
+
+  /**
+   * The resolution run the last successful sync started (see
+   * `resolveSyncedProgress` in `hole-patch.ts`), retained for callers and
+   * tests that need the rows it mints. Sync itself never waits on it.
+   */
+  progressResolution: Promise<void> = Promise.resolve();
+
+  /** Settles when the series-index refresh the last listing started has finished; immediately when none is running. */
+  whenSeriesIndexesSettled(): Promise<void> {
+    return this.seriesIndexRefresh ?? Promise.resolve();
+  }
+
+  /**
    * Store containing cloud volumes from the current provider
    * Returns Map<seriesTitle, CloudVolumeWithProvider[]> for efficient series-based operations
    * Delegates to cacheManager and adds provider field to each file
@@ -263,10 +290,15 @@ class UnifiedCloudManager {
       }
 
       // Bound to THIS provider: the run may start long after the switch that
-      // makes these ids and paths meaningless.
-      void Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
+      // makes these ids and paths meaningless. RETAINED (not just fired) so
+      // `whenSeriesIndexesSettled` can hand it to the post-sync resolution.
+      const refresh = Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
         console.warn('Series index refresh failed:', error)
       );
+      this.seriesIndexRefresh = refresh;
+      void refresh.finally(() => {
+        if (this.seriesIndexRefresh === refresh) this.seriesIndexRefresh = null;
+      });
       // The root catalog rides the same listing: one download for the whole
       // library, skipped entirely when its size/mtime has not moved.
       void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
@@ -2026,12 +2058,23 @@ class UnifiedCloudManager {
     }
 
     const result = await unifiedSyncService.syncProvider(provider, options);
+    // Synced progress may reference series this device has no rows for. THE
+    // one trigger for resolving that — never a view mount — and started
+    // behind the result: sync reports what it did, resolution continues.
+    if (result.success) this.startProgressResolution();
     return {
       totalProviders: 1,
       succeeded: result.success ? 1 : 0,
       failed: result.success ? 0 : 1,
       results: [result]
     };
+  }
+
+  /** Never throws into a sync result: `resolveSyncedProgress` swallows its own failures, and so does this. */
+  private startProgressResolution(): void {
+    this.progressResolution = Promise.resolve()
+      .then(() => resolveSyncedProgress())
+      .catch((error) => console.debug('[sync] progress resolution failed to start:', error));
   }
 
   /**
