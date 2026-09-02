@@ -93,7 +93,7 @@ describe('PlaceholderThumbnail cover lifetime', () => {
 
     expect(requestCover).toHaveBeenCalledWith(
       expect.objectContaining({ volume_uuid: 'c-3' }),
-      expect.any(Function)
+      expect.objectContaining({ stillNear: expect.any(Function) })
     );
   });
 
@@ -211,7 +211,7 @@ describe('PlaceholderThumbnail asks for a cover only once it is near the viewpor
     expect(requestCover).toHaveBeenCalledTimes(1);
     expect(requestCover).toHaveBeenCalledWith(
       expect.objectContaining({ volume_uuid: 'near-1' }),
-      expect.any(Function)
+      expect.objectContaining({ stillNear: expect.any(Function) })
     );
   });
 

@@ -75,7 +75,8 @@ vi.mock('$lib/catalog/cloud-thumbnails', () => ({
 import { db } from '$lib/catalog/db';
 import { _getCloudCoversForTests } from './cloud-covers';
 import { _resetCoverPersistForTests } from './cover-persist';
-import { MAX_CONCURRENT_COVER_INSTALLS, installCoversForSeries } from './cover-install';
+import { _resetCoverServiceForTests, _setRetryDelaysForTests } from './cover-service';
+import { installCoversForSeries } from './cover-install';
 
 const activeProvider = {
   type: 'webdav',
@@ -85,6 +86,10 @@ const activeProvider = {
 beforeEach(() => {
   vi.clearAllMocks();
   _resetCoverPersistForTests();
+  _resetCoverServiceForTests();
+  // A batch pass awaits the service's outcomes, retry schedule included; a
+  // failing download must not cost this suite the real 10 s.
+  _setRetryDelaysForTests([0, 0]);
   history.set({});
   // `clearAllMocks` clears call history, not implementations: re-pin the
   // per-test defaults so a `mockReturnValue` in one test cannot leak into the next.
@@ -111,6 +116,7 @@ function deferFetch() {
 
 afterEach(async () => {
   _resetCoverPersistForTests(); // cancel a pending timer before it can fire against a cleared table
+  _setRetryDelaysForTests(null);
   await db.volumes.clear();
   await db.cloud_covers.clear();
 });
@@ -247,7 +253,7 @@ describe('installCoversForSeries', () => {
 
   it('never rejects when a download fails', async () => {
     await addRow();
-    fetchCloudThumbnail.mockRejectedValueOnce(new Error('timeout'));
+    fetchCloudThumbnail.mockRejectedValue(new Error('timeout'));
     await expect(installCoversForSeries('Dr Stone')).resolves.toBe(0);
   });
 
@@ -366,6 +372,10 @@ describe('installCoversForSeries', () => {
     expect(await installCoversForSeries('Dr Stone')).toBe(1);
     await addRow(); // back to a coverless row
     await db.cloud_covers.clear(); // ...and its cached cover aged out (see below)
+    // The service's ledger is session-scoped, and the TTL prune runs at boot,
+    // before anything is requested: an aged-out cover is a fresh session's
+    // request. This stands in for that reload.
+    _resetCoverServiceForTests();
 
     expect(await installCoversForSeries('Dr Stone')).toBe(1);
     expect(fetchCloudThumbnail).toHaveBeenCalledTimes(2);
@@ -385,11 +395,25 @@ describe('installCoversForSeries', () => {
   });
 });
 
-describe('concurrency pinning', () => {
-  it('pins the install pass width at 8 — matched to MAX_CONCURRENT_FETCHES, change both together', () => {
-    // The fetch-pool constant has its own pin in cloud-thumbnails' suite
-    // (this file mocks that module, so cross-module equality cannot be
-    // asserted here); the pairing lives in both constants' doc comments.
-    expect(MAX_CONCURRENT_COVER_INSTALLS).toBe(8);
+describe('the pass is a candidate builder over the one cover entry point', () => {
+  // The decoration it builds from the listing is asserted through its effects
+  // above: the fetch receives the listing's cover id/path, and a READ row's
+  // update carries the listing's stamp. What is new here is what the service
+  // does with a candidate the old pass would have skipped.
+  it('promotes a cached cover onto a READ row without fetching', async () => {
+    await addRow();
+    history.set({ 'uuid-1': { progress: 3 } });
+    await db.cloud_covers.put({
+      account_scope: 'webdav:a@b.com',
+      path: 'Dr Stone/Volume 1.cbz',
+      thumbnail: new File(['c'], 'c.webp', { type: 'image/webp' }),
+      width: 10,
+      height: 15,
+      cached_at: Date.now()
+    });
+
+    expect(await installCoversForSeries('Dr Stone')).toBe(1);
+    expect(fetchCloudThumbnail).not.toHaveBeenCalled();
+    expect((await db.volumes.get('uuid-1'))?.thumbnail_width).toBe(10);
   });
 });

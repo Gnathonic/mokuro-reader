@@ -16,7 +16,7 @@
     isOrphanedVolumeData
   } from '$lib/settings/volume-data';
   import { volumes as catalogStore } from '$lib/catalog';
-  import { patchProgressHolesWhenListingReady } from '$lib/metadata/hole-patch';
+  import { enrichAllOrphanedVolumes } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     Badge,
@@ -702,29 +702,19 @@
   });
 
   onMount(() => {
-    // Enrich, sweep, then enrich AGAIN — in that order, each awaited.
+    // Titles for legacy records that have a local row but no name yet: this
+    // page groups by the reading record's titles, and the `[Missing Series
+    // Info]` bucket it offers for deletion is exactly what an un-enriched
+    // record falls into. `enrichAllOrphanedVolumes` copies them off rows this
+    // device already has, reads IndexedDB only when there is an orphan, and
+    // is the only path a device with no provider ever has for this.
     //
-    // `enrichAllOrphanedVolumes` can only copy metadata off rows this device
-    // already has; a volume read on another machine has none, which is what
-    // puts it in the `[Missing Series Info]` bucket this page then offers for
-    // deletion. The sweep mints those missing rows from data already on the
-    // device (see `materializeHistoryRows`) — but a row only reaches
-    // `$orphanedVolumeIds` once an enrichment pass has copied it onto the
-    // reading record. Enriching BEFORE the sweep and firing the sweep off
-    // un-awaited (which is what this used to do) therefore left the bucket, and
-    // the trash button on it, holding every volume the sweep had just resolved
-    // for the whole visit. `patchProgressHolesAndEnrich` is that ordering, and
-    // `patchProgressHolesWhenListingReady` (see hole-patch.ts) is what re-runs
-    // it once more if THIS mount fired before the cloud listing was in —
-    // otherwise a cold start straight into this page can sweep zero volumes
-    // for the whole visit, which was the user-reported bug.
-    //
-    // The promise itself is not awaited here: it never rejects and must never
-    // hold up the page. What matters is the order INSIDE it.
-    const unsubscribeListing = patchProgressHolesWhenListingReady();
+    // Rows for progress synced from OTHER devices are minted after each
+    // progress sync (`resolveSyncedProgress`, which enriches again once its
+    // rows land), never from a view mount — so there is no sweep here.
+    void enrichAllOrphanedVolumes();
 
     return () => {
-      unsubscribeListing();
       if (chart) {
         chart.destroy();
       }
