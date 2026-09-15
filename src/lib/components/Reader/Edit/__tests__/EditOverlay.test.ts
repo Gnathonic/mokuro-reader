@@ -273,3 +273,49 @@ describe('EditOverlay — line-centric rendering', () => {
     expect(session.pageFor(0).blocks[0].lines_coords).toHaveLength(13);
   });
 });
+
+describe('EditOverlay — text follows the model', () => {
+  function lineTexts(container: HTMLElement): string[] {
+    return [...container.querySelectorAll('.editBlock')[0].querySelectorAll('.line')].map(
+      (el) => el.textContent
+    );
+  }
+
+  it('undo and redo of a text edit re-render the line text (same line count)', async () => {
+    const { container, session } = mount();
+    expect(lineTexts(container)).toEqual(['あ', 'い']);
+
+    session.setLines(0, 0, ['か', 'い']);
+    await tick();
+    expect(lineTexts(container)).toEqual(['か', 'い']);
+
+    session.undo(0);
+    await tick();
+    expect(lineTexts(container)).toEqual(['あ', 'い']);
+
+    session.redo(0);
+    await tick();
+    expect(lineTexts(container)).toEqual(['か', 'い']);
+  });
+
+  it('revert page re-renders the original text', async () => {
+    const p = page();
+    const original = page();
+    const session = new EditSession({
+      volumeUuid: 'v1',
+      getPage: () => p,
+      persist: async () => {},
+      loadOriginal: async () => original,
+      debounceMs: 100000
+    });
+    const { container } = render(EditOverlay, { props: { page: p, pageIndex: 0, session } });
+
+    session.setLines(0, 0, ['edited', 'い']);
+    await tick();
+    expect(lineTexts(container)).toEqual(['edited', 'い']);
+
+    await session.revertPage(0);
+    await tick();
+    expect(lineTexts(container)).toEqual(['あ', 'い']);
+  });
+});

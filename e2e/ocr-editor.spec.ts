@@ -159,7 +159,18 @@ test.describe('OCR editor', () => {
     expect(after.block).toEqual(saved.block);
 
     await enterEditMode(page);
+    // The edited text is what the overlay shows before the revert…
+    const shownBefore = page.locator('.editBlock .line').first();
+    await expect(shownBefore).toHaveText('かきく');
     await page.getByLabel('Revert page').click();
+    // …and the ORIGINAL text is what it shows after: the model change must
+    // reach the DOM, not just the database (regression: stable-keyed line
+    // elements whose text was written once at mount).
+    await expect(page.locator('.editBlock .line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
+    // Undo the revert: the edited text comes back on screen too.
+    await page.keyboard.press('Control+Z');
+    await expect(page.locator('.editBlock .line').first()).toHaveText('かきく');
+    await page.keyboard.press('Control+Shift+Z');
     await page.waitForTimeout(1200);
     const reverted = await readOcr(page);
     expect(reverted.block).toEqual(ORIGINAL_BLOCK);

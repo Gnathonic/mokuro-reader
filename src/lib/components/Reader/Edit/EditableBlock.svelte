@@ -214,10 +214,18 @@
     editing = false;
   }
 
-  /** Set the line's text once at mount — never re-rendered, so the caret is
-   * never fought while the user types. */
+  /** Own the line's text imperatively: written at mount and again whenever
+   * the MODEL changes under a stable element (undo, redo, revert, a merge that
+   * rewrites a neighbour). While the user types, the model only changes when
+   * the draft is committed — to exactly what the element already holds — so
+   * the equality guard keeps the caret from ever being fought mid-edit. */
   function initText(el: HTMLElement, text: string) {
     el.textContent = text;
+    return {
+      update(next: string) {
+        if (el.textContent !== next) el.textContent = next;
+      }
+    };
   }
 
   function onLineInput(i: number, e: Event) {
