@@ -32,6 +32,9 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn(),
       delete: vi.fn()
     },
+    volume_ocr_layers: {
+      where: vi.fn(() => ({ equals: vi.fn(() => ({ delete: vi.fn() })) }))
+    },
     transaction: vi.fn(),
     processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
@@ -416,7 +419,7 @@ describe('deleteVolumeCompletely', () => {
     );
   });
 
-  it('deletes from all three tables', async () => {
+  it('deletes from all four tables', async () => {
     await deleteVolumeCompletely('test-uuid');
 
     expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
@@ -429,7 +432,7 @@ describe('deleteVolumeCompletely', () => {
 
     expect(db.transaction).toHaveBeenCalledWith(
       'rw',
-      expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files]),
+      expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files, db.volume_ocr_layers]),
       expect.any(Function)
     );
   });

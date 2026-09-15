@@ -149,7 +149,8 @@ describe('the shared mokuro_v3 schema', () => {
         'series_metadata: series_key [folded_key]',
         'volume_files: volume_uuid []',
         'volume_ocr: volume_uuid []',
-        'volumes: volume_uuid [series_title, series_uuid]'
+        'volume_ocr_layers: [volume_uuid+layer_id] [volume_uuid]',
+        'volumes: volume_uuid [ocr_edited_at, series_title, series_uuid]'
       ]);
     } finally {
       db.close();
