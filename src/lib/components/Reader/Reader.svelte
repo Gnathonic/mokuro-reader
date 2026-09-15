@@ -57,6 +57,9 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import EditToolbar from './Edit/EditToolbar.svelte';
+  import { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import { hasOriginalLayer } from '$lib/reader/edit/edit-persist';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
@@ -255,6 +258,34 @@
     // Ignore shortcuts when the user is typing or inside reader UI overlays
     if (keyboardShouldIgnore(event.target)) {
       return;
+    }
+
+    if (editSession) {
+      const s = editSession;
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (ctrl && event.code === 'KeyZ') {
+        event.preventDefault();
+        if (event.shiftKey) s.redo(index);
+        else s.undo(index);
+        return;
+      }
+      if (ctrl && event.code === 'KeyY') {
+        event.preventDefault();
+        s.redo(index);
+        return;
+      }
+      if ((event.code === 'Delete' || event.code === 'Backspace') && s.selection.length > 0) {
+        event.preventDefault();
+        s.deleteSelected();
+        return;
+      }
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        if (s.tool === 'draw') s.tool = 'select';
+        else if (s.selection.length > 0) s.clearSelection();
+        else void exitEditMode();
+        return;
+      }
     }
 
     const action = event.code || event.key;
@@ -461,7 +492,13 @@
     }
   });
 
-  let pages = $derived(volumeData?.pages || []);
+  // `pagesRevision` bumps when the OCR editor persists a page, so the array
+  // re-derives from the patched in-memory data (see `onPersisted` below).
+  let pagesRevision = $state(0);
+  let pages = $derived.by(() => {
+    void pagesRevision;
+    return volumeData?.pages || [];
+  });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
@@ -476,6 +513,62 @@
 
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
+
+  // ============================================================
+  // OCR edit mode (paged mode only). The session owns the working pages,
+  // selection, history and the debounced save; the overlay lives in
+  // MangaPage; this component only wires entry/exit, keys and refresh.
+  // ============================================================
+  let editSession = $state<EditSession | null>(null);
+  let editHasOriginal = $state(false);
+
+  function enterEditMode() {
+    if (!volume || !volumeData || $settings.continuousScroll || editSession) return;
+    const uuid = volume.volume_uuid;
+    const data = volumeData;
+    editSession = new EditSession({
+      volumeUuid: uuid,
+      getPage: (i) => data.pages[i],
+      onPersisted: (i, page) => {
+        // Keep the in-memory volume data (charDisplay, the next open of this
+        // page) in step with what was written; `pages` re-derives.
+        data.pages[i] = page;
+        pagesRevision++;
+        editHasOriginal = true;
+      }
+    });
+    hasOriginalLayer(uuid)
+      .then((v) => (editHasOriginal = v))
+      .catch(() => (editHasOriginal = false));
+    overlaysVisible = true;
+  }
+
+  async function exitEditMode() {
+    const s = editSession;
+    if (!s) return;
+    editSession = null;
+    await s.dispose();
+    pagesRevision++;
+  }
+
+  async function revertCurrentPage() {
+    if (!editSession) return;
+    const ok = await editSession.revertPage(index);
+    if (!ok) showSnackbar('No original to revert to');
+  }
+
+  function toggleEditMode() {
+    if (editSession) void exitEditMode();
+    else enterEditMode();
+  }
+
+  // Leaving the volume or switching to a scroll mode ends the session
+  // (saving whatever is pending).
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const continuous = $settings.continuousScroll;
+    if (editSession && (continuous || uuid !== editSession.volumeUuid)) void exitEditMode();
+  });
 
   // Custom page intro (new page coming in)
   function pageIn(
@@ -643,6 +736,11 @@
 
   onDestroy(() => {
     imageCache.cleanup();
+    if (editSession) {
+      const s = editSession;
+      editSession = null;
+      void s.dispose();
+    }
   });
 
   // Window size state for reactive auto-detection
@@ -1134,8 +1232,20 @@
     page1Number={index + 1}
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
+    onEdit={toggleEditMode}
+    editEnabled={!$settings.continuousScroll}
+    editing={!!editSession}
   />
   <SettingsButton visible={overlaysVisible} />
+  {#if editSession}
+    <EditToolbar
+      session={editSession}
+      pageIndex={index}
+      hasOriginal={editHasOriginal}
+      onExit={exitEditMode}
+      onRevert={revertCurrentPage}
+    />
+  {/if}
   <RereadPromptModal
     bind:open={rereadPromptOpen}
     seriesTitle={volume.series_title}
@@ -1289,6 +1399,7 @@
                     pageIndex={index + 1}
                     forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                     onContextMenu={handleTextBoxContextMenu}
+                    {editSession}
                   />
                 {/if}
                 <MangaPage
@@ -1299,6 +1410,7 @@
                   pageIndex={index}
                   forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
+                  {editSession}
                 />
               {:else}
                 <div class="flex h-screen w-screen items-center justify-center">

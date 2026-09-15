@@ -17,7 +17,7 @@ function page(): Page {
 
 function session(overrides: Partial<ConstructorParameters<typeof EditSession>[0]> = {}) {
   const pages = [page()];
-  const persist = vi.fn(async () => {});
+  const persist = vi.fn(async (_uuid: string, _pageIndex: number, _page: Page) => {});
   const onPersisted = vi.fn();
   const s = new EditSession({
     volumeUuid: 'v1',

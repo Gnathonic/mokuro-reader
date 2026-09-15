@@ -6,6 +6,7 @@
     ArrowLeftOutline,
     ArrowRightOutline,
     CompressOutline,
+    EditOutline,
     ImageOutline,
     ZoomOutOutline,
     PlusOutline
@@ -25,6 +26,10 @@
     page1Number?: number; // 1-indexed page number for src1/page1
     page2Number?: number; // 1-indexed page number for src2/page2
     visible?: boolean;
+    /** OCR edit mode toggle (paged mode only — disabled otherwise). */
+    onEdit?: () => void;
+    editEnabled?: boolean;
+    editing?: boolean;
   }
 
   let {
@@ -37,7 +42,10 @@
     page2,
     page1Number,
     page2Number,
-    visible = true
+    visible = true,
+    onEdit,
+    editEnabled = false,
+    editing = false
   }: Props = $props();
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
@@ -88,6 +96,18 @@
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
+        <button
+          onclick={() => {
+            onEdit?.();
+            open = false;
+          }}
+          disabled={!editEnabled}
+          title={editEnabled ? undefined : 'Edit is available in paged mode only'}
+          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          aria-label={editing ? 'Exit edit mode' : 'Edit OCR'}
+        >
+          <EditOutline size="xl" />
+        </button>
         {#if $settings.ankiConnectSettings.enabled}
           <button
             onclick={() => onUpdateCard(src1, page1, page1Number)}
