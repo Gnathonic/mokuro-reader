@@ -21,7 +21,14 @@ export type MiscSettings = {
   deviceRamGB: 4 | 8 | 16 | 32;
   turboMode: boolean;
   gdriveAutoReAuth: boolean;
+  /** Experimental translation engine preferences. Keys live in
+   * `$lib/engines/credentials` (localStorage only) — never here. */
+  translationEngine: TranslationEngineId;
+  translationModel: string; // '' = the adapter's default model
+  translationLanguage: string; // BCP-47-ish target, default 'en'
 };
+
+export type TranslationEngineId = 'gemini' | 'anthropic' | 'openai';
 
 export type MiscSettingsKey = keyof MiscSettings;
 
@@ -49,7 +56,10 @@ const defaultSettings: MiscSettings = {
   progressResetDay: 1, // Monday
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
-  gdriveAutoReAuth: true // Keep users synced during long reading sessions
+  gdriveAutoReAuth: true, // Keep users synced during long reading sessions
+  translationEngine: 'gemini',
+  translationModel: '',
+  translationLanguage: 'en'
 };
 
 /**
