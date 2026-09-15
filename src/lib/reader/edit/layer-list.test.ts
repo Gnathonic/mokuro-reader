@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
-import { summarizeLayers } from './layer-list';
+import { summarizeLayers, nextLayerId } from './layer-list';
 import type { VolumeOcrLayer } from '$lib/types';
 
 describe('summarizeLayers', () => {
@@ -47,5 +47,26 @@ describe('summarizeLayers', () => {
       updated_at: 'x'
     });
     expect('pages' in out[0]).toBe(false);
+  });
+});
+
+describe('nextLayerId', () => {
+  const layers = [
+    { layer_id: 'original', name: 'Original', kind: 'original', updated_at: '' },
+    { layer_id: 'fix', name: 'Fix', kind: 'edit', updated_at: '' },
+    { layer_id: 'gcv', name: 'GCV', kind: 'ocr', updated_at: '' }
+  ] as Parameters<typeof nextLayerId>[1];
+
+  it('cycles Primary → each layer in list order → Primary', () => {
+    expect(nextLayerId(null, layers)).toBe('original');
+    expect(nextLayerId('original', layers)).toBe('fix');
+    expect(nextLayerId('fix', layers)).toBe('gcv');
+    expect(nextLayerId('gcv', layers)).toBe(null);
+  });
+
+  it('a displayed id no longer in the list restarts from the first layer; no layers → stays Primary', () => {
+    expect(nextLayerId('gone', layers)).toBe('original');
+    expect(nextLayerId(null, [])).toBe(null);
+    expect(nextLayerId('fix', [])).toBe(null);
   });
 });

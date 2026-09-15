@@ -48,3 +48,16 @@ export function layerSummaries(volumeUuid: string): Readable<LayerSummary[]> {
     return () => sub.unsubscribe();
   });
 }
+
+/**
+ * The layer the `L` hotkey moves to: Primary (null) → each layer in list
+ * order → Primary again. A displayed id that is no longer listed (deleted
+ * under us) restarts the cycle; with no layers at all it stays on Primary.
+ */
+export function nextLayerId(current: string | null, layers: LayerSummary[]): string | null {
+  if (layers.length === 0) return null;
+  if (current === null) return layers[0].layer_id;
+  const i = layers.findIndex((l) => l.layer_id === current);
+  if (i === -1) return layers[0].layer_id;
+  return i + 1 < layers.length ? layers[i + 1].layer_id : null;
+}
