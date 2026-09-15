@@ -74,6 +74,9 @@ async function seedVolume(page: Page, opts: { pages?: number; view?: 'single' | 
 }
 
 async function openReader(page: Page) {
+  // Let the catalog settle on the freshly seeded rows before the route
+  // changes — a hash set mid-reaction bounces back to the catalog.
+  await page.waitForTimeout(800);
   await page.evaluate(
     ({ SERIES_UUID, VOLUME_UUID }) => {
       window.location.hash = `#/reader/${SERIES_UUID}/${VOLUME_UUID}`;

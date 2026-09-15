@@ -512,8 +512,17 @@
   let displayedLayerId = $derived(
     (volume && $volumes[volume.volume_uuid]?.settings?.ocrLayer) || null
   );
-  let layerPages = $state<Page[] | null>(null);
-  let loadedLayerKey = $state<string | null>(null);
+  // $state.raw: deep reactivity would wrap every page in a Proxy, and the
+  // editor hands those objects straight to IndexedDB, which cannot clone a
+  // Proxy (DataCloneError on every layer save). The primary path's pages come
+  // from a plain store value and never had this problem.
+  let layerPages = $state.raw<Page[] | null>(null);
+  /** A layer load is in flight: edit mode waits, so a session never opens
+   * against the primary while the user has asked for a layer. */
+  let layerLoading = $state(false);
+  // Plain variable on purpose: as $state, the write below would re-run this
+  // effect and its cleanup would cancel the load it had just started.
+  let loadedLayerKey: string | null = null;
   $effect(() => {
     const uuid = volume?.volume_uuid;
     const id = displayedLayerId;
@@ -522,9 +531,11 @@
     loadedLayerKey = key;
     if (!uuid || !id) {
       layerPages = null;
+      layerLoading = false;
       return;
     }
     let cancelled = false;
+    layerLoading = true;
     loadLayerPages(uuid, id)
       .then((p) => {
         if (cancelled) return;
@@ -532,6 +543,9 @@
       })
       .catch(() => {
         if (!cancelled) layerPages = null;
+      })
+      .finally(() => {
+        if (!cancelled) layerLoading = false;
       });
     return () => {
       cancelled = true;
@@ -585,6 +599,7 @@
       showSnackbar('The original layer is read-only — pick another layer or create a copy');
       return;
     }
+    if (layerLoading) return;
     if (editSession) {
       if (focus) {
         editSession.select(focus.pageIndex, focus.blockIndex);
@@ -1366,7 +1381,7 @@
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
     onEdit={toggleEditMode}
-    editEnabled={!$settings.continuousScroll && !editingBlocked}
+    editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
     editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
     editing={!!editSession}
     {layers}
