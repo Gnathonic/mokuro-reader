@@ -375,3 +375,15 @@ describe('VolumeData.completedAt', () => {
     expect(tombstone.completedAt).toBeUndefined();
   });
 });
+
+describe('VolumeData.settings.ocrLayer', () => {
+  it('round-trips a string layer id and drops anything else', () => {
+    const v = new VolumeData({ settings: { ocrLayer: 'gcv' } });
+    expect(v.settings.ocrLayer).toBe('gcv');
+    expect(VolumeData.fromJSON(JSON.stringify(v)).settings.ocrLayer).toBe('gcv');
+    expect(
+      new VolumeData({ settings: { ocrLayer: 3 as unknown as string } }).settings.ocrLayer
+    ).toBeUndefined();
+    expect(new VolumeData({}).toJSON().settings).toBeUndefined();
+  });
+});

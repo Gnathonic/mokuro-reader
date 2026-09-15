@@ -31,6 +31,8 @@ export type VolumeSettings = {
   rightToLeft?: boolean;
   hasCover?: boolean;
   spreadBreakpoints?: number[];
+  /** Displayed OCR layer id (`volume_ocr_layers.layer_id`); absent = primary. */
+  ocrLayer?: string;
 };
 
 export type VolumeSettingsKey = keyof VolumeSettings;
@@ -175,6 +177,10 @@ export class VolumeData implements VolumeDataJSON {
     if (typeof data.settings?.hasCover === 'boolean') {
       this.settings.hasCover = data.settings.hasCover;
     }
+
+    if (typeof data.settings?.ocrLayer === 'string' && data.settings.ocrLayer) {
+      this.settings.ocrLayer = data.settings.ocrLayer;
+    }
   }
 
   static fromJSON(json: any): VolumeData {
@@ -212,6 +218,11 @@ export class VolumeData implements VolumeDataJSON {
     }
     if (typeof this.settings.hasCover === 'boolean') {
       syncableSettings.hasCover = this.settings.hasCover;
+    }
+    // The displayed OCR layer follows the volume across devices like the
+    // other volume facts; a device without that layer falls back to primary.
+    if (typeof this.settings.ocrLayer === 'string' && this.settings.ocrLayer) {
+      syncableSettings.ocrLayer = this.settings.ocrLayer;
     }
 
     if (Object.keys(syncableSettings).length > 0) {
