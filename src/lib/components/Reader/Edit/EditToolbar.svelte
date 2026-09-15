@@ -27,14 +27,22 @@
       ? session.pageFor(selected[0].pageIndex).blocks[selected[0].blockIndex]
       : null
   );
-  let canSplit = $derived(!!single && single.lines.length >= 2);
+  // Split happens BEFORE the selected line, so it needs a single block with a
+  // line chosen inside it that is not the first one.
+  let splitLine = $derived(
+    single && selected.length === 1 && session.selectedLine
+      ? session.selectedLine.pageIndex === selected[0].pageIndex &&
+        session.selectedLine.blockIndex === selected[0].blockIndex
+        ? session.selectedLine.lineIndex
+        : null
+      : null
+  );
+  let canSplit = $derived(
+    !!single && single.lines.length >= 2 && splitLine !== null && splitLine >= 1
+  );
   let canPlaceLines = $derived(
     !!single && !(single.lines_coords && single.lines_coords.length === single.lines.length)
   );
-  let splitAt = $state(1);
-  $effect(() => {
-    if (single) splitAt = Math.min(Math.max(1, splitAt), Math.max(1, single.lines.length - 1));
-  });
 
   const btn =
     'flex h-10 w-10 items-center justify-center rounded-full bg-gray-700 text-gray-200 shadow hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700';
@@ -75,23 +83,12 @@
   >
     <ObjectsColumnOutline />
   </button>
-  {#if canSplit && single}
-    <select
-      aria-label="Split after line"
-      class="rounded bg-gray-700 px-1 py-1 text-sm text-gray-200"
-      bind:value={splitAt}
-    >
-      {#each Array.from({ length: single.lines.length - 1 }, (_, i) => i + 1) as n (n)}
-        <option value={n}>{n}</option>
-      {/each}
-    </select>
-  {/if}
   <button
     class={btn}
     aria-label="Split"
-    title="Split the box after the chosen line"
+    title="Split the box before the selected line (click a line inside the selected box first)"
     disabled={!canSplit}
-    onclick={() => session.splitSelected(Number(splitAt))}
+    onclick={() => splitLine !== null && session.splitSelected(splitLine)}
   >
     <span class="text-xs font-bold">S</span>
   </button>

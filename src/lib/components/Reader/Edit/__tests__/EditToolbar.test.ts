@@ -39,7 +39,7 @@ function mount(hasOriginal = true) {
 
 describe('EditToolbar', () => {
   it('disables ops whose preconditions do not hold', async () => {
-    const { btn, session } = mount(false);
+    const { btn, session, queryByLabelText } = mount(false);
     expect(btn('Delete').disabled).toBe(true);
     expect(btn('Merge').disabled).toBe(true);
     expect(btn('Split').disabled).toBe(true);
@@ -49,6 +49,15 @@ describe('EditToolbar', () => {
     session.select(0, 0);
     await tick();
     expect(btn('Delete').disabled).toBe(false);
+    // Split needs a chosen line INSIDE the block (never line 0 — nothing
+    // would be split off before it); the old unlabeled dropdown is gone.
+    expect(btn('Split').disabled).toBe(true);
+    expect(queryByLabelText('Split after line')).toBeNull();
+    session.selectLine(0, 0, 0);
+    await tick();
+    expect(btn('Split').disabled).toBe(true);
+    session.selectLine(0, 0, 1);
+    await tick();
     expect(btn('Split').disabled).toBe(false);
     expect(btn('Merge').disabled).toBe(true);
     session.select(0, 1, true);
@@ -70,12 +79,13 @@ describe('EditToolbar', () => {
   });
 
   it('drives the session', async () => {
-    const { btn, session, onExit, onRevert, getByLabelText } = mount(true);
+    const { btn, session, onExit, onRevert } = mount(true);
     await fireEvent.click(btn('Draw new box'));
     expect(session.tool).toBe('draw');
-    session.select(0, 0);
+    // Select the second line of block 0, then Split: the box splits BEFORE
+    // that line, so the selected line starts the new block.
+    session.selectLine(0, 0, 1);
     await tick();
-    await fireEvent.change(getByLabelText('Split after line'), { target: { value: '1' } });
     await fireEvent.click(btn('Split'));
     expect(session.pageFor(0).blocks).toHaveLength(3);
     await fireEvent.click(btn('Undo'));
