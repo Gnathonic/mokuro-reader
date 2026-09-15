@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Page } from '$lib/types';
+  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import TextBoxes from './TextBoxes.svelte';
+  import EditOverlay from './Edit/EditOverlay.svelte';
 
   interface ContextMenuData {
     x: number;
@@ -21,6 +23,8 @@
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
+    /** Set while the reader is in OCR edit mode: the edit overlay replaces the text boxes. */
+    editSession?: EditSession | null;
   }
 
   let {
@@ -30,7 +34,8 @@
     volumeUuid,
     pageIndex,
     forceVisible = false,
-    onContextMenu
+    onContextMenu,
+    editSession = null
   }: Props = $props();
 
   let url = $state('');
@@ -71,12 +76,16 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes
-    {page}
-    src={src ?? undefined}
-    {volumeUuid}
-    {pageIndex}
-    {forceVisible}
-    {onContextMenu}
-  />
+  {#if editSession && pageIndex !== undefined}
+    <EditOverlay {page} {pageIndex} session={editSession} />
+  {:else}
+    <TextBoxes
+      {page}
+      src={src ?? undefined}
+      {volumeUuid}
+      {pageIndex}
+      {forceVisible}
+      {onContextMenu}
+    />
+  {/if}
 </div>
