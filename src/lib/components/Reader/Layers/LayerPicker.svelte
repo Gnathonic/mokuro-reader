@@ -14,7 +14,9 @@
     CloseOutline,
     DownloadOutline,
     EditOutline,
+    LanguageOutline,
     PlusOutline,
+    SearchOutline,
     TrashBinOutline
   } from 'flowbite-svelte-icons';
 
@@ -24,8 +26,12 @@
     onSelect: (layerId: string | null) => void;
     onAction: (action: LayerAction, layerId: string | null) => void;
     onClose: () => void;
+    /** Whole-volume engine runs — given only when the matching key is configured. */
+    onOcrVolume?: () => void;
+    onTranslateVolume?: () => void;
   }
-  let { layers, current, onSelect, onAction, onClose }: Props = $props();
+  let { layers, current, onSelect, onAction, onClose, onOcrVolume, onTranslateVolume }: Props =
+    $props();
 
   const row =
     'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-gray-600 aria-checked:bg-gray-600';
@@ -99,4 +105,24 @@
   >
     <PlusOutline size="sm" /><span>New layer…</span>
   </button>
+  {#if onOcrVolume}
+    <button
+      class="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-gray-600"
+      aria-label="OCR whole volume"
+      title="Google Cloud Vision, every page (experimental)"
+      onclick={onOcrVolume}
+    >
+      <SearchOutline size="sm" /><span>OCR whole volume…</span>
+    </button>
+  {/if}
+  {#if onTranslateVolume}
+    <button
+      class="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-gray-600"
+      aria-label="Translate whole volume"
+      title="Translate every page of the displayed layer (experimental)"
+      onclick={onTranslateVolume}
+    >
+      <LanguageOutline size="sm" /><span>Translate whole volume…</span>
+    </button>
+  {/if}
 </div>

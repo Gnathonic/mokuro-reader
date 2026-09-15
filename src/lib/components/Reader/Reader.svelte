@@ -66,6 +66,9 @@
   import { runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+  import { engineVolumeRunner, startEngineRun, type EngineKind } from '$lib/engines/engine-runs';
+  import { hasGoogleKey, hasTranslationKey } from '$lib/engines/credentials';
+  import EngineRunBanner from './Engines/EngineRunBanner.svelte';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
@@ -523,9 +526,16 @@
   // Plain variable on purpose: as $state, the write below would re-run this
   // effect and its cleanup would cancel the load it had just started.
   let loadedLayerKey: string | null = null;
+  /** Bumped to re-read the displayed layer after an engine run wrote into it. */
+  let layerReloadTick = $state(0);
+  function refreshLayerPages() {
+    loadedLayerKey = null;
+    layerReloadTick++;
+  }
   $effect(() => {
     const uuid = volume?.volume_uuid;
     const id = displayedLayerId;
+    void layerReloadTick;
     const key = uuid && id ? `${uuid}:${id}` : null;
     if (key === loadedLayerKey) return;
     loadedLayerKey = key;
@@ -697,6 +707,57 @@
       onSelectLayer: selectLayer
     });
   }
+
+  // ---- engines (experimental): OCR / translate this page or the volume ----
+  async function runEngine(kind: EngineKind, scope: 'page' | 'volume') {
+    if (!volume || !pages.length) return;
+    const uuid = volume.volume_uuid;
+    const src = pages;
+    // A session open on the layer the run writes to would race it: close it
+    // (saving what is pending) before the run starts.
+    const target = kind === 'ocr' ? 'gcv' : null;
+    if (editSession && (target === null || editSession.layerId === target)) {
+      await exitEditMode();
+    }
+    const result = await startEngineRun(kind, {
+      volumeUuid: uuid,
+      volumeTitle: volume.volume_title,
+      seriesTitle: volume.series_title,
+      rtl: !!volumeSettings.rightToLeft,
+      sourcePages: src,
+      getImage: async (i) => {
+        const cached = imageCache.getFile(i);
+        if (cached) return cached;
+        const files = (await db.volume_files.get(uuid))?.files;
+        return files?.[src[i]?.img_path] ?? null;
+      },
+      pageIndices: scope === 'page' ? [editActivePage] : src.map((_, i) => i)
+    });
+    if (!result || result.done === 0) return;
+    if (displayedLayerId === result.layerId) refreshLayerPages();
+    else await selectLayer(result.layerId);
+  }
+  let ocrPageHandler = $derived(
+    $hasGoogleKey && !$settings.continuousScroll ? () => void runEngine('ocr', 'page') : undefined
+  );
+  let translatePageHandler = $derived(
+    $hasTranslationKey && !$settings.continuousScroll
+      ? () => void runEngine('translate', 'page')
+      : undefined
+  );
+  let ocrVolumeHandler = $derived(
+    $hasGoogleKey ? () => void runEngine('ocr', 'volume') : undefined
+  );
+  let translateVolumeHandler = $derived(
+    $hasTranslationKey ? () => void runEngine('translate', 'volume') : undefined
+  );
+  // The settings panel offers the whole-volume runs through this registration.
+  $effect(() => {
+    const ocr = ocrVolumeHandler;
+    const translate = translateVolumeHandler;
+    engineVolumeRunner.set(volume && (ocr || translate) ? { ocr, translate } : null);
+    return () => engineVolumeRunner.set(null);
+  });
 
   // Leaving the volume or switching to a scroll mode ends the session
   // (saving whatever is pending).
@@ -1388,6 +1449,10 @@
     currentLayer={activeLayerId}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
+    onOcrPage={ocrPageHandler}
+    onTranslatePage={translatePageHandler}
+    onOcrVolume={ocrVolumeHandler}
+    onTranslateVolume={translateVolumeHandler}
   />
   <SettingsButton visible={overlaysVisible} />
   {#if editSession}
@@ -1397,8 +1462,11 @@
       hasOriginal={editHasOriginal}
       onExit={exitEditMode}
       onRevert={revertCurrentPage}
+      onOcrPage={ocrPageHandler}
+      onTranslatePage={translatePageHandler}
     />
   {/if}
+  <EngineRunBanner />
   <LayerNameModal />
   <RereadPromptModal
     bind:open={rereadPromptOpen}

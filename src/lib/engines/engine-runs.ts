@@ -88,6 +88,17 @@ const active = writable<ActiveEngineRun | null>(null);
 /** The run in flight, for the reader's banner. */
 export const activeEngineRun = readonly(active);
 
+/**
+ * The reader registers its whole-volume runners here while a volume is open,
+ * so the settings panel (not a child of the reader) can offer the same
+ * "OCR / Translate whole volume" buttons. Null outside the reader or when
+ * no engine key is configured for that runner.
+ */
+export const engineVolumeRunner = writable<{
+  ocr?: () => void;
+  translate?: () => void;
+} | null>(null);
+
 function defaultDeps(): EngineRunDeps {
   const m = get(miscSettings);
   return {
@@ -97,7 +108,7 @@ function defaultDeps(): EngineRunDeps {
       translationModel: m.translationModel,
       translationLanguage: m.translationLanguage || 'en'
     },
-    fetch: (...args) => fetch(...args),
+    fetch: (input, init) => globalThis.fetch(input, init),
     confirm: (message) =>
       new Promise((resolve) =>
         promptConfirmation(

@@ -104,3 +104,29 @@ describe('EditToolbar', () => {
     expect(onExit).toHaveBeenCalled();
   });
 });
+
+describe('EditToolbar — engine entry points', () => {
+  it('shows OCR / Translate this page only when a handler is given, and calls it', async () => {
+    const onOcrPage = vi.fn();
+    const p = page();
+    const session = new EditSession({
+      volumeUuid: 'v',
+      getPage: () => p,
+      persist: async () => {},
+      debounceMs: 1e6
+    });
+    const utils = render(EditToolbar, {
+      props: {
+        session,
+        pageIndex: 0,
+        hasOriginal: false,
+        onExit: vi.fn(),
+        onRevert: vi.fn(),
+        onOcrPage
+      }
+    });
+    await fireEvent.click(utils.getByLabelText('OCR this page'));
+    expect(onOcrPage).toHaveBeenCalledTimes(1);
+    expect(utils.queryByLabelText('Translate this page')).toBeNull();
+  });
+});

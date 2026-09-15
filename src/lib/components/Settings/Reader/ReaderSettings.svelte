@@ -20,6 +20,7 @@
   import { LAYER_KIND_LABEL, loadLayerPages } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
+  import { engineVolumeRunner } from '$lib/engines/engine-runs';
   import { db } from '$lib/catalog/db';
   import type { Page } from '$lib/types';
 
@@ -293,6 +294,28 @@
           {/if}
         </div>
       </div>
+
+      <!-- 8c. Engines (experimental): whole-volume runs the reader registered -->
+      {#if $engineVolumeRunner?.ocr || $engineVolumeRunner?.translate}
+        <div class="flex flex-wrap gap-1">
+          {#if $engineVolumeRunner.ocr}
+            <Button
+              size="xs"
+              color="alternative"
+              aria-label="OCR whole volume"
+              onclick={$engineVolumeRunner.ocr}>OCR whole volume…</Button
+            >
+          {/if}
+          {#if $engineVolumeRunner.translate}
+            <Button
+              size="xs"
+              color="alternative"
+              aria-label="Translate whole volume"
+              onclick={$engineVolumeRunner.translate}>Translate whole volume…</Button
+            >
+          {/if}
+        </div>
+      {/if}
 
       <!-- 9. Offset spreads button -->
       {#if showOffset}

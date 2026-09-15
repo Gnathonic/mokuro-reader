@@ -5,8 +5,10 @@
     CloseOutline,
     GridPlusOutline,
     ObjectsColumnOutline,
+    LanguageOutline,
     RedoOutline,
     RefreshOutline,
+    SearchOutline,
     TextSizeOutline,
     TrashBinOutline,
     UndoOutline
@@ -18,8 +20,12 @@
     hasOriginal: boolean;
     onExit: () => void;
     onRevert: () => void;
+    /** Engine entry points — given only when the matching key is configured. */
+    onOcrPage?: () => void;
+    onTranslatePage?: () => void;
   }
-  let { session, pageIndex, hasOriginal, onExit, onRevert }: Props = $props();
+  let { session, pageIndex, hasOriginal, onExit, onRevert, onOcrPage, onTranslatePage }: Props =
+    $props();
 
   let selected = $derived(session.selection);
   let single = $derived(
@@ -129,6 +135,29 @@
   >
     <RedoOutline />
   </button>
+  {#if onOcrPage || onTranslatePage}
+    <span class="mx-1 h-6 w-px bg-gray-600"></span>
+    {#if onOcrPage}
+      <button
+        class={btn}
+        aria-label="OCR this page"
+        title="Re-OCR this page with Google Cloud Vision (experimental) → 'Cloud Vision' layer"
+        onclick={onOcrPage}
+      >
+        <SearchOutline />
+      </button>
+    {/if}
+    {#if onTranslatePage}
+      <button
+        class={btn}
+        aria-label="Translate this page"
+        title="Translate this page (experimental) → 'Translation' layer"
+        onclick={onTranslatePage}
+      >
+        <LanguageOutline />
+      </button>
+    {/if}
+  {/if}
   <button
     class={btn}
     aria-label="Revert page"

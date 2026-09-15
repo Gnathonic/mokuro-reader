@@ -8,7 +8,9 @@
     CompressOutline,
     EditOutline,
     ImageOutline,
+    LanguageOutline,
     LayersOutline,
+    SearchOutline,
     ZoomOutOutline,
     PlusOutline
   } from 'flowbite-svelte-icons';
@@ -41,6 +43,11 @@
     currentLayer?: string | null;
     onSelectLayer?: (layerId: string | null) => void;
     onLayerAction?: (action: LayerAction, layerId: string | null) => void;
+    /** Engine entry points (experimental) — given only when the key is configured. */
+    onOcrPage?: () => void;
+    onTranslatePage?: () => void;
+    onOcrVolume?: () => void;
+    onTranslateVolume?: () => void;
   }
 
   let {
@@ -61,7 +68,11 @@
     layers = [],
     currentLayer = null,
     onSelectLayer,
-    onLayerAction
+    onLayerAction,
+    onOcrPage,
+    onTranslatePage,
+    onOcrVolume,
+    onTranslateVolume
   }: Props = $props();
 
   let layersOpen = $state(false);
@@ -114,7 +125,33 @@
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
-        {#if layers.length > 0 || editing}
+        {#if !editing && onOcrPage}
+          <button
+            onclick={() => {
+              onOcrPage?.();
+              open = false;
+            }}
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            aria-label="OCR this page"
+            title="OCR this page with Google Cloud Vision (experimental)"
+          >
+            <SearchOutline size="xl" />
+          </button>
+        {/if}
+        {#if !editing && onTranslatePage}
+          <button
+            onclick={() => {
+              onTranslatePage?.();
+              open = false;
+            }}
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            aria-label="Translate this page"
+            title="Translate this page (experimental)"
+          >
+            <LanguageOutline size="xl" />
+          </button>
+        {/if}
+        {#if layers.length > 0 || editing || onOcrVolume || onTranslateVolume}
           <button
             onclick={() => {
               layersOpen = !layersOpen;
@@ -216,6 +253,18 @@
           layersOpen = false;
         }}
         onClose={() => (layersOpen = false)}
+        onOcrVolume={onOcrVolume
+          ? () => {
+              onOcrVolume?.();
+              layersOpen = false;
+            }
+          : undefined}
+        onTranslateVolume={onTranslateVolume
+          ? () => {
+              onTranslateVolume?.();
+              layersOpen = false;
+            }
+          : undefined}
       />
     {/if}
 

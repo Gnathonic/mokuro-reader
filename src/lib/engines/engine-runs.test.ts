@@ -96,7 +96,7 @@ describe('startEngineRun', () => {
   });
 
   it('whole volume asks first with the page count and cost note; declining returns null', async () => {
-    const confirm = vi.fn(async () => false);
+    const confirm = vi.fn(async (_message: string) => false);
     expect(await startEngineRun('ocr', ctx({ pageIndices: [0, 1], deps: { confirm } }))).toBeNull();
     expect(confirm.mock.calls[0][0]).toMatch(/2 pages/);
     expect(confirm.mock.calls[0][0]).toMatch(/\$1\.50 per 1000 pages/);
@@ -127,13 +127,13 @@ describe('startEngineRun', () => {
   });
 
   it('a page with no blocks is skipped as done without calling the translator', async () => {
-    const fetch = vi.fn() as unknown as typeof fetch;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
     const r = await startEngineRun(
       'translate',
-      ctx({ sourcePages: [pg('', '001.png')], pageIndices: [0], deps: { fetch } })
+      ctx({ sourcePages: [pg('', '001.png')], pageIndices: [0], deps: { fetch: fetchImpl } })
     );
     expect(r).toMatchObject({ done: 1, failed: 0 });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('missing key → null and a notice', async () => {
@@ -170,11 +170,11 @@ describe('startEngineRun', () => {
   it('refuses a second run while one is active', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const fetch = vi.fn(async () => {
+    const fetchImpl = vi.fn(async () => {
       await gate;
       return new Response(JSON.stringify(vertical), { status: 200 });
     }) as unknown as typeof fetch;
-    const first = startEngineRun('ocr', ctx({ deps: { fetch } }));
+    const first = startEngineRun('ocr', ctx({ deps: { fetch: fetchImpl } }));
     await new Promise((r) => setTimeout(r, 0));
     expect(get(activeEngineRun)?.kind).toBe('ocr');
     const notify = vi.fn();
