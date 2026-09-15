@@ -59,7 +59,12 @@
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
-  import { hasOriginalLayer } from '$lib/reader/edit/edit-persist';
+  import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
+  import type { Page } from '$lib/types';
+  import { layerSummaries, type LayerSummary } from '$lib/reader/edit/layer-list';
+  import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { runLayerAction, type LayerAction } from './Layers/layer-actions';
+  import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
@@ -499,9 +504,57 @@
   // `pagesRevision` bumps when the OCR editor persists a page, so the array
   // re-derives from the patched in-memory data (see `onPersisted` below).
   let pagesRevision = $state(0);
+
+  // ---- OCR layers: which page set the reader shows ----
+  // The per-volume `ocrLayer` setting names an alternate layer; absent (or a
+  // layer this device does not have) means the primary row. Layer pages are
+  // loaded once per (volume, layer) and patched in place by the editor.
+  let displayedLayerId = $derived(
+    (volume && $volumes[volume.volume_uuid]?.settings?.ocrLayer) || null
+  );
+  let layerPages = $state<Page[] | null>(null);
+  let loadedLayerKey = $state<string | null>(null);
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const id = displayedLayerId;
+    const key = uuid && id ? `${uuid}:${id}` : null;
+    if (key === loadedLayerKey) return;
+    loadedLayerKey = key;
+    if (!uuid || !id) {
+      layerPages = null;
+      return;
+    }
+    let cancelled = false;
+    loadLayerPages(uuid, id)
+      .then((p) => {
+        if (cancelled) return;
+        layerPages = p; // null → primary (silent fallback, setting untouched)
+      })
+      .catch(() => {
+        if (!cancelled) layerPages = null;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+  let layersStore = $derived(volume ? layerSummaries(volume.volume_uuid) : null);
+  let layers = $state<LayerSummary[]>([]);
+  $effect(() => {
+    const s = layersStore;
+    if (!s) {
+      layers = [];
+      return;
+    }
+    return s.subscribe((v) => (layers = v));
+  });
+  /** The layer actually on screen (null when the setting names a missing layer). */
+  let activeLayerId = $derived(layerPages ? displayedLayerId : null);
+  /** The pre-edit snapshot is read-only: the user copies it to edit. */
+  let editingBlocked = $derived(activeLayerId === ORIGINAL_LAYER_ID);
+
   let pages = $derived.by(() => {
     void pagesRevision;
-    return volumeData?.pages || [];
+    return layerPages ?? volumeData?.pages ?? [];
   });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
@@ -528,6 +581,10 @@
 
   function enterEditMode(focus?: LineRef) {
     if (!volume || !volumeData || $settings.continuousScroll) return;
+    if (editingBlocked) {
+      showSnackbar('The original layer is read-only — pick another layer or create a copy');
+      return;
+    }
     if (editSession) {
       if (focus) {
         editSession.select(focus.pageIndex, focus.blockIndex);
@@ -537,15 +594,21 @@
     }
     const uuid = volume.volume_uuid;
     const data = volumeData;
+    // Edit whatever is on screen: an alternate layer's row, or the primary.
+    const layerId = activeLayerId;
+    const layerPagesAtEntry = layerPages;
     editSession = new EditSession({
       volumeUuid: uuid,
-      getPage: (i) => data.pages[i],
+      layerId,
+      getPage: (i) => (layerPagesAtEntry ?? data.pages)[i],
+      persist: layerId ? (v, i, page) => persistLayerPageEdit(v, layerId, i, page) : undefined,
       onPersisted: (i, page) => {
-        // Keep the in-memory volume data (charDisplay, the next open of this
+        // Keep the in-memory page set (charDisplay, the next open of this
         // page) in step with what was written; `pages` re-derives.
-        data.pages[i] = page;
+        if (layerPagesAtEntry) layerPagesAtEntry[i] = page;
+        else data.pages[i] = page;
         pagesRevision++;
-        editHasOriginal = true;
+        if (!layerId) editHasOriginal = true;
       }
     });
     if (focus) {
@@ -601,12 +664,36 @@
     else enterEditMode();
   }
 
+  // ---- layer switching and actions (the picker and the settings panel) ----
+  async function selectLayer(layerId: string | null) {
+    if (!volume) return;
+    if (editSession) await exitEditMode();
+    updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
+  }
+
+  function runLayerActionFromReader(action: LayerAction, layerId: string | null) {
+    if (!volume) return;
+    const target = layerId ?? activeLayerId;
+    void runLayerAction(action, {
+      volumeUuid: volume.volume_uuid,
+      layerId: target,
+      layerName: layers.find((l) => l.layer_id === target)?.name,
+      displayedPages: pages,
+      onSelectLayer: selectLayer
+    });
+  }
+
   // Leaving the volume or switching to a scroll mode ends the session
   // (saving whatever is pending).
   $effect(() => {
     const uuid = volume?.volume_uuid;
     const continuous = $settings.continuousScroll;
-    if (editSession && (continuous || uuid !== editSession.volumeUuid)) void exitEditMode();
+    const layer = activeLayerId;
+    if (
+      editSession &&
+      (continuous || uuid !== editSession.volumeUuid || layer !== editSession.layerId)
+    )
+      void exitEditMode();
   });
 
   // Custom page intro (new page coming in)
@@ -1279,8 +1366,13 @@
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
     onEdit={toggleEditMode}
-    editEnabled={!$settings.continuousScroll}
+    editEnabled={!$settings.continuousScroll && !editingBlocked}
+    editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
     editing={!!editSession}
+    {layers}
+    currentLayer={activeLayerId}
+    onSelectLayer={selectLayer}
+    onLayerAction={runLayerActionFromReader}
   />
   <SettingsButton visible={overlaysVisible} />
   {#if editSession}
@@ -1292,6 +1384,7 @@
       onRevert={revertCurrentPage}
     />
   {/if}
+  <LayerNameModal />
   <RereadPromptModal
     bind:open={rereadPromptOpen}
     seriesTitle={volume.series_title}

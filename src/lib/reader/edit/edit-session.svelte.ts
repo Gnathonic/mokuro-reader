@@ -34,6 +34,8 @@ export interface LineRef extends BlockRef {
 
 export interface EditSessionOptions {
   volumeUuid: string;
+  /** The alternate layer being edited, or null for the primary row. */
+  layerId?: string | null;
   /** The reader's current pages — the source a working copy is seeded from. */
   getPage: (pageIndex: number) => Page | undefined;
   /** A page was written; the reader patches its in-memory data from this. */
@@ -47,6 +49,7 @@ export const SAVE_DEBOUNCE_MS = 500;
 
 export class EditSession {
   readonly volumeUuid: string;
+  readonly layerId: string | null;
   selection = $state<BlockRef[]>([]);
   /** The line singled out inside the (single) selected block, if any. */
   selectedLine = $state<LineRef | null>(null);
@@ -72,6 +75,7 @@ export class EditSession {
   constructor(opts: EditSessionOptions) {
     this.opts = opts;
     this.volumeUuid = opts.volumeUuid;
+    this.layerId = opts.layerId ?? null;
   }
 
   private history(pageIndex: number): EditHistory<Page> {

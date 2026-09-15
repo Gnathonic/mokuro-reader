@@ -8,9 +8,13 @@
     CompressOutline,
     EditOutline,
     ImageOutline,
+    LayersOutline,
     ZoomOutOutline,
     PlusOutline
   } from 'flowbite-svelte-icons';
+  import LayerPicker from './Layers/LayerPicker.svelte';
+  import type { LayerSummary } from '$lib/reader/edit/layer-list';
+  import type { LayerAction } from './Layers/layer-actions';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import { showTextBoxPicker } from './text-box-picker';
   import type { Page } from '$lib/types';
@@ -29,7 +33,14 @@
     /** OCR edit mode toggle (paged mode only — disabled otherwise). */
     onEdit?: () => void;
     editEnabled?: boolean;
+    /** Why Edit is disabled, when it is for a reason other than the view mode. */
+    editBlockedReason?: string;
     editing?: boolean;
+    /** OCR layers of the volume; the picker shows when there are any, or in edit mode. */
+    layers?: LayerSummary[];
+    currentLayer?: string | null;
+    onSelectLayer?: (layerId: string | null) => void;
+    onLayerAction?: (action: LayerAction, layerId: string | null) => void;
   }
 
   let {
@@ -45,8 +56,15 @@
     visible = true,
     onEdit,
     editEnabled = false,
-    editing = false
+    editBlockedReason,
+    editing = false,
+    layers = [],
+    currentLayer = null,
+    onSelectLayer,
+    onLayerAction
   }: Props = $props();
+
+  let layersOpen = $state(false);
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
   let volumeMetadata = $derived<VolumeMetadata>({
@@ -96,13 +114,28 @@
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
+        {#if layers.length > 0 || editing}
+          <button
+            onclick={() => {
+              layersOpen = !layersOpen;
+              open = false;
+            }}
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            aria-label="OCR layers"
+            title="OCR layers"
+          >
+            <LayersOutline size="xl" />
+          </button>
+        {/if}
         <button
           onclick={() => {
             onEdit?.();
             open = false;
           }}
           disabled={!editEnabled}
-          title={editEnabled ? undefined : 'Edit is available in paged mode only'}
+          title={editEnabled
+            ? undefined
+            : (editBlockedReason ?? 'Edit is available in paged mode only')}
           class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
           aria-label={editing ? 'Exit edit mode' : 'Edit OCR'}
         >
@@ -168,6 +201,22 @@
           <ArrowLeftOutline size="xl" />
         </button>
       </div>
+    {/if}
+
+    {#if layersOpen}
+      <LayerPicker
+        {layers}
+        current={currentLayer}
+        onSelect={(id) => {
+          onSelectLayer?.(id);
+          layersOpen = false;
+        }}
+        onAction={(a, id) => {
+          onLayerAction?.(a, id);
+          layersOpen = false;
+        }}
+        onClose={() => (layersOpen = false)}
+      />
     {/if}
 
     <!-- Main toggle button -->
