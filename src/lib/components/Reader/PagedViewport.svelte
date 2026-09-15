@@ -241,7 +241,10 @@
     getElement: () => wrapperEl,
     capturePolicy: 'deferred',
     suppressPan: (e) => {
-      if (gestureTargetRole(e.target) !== 'textbox') return false;
+      const role = gestureTargetRole(e.target);
+      // The edit overlay owns its presses outright (all pointer types).
+      if (role === 'editor') return true;
+      if (role !== 'textbox') return false;
       // Any press on a text box marks the next outside tap as a dismissal.
       taps.noteTextBoxInteraction();
       return e.pointerType !== 'touch';

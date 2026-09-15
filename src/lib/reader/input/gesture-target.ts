@@ -16,6 +16,11 @@
  * drag-selection gesture, so touch pans across text boxes (as the old
  * panzoom touch path always did).
  *
+ * **`.editBlock` (role 'editor')** is the OCR edit overlay
+ * (`EditOverlay.svelte`): the overlay captures its own pointers and stops
+ * propagation; surfaces must never pan, tap-toggle, or zoom from a press on
+ * one, for ANY pointer type (unlike text boxes, where touch still pans).
+ *
  * **'interactive'** is reader chrome (buttons, links): taps belong to the
  * control, not to overlay toggling or zoom.
  *
@@ -26,10 +31,14 @@
  * text box they live in.
  */
 
-export type GestureTargetRole = 'textbox' | 'interactive' | 'page';
+export type GestureTargetRole = 'editor' | 'textbox' | 'interactive' | 'page';
 
 export function gestureTargetRole(target: EventTarget | null): GestureTargetRole {
   if (!(target instanceof Element)) return 'page';
+  // The OCR edit overlay owns every press on its blocks and handles (move,
+  // resize, text editing) — checked first so an editor never pans, taps, or
+  // triggers the Anki double-tap. See docs/INPUT-CONTRACTS.md "Edit overlay".
+  if (target.closest('.editBlock, [data-edit-handle]')) return 'editor';
   // textbox wins over interactive: controls inside a box belong to the box's
   // domain (Anki capture UI), not to reader chrome.
   if (target.closest('.textBox')) return 'textbox';

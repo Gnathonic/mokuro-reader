@@ -30,6 +30,18 @@ describe('gestureTargetRole', () => {
     );
   });
 
+  it('classifies edit-overlay blocks and handles as editor, ahead of textbox', () => {
+    expect(gestureTargetRole(el('<div class="editBlock" data-probe></div>'))).toBe('editor');
+    expect(
+      gestureTargetRole(
+        el('<div class="editBlock"><span data-edit-handle data-probe></span></div>')
+      )
+    ).toBe('editor');
+    expect(
+      gestureTargetRole(el('<div class="editBlock"><div class="textBox" data-probe></div></div>'))
+    ).toBe('editor');
+  });
+
   it('defaults to page', () => {
     expect(gestureTargetRole(el('<div data-probe></div>'))).toBe('page');
     expect(gestureTargetRole(null)).toBe('page');

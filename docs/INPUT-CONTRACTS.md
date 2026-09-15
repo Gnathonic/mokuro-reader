@@ -62,6 +62,17 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).
 
+### The edit overlay owns its blocks (`.editBlock`, role 'editor')
+
+In OCR edit mode (`EditOverlay.svelte`) every block renders as an
+`.editBlock` with `[data-edit-handle]` resize handles. The overlay
+`setPointerCapture`s its own presses and stops propagation; surfaces
+classify the role first and **never pan, tap-toggle, or zoom from it — for
+any pointer type** (unlike `.textBox`, where touch still pans). The page
+background keeps its read-mode gestures, so the user can pan and pinch while
+editing; with the "draw box" tool armed, the overlay owns the next background
+drag instead. Pinch still wins everywhere.
+
 ### Pinch always wins
 
 Two pointers upgrade to pinch no matter where they pressed (text box
