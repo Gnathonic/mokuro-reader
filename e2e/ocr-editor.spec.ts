@@ -177,3 +177,58 @@ test.describe('OCR editor', () => {
     await expect(page.getByLabel('Edit OCR')).toBeDisabled();
   });
 });
+
+test.describe('OCR editor — entry points', () => {
+  test('the E hotkey toggles edit mode', async ({ page }) => {
+    await seedVolume(page);
+    await openReader(page);
+    // Keyboard shortcuts are window-level; nothing needs focus first.
+    await page.keyboard.press('e');
+    await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+    await page.keyboard.press('e');
+    await expect(page.locator('[data-edit-toolbar]')).toBeHidden();
+  });
+
+  test('the settings toggle enters and leaves edit mode', async ({ page }) => {
+    await seedVolume(page);
+    await openReader(page);
+    await page.evaluate(async () => {
+      const { requestEditMode } = await import('/src/lib/reader/edit/edit-mode.ts');
+      requestEditMode(true);
+    });
+    await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+    await page.evaluate(async () => {
+      const { requestEditMode } = await import('/src/lib/reader/edit/edit-mode.ts');
+      requestEditMode(false);
+    });
+    await expect(page.locator('[data-edit-toolbar]')).toBeHidden();
+  });
+
+  test('"Edit this text" in the text box menu opens the editor on that block with the first line focused', async ({
+    page
+  }) => {
+    await seedVolume(page);
+    await page.evaluate(async () => {
+      const { updateSetting } = await import('/src/lib/settings/index.ts');
+      updateSetting('textBoxContextMenu', true);
+      updateSetting('alwaysShowOCR', true);
+    });
+    await openReader(page);
+    const box = page.locator('.textBox').first();
+    await expect(box).toBeVisible();
+    await box.click({ button: 'right' });
+    await page.getByText('Edit this text').click();
+    await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+    const block = page.locator('.editBlock').first();
+    await expect(block).toHaveClass(/selected/);
+    const line = block.locator('[contenteditable]').first();
+    await expect(line).toBeVisible();
+    await expect(line).toBeFocused();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('さしす');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(1200);
+    const saved = await readOcr(page);
+    expect(saved.block!.lines).toEqual(['さしす']);
+  });
+});
