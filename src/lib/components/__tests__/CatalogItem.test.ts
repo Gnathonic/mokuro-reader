@@ -1813,7 +1813,7 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
     expect(requestCoverMock).toHaveBeenCalledWith(
       expect.objectContaining({ volume_uuid: 'c-2' }),
       // The still-near-viewport probe every request now carries.
-      expect.any(Function)
+      expect.objectContaining({ stillNear: expect.any(Function) })
     );
 
     updateCatalogSetting('horizontalStep', 12);
@@ -1823,7 +1823,7 @@ describe('CatalogItem draws the covers that arrive after it mounted', () => {
       // harmless — the card is not expected to suppress it itself.
       expect(requestCoverMock).toHaveBeenCalledWith(
         expect.objectContaining({ volume_uuid: 'c-2' }),
-        expect.any(Function)
+        expect.objectContaining({ stillNear: expect.any(Function) })
       );
       // Arity matters here: with the probe argument, a volume-only matcher
       // would "not match" every call vacuously.

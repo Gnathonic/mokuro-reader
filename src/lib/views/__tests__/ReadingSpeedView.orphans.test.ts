@@ -12,20 +12,21 @@ import { get, readable } from 'svelte/store';
  * therefore have to hold, and neither is visible to a unit test of any single
  * module:
  *
- * 1. The repair has to reach the orphan set. `patchProgressHolesAndEnrich`
- *    mints rows and then copies them onto the reading records; if the page's
- *    orphan set does not reflect that by the time the user can click, a volume
- *    the app JUST resolved is still sitting in the bucket being offered up.
+ * 1. The repair has to reach the orphan set. `resolveSyncedProgress` (run
+ *    after every progress sync, never from this page) mints rows and then
+ *    copies them onto the reading records; if the page's orphan set does not
+ *    reflect that by the time the user can click, a volume the app JUST
+ *    resolved is still sitting in the bucket being offered up.
  * 2. The button has to act on the row it is in. It is revealed by one row of
  *    the "Speed by Series" table and used to hand the whole store's orphan list
  *    to `clearOrphanedVolumeData`.
  *
  * So the component is rendered for real, over the REAL `volume-data` store and
- * the REAL `patchProgressHolesAndEnrich`. Only the edges are doubled: the
- * catalog liveQuery, Chart.js, and the four modules the hole patcher talks to
- * (the row sweep, the index cache, `openSeries`, the cloud listing). A double
- * for `patchProgressHolesAndEnrich` itself would make case 1 vacuous — the
- * ordering IS the thing under test.
+ * the REAL `resolveSyncedProgress`. Only the edges are doubled: the catalog
+ * liveQuery, Chart.js, and the four modules the hole patcher talks to (the row
+ * sweep, the index cache, `openSeries`, the cloud listing). A double for the
+ * resolver itself would make case 1 vacuous — the ordering IS the thing under
+ * test.
  */
 
 const { catalogVolumes } = vi.hoisted(() => {
@@ -79,11 +80,9 @@ vi.mock('$lib/metadata/series-open', () => ({ openSeries: vi.fn(async () => {}) 
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => ({ type: 'google-drive' }),
-    // Already loaded, matching `cacheManager.isLoaded()` below being `true`
-    // from the start: `patchProgressHolesWhenListingReady` subscribes to
-    // this, and its own "already loaded at mount" fast path is what this
-    // suite exercises — a real retry is `hole-patch.test.ts`'s job.
-    cloudFiles: readable(new Map([['Dr Stone', [{}]]]))
+    cloudFiles: readable(new Map([['Dr Stone', [{}]]])),
+    // The index refresh the resolver awaits: already settled here.
+    whenSeriesIndexesSettled: () => Promise.resolve()
   }
 }));
 vi.mock('$lib/util/sync/cache-manager', () => ({
@@ -98,6 +97,7 @@ vi.mock('chart.js/auto', () => ({
 }));
 
 import ReadingSpeedView from '$lib/views/ReadingSpeedView.svelte';
+import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
 import { VolumeData, volumes, volumesWithTrash } from '$lib/settings/volume-data';
 
 /** A record that clears `processVolumeSpeedData`'s filters, so it is SPEED-TRACKED. */
@@ -159,6 +159,14 @@ describe('ReadingSpeedView orphan bucket', () => {
     });
 
     render(ReadingSpeedView);
+    // The page itself never sweeps; it renders the bucket for what it has...
+    await vi.waitFor(() => {
+      expect(seriesRow('[Missing Series Info]')).toBeDefined();
+    });
+    expect(materializeHistoryRows).not.toHaveBeenCalled();
+
+    // ...and a progress sync lands mid-visit and resolves the volume.
+    await resolveSyncedProgress();
 
     // The load-bearing assertion is the page's own orphan bucket, not the
     // store: the fake series must be gone and its trash button with it — a
@@ -177,10 +185,9 @@ describe('ReadingSpeedView orphan bucket', () => {
     volumesWithTrash.set({ 'uuid-unresolved': speedTracked() });
 
     render(ReadingSpeedView);
+    await resolveSyncedProgress();
+    expect(materializeHistoryRows).toHaveBeenCalled();
 
-    await vi.waitFor(() => {
-      expect(materializeHistoryRows).toHaveBeenCalled();
-    });
     const row = await vi.waitFor(() => {
       const found = seriesRow('[Missing Series Info]');
       expect(found).toBeDefined();

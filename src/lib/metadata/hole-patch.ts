@@ -9,43 +9,6 @@ import { materializeHistoryRows } from './history-rows';
 import { normalizeSeriesKey } from './series-key';
 
 /**
- * Series pulled per run. Each pull is a `series.json` download, so a device
- * whose progress file references a hundred long-gone series must not turn a
- * catalog open into a hundred requests — the rest are patched on the next run.
- *
- * This caps the NETWORK phase only, and that phase is now the rare one: a
- * series whose `series.json` is already cached is served by
- * `materializeHistoryRows` with no request at all, and the listing-wide index
- * refresh (`series-index-sync.ts`) caches one for every folder in the account.
- * What is left here is the window before that refresh has caught up — where
- * five downloads per run is exactly the right budget.
- */
-export const MAX_HOLE_PATCHES_PER_RUN = 5;
-
-/**
- * Series keys this page load has already tried to pull. A series that still
- * has no local row and no cached index after `openSeries` settles is either
- * genuinely absent from the cloud or unreachable right now — either way,
- * retrying it on every catalog open (the caller re-runs this on EVERY mount)
- * would turn a permanent gap into a permanent request. Cleared only by a
- * fresh page load, matching the "session-scoped" contract; a series that was
- * only deferred by the run cap is never added here, so it is still picked up
- * next run.
- *
- * It can no longer hide a hole for a whole session, which it used to be able
- * to: a series memoized here before its `series.json` had been cached is still
- * picked up by `materializeHistoryRows`, which consults nothing in this set —
- * it reads the index cache, so it heals the moment the background refresh
- * lands the file.
- */
-const attemptedThisSession = new Set<string>();
-
-/** Test-only: clears the session memory so cases don't leak into each other. */
-export function resetHolePatchSessionForTests(): void {
-  attemptedThisSession.clear();
-}
-
-/**
  * Is there a COMPLETE cloud listing to check `openSeries` against right now?
  *
  * A non-null `getActiveProvider()` is not enough: `initializeCurrentProvider()`
@@ -84,11 +47,19 @@ function listingIsLoaded(): boolean {
  * connected account arrives on its own, and for a series long gone from the
  * cloud never does.
  *
- * PHASE 2 — the network fallback, capped. A series that phase 1 could not
- * serve because this device has NO cached index for it gets its `series.json`
+ * PHASE 2 — the network fallback. A series that phase 1 could not serve
+ * because this device has NO cached index for it gets its `series.json`
  * pulled and its volumes materialized (`openSeries`), which is exactly the
  * state the series would have been in had the user opened it. Phase 1 runs
  * first so the rows it creates take those series out of phase 2's reckoning.
+ * Uncapped, and with no session memory of what it tried: the trigger is one
+ * run per progress sync with the index refresh already awaited
+ * (`resolveSyncedProgress`), so this phase only ever downloads an index the
+ * listing shows but that refresh failed to cache — and a series absent from
+ * the cloud costs `openSeries` zero I/O. The old per-mount memo existed to
+ * stop a per-mount sweep re-pulling an absent series; it could also poison a
+ * series attempted before its index had landed, and it had nothing left to
+ * save.
  *
  * Cheap in the normal case: one pass over the progress records, one INDEX-KEY
  * read of the local rows (never a full scan — `volumes` rows carry thumbnail
@@ -101,8 +72,7 @@ function listingIsLoaded(): boolean {
  * exist in the cloud, in which case nothing is downloaded but nothing throws
  * either — so this is "attempted", not "confirmed fetched". Never rejects.
  */
-export async function patchProgressHoles(options?: { limit?: number }): Promise<string[]> {
-  const limit = options?.limit ?? MAX_HOLE_PATCHES_PER_RUN;
+export async function patchProgressHoles(): Promise<string[]> {
   const pulled: string[] = [];
 
   // ONE `series_index` read for the whole run, shared by both phases — they
@@ -111,8 +81,8 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
   // 1 writes only to `volumes`, so the index list it read cannot have gone
   // stale by the time phase 2 wants it. LAZY, not fetched up front: a run that
   // bails before either phase asks — no provider, no listing, or every
-  // dangling title already attempted this session — must still issue no read
-  // at all, and this caller re-runs on every mount.
+  // dangling title already rowed or indexed — must still issue no read at
+  // all, and this runs on every sync.
   let indexesOnce: Promise<SeriesIndexRecord[]> | null = null;
   const readIndexes = () => (indexesOnce ??= listSeriesIndexes());
 
@@ -132,11 +102,11 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     // runs once the listing has loaded. See `listingIsLoaded`.
     if (!listingIsLoaded()) return pulled;
 
-    // Phase 1. Local, network-free, and NOT capped at five: it is the phase
-    // that actually closes the gap the user reported (726 volumes with
-    // history, 36 of them tracked), and it can only act on data already on
-    // the device. Awaited before phase 2 plans anything so the rows it writes
-    // are visible to the "does this series already have a row" check below.
+    // Phase 1. Local and network-free: it is the phase that actually closes
+    // the gap the user reported (726 volumes with history, 36 of them
+    // tracked), and it can only act on data already on the device. Awaited
+    // before phase 2 plans anything so the rows it writes are visible to the
+    // "does this series already have a row" check below.
     await materializeHistoryRows({ readIndexes });
 
     const progress = get(progressStore);
@@ -151,7 +121,7 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
       const title = record.series_title;
       if (typeof title !== 'string') continue;
       const key = normalizeSeriesKey(title);
-      if (!key || wanted.has(key) || attemptedThisSession.has(key)) continue;
+      if (!key || wanted.has(key)) continue;
       wanted.set(key, title);
     }
     if (wanted.size === 0) return pulled;
@@ -172,13 +142,11 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
     }
     if (wanted.size === 0) return pulled;
 
-    for (const [key, title] of [...wanted.entries()].slice(0, limit)) {
+    for (const title of wanted.values()) {
       // Re-checked per attempt, not just once at entry: the provider or its
       // listing can drop between awaits (e.g. a logout, or a provider switch
-      // clearing the cache). A title skipped here was never actually
-      // attempted, so it is left un-memoized for the next run.
+      // clearing the cache), and `openSeries` would then silently no-op.
       if (!listingIsLoaded()) break;
-      attemptedThisSession.add(key);
       try {
         await openSeries(title);
         pulled.push(title);
@@ -213,9 +181,9 @@ export async function patchProgressHoles(options?: { limit?: number }): Promise<
  *
  * Best-effort, like everything else here: never rejects.
  */
-export async function patchProgressHolesAndEnrich(options?: { limit?: number }): Promise<string[]> {
+export async function patchProgressHolesAndEnrich(): Promise<string[]> {
   await enrichQuietly();
-  const pulled = await patchProgressHoles(options);
+  const pulled = await patchProgressHoles();
   // Awaited AFTER the sweep, not alongside it: this is the pass that sees the
   // rows the sweep just wrote.
   await enrichQuietly();
@@ -223,57 +191,32 @@ export async function patchProgressHolesAndEnrich(options?: { limit?: number }):
 }
 
 /**
- * Run `patchProgressHolesAndEnrich` now, and — if the listing was not loaded
- * yet at that moment — exactly once more when it arrives.
+ * THE trigger. Runs once per progress sync, from
+ * `unifiedCloudManager.syncProgress()` — never from a view mount.
  *
- * THE RACE THIS CLOSES. `patchProgressHoles` bails with ZERO work done,
- * including the local, network-free phase (`materializeHistoryRows`) that
- * needs no cloud round trip and is the one that actually closes a gap like
- * "726 volumes with history, 36 tracked" — whenever `listingIsLoaded()` is
- * false. Both callers (`CatalogView`, `ReadingSpeedView`) run the sweep from
- * `onMount`, which on a cold app start can fire before `initializeProviders()`
- * `fetchAllCloudVolumes()` has resolved. A mount that loses that race used to
- * get nothing for the rest of that visit — the exact symptom reported: a
- * stats page opened straight after launch, before the listing was in, showed
- * untracked history forever.
+ * Waits for the `series.json` refresh the listing started, because that is
+ * what phase 1 resolves against: measured 2026-08-31, the same sweep
+ * materialized 5 of 30 series against a cold index cache and 30 of 30 against
+ * a warm one, and on a network provider the startup sweep always ran cold
+ * (the refresh is fire-and-forget behind the listing). Coverage was then made
+ * up by re-running the sweep from view mounts, so convergence depended on how
+ * the user navigated. With the refresh awaited, phase 1 is in-memory plus one
+ * bulk read, and phase 2 only ever downloads an index the listing shows but
+ * the refresh failed to cache.
  *
- * `unifiedCloudManager.cloudFiles` is used as the "the listing just arrived"
- * signal rather than a bespoke one, matching how `SeriesView` already treats
- * that store's transition-to-non-empty as "cache is now loaded". It is not a
- * perfect proxy — an account with a genuinely empty cloud never re-triggers —
- * but `patchProgressHoles`'s own internal `listingIsLoaded()` check is the
- * actual authority in that case too, and a truly empty listing has nothing
- * for either phase to resolve regardless.
- *
- * AT MOST ONE RETRY. `cloudFiles` re-emits on every fetch, dedup pass and
- * cache mutation for the rest of the app's life — reacting to all of them
- * would re-sweep on every unrelated cache change. The `retried` flag caps it
- * at one. The delivery `.subscribe()` makes SYNCHRONOUSLY the moment this
- * subscribes (Svelte stores replay their current value to a new subscriber)
- * is treated as a snapshot, not a trigger: if the listing was already loaded
- * at mount, the unconditional call above already covered it, and firing the
- * retry on that same initial value would double the sweep on every ordinary
- * visit instead of only the cold-start one this exists for.
- *
- * NO LEAK. Returns the store's unsubscribe function; callers MUST invoke it
- * on unmount (e.g. from `onMount`'s cleanup return) or the subscription — and
- * the closure it holds — outlives the component.
+ * Starts no I/O the sync did not already imply: no listing is fetched here
+ * (a Drive listing fetch can itself trigger a post-login sync, and a
+ * resolution that fetched would close that loop). Without a loaded listing it
+ * is a no-op; the next sync catches up. Never rejects.
  */
-export function patchProgressHolesWhenListingReady(): () => void {
-  void patchProgressHolesAndEnrich();
-
-  let sawInitialSnapshot = false;
-  let retried = false;
-  return unifiedCloudManager.cloudFiles.subscribe((files) => {
-    if (!sawInitialSnapshot) {
-      // The replay-on-subscribe delivery: not a change, so not a trigger.
-      sawInitialSnapshot = true;
-      return;
-    }
-    if (retried || files.size === 0) return;
-    retried = true;
-    void patchProgressHolesAndEnrich();
-  });
+export async function resolveSyncedProgress(): Promise<void> {
+  try {
+    if (!listingIsLoaded()) return;
+    await unifiedCloudManager.whenSeriesIndexesSettled();
+    await patchProgressHolesAndEnrich();
+  } catch (error) {
+    console.debug('[hole-patch] resolution failed:', error);
+  }
 }
 
 /**

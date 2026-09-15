@@ -8,38 +8,6 @@ import { listSeriesIndexes, type SeriesIndexRecord } from './series-index';
 import { normalizeSeriesKey } from './series-key';
 import type { SeriesFileVolume } from './series-file';
 
-/**
- * Volumes given a row per run.
- *
- * The set this sweep works from is bounded by the user's own reading history,
- * not by the size of their library: a 12,520-file cloud account with 2,075
- * progress entries yields at most 2,075 candidates, and the ~726 of those with
- * genuine activity is the number that matters. So the cap is generous enough
- * that a real library drains in ONE run — a sweep that needed twenty page
- * loads to finish would leave the stats views wrong for most of them — while
- * still refusing to be unbounded: a pathological store drains over successive
- * runs instead of building one enormous transaction.
- */
-export const MAX_HISTORY_ROWS_PER_RUN = 1000;
-
-/**
- * Series touched per run.
- *
- * A SECOND cap, because the two costs are not the same shape. Rows are cheap
- * and local; each series costs a `cloudVolumeTitlesFor` lookup, and that is
- * the one genuinely superlinear thing this sweep does — only the Google Drive
- * cache answers it from a Map (`currentCache.get(seriesTitle)`); the MEGA,
- * OneDrive and local-folder caches all walk the WHOLE listing per call, twice
- * (`resolveCloudFolderTitle` then `cloudVolumeTitles`). On a 12,520-file
- * account that is ~25k string comparisons per series. 200 series bounds the
- * first sweep at ~5M comparisons — tens of milliseconds, once, off the render
- * path — where the row cap alone would have allowed five times that. A real
- * library is nowhere near it (726 read volumes spread over well under 200
- * series), so this only ever bites the pathological case, and even then it
- * drains over successive runs.
- */
-export const MAX_HISTORY_SERIES_PER_RUN = 200;
-
 /** The fields this module reads off a reading-state entry, structurally. */
 type ProgressRecord = ReadingHistoryEntry & {
   deletedOn?: string;
@@ -49,17 +17,17 @@ type ProgressRecord = ReadingHistoryEntry & {
 /**
  * Uuids a run PLANNED and still failed to give a row.
  *
- * WHY THIS EXISTS. Both caps are spent at PLAN time, but a planned uuid is not
- * a written row: `materializeSeriesVolumes` skips an entry whose uuid belongs
- * to another series (rule 0) or whose title a local row already owns (rule 2),
- * and a whole batch is dropped before the transaction when
- * `cloudVolumeTitlesFor` reports an empty listing for its series — the state of
- * every index cached from a provider that is no longer the connected one, which
- * `runRefresh` deliberately never cleans. Iteration order over the progress
- * store is stable, so without this set those uuids are re-planned in the same
- * order on every run, spend the same slots, and everything behind them is
- * starved FOREVER: 200 such series is all it takes to make the series cap
- * unreachable for a series that WOULD materialize.
+ * WHY THIS EXISTS. A planned uuid is not a written row:
+ * `materializeSeriesVolumes` skips an entry whose uuid belongs to another
+ * series (rule 0) or whose title a local row already owns (rule 2), and a whole
+ * batch is dropped before the transaction when `cloudVolumeTitlesFor` reports
+ * an empty listing for its series — the state of every index cached from a
+ * provider that is no longer the connected one, which `runRefresh`
+ * deliberately never cleans. Without this set those uuids are re-planned on
+ * every run — one listing lookup per series and one indexed read per batch,
+ * on every sync, forever, for rows that can never be written. Not a coverage
+ * cap: it only ever holds uuids the cached index has PROVED cannot become
+ * rows, and it is written only after that index was consulted.
  *
  * SESSION-SCOPED, cleared only by a page load, matching the same contract
  * `hole-patch.ts` uses for its own attempt memory. The trade-off is deliberate:
@@ -134,14 +102,14 @@ export function resetHistoryRowsSessionForTests(): void {
  * broadcast and therefore ONE catalog re-derive rather than N. Zero network:
  * everything it reads is already on the device. A run with nothing to do opens
  * no write transaction at all, and a readwrite transaction that writes nothing
- * broadcasts nothing (both verified).
+ * broadcasts nothing (both verified). There is no per-run cap on rows or
+ * series: the set is bounded by the reading history, and one run drains it
+ * (the transaction must not be split into batches to reintroduce one).
  *
  * Best-effort throughout: never rejects, never surfaces UI. Returns the number
  * of rows created or filled.
  */
 export async function materializeHistoryRows(options?: {
-  limit?: number;
-  seriesLimit?: number;
   /**
    * How to read the cached `series.json` indexes. Defaults to
    * `listSeriesIndexes`; `patchProgressHoles` passes a lazy, memoized reader so
@@ -150,8 +118,6 @@ export async function materializeHistoryRows(options?: {
    */
   readIndexes?: () => Promise<SeriesIndexRecord[]>;
 }): Promise<number> {
-  const limit = options?.limit ?? MAX_HISTORY_ROWS_PER_RUN;
-  const seriesLimit = options?.seriesLimit ?? MAX_HISTORY_SERIES_PER_RUN;
   const readIndexes = options?.readIndexes ?? listSeriesIndexes;
 
   try {
@@ -200,23 +166,20 @@ export async function materializeHistoryRows(options?: {
     if (candidates.size === 0) return 0;
 
     // 4. Group the wanted uuids by the series that will materialize them.
+    //    UNCAPPED: the set is bounded by the user's own reading history, not
+    //    by the library, and one run drains it entirely — a sweep that
+    //    needed several syncs to finish would leave the stats views and the
+    //    tracker wrong until then. What is planned is not yet a row, so
+    //    whatever is still row-less when this run ends is remembered as
+    //    unmaterializable and never planned again. See
+    //    `unmaterializableThisSession`.
     const plan = new Map<string, { record: SeriesIndexRecord; uuids: Set<string> }>();
-    // Every uuid that SPENT a slot. Both caps are charged here, at plan time,
-    // but a plan entry is not a row — so whatever is still row-less when this
-    // run ends is remembered as unmaterializable and never charged again. See
-    // `unmaterializableThisSession`.
     const plannedUuids = new Set<string>();
     for (const [uuid, storedTitle] of wanted) {
-      if (plannedUuids.size >= limit) break;
       const record = pickSeriesFor(candidates.get(uuid), storedTitle);
       if (!record) continue;
       let slot = plan.get(record.series_key);
       if (!slot) {
-        // A series already in the plan costs nothing more; a NEW one costs a
-        // listing lookup, which is what `seriesLimit` bounds. Skipping the
-        // uuid rather than breaking out lets the series already planned keep
-        // filling, and the skipped ones are picked up by the next run.
-        if (plan.size >= seriesLimit) continue;
         slot = { record, uuids: new Set() };
         plan.set(record.series_key, slot);
       }

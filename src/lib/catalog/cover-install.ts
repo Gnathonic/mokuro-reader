@@ -1,28 +1,18 @@
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { fetchCloudThumbnail } from '$lib/catalog/cloud-thumbnails';
-import { activeAccountScope, normalizeCachePath } from '$lib/catalog/cloud-cache-key';
-import { cachedCoverPaths } from '$lib/catalog/cloud-covers';
-import { installCover, flushPendingCoverPersists } from '$lib/catalog/cover-persist';
+import { flushPendingCoverPersists } from '$lib/catalog/cover-persist';
+// Deferred-use import into the module cycle cover-service → series-file-sync →
+// series-backfill → cover-install → cover-service (the backfill imports this
+// module for its post-write flesh-out). Safe for the same reason the existing
+// series-file-sync ↔ series-backfill cycle is: nothing on any side calls
+// across at module-init time, only from inside function bodies.
+import { requestCover, type CoverOutcome } from '$lib/catalog/cover-service';
 import { indexCoverSidecarsByBasePath, type CoverSidecarInfo } from '$lib/catalog/placeholders';
 import { needsDownload } from '$lib/catalog/volume-state';
+import { isArchiveSize } from '$lib/metadata/series-file';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-
-/**
- * Cover downloads started at once by one series-open pass. Matched to
- * `fetchCloudThumbnail`'s own `MAX_CONCURRENT_FETCHES` (the real network
- * cap) so a pass can actually fill that pool rather than starving it at
- * half width; the per-worker DB re-check between fetches is a keyed read
- * and costs nothing at this parallelism.
- */
-/**
- * Matched to `MAX_CONCURRENT_FETCHES` in `cloud-thumbnails.ts` (both 8) so the
- * install pass can keep the widened fetch pool fed. Pinned by test — change
- * both together or the narrower one silently becomes the real limit.
- */
-export const MAX_CONCURRENT_COVER_INSTALLS = 8;
 
 /**
  * The running pass per normalized series key, plus whether a joiner arrived
@@ -98,20 +88,20 @@ function foldArchiveIndex(files: Iterable<CloudFileMetadata>): Map<string, strin
  *
  * A materialized row has everything except a picture, and a catalog full of
  * blank cards is worse than a slow one — but the covers are the only heavy part
- * of the series-open path, so they are fetched lazily, bounded, and only for
- * rows that actually lack one. `fetchCloudThumbnail` provides the session cache,
- * the request coalescing, the concurrency cap (`MAX_CONCURRENT_FETCHES`) and the
- * 15 s timeout; this function only decides WHICH rows need one and hands the
- * result to `cover-persist.ts`.
+ * of the series-open path, so they are asked for lazily and only for rows that
+ * actually lack one. This module decides WHICH rows to ask for and from WHICH
+ * listing files; everything after that — the cache check, PROMOTING a cached
+ * cover onto a row the user has read, the fetch (`cloud-thumbnails.ts`'s
+ * 8-slot pool and 15 s timeout), the dedupe, the retry, and where the blob
+ * lands — is `cover-service.ts`'s `requestCover`, the ONE entry point every
+ * cover in the app goes through. There is no second fetch path here any more.
  *
- * It does NOT decide where the blob lands. `installCover` does, for every cover
- * path in the app: onto the `volumes` row only when this device has a
- * RELATIONSHIP with the volume (installed, or with reading activity), and
+ * Where the blob lands is `cover-persist.ts`'s call (`coverBelongsOnRow`):
+ * onto the `volumes` row only for a metadata-only row the user has READ, and
  * otherwise into the `cloud_covers` cache keyed by `[account_scope+path]`. The
  * rows this module targets are the metadata-only ones a mere series OPEN
- * materializes, which typically have neither — so in the common case nothing is
- * written to `volumes` at all, and the card paints from the cache instead
- * (`catalog/index.ts`'s join).
+ * materializes, which usually have no history — so in the common case nothing
+ * is written to `volumes` at all, and the card paints from the cache instead.
  *
  * A row that already has a thumbnail is never touched: it was either measured
  * from the volume's own pages or picked by hand, and the sidecar is a guess by
@@ -138,8 +128,8 @@ function foldArchiveIndex(files: Iterable<CloudFileMetadata>): Map<string, strin
  * never in a loop — a joiner during the re-scan is served the same promise and
  * the series settles rather than chasing a moving listing forever.
  *
- * Returns how many covers were fetched and routed (onto a row or into the
- * cache — `installCover` decides which). Never rejects.
+ * Returns how many requests delivered a cover (onto a row or into the cache —
+ * the service decides which). Never rejects.
  */
 export function installCoversForSeries(seriesTitle: string): Promise<number> {
   const key = normalizeSeriesKey(seriesTitle);
@@ -174,49 +164,6 @@ export function installCoversForSeries(seriesTitle: string): Promise<number> {
   return state.promise;
 }
 
-/** One row this pass could fetch a cover for, with the two listing facts it needs. */
-interface CoverCandidate {
-  row: VolumeMetadata;
-  info: CoverSidecarInfo | undefined;
-  archivePath: string | undefined;
-}
-
-/**
- * Drop the candidates whose cover this account already has in `cloud_covers`.
- *
- * Load-bearing, not an optimization. `!row.thumbnail` used to be a complete
- * "already done" test because this module wrote the blob onto the row; now
- * that a relationship-less row deliberately never carries one, that row stays
- * blank forever and every later pass — every series open, every backfill
- * sweep — would re-download a cover it already holds. This is the same
- * already-have-it check `cover-service.ts` gets for free, because the catalog
- * hands IT rows already decorated with the cached cover
- * (`catalog/index.ts`'s join); this module reads STORED rows, so it has to ask
- * directly. An indexed point read per path, keys only — never the blobs.
- *
- * Defensive by design: any failure to resolve the scope or read the table
- * means "skip nothing", so a broken cache can only cost a redundant fetch, and
- * never a blank card.
- */
-async function withoutCachedCovers(candidates: CoverCandidate[]): Promise<CoverCandidate[]> {
-  try {
-    const scope = activeAccountScope();
-    if (!scope) return candidates;
-    const paths = candidates
-      .map((candidate) => candidate.archivePath)
-      .filter((path): path is string => !!path);
-    const cached = await cachedCoverPaths(scope, paths);
-    if (cached.size === 0) return candidates;
-    return candidates.filter(
-      (candidate) =>
-        !candidate.archivePath || !cached.has(normalizeCachePath(candidate.archivePath))
-    );
-  } catch (error) {
-    console.debug('[cover-install] could not consult the cover cache:', error);
-    return candidates;
-  }
-}
-
 async function runCoverInstall(seriesTitle: string): Promise<number> {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return 0;
@@ -232,78 +179,39 @@ async function runCoverInstall(seriesTitle: string): Promise<number> {
     .equalsIgnoreCase(seriesTitle)
     .toArray()) as VolumeMetadata[];
 
-  // `equalsIgnoreCase` is case- but not whitespace-insensitive; re-filter by the
-  // catalog's own grouping key, exactly as `materializeSeriesVolumes` does.
-  const candidates = rows
-    .filter(
-      (row) =>
-        normalizeSeriesKey(row.series_title) === seriesKey && needsDownload(row) && !row.thumbnail
-    )
-    .map((row) => {
-      const key = coverKey(row.series_title, row.volume_title);
-      return { row, info: covers.get(key), archivePath: archivePaths.get(key) ?? row.cloudPath };
-    })
-    .filter((candidate) => !!candidate.info);
-  if (candidates.length === 0) return 0;
+  // `equalsIgnoreCase` is case- but not whitespace-insensitive; re-filter by
+  // the catalog's own grouping key, exactly as `materializeSeriesVolumes` does.
+  // Each candidate is decorated on a COPY with the listing's cover sidecar
+  // and archive path — the same shape the catalog hands a card
+  // (`cloudFieldsForRemovedVolume`), so the service sees exactly what it
+  // would see from a render. Nothing here is ever written back to the row.
+  const requests: Promise<CoverOutcome>[] = [];
+  for (const row of rows) {
+    if (normalizeSeriesKey(row.series_title) !== seriesKey) continue;
+    if (!needsDownload(row) || row.thumbnail) continue;
+    const key = coverKey(row.series_title, row.volume_title);
+    const info = covers.get(key);
+    if (!info) continue;
+    const decorated: VolumeMetadata = {
+      ...row,
+      cloudProvider: provider.type,
+      cloudPath: archivePaths.get(key) ?? row.cloudPath,
+      cloudThumbnailFileId: info.fileId,
+      cloudThumbnailPath: info.path,
+      ...(isArchiveSize(info.size) ? { cloudThumbnailSize: info.size } : {}),
+      ...(info.modifiedTime ? { cloudThumbnailModifiedTime: info.modifiedTime } : {})
+    };
+    requests.push(requestCover(decorated));
+  }
+  if (requests.length === 0) return 0;
 
-  const targets = await withoutCachedCovers(candidates);
-  if (targets.length === 0) return 0;
-
-  let installed = 0;
-  let next = 0;
-  const workers = Array.from(
-    { length: Math.min(MAX_CONCURRENT_COVER_INSTALLS, targets.length) },
-    async () => {
-      while (next < targets.length) {
-        const { row, info, archivePath } = targets[next++];
-        if (!info) continue;
-        try {
-          const result = await fetchCloudThumbnail({
-            ...row,
-            cloudProvider: provider.type,
-            cloudThumbnailFileId: info.fileId,
-            cloudThumbnailPath: info.path
-          });
-          if (!result) continue;
-          // Re-check before queueing: a download can finish while this cover is
-          // in flight, which INSTALLS the volume and gives it a thumbnail
-          // measured from its own pages. The snapshot above is that old by the
-          // time the network answers, so the row is re-read and the same two
-          // conditions re-tested. This is only a "don't bother queueing"
-          // filter, not the safety guard it used to be — the flush re-reads and
-          // re-tests both conditions INSIDE its own write transaction, which is
-          // where the write actually happens now.
-          const fresh = (await db.volumes.get(row.volume_uuid)) as VolumeMetadata | undefined;
-          if (!fresh || !needsDownload(fresh) || fresh.thumbnail) continue;
-          // Routed, never written directly. A cover belongs on a `volumes` row
-          // only when the device has a RELATIONSHIP with the volume (installed,
-          // or read); the rows this module targets are metadata-only ones a
-          // mere series OPEN materialized, which usually have neither — and a
-          // blob on such a row is precisely what grew the table to 11,354 rows
-          // / 417MB of thumbnails and made every catalog scan expensive.
-          // `cover-persist.ts` owns that decision for every cover path in the
-          // app; this one used to bypass it with a raw `db.volumes.update`.
-          installCover({ volume_uuid: row.volume_uuid, cloudPath: archivePath }, result, {
-            size: info.size,
-            modifiedTime: info.modifiedTime
-          });
-          installed += 1;
-        } catch (error) {
-          console.debug(
-            `[cover-install] could not install a cover for '${row.volume_title}':`,
-            error
-          );
-        }
-      }
-    }
-  );
-  await Promise.all(workers);
-  // Drain what this pass queued before returning, the same way
-  // `series-backfill.ts`'s `refreshStaleCover` does: this runs inside an
+  const outcomes = await Promise.all(requests);
+  const installed = outcomes.filter((o) => o === 'row' || o === 'cache').length;
+  // Drain what this pass queued before returning: this runs inside an
   // already-async series-open/backfill pass whose caller awaits it, not a UI
   // burst, so "installed" should mean the covers have actually landed. One
-  // forced flush for the whole pass keeps the "one burst, one write per table"
-  // property the queue's write-storm design depends on.
+  // forced flush for the whole pass keeps the "one burst, one write per
+  // table" property the queue's write-storm design depends on.
   if (installed > 0) await flushPendingCoverPersists();
   return installed;
 }

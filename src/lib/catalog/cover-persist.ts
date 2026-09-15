@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
+import { needsDownload } from '$lib/catalog/volume-state';
 import { isArchiveSize } from '$lib/metadata/series-file';
 import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
@@ -48,9 +48,8 @@ import type { CloudThumbnailResult } from './cloud-thumbnails';
  *    thumbnail installed by older code, or measured from the volume's own
  *    pages, is left alone forever rather than being "healed" by a pull.
  *
- * ROUTING: a cover for a volume with a `volumes` row (installed, or
- * metadata-only because it carries reading history) lands on that row exactly
- * as described above. A cover for a volume with NO row — pure catalog
+ * ROUTING (`coverBelongsOnRow`): a cover for a metadata-only `volumes` row
+ * the user has read lands on that row exactly as described above. A cover for a volume with NO row — pure catalog
  * knowledge, nothing the user has installed or read — is catalog knowledge
  * only, and lands in `cloud_covers` instead (Task 2's blob-only cache table),
  * keyed by the ACTIVE account's scope so two accounts never blend covers.
@@ -227,6 +226,30 @@ function runDrain(): Promise<void> {
 }
 
 /**
+ * Does a cloud cover for this volume belong ON ITS `volumes` ROW?
+ *
+ * Yes exactly when the row exists, its pages are not on this device
+ * (`needsDownload` — an installed volume's thumbnail was measured from its
+ * own pages and is never replaced by a cloud guess) and the user has actually
+ * read it (`hasReadingActivity`). Everything else — no row, a row minted
+ * purely by browsing — is catalog knowledge and belongs in `cloud_covers`.
+ *
+ * ONE definition, consulted at REQUEST time (`cover-service.ts`, to decide
+ * whether a cached cover should be promoted onto the row and what outcome to
+ * report) and at FLUSH time (below, against the row re-read inside the write
+ * transaction). Two copies of this rule would let the service promise a row
+ * the queue then refuses.
+ */
+export function coverBelongsOnRow(
+  row: VolumeMetadata | undefined,
+  history: ReadingHistoryEntry | undefined
+): boolean {
+  if (!row) return false;
+  if (!needsDownload(row)) return false;
+  return hasReadingActivity(history);
+}
+
+/**
  * Queue a fetched cover for background persistence. `volume` is either a
  * bare uuid (an existing caller that knows a row exists, and never has a
  * cloud path to attribute an unrowed cover to) or a volume-shaped object
@@ -351,17 +374,20 @@ async function flushOneBatch(): Promise<void> {
         const [volumeUuid, { result, coverSize, coverModified, mode, cachePath }] = entries[i];
         const fresh = rows[i];
 
-        const hasRelationship =
-          !!fresh && (isVolumeInstalled(fresh) || hasReadingActivity(readingHistory[volumeUuid]));
-
         // A row exists AND the device has a relationship with it — that is
-        // the one case a cover belongs on the row itself. Re-reading and
-        // re-testing `needsDownload` INSIDE the transaction (rather than
-        // trusting the caller's snapshot) is what keeps a download that
-        // finished mid-flight from having its own page-measured thumbnail
-        // clobbered by a stale cloud guess.
-        if (hasRelationship && fresh) {
-          if (!needsDownload(fresh)) continue;
+        // the one case a cover belongs on the row itself
+        // (`coverBelongsOnRow`). Deciding it against the row RE-READ INSIDE
+        // the transaction (rather than the caller's snapshot) is what keeps a
+        // download that finished mid-flight — which installs the volume and
+        // makes `needsDownload` false — from having its own page-measured
+        // thumbnail clobbered by a stale cloud guess.
+        // An INSTALLED row (a download finished while this cover was in
+        // flight) has a thumbnail measured from its own pages: nothing to
+        // write, and nothing worth caching either — the cache exists for
+        // volumes whose pages are NOT here.
+        if (fresh && !needsDownload(fresh)) continue;
+
+        if (fresh && coverBelongsOnRow(fresh, readingHistory[volumeUuid])) {
           if (mode === 'fill' && fresh.thumbnail) continue;
 
           const patch: Partial<VolumeMetadata> = {
@@ -390,7 +416,13 @@ async function flushOneBatch(): Promise<void> {
             thumbnail: result.file,
             width: result.width,
             height: result.height,
-            cached_at: Date.now()
+            cached_at: Date.now(),
+            // The same decision-time stamp a row install records, so a later
+            // PROMOTION of this blob onto a row (`cover-service.ts`) carries
+            // the freshness it actually has. Omitted, never `undefined`, so
+            // the row's shape stays the same as a stampless one.
+            ...(coverSize !== undefined ? { cover_size: coverSize } : {}),
+            ...(coverModified !== undefined ? { cover_modified: coverModified } : {})
           });
         }
       }

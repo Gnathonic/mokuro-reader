@@ -471,6 +471,17 @@ must not break. Highlights:
 - Each surface owns its gestures via `PointerGestureTracker` config; Reader owns only keyboard + intent callbacks
 - Before starting any motion, handlers call their surface's `MotionGate` intent method instead of ad-hoc `finishNow()`/`stop()` combinations
 
+### Cloud covers
+
+`requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
+cloud cover: surfaces through `createCoverClaims`, the series-open pass through
+`installCoversForSeries` (a candidate builder), the backfill's stale refresh with
+`{ refresh: true }`. Its ladder: fresh row thumbnail → cached in `cloud_covers` (PROMOTED
+onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. The
+write queue (`cover-persist.ts`) routes by the same predicate. Never fetch or write a cover
+from anywhere else. Synced-progress rows are minted after every progress sync
+(`resolveSyncedProgress`), never from a view mount.
+
 ### Modal Button Z-Index
 
 **Always add `relative z-10` to action button containers in modals.**

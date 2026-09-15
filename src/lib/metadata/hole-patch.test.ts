@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readable, writable } from 'svelte/store';
+import { readable } from 'svelte/store';
 
 let progress: Record<string, { series_title?: string; deletedOn?: string }> = {};
 /**
@@ -54,23 +54,12 @@ vi.mock('$lib/metadata/history-rows', () => ({
 // to know about the listing gate; the gate-specific tests flip these.
 let activeProvider: { type: string } | null = { type: 'google-drive' };
 const getActiveProvider = vi.fn(() => activeProvider);
-// The "has the listing arrived" signal `patchProgressHolesWhenListingReady`
-// subscribes to. A real `writable`, not a reassigned `let` behind a thunk
-// like the other mocks here: the whole point of the tests that use it is to
-// push a SECOND emission at a subscriber already listening, which a plain
-// value swap can't do.
-const cloudFilesStore = writable<Map<string, unknown[]>>(new Map());
+// The series-index refresh `resolveSyncedProgress` awaits before sweeping.
+let indexRefresh: Promise<void> = Promise.resolve();
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     getActiveProvider: () => getActiveProvider(),
-    // A getter, not a direct property: `vi.mock` factories are hoisted above
-    // this file's own top-level `const cloudFilesStore = ...`, so evaluating
-    // the reference eagerly here would hit the TDZ. Deferring behind a getter
-    // matches the `getActiveProvider` thunk above — both wait until something
-    // actually asks.
-    get cloudFiles() {
-      return cloudFilesStore;
-    }
+    whenSeriesIndexesSettled: () => indexRefresh
   }
 }));
 
@@ -82,8 +71,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 import {
   patchProgressHoles,
   patchProgressHolesAndEnrich,
-  patchProgressHolesWhenListingReady,
-  resetHolePatchSessionForTests
+  resolveSyncedProgress
 } from './hole-patch';
 
 beforeEach(() => {
@@ -93,10 +81,9 @@ beforeEach(() => {
   indexes = [];
   activeProvider = { type: 'google-drive' };
   cacheLoaded = true;
-  cloudFilesStore.set(new Map());
+  indexRefresh = Promise.resolve();
   materializeHistoryRows.mockImplementation(async () => 0);
   enrichAllOrphanedVolumes.mockImplementation(async () => {});
-  resetHolePatchSessionForTests();
 });
 
 describe('patchProgressHoles', () => {
@@ -128,16 +115,20 @@ describe('patchProgressHoles', () => {
     expect(openSeries).not.toHaveBeenCalled();
   });
 
-  it('de-duplicates by series and caps the run', async () => {
+  it('de-duplicates by series and pulls every dangling series in one run — no cap', async () => {
     progress = {
       a: { series_title: 'One' },
       b: { series_title: 'one' },
       c: { series_title: 'Two' },
-      d: { series_title: 'Three' }
+      d: { series_title: 'Three' },
+      e: { series_title: 'Four' },
+      f: { series_title: 'Five' },
+      g: { series_title: 'Six' },
+      h: { series_title: 'Seven' }
     };
-    const pulled = await patchProgressHoles({ limit: 2 });
-    expect(pulled).toHaveLength(2);
-    expect(openSeries).toHaveBeenCalledTimes(2);
+    const pulled = await patchProgressHoles();
+    expect(pulled).toHaveLength(7);
+    expect(openSeries).toHaveBeenCalledTimes(7);
   });
 
   it('never rejects when an open fails', async () => {
@@ -146,33 +137,15 @@ describe('patchProgressHoles', () => {
     await expect(patchProgressHoles()).resolves.toEqual([]);
   });
 
-  it('does not re-attempt a series already tried this session, even if it is still a hole', async () => {
+  it('re-attempts a still-dangling series on the next run — there is no session memo', async () => {
     // Nothing in localRows/indexes ever appears for this title — as if the
-    // series is genuinely absent from the cloud (or the device is offline).
+    // series is genuinely absent from the cloud. `openSeries` costs zero I/O
+    // for such a series, and a memo here used to poison a series attempted
+    // before its index had landed.
     progress = { 'uuid-1': { series_title: 'Ghost Series' } };
 
     await expect(patchProgressHoles()).resolves.toEqual(['Ghost Series']);
-    expect(openSeries).toHaveBeenCalledTimes(1);
-
-    // A later catalog open re-runs the patcher against the same still-dangling
-    // progress record; it must not call openSeries again this session.
-    await expect(patchProgressHoles()).resolves.toEqual([]);
-    expect(openSeries).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not count an attempt left off by the run cap against the session memory', async () => {
-    progress = {
-      a: { series_title: 'One' },
-      b: { series_title: 'Two' }
-    };
-    const first = await patchProgressHoles({ limit: 1 });
-    expect(first).toEqual(['One']);
-    expect(openSeries).toHaveBeenCalledTimes(1);
-
-    // 'Two' was deferred by the cap, not attempted — it must still be picked
-    // up on the next run.
-    const second = await patchProgressHoles({ limit: 1 });
-    expect(second).toEqual(['Two']);
+    await expect(patchProgressHoles()).resolves.toEqual(['Ghost Series']);
     expect(openSeries).toHaveBeenCalledTimes(2);
   });
 
@@ -216,7 +189,7 @@ describe('patchProgressHoles', () => {
     expect(openSeries).toHaveBeenCalledTimes(1);
   });
 
-  it('stops attempting mid-run if the provider drops, without memoizing the untried titles', async () => {
+  it('stops attempting mid-run if the provider drops, and picks everything up next run', async () => {
     progress = {
       a: { series_title: 'One' },
       b: { series_title: 'Two' }
@@ -230,11 +203,11 @@ describe('patchProgressHoles', () => {
     expect(pulled).toEqual(['One']);
     expect(openSeries).toHaveBeenCalledTimes(1);
 
-    // 'Two' was never attempted (provider dropped before its turn), so it is
-    // not memoized — reconnecting must let it through on the next run.
+    // Reconnecting: 'Two' was never attempted and 'One' left no row or
+    // index behind, so both are dangling and both are pulled again.
     activeProvider = { type: 'google-drive' };
     const second = await patchProgressHoles();
-    expect(second).toEqual(['Two']);
+    expect(second).toEqual(['One', 'Two']);
   });
 
   describe('phase 1 hand-off', () => {
@@ -314,19 +287,6 @@ describe('patchProgressHoles', () => {
     expect(listSeriesIndexes).toHaveBeenCalledTimes(1);
   });
 
-  it('reads nothing at all on a re-run whose titles are all already memoized', async () => {
-    // Why the shared reader is LAZY rather than fetched once up front: a run
-    // that bails before either phase wants the indexes must still issue no
-    // `series_index` read, and this page's caller re-runs on every mount.
-    progress = { 'uuid-1': { series_title: 'Ghost Series' } };
-    await expect(patchProgressHoles()).resolves.toEqual(['Ghost Series']);
-    expect(listSeriesIndexes).toHaveBeenCalledTimes(1);
-
-    listSeriesIndexes.mockClear();
-    await expect(patchProgressHoles()).resolves.toEqual([]);
-    expect(listSeriesIndexes).not.toHaveBeenCalled();
-  });
-
   describe('patchProgressHolesAndEnrich', () => {
     it('runs the enrichment AGAIN after the sweep, where it can see the rows the sweep wrote', async () => {
       // The bug this exists to prevent: `ReadingSpeedView` enriched first and
@@ -388,130 +348,51 @@ describe('patchProgressHoles', () => {
   });
 });
 
-// Every mock in this file resolves through plain microtasks (no real timers,
-// no I/O) — including the fire-and-forget `void patchProgressHolesAndEnrich()`
-// calls `patchProgressHolesWhenListingReady` makes, which the caller never
-// gets a handle on. A `setTimeout` macrotask boundary is therefore a reliable
-// "wait for whatever is currently in flight to finish" gate: the microtask
-// queue drains completely — including every continuation THOSE microtasks
-// enqueue — before any timer callback runs. `vi.waitFor`'s "did the mock get
-// called yet" polling is the wrong tool for the "nothing happened" side of
-// these assertions: it resolves the instant a condition is first satisfied,
-// which can be BEFORE an in-flight bailing call has reached the very check
-// this suite exists to test, letting a later state change in the test race
-// ahead of it and silently turn a bail into a real sweep.
-async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-describe('patchProgressHolesWhenListingReady', () => {
-  it('retries the sweep once the listing arrives, after a mount that raced ahead of it did no sweep work', async () => {
-    // The bug this exists to prevent: a mount that fires before the cloud
-    // listing has loaded gets an immediate `patchProgressHoles` call that
-    // bails at its very first line (`listingIsLoaded()`), doing NOTHING —
-    // not even the local, network-free phase — for the rest of that visit.
-    cacheLoaded = false; // mirrors an unloaded listing at mount
-    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
-
-    const unsubscribe = patchProgressHolesWhenListingReady();
-
-    // Let the immediate call run to completion before touching any state it
-    // reads, so its bail is really a bail and not a race.
-    await flush();
+describe('resolveSyncedProgress — the one trigger, run after every progress sync', () => {
+  it('does nothing before the listing is loaded', async () => {
+    cacheLoaded = false;
+    progress = { v1: { series_title: 'Ghost' } };
+    await resolveSyncedProgress();
     expect(materializeHistoryRows).not.toHaveBeenCalled();
+    expect(enrichAllOrphanedVolumes).not.toHaveBeenCalled();
     expect(openSeries).not.toHaveBeenCalled();
+  });
 
-    // The listing arrives (e.g. `fetchAllCloudVolumes()` resolves): the cache
-    // reports loaded AND its store emits a non-empty map, same as a real
-    // provider's `fetch()` does together.
-    cacheLoaded = true;
-    cloudFilesStore.set(new Map([['Dr Stone', [{}]]]));
-    await flush();
+  it('waits for the series-index refresh before sweeping', async () => {
+    let release!: () => void;
+    indexRefresh = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    progress = { v1: { series_title: 'Ghost' } };
 
-    // This is the assertion that fails without the fix: without a retry
-    // triggered off the listing arriving, this never happens for the rest of
-    // the visit.
-    expect(openSeries).toHaveBeenCalledWith('Dr Stone');
+    const run = resolveSyncedProgress();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(materializeHistoryRows).not.toHaveBeenCalled();
+
+    release();
+    await run;
     expect(materializeHistoryRows).toHaveBeenCalledTimes(1);
-
-    unsubscribe();
+    expect(openSeries).toHaveBeenCalledWith('Ghost');
   });
 
-  it('does not retry when the listing was already loaded and non-empty at mount', async () => {
-    // `.subscribe()` replays the CURRENT value synchronously to a new
-    // subscriber. If that replay were treated as "the listing just arrived",
-    // every ordinary mount (listing already loaded) would sweep twice.
-    cacheLoaded = true;
-    cloudFilesStore.set(new Map([['Dr Stone', [{}]]]));
-    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
-
-    const unsubscribe = patchProgressHolesWhenListingReady();
-    await flush();
-
-    expect(openSeries).toHaveBeenCalledTimes(1);
-    expect(openSeries).toHaveBeenCalledWith('Dr Stone');
-    expect(materializeHistoryRows).toHaveBeenCalledTimes(1);
-
-    unsubscribe();
+  it('enriches before AND after the sweep', async () => {
+    const order: string[] = [];
+    enrichAllOrphanedVolumes.mockImplementation(async () => {
+      order.push('enrich');
+    });
+    materializeHistoryRows.mockImplementation(async () => {
+      order.push('sweep');
+      return 0;
+    });
+    await resolveSyncedProgress();
+    expect(order).toEqual(['enrich', 'sweep', 'enrich']);
   });
 
-  it('retries at most once even if the listing keeps re-emitting after it arrives', async () => {
-    cacheLoaded = false;
-    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
-
-    const unsubscribe = patchProgressHolesWhenListingReady();
-    await flush();
-    expect(openSeries).not.toHaveBeenCalled();
-
-    cacheLoaded = true;
-    cloudFilesStore.set(new Map([['Dr Stone', [{}]]]));
-    await flush();
-    expect(openSeries).toHaveBeenCalledTimes(1);
-
-    // The listing store re-emits again (e.g. a background dedup pass, or a
-    // second unrelated fetch) — this must NOT trigger a second sweep.
-    cloudFilesStore.set(
-      new Map([
-        ['Dr Stone', [{}]],
-        ['One Piece', [{}]]
-      ])
-    );
-    cloudFilesStore.set(new Map([['Dr Stone', [{}]]]));
-    await flush();
-    expect(openSeries).toHaveBeenCalledTimes(1);
-    expect(materializeHistoryRows).toHaveBeenCalledTimes(1);
-
-    unsubscribe();
-  });
-
-  it('an empty re-emission after mount does not count as the listing arriving', async () => {
-    cacheLoaded = false;
-    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
-
-    const unsubscribe = patchProgressHolesWhenListingReady();
-    await flush();
-
-    // Still empty — must not be mistaken for "arrived".
-    cloudFilesStore.set(new Map());
-    await flush();
-    expect(openSeries).not.toHaveBeenCalled();
-
-    unsubscribe();
-  });
-
-  it('unsubscribes on the returned cleanup — a listing arriving after unmount must not trigger a sweep', async () => {
-    cacheLoaded = false;
-    progress = { 'uuid-1': { series_title: 'Dr Stone' } };
-
-    const unsubscribe = patchProgressHolesWhenListingReady();
-    await flush();
-    expect(openSeries).not.toHaveBeenCalled();
-
-    unsubscribe();
-
-    cacheLoaded = true;
-    cloudFilesStore.set(new Map([['Dr Stone', [{}]]]));
-    await flush();
-    expect(openSeries).not.toHaveBeenCalled();
+  it('never rejects', async () => {
+    materializeHistoryRows.mockRejectedValueOnce(new Error('boom'));
+    await expect(resolveSyncedProgress()).resolves.toBeUndefined();
+    indexRefresh = Promise.reject(new Error('refresh exploded'));
+    await expect(resolveSyncedProgress()).resolves.toBeUndefined();
   });
 });

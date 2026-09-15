@@ -76,6 +76,20 @@ export interface CloudCover {
    * comparison.
    */
   cached_at: number;
+  /**
+   * The listing stamp of the cover sidecar this blob was fetched from —
+   * bytes + epoch seconds, the same two fields with the same guards as
+   * `VolumeMetadata.cover_size`/`cover_modified` and the `series.json` entry
+   * stamps. Written by `cover-persist.ts` at flush; read by
+   * `cover-service.ts` when it PROMOTES a cached cover onto a row the user
+   * has since read, so the row inherits the freshness the blob actually has
+   * rather than the listing's current one. Absent on rows cached before this
+   * existed, which the staleness rule treats as never-stale (the
+   * migration-safety inversion everywhere else). Non-indexed: no schema
+   * version bump.
+   */
+  cover_size?: number;
+  cover_modified?: number;
 }
 
 /** Write covers, normalizing paths so every caller lands on the same key. */

@@ -157,7 +157,7 @@ describe('every request carries a live still-near-viewport probe', () => {
     await settle();
 
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
-    const probe = requestCoverMock.mock.calls[0][1] as (() => boolean) | undefined;
+    const probe = (requestCoverMock.mock.calls[0][1] as { stillNear?: () => boolean }).stillNear;
     expect(typeof probe).toBe('function');
 
     // jsdom rects are all zeros — indistinguishable from a detached node, so
@@ -194,7 +194,7 @@ describe('the probe survives its own gate node being torn down', () => {
     await settle();
 
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
-    const probe = requestCoverMock.mock.calls[0][1] as () => boolean;
+    const probe = (requestCoverMock.mock.calls[0][1] as { stillNear: () => boolean }).stillNear;
     const node = observer.gates[0].target as HTMLElement;
 
     // Positive control #1: while mounted, the probe reads the LIVE rect —
@@ -235,7 +235,7 @@ describe('a swap between two gated elements', () => {
     observer.gates[0].emit(true);
     await settle();
     expect(requestCoverMock).toHaveBeenCalledTimes(1);
-    const probe = requestCoverMock.mock.calls[0][1] as () => boolean;
+    const probe = (requestCoverMock.mock.calls[0][1] as { stillNear: () => boolean }).stillNear;
     const nodeA = observer.gates[0].target as HTMLElement;
 
     // The `PlaceholderThumbnail` shape: a structurally different element

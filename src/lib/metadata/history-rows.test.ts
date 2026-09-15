@@ -63,12 +63,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 
 import { db } from '$lib/catalog/db';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import {
-  materializeHistoryRows,
-  resetHistoryRowsSessionForTests,
-  MAX_HISTORY_ROWS_PER_RUN,
-  MAX_HISTORY_SERIES_PER_RUN
-} from './history-rows';
+import { materializeHistoryRows, resetHistoryRowsSessionForTests } from './history-rows';
 
 function indexVolume(uuid: string, title: string, over: Partial<SeriesFileVolume> = {}) {
   return {
@@ -259,7 +254,11 @@ describe('materializeHistoryRows', () => {
   });
 
   describe('when a planned uuid cannot become a row', () => {
-    it('does not let a series with no cloud listing starve a materializable one behind it', async () => {
+    // There is no per-run cap any more, so nothing can be STARVED — what is
+    // left to prove is that a uuid the cached index has shown cannot become
+    // a row stops costing work on later runs (`unmaterializableThisSession`),
+    // while everything else in the same run still lands.
+    it('remembers a series with no cloud listing, and stops paying its listing lookup', async () => {
       // The concrete case: an index cached while a DIFFERENT provider was
       // connected. `runRefresh` deliberately never cleans those, so the record
       // is in `series_index` forever while `cloudVolumeTitlesFor` reports an
@@ -267,30 +266,28 @@ describe('materializeHistoryRows', () => {
       await seedSeries('Aaa Stale', [indexVolume('uuid-stale', 'Aaa Stale v01')]);
       listing.delete('Aaa Stale');
       await seedSeries('Bbb Live', [indexVolume('uuid-live', 'Bbb Live v01')]);
-
-      // Iteration order over the progress store is stable and puts the dead
-      // series first, which is the whole mechanism: with one series slot per
-      // run, it took that slot on every run and 'Bbb Live' never got one.
       progressStore.set({
         'uuid-stale': { completed: true },
         'uuid-live': { completed: true }
       });
+      const listingLookups = vi.spyOn(unifiedCloudManager, 'cloudVolumeTitlesFor');
 
-      await expect(materializeHistoryRows({ seriesLimit: 1 })).resolves.toBe(0);
-      expect(await db.volumes.get('uuid-live')).toBeUndefined();
-
-      await expect(materializeHistoryRows({ seriesLimit: 1 })).resolves.toBe(1);
+      await expect(materializeHistoryRows()).resolves.toBe(1);
       expect(await db.volumes.get('uuid-live')).toBeDefined();
-      // And the dead one is still dead — this is a scheduling fix, not a
-      // licence to write a row the listing gate refused.
+      // Not a licence to write a row the listing gate refused.
       expect(await db.volumes.get('uuid-stale')).toBeUndefined();
+      expect(listingLookups).toHaveBeenCalledWith('Aaa Stale');
+
+      listingLookups.mockClear();
+      await expect(materializeHistoryRows()).resolves.toBe(0);
+      expect(listingLookups).not.toHaveBeenCalledWith('Aaa Stale');
     });
 
-    it('does not let a uuid `materializeSeriesVolumes` skips starve a writable one behind it', async () => {
+    it('remembers a uuid `materializeSeriesVolumes` skips, and still writes the one beside it', async () => {
       // Rule 2: a local row already owns 'Dr Stone v01' under a different uuid
       // (a re-OCR elsewhere, or a path-derived placeholder). The index entry is
-      // skipped every run — it survives the listing gate, so this is the OTHER
-      // half of the problem: the row cap is spent, not the series cap.
+      // skipped every run — it survives the listing gate, so it is the OTHER
+      // way a planned uuid ends up row-less.
       await seedSeries('Dr Stone', [
         indexVolume('uuid-shadowed', 'Dr Stone v01'),
         indexVolume('uuid-writable', 'Dr Stone v02')
@@ -306,17 +303,21 @@ describe('materializeHistoryRows', () => {
         page_char_counts: [],
         metadata_only: true
       } as VolumeMetadata);
-
       progressStore.set({
         'uuid-shadowed': { completed: true },
         'uuid-writable': { completed: true }
       });
 
-      await expect(materializeHistoryRows({ limit: 1 })).resolves.toBe(0);
-      expect(await db.volumes.get('uuid-writable')).toBeUndefined();
-
-      await expect(materializeHistoryRows({ limit: 1 })).resolves.toBe(1);
+      await expect(materializeHistoryRows()).resolves.toBe(1);
       expect(await db.volumes.get('uuid-writable')).toBeDefined();
+      expect(await db.volumes.get('uuid-shadowed')).toBeUndefined();
+
+      // The shadowed uuid is not re-planned: a second run has nothing to do
+      // and opens no write transaction at all.
+      const counts = await countIdbOps(async () => {
+        await expect(materializeHistoryRows()).resolves.toBe(0);
+      });
+      expect(counts['tx.volumes.readwrite'] ?? 0).toBe(0);
     });
   });
 
@@ -385,33 +386,35 @@ describe('materializeHistoryRows', () => {
       expect(counts['volumes.bytes'] ?? 0).toBe(0);
     });
 
-    it('honours the per-run cap and drains across runs', async () => {
-      await expect(materializeHistoryRows({ limit: 40 })).resolves.toBe(40);
-      expect(await db.volumes.count()).toBe(40 + 20);
+    it('has no per-run cap: more history than the old caps allowed drains in ONE run and ONE transaction', async () => {
+      // The removed caps were 1,000 rows and 200 series per run. Add enough
+      // history to exceed both on top of the fixture above.
+      const EXTRA_SERIES = 200;
+      const READ_PER_EXTRA = 5;
+      let progress: Record<string, unknown> = {};
+      progressStore.subscribe((v) => (progress = { ...v }))();
+      for (let s = 0; s < EXTRA_SERIES; s++) {
+        const seriesTitle = `Extra ${String(s).padStart(3, '0')}`;
+        const volumes: SeriesFileVolume[] = [];
+        for (let v = 0; v < READ_PER_EXTRA; v++) {
+          const uuid = `x${s}-v${v}`;
+          volumes.push(indexVolume(uuid, `${seriesTitle} v${v}`));
+          progress[uuid] = { completed: true };
+        }
+        await seedSeries(seriesTitle, volumes);
+      }
+      progressStore.set(progress);
+      const expected = SERIES * READ_PER_SERIES + EXTRA_SERIES * READ_PER_EXTRA;
+      expect(expected).toBeGreaterThan(1000);
+      expect(SERIES + EXTRA_SERIES).toBeGreaterThan(200);
 
-      await expect(materializeHistoryRows({ limit: 40 })).resolves.toBe(40);
-      expect(await db.volumes.count()).toBe(80 + 20);
-
-      // Left to itself the default cap swallows the rest in one go: a sweep
-      // that needed twenty page loads to finish would leave the stats views
-      // wrong for most of them.
-      expect(MAX_HISTORY_ROWS_PER_RUN).toBeGreaterThanOrEqual(SERIES * READ_PER_SERIES);
-      await expect(materializeHistoryRows()).resolves.toBe(SERIES * READ_PER_SERIES - 80);
+      let created = 0;
+      const counts = await countIdbOps(async () => {
+        created = await materializeHistoryRows();
+      });
+      expect(created).toBe(expected);
+      expect(counts['tx.volumes.readwrite']).toBe(1);
       await expect(materializeHistoryRows()).resolves.toBe(0);
-    });
-
-    it('bounds the SERIES a run touches, not just the rows it writes', async () => {
-      // Each new series costs a `cloudVolumeTitlesFor` lookup, which on every
-      // provider but Google Drive walks the whole cloud listing — twice. The
-      // row cap cannot bound that; this one does.
-      const listingLookups = vi.spyOn(unifiedCloudManager, 'cloudVolumeTitlesFor');
-
-      await expect(materializeHistoryRows({ seriesLimit: 3 })).resolves.toBe(3 * READ_PER_SERIES);
-      expect(listingLookups).toHaveBeenCalledTimes(3);
-
-      // Untouched series are not lost — the next run takes the next three.
-      await expect(materializeHistoryRows({ seriesLimit: 3 })).resolves.toBe(3 * READ_PER_SERIES);
-      expect(MAX_HISTORY_SERIES_PER_RUN).toBeGreaterThanOrEqual(SERIES);
     });
   });
 });

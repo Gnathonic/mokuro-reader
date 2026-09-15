@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
 
 const fetchAll = vi.fn();
@@ -151,6 +152,14 @@ const refreshSeriesIndexes = vi.fn(async (_map: unknown, _providerType?: string)
 vi.mock('$lib/metadata/series-index-sync', () => ({
   refreshSeriesIndexes: (map: unknown, providerType: string) =>
     refreshSeriesIndexes(map, providerType)
+}));
+
+const resolveSyncedProgress = vi.fn(async () => {});
+vi.mock('$lib/metadata/hole-patch', () => ({
+  resolveSyncedProgress: () => resolveSyncedProgress()
+}));
+vi.mock('$lib/util/sync/sidecar-backfill', () => ({
+  sweepInstalledVolumesForSidecarBackfill: vi.fn(async () => {})
 }));
 
 const refreshCatalogIndex = vi.fn(async (_map: unknown, _providerType?: string) => {});
@@ -3660,5 +3669,85 @@ describe('the raw-doubles flag on cached records (raw_entry_collapse)', () => {
 
     expect(putSeriesIndex).toHaveBeenCalledTimes(1);
     expect(putSeriesIndex.mock.calls[0][0]).not.toHaveProperty('raw_entry_collapse');
+  });
+});
+
+describe('the series-index refresh is retained for the post-sync resolution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue({ type: 'webdav', getStatus: () => ({ isReadOnly: false }) });
+    getAllFiles.mockReturnValue([
+      { provider: 'webdav', fileId: '1', path: 'S/V.cbz', size: 1, modifiedTime: '' }
+    ]);
+  });
+
+  it('resolves immediately when no refresh is running', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(unifiedCloudManager.whenSeriesIndexesSettled()).resolves.toBeUndefined();
+  });
+
+  it('waits for the refresh the last listing started', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    let release!: () => void;
+    refreshSeriesIndexes.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    let settled = false;
+    const waiting = unifiedCloudManager.whenSeriesIndexesSettled().then(() => (settled = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    release();
+    await waiting;
+    expect(settled).toBe(true);
+    // And once it has settled there is nothing left to wait on.
+    await expect(unifiedCloudManager.whenSeriesIndexesSettled()).resolves.toBeUndefined();
+  });
+
+  it('never rejects, even when the refresh does', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    refreshSeriesIndexes.mockRejectedValueOnce(new Error('boom'));
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+    await expect(unifiedCloudManager.whenSeriesIndexesSettled()).resolves.toBeUndefined();
+  });
+});
+
+describe('syncProgress starts progress resolution behind its result', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue({ type: 'webdav', getStatus: () => ({ isReadOnly: false }) });
+  });
+
+  it('runs resolveSyncedProgress after a successful sync, without waiting for it', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    let release!: () => void;
+    resolveSyncedProgress.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
+    vi.mocked(unifiedSyncService.syncProvider).mockResolvedValue({ success: true } as never);
+
+    const result = await unifiedCloudManager.syncProgress({ silent: true });
+    expect(result.succeeded).toBe(1);
+    expect(resolveSyncedProgress).toHaveBeenCalledTimes(1);
+
+    let done = false;
+    const retained = unifiedCloudManager.progressResolution.then(() => (done = true));
+    await Promise.resolve();
+    expect(done).toBe(false); // the sync result came back first
+    release();
+    await retained;
+    expect(done).toBe(true);
+  });
+
+  it('does not start resolution after a failed sync, and never lets it reject', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    vi.mocked(unifiedSyncService.syncProvider).mockResolvedValue({ success: false } as never);
+    await unifiedCloudManager.syncProgress();
+    expect(resolveSyncedProgress).not.toHaveBeenCalled();
+
+    vi.mocked(unifiedSyncService.syncProvider).mockResolvedValue({ success: true } as never);
+    resolveSyncedProgress.mockRejectedValueOnce(new Error('boom'));
+    const result = await unifiedCloudManager.syncProgress();
+    expect(result.succeeded).toBe(1);
+    await expect(unifiedCloudManager.progressResolution).resolves.toBeUndefined();
   });
 });
