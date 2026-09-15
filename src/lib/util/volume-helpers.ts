@@ -15,6 +15,33 @@
  * Callers pass the RAW current page — 0 when there is no progress record — not the
  * display default of 1.
  */
+/**
+ * Did the reader start a NEW PASS through this volume after `sinceMs` — as
+ * opposed to revisiting a bit of one they had already finished?
+ *
+ * The measure is how far back they went, against a reference page (the volume's
+ * length, or the page they have just finished on). At or before the halfway
+ * mark is a pass; anything nearer the end is a revisit.
+ *
+ * THE SAME QUESTION decides two things that must not disagree: whether a
+ * completion gets a new date (`updateProgress`), and whether in-period reading
+ * earns fractional goal credit (`partialProgressInPeriod`). When they used
+ * different rules, a re-read begun past the halfway mark accrued credit while
+ * it was in progress and lost all of it at the final page turn — reading more
+ * pages made the goal go DOWN.
+ *
+ * @param pageTurns the volume's `recentPageTurns`
+ * @param sinceMs epoch ms of the completion this pass would supersede
+ * @param referencePage the volume's page count, or the completing page
+ */
+export function hasFreshPassSince(
+  pageTurns: readonly (readonly [number, number, number])[],
+  sinceMs: number,
+  referencePage: number
+): boolean {
+  return pageTurns.some(([timestamp, page]) => timestamp > sinceMs && page * 2 <= referencePage);
+}
+
 export function isVolumeComplete(currentPage: number, pageCount: number): boolean {
   if (!pageCount || currentPage <= 0) return false;
   return currentPage === pageCount || currentPage === pageCount - 1;

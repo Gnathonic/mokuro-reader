@@ -7,7 +7,8 @@
  * - Sidecars: OCR data (.mokuro / .mokuro.gz), thumbnails (.webp/.jpg/.jpeg)
  *   and the per-series index `<Series Title>/series.json`
  * - Root config files: volume-data.json (read progress + series-level reading
- *   state) and profiles.json (settings profiles), plus catalog.json (the
+ *   state), profiles.json (settings profiles) and goals.json (reading goals,
+ *   closed-period snapshots and per-volume deadlines), plus catalog.json (the
  *   compiled library index)
  *
  * `series.json` is a sidecar of the SERIES FOLDER, not of a volume: it is the
@@ -22,8 +23,14 @@
 
 import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
 import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
+import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
 
-const ROOT_CONFIG_FILENAMES = new Set(['volume-data.json', 'profiles.json', CATALOG_FILE_NAME]);
+const ROOT_CONFIG_FILENAMES = new Set([
+  'volume-data.json',
+  'profiles.json',
+  GOALS_FILE_NAME,
+  CATALOG_FILE_NAME
+]);
 
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
@@ -74,6 +81,11 @@ export function isSyncableFile(path: string): boolean {
  * really is a problem worth surfacing.
  *
  * `catalog.json` only counts at the ROOT — a nested one is somebody else's file.
+ *
+ * `goals.json` is deliberately NOT here either: no server compiles a user's
+ * personal reading goals, so there is nothing for a server to reject by design.
+ * It is the user's own state, like progress and profiles, and a silently
+ * dropped write there is data loss they never learn about.
  */
 export function isBestEffortMetadataPath(path: string): boolean {
   return isSeriesFilePath(path) || isCatalogFilePath(path);

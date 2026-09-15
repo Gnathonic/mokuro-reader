@@ -28,6 +28,12 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 - **Per-Volume Analytics** - Character counts and progress tracking for each volume
 - **Series-Level Stats** - Aggregate statistics across entire manga series
 
+### 📈 Progress Tracking
+
+- **Volume Goals** - Set a number of volumes to finish in a year, season, month, day, or custom date range, and track completions against the pace needed to reach it
+- **Per-Volume Deadlines** - Give a volume a finish-by date and see the pages per day (or per week) needed to stay on schedule
+- **Read-Next Ordering** - Order the tracker by deadline, pages remaining, or pages needed per period, so the volume to pick up next is at the front
+
 ### ☁️ Cloud Integration
 
 - **Google Drive Sync** - Full integration with automatic token refresh and reconnection

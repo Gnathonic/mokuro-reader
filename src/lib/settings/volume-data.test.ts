@@ -251,3 +251,127 @@ describe('enrichAllOrphanedVolumes', () => {
     expect(bulkGet).not.toHaveBeenCalled();
   });
 });
+
+describe('VolumeData.completedAt', () => {
+  beforeEach(() => {
+    clearVolumes();
+  });
+
+  it('round-trips through toJSON/fromJSON and is omitted when absent', () => {
+    expect('completedAt' in new VolumeData({ progress: 3 }).toJSON()).toBe(false);
+
+    const stamp = '2026-03-04T05:06:07.000Z';
+    const json = new VolumeData({ completed: true, completedAt: stamp }).toJSON();
+    expect(json.completedAt).toBe(stamp);
+    expect(VolumeData.fromJSON(JSON.stringify(json)).completedAt).toBe(stamp);
+  });
+
+  it('drops an unparseable stamp instead of carrying an Invalid Date into a goal period', () => {
+    expect(new VolumeData({ completedAt: 'last tuesday' as string }).completedAt).toBeUndefined();
+    expect(new VolumeData({ completedAt: 42 as unknown as string }).completedAt).toBeUndefined();
+  });
+
+  it('dates a SECOND reading, so a re-read counts toward the new period', () => {
+    vi.useFakeTimers();
+    try {
+      // Write-once meant a volume finished in 2025, paged back to the start and
+      // read cover to cover again in 2026 kept its 2025 date: the 2026 goal never
+      // counted it, and `bucketVolumes` dropped it from every section too,
+      // because it IS finished — just not in this period.
+      vi.setSystemTime(new Date('2025-06-01T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 5000, true);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
+
+      // Page back to the start: the flag falls, the date stays.
+      vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
+      updateProgress('vol-1', 1, 5000);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
+
+      // Read it through again: a second completion gets its own date, in the
+      // period it actually happened in.
+      vi.setSystemTime(new Date('2026-03-20T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 6000, true);
+      expect(get(volumes)['vol-1'].completedAt).toBe('2026-03-20T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT re-date when the flag merely dips and rises near the end', () => {
+    // The flag falls on any page below the last-page window, on the
+    // reader-settings page input and on toggleHasCover. Treating a bare
+    // false->true edge as a new completion meant "tap back twice, forward
+    // once" in a volume finished last year re-dated it into this year's goal.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2025-06-01T00:00:00.000Z'));
+      updateProgress('vol-1', 100, 5000, true);
+      const original = get(volumes)['vol-1'].completedAt;
+
+      vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
+      updateProgress('vol-1', 99, 5000, true); // still inside the last-page window
+      updateProgress('vol-1', 98, 5000); // flag falls
+      updateProgress('vol-1', 99, 5000, true); // and rises again
+
+      expect(get(volumes)['vol-1'].completedAt).toBe(original);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is stamped once at the false->true edge and does not move afterwards', () => {
+    updateProgress('vol-1', 100, 5000, true);
+    const first = get(volumes)['vol-1'].completedAt;
+    expect(first).toBeTruthy();
+
+    // Re-reporting completion (the reader calls updateProgress on every page
+    // change) must not walk the date forward.
+    updateProgress('vol-1', 100, 5000, true);
+    expect(get(volumes)['vol-1'].completedAt).toBe(first);
+  });
+
+  it('survives a `completed: false` write, because the default means "caller said nothing"', () => {
+    // `toggleHasCover` and the reader-settings page input both call
+    // updateProgress without the flag; neither means "un-read this volume".
+    updateProgress('vol-1', 100, 5000, true);
+    const stamp = get(volumes)['vol-1'].completedAt;
+
+    updateProgress('vol-1', 42, 5000);
+    expect(get(volumes)['vol-1'].completed).toBe(false);
+    expect(get(volumes)['vol-1'].completedAt).toBe(stamp);
+  });
+
+  it('is cleared by the explicit un-read', async () => {
+    const { markVolumeAsUnread } = await import('./volume-data');
+    updateProgress('vol-1', 100, 5000, true);
+    expect(get(volumes)['vol-1'].completedAt).toBeTruthy();
+
+    markVolumeAsUnread('vol-1');
+    expect(get(volumes)['vol-1'].completedAt).toBeUndefined();
+  });
+
+  it('rides onto the archived pass on restart, so past periods keep counting it', () => {
+    updateProgress('vol-1', 100, 5000, true);
+    const stamp = get(volumes)['vol-1'].completedAt;
+
+    archiveAndResetVolumes(['vol-1']);
+
+    const after = get(volumes)['vol-1'];
+    expect(after.completedAt).toBeUndefined();
+    expect(after.progress).toBe(0);
+    expect(after.archivedReads).toHaveLength(1);
+    // `at` is when restart was pressed; `completedAt` is when the pass finished.
+    expect(after.archivedReads[0].completed).toBe(true);
+    expect(after.archivedReads[0].completedAt).toBe(stamp);
+  });
+
+  it('is not carried on a delete tombstone', async () => {
+    const { deleteVolume } = await import('./volume-data');
+    updateProgress('vol-1', 100, 5000, true);
+    deleteVolume('vol-1');
+
+    const tombstone = get(volumesWithTrash)['vol-1'];
+    expect(tombstone.deletedOn).toBeTruthy();
+    expect(tombstone.completedAt).toBeUndefined();
+  });
+});

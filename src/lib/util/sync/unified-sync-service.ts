@@ -21,6 +21,45 @@ import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-i
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import {
+  GOALS_FILE_NAME,
+  composeGoalsFile,
+  detectBogusGoalKeys,
+  emptySections,
+  mergeGoalsSections,
+  parseGoalsFile,
+  purgeGoalTombstones,
+  sectionsAreEmpty,
+  type GoalsFileSections,
+  type GoalsSectionName
+} from '$lib/goals/goals-file';
+// LEAF MODULES, never the `$lib/goals` barrel: that re-exports the snapshot
+// BUILDER and `active-progress`, which reach `$lib/catalog` and so drag Dexie
+// and the cloud manager into the sync layer — and into every sync test.
+import { deadlinesWithTrash, setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
+import {
+  dropDanglingCustomSelection,
+  goalsWithTrash,
+  setGoalSections
+} from '$lib/goals/goals-data';
+import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
+
+/**
+ * `goals.json` as it comes off the cloud.
+ *
+ * `raw` is the UNPARSED survivor: the upload decision compares against it, not
+ * against `sections`, for the same reason `CloudVolumeDataFile.rawSeries`
+ * exists — a clamped stamp compares equal to the poison once parsed, so the
+ * file would never heal and every device would re-clamp it to a fresher `now`
+ * on every sync, reverting every honest edit to that key forever.
+ *
+ * `bogusKeys` is the union across every readable copy, per section.
+ */
+interface CloudGoalsFile {
+  sections: GoalsFileSections;
+  raw: Record<string, unknown>;
+  bogusKeys: Partial<Record<GoalsSectionName, ReadonlySet<string>>>;
+}
 
 /**
  * Deep-sorts object keys before `JSON.stringify` so two values that differ
@@ -280,6 +319,14 @@ class UnifiedSyncService {
       console.log('🔄 Syncing profiles...');
       await this.syncProfiles(provider);
       console.log('✅ Profiles synced');
+
+      // Goals ride the same unconditional round-trip. AFTER volume data on
+      // purpose: a closed period's snapshot is permanent, and it should be
+      // built from the progress this sync just merged, not from what this
+      // device happened to know before it.
+      console.log('🔄 Syncing goals...');
+      await this.syncGoals(provider);
+      console.log('✅ Goals synced');
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -611,6 +658,154 @@ class UnifiedSyncService {
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
       await this.uploadVolumeDataFile(provider, nextFile);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // goals.json — reading goals, closed-period snapshots, per-volume deadlines.
+  //
+  // A ROOT CONFIG file, so a failed write propagates like a failed progress
+  // write: out of `syncGoals` -> `syncProvider`'s catch -> `success: false` ->
+  // the "N failed" snackbar, and WebDAV's classifier demotes to read-only. It
+  // is deliberately NOT in `isBestEffortMetadataPath`: that exists for files a
+  // bunko server compiles and rejects BY DESIGN, and nothing compiles a user's
+  // personal goals.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every `goals.json` the cache knows about.
+   *
+   * `getAll`, not `get` like the profiles half: Drive mints duplicate files,
+   * and a `get`-only path silently ignores every copy but one — losing whatever
+   * only the other copies held.
+   */
+  private findGoalsFiles(provider: SyncProvider): CloudFileMetadata[] {
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache) return [];
+    return cache.getAll(GOALS_FILE_NAME) || [];
+  }
+
+  private async downloadGoalsFile(provider: SyncProvider): Promise<CloudGoalsFile | null> {
+    const files = this.findGoalsFiles(provider);
+    if (files.length === 0) return null;
+
+    // A listed copy can be a ghost — deleted server-side but still in a stale
+    // provider cache — so a not-found copy must not discard the readable ones.
+    const downloads = await Promise.allSettled(
+      files.map(async (file) => {
+        const blob = await provider.downloadFile(file);
+        return (await this.blobToJson(blob)) as unknown;
+      })
+    );
+
+    const transient = downloads.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === 'rejected' && !this.isFileNotFoundError(result.reason)
+    );
+    if (transient) throw transient.reason;
+
+    const readable = downloads
+      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      .map((r) => r.value);
+
+    if (readable.length === 0) return null;
+
+    // Bogus-key detection runs on each copy's OWN RAW sections, before the
+    // parse-time clamp hides the poison, and the result is the UNION across
+    // every readable copy — not just whichever copy wins the fold below.
+    const bogusKeys: Record<GoalsSectionName, Set<string>> = {
+      targets: new Set(),
+      customGoals: new Set(),
+      snapshots: new Set(),
+      volumeDeadlines: new Set()
+    };
+    for (const raw of readable) {
+      const record = (raw ?? {}) as Record<string, unknown>;
+      for (const section of ['targets', 'customGoals', 'volumeDeadlines'] as GoalsSectionName[]) {
+        for (const key of detectBogusGoalKeys(record[section])) bogusKeys[section].add(key);
+      }
+    }
+
+    // Fold duplicate copies into one, by the same union/newest-wins rules the
+    // cloud-vs-local merge uses, so no copy's content is lost before we start —
+    // and honouring `bogusKeys`, so a poisoned stamp on one copy cannot clobber
+    // an honest entry on another regardless of fold order. (The volume-data
+    // fold next door calls this the `honestElsewhere` guard.)
+    let sections = parseGoalsFile(readable[0]);
+    for (const raw of readable.slice(1)) {
+      sections = mergeGoalsSections(sections, parseGoalsFile(raw), bogusKeys);
+    }
+
+    // Compare the upload against what the cloud LITERALLY holds, never against
+    // the parsed copy: a clamped or sanitized value looks identical to the
+    // poison once parsed, so the file would never heal.
+    const survivor = (readable[0] ?? {}) as Record<string, unknown>;
+
+    return { sections, raw: survivor, bogusKeys };
+  }
+
+  private async uploadGoalsFile(provider: SyncProvider, data: unknown): Promise<void> {
+    const blob = this.jsonToBlob(data);
+    const uploaded = await provider.uploadFile(GOALS_FILE_NAME, blob);
+    cacheManager
+      .getCache(provider.type)
+      ?.add?.(
+        GOALS_FILE_NAME,
+        uploadCacheEntry(provider.type, GOALS_FILE_NAME, blob.size, uploaded)
+      );
+  }
+
+  /** The local half of `goals.json`, tombstones included. */
+  private localGoalSections(): GoalsFileSections {
+    const goals = get(goalsWithTrash);
+    return {
+      targets: goals.targets,
+      customGoals: goals.customGoals,
+      snapshots: get(goalSnapshots),
+      volumeDeadlines: get(deadlinesWithTrash)
+    };
+  }
+
+  private async syncGoals(provider: SyncProvider): Promise<void> {
+    const cloud = await this.downloadGoalsFile(provider);
+    const local = this.localGoalSections();
+
+    const merged = purgeGoalTombstones(
+      mergeGoalsSections(local, cloud?.sections ?? emptySections(), cloud?.bogusKeys ?? {})
+    );
+
+    setGoalSections(merged.targets, merged.customGoals);
+    setGoalSnapshots(merged.snapshots);
+    setVolumeDeadlineEntries(merged.volumeDeadlines);
+    // A custom goal deleted on another device arrives here as a tombstone. The
+    // selection is per-device and was not part of the merge, so without this
+    // the goal card reads "Read 0 volumes in Unknown period" until the user
+    // works out they have to pick something else.
+    dropDanglingCustomSelection();
+
+    // A library that has never used goals must not mint a file: an empty
+    // goals.json in every user's folder is pure churn.
+    if (sectionsAreEmpty(merged) && !cloud) return;
+
+    const nextFile = composeGoalsFile(merged, new Date().toISOString());
+    const cloudSections = cloud
+      ? {
+          targets: (cloud.raw.targets ?? {}) as GoalsFileSections['targets'],
+          customGoals: (cloud.raw.customGoals ?? {}) as GoalsFileSections['customGoals'],
+          snapshots: (cloud.raw.snapshots ?? {}) as GoalsFileSections['snapshots'],
+          volumeDeadlines: (cloud.raw.volumeDeadlines ?? {}) as GoalsFileSections['volumeDeadlines']
+        }
+      : emptySections();
+
+    // `updated_at` is informational, so it is excluded from the comparison —
+    // including it would make every device re-upload on every sync forever.
+    const contentOf = (file: ReturnType<typeof composeGoalsFile>) => {
+      const { updated_at: _ignored, ...rest } = file;
+      return stableStringify(rest);
+    };
+
+    if (contentOf(nextFile) !== contentOf(composeGoalsFile(cloudSections, ''))) {
+      await this.uploadGoalsFile(provider, nextFile);
     }
   }
 

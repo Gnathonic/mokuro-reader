@@ -66,6 +66,9 @@ import {
   updateSeriesReadingState,
   volumesWithTrash
 } from '$lib/settings';
+import { goalsWithTrash, setGoalSections } from '$lib/goals/goals-data';
+import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
+import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
 
 // downloadVolumeDataFile is private; these tests target it directly because it
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
@@ -931,5 +934,248 @@ describe('direct config uploads record a targeted cache entry', () => {
       modifiedTimeProvisional: false,
       size: 11
     });
+  });
+});
+
+describe('goals.json', () => {
+  const goalsMeta = (fileId: string) =>
+    ({
+      provider: 'mega',
+      fileId,
+      path: 'goals.json',
+      modifiedTime: '2026-01-01T00:00:00Z'
+    }) as unknown as CloudFileMetadata;
+
+  function stubGoalsCache(files: CloudFileMetadata[]) {
+    const cache = {
+      getAll: vi.fn((name: string) => (name === 'goals.json' ? files : [])),
+      get: vi.fn(() => null),
+      add: vi.fn(),
+      fetch: vi.fn(async () => {})
+    };
+    getCache.mockReturnValue(cache);
+    return cache;
+  }
+
+  function goalsProvider(
+    download: (file: CloudFileMetadata) => Promise<Blob>,
+    uploads: Array<Record<string, any>> = []
+  ): SyncProvider {
+    return {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(download),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+        return { fileId: 'goals-1', modifiedTime: '2026-08-30T00:00:00.000Z', size: blob.size };
+      })
+    } as unknown as SyncProvider;
+  }
+
+  const target = (over: Record<string, unknown> = {}) => ({
+    goalType: 'year',
+    periodKey: '2026',
+    targetVolumes: 52,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastUpdated: '2026-01-01T00:00:00.000Z',
+    ...over
+  });
+
+  beforeEach(() => {
+    setGoalSections({}, {});
+    setGoalSnapshots({});
+    setVolumeDeadlineEntries({});
+  });
+
+  it('writes nothing at all for a user who has never set a goal', async () => {
+    // The whole world syncs. A file nobody asked for must not appear in every
+    // library folder.
+    stubGoalsCache([]);
+    const uploads: Array<Record<string, any>> = [];
+    await svc.syncGoals(goalsProvider(async () => jsonBlob({}), uploads));
+    expect(uploads).toEqual([]);
+  });
+
+  it('uploads the local goals when the cloud has none', async () => {
+    setGoalSections({ 'year:2026': target() as any }, {});
+    stubGoalsCache([]);
+    const uploads: Array<Record<string, any>> = [];
+
+    await svc.syncGoals(goalsProvider(async () => jsonBlob({}), uploads));
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].version).toBe(1);
+    expect(uploads[0].targets['year:2026'].targetVolumes).toBe(52);
+    // Empty sections are omitted so unused libraries produce identical bytes.
+    expect('customGoals' in uploads[0]).toBe(false);
+  });
+
+  it('adopts a newer cloud goal and writes it back to the local store', async () => {
+    setGoalSections({ 'year:2026': target({ targetVolumes: 10 }) as any }, {});
+    stubGoalsCache([goalsMeta('only')]);
+
+    await svc.syncGoals(
+      goalsProvider(async () =>
+        jsonBlob({
+          version: 1,
+          updated_at: '2026-06-01T00:00:00.000Z',
+          targets: {
+            'year:2026': target({ targetVolumes: 99, lastUpdated: '2026-06-01T00:00:00.000Z' })
+          }
+        })
+      )
+    );
+
+    expect(get(goalsWithTrash).targets['year:2026'].targetVolumes).toBe(99);
+  });
+
+  it('does not re-upload when local and cloud already agree', async () => {
+    setGoalSections({ 'year:2026': target() as any }, {});
+    stubGoalsCache([goalsMeta('only')]);
+    const uploads: Array<Record<string, any>> = [];
+
+    await svc.syncGoals(
+      goalsProvider(
+        async () =>
+          jsonBlob({
+            version: 1,
+            // A different build stamp must not by itself force an upload.
+            updated_at: '2020-01-01T00:00:00.000Z',
+            targets: { 'year:2026': target() }
+          }),
+        uploads
+      )
+    );
+
+    expect(uploads).toEqual([]);
+  });
+
+  it('propagates a deletion instead of resurrecting the goal', async () => {
+    // Deleted on this device; the cloud copy is the pre-delete state. The
+    // tombstone is recent, so it is still inside the 30-day purge window.
+    const deletedOn = new Date(Date.now() - 60_000).toISOString();
+    setGoalSections({ 'year:2026': target({ lastUpdated: deletedOn, deletedOn }) as any }, {});
+    stubGoalsCache([goalsMeta('only')]);
+    const uploads: Array<Record<string, any>> = [];
+
+    await svc.syncGoals(
+      goalsProvider(
+        async () => jsonBlob({ version: 1, updated_at: '', targets: { 'year:2026': target() } }),
+        uploads
+      )
+    );
+
+    expect(get(goalsWithTrash).targets['year:2026'].deletedOn).toBe(deletedOn);
+    expect(uploads[0].targets['year:2026'].deletedOn).toBe(deletedOn);
+  });
+
+  it('forfeits a future-stamped cloud goal to a pending local edit', async () => {
+    const localStamp = new Date(Date.now() - 60_000).toISOString();
+    setGoalSections(
+      { 'year:2026': target({ targetVolumes: 10, lastUpdated: localStamp }) as any },
+      {}
+    );
+    stubGoalsCache([goalsMeta('only')]);
+
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await svc.syncGoals(
+      goalsProvider(async () =>
+        jsonBlob({
+          version: 1,
+          updated_at: '',
+          targets: { 'year:2026': target({ targetVolumes: 99, lastUpdated: future }) }
+        })
+      )
+    );
+
+    // The clamp alone would let the healed stamp tie-or-beat the honest local
+    // edit; FORFEIT-ON-BOGUS is what protects it.
+    expect(get(goalsWithTrash).targets['year:2026'].targetVolumes).toBe(10);
+  });
+
+  it('unions duplicate cloud copies rather than letting one shadow the other', async () => {
+    stubGoalsCache([goalsMeta('a'), goalsMeta('b')]);
+    let call = 0;
+
+    await svc.syncGoals(
+      goalsProvider(async () => {
+        call += 1;
+        return jsonBlob(
+          call === 1
+            ? { version: 1, updated_at: '', targets: { 'year:2026': target() } }
+            : {
+                version: 1,
+                updated_at: '',
+                targets: { 'year:2025': target({ periodKey: '2025' }) }
+              }
+        );
+      })
+    );
+
+    expect(Object.keys(get(goalsWithTrash).targets).sort()).toEqual(['year:2025', 'year:2026']);
+  });
+
+  it('survives a ghost duplicate that no longer exists server-side', async () => {
+    stubGoalsCache([goalsMeta('good'), goalsMeta('ghost')]);
+
+    await svc.syncGoals(
+      goalsProvider(async (file: any) => {
+        if (file.fileId === 'ghost') {
+          throw new ProviderError('File not found: goals.json', 'mega', 'NOT_FOUND');
+        }
+        return jsonBlob({ version: 1, updated_at: '', targets: { 'year:2026': target() } });
+      })
+    );
+
+    expect(get(goalsWithTrash).targets['year:2026'].targetVolumes).toBe(52);
+  });
+
+  it('unions snapshots so the device that knows less cannot erase the record', async () => {
+    setGoalSnapshots({
+      'year:2026': {
+        goalType: 'year',
+        periodKey: '2026',
+        startDate: '2026-01-01',
+        endDate: '2026-12-31',
+        closedAt: '2027-01-02T00:00:00.000Z',
+        completed: { a: '2026-03-01T00:00:00.000Z' },
+        partialProgress: {},
+        lastUpdated: '2027-01-02T00:00:00.000Z'
+      }
+    } as any);
+    stubGoalsCache([goalsMeta('only')]);
+
+    await svc.syncGoals(
+      goalsProvider(async () =>
+        jsonBlob({
+          version: 1,
+          updated_at: '',
+          snapshots: {
+            'year:2026': {
+              goalType: 'year',
+              periodKey: '2026',
+              startDate: '2026-01-01',
+              endDate: '2026-12-31',
+              closedAt: '2027-01-01T00:00:00.000Z',
+              completed: { b: '2026-07-01T00:00:00.000Z' },
+              partialProgress: {},
+              lastUpdated: '2026-12-31T00:00:00.000Z'
+            }
+          }
+        })
+      )
+    );
+
+    expect(Object.keys(get(goalSnapshots)['year:2026'].completed).sort()).toEqual(['a', 'b']);
+  });
+
+  it('records a targeted cache entry so a first-ever upload is visible without a listing', async () => {
+    setGoalSections({ 'year:2026': target() as any }, {});
+    const cache = stubGoalsCache([]);
+
+    await svc.syncGoals(goalsProvider(async () => jsonBlob({})));
+
+    expect(cache.add).toHaveBeenCalledWith('goals.json', expect.anything());
   });
 });
