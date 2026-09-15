@@ -280,6 +280,9 @@ function whenDownloadQueueIdleOrImportWork(): Promise<void> {
   });
 }
 
+/** OCR edited in the reader — TRIGGER 3, implemented with the re-upload hook. */
+export function noteOcrEdited(_volumeUuid: string): void {}
+
 /**
  * TRIGGER 1 — a volume just finished downloading/importing from the cloud.
  * Cheap and unconditional beyond the shared gate: the drain re-checks
